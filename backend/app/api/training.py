@@ -164,7 +164,9 @@ async def voice_enroll(
     """Enroll with base64 audio samples (raw bytes are discarded immediately)."""
     runtime = _runtime(session)
     try:
-        samples = [{"audio_b64": sample} for sample in data.samples]
+        samples: list[dict[str, object]] = [
+            {"audio_b64": sample} for sample in data.samples
+        ]
         if data.liveness_proof is not None:
             for sample in samples:
                 sample["liveness_proof"] = data.liveness_proof
