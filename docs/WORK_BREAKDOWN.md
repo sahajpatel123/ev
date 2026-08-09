@@ -416,8 +416,9 @@ from the recorded stream.
 
 ### 8.1 Live channels & events — **Built**
 `live_channels` + immutable `live_events` with batch ingestion, status, and
-privacy levels. Direction: add real-time streaming (WebSocket/SSE) from
-collectors.
+privacy levels. `GET /v1/live/stream` provides SSE tailing of newly ingested
+events with `access=user|model` privacy slices and replay-on-connect via
+`since=`. Direction: WebSocket variant for two-way collector control.
 
 ### 8.2 Live context in state — **Built**
 `GET /v1/state` includes recent live snippets. Direction: weight live context by
@@ -580,8 +581,8 @@ can ask "what's 14% of 3,500?" or "check my battery" and EVIE uses the right too
 without being asked twice.
 
 ### 11.1 Tool registry & dispatch — **Built**
-Memory, timeline, person, project, goals, patterns, calculate, health, gear,
-alerts, and research tools with a safe AST calculator. Every tool is a formally
+Memory, decisions, timeline, person, project, goals, patterns, calculate, health,
+gear, alerts, and research tools with a safe AST calculator. Every tool is a formally
 declared capability: explicit input schema (types, bounds, enums, no unknown
 arguments), output shape, permission scope, read-only boundary, and undoability
 marker. The dispatcher validates arguments, enforces sensitive-tool permission
