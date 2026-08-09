@@ -122,8 +122,8 @@ implements the ContextCompiler: deterministic per-request window planning
 (strategy → user state → live context → rollup → retrieved memory → history →
 open questions) with a real-time budget monitor report (per-section tokens,
 included/dropped items, remaining budget). The chat assembler delegates to it
-and depth profiles scale the budget. Direction: expose the plan in chat
-responses and add progressive tool-loaded deep dives.
+and depth profiles scale the budget. Chat responses and SSE streams expose
+the plan as `context_plan`. Direction: add progressive tool-loaded deep dives.
 
 ### 2.5 Whole-life recall — **Partial**
 "Remember my whole life" = memory store + hierarchical retrieval, not a lifetime
@@ -816,24 +816,29 @@ photo show?" from the recorded perception, surfacing it in the context window
 and chat provenance with the perception event id. Direction: add on-device OCR
 adapters and face-free identity hints.
 
-### 15.2 Screen awareness — **Partial**
+### 15.2 Screen awareness — **Built**
 The live screen channel yields derived context (active app, document/code summary)
 into user state and the ContextCompiler; the model slice never receives raw
-screen content. Direction: build OS-level collectors that emit text-level events,
-then feed them into user state and the ContextCompiler.
+screen content. The `clients/collectors` agent ships a macOS collector that
+emits text-level events (active app, window title, code file) via System Events
+— no screen capture. Direction: add per-app document extraction and
+permission UI on iOS/macOS.
 
 ### 15.3 Audio scene understanding — **Built**
 Audio live events derive a minimal scene representation (speech/music/noise,
 in-call/meeting) with confidence, surfaced as `audio_in_call` EV Sense signals
-with live-event provenance. Raw audio and transcripts are never included in the
-model-facing slice. Direction: add on-device scene classification behind the
+with live-event provenance. The collector agent relays derived scene hints from
+a local classifier (`~/.ev/audio-scene.json` or env) and never ships raw audio
+or transcripts. Direction: add on-device scene classification behind the
 existing channel contract.
 
 ### 15.4 Location & presence — **Built**
 Location live events derive coarse place + presence context (never exact
 coordinates/addresses in model-facing context), surfaced as `location_presence`
-EV Sense signals and route-briefing context. Direction: add opt-in on-device
-collectors and route-briefing integration.
+EV Sense signals and route-briefing context. The collector agent emits coarse
+place/presence from a user-managed file (`~/.ev/location.json`) or env; exact
+GPS fixes must be rounded to a coarse label before ingestion. Direction: add
+opt-in CoreLocation integration that only ever sends coarse labels.
 
 ### 15.5 Multimodal provider input — **Built**
 The provider contract carries typed media parts (`ChatMessage.media` with

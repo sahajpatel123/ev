@@ -247,6 +247,7 @@ class ChatResponse(BaseModel):
     memory_delta: list[MemoryDelta] = Field(default_factory=list)
     provenance: list[ProvenanceItem] = Field(default_factory=list)
     filter_report: FilterReportOut | None = None
+    context_plan: dict | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -885,6 +886,7 @@ class LiveRetentionOut(BaseModel):
 class VoiceWakeRequest(BaseModel):
     device_id: str = Field(min_length=1, max_length=128)
     wake_word: str = Field(default="evie", min_length=1, max_length=32)
+    priority: float = Field(default=0.5, ge=0, le=1)
     text_hint: str | None = Field(default=None, max_length=256)
     audio_ref: str | None = None
     wake_confidence: float | None = Field(default=None, ge=0, le=1)
@@ -1121,6 +1123,7 @@ class OpsCenterOut(BaseModel):
     patterns: list[dict] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
     recent_commands: list[CommandOut] = Field(default_factory=list)
+    metrics: dict | None = None
 
 
 class CommandOut(BaseModel):

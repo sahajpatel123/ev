@@ -29,6 +29,15 @@ class SectionPlan:
     items_dropped: int = 0
     truncated: bool = False
 
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "tokens": self.tokens,
+            "items_included": self.items_included,
+            "items_dropped": self.items_dropped,
+            "truncated": self.truncated,
+        }
+
 
 @dataclass
 class ContextPlan:
@@ -46,6 +55,15 @@ class ContextPlan:
     @property
     def over_budget(self) -> bool:
         return self.used_tokens > self.budget
+
+    def to_dict(self) -> dict:
+        return {
+            "used_tokens": self.used_tokens,
+            "budget": self.budget,
+            "remaining_tokens": self.remaining_tokens,
+            "over_budget": self.over_budget,
+            "sections": [section.to_dict() for section in self.sections],
+        }
 
 
 class ContextCompiler:

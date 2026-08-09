@@ -123,6 +123,25 @@ async def test_single_default_thread_invariant(db_session: AsyncSession) -> None
             await db_session.flush()
 
 
+async def test_chat_response_includes_context_plan(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/v1/chat",
+        json={"message": "I decided to use SQLite for testing."},
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    plan = payload["context_plan"]
+    assert plan is not None
+    assert plan["used_tokens"] == payload["context_tokens"]
+    assert plan["budget"] > 0
+    assert plan["remaining_tokens"] >= 0
+    assert plan["over_budget"] is False
+    names = [section["name"] for section in plan["sections"]]
+    assert "strategy" in names
+    assert "user_state" in names
+    assert "retrieved_memory" in names
+
+
 async def test_rolling_summary_and_progressive_depth(client: AsyncClient) -> None:
     first = await client.post(
         "/v1/chat",
