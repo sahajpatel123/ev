@@ -65,7 +65,9 @@ class Settings(BaseSettings):
     voice_tts_format: str = "mp3"
 
     # Chat gateway
-    chat_provider: str = "echo"  # echo | mock | deepseek
+    chat_provider: str = "echo"  # echo | mock | deepseek | local
+    local_model_base_url: str | None = None  # OpenAI-compatible local server (Ollama/llama.cpp)
+    local_model_name: str = "llama3"
     model_call_log_enabled: bool = True
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_api_key: str | None = None

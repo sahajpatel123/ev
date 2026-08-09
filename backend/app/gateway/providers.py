@@ -227,10 +227,18 @@ class LocalModelProvider(DeepSeekProvider):
         base_url: str | None = None,
         default_model: str | None = None,
     ) -> None:
-        resolved_base = base_url or os.getenv("EV_LOCAL_MODEL_BASE_URL") or (
-            "http://localhost:11434/v1"
+        resolved_base = (
+            base_url
+            or os.getenv("EV_LOCAL_MODEL_BASE_URL")
+            or settings.local_model_base_url
+            or "http://localhost:11434/v1"
         )
-        resolved_model = default_model or os.getenv("EV_LOCAL_MODEL_NAME") or "llama3"
+        resolved_model = (
+            default_model
+            or os.getenv("EV_LOCAL_MODEL_NAME")
+            or settings.local_model_name
+            or "llama3"
+        )
         super().__init__(
             base_url=resolved_base,
             api_key=None,
