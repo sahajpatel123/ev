@@ -118,10 +118,10 @@ def _new_recovery_code() -> str:
     return "-".join(groups)
 
 
-def as_utc(value: datetime | None) -> datetime:
-    """Normalize to tz-aware UTC; None means 'no expiry' and compares as now."""
+def as_utc(value: datetime | None) -> datetime | None:
+    """Normalize to tz-aware UTC; None stays None (no expiry / no lock)."""
     if value is None:
-        return utcnow()
+        return None
     if value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
@@ -241,8 +241,8 @@ async def redeem_recovery_code(
     """
     owner = await require_owner(session)
     now = utcnow()
-    locked_until = as_utc(owner.recovery_locked_until)
-    if locked_until is not None and locked_until > now:
+    locked_until = owner.recovery_locked_until
+    if locked_until is not None and as_utc(locked_until) > now:
         raise IdentityError(
             "Recovery temporarily locked after too many failed attempts — try again later",
             status=429,
