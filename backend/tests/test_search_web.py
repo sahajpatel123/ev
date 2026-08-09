@@ -5,7 +5,9 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.ev.research import ResearchService
 from app.ev.tools import dispatch, get_spec, list_tools
+from app.schemas import ResearchSessionCreate
 from app.search.providers import (
     BraveSearchProvider,
     MockSearchProvider,
@@ -82,3 +84,33 @@ def test_search_web_is_declared_with_citations_output() -> None:
     assert spec["read_only"] is True
     assert spec["output"]["required"] == ["count", "results"]
     assert any(t["name"] == "search_web" for t in list_tools())
+
+
+async def test_research_web_search_adds_cited_notes(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "search_provider", "mock")
+    service = ResearchService(db_session, actor="tester")
+    session = await service.create_session(
+        ResearchSessionCreate(question="Which local embedding model is best?")
+    )
+    notes = await service.web_search(session.id, "local embedding benchmark", limit=2)
+    assert len(notes) == 2
+    assert all(note.source_url and note.source_title for note in notes)
+    assert all(note.note for note in notes)
+    await db_session.commit()
+
+
+async def test_research_web_search_memory_only_mode_raises(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "search_provider", "none")
+    service = ResearchService(db_session, actor="tester")
+    session = await service.create_session(
+        ResearchSessionCreate(question="Memory-only question")
+    )
+    try:
+        await service.web_search(session.id, "anything")
+        raise AssertionError("expected KeyError for disabled web search")
+    except KeyError as exc:
+        assert "disabled" in str(exc)

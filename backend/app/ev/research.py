@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.embeddings import get_embedder
 from app.models import Event, Memory, MemoryEvent, ResearchNote, ResearchSession
 from app.schemas import EventCreate, ResearchConclude, ResearchNoteCreate, ResearchSessionCreate
+from app.search.providers import get_search_provider
 from app.services.event_service import EventService
 from app.utils.text import fingerprint, normalize_text
 
@@ -74,6 +75,44 @@ class ResearchService:
         self.session.add(note)
         await self.session.flush()
         return note
+
+    async def web_search(
+        self,
+        session_id: UUID,
+        query: str,
+        *,
+        limit: int = 5,
+    ) -> list[ResearchNote]:
+        """Search the web into an open session, one cited note per result.
+
+        Memory-only mode (no search provider configured) raises KeyError so the
+        caller can surface a clear "web search disabled" outcome.
+        """
+
+        research = await self.session.get(ResearchSession, session_id)
+        if research is None:
+            raise KeyError(f"Research session {session_id} not found")
+        if research.status != "open":
+            raise ValueError("Research session is already concluded")
+        provider = get_search_provider()
+        if provider is None:
+            raise KeyError(
+                "Web search is disabled: set EV_SEARCH_PROVIDER and an API key to enable it"
+            )
+        results = await provider.search(query, limit=limit)
+        notes: list[ResearchNote] = []
+        for result in results:
+            notes.append(
+                await self.add_note(
+                    session_id,
+                    ResearchNoteCreate(
+                        note=result.snippet,
+                        source_url=result.url,
+                        source_title=result.title,
+                    ),
+                )
+            )
+        return notes
 
     async def conclude(
         self,
