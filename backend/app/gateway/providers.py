@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
 
 import httpx
@@ -210,6 +211,33 @@ class DeepSeekProvider:
         return [self.default_model]
 
 
+class LocalModelProvider(DeepSeekProvider):
+    """OpenAI-compatible local model server (Ollama/llama.cpp) — plan 4.4.
+
+    The model runs on the user's machine or LAN; no API key is required.
+    Point ``EV_LOCAL_MODEL_BASE_URL`` at the server's OpenAI-compatible
+    endpoint (Ollama default: ``http://localhost:11434/v1``).
+    """
+
+    name = "local"
+
+    def __init__(
+        self,
+        *,
+        base_url: str | None = None,
+        default_model: str | None = None,
+    ) -> None:
+        resolved_base = base_url or os.getenv("EV_LOCAL_MODEL_BASE_URL") or (
+            "http://localhost:11434/v1"
+        )
+        resolved_model = default_model or os.getenv("EV_LOCAL_MODEL_NAME") or "llama3"
+        super().__init__(
+            base_url=resolved_base,
+            api_key=None,
+            default_model=resolved_model,
+        )
+
+
 def _deepseek_factory() -> DeepSeekProvider:
     return DeepSeekProvider(
         base_url=settings.deepseek_base_url,
@@ -218,11 +246,16 @@ def _deepseek_factory() -> DeepSeekProvider:
     )
 
 
+def _local_factory() -> LocalModelProvider:
+    return LocalModelProvider()
+
+
 # Provider registry: model swap is a configuration change (EV_CHAT_PROVIDER).
 PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
     "echo": EchoProvider,
     "mock": MockProvider,
     "deepseek": _deepseek_factory,
+    "local": _local_factory,
 }
 
 

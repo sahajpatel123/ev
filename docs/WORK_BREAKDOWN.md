@@ -238,9 +238,12 @@ tools and malformed arguments are rejected, missing optional arguments with
 declared defaults are rectified, and sensitive tools require an explicit
 permission gate (`allow_sensitive_tools`).
 
-### 4.4 Local models (future) — **Future**
-2B-class local critic for style/safety, on-device STT/TTS, wake word models.
-Direction: evaluate edge hardware and power budgets before committing.
+### 4.4 Local models (future) — **Built (v1)**
+`local` chat provider talks to any OpenAI-compatible local server
+(Ollama/llama.cpp default `http://localhost:11434/v1`, no API key) through the
+same provider interface (`EV_CHAT_PROVIDER=local`,
+`EV_LOCAL_MODEL_BASE_URL`, `EV_LOCAL_MODEL_NAME`). Direction: 2B-class local
+critic, on-device STT/TTS, and wake-word models after edge-hardware eval.
 
 ### 4.5 Embeddings — **Built**
 Hash provider for tests; OpenAI-compatible HTTP provider for production; pgvector
