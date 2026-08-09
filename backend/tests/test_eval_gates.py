@@ -10,6 +10,7 @@ from app.scripts.eval_gates import (
     GateResult,
     build_report,
     run_api_contract_gate,
+    run_deployment_gate,
     run_filter_gate,
     run_observability_gate,
     run_roadmap_gate,
@@ -38,6 +39,11 @@ async def test_voice_gate_passes() -> None:
 
 def test_observability_gate_passes() -> None:
     result = run_observability_gate(_spec())
+    assert result.passed, result.to_dict()
+
+
+def test_deployment_gate_passes() -> None:
+    result = run_deployment_gate()
     assert result.passed, result.to_dict()
 
 

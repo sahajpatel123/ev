@@ -581,6 +581,171 @@ def run_observability_gate(spec: dict) -> GateResult:
     return _gate("observability", checks, int((time.perf_counter() - started) * 1000))
 
 
+def run_deployment_gate() -> GateResult:
+    """Reproducible self-hosting gate: compose topology, env wiring, restart
+    policy, image/build inputs, migrations, and Make targets.
+
+    Fails when the documented deployment contract (docs/DEPLOYMENT.md) drifts,
+    e.g. a service loses its healthcheck, ``restart: unless-stopped``
+    disappears, or ``make migrate`` has nothing to run.
+    """
+
+    started = time.perf_counter()
+    import re
+
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[3]
+    compose_path = repo_root / "compose.yaml"
+    env_example = repo_root / ".env.example"
+    makefile = repo_root / "Makefile"
+    dockerfile = repo_root / "backend" / "Dockerfile"
+    pyproject = repo_root / "backend" / "pyproject.toml"
+    lockfile = repo_root / "backend" / "uv.lock"
+    alembic_ini = repo_root / "backend" / "alembic.ini"
+    alembic_env = repo_root / "backend" / "alembic" / "env.py"
+    alembic_versions = repo_root / "backend" / "alembic" / "versions"
+
+    checks: list[Check] = []
+    required_files = {
+        "compose.yaml": compose_path,
+        ".env.example": env_example,
+        "Makefile": makefile,
+        "backend/Dockerfile": dockerfile,
+        "backend/pyproject.toml": pyproject,
+        "backend/uv.lock": lockfile,
+        "backend/alembic.ini": alembic_ini,
+        "backend/alembic/env.py": alembic_env,
+    }
+    missing_files = [name for name, path in required_files.items() if not path.is_file()]
+    checks.append(
+        _check(
+            "required_files_present",
+            not missing_files,
+            "missing=" + (", ".join(missing_files) if missing_files else "all present."),
+        )
+    )
+
+    if not alembic_versions.is_dir() or not list(alembic_versions.glob("*.py")):
+        checks.append(
+            _check(
+                "alembic_migrations_present",
+                False,
+                "no migration scripts in backend/alembic/versions",
+            )
+        )
+    else:
+        checks.append(
+            _check(
+                "alembic_migrations_present",
+                True,
+                f"{len(list(alembic_versions.glob('*.py')))} migration scripts",
+            )
+        )
+
+    if makefile.is_file():
+        make_text = makefile.read_text()
+        required_targets = ["install", "test", "migrate", "seed", "eval"]
+        missing_targets = [
+            target
+            for target in required_targets
+            if not re.search(rf"^{target}:", make_text, re.MULTILINE)
+        ]
+        checks.append(
+            _check(
+                "makefile_targets",
+                not missing_targets,
+                "missing targets=" + (", ".join(missing_targets) if missing_targets else "all present."),
+            )
+        )
+
+    if env_example.is_file():
+        env_text = env_example.read_text()
+        required_env = ["EV_MASTER_KEY", "EV_DATABASE_URL", "EV_REDIS_URL"]
+        missing_env = [key for key in required_env if f"{key}=" not in env_text]
+        checks.append(
+            _check(
+                "env_example_required_keys",
+                not missing_env,
+                "missing=" + (", ".join(missing_env) if missing_env else "all present."),
+            )
+        )
+
+    if compose_path.is_file():
+        compose = yaml.safe_load(compose_path.read_text())
+        services = compose.get("services", {})
+        required_services = ["db", "redis", "minio", "api", "worker"]
+        missing_services = [name for name in required_services if name not in services]
+        checks.append(
+            _check(
+                "compose_services",
+                not missing_services,
+                "missing=" + (", ".join(missing_services) if missing_services else "all present."),
+            )
+        )
+
+        no_restart = [
+            name
+            for name, cfg in services.items()
+            if cfg.get("restart") != "unless-stopped"
+        ]
+        checks.append(
+            _check(
+                "compose_restart_unless_stopped",
+                not no_restart,
+                "missing restart policy on: "
+                + (", ".join(sorted(no_restart)) if no_restart else "all services."),
+            )
+        )
+
+        if "db" in services and "api" in services and "worker" in services:
+            db_health = services["db"].get("healthcheck") is not None
+            api_depends = services["api"].get("depends_on", {})
+            worker_depends = services["worker"].get("depends_on", {})
+            api_waits_db = (
+                isinstance(api_depends, dict)
+                and api_depends.get("db", {}).get("condition") == "service_healthy"
+            )
+            worker_waits_db = (
+                isinstance(worker_depends, dict)
+                and worker_depends.get("db", {}).get("condition") == "service_healthy"
+            )
+            checks.append(
+                _check(
+                    "compose_health_gating",
+                    db_health and api_waits_db and worker_waits_db,
+                    f"db_healthcheck={db_health}, api_waits_db={api_waits_db}, "
+                    f"worker_waits_db={worker_waits_db}",
+                )
+            )
+
+        wiring_ok = True
+        wiring_detail: list[str] = []
+        for name in ("api", "worker"):
+            env = services.get(name, {}).get("environment", {})
+            if env.get("EV_DATABASE_URL") != "postgresql+psycopg://ev:ev@db:5432/ev":
+                wiring_ok = False
+                wiring_detail.append(f"{name}:EV_DATABASE_URL")
+            if env.get("EV_REDIS_URL") != "redis://redis:6379/0":
+                wiring_ok = False
+                wiring_detail.append(f"{name}:EV_REDIS_URL")
+            if env.get("EV_OBJECT_STORE_BACKEND") != "s3":
+                wiring_ok = False
+                wiring_detail.append(f"{name}:EV_OBJECT_STORE_BACKEND")
+            if not env.get("EV_S3_ENDPOINT_URL") or not env.get("EV_S3_BUCKET"):
+                wiring_ok = False
+                wiring_detail.append(f"{name}:EV_S3_*")
+        checks.append(
+            _check(
+                "compose_env_wiring",
+                wiring_ok,
+                "mismatches=" + (", ".join(wiring_detail) if wiring_detail else "all wired."),
+            )
+        )
+
+    return _gate("deployment", checks, int((time.perf_counter() - started) * 1000))
+
+
 async def run_latency_gate() -> GateResult:
     """Measure real API latencies against the documented budgets.
 
@@ -818,6 +983,7 @@ async def _run_all(session) -> list[GateResult]:
         retrieval,
         await run_voice_gate(spec),
         run_observability_gate(spec),
+        run_deployment_gate(),
         await run_latency_gate(),
         await run_restore_gate(),
         run_roadmap_gate(spec),
