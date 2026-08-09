@@ -47,7 +47,7 @@ from app.schemas import (
     WebhookSecretOut,
 )
 from app.services.access_log import log_access
-from app.utils.text import utcnow
+from app.utils.text import sha256_hex, utcnow
 
 PRIVACY_ORDER = {
     "normal": 0,

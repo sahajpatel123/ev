@@ -799,7 +799,7 @@ async def test_vault_key_rotation_reencrypts_credentials(
             "/v1/integrations/vault/rotate",
             json={"new_key": "short"},
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 422  # schema-level minimum enforced at the boundary
     finally:
         vault.reset()
 
