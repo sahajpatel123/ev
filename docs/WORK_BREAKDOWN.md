@@ -1,0 +1,924 @@
+# EVIE — Complete Work Breakdown (Every Factor)
+
+**Purpose:** every factor that must exist for EVIE to work as a lifelong,
+voice-aware, 24/7 personal intelligence. Each factor lists what we plan and the
+direction we'll take. Status: **Built** (implemented + tested), **Partial**
+(core exists, gaps remain), **Design** (architecture written, not built),
+**Future** (roadmap only).
+
+---
+
+## 1. Memory & data foundation
+
+**Domain essence:** This is the soul of EVIE. Raw immutable events capture
+everything that happens or is told to her; derived memories turn that raw stream
+into facts, decisions, goals, preferences, patterns, and lessons; versioning
+guarantees the past is never rewritten; provenance makes every answer explainable;
+correction and forgetting give the user final control. The vision is a perfect
+transcript of a life that never lies, never loses the past, and can rebuild any
+conclusion from its sources — so "why do you know that?", "what was I thinking in
+March?", and "delete that from your memory" all work with equal ease. Success
+means every derived table can be dropped and regenerated from events into an
+equivalent state, and every memory carries the evidence trail that earned it.
+
+### 1.1 Immutable raw event store — **Built**
+Every input (text, voice, image, file, live event) is an append-only event with
+`occurred_at`, `ingested_at`, source, type, content, privacy level, and a
+content hash. Direction: keep it the single source of truth; all derived data
+must remain rebuildable from it. No code path may ever update or physically
+delete a raw event.
+
+### 1.2 Derived memory system — **Built**
+Facts, decisions, goals, preferences, observations, patterns, summaries, and
+lessons are derived, typed, scored (importance/confidence), and provenance-linked
+to events. Direction: grow extraction quality (rules → LLM-assisted), and keep
+the rebuild-from-events invariant tested.
+
+### 1.3 Versioning & time travel — **Built**
+A changed memory creates a new version in the same version group with
+`valid_from`/`valid_until`, `supersedes`/`superseded_by`, and a reason. Direction:
+make as-of queries ("what was I thinking in March?") first-class across all
+endpoints and add a time-travel UI.
+
+### 1.4 Entities & relationships — **Built**
+People, places, projects, topics are canonical entities with aliases; memory-to-
+entity links carry role/weight; typed relationships are time-valid. Direction:
+improve entity resolution (dedup, merge, canonicalization) and consider a graph
+layer only if relational queries measurably hurt.
+
+### 1.5 Contradiction detection — **Built**
+Conflicting observations create open conflict records instead of silent
+arbitration; resolution creates an explicit superseding memory. Direction: extend
+to facts/preferences/decisions, and surface conflicts in the filter's grounding
+audit.
+
+### 1.6 Provenance & audit ("why do you know that?") — **Built**
+Every memory traces to source events; audit shows version chain, conflicts, and
+access log. Direction: make the output filter emit memory-linked claims so
+provenance becomes part of every answer automatically.
+
+### 1.7 Memory correction, forgetting, restoration — **Built**
+Correction creates a new version preserving history; forgetting hides from active
+retrieval reversibly; restore brings it back. Direction: add batch corrections
+and a "what did I forget?" review surface.
+
+### 1.8 Access log & read/write audit — **Built**
+Every read/write/export/delete is logged with actor, endpoint, resource, and
+request id. Direction: add retention policy, anomaly detection on access, and
+export of the log itself.
+
+### 1.9 Export, import, deletion — **Built (partial)**
+Full export bundles events, memories, entities, relationships, conflicts;
+tombstone delete redacts derived rows. Direction: implement import/restore round-
+trip and scheduled encrypted backups (see §13).
+
+### 1.10 Long-horizon consolidation — **Partial**
+Daily/weekly/monthly summaries are planned as additional derived indexes over raw
+events. Direction: add consolidation worker jobs and "how has my thinking changed
+since…?" queries over version chains.
+
+### 1.11 Storage of voiceprints & biometrics — **Design**
+Voice samples and derived voiceprints must be encrypted at rest, versioned, and
+never sent to the provider. Direction: dedicated `voice_prints` + encrypted
+sample attachments with re-enrollment flow and revocation.
+
+---
+
+## 2. Single conversation & context
+
+**Domain essence:** There are no chat #1, #2, #3 — there is one continuous
+relationship. A single default thread holds every message forever, and an
+ephemeral state layer remembers what we are working on right now, what questions
+are open, and what context matters. The vision is that the user never has to
+reintroduce themselves or their work: "continue" just works, on any device,
+mid-thought. The 1M-token window is treated as a scratch workspace — a rolling
+summary, recent turns, retrieved memories, then progressive deep dives — so
+"remember my whole life" is satisfied by the memory store plus smart loading,
+not by stuffing a lifetime into one prompt. Success is measured by zero context
+restarts: the user always feels like they are talking to the same EVIE.
+
+### 2.1 One lifelong conversation thread — **Built**
+`conversation_threads` has exactly one default thread; chat without an id
+resolves to it, and the response always returns the same id. Direction: keep the
+invariant "no new chat" and extend it to voice sessions.
+
+### 2.2 Ephemeral conversation state — **Built**
+Per-thread focus, recent topics, pending questions, and working context live in
+`conversation_states`; reset clears state, never history. Direction: add
+expiration, merge rules, and voice-session state.
+
+### 2.3 Continuous history in prompt — **Built**
+The last ~10 turns are injected as a continuous window so "continue" works
+without restating context. Direction: make the window adaptive (importance and
+recency weighted) and compress older turns into rolling summaries.
+
+### 2.4 1M-token window strategy — **Design**
+The window is a scratch workspace, not a life-dump: rolling summary → recent
+turns → retrieved memories → progressive tool-loaded deep dives. Direction:
+implement a ContextCompiler that plans window usage per request and monitors
+budget in real time.
+
+### 2.5 Whole-life recall — **Design**
+"Remember my whole life" = memory store + hierarchical retrieval, not a lifetime
+in context. Direction: long-horizon indexes, time-travel queries, and
+"reconstruct any past week" commands with provenance.
+
+---
+
+## 3. Intelligence filter
+
+**Domain essence:** The provider is a brilliant but generic brain; the filter is
+what makes its output EVIE. Every byte travelling to the provider is shaped by
+the input filter (identity, privacy, intent, state, memory, context), and every
+byte coming back is refined by the output filter: structure validated, claims
+grounded in real memory, persona and tone enforced, safety applied, and a critic
+loop polishing weak drafts. The vision is that EVIE's quality, honesty, and voice
+live in the filter rather than in any single model — so DeepSeek can be swapped
+without EVIE changing. Success means no ungrounded personal claim survives, every
+HUD contract renders perfectly, every filter decision is recorded in a ledger,
+and the filter measurably gets better from the user's corrections.
+
+### 3.1 Input filter — **Design**
+Every inbound utterance passes IdentityGate, InputGuard (injection/PII/privacy
+caps), intent/state compile, MemoryBroker, and ContextCompiler before reaching
+the provider. Direction: implement as a wrapper in the chat/voice pipeline with
+per-stage logs.
+
+### 3.2 Output filter — **Design**
+Structural validation → grounding audit → persona/style → safety → critic loop →
+finalize. Direction: implement deterministic stages first (contracts, length,
+redaction, entity grounding), then the critic pass.
+
+### 3.3 Grounding audit — **Design**
+Claims are checked against the memories actually in context (entity/date/number
+overlap, semantic similarity, optional critic). Direction: build a claim
+extractor + verifier with an eval corpus of seeded facts.
+
+### 3.4 Persona & style enforcement — **Design**
+Mode, length ±40%, directness, assertiveness ceiling, challenge-evidence gating,
+and urgency conciseness are enforced after generation. Direction: rule-based
+checks now; learned voice profile later.
+
+### 3.5 Safety & privacy filter — **Design**
+Output-side secret/PII redaction, toxicity, manipulation, dependency nudging,
+jailbreak leaks. Direction: deterministic detectors first; local model for
+semantic checks later.
+
+### 3.6 Critic & refine loop — **Design**
+LLM-as-judge rubric (grounding, persona, actionability, honesty, contract) with
+max two refinement iterations and staged trust. Direction: same-model critic
+first; separate local critic for privacy; learned feedback model after ledger
+data accumulates.
+
+### 3.7 Filter ledger — **Design**
+Every filter decision (draft, edits, scores, flags, iterations, cost) is
+recorded. Direction: new table + aggregates that feed thresholds and the
+self-evaluation engine.
+
+### 3.8 Filter-as-API & replay tests — **Design**
+`/v1/filter` for tests/CLI plus snapshot replay of historical drafts. Direction:
+build after deterministic stages; use for regression and tuning.
+
+### 3.9 Streaming refinement — **Design**
+Buffered-final first: stream raw text, then emit a `refined` event; chunk-filter
+later. Direction: define client protocol (replace vs. append) and latency
+budgets.
+
+---
+
+## 4. Provider & models
+
+**Domain essence:** DeepSeek V4 Flash is the brain — general reasoning, no
+specialized EVIE knowledge — and the gateway is the neutral socket it plugs into.
+The vision is a swappable brain: today DeepSeek, tomorrow a deeper reasoning
+model, a coding model, or a local model, all hidden behind EVIE's identity. The
+gateway must carry a full envelope (strategy, memories, request id) so the filter
+can audit every call, validate tool invocations before they execute, and route
+simple requests to fast models and hard problems to deep ones when evaluation
+proves routing wins. Success means changing the provider is a configuration
+change, not a personality change.
+
+### 4.1 Provider gateway (DeepSeek V4 Flash) — **Built**
+Chat/tools/models endpoints with echo/mock providers for offline dev; DeepSeek is
+the default brain. The gateway now enforces envelope contracts (strategy,
+memories, request id, metadata) on every call and persists an append-only
+`model_calls` audit record (provider, model, latency, usage, envelope,
+tool-validation outcome, errors).
+
+### 4.2 Provider swappability — **Built**
+The gateway is model-agnostic by design. Direction: add a model-routing policy
+(fast vs. deep) hidden behind EVIE, gated by evaluation.
+
+### 4.3 Tool-call validation — **Built**
+Tool registry + dispatcher + selection exist; model tool calls are pre-validated
+by the gateway before anything executes (Invocation-Refiner pattern): unknown
+tools and malformed arguments are rejected, missing optional arguments with
+declared defaults are rectified, and sensitive tools require an explicit
+permission gate (`allow_sensitive_tools`).
+
+### 4.4 Local models (future) — **Future**
+2B-class local critic for style/safety, on-device STT/TTS, wake word models.
+Direction: evaluate edge hardware and power budgets before committing.
+
+### 4.5 Embeddings — **Built**
+Hash provider for tests; OpenAI-compatible HTTP provider for production; pgvector
+column ready. Direction: pick a dedicated local embedding model and an eval
+corpus for retrieval quality.
+
+---
+
+## 5. Voice & speech
+
+**Domain essence:** This is how EVIE becomes a presence rather than an app. An
+always-on, low-power wake engine listens for "EVIE"; speaker verification makes
+sure only the owner's voice unlocks it; anti-spoofing stops recordings and
+synthetic voices; ASR turns speech into text; TTS gives EVIE a natural voice
+that can carry urgency, warmth, and brevity. The vision is a "Hey Siri"-class
+experience that is private: wake, verify, listen, understand, act, reply, and a
+30-second follow-up window before returning to silent idle. Success means the
+wake word never fires for strangers, replay attacks fail, and voice feels as
+natural as talking to a person who knows you.
+
+### 5.1 Wake word engine ("EVIE") — **Design**
+Always-on low-power on-device detection (Sensory/AON1100-class pattern); wake
+triggers a larger processor burst for ASR. Direction: choose a wake-word SDK/model
+and a multi-stage power architecture per device.
+
+### 5.2 Speaker verification (owner-only) — **Design**
+Enroll voice samples → ECAPA-TDNN voiceprints (encrypted, versioned); verify
+every wake event; unknown voices get a polite refusal. Direction: enrollment UI,
+threshold tuning, re-enrollment when voice changes.
+
+### 5.3 Anti-spoofing / liveness — **Design**
+Block replay, synthesis, and voice-conversion with liveness checks and
+challenge-response. Direction: evaluate lightweight countermeasures and degrade
+to text verification for sensitive actions.
+
+### 5.4 Speech-to-text (ASR) — **Design**
+Whisper-class on-device or local-server transcription with punctuation and
+streaming. Direction: latency budget (~300 ms wake→ASR ready), multi-language,
+and transcript-as-event recording.
+
+### 5.5 Text-to-speech (TTS) — **Design**
+Natural EVIE voice with emotion/urgency modulation and streaming. Direction:
+pick provider (local or cloud, permissioned), voice consistency across devices.
+
+### 5.6 Voice session lifecycle — **Design**
+Wake → verify → listen → process → respond → 30-second follow-up window without
+re-wake → idle. Direction: implement the runtime state machine (see §6) and
+device arbitration (closest/online device wins).
+
+### 5.7 Voice enrollment UX — **Design**
+Onboarding flow: sample phrases, progress feedback, re-record, liveness
+calibration, privacy disclosure. Direction: build after speaker-verification
+core is selected.
+
+---
+
+## 6. 24/7 runtime & devices
+
+**Domain essence:** EVIE is not a request-response server; she is a living
+runtime. Devices become ears — the Mac, the iPhone, future glasses — each running
+a low-power listener, with the closest or most capable device winning the wake.
+A central state machine moves from idle to verifying, awake, processing,
+responding, and follow-up; queues, heartbeats, and dead-letter handling keep it
+alive; the action router turns commands into approved actions; quiet hours and
+the attention budget keep her from becoming a nag. The vision is Siri-like
+availability with home-lab ownership: always on, always reachable, never
+annoying, and observable — you can see every pulse of the system. Success means
+wake-to-reply in seconds on any device and zero silent failures.
+
+### 6.1 Always-on runtime state machine — **Design**
+IDLE → VERIFYING → AWAKE → PROCESSING → RESPONDING → FOLLOW-UP → IDLE, with
+timeouts and quiet hours. Direction: implement as a daemon with per-device
+listener agents and a central orchestrator.
+
+### 6.2 Device fleet as "ears" — **Built (partial)**
+Fleet status, gear telemetry, and task dispatch exist. Direction: add
+audio-capture capability negotiation and device arbitration for wake events.
+
+### 6.3 Queue & background workers — **Built**
+Redis/RQ ingestion pipeline with sync fallback. Direction: add filter jobs,
+consolidation jobs, and dead-letter handling with retries.
+
+### 6.4 Heartbeat & health monitoring — **Partial**
+`/v1/health` and calibration diagnostics exist. Direction: full runtime health
+checks (listeners, ASR, TTS, provider, queues) with alerts.
+
+### 6.5 Action router — **Built (partial)**
+Commands become approved actions: searches, fleet tasks, HUD cards,
+notifications — each with a permission check and ledger entry. The E.D.I.T.H.
+command ledger now records focus, fleet, and recognition commands with actor,
+target, payload, status, and result; fleet tasks are device-scoped and
+capability-checked through a full lifecycle. Direction: extend the ledger to
+notifications and future web/file/code actions, and add an approval matrix.
+
+### 6.6 Notifications & attention budget — **Built (partial)**
+Quiet hours, daily alert budget, intervention tiers exist. Direction: extend to
+voice interruptions ("only interrupt if urgent during focus") and digest mode.
+
+### 6.7 Offline capture & sync — **Future**
+Clients queue voice/text/live events offline and sync when back. Direction:
+define client sync protocol and conflict-free idempotent ingestion.
+
+---
+
+## 7. Training & personalization
+
+**Domain essence:** EVIE must learn the user, not just retrieve from them.
+Training happens in four tracks so nothing blocks: voice enrollment (samples to
+voiceprints, minutes not weeks), life-data personalization (retrieval and
+importance learning from everything stored), an optional adapter fine-tune that
+encodes EVIE's voice and working style from the conversation corpus, and
+filter self-improvement from the ledger. The vision is that after months, EVIE
+genuinely understands how the user thinks, decides, works, and likes to be
+spoken to — always evidence-backed, always consent-gated, always rollback-able.
+Success means personalization improves measured outcomes (fewer corrections,
+better predictions) without ever leaking or misusing the training data.
+
+### 7.1 Voice enrollment training — **Design**
+Samples → voiceprints + liveness calibration; "training" here is enrollment, not
+LLM weight updates. Direction: multi-sample enrollment, versioning, revocation.
+
+### 7.2 Life-data personalization — **Partial**
+Importance scoring, patterns, preferences, and self-evaluation already
+personalize retrieval. Direction: add recommendation-follow/ignore learning and
+per-domain calibration.
+
+### 7.3 Adapter fine-tuning (LoRA) — **Future**
+Train an EVIE adapter on filtered responses + user corrections to encode voice,
+style, and working style. Direction: versioned adapters, eval gates, rollback;
+requires corpus from the filter ledger.
+
+### 7.4 Training corpus harvesting — **Design**
+Derive versioned snapshots from events, response logs, and ledger with user
+consent; exclude `never_send_to_model` content. Direction: build the corpus
+pipeline before any fine-tuning.
+
+### 7.5 Filter self-improvement — **Design**
+Ledger aggregates (defect precision/recall, over-refinement, correction rate)
+recalibrate thresholds monthly. Direction: automate the report and threshold
+proposals.
+
+### 7.6 Personalization privacy & consent — **Design**
+Every training track requires explicit consent, data deletion, and
+exportability. Direction: document per-track consent in the privacy center.
+
+---
+
+## 8. Live data & sensors
+
+**Domain essence:** Memory is what the user tells EVIE; live data is what EVIE
+can observe — with permission. Screen activity, ambient audio, health signals,
+and location stream through named channels as immutable live events with privacy
+levels, feeding user state, EV Sense, and the context compiler. The vision is a
+second, continuous channel of understanding: EVIE knows you are in Xcode, that
+your heart rate spiked, that you are at the airport — because your own collectors
+said so, under your control. Success means the user runs the collectors, EVIE
+uses only permitted slices, and every derived insight can be replayed and rebuilt
+from the recorded stream.
+
+### 8.1 Live channels & events — **Built**
+`live_channels` + immutable `live_events` with batch ingestion, status, and
+privacy levels. Direction: add real-time streaming (WebSocket/SSE) from
+collectors.
+
+### 8.2 Live context in state — **Built**
+`GET /v1/state` includes recent live snippets. Direction: weight live context by
+recency and privacy and feed it into the ContextCompiler.
+
+### 8.3 Sensor integrations — **Future**
+Screen activity, audio transcripts, HealthKit, location (permissioned). Direction:
+implement collectors on each OS; user manages collection.
+
+### 8.4 Live-data rebuildability — **Built**
+Live events are immutable with consumed flags; derived state rebuilds. Direction:
+add replay/rebuild jobs and retention policy.
+
+---
+
+## 9. Intelligence modules
+
+**Domain essence:** These are EVIE's analytical organs — the difference between
+an assistant and a companion. Health radar watches the body's readiness and
+anomalies; alert radar keeps watch over what the user cares about; EV Sense
+predicts what deserves attention and why now; the pattern engine sees loops and
+habits; decision intelligence closes the loop between choices and outcomes; the
+user state engine tracks the present; interaction intelligence picks the right
+mode and assertiveness; the personality engine keeps EVIE herself; the
+relationship model learns what works; self-evaluation keeps everything honest.
+The vision is one brain where every organ feeds the others: a pattern feeds a
+predictions, a prediction feeds an alert, an alert feeds a challenge, a challenge
+feeds the relationship model. Success means the modules together make EVIE
+proactively useful, not just reactive.
+
+### 9.1 Health radar — **Built**
+Readiness score, z-score anomalies, trends, morning brief. Direction: HealthKit
+connector, sleep/stress correlations, and readiness-informed scheduling.
+
+### 9.2 Alert radar — **Built**
+Watchlist, scan, priority scoring, dedup, dismiss lifecycle. Direction:
+permissioned external sources (calendar, GitHub, RSS) and digest builder.
+
+### 9.3 EV Sense predictive layer — **Built**
+Decision loops, patterns, deadlines, health anomalies, guardrails, reorders;
+intervention scoring with why-now and outcome tracking. Direction: improve
+prediction calibration from outcomes and add next-action cards.
+
+### 9.4 Behavioral pattern engine — **Built**
+Research loops, tool churn, repeated questions, with evidence/frequency/confidence.
+Direction: add goal-drift and project-abandonment detectors.
+
+### 9.5 Decision intelligence — **Built**
+Loops, expected-vs-actual outcomes, auto-lessons, follow-ups. Direction: decision
+review scheduling and "decision ledger" UI.
+
+### 9.6 User state engine — **Built**
+Activity, project, goal, task, topics, constraints, live context. Direction:
+continuous update via live data and focus designations.
+
+### 9.7 Interaction intelligence — **Built**
+Modes, intent, urgency, emotion, assertiveness L0–L3, strategy block. Direction:
+calibrate with relationship stats and self-evaluation.
+
+### 9.8 Personality engine — **Built**
+Versioned profile with assertiveness/challenge ceilings. Direction: connect all
+output surfaces (voice, HUD, alerts) to the profile.
+
+### 9.9 Relationship model — **Built**
+Interaction stats, corrections, follow rates, challenge acceptance. Direction:
+use these to adapt intervention thresholds and tone.
+
+### 9.10 Self-evaluation — **Built**
+Response log + aggregates by mode. Direction: feed filter thresholds and
+personality updates.
+
+---
+
+## 10. E.D.I.T.H. & advanced modules
+
+**Domain essence:** This is the command layer — E.D.I.T.H.'s tactical
+intelligence adapted to a life, not a battlefield. Focus designation locks EVIE
+onto what matters; the device fleet turns phones and Macs into a coordinated
+network; the ops center is a single dashboard of everything; the recognition log
+identifies what the user cares about in their own media; the digital twin is an
+explainable model of the user; HUD schemas carry information to glasses, watches,
+and widgets; tactical mode briefs before high-stakes moments; the research
+assistant and maker companion handle science and making; gear telemetry and
+navigation cover the physical world. The vision is a personal operations center:
+one conversation, one command surface, total awareness of the user's projects,
+devices, and plans — with every "target" being a goal, never a person to harm.
+
+### 10.1 Focus designation — **Built**
+Lock EV onto a task/project/person/goal; feeds state and HUD focus overlay.
+Direction: auto-suggest focus from user state and live data.
+
+### 10.2 Device fleet & tasks — **Built**
+Fleet presence, gear, capability-checked task dispatch, and a device-scoped
+lifecycle (`requested → accepted → running → completed | failed | cancelled`)
+with per-transition command-ledger entries. Direction: real device app to
+execute tasks (capture photo, run scan, record audio) and wake arbitration.
+
+### 10.3 Ops center — **Built**
+Aggregated dashboard (state, focus, health, alerts, fleet, decisions, patterns).
+Direction: push to HUD/AR and add command cards.
+
+### 10.4 Recognition log — **Built**
+User-tagged labels over user-owned media/live events, linked to entities.
+Direction: on-device vision model suggestions, always user-confirmed.
+
+### 10.5 Digital twin — **Built**
+Summary of facts, preferences, goals, patterns, relationship, health. Direction:
+versioned twin snapshots and "what do you know about me?" explainability.
+
+### 10.6 HUD schemas — **Built**
+`ev.hud.card.v1`, `briefing.v1`, `focus.v1`, `route.v1`. Direction: render on
+Watch/widget/AR and add alert schema.
+
+### 10.7 Tactical mode — **Built**
+Pre-event briefings with risks, options, decision history. Direction: trigger
+from calendar/live context and cache quick cards.
+
+### 10.8 Person finder — **Built**
+Last seen, mentions, relationships over user-owned memory. Direction: sightings
+from recognition log and live data.
+
+### 10.9 Research assistant — **Built**
+Sessions, notes, sources, conclusions with provenance. Direction: web-search
+integration with citations and research reviews.
+
+### 10.10 Maker companion — **Built**
+Projects, BOM, print queue, reorder signals. Direction: OctoPrint adapter and
+learned build sequences.
+
+### 10.11 Gear telemetry & diagnostics — **Built**
+Device snapshots and calibration checks. Direction: battery/backup alerts and
+"EV checkup" scheduled runs.
+
+### 10.12 Navigation & route briefings — **Built**
+Next-commitment leave-by cards. Direction: real maps integration later.
+
+---
+
+## 11. Tools & actions
+
+**Domain essence:** EVIE needs hands, not just a mouth. The tool registry
+declares what she can do — search memory, search the timeline, look up a person,
+inspect a project, calculate safely, check health or gear, list alerts and
+research — and the dispatcher executes those calls with full logging. Tool
+selection routes simple intents automatically, and future tools (web search,
+files, code, external APIs) will follow the same pattern behind permission
+gates. The vision is that EVIE can act on the user's behalf: retrieve, compute,
+search, and eventually write and run — always within an explicit permission
+matrix, always auditable, always undoable where possible. Success means the user
+can ask "what's 14% of 3,500?" or "check my battery" and EVIE uses the right tool
+without being asked twice.
+
+### 11.1 Tool registry & dispatch — **Built**
+Memory, timeline, person, project, goals, patterns, calculate, health, gear,
+alerts, research tools with safe AST calculator. Direction: add web, file, code,
+and API tools behind permissions.
+
+### 11.2 Tool selection intelligence — **Built**
+Rule-based intent routing. Direction: add model-assisted selection fallback with
+the same safety caps.
+
+### 11.3 Permissioned web/search — **Future**
+`search_web` with provider interface and citations. Direction: design adapter +
+privacy pass-through.
+
+### 11.4 Sandboxed code/file tools — **Future**
+Read/write/run in sandboxes with per-call approval and versioned drafts. Direction:
+design approval matrix and audit trail.
+
+---
+
+## 12. Security, privacy & compliance
+
+**Domain essence:** Trust is the product's foundation. Authentication is
+multi-layered (master key, device tokens, future biometric unlock); privacy
+levels govern every byte, with `never_send_to_model` enforced below the prompt;
+encryption protects data at rest and in transit; secret and PII guards run on
+both sides of the filter; backups and restore drills protect against loss; and
+ethics guardrails (no surveillance of strangers, no manipulation, no dependency
+nudging, transparency) are non-negotiables. The vision is a system where the
+user's entire life can live in one place with the keys in their hand — the model
+only ever sees what they permit, deletion is real, and export is always possible.
+Success means the boundary is tested at the payload level, not just promised.
+
+### 12.1 Auth & device tokens — **Built**
+Master key + per-device tokens with revocation. Direction: add biometric unlock
+and per-device scopes.
+
+### 12.2 Privacy levels & model boundary — **Built**
+`never_send_to_model` is enforced below retrieval; tests instrument provider
+payloads. Direction: extend boundary tests to voice transcripts and filter critic
+payloads.
+
+### 12.3 Encryption — **Partial**
+TLS in transit planned; storage encryption via OS volumes. Direction: encrypt
+voiceprints/samples and backups explicitly.
+
+### 12.4 Secret/PII protection — **Design**
+Input and output guards detect keys, tokens, phone numbers, addresses. Direction:
+implement detectors + redaction policies.
+
+### 12.5 Backups & restore drill — **Future**
+Encrypted backups and periodic restore tests. Direction: script and document.
+
+### 12.6 Ethics guardrails — **Built**
+No stranger surveillance, no manipulation, anti-dependency guardrails,
+transparency. Direction: publish a privacy/ethics statement in-app.
+
+---
+
+## 13. Clients & UX
+
+**Domain essence:** EVIE must be where the user is: a Mac and web surface today,
+iPhone and Watch tomorrow, HUD cards on widgets and future AR. The web/CLI client
+is the fastest way to validate memory and the filter; the iOS app adds voice,
+camera, share-sheet capture, and background capture; the memory browser makes the
+invisible store visible and editable; onboarding turns voice enrollment and
+initial memory import into a delightful ritual; HUD renderers turn schemas into
+screens. The vision is one EVIE across every surface — same memory, same voice,
+same relationship — with offline capture that syncs when the network returns.
+Success means a capture on the iPhone appears on the Mac within seconds, and the
+user never feels like they opened a different product.
+
+### 13.1 Web/CLI client — **Partial**
+CLI package skeleton exists. Direction: full CLI (voice via local ASR, capture,
+memory browser) and web dashboard.
+
+### 13.2 iOS/Watch app — **Future**
+Voice capture, wake listener, HUD cards, share sheet, offline queue. Direction:
+build after backend/voice contracts stabilize.
+
+### 13.3 Memory browser UI — **Future**
+Timeline, audit view, corrections, time travel. Direction: web first, then app.
+
+### 13.4 Onboarding & enrollment UX — **Design**
+Voice enrollment, initial memory import, trust/privacy setup. Direction:
+scripted flow after voice core.
+
+### 13.5 HUD rendering targets — **Future**
+Watch complications, widgets, future AR glasses. Direction: schema-driven
+renderers.
+
+---
+
+## 14. Ops, evaluation & roadmap
+
+**Domain essence:** This is the engineering backbone that lets the project
+survive for years. Deployment means a reproducible self-hosted stack; the
+evaluation suite gates every change (API tests, retrieval evals, filter evals,
+voice EER tests); observability makes health, calibration, and latency visible;
+the API contract keeps 85+ endpoints stable and versioned; cost and latency
+budgets stop the filter and the provider from spiraling; the roadmap sequences
+everything into phases with exit gates. The vision is a system you can rebuild
+from a script, measure honestly, upgrade without fear, and run 24/7 for a decade.
+Success means every important change ships with evidence, and the system degrades
+gracefully when something fails.
+
+### 14.1 Deployment — **Partial**
+Docker Compose (Postgres/pgvector, Redis, MinIO), Tailscale plan. Direction:
+finish Dockerfile/compose wiring and TLS.
+
+### 14.2 Evaluation suite — **Partial**
+30+ API tests; retrieval/filter/voice evals planned. Direction: add seeded corpus
+evals, filter gates, voice EER tests.
+
+### 14.3 Observability — **Partial**
+Health + calibration exist. Direction: structured logs, latency budgets, filter
+ledger dashboards.
+
+### 14.4 API contract & versioning — **Built**
+85 OpenAPI paths, versioned v1. Direction: deprecation policy, idempotency,
+SSE event schema versioning.
+
+### 14.5 Cost/latency budgets — **Design**
+Provider + filter overhead budgets with degradation. Direction: implement meters
+and alerts.
+
+### 14.6 Roadmap sequencing — **Design**
+Phase 1: deterministic input/output filter + voice enrollment; Phase 2: wake/ASR/
+TTS + runtime; Phase 3: critic + training corpus; Phase 4: adapters, clients, AR.
+Direction: gate each phase on its evaluation gates.
+
+---
+
+## 15. Perception & multimodal understanding
+
+**Domain essence:** EVIE needs eyes, not just ears. Vision understanding reads
+what the user shows her (photos, screenshots, documents) with user-confirmed
+labels; screen awareness derives what the user is doing without sending raw
+screens; audio scene understanding knows a meeting from music; location and
+presence give context for route briefings; multimodal provider input lets the
+brain receive typed media when explicitly permitted. The vision is
+E.D.I.T.H.-grade perception with a hard ethical line: EVIE understands the user's
+world, never surveils strangers, and never sends raw content without permission.
+Success means "what does this photo show?" and "what was I working on?" are
+answered from real perception with provenance.
+
+### 15.1 Vision understanding — **Future**
+EVIE must interpret images/video it is given (photos, screenshots, documents):
+OCR, scene/object recognition, and face-free identity hints, always over
+user-owned media and user-confirmed (recognition log). Direction: add an adapter
+over a vision-capable provider or a local model, with the same
+`never_send_to_model` boundary and confirmation flow.
+
+### 15.2 Screen awareness — **Design**
+The live screen channel should yield derived context (active app, document, code
+file, meeting) without ever sending raw screen content to the provider. Direction:
+build OS-level collectors that emit text-level events, then feed them into user
+state and the ContextCompiler.
+
+### 15.3 Audio scene understanding — **Future**
+Distinguish speech, music, noise, and meetings from ambient audio; detect "user is
+in a call" for interruption discipline. Direction: add after ASR; keep raw audio
+on-device by default.
+
+### 15.4 Location & presence — **Future**
+Permissioned, coarse location/live presence to power route briefings and
+context-aware replies ("you're at the airport"). Direction: opt-in channel with
+privacy level and on-device processing preference.
+
+### 15.5 Multimodal provider input — **Future**
+When the user explicitly shares an image/audio snippet, the gateway must support
+multimodal provider payloads under the same permission rules. Direction: extend
+the gateway contract and filter envelope to carry typed media references.
+
+---
+
+## 16. Identity & trust lifecycle
+
+**Domain essence:** Before EVIE can be trusted with a life, the system must know
+exactly who the owner is and how trust escalates. An owner identity record binds
+voiceprint, trusted devices, and passkey; trust escalation means casual chat is
+lightweight but sensitive actions require re-verification; recovery guarantees a
+lost device or changed voice never locks the user out of their own memory; the
+multi-user boundary keeps strangers out today and leaves room for a guest mode
+later; session security prevents someone else from continuing an unlocked voice
+session. The vision is "EVIE is yours alone, and can prove it" — with recovery
+that feels like a safety net, not a hurdle. Success means the wrong voice can
+never act, and the right user can always get back in.
+
+### 16.1 Owner identity model — **Design**
+EVIE needs one authoritative "this is my owner" record: enrolled voiceprint,
+trusted devices, passkey, and recovery material — the anchor for all access
+decisions. Direction: design an identity table + enrollment ceremony before voice
+goes live.
+
+### 16.2 Trust escalation — **Design**
+Not every action needs the same trust: casual chat = verified voice; sensitive
+actions (deleting memory, spending, external writes) = re-verification via voice
+challenge or passkey. Direction: implement a graded permission matrix with
+escalation and logging.
+
+### 16.3 Recovery & fallback — **Design**
+Lost device, changed voice, or forgotten passkey must not lock the user out of a
+lifetime of memory. Direction: recovery codes, re-enrollment flow, and encrypted
+identity backup with a restore drill.
+
+### 16.4 Multi-user boundary — **Future**
+Single-user first: unknown voices are refused. Optional guest/second-user mode can
+come later with per-person voiceprints and isolation. Direction: keep the
+single-user invariant, design tables so a second identity is additive later.
+
+### 16.5 Session security — **Design**
+Voice sessions need timeouts, silence-lock, and explicit end-of-session so a
+roommate can't continue the owner's session. Direction: runtime policy on session
+TTL and re-verification.
+
+---
+
+## 17. Legal & biometric compliance
+
+**Domain essence:** Voiceprints are biometric data, and biometric data has legal
+teeth (GDPR, Illinois BIPA, EU AI Act). This domain makes the system lawful and
+trustworthy by design: biometric handling defines encryption, retention, and
+deletion; the consent lifecycle gives the user explicit, revocable consent per
+track (voice, training, live data, integrations); data-subject rights cover
+voiceprints and training snapshots, not just memories; regional configuration
+adapts residency and retention; a transparency center explains exactly what is
+stored, trained, and sent. The vision is a personal AI that you can defend in
+front of a regulator — because the architecture made compliance structural, not
+an afterthought. Success means deletion requests are fully honored everywhere.
+
+### 17.1 Biometric data handling — **Design**
+Voiceprints are biometric data under GDPR and laws like Illinois BIPA: they need
+encryption, access control, retention limits, and deletion on request. Direction:
+document a biometric-data policy and design the storage schema around it.
+
+### 17.2 Consent lifecycle — **Design**
+Separate, explicit consent per track: voice enrollment, training corpus, live-data
+collection, integrations — each revocable without breaking core memory. Direction:
+consent records with timestamps and revocation UI.
+
+### 17.3 Data subject rights — **Design**
+Export, correction, and deletion must cover voiceprints, training snapshots, and
+ledger data — not just events/memories. Direction: extend the existing export and
+tombstone paths to every new store.
+
+### 17.4 Regional compliance — **Design**
+GDPR, EU AI Act, BIPA, and data-residency rules differ by region. Direction:
+configuration for residency, retention windows, and disclosure requirements.
+
+### 17.5 Transparency center — **Design**
+An in-app page explaining exactly what is stored, what is trained, and what leaves
+the machine. Direction: build alongside onboarding; source of truth for trust.
+
+---
+
+## 18. Integrations & ecosystem
+
+**Domain essence:** EVIE's knowledge and power grow with what she can reach.
+Calendar, health, GitHub, smart home, and messaging integrations arrive through a
+standard adapter framework; OAuth tokens live in an encrypted vault with scopes
+and revocation; webhooks push external events into live channels so EV Sense
+sees them; plugins let the user add custom skills and commands; every integration
+carries its own privacy scope. The vision is an ecosystem where EVIE connects to
+the user's digital life the way an executive assistant connects to an office —
+reading what is permitted, acting only when authorized, and keeping every
+credential safe. Success means adding a new integration is a config change, and
+revoking it is instant and complete.
+
+### 18.1 Adapter framework — **Future**
+Calendar, health, GitHub, smart home, and messaging integrations need one standard
+adapter interface (capabilities, permissions, events). Direction: define the
+adapter SDK + registry before building individual connectors.
+
+### 18.2 OAuth & token vault — **Future**
+Third-party tokens must live encrypted in a vault with scopes, refresh handling,
+and revocation — never in memory or provider context. Direction: vault service +
+per-integration permission cards.
+
+### 18.3 Webhooks & triggers — **Future**
+External systems should push events into live channels (deadline, CI failure, new
+mail) so EV Sense sees them. Direction: authenticated webhook endpoint with
+signature verification and rate limits.
+
+### 18.4 Plugin & user extensions — **Future**
+Users should be able to add custom skills, commands, and macros without touching
+core code. Direction: plugin manifest + sandboxed execution + approval flow.
+
+### 18.5 Integration privacy — **Design**
+Every integration gets its own permission scope (read/act), and its data obeys
+`never_send_to_model` rules. Direction: extend the privacy matrix per integration.
+
+---
+
+## 19. Routines & automations
+
+**Domain essence:** This is EVIE's proactivity engine — the difference between
+an assistant that waits and one that remembers. Scheduled routines run recurring
+work (morning brief, weekly review, backups, decision follow-ups); trigger-based
+automations fire from state and live data ("deadline 24h out → prepare a brief",
+"readiness low → reschedule heavy work"); every automated action is logged,
+sensitive ones approved, and undoable where possible; a routine library turns
+personal history into reusable templates; observability shows every run and
+failure. The vision is an EVIE that quietly handles the predictable parts of a
+life so the user only steps in for decisions. Success means automations run
+reliably for months, never surprise the user, and can be switched off in one tap.
+
+### 19.1 Scheduled routines — **Design**
+A 24/7 assistant should run recurring actions: morning brief, weekly review,
+backup, decision follow-ups. Direction: scheduler (cron-style) with missed-run
+handling and quiet-hour awareness.
+
+### 19.2 Trigger-based automations — **Design**
+If-then rules over state/live data: "when a deadline is 24h out, prepare a brief";
+"when readiness drops, reschedule heavy work". Direction: rule engine with
+conditions from EV Sense signals.
+
+### 19.3 Approval & undo — **Design**
+Automations that act (write, send, execute) are logged; sensitive ones require
+approval; undo/rollback where possible. Direction: action ledger + reversal
+handlers (reuse fleet-task pattern).
+
+### 19.4 Routine library — **Future**
+Pre-built routines (deployment checklist, weekly health review, project
+close-out) that personalize from history. Direction: template library +
+learned-sequence suggestions (maker next-step already seeds this).
+
+### 19.5 Automation observability — **Design**
+Run history, failures, and notification trail for every automation. Direction:
+dashboard + alert on repeated failure.
+
+---
+
+## 20. Deliberately excluded candidates (with reasons)
+
+**Domain essence:** Eight candidates were considered as top-level domains and
+deliberately kept out to avoid duplicated ownership and scope creep. They are
+not unimportant — each is a work item that belongs inside an existing domain as
+a sub-factor (schema governance under Memory/Ops, localization under Voice,
+design system under Clients, cost and observability under Ops, hardware under
+Models/Clients, disaster recovery under Security, business under roadmap). The
+vision is disciplined scope: every necessary thing is listed, but the domain
+map stays clean enough that each domain has one owner and one clear goal.
+
+These were considered as standalone domains and **excluded** — either because
+they belong inside an existing domain (a domain would duplicate ownership) or
+because they are not needed for the single-user v1. They are still work items;
+they just are not top-level domains.
+
+### 20.1 Data & schema governance — excluded (sub-factor, not domain)
+Schema migrations (Alembic), retention windows, validation, and archival are
+necessary engineering, but they cut across Memory foundation (§1) and Ops (§14).
+Making it a domain would split ownership. Plan: add sub-factors — 1.12 schema
+migrations & evolution, 14.7 retention & archival policy.
+
+### 20.2 Multilingual & localization — excluded (low priority for v1)
+The system is single-user; the user's own language is the primary requirement,
+and ASR/TTS providers handle most language switching. Plan: a sub-factor under
+Voice (§5) — 5.8 multi-language ASR/TTS + locale-aware formatting — rather than a
+domain.
+
+### 20.3 UI/UX design system & accessibility — excluded (inside Clients & UX)
+A design system, voice-first UX patterns, and accessibility are product-critical,
+but they are implementation details of §13. Plan: sub-factors 13.6 design system
+and 13.7 accessibility & voice-first UX.
+
+### 20.4 Cost & resource governance — excluded (inside Ops)
+Provider spend, filter overhead, and per-device power budgets already live in
+§14.5 (cost/latency budgets). Plan: expand to 14.8 provider-spend dashboard and
+per-device power telemetry, not a new domain.
+
+### 20.5 Observability & telemetry — excluded (distributed across domains)
+Runtime health (§6.4), filter ledger (§3.7), and API observability (§14.3)
+already cover it. A standalone telemetry domain would fragment ownership. Plan:
+add a unified dashboard that reads from all three.
+
+### 20.6 Hardware & edge AI — excluded (roadmap, not v1 domain)
+Local 2B models, wearable power budgets, and AR glasses are real directions but
+they are constraints on other domains (§4.4 local models, §13.5 HUD targets),
+not a domain of their own yet. Plan: revisit when hardware choices are concrete.
+
+### 20.7 Disaster recovery & business continuity — excluded (inside Security/Ops)
+Encrypted backups, restore drills, and failover belong to §12.5 and §14.1.
+Plan: sub-factor 14.9 restore-drill schedule rather than a domain.
+
+### 20.8 Business/product/marketing — excluded (out of technical scope)
+This is a personal self-hosted project; monetization, go-to-market, and
+roadmap-as-business are not engineering domains. Plan: keep product thinking in
+PLAN.md/ROADMAP.md only.

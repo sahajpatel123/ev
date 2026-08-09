@@ -1,0 +1,242 @@
+"""24/7 runtime API: state machine, wake arbitration, heartbeats, actions, DLQ."""
+
+from __future__ import annotations
+
+from typing import Literal
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth import require_actor
+from app.db import get_session
+from app.models import ApprovedAction, DeadLetter
+from app.schemas import (
+    ActionDecisionRequest,
+    ApprovedActionCreate,
+    ApprovedActionOut,
+    DeadLetterCreate,
+    DeadLetterOut,
+    RuntimeHeartbeatCreate,
+    RuntimeHeartbeatOut,
+    RuntimeStatusOut,
+    RuntimeTransitionRequest,
+    WakeArbitrationOut,
+    WakeIntent,
+)
+from app.services import runtime as runtime_service
+
+router = APIRouter(prefix="/v1/runtime")
+
+
+@router.post("/heartbeat", response_model=RuntimeHeartbeatOut, status_code=201)
+async def heartbeat(
+    data: RuntimeHeartbeatCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> RuntimeHeartbeatOut:
+    try:
+        row = await runtime_service.record_heartbeat(session, data)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    await session.commit()
+    return RuntimeHeartbeatOut.model_validate(row)
+
+
+@router.post("/wake", response_model=WakeArbitrationOut)
+async def wake(
+    intents: list[WakeIntent],
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> WakeArbitrationOut:
+    outcome = await runtime_service.arbitrate_wake(session, intents)
+    await session.commit()
+    return outcome
+
+
+@router.post("/transition", response_model=RuntimeStatusOut)
+async def transition(
+    data: RuntimeTransitionRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> RuntimeStatusOut:
+    current = await runtime_service.active_session(session)
+    if current is None:
+        raise HTTPException(status_code=409, detail="No active runtime session")
+    try:
+        await runtime_service.transition(session, current, data.to_state, reason=data.reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return await runtime_service.runtime_status(session)
+
+
+@router.get("/status", response_model=RuntimeStatusOut)
+async def status(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> RuntimeStatusOut:
+    result = await runtime_service.runtime_status(session)
+    await session.commit()
+    return result
+
+
+@router.post("/actions", response_model=ApprovedActionOut, status_code=201)
+async def route_action(
+    data: ApprovedActionCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ApprovedActionOut:
+    action = await runtime_service.route_action(
+        session, data, requested_by=actor, device_id=data.device_id
+    )
+    await session.commit()
+    return ApprovedActionOut.model_validate(action)
+
+
+@router.get("/actions", response_model=list[ApprovedActionOut])
+async def list_actions(
+    status_filter: Literal[
+        "pending", "approved", "denied", "executed", "failed"
+    ] | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[ApprovedActionOut]:
+    stmt = select(ApprovedAction).order_by(ApprovedAction.created_at.desc()).limit(limit)
+    if status_filter:
+        stmt = stmt.where(ApprovedAction.status == status_filter)
+    rows = (await session.execute(stmt)).scalars().all()
+    return [ApprovedActionOut.model_validate(row) for row in rows]
+
+
+@router.post("/actions/{action_id}/approve", response_model=ApprovedActionOut)
+async def approve_action(
+    action_id: UUID,
+    data: ActionDecisionRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ApprovedActionOut:
+    try:
+        action = await runtime_service.decide_action(
+            session,
+            action_id,
+            actor=actor,
+            decision="approve",
+            reason=data.reason if data else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return ApprovedActionOut.model_validate(action)
+
+
+@router.post("/actions/{action_id}/deny", response_model=ApprovedActionOut)
+async def deny_action(
+    action_id: UUID,
+    data: ActionDecisionRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ApprovedActionOut:
+    try:
+        action = await runtime_service.decide_action(
+            session,
+            action_id,
+            actor=actor,
+            decision="deny",
+            reason=data.reason if data else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return ApprovedActionOut.model_validate(action)
+
+
+@router.post("/actions/{action_id}/execute", response_model=ApprovedActionOut)
+async def execute_action(
+    action_id: UUID,
+    data: ActionDecisionRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ApprovedActionOut:
+    try:
+        action = await runtime_service.execute_action(
+            session,
+            action_id,
+            actor=actor,
+            result=data.result if data else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return ApprovedActionOut.model_validate(action)
+
+
+@router.post("/dead-letters", response_model=DeadLetterOut, status_code=201)
+async def create_dead_letter(
+    data: DeadLetterCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> DeadLetterOut:
+    letter = await runtime_service.record_dead_letter(
+        session,
+        queue=data.queue,
+        payload=data.payload,
+        error=data.error,
+        job_id=data.job_id,
+    )
+    await session.commit()
+    return DeadLetterOut.model_validate(letter)
+
+
+@router.get("/dead-letters", response_model=list[DeadLetterOut])
+async def list_dead_letters(
+    status_filter: Literal["new", "retrying", "discarded", "resolved"] | None = Query(
+        default=None, alias="status"
+    ),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[DeadLetterOut]:
+    stmt = select(DeadLetter).order_by(DeadLetter.created_at.desc()).limit(limit)
+    if status_filter:
+        stmt = stmt.where(DeadLetter.status == status_filter)
+    rows = (await session.execute(stmt)).scalars().all()
+    return [DeadLetterOut.model_validate(row) for row in rows]
+
+
+@router.post("/dead-letters/{letter_id}/retry", response_model=DeadLetterOut)
+async def retry_dead_letter(
+    letter_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> DeadLetterOut:
+    try:
+        letter = await runtime_service.retry_dead_letter(session, letter_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return DeadLetterOut.model_validate(letter)
+
+
+@router.post("/dead-letters/{letter_id}/discard", response_model=DeadLetterOut)
+async def discard_dead_letter(
+    letter_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> DeadLetterOut:
+    try:
+        letter = await runtime_service.discard_dead_letter(session, letter_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    await session.commit()
+    return DeadLetterOut.model_validate(letter)

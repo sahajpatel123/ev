@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+import secrets
+from dataclasses import dataclass
+from uuid import UUID
+
+from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.db import get_session
+from app.models import Device
+from app.utils.text import sha256_hex, utcnow
+
+
+@dataclass(frozen=True)
+class ActorContext:
+    """Who is acting: the master key or a registered, non-revoked device."""
+
+    actor: str
+    device_id: UUID | None = None
+    is_master: bool = False
+    device: Device | None = None
+
+    @property
+    def is_device(self) -> bool:
+        return self.device_id is not None
+
+
+async def require_auth(authorization: str | None = Header(default=None)) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+    token = authorization.removeprefix("Bearer ").strip()
+    if not secrets.compare_digest(token, settings.master_key):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid master key")
+    return token
+
+
+async def require_master(authorization: str | None = Header(default=None)) -> str:
+    """Only the master key may manage identity and device trust.
+
+    A registered device token is deliberately rejected: a compromised device
+    must not be able to mint new devices, revoke the fleet, or rotate recovery
+    material (device-to-device privilege escalation).
+    """
+    return await require_auth(authorization)
+
+
+async def require_master(authorization: str | None = Header(default=None)) -> str:
+    """Master-key-only gate for privileged surfaces (device management, export).
+
+    A registered device token authenticates the device, but must not grant
+    device-credential management or full-data export privileges. Those remain
+    exclusive to the user-held master key.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty bearer token")
+    if not secrets.compare_digest(token, settings.master_key):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Master key required for this operation",
+        )
+    return "master"
+
+
+async def _resolve_actor(
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> tuple[str, Device | None]:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+    token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty bearer token")
+    if secrets.compare_digest(token, settings.master_key):
+        return "master", None
+    token_hash = sha256_hex(token)
+    result = await session.execute(
+        select(Device).where(
+            Device.token_hash == token_hash,
+            Device.revoked_at.is_(None),
+        )
+    )
+    device = result.scalar_one_or_none()
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or revoked device token")
+    device.last_seen_at = utcnow()
+    return f"device:{device.name}", device
+
+
+async def require_actor(
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> str:
+    """Accept the master key or a registered, non-revoked device token."""
+    actor, _ = await _resolve_actor(authorization, session)
+    return actor
+
+
+async def require_actor_context(
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> ActorContext:
+    """Richer actor resolution for command surfaces that need device scoping."""
+    actor, device = await _resolve_actor(authorization, session)
+    return ActorContext(
+        actor=actor,
+        device_id=device.id if device else None,
+        is_master=device is None,
+        device=device,
+    )

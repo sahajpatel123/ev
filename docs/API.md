@@ -1,0 +1,238 @@
+# EV — API Contract (v1)
+
+**Version 1.0** — the public contract for clients and integrations. Companion to
+`ARCHITECTURE.md` §10.
+
+## 1. Conventions
+
+- Base URL: `https://<ev-host>/v1` (Tailscale/Caddy; localhost in dev).
+- Auth: `Authorization: Bearer <master-key>` or per-device token after pairing.
+- Time: RFC 3339 UTC (`2026-08-09T09:00:00Z`). Clients render local time.
+- IDs: UUID v4 strings.
+- Pagination: cursor-based (`next_cursor` opaque) or `limit` (max 500).
+- Errors: JSON `{"detail": {"code": "...", "message": "...", "fields": {...}}}` with
+  standard HTTP status codes.
+- Idempotency: clients send `Idempotency-Key` on writes; duplicate keys return the
+  original result without re-inserting.
+- Versioning: additive changes only within v1; breaking changes require a new major
+  version and client capability negotiation.
+
+## 2. Endpoint map
+
+| Method | Path | Purpose | FR |
+| --- | --- | --- | --- |
+| POST | `/v1/events` | Capture event | FR-MEM-01 |
+| GET | `/v1/events/{id}` | Read event | FR-MEM-01 |
+| DELETE | `/v1/events/{id}` | Tombstone + redact | FR-SEC-04 |
+| GET | `/v1/timeline` | Event timeline | FR-MEM-06 |
+| POST | `/v1/chat` | Chat (SSE streaming) | FR-ORCH-01..03 |
+| GET | `/v1/memories` | Browse memories | FR-MEM-03 |
+| GET | `/v1/memories/{id}` | Memory detail | FR-MEM-02 |
+| GET | `/v1/people` · `/v1/decisions` · `/v1/goals` · `/v1/preferences` · `/v1/patterns` | Typed browsing | FR-MEM-09 |
+| GET | `/v1/audit/{memory_id}` | Why-do-you-know-that | FR-MEM-02, FR-COMP-03 |
+| GET | `/v1/conflicts` | Open/resolved conflicts | FR-MEM-07 |
+| POST | `/v1/export` | Full export bundle | FR-SEC-04 |
+| POST | `/v1/attachments` | Blob capture (multipart) | FR-DEV-01 |
+| GET | `/v1/attachments/{id}` | Blob download (auth) | FR-DEV-01 |
+| GET | `/v1/health` | System + provider health | FR-DIAG-01 |
+| POST | `/v1/devices` · GET `/v1/devices` · DELETE `/v1/devices/{id}` | Device pairing/lifecycle | FR-SEC-01 |
+| GET | `/v1/gear` | Gear telemetry (M5) | FR-GEAR-01..03 |
+| GET | `/v1/alerts` · POST `/v1/alerts/{id}/dismiss` | Alerts (M5) | FR-ALERT-02..04 |
+| GET | `/v1/research/sessions` · POST `/v1/research/sessions` · POST `/v1/research/sessions/{id}/notes` | Research (M5) | FR-RESEARCH-01..04 |
+| GET | `/v1/projects` · POST `/v1/projects` · GET/POST `/v1/projects/{id}/bom` · POST `/v1/projects/{id}/print-jobs` | Maker (M5) | FR-MAKER-01..04 |
+| POST | `/v1/focus` · GET `/v1/focus` · POST `/v1/focus/{id}/end` | Focus designation (E.D.I.T.H.) | FR-FOCUS |
+| GET | `/v1/fleet` · POST `/v1/fleet/tasks` · GET `/v1/fleet/tasks[/pending]` | Fleet status + task dispatch/queue | FR-FLEET |
+| POST | `/v1/fleet/tasks/{id}/accept` · `/start` · `/complete` · `/fail` · `/cancel` | Device-scoped task lifecycle | FR-FLEET |
+| GET | `/v1/commands` · `/v1/commands/{id}` | Auditable E.D.I.T.H. command ledger | FR-SEC-XX |
+| GET | `/v1/ops/center` · `/v1/twin` · `/v1/hud/focus` | Ops center / digital twin / HUD overlay | FR-HUD |
+| POST | `/v1/gateway/chat` · `/v1/gateway/tools` · GET `/v1/gateway/models` | Internal gateway (model-agnostic) | FR-SYS-03 |
+
+## 3. Event capture
+
+```http
+POST /v1/events
+Idempotency-Key: <uuid>
+Content-Type: application/json
+
+{
+  "source": "ios",
+  "event_type": "voice",
+  "text": "Decided to use SQLite for local testing.",
+  "occurred_at": "2026-08-09T09:00:00Z",
+  "metadata": {"duration_ms": 4200},
+  "device_id": "iphone-16-pro",
+  "conversation_id": null,
+  "privacy_level": "normal"
+}
+```
+
+`201 Created` → `EventOut` (includes `id`, `sha256`, `ingested_at`).
+
+Errors: `401` auth, `422` validation, `409` duplicate idempotency key with different
+body.
+
+## 4. Timeline
+
+```http
+GET /v1/timeline?limit=50&cursor=<occurred_at>&source=ios&event_type=note&since=...&until=...
+```
+
+`200` → `{"events": [EventOut], "next_cursor": "..."}`. Tombstoned events are excluded
+unless `include_tombstoned=true` (audit-only).
+
+## 5. Chat (streaming)
+
+```http
+POST /v1/chat
+Content-Type: application/json
+
+{"message": "Why did I decide to use SQLite?", "conversation_id": null,
+ "device_id": "macbook", "stream": true, "model": null}
+```
+
+SSE event stream:
+
+```text
+event: memory-delta
+data: {"action":"created","memory_type":"observation","id":"…","text":"…"}
+
+event: provenance
+data: {"memory_id":"…","text":"…","score":0.87,"components":{...}}
+
+event: delta
+data: {"text":"You decided on 2026-08-09 to use SQLite…"}
+
+event: done
+data: {"conversation_id":"…","context_tokens":4210,"model":"deepseek-v4-flash-0731"}
+```
+
+Errors mid-stream: `event: error` then `event: done`. Non-streaming returns
+`ChatResponse` JSON.
+
+## 6. Memories & typed browsing
+
+```http
+GET /v1/memories?memory_type=decision&is_current=true&q=sqlite&limit=20&as_of=2026-08-01T00:00:00Z
+```
+
+`200` → `MemoryListResponse` (`memories: [MemoryOut]`, `total`). Filters: `memory_type`,
+`is_current`, `q` (hybrid), `as_of`, `privacy_level` (master-key scope), `source_type`,
+`redacted` (audit-only).
+
+`GET /v1/memories/{id}` returns full `MemoryOut` with provenance and entities.
+
+## 7. Audit
+
+```http
+GET /v1/audit/{memory_id}
+```
+
+`200` → `AuditOut`: memory, full version chain, source events, conflicts, access log
+entries touching the memory.
+
+## 8. Export & delete
+
+```http
+POST /v1/export
+```
+
+`200` → `ExportBundle`: events, memories, entities, relationships, conflicts,
+attachments metadata, access log. Blobs exported via attachment download endpoints.
+
+```http
+DELETE /v1/events/{id}?reason=user-requested
+```
+
+`200` → tombstoned `EventOut`. Derived memories redacted; blobs scheduled for deletion
+after audit window.
+
+## 9. Attachments
+
+```http
+POST /v1/attachments
+Content-Type: multipart/form-data
+fields: file, event_type=image|file|voice, privacy_level, occurred_at, metadata
+```
+
+Creates an event + blob; `201` → `AttachmentOut` + `EventOut`. Download requires
+auth and respects privacy levels.
+
+## 10. Devices
+
+```http
+POST /v1/devices   {"name":"iphone-16-pro","capabilities":["voice","camera","health"]}
+GET  /v1/devices
+DELETE /v1/devices/{id}
+```
+
+Pairing returns a device token (shown once, stored hashed). Revocation is immediate.
+
+## 11. E.D.I.T.H. command surface
+
+Focus locks EV's attention onto a user-defined goal/task/project/person/topic —
+never a person to harm:
+
+```http
+POST /v1/focus   {"label":"Ship EV memory engine","kind":"goal","reason":"lock-on"}
+GET  /v1/focus
+POST /v1/focus/{id}/end
+```
+
+Fleet tasks are dispatched to a registered device and must match a declared
+capability (or be a universal task: `ping`, `sync`, `report_status`, `ack`).
+Lifecycle is `requested → accepted → running → completed | failed | cancelled`,
+and every transition is device-scoped: a device token can only read, accept,
+start, complete, or fail its own tasks.
+
+```http
+POST /v1/fleet/tasks
+  {"device_id":"<uuid>","task_type":"capture_photo","payload":{...}}
+GET  /v1/fleet/tasks/pending          # device-facing queue (own tasks only)
+GET  /v1/fleet/tasks/{id}
+POST /v1/fleet/tasks/{id}/accept
+POST /v1/fleet/tasks/{id}/start
+POST /v1/fleet/tasks/{id}/complete   {"result":{...}}
+POST /v1/fleet/tasks/{id}/fail       {"error":"..."}
+POST /v1/fleet/tasks/{id}/cancel
+```
+
+Every command (focus designation/end, fleet dispatch/transition, recognition
+annotation) is appended to the command ledger with its actor, target, request,
+status, and result. Master sees all commands; device tokens see only the
+commands they issued. `GET /v1/commands` and `GET /v1/commands/{id}` expose the
+ledger; `GET /v1/ops/center` includes the five most recent commands.
+
+## 12. Gateway (internal)
+
+- `POST /v1/gateway/chat` — messages + optional tools + request envelope
+  (`request_id`, `strategy`, `memories`, `context`) → `GatewayChatResponse`
+  with provider, model, latency, and per-call tool-validation outcomes.
+- `POST /v1/gateway/tools` — declarative tool dispatch (used by orchestrator).
+- `GET /v1/gateway/models` — provider + available models.
+- `GET /v1/gateway/calls?limit=&request_id=` — audit view of model calls
+  (provider, model, latency, usage, envelope, tool validation, errors).
+
+Clients never call the gateway directly; `/v1/chat` is the only model-facing entry
+point from the product surface. Every model call through either entry point is
+logged to `model_calls` when `EV_MODEL_CALL_LOG_ENABLED=true`.
+
+## 13. Error codes
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| 400 | `bad_request` | Malformed request |
+| 401 | `unauthorized` | Missing/invalid token |
+| 403 | `forbidden` | Valid token, insufficient scope (e.g., revoked device) |
+| 404 | `not_found` | Resource absent or tombstoned |
+| 409 | `conflict` | Idempotency mismatch / state conflict |
+| 422 | `validation_error` | Schema/field errors |
+| 429 | `rate_limited` | Client exceeded budget |
+| 500 | `internal_error` | Server fault (request id in detail) |
+| 503 | `unavailable` | Provider/queue degraded |
+
+## 14. Stability & deprecation
+
+- Endpoints declare `x-deprecated` headers one minor version ahead of removal.
+- Clients negotiate capabilities via `GET /v1/health` (`capabilities` field).
+- Model/provider selection is per-request (`model` nullable) and never encoded into
+  client logic.
