@@ -20,6 +20,7 @@ from app.api import (
     runtime,
     training,
     voice,
+    web,
 )
 from app.config import settings
 from app.db import init_db
@@ -56,6 +57,7 @@ app.include_router(training.router)
 app.include_router(voice.router)
 app.include_router(filter.router)
 app.include_router(integrations.router)
+app.include_router(web.router)
 
 
 @app.get("/")

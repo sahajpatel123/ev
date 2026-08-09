@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EV — Workbench</title>
+  <link rel="stylesheet" href="/app/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>EV — Workbench</h1>
+    <span id="ev-status" class="status disconnected">disconnected</span>
+  </header>
+
+  <main>
+    <section id="connection" class="panel">
+      <h2>Connection</h2>
+      <form id="connection-form">
+        <input id="api-url" type="text" autocomplete="off"
+               placeholder="API URL (leave empty for this origin)">
+        <input id="api-key" type="password" autocomplete="off"
+               placeholder="API key (master or device token)">
+        <button type="submit">Connect</button>
+      </form>
+    </section>
+
+    <section id="ev-hud-card" class="panel">
+      <h2>HUD card <span id="hud-schema" class="schema"></span></h2>
+      <div id="hud-body" class="hud-body"></div>
+    </section>
+
+    <section id="capture" class="panel">
+      <h2>Capture</h2>
+      <form id="capture-form">
+        <textarea id="capture-text" rows="3" maxlength="200000"
+                  placeholder="Remember this…"></textarea>
+        <button type="submit">Remember</button>
+      </form>
+      <p id="capture-result" class="result"></p>
+    </section>
+
+    <section id="ask" class="panel">
+      <h2>Ask EV</h2>
+      <form id="ask-form">
+        <input id="ask-question" type="text" autocomplete="off"
+               placeholder="What did I decide about X?">
+        <button type="submit">Ask</button>
+      </form>
+      <p id="ask-reply" class="reply"></p>
+      <div id="ask-provenance"></div>
+    </section>
+
+    <section id="ev-memory-browser" class="panel">
+      <h2>Memory browser</h2>
+      <div class="row">
+        <select id="memory-type">
+          <option value="">All types</option>
+          <option value="decision">Decisions</option>
+          <option value="goal">Goals</option>
+          <option value="preference">Preferences</option>
+          <option value="fact">Facts</option>
+          <option value="people">People</option>
+          <option value="summary">Summaries</option>
+        </select>
+        <input id="memory-search" type="search" placeholder="Search memory">
+        <button id="memory-load" type="button">Browse</button>
+      </div>
+      <ul id="memory-list" class="list"></ul>
+      <div id="audit-panel"></div>
+    </section>
+
+    <section id="ev-timeline" class="panel">
+      <h2>Timeline</h2>
+      <button id="timeline-load" type="button">Load recent</button>
+      <ul id="timeline-list" class="list"></ul>
+    </section>
+  </main>
+
+  <script src="/app/app.js" defer></script>
+</body>
+</html>

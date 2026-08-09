@@ -95,6 +95,15 @@ queued capture carries an `Idempotency-Key`. `ev sync` replays the queue: 201
 marks synced, 409 drops the duplicate, 422 quarantines the record, and a
 connectivity failure leaves the queue intact for the next attempt.
 
+### 4.2 Web workbench
+
+Served at `/app` by the FastAPI app (no third-party scripts, strict CSP,
+`X-Frame-Options: DENY`). One self-contained page: HUD card
+(`ev.hud.card.v1`), capture (with idempotency keys), chat with provenance
+chips, memory browser + audit drill-down, and timeline. The API URL/key are
+kept in `localStorage`; same-origin API is the default, so `connect-src 'self'`
+holds.
+
 ## 5. HUD rendering targets (M5)
 
 | Target | Renderer | Schema |
