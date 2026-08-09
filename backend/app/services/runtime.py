@@ -1048,6 +1048,66 @@ async def attention_usage(session: AsyncSession) -> dict:
     }
 
 
+async def _asr_tts_checks() -> list[dict]:
+    """ASR/TTS provider health: local providers get a functional probe,
+    network providers are checked for configuration (no probe traffic)."""
+    from app.voice.asr import get_transcriber
+    from app.voice.contracts import SpeechStyle
+    from app.voice.tts import get_synthesizer
+
+    checks: list[dict] = []
+    try:
+        transcriber = get_transcriber()
+        if transcriber.name == "echo":
+            await transcriber.transcribe(text_hint="ev health probe")
+            asr_status = "ok"
+            asr_detail: dict = {"probe": "echo"}
+        elif settings.voice_asr_base_url:
+            asr_status = "ok"
+            asr_detail = {}
+        else:
+            asr_status = "degraded"
+            asr_detail = {"reason": "base_url not configured"}
+    except Exception as exc:  # noqa: BLE001 - health boundary
+        asr_status = "degraded"
+        asr_detail = {"error": f"{type(exc).__name__}: {exc}"}
+    checks.append(
+        {
+            "name": "asr",
+            "status": asr_status,
+            "provider": settings.voice_asr_provider,
+            "model": settings.voice_asr_model,
+            **asr_detail,
+        }
+    )
+
+    try:
+        synthesizer = get_synthesizer()
+        if synthesizer.name == "meta":
+            await synthesizer.synthesize("ev health probe", style=SpeechStyle())
+            tts_status = "ok"
+            tts_detail: dict = {"probe": "meta"}
+        elif settings.voice_tts_base_url:
+            tts_status = "ok"
+            tts_detail = {}
+        else:
+            tts_status = "degraded"
+            tts_detail = {"reason": "base_url not configured"}
+    except Exception as exc:  # noqa: BLE001 - health boundary
+        tts_status = "degraded"
+        tts_detail = {"error": f"{type(exc).__name__}: {exc}"}
+    checks.append(
+        {
+            "name": "tts",
+            "status": tts_status,
+            "provider": settings.voice_tts_provider,
+            "model": settings.voice_tts_model,
+            **tts_detail,
+        }
+    )
+    return checks
+
+
 async def runtime_health(session: AsyncSession) -> dict:
     """Structured runtime health: DB, state machine, listeners, queue, DLQ."""
     checks: list[dict] = []
@@ -1126,6 +1186,7 @@ async def runtime_health(session: AsyncSession) -> dict:
             "provider": settings.chat_provider,
         }
     )
+    checks.extend(await _asr_tts_checks())
 
     statuses = [check["status"] for check in checks]
     if "failed" in statuses:

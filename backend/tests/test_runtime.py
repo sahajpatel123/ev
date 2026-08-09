@@ -410,10 +410,41 @@ async def test_runtime_health_reports_checks(client: AsyncClient) -> None:
     assert report["schema_version"] == "ev.runtime.health.v1"
     assert report["overall"] in ("ok", "degraded", "failed")
     names = {check["name"] for check in report["checks"]}
-    assert {"database", "state_machine", "listeners", "dead_letters", "queue", "chat_provider"} <= names
+    assert {
+        "database",
+        "state_machine",
+        "listeners",
+        "dead_letters",
+        "queue",
+        "chat_provider",
+        "asr",
+        "tts",
+    } <= names
     listeners = next(c for c in report["checks"] if c["name"] == "listeners")
     assert listeners["online_devices"] == 1
     assert listeners["listening_devices"] == 1
+    asr = next(c for c in report["checks"] if c["name"] == "asr")
+    tts = next(c for c in report["checks"] if c["name"] == "tts")
+    assert asr["status"] == "ok"
+    assert tts["status"] == "ok"
+
+
+async def test_runtime_health_reports_unconfigured_network_voice_providers(
+    client: AsyncClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "voice_asr_provider", "openai_compat")
+    monkeypatch.setattr(settings, "voice_asr_base_url", None)
+    monkeypatch.setattr(settings, "voice_tts_provider", "openai_compat")
+    monkeypatch.setattr(settings, "voice_tts_base_url", None)
+
+    resp = await client.get("/v1/runtime/health")
+    assert resp.status_code == 200, resp.text
+    report = resp.json()
+    assert report["overall"] == "degraded"
+    asr = next(c for c in report["checks"] if c["name"] == "asr")
+    tts = next(c for c in report["checks"] if c["name"] == "tts")
+    assert asr["status"] == "degraded"
+    assert tts["status"] == "degraded"
 
 
 async def test_daemon_tick_expires_stale_session_and_reports(
