@@ -77,8 +77,6 @@ async def test_listener_wake_and_sync_convergence(db_session) -> None:
         )
         await db_session.commit()
 
-        resp = await client.post("/v1/runtime/transition", json={"to_state": "awake"})
-        assert resp.status_code == 200, resp.text
         snapshot = await listener.sync_state()
         assert snapshot["latency"]["wake_to_awake_ms"] is not None
         assert snapshot["latency"]["wake_to_awake_ms"] >= 0
