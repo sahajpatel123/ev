@@ -553,10 +553,11 @@ async def test_http_adapter_mode_uses_vault_token(
     ) -> dict:
         return {"ok": True, "revoked": bool(authorization)}
 
+    original_client = httpx.AsyncClient
     monkeypatch.setattr(
         httpx,
         "AsyncClient",
-        lambda **kwargs: httpx.AsyncClient(
+        lambda **kwargs: original_client(
             transport=ASGITransport(app=provider),
             base_url="http://provider",
         ),
