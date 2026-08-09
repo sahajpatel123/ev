@@ -32,13 +32,17 @@ from app.schemas import (
     FleetTaskCreate,
     FocusDesignationCreate,
     FocusDesignationOut,
+    FocusSuggestion,
+    FocusSuggestResponse,
     HealthSummaryOut,
     HudFocusOut,
     OpsCenterOut,
     RecognitionCreate,
     TwinOut,
 )
-from app.utils.text import utcnow
+from app.utils.text import normalize_text, utcnow
+
+FocusKind = Literal["task", "project", "person", "topic", "goal"]
 
 # --------------------------------------------------------------------------- #
 # Focus designation (E.D.I.T.H. targeting, pointed at attention instead of harm)
@@ -186,6 +190,110 @@ async def active_focus(session: AsyncSession) -> FocusDesignation | None:
         .limit(1)
     )
     return result.scalars().first()
+
+
+async def suggest_focus(
+    session: AsyncSession,
+    *,
+    limit: int = 5,
+) -> FocusSuggestResponse:
+    """Rank focus candidates from user state, alerts, decisions, and patterns."""
+    state = await build_user_state(session)
+    focus = await active_focus(session)
+    alerts = await alert_radar.list_alerts(session, status="pending", limit=3)
+    pattern_rows = (
+        await session.execute(
+            select(Memory)
+            .where(
+                Memory.memory_type == "pattern",
+                Memory.is_current.is_(True),
+                Memory.redacted.is_(False),
+            )
+            .order_by(Memory.confidence.desc())
+            .limit(3)
+        )
+    ).scalars().all()
+
+    candidates: list[FocusSuggestion] = []
+
+    def add(
+        label: str | None,
+        kind: FocusKind,
+        reason: str,
+        source: str,
+        score: float,
+        target_id: str | None = None,
+    ) -> None:
+        if not label:
+            return
+        key = normalize_text(label)
+        if focus and normalize_text(focus.label) == key:
+            return
+        if any(normalize_text(c.label) == key for c in candidates):
+            return
+        candidates.append(
+            FocusSuggestion(
+                label=label,
+                kind=kind,
+                reason=reason,
+                source=source,
+                score=score,
+                target_id=target_id,
+            )
+        )
+
+    add(state.current_task, "task", "Resume the task you were last working on", "user_state", 1.0)
+    add(state.active_goal, "goal", "Your most recent active goal", "memory:goal", 0.95)
+    add(state.active_project, "project", "Your active project", "user_state", 0.85)
+    if alerts:
+        top = alerts[0]
+        add(
+            top.title,
+            "topic",
+            f"Top pending alert: {top.rationale or top.body[:160]}",
+            "alert_radar",
+            0.75,
+            target_id=str(top.id),
+        )
+    if state.open_decisions:
+        add(
+            state.open_decisions[0].get("text") or str(state.open_decisions[0]),
+            "topic",
+            "Settle the most recent open decision",
+            "user_state:decision",
+            0.7,
+        )
+    if state.recent_failures:
+        add(
+            state.recent_failures[0],
+            "task",
+            "Unblock the most recent failure",
+            "user_state:failure",
+            0.65,
+        )
+    for pattern in pattern_rows:
+        add(
+            pattern.text,
+            "topic",
+            f"Pattern in play (confidence {pattern.confidence:.2f})",
+            "memory:pattern",
+            0.55,
+            target_id=str(pattern.id),
+        )
+    if state.live_context:
+        add(
+            state.live_context[0],
+            "task",
+            "Derived from your latest permissioned live activity",
+            "live_context",
+            0.45,
+        )
+
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    return FocusSuggestResponse(
+        generated_at=utcnow(),
+        suggestions=candidates[:max(1, min(limit, 10))],
+    )
 
 
 async def end_focus(session: AsyncSession, focus_id: UUID, *, actor: str) -> FocusDesignation:

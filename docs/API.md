@@ -41,6 +41,7 @@
 | GET | `/v1/research/sessions` · POST `/v1/research/sessions` · POST `/v1/research/sessions/{id}/notes` | Research (M5) | FR-RESEARCH-01..04 |
 | GET | `/v1/projects` · POST `/v1/projects` · GET/POST `/v1/projects/{id}/bom` · POST `/v1/projects/{id}/print-jobs` | Maker (M5) | FR-MAKER-01..04 |
 | POST | `/v1/focus` · GET `/v1/focus` · POST `/v1/focus/{id}/end` | Focus designation (E.D.I.T.H.) | FR-FOCUS |
+| GET | `/v1/focus/suggest` | Ranked focus lock-on suggestions from state/alerts/decisions | FR-FOCUS |
 | GET | `/v1/fleet` · POST `/v1/fleet/tasks` · GET `/v1/fleet/tasks[/pending]` | Fleet status + task dispatch/queue | FR-FLEET |
 | POST | `/v1/fleet/tasks/{id}/accept` · `/start` · `/complete` · `/fail` · `/cancel` | Device-scoped task lifecycle | FR-FLEET |
 | GET | `/v1/commands` · `/v1/commands/{id}` | Auditable E.D.I.T.H. command ledger | FR-SEC-XX |

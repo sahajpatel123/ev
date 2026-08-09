@@ -32,6 +32,7 @@ from app.schemas import (
     FleetTaskOut,
     FocusDesignationCreate,
     FocusDesignationOut,
+    FocusSuggestResponse,
     HudFocusOut,
     LiveChannelCreate,
     LiveChannelOut,
@@ -292,6 +293,16 @@ async def apply_live_retention_policy(
 # --------------------------------------------------------------------------- #
 # E.D.I.T.H.-inspired modules
 # --------------------------------------------------------------------------- #
+
+
+@router.get("/focus/suggest", response_model=FocusSuggestResponse)
+async def focus_suggest(
+    limit: int = Query(default=5, ge=1, le=10),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> FocusSuggestResponse:
+    """E.D.I.T.H.-style lock-on suggestions, pointed at goals/tasks — never people to harm."""
+    return await edith.suggest_focus(session, limit=limit)
 
 
 @router.post("/focus", response_model=FocusDesignationOut, status_code=201)

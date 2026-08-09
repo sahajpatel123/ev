@@ -516,7 +516,9 @@ devices, and plans — with every "target" being a goal, never a person to harm.
 
 ### 10.1 Focus designation — **Built**
 Lock EV onto a task/project/person/goal; feeds state and HUD focus overlay.
-Direction: auto-suggest focus from user state and live data.
+`GET /v1/focus/suggest` ranks lock-on candidates from user state, pending
+alerts, open decisions, recent failures, patterns, and live context; the active
+focus is excluded from suggestions. Direction: model-assisted ranking.
 
 ### 10.2 Device fleet & tasks — **Built**
 Fleet presence, gear, capability-checked task dispatch, and a device-scoped
