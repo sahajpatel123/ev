@@ -66,6 +66,61 @@ func captureBody(eventID: String) -> String {
     """
 }
 
+extension URLRequest {
+    func bodyData() -> Data {
+        if let body = httpBody {
+            return body
+        }
+        guard let stream = httpBodyStream else {
+            return Data()
+        }
+        stream.open()
+        defer { stream.close() }
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        var data = Data()
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            if count <= 0 {
+                break
+            }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+}
+
+func attachmentResponseJSON() -> String {
+    """
+    {
+      "attachment": {
+        "id": "att-1",
+        "event_id": "evt-att",
+        "filename": "photo.jpg",
+        "content_type": "image/jpeg",
+        "size_bytes": 11,
+        "storage_key": "attachments/x.bin",
+        "sha256": "abc123",
+        "created_at": "2026-08-09T12:00:00Z"
+      },
+      "event": {
+        "id": "evt-att",
+        "occurred_at": "2026-08-09T12:00:00Z",
+        "ingested_at": "2026-08-09T12:00:00Z",
+        "source": "ios",
+        "event_type": "file",
+        "content": {"filename": "photo.jpg", "content_type": "image/jpeg"},
+        "metadata": {},
+        "device_id": null,
+        "conversation_id": null,
+        "privacy_level": "normal",
+        "sha256": "abc",
+        "tombstoned_at": null,
+        "tombstone_reason": null
+      }
+    }
+    """
+}
+
 func heartbeatBody(deviceID: String) -> String {
     """
     {

@@ -4,15 +4,50 @@
 
 import Foundation
 
+public struct PendingAttachment: Codable, Sendable, Equatable {
+    public let filePath: String
+    public let contentType: String?
+    public let source: String
+    public let eventType: String
+    public let privacyLevel: String
+    public let deviceID: String?
+
+    public init(
+        filePath: String,
+        contentType: String? = nil,
+        source: String = "ios",
+        eventType: String = "file",
+        privacyLevel: String = "normal",
+        deviceID: String? = nil
+    ) {
+        self.filePath = filePath
+        self.contentType = contentType
+        self.source = source
+        self.eventType = eventType
+        self.privacyLevel = privacyLevel
+        self.deviceID = deviceID
+    }
+}
+
 public struct PendingCapture: Codable, Sendable, Equatable {
     public let idempotencyKey: String
     public let queuedAt: String
     public let payload: CapturePayload
+    public let kind: String?
+    public let attachment: PendingAttachment?
 
-    public init(idempotencyKey: String, queuedAt: String, payload: CapturePayload) {
+    public init(
+        idempotencyKey: String,
+        queuedAt: String,
+        payload: CapturePayload,
+        kind: String? = nil,
+        attachment: PendingAttachment? = nil
+    ) {
         self.idempotencyKey = idempotencyKey
         self.queuedAt = queuedAt
         self.payload = payload
+        self.kind = kind
+        self.attachment = attachment
     }
 }
 
@@ -169,6 +204,33 @@ public struct OfflineCaptureQueue: Sendable {
         return record
     }
 
+    public func enqueueAttachment(
+        filePath: String,
+        contentType: String? = nil,
+        source: String = "ios",
+        eventType: String = "file",
+        privacyLevel: String = "normal",
+        deviceID: String? = nil,
+        idempotencyKey: String = UUID().uuidString
+    ) throws -> PendingCapture {
+        let record = PendingCapture(
+            idempotencyKey: idempotencyKey,
+            queuedAt: Date().ISO8601Format(),
+            payload: CapturePayload(text: filePath),
+            kind: "attachment",
+            attachment: PendingAttachment(
+                filePath: filePath,
+                contentType: contentType,
+                source: source,
+                eventType: eventType,
+                privacyLevel: privacyLevel,
+                deviceID: deviceID
+            )
+        )
+        try store.append(record)
+        return record
+    }
+
     public func sync(using client: EVAPIClient) async -> SyncSummary {
         let records: [PendingCapture]
         do {
@@ -193,6 +255,38 @@ public struct OfflineCaptureQueue: Sendable {
         var errors: [String] = []
 
         for record in records {
+            if record.kind == "attachment", let attachment = record.attachment {
+                guard FileManager.default.fileExists(atPath: attachment.filePath) else {
+                    quarantined += 1
+                    try? store.quarantine(
+                        record,
+                        reason: "attachment file missing: \(attachment.filePath)"
+                    )
+                    continue
+                }
+                do {
+                    let fileURL = URL(fileURLWithPath: attachment.filePath)
+                    let data = try Data(contentsOf: fileURL)
+                    _ = try await client.attach(
+                        filename: fileURL.lastPathComponent,
+                        contentType: attachment.contentType ?? "application/octet-stream",
+                        data: data,
+                        source: attachment.source,
+                        eventType: attachment.eventType,
+                        privacyLevel: attachment.privacyLevel,
+                        deviceID: attachment.deviceID
+                    )
+                    synced += 1
+                } catch EVAPIError.httpStatus(let code, let body) where code == 400 || code == 422 {
+                    quarantined += 1
+                    try? store.quarantine(record, reason: body)
+                } catch {
+                    remaining.append(record)
+                    errors.append("\(record.idempotencyKey): \(error)")
+                    break
+                }
+                continue
+            }
             do {
                 let (status, data) = try await client.postEvent(
                     payload: record.payload,

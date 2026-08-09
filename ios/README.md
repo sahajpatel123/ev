@@ -17,7 +17,9 @@ and CLI clients — one backend, one memory, one sync contract.
 - **`OfflineCaptureQueue`** — offline-first capture queue. Pending captures
   persist with idempotency keys; `sync(using:)` applies the same contract as
   `ev sync` and the web client: 201 synced, 409 duplicate dropped, 422
-  quarantined, network failure preserves the queue.
+  quarantined, network failure preserves the queue. Attachment captures
+  (photos/files) queue with their local file path and upload as multipart on
+  sync; records whose file has disappeared are quarantined.
 - **`EVUI`** — shared SwiftUI views (`TodayView` with HUD card, `CaptureView`
   with offline queue fallback, `MemoryBrowserView` with audit drill-down) that
   compile on macOS and are imported by the iPhone/Watch app targets.

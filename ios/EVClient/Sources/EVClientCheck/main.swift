@@ -113,36 +113,7 @@ do {
         receivedBody = String(data: bodyData, encoding: .utf8) ?? ""
         receivedContentType = request.value(forHTTPHeaderField: "Content-Type") ?? ""
         receivedStatus = 201
-        let response = """
-        {
-          "attachment": {
-            "id": "att-1",
-            "event_id": "evt-att",
-            "filename": "photo.jpg",
-            "content_type": "image/jpeg",
-            "size_bytes": 11,
-            "storage_key": "attachments/x.bin",
-            "sha256": "abc123",
-            "created_at": "2026-08-09T12:00:00Z"
-          },
-          "event": {
-            "id": "evt-att",
-            "occurred_at": "2026-08-09T12:00:00Z",
-            "ingested_at": "2026-08-09T12:00:00Z",
-            "source": "ios",
-            "event_type": "file",
-            "content": {"filename": "photo.jpg", "content_type": "image/jpeg"},
-            "metadata": {},
-            "device_id": null,
-            "conversation_id": null,
-            "privacy_level": "normal",
-            "sha256": "abc",
-            "tombstoned_at": null,
-            "tombstone_reason": null
-          }
-        }
-        """
-        let responseData = Data(response.utf8)
+        let responseData = Data(attachmentResponseJSON().utf8)
         return (httpResponse(201, contentLength: responseData.count), responseData)
     }
     do {
@@ -167,6 +138,44 @@ do {
 } catch {
     failures.append("attachment: \(error)")
     print("FAIL: attachment: \(error)")
+}
+
+// 9. Attachment offline queue: enqueue -> sync uploads multipart; missing file quarantines.
+do {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let fileURL = directory.appendingPathComponent("offline-photo.jpg")
+    try Data("offline-photo-bytes".utf8).write(to: fileURL)
+
+    let store = MemoryCaptureQueueStore()
+    let queue = OfflineCaptureQueue(store: store)
+    _ = try queue.enqueueAttachment(filePath: fileURL.path, contentType: "image/jpeg")
+
+    MockURLProtocol.handler = { request in
+        let body = String(data: request.bodyData(), encoding: .utf8) ?? ""
+        expect(body.contains("name=\"file\""), "attachment queue sends multipart")
+        expect(body.contains("offline-photo-bytes"), "attachment queue sends file bytes")
+        let responseData = Data(attachmentResponseJSON().utf8)
+        return (httpResponse(201, contentLength: responseData.count), responseData)
+    }
+    let summary = await queue.sync(using: client)
+    expect(summary.synced == 1, "attachment queue synced one capture")
+    expect(summary.remaining == 0, "attachment queue drained")
+    let pendingAfterSync = try queue.pending()
+    expect(pendingAfterSync.isEmpty, "attachment queue empty after sync")
+
+    _ = try queue.enqueueAttachment(filePath: directory.appendingPathComponent("gone.jpg").path)
+    let failed = await queue.sync(using: client)
+    expect(failed.quarantined == 1, "missing attachment file quarantined")
+    expect(failed.remaining == 0, "missing-file record removed from queue")
+    expect(store.quarantinedCount() == 1, "missing-file quarantine stored")
+    let pendingAfterQuarantine = try queue.pending()
+    expect(pendingAfterQuarantine.isEmpty, "missing-file queue drained")
+    print("ok: attachment offline queue")
+} catch {
+    failures.append("attachment queue: \(error)")
+    print("FAIL: attachment queue: \(error)")
 }
 
 // 2. Capture sends Idempotency-Key and returns the event.
