@@ -1401,6 +1401,7 @@ async def daemon_tick(session: AsyncSession) -> dict:
     re_enqueued = sum(1 for letter in retrying_rows if _re_enqueue_dead_letter(letter))
     health = await runtime_health(session)
     digest = await maybe_build_digest(session)
+    recalibration = await maybe_recalibrate_filter(session)
     await record_runtime_event(
         session,
         kind="daemon",
@@ -1408,6 +1409,7 @@ async def daemon_tick(session: AsyncSession) -> dict:
             "expired_session_id": str(expired_session_id) if expired_session_id else None,
             "re_enqueued": re_enqueued,
             "digest_delivered": bool(digest),
+            "filter_recalibration": bool(recalibration),
             "overall": health["overall"],
         },
     )
@@ -1416,6 +1418,7 @@ async def daemon_tick(session: AsyncSession) -> dict:
         "expired_session_id": str(expired_session_id) if expired_session_id else None,
         "re_enqueued": re_enqueued,
         "digest": digest,
+        "filter_recalibration": recalibration,
         "health": health,
     }
 
@@ -1455,6 +1458,50 @@ async def maybe_build_digest(session: AsyncSession) -> dict | None:
         },
     )
     return result
+
+
+async def maybe_recalibrate_filter(session: AsyncSession) -> dict | None:
+    """Create one ledger-driven filter recalibration report per month (7.5).
+
+    The daemon automates the report itself — thresholds are proposed, never
+    silently applied. Consent must be active, and the runtime event log
+    deduplicates to one report per calendar month.
+    """
+
+    from app.training import filter_improvement
+    from app.training.consent import active_consent
+
+    if await active_consent(session, "filter_self_improvement") is None:
+        return None
+    start_of_month = utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    ran_this_month = int(
+        (
+            await session.execute(
+                select(func.count(RuntimeEvent.id)).where(
+                    RuntimeEvent.kind == "filter_recalibration",
+                    RuntimeEvent.occurred_at >= start_of_month,
+                )
+            )
+        ).scalar_one()
+    )
+    if ran_this_month > 0:
+        return None
+    row = await filter_improvement.recalibrate(
+        session,
+        actor="runtime_daemon",
+        reason="automated monthly ledger-driven recalibration report",
+    )
+    await record_runtime_event(
+        session,
+        kind="filter_recalibration",
+        payload={
+            "version": row.version,
+            "proposals": len(row.proposals),
+            "applied": False,
+            "source": "runtime_daemon",
+        },
+    )
+    return {"version": row.version, "proposals": len(row.proposals), "applied": False}
 
 
 async def digest_state(session: AsyncSession) -> dict | None:

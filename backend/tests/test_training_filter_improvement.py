@@ -8,7 +8,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import FilterLedger, FilterRecalibration, ResponseLog
+from app.models import FilterLedger, FilterRecalibration, ResponseLog, RuntimeEvent
 
 
 async def grant_filter_consent(client: AsyncClient) -> None:
@@ -218,6 +218,52 @@ async def test_filter_recalibration_rollback_restores_applied_policy(
     assert all(row.policy == {} for row in rows)
     assert all(row.applied_at is None for row in rows)
     assert all(row.applied_by is None for row in rows)
+
+
+async def test_runtime_daemon_automates_monthly_recalibration_report(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    from app.services.runtime import maybe_recalibrate_filter
+
+    await seed_ledger_and_signals(db_session)
+    await grant_filter_consent(client)
+
+    result = await maybe_recalibrate_filter(db_session)
+    await db_session.commit()
+    assert result is not None
+    assert result["applied"] is False
+    assert result["version"] == 1
+
+    rows = list(
+        (await db_session.execute(select(FilterRecalibration))).scalars().all()
+    )
+    assert len(rows) == 1
+    assert rows[0].reason_for_change == "automated monthly ledger-driven recalibration report"
+    assert rows[0].applied_at is None
+
+    events = list(
+        (
+            await db_session.execute(
+                select(RuntimeEvent).where(RuntimeEvent.kind == "filter_recalibration")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(events) == 1
+    assert events[0].payload["version"] == 1
+    assert events[0].payload["applied"] is False
+
+    # Same month: the daemon never double-reports.
+    assert await maybe_recalibrate_filter(db_session) is None
+
+    # Revoking consent stops future automated reports.
+    resp = await client.post(
+        "/v1/training/consent/filter_self_improvement/revoke",
+        json={"reason": "privacy"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert await maybe_recalibrate_filter(db_session) is None
 
 
 async def test_filter_self_improve_versions_rollback_and_delete(
