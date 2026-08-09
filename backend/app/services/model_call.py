@@ -20,6 +20,7 @@ async def log_model_call(
     """Persist one auditable model call with its envelope and validation outcome."""
 
     usage = call.result.usage or {}
+    envelope_hash = call.envelope.metadata.get("envelope_hash")
     row = ModelCallLog(
         request_id=call.request_id,
         actor=actor,
@@ -31,6 +32,7 @@ async def log_model_call(
         completion_tokens=int(usage.get("completion_tokens") or 0),
         tool_calls=call.tool_calls_dict(),
         envelope=call.envelope.to_dict(memory_text_limit=MEMORY_TEXT_LOG_LIMIT),
+        envelope_hash=envelope_hash,
         error=call.error,
     )
     session.add(row)

@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext, require_actor_context, require_master
+from app.auth import ActorContext, require_actor_context, require_master, require_owner_trust
 from app.db import get_session
 from app.identity import service as identity
-from app.models import Device, RecoveryCode
+from app.models import Device, PasskeyCredential, RecoveryCode
 from app.schemas import (
     DeviceOut,
     IdentityStatusOut,
     OwnerCreateRequest,
     OwnerCreateResponse,
+    PasskeyOut,
+    PasskeyRegisterRequest,
+    PasskeyRegisterResponse,
     RecoveryCodeOut,
     RecoveryCodesResponse,
     RecoveryRedeemRequest,
@@ -71,6 +76,7 @@ async def identity_status(
     owner = await identity.get_owner(session)
     devices_active = 0
     recovery_remaining = 0
+    passkeys_active = 0
     recovery_locked = False
     if owner is not None:
         now = utcnow()
@@ -94,6 +100,14 @@ async def identity_status(
         recovery_remaining = sum(
             1 for c in codes if c.expires_at is None or identity.as_utc(c.expires_at) > now
         )
+        passkeys_active = (
+            await session.execute(
+                select(func.count(PasskeyCredential.id)).where(
+                    PasskeyCredential.owner_id == owner.id,
+                    PasskeyCredential.revoked_at.is_(None),
+                )
+            )
+        ).scalar_one()
         recovery_locked = (
             owner.recovery_locked_until is not None
             and identity.as_utc(owner.recovery_locked_until) > now
@@ -106,6 +120,7 @@ async def identity_status(
         actor=ctx.actor,
         devices_active=devices_active or 0,
         recovery_codes_remaining=recovery_remaining or 0,
+        passkeys_active=passkeys_active or 0,
         recovery_locked=recovery_locked,
     )
 
@@ -200,6 +215,59 @@ async def consume_reverification(
         raise _http(exc) from exc
     await session.commit()
     return ReverificationConsumeResponse(valid=True, purpose=data.purpose)
+
+
+@router.post("/passkeys", response_model=PasskeyRegisterResponse, status_code=201)
+async def register_passkey(
+    data: PasskeyRegisterRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_owner_trust),
+) -> PasskeyRegisterResponse:
+    try:
+        owner = await identity.require_owner(session)
+        row = await identity.register_passkey(
+            session,
+            owner=owner,
+            credential_id=data.credential_id,
+            name=data.name,
+            actor="master" if ctx.is_master else "device",
+            device_id=data.device_id,
+        )
+    except identity.IdentityError as exc:
+        raise _http(exc) from exc
+    await session.commit()
+    return PasskeyRegisterResponse(passkey=PasskeyOut.model_validate(row))
+
+
+@router.get("/passkeys", response_model=list[PasskeyOut])
+async def list_passkeys(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_owner_trust),
+) -> list[PasskeyOut]:
+    owner = await identity.require_owner(session)
+    rows = await identity.list_passkeys(session, owner_id=owner.id)
+    return [PasskeyOut.model_validate(r) for r in rows]
+
+
+@router.delete("/passkeys/{passkey_id}", response_model=PasskeyOut)
+async def revoke_passkey(
+    passkey_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> PasskeyOut:
+    try:
+        owner = await identity.require_owner(session)
+        row = await identity.revoke_passkey(
+            session,
+            passkey_id=passkey_id,
+            owner_id=owner.id,
+            reason="user revoked",
+            actor=actor,
+        )
+    except identity.IdentityError as exc:
+        raise _http(exc) from exc
+    await session.commit()
+    return PasskeyOut.model_validate(row)
 
 
 @router.get("/trust", response_model=TrustMatrixOut)

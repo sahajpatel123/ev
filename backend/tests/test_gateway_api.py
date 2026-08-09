@@ -74,7 +74,11 @@ async def test_gateway_chat_forwards_tools_validates_and_audits(
                         "score": 0.8,
                     }
                 ],
-                "context": {"context_tokens": 42, "context_depth": "standard"},
+                "context": {
+                    "context_tokens": 42,
+                    "context_depth": "standard",
+                    "envelope_hash": "hash-abc-123",
+                },
                 "tools": [
                     {
                         "name": "calculate",
@@ -99,6 +103,7 @@ async def test_gateway_chat_forwards_tools_validates_and_audits(
         assert payload["tool_validation"][0]["status"] == "ok"
         assert payload["envelope"]["memories"][0]["memory_id"] == "mem-1"
         assert payload["envelope"]["strategy"]["mode"] == "technical"
+        assert payload["envelope"]["metadata"]["envelope_hash"] == "hash-abc-123"
         assert payload["latency_ms"] >= 0
 
         resp = await client.get("/v1/gateway/calls", params={"request_id": "api-req-1"})
@@ -107,5 +112,6 @@ async def test_gateway_chat_forwards_tools_validates_and_audits(
         assert rows[0]["tool_calls"][0]["status"] == "ok"
         assert rows[0]["envelope"]["strategy"]["mode"] == "technical"
         assert rows[0]["envelope"]["memories"][0]["memory_id"] == "mem-1"
+        assert rows[0]["envelope_hash"] == "hash-abc-123"
     finally:
         settings.chat_provider = original

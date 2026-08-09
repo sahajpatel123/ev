@@ -113,9 +113,10 @@ Indexes: `(memory_type, is_current)`, `(valid_from, valid_until)`, `fingerprint`
 - `access_log(id, occurred_at, actor, action, endpoint, resource_type,
   resource_ids jsonb, request_id, details jsonb)` — append-only writes.
 - `model_calls(id, request_id, actor, provider, model, status, latency_ms,
-  prompt_tokens, completion_tokens, tool_calls jsonb, envelope jsonb, error,
-  created_at)` — append-only audit of every gateway model call; envelope holds
-  strategy, memory refs, request id, and metadata.
+  prompt_tokens, completion_tokens, tool_calls jsonb, envelope jsonb,
+  envelope_hash, error, created_at)` — append-only audit of every gateway model
+  call; envelope holds strategy, memory refs, request id, and metadata, and
+  `envelope_hash` correlates each call with its filter-ledger decisions.
 
 ### 4.5 EV-Advanced stores (M5)
 

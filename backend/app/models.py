@@ -5,12 +5,12 @@ from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
-    Index,
     JSON,
     Boolean,
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -579,6 +579,7 @@ class ModelCallLog(Base):
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     tool_calls: Mapped[list] = mapped_column(JSONType, default=list)
     envelope: Mapped[dict] = mapped_column(JSONType, default=dict)
+    envelope_hash: Mapped[str | None] = mapped_column(String(64), index=True)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
@@ -1337,3 +1338,31 @@ class TrainingCorpusSnapshot(Base):
     )
     redacted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class WebhookDelivery(Base):
+    """Idempotent webhook delivery ledger (provider retries are exact dedupes).
+
+    A provider may retry the same logical delivery with a fresh timestamp and
+    signature. ``X-EV-Delivery-Id`` lets EV return the original result instead
+    of ingesting a duplicate. The unique (integration, delivery_key) pair makes
+    retries idempotent at the database level.
+    """
+
+    __tablename__ = "webhook_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "integration_id",
+            "delivery_key",
+            name="uq_webhook_deliveries_integration_key",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    integration_id: Mapped[UUID] = mapped_column(ForeignKey("integrations.id"), index=True)
+    delivery_key: Mapped[str] = mapped_column(String(128))
+    event_ids: Mapped[list] = mapped_column(JSONType, default=list)
+    event_count: Mapped[int] = mapped_column(Integer, default=0)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )

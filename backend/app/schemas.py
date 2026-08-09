@@ -450,6 +450,7 @@ class ModelCallOut(BaseModel):
     completion_tokens: int
     tool_calls: list
     envelope: dict
+    envelope_hash: str | None
     error: str | None
     created_at: datetime
 

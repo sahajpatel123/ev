@@ -15,6 +15,7 @@ from app.auth import (
 )
 from app.config import settings
 from app.db import get_session
+from app.identity import service as identity_service
 from app.models import VoiceSession
 from app.schemas import (
     ConsentOut,
@@ -59,6 +60,12 @@ def _guard_session(row: VoiceSession, ctx: ActorContext) -> None:
     """A voice session belongs to the device that woke it — no silent inheritance."""
     if ctx.is_master:
         return
+    if row.owner_id is not None and (ctx.device is None or row.owner_id != ctx.device.owner_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Voice session belongs to a different owner",
+            headers={"X-Error-Code": "session_owner_mismatch"},
+        )
     if ctx.device_id is None or row.device_id != str(ctx.device_id):
         raise HTTPException(
             status_code=403,
@@ -86,6 +93,9 @@ async def enroll_voice(
         )
     except VoiceError as exc:
         raise _http(exc) from exc
+    owner = await identity_service.get_owner(session)
+    if owner is not None:
+        row.owner_id = owner.id
     await session.commit()
     return VoiceEnrollResponse(
         enrollment=VoiceEnrollmentDetailOut.model_validate(row),
@@ -187,6 +197,11 @@ async def wake(
         )
     except VoiceError as exc:
         raise _http(exc) from exc
+    if outcome.session_id is not None:
+        session_row = await session.get(VoiceSession, UUID(outcome.session_id))
+        owner = await identity_service.get_owner(session)
+        if session_row is not None and owner is not None:
+            session_row.owner_id = owner.id
     await session.commit()
     return VoiceWakeResponse(
         session_id=UUID(outcome.session_id) if outcome.session_id else None,

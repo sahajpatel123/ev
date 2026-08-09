@@ -11,8 +11,11 @@ from app.identity.service import (
     get_owner,
     issue_recovery_codes,
     issue_reverification,
+    list_passkeys,
     redeem_recovery_code,
+    register_passkey,
     require_owner,
+    revoke_passkey,
     trust_allows,
 )
 
@@ -27,7 +30,10 @@ __all__ = [
     "get_owner",
     "issue_recovery_codes",
     "issue_reverification",
+    "list_passkeys",
     "redeem_recovery_code",
+    "register_passkey",
     "require_owner",
+    "revoke_passkey",
     "trust_allows",
 ]

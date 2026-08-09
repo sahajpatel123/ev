@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app
-from app.models import VoiceSession
+from app.models import Device, PasskeyCredential, VoiceEnrollment, VoiceSession
 
 
 def _client(headers: dict | None = None) -> httpx.AsyncClient:
@@ -319,3 +320,147 @@ async def test_voice_revoke_requires_reverification_for_device(
         headers={"X-EV-Reverify": proof},
     )
     assert passed.status_code != 403
+
+
+async def test_voice_enrollment_and_session_bound_to_owner(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    owner = await create_owner(client)
+    assert (
+        await client.post(
+            "/v1/training/consent",
+            json={"track": "voice_enrollment"},
+        )
+    ).status_code == 201
+
+    enrolled = await client.post(
+        "/v1/voice/enroll",
+        json={
+            "samples": [
+                {"text": f"owner sample {i}"} for i in range(5)
+            ],
+            "reason": "binding test",
+        },
+    )
+    assert enrolled.status_code == 201, enrolled.text
+
+    enrollment = (
+        await db_session.execute(
+            select(VoiceEnrollment)
+            .where(VoiceEnrollment.is_current.is_(True))
+            .order_by(VoiceEnrollment.version.desc())
+            .limit(1)
+        )
+    ).scalar_one()
+    assert str(enrollment.owner_id) == owner["owner_id"]
+
+    device = await create_device(client, "owner-phone", trust_level="owner")
+    dev_client = _client({"Authorization": f"Bearer {device['token']}"})
+    woke = await dev_client.post(
+        "/v1/voice/wake",
+        json={
+            "device_id": "ignored-client-value",
+            "wake_word": "evie",
+            "text_hint": "hey evie",
+        },
+    )
+    assert woke.status_code == 201, woke.text
+    assert woke.json()["session_id"] is not None
+    session_row = await db_session.get(VoiceSession, UUID(woke.json()["session_id"]))
+    assert session_row is not None
+    assert str(session_row.owner_id) == owner["owner_id"]
+    assert session_row.device_id == str(device["device"]["id"])
+
+
+async def test_voice_session_rejects_device_of_another_owner(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    await create_owner(client)
+    device_a = await create_device(client, "owner-phone", trust_level="owner")
+    device_b = await create_device(client, "unbound-pad")
+
+    # Simulate a future second identity: device B belongs to a different owner.
+    device_b_row = await db_session.get(Device, UUID(device_b["device"]["id"]))
+    device_b_row.owner_id = uuid4()
+    await db_session.commit()
+
+    session = VoiceSession(
+        device_id=str(device_a["device"]["id"]),
+        owner_id=uuid4(),
+        state="awake",
+        owner_verified=True,
+    )
+    db_session.add(session)
+    await db_session.commit()
+
+    b = _client({"Authorization": f"Bearer {device_b['token']}"})
+    denied = await b.get(f"/v1/voice/sessions/{session.id}")
+    assert denied.status_code == 403
+    assert denied.headers.get("X-Error-Code") == "session_owner_mismatch"
+
+
+async def test_passkey_registration_binding_and_revocation(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    owner = await create_owner(client)
+    owner_device = await create_device(client, "owner-phone", trust_level="owner")
+    other_device = await create_device(client, "other-pad")
+
+    registered = await client.post(
+        "/v1/identity/passkeys",
+        json={
+            "credential_id": "passkey-credential-id-0001",
+            "name": "mac touch id",
+            "device_id": owner_device["device"]["id"],
+        },
+    )
+    assert registered.status_code == 201, registered.text
+    passkey_id = registered.json()["passkey"]["id"]
+
+    row = await db_session.get(PasskeyCredential, UUID(passkey_id))
+    assert row is not None
+    assert str(row.owner_id) == owner["owner_id"]
+    assert row.credential_id_hash != "passkey-credential-id-0001"
+
+    listed = (await client.get("/v1/identity/passkeys")).json()
+    assert len(listed) == 1
+    status = (await client.get("/v1/identity/status")).json()
+    assert status["passkeys_active"] == 1
+
+    dup = await client.post(
+        "/v1/identity/passkeys",
+        json={"credential_id": "passkey-credential-id-0001", "name": "dupe"},
+    )
+    assert dup.status_code == 409
+    assert dup.headers.get("X-Error-Code") == "passkey_exists"
+
+    # Simulate a device that belongs to a different owner (future second identity).
+    other_device_row = await db_session.get(Device, UUID(other_device["device"]["id"]))
+    other_device_row.owner_id = uuid4()
+    await db_session.commit()
+
+    wrong_device = await client.post(
+        "/v1/identity/passkeys",
+        json={
+            "credential_id": "passkey-credential-id-0002",
+            "name": "bad",
+            "device_id": other_device["device"]["id"],
+        },
+    )
+    assert wrong_device.status_code == 422
+    assert wrong_device.headers.get("X-Error-Code") == "passkey_device_mismatch"
+
+    plain = _client({"Authorization": f"Bearer {other_device['token']}"})
+    forbidden = await plain.post(
+        "/v1/identity/passkeys",
+        json={"credential_id": "passkey-credential-id-0003", "name": "x"},
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.headers.get("X-Error-Code") == "owner_trust_required"
+
+    revoked = await client.delete(f"/v1/identity/passkeys/{passkey_id}")
+    assert revoked.status_code == 200
+    assert (await client.get("/v1/identity/passkeys")).json() == []

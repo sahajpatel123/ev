@@ -19,7 +19,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ActorContext
-from app.models import Device, OwnerIdentity, RecoveryCode, ReVerificationProof
+from app.models import (
+    Device,
+    OwnerIdentity,
+    PasskeyCredential,
+    RecoveryCode,
+    ReVerificationProof,
+)
 from app.services.access_log import log_access
 from app.utils.text import sha256_hex, utcnow
 
@@ -382,3 +388,102 @@ async def consume_reverification(
         details={"purpose": purpose, "proof_id": str(proof.id)},
     )
     return proof
+
+
+async def register_passkey(
+    session: AsyncSession,
+    *,
+    owner: OwnerIdentity,
+    credential_id: str,
+    name: str,
+    actor: str,
+    device_id: UUID | None = None,
+) -> PasskeyCredential:
+    """Bind a WebAuthn passkey to the owner record (credential ID hashed at rest)."""
+    if len(credential_id) < 8:
+        raise IdentityError(
+            "credential_id looks too short to be a WebAuthn credential",
+            status=422,
+            code="passkey_credential_invalid",
+        )
+    credential_hash = sha256_hex(credential_id)
+    result = await session.execute(
+        select(PasskeyCredential).where(
+            PasskeyCredential.credential_id_hash == credential_hash,
+            PasskeyCredential.revoked_at.is_(None),
+        )
+    )
+    if result.scalar_one_or_none() is not None:
+        raise IdentityError(
+            "Passkey already registered",
+            status=409,
+            code="passkey_exists",
+        )
+    if device_id is not None:
+        device = await session.get(Device, device_id)
+        if device is None or device.owner_id != owner.id:
+            raise IdentityError(
+                "Device does not belong to the owner",
+                status=422,
+                code="passkey_device_mismatch",
+            )
+    row = PasskeyCredential(
+        owner_id=owner.id,
+        device_id=device_id,
+        credential_id_hash=credential_hash,
+        name=name.strip() or "passkey",
+    )
+    session.add(row)
+    await session.flush()
+    await log_access(
+        session,
+        actor=actor,
+        action="passkey_register",
+        endpoint="POST /v1/identity/passkeys",
+        resource_type="passkey",
+        resource_ids=[row.id],
+        details={"owner_id": str(owner.id), "device_id": str(device_id) if device_id else None},
+    )
+    return row
+
+
+async def list_passkeys(
+    session: AsyncSession,
+    *,
+    owner_id: UUID,
+) -> list[PasskeyCredential]:
+    result = await session.execute(
+        select(PasskeyCredential)
+        .where(
+            PasskeyCredential.owner_id == owner_id,
+            PasskeyCredential.revoked_at.is_(None),
+        )
+        .order_by(PasskeyCredential.created_at.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def revoke_passkey(
+    session: AsyncSession,
+    *,
+    passkey_id: UUID,
+    owner_id: UUID,
+    reason: str,
+    actor: str,
+) -> PasskeyCredential:
+    row = await session.get(PasskeyCredential, passkey_id)
+    if row is None or row.owner_id != owner_id:
+        raise IdentityError("Passkey not found", status=404, code="passkey_not_found")
+    now = utcnow()
+    row.revoked_at = now
+    row.revoked_reason = reason
+    await log_access(
+        session,
+        actor=actor,
+        action="passkey_revoke",
+        endpoint=f"DELETE /v1/identity/passkeys/{row.id}",
+        resource_type="passkey",
+        resource_ids=[row.id],
+        details={"owner_id": str(owner_id), "reason": reason},
+    )
+    return row
