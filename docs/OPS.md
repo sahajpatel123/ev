@@ -14,6 +14,7 @@ make migrate      # Alembic forward-only
 make seed         # optional demo corpus
 make test         # pytest suite (fast, offline)
 make eval         # ops evaluation gates -> eval/last-run.json
+make update-contract  # deliberately re-lock eval/contract_v1.json after API changes
 ```
 
 `make eval` must exit 0 on a healthy tree. It is the regression gate for the
