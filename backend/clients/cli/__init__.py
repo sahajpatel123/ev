@@ -78,6 +78,31 @@ def enqueue_capture(payload: dict, idempotency_key: str, queue: Path) -> dict:
     }
 
 
+def enqueue_attachment(
+    payload: dict,
+    file_path: Path,
+    idempotency_key: str,
+    queue: Path,
+) -> dict:
+    """Persist one attachment capture locally for later sync."""
+    queue.mkdir(parents=True, exist_ok=True)
+    record = {
+        "kind": "attachment",
+        "idempotency_key": idempotency_key,
+        "queued_at": datetime.now(UTC).isoformat(),
+        "payload": payload,
+        "file_path": str(file_path),
+    }
+    with _queue_file(queue).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+    return {
+        "queued": True,
+        "idempotency_key": idempotency_key,
+        "queued_at": record["queued_at"],
+        "file": str(file_path),
+    }
+
+
 def list_queue(queue: Path) -> list[dict]:
     path = _queue_file(queue)
     if not path.exists():
@@ -171,6 +196,7 @@ async def attach(
     device_id: str | None = None,
     metadata: dict | None = None,
     client: httpx.AsyncClient | None = None,
+    queue: Path | None = None,
 ) -> dict:
     """Capture a file/share as an attachment event (multipart upload)."""
     file_path = Path(path)
@@ -186,15 +212,37 @@ async def attach(
     }
     if device_id:
         data["device_id"] = device_id
-    with file_path.open("rb") as fh:
-        resp = await c.post(
-            "/v1/attachments",
-            data=data,
-            files={"file": (file_path.name, fh, content_type)},
+    try:
+        with file_path.open("rb") as fh:
+            resp = await c.post(
+                "/v1/attachments",
+                data=data,
+                files={"file": (file_path.name, fh, content_type)},
+            )
+    except httpx.HTTPError:
+        return enqueue_attachment(
+            data,
+            file_path,
+            f"cli-{uuid.uuid4()}",
+            queue or queue_dir(),
         )
     if resp.status_code != 201:
         raise CliError(f"attach failed ({resp.status_code}): {resp.text[:500]}")
     return resp.json()
+
+
+async def _post_attachment(client: httpx.AsyncClient, record: dict) -> httpx.Response:
+    path = Path(record["file_path"])
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    payload = dict(record.get("payload", {}))
+    content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    with path.open("rb") as fh:
+        return await client.post(
+            "/v1/attachments",
+            data=payload,
+            files={"file": (path.name, fh, content_type)},
+        )
 
 
 async def sync_captures(
@@ -213,7 +261,14 @@ async def sync_captures(
     for record in records:
         key = record["idempotency_key"]
         try:
-            resp = await _post_event(client, record["payload"], key)
+            if record.get("kind") == "attachment":
+                resp = await _post_attachment(client, record)
+            else:
+                resp = await _post_event(client, record["payload"], key)
+        except FileNotFoundError as exc:
+            quarantined += 1
+            _quarantine(queue, record, f"attachment file missing: {exc}")
+            continue
         except httpx.HTTPError as exc:
             remaining.append(record)
             errors.append(f"{key}: {exc}")
@@ -640,6 +695,12 @@ async def _run(args: argparse.Namespace) -> int:
                 device_id=args.device_id,
                 client=client,
             )
+        if result.get("queued"):
+            print(
+                f"EV is offline — attachment queued ({result['idempotency_key']}) "
+                "for `ev sync`."
+            )
+            return 0
         attachment = result["attachment"]
         event = result["event"]
         print(
@@ -795,7 +856,16 @@ async def _run(args: argparse.Namespace) -> int:
             return 0
         for record in records:
             payload = record["payload"]
-            print(f"{record['queued_at']}  {record['idempotency_key']}  {payload.get('text', '')[:120]}")
+            if record.get("kind") == "attachment":
+                print(
+                    f"{record['queued_at']}  attachment  {record['idempotency_key']}  "
+                    f"{record.get('file_path', '')}"
+                )
+            else:
+                print(
+                    f"{record['queued_at']}  capture  {record['idempotency_key']}  "
+                    f"{payload.get('text', '')[:120]}"
+                )
         return 0
     if cmd == "sync":
         async with _client() as client:

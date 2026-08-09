@@ -7,7 +7,10 @@ from pathlib import Path
 
 import httpx
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models import Attachment
 from clients.cli import (
     QUEUE_FILENAME,
     attach,
@@ -15,6 +18,7 @@ from clients.cli import (
     capture,
     card,
     correct,
+    enqueue_attachment,
     enqueue_capture,
     export_bundle,
     forget,
@@ -253,6 +257,70 @@ async def test_cli_attach_file_capture_roundtrip(
     resp = await client.get(f"/v1/attachments/{attachment['id']}")
     assert resp.status_code == 200
     assert resp.content == payload
+
+
+async def test_offline_attachment_queues_and_syncs(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    tmp_path: Path,
+) -> None:
+    queue = tmp_path / "queue"
+    file_path = tmp_path / "offline.txt"
+    payload = b"offline attachment bytes"
+    file_path.write_bytes(payload)
+
+    async with offline_client() as offline:
+        result = await attach(file_path, client=offline, queue=queue)
+    assert result["queued"] is True
+    records = list_queue(queue)
+    assert len(records) == 1
+    assert records[0]["kind"] == "attachment"
+    assert records[0]["file_path"] == str(file_path)
+
+    summary = await sync_captures(client, queue)
+    assert summary["synced"] == 1
+    assert summary["remaining"] == 0
+    assert list_queue(queue) == []
+
+    data = await timeline(client=client, limit=100)
+    events = [e for e in data["events"] if e["source"] == "attachment"]
+    assert events and (events[0]["content"] or {}).get("filename") == "offline.txt"
+
+    rows = (await db_session.execute(select(Attachment))).scalars().all()
+    assert len(rows) == 1
+    resp = await client.get(f"/v1/attachments/{rows[0].id}")
+    assert resp.status_code == 200
+    assert resp.content == payload
+
+
+async def test_sync_quarantines_attachment_with_missing_file(
+    client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    queue = tmp_path / "queue"
+    missing = tmp_path / "gone.txt"
+    enqueue_attachment(
+        {
+            "source": "attachment",
+            "event_type": "file",
+            "privacy_level": "normal",
+            "metadata": "{}",
+        },
+        missing,
+        "cli-missing-file",
+        queue,
+    )
+
+    summary = await sync_captures(client, queue)
+    assert summary["quarantined"] == 1
+    assert summary["synced"] == 0
+    assert summary["remaining"] == 0
+    assert list_queue(queue) == []
+
+    quarantine = queue / "quarantine.jsonl"
+    assert quarantine.exists()
+    entries = [json.loads(line) for line in quarantine.read_text().splitlines()]
+    assert "file missing" in entries[0]["reason"]
 
 
 async def test_cli_identity_owner_passkey_lifecycle(client: AsyncClient) -> None:

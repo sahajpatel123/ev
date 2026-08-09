@@ -101,7 +101,10 @@ ev queue | ev sync                               # offline captures -> server
 `ev capture` writes to the local queue when the server is unreachable; every
 queued capture carries an `Idempotency-Key`. `ev sync` replays the queue: 201
 marks synced, 409 drops the duplicate, 422 quarantines the record, and a
-connectivity failure leaves the queue intact for the next attempt.
+connectivity failure leaves the queue intact for the next attempt. `ev attach`
+queues file captures the same way (kind `attachment`, with the local file
+path); `ev sync` uploads them as multipart attachments and quarantines records
+whose file has disappeared.
 
 ### 4.2 Web workbench
 
