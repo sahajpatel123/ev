@@ -48,3 +48,25 @@ def run_live_retention(days: int | None = None) -> dict:
             return result
 
     return asyncio.run(_run())
+
+
+def run_compliance_retention(reason: str = "retention policy") -> dict:
+    """Scheduled/CLI entrypoint for the biometric retention sweep.
+
+    Enforces the configured voiceprint retention window (``EV_RETENTION_*`` /
+    ``EV_REGION``) so revocation and residency rules are applied by the
+    scheduler, not only on demand.
+    """
+    import asyncio
+
+    from app.compliance.erasure import retention_sweep
+
+    async def _run() -> dict:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as session:
+            result = await retention_sweep(session, reason=reason, actor="scheduler")
+            await session.commit()
+            return result
+
+    return asyncio.run(_run())

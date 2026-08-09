@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.compliance.policy import remote_processing_allowed
 from app.config import settings
 from app.ev import conversation
 from app.models import (
@@ -261,6 +262,17 @@ class VoiceRuntime:
                 code="consent_required",
             ) from exc
 
+    def _enforce_remote_voiceprint_gate(self) -> None:
+        """Regional policy: remote encoders need an explicit processing gate."""
+        if settings.voiceprint_provider == "http" and not remote_processing_allowed(
+            "voice_enrollment"
+        ):
+            raise VoiceError(
+                "Remote voiceprint processing is denied by regional policy",
+                status=403,
+                code="remote_processing_denied",
+            )
+
     async def _decrypt_enrollment(self, enrollment: VoiceEnrollment) -> dict:
         if not enrollment.ciphertext or not enrollment.salt:
             raise VoiceError(
@@ -283,6 +295,7 @@ class VoiceRuntime:
 
     async def enroll(self, samples: list[dict], *, reason: str | None = None) -> VoiceEnrollment:
         consent = await self._require_voice_consent()
+        self._enforce_remote_voiceprint_gate()
         if len(samples) < 5:
             raise VoiceError("Enrollment requires at least 5 voice samples", code="enroll_samples")
         payload = await self.verifier.enroll(samples, reason=reason)
@@ -519,6 +532,7 @@ class VoiceRuntime:
     async def verify_samples(self, samples: list[dict]) -> dict:
         """Stateless speaker verification (training API): score vs current voiceprint."""
         await self._require_voice_consent()
+        self._enforce_remote_voiceprint_gate()
         enrollment = await self._current_enrollment()
         if enrollment is None:
             return {
@@ -597,6 +611,7 @@ class VoiceRuntime:
                 message="Wake word not detected",
             )
         await self._require_voice_consent()
+        self._enforce_remote_voiceprint_gate()
 
         existing = await self._active_session(device_id)
         if existing is not None:
@@ -705,6 +720,7 @@ class VoiceRuntime:
                 code="invalid_state",
             )
         await self._require_voice_consent()
+        self._enforce_remote_voiceprint_gate()
         if row.owner_verified:
             raise VoiceError("Session already verified", status=409, code="already_verified")
         if _aware(row.expires_at) is not None and _aware(row.expires_at) < utcnow():

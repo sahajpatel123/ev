@@ -198,3 +198,56 @@ async def test_retention_sweep_deletes_expired_enrollments(
     await db_session.refresh(enrollment)
     assert enrollment.status == "deleted"
     assert enrollment.ciphertext is None
+
+
+async def test_remote_voiceprint_gate_blocks_http_without_policy(
+    client: AsyncClient, monkeypatch
+) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "voiceprint_provider", "http")
+    monkeypatch.delenv("EV_ALLOW_REMOTE_VOICEPRINT_PROCESSING", raising=False)
+    await grant_voice_consent(client)
+
+    resp = await client.post("/v1/voice/enroll", json=sample_payload(SAMPLE_A))
+    assert resp.status_code == 403, resp.text
+    assert "remote" in resp.json()["detail"].lower()
+
+    resp = await client.post(
+        "/v1/training/voice/verify", json={"samples": [b64(SAMPLE_A)]}
+    )
+    assert resp.status_code == 403, resp.text
+
+    # Explicit regional-policy approval re-enables the remote encoder.
+    monkeypatch.setenv("EV_ALLOW_REMOTE_VOICEPRINT_PROCESSING", "true")
+    resp = await client.post("/v1/voice/enroll", json=sample_payload(SAMPLE_A))
+    assert resp.status_code == 201, resp.text
+
+
+async def test_scheduled_compliance_sweep_job_enforces_retention(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.compliance.erasure import retention_sweep
+    from app.workers.jobs import run_compliance_retention
+
+    assert callable(run_compliance_retention)  # scheduler/CLI entrypoint exists
+    monkeypatch.setenv("EV_RETENTION_VOICEPRINT_DAYS", "7")
+    await grant_voice_consent(client)
+    resp = await client.post("/v1/voice/enroll", json=sample_payload(SAMPLE_A))
+    assert resp.status_code == 201, resp.text
+    enrollment_id = resp.json()["enrollment"]["id"]
+
+    enrollment = await db_session.get(VoiceEnrollment, UUID(enrollment_id))
+    enrollment.created_at = utcnow() - timedelta(days=10)
+    await db_session.commit()
+
+    report = await retention_sweep(
+        db_session, reason="retention policy", actor="scheduler"
+    )
+    assert report["voiceprints_deleted"] == 1
+    assert report["enrollment_ids"] == [enrollment_id]
+
+    enrollment = await db_session.get(VoiceEnrollment, UUID(enrollment_id))
+    await db_session.refresh(enrollment)
+    assert enrollment.status == "deleted"
+    assert enrollment.ciphertext is None

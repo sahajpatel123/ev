@@ -29,3 +29,6 @@ migrate:
 
 seed:
 	cd backend && uv run python -m app.scripts.seed
+
+compliance-sweep:
+	cd backend && uv run python -m app.scripts.compliance_sweep
