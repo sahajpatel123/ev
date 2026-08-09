@@ -4,7 +4,7 @@ focus designation, device fleet, recognition log, ops center, digital twin.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
 
@@ -710,18 +710,20 @@ async def ops_card(session: AsyncSession) -> HudOpsCardOut:
     )
 
 
-async def twin(session: AsyncSession) -> TwinOut:
-    rows = list(
-        (
-            await session.execute(
-                select(Memory).where(
-                    Memory.is_current.is_(True),
-                    Memory.redacted.is_(False),
-                    Memory.memory_type.in_(["fact", "preference", "goal", "pattern"]),
-                )
-            )
-        ).scalars().all()
+async def twin(session: AsyncSession, *, as_of: datetime | None = None) -> TwinOut:
+    """Explainable digital twin; ``as_of`` returns the twin at a past moment."""
+    stmt = select(Memory).where(
+        Memory.redacted.is_(False),
+        Memory.memory_type.in_(["fact", "preference", "goal", "pattern"]),
     )
+    if as_of is None:
+        stmt = stmt.where(Memory.is_current.is_(True))
+    else:
+        stmt = stmt.where(
+            Memory.valid_from <= as_of,
+            (Memory.valid_until.is_(None)) | (Memory.valid_until >= as_of),
+        )
+    rows = list((await session.execute(stmt)).scalars().all())
     by_type: dict[str, list[dict]] = {"fact": [], "preference": [], "goal": [], "pattern": []}
     confidences: list[float] = []
     provenance_rows = (

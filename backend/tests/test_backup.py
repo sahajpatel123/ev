@@ -205,3 +205,34 @@ async def test_export_bundle_is_complete(client: AsyncClient) -> None:
     assert "attachments" in bundle
     assert "access_log" in bundle
     assert bundle["access_log"], "export should include the audit trail"
+
+
+async def test_backup_restores_attachment_blobs(client: AsyncClient) -> None:
+    original = b"blob-bytes-that-must-survive-the-drill"
+    upload = await client.post(
+        "/v1/attachments",
+        files={"file": ("secret.txt", original, "text/plain")},
+        data={"event_type": "note"},
+    )
+    assert upload.status_code == 201, upload.text
+    attachment_id = upload.json()["attachment"]["id"]
+
+    resp = await client.post("/v1/backup", json={"passphrase": PASSPHRASE})
+    assert resp.status_code == 201, resp.text
+    backup_path = resp.json()["path"]
+
+    resp = await client.post(
+        "/v1/backup/restore",
+        json={
+            "path": backup_path,
+            "passphrase": PASSPHRASE,
+            "mode": "wipe",
+            "confirm_wipe": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["blobs_restored"] == 1
+
+    download = await client.get(f"/v1/attachments/{attachment_id}")
+    assert download.status_code == 200, download.text
+    assert download.content == original

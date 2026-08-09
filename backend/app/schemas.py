@@ -445,6 +445,7 @@ class BackupRestoreOut(BaseModel):
     events_restored: int
     events_skipped: int
     attachments_restored: int
+    blobs_restored: int = 0
     devices_restored: int
     access_log_restored: int
     backup_counts: dict

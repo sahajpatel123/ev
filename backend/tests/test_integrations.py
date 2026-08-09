@@ -782,6 +782,7 @@ async def test_vault_key_rotation_reencrypts_credentials(
         assert resp.status_code == 200, resp.text
         assert resp.json()["reencrypted_credentials"] == 1
 
+        db_session.expire_all()
         after = (
             await db_session.execute(
                 select(IntegrationCredential).where(

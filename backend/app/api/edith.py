@@ -707,10 +707,11 @@ async def ops_center(
 
 @router.get("/twin", response_model=TwinOut)
 async def digital_twin(
+    as_of: datetime | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> TwinOut:
-    return await edith.twin(session)
+    return await edith.twin(session, as_of=as_of)
 
 
 @router.get("/hud/focus", response_model=HudFocusOut)

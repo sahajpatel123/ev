@@ -19,6 +19,8 @@ database or master key does not decrypt old backups, and vice versa.
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -57,6 +59,7 @@ from app.models import (
     VoiceSession,
 )
 from app.services.rebuild import rebuild_derived_state
+from app.storage.object_store import get_object_store
 from app.utils.text import utcnow
 from app.voice.security import decrypt_payload, encrypt_payload
 
@@ -125,6 +128,14 @@ async def _collect_payload(session: AsyncSession) -> dict:
     attachments = await rows(Attachment)
     devices = await rows(Device)
     access_log = await rows(AccessLog)
+    store = get_object_store()
+    attachment_blobs: list[dict] = []
+    for attachment in attachments:
+        entry = _row_dict(attachment)
+        with contextlib.suppress(Exception):
+            blob = await store.get(attachment.storage_key)
+            entry["blob_b64"] = base64.b64encode(blob).decode("ascii")
+        attachment_blobs.append(entry)
     payload = {
         "schema": BACKUP_SCHEMA,
         "exported_at": utcnow().isoformat(),
@@ -135,7 +146,7 @@ async def _collect_payload(session: AsyncSession) -> dict:
         "conflicts": [_row_dict(c) for c in conflicts],
         "memory_events": [_row_dict(r) for r in memory_events],
         "memory_entities": [_row_dict(r) for r in memory_entities],
-        "attachments": [_row_dict(a) for a in attachments],
+        "attachments": attachment_blobs,
         "devices": [_row_dict(d) for d in devices],
         "access_log": [_row_dict(a) for a in access_log],
         "counts": {
@@ -398,10 +409,13 @@ async def restore_backup(
         for row in (await session.execute(select(Attachment.id))).all()
     }
     attachments_restored = 0
+    restored_blobs = 0
+    store = get_object_store()
     for data in payload.get("attachments", []):
         attachment_id = str(data["id"])
         if attachment_id in existing_attachment_ids:
             continue
+        storage_key = str(data.get("storage_key") or "")
         session.add(
             Attachment(
                 id=UUID(attachment_id),
@@ -409,11 +423,19 @@ async def restore_backup(
                 filename=str(data.get("filename") or "unnamed"),
                 content_type=data.get("content_type"),
                 size_bytes=int(data.get("size_bytes") or 0),
-                storage_key=str(data.get("storage_key") or ""),
+                storage_key=storage_key,
                 sha256=str(data.get("sha256") or ""),
                 created_at=_parse_dt(data.get("created_at")) or utcnow(),
             )
         )
+        if data.get("blob_b64") and storage_key:
+            with contextlib.suppress(Exception):
+                await store.put(
+                    storage_key,
+                    base64.b64decode(str(data["blob_b64"])),
+                    data.get("content_type"),
+                )
+                restored_blobs += 1
         existing_attachment_ids.add(attachment_id)
         attachments_restored += 1
 
@@ -453,6 +475,7 @@ async def restore_backup(
         "events_restored": events_restored,
         "events_skipped": max(0, len(payload.get("events", [])) - events_restored),
         "attachments_restored": attachments_restored,
+        "blobs_restored": restored_blobs,
         "devices_restored": devices_restored,
         "access_log_restored": access_restored,
         "backup_counts": payload.get("counts") or {},

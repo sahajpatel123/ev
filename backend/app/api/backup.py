@@ -128,6 +128,7 @@ async def restore_backup_endpoint(
         events_restored=result["events_restored"],
         events_skipped=result["events_skipped"],
         attachments_restored=result["attachments_restored"],
+        blobs_restored=result.get("blobs_restored", 0),
         devices_restored=result["devices_restored"],
         access_log_restored=result["access_log_restored"],
         backup_counts=result["backup_counts"],

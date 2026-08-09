@@ -707,26 +707,30 @@ async def ingest_webhook(
     secret = await _webhook_secret(session, integration_id)
     webhooks.verify_webhook_signature(secret=secret, body=body, headers=headers)
     delivery_key = webhooks.header_value(headers, "X-EV-Delivery-Id")
-    if delivery_key:
-        if len(delivery_key) > 128 or not delivery_key.strip():
-            raise ValueError("X-EV-Delivery-Id must be 1..128 non-blank characters")
-        prior = (
-            await session.execute(
-                select(WebhookDelivery).where(
-                    WebhookDelivery.integration_id == integration.id,
-                    WebhookDelivery.delivery_key == delivery_key,
-                )
+    if not delivery_key:
+        # Providers without delivery ids get content-fingerprint replay
+        # protection: the same signed body (regardless of header timestamp)
+        # is idempotent.
+        delivery_key = "content:" + sha256_hex(body.decode("utf-8", "replace"))
+    if len(delivery_key) > 160 or not delivery_key.strip():
+        raise ValueError("X-EV-Delivery-Id must be 1..128 non-blank characters")
+    prior = (
+        await session.execute(
+            select(WebhookDelivery).where(
+                WebhookDelivery.integration_id == integration.id,
+                WebhookDelivery.delivery_key == delivery_key,
             )
-        ).scalar_one_or_none()
-        if prior is not None:
-            return WebhookIngestOut(
-                integration_id=integration.id,
-                adapter=adapter.slug,
-                accepted=0,
-                deduplicated=prior.event_count,
-                channel_id=integration.live_channel_id,
-                event_ids=[UUID(value) for value in (prior.event_ids or [])],
-            )
+        )
+    ).scalar_one_or_none()
+    if prior is not None:
+        return WebhookIngestOut(
+            integration_id=integration.id,
+            adapter=adapter.slug,
+            accepted=0,
+            deduplicated=prior.event_count,
+            channel_id=integration.live_channel_id,
+            event_ids=[UUID(value) for value in (prior.event_ids or [])],
+        )
     if not webhooks.webhook_rate_limiter.allow(str(integration_id)):
         raise webhooks.RateLimitError("webhook rate limit exceeded")
     try:
