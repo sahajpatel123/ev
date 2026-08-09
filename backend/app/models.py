@@ -238,6 +238,27 @@ class ReVerificationProof(Base):
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class PasskeyCredential(Base):
+    """A registered WebAuthn passkey bound to the owner record.
+
+    Only the credential ID hash is stored (a high-entropy public identifier,
+    not a secret). Possession is proven later by a WebAuthn challenge-response;
+    this row is the binding anchor so passkeys, voiceprints, and devices all
+    resolve to exactly one owner identity.
+    """
+
+    __tablename__ = "identity_passkeys"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("owner_identities.id"), index=True)
+    device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"), index=True)
+    credential_id_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_reason: Mapped[str | None] = mapped_column(String(128))
+
+
 class Device(Base):
     __tablename__ = "devices"
 
@@ -783,6 +804,9 @@ class VoiceEnrollment(Base):
     __tablename__ = "voice_enrollments"
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("owner_identities.id"), index=True
+    )
     version: Mapped[int] = mapped_column(Integer, default=1, index=True)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     algorithm: Mapped[str] = mapped_column(String(32), default="profile-v1", index=True)
@@ -866,6 +890,9 @@ class VoiceSession(Base):
     __tablename__ = "voice_sessions"
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("owner_identities.id"), index=True
+    )
     device_id: Mapped[str] = mapped_column(String(128), index=True)
     wake_word: Mapped[str] = mapped_column(String(32), default="evie")
     state: Mapped[str] = mapped_column(String(24), default="idle", index=True)
@@ -946,6 +973,14 @@ class RuntimeSession(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     end_reason: Mapped[str | None] = mapped_column(String(128))
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Owner-only activation gates. Set only after speaker verification passes.
+    owner_verified: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    speaker_confidence: Mapped[float | None] = mapped_column(Float)
+    verifier_name: Mapped[str | None] = mapped_column(String(64))
+    wake_word: Mapped[str] = mapped_column(String(32), default="evie")
+    challenge_nonce: Mapped[str | None] = mapped_column(String(128), index=True)
+    challenge_phrase: Mapped[str | None] = mapped_column(String(256))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RuntimeHeartbeat(Base):
@@ -1017,6 +1052,31 @@ class DeadLetter(Base):
         DateTime(timezone=True), default=utcnow, index=True
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RuntimeEvent(Base):
+    """Append-only runtime observability log: every pulse of the runtime.
+
+    Records wake arbitrations, state transitions, heartbeats, action
+    decisions, dead-letter changes, and daemon ticks so failures and lifecycles
+    are auditable and devices can converge on the same runtime state.
+    """
+
+    __tablename__ = "runtime_events"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), index=True, default=utcnow
+    )
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"), index=True)
+    session_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("runtime_sessions.id"), index=True
+    )
+    action_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("approved_actions.id"), index=True
+    )
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
 
 
 # --------------------------------------------------------------------------- #

@@ -256,6 +256,19 @@ class MemoryListResponse(BaseModel):
     total: int
 
 
+class MemoryChangeGroup(BaseModel):
+    version_group: UUID
+    memory_type: str
+    versions: list[MemoryOut]
+
+
+class MemoryChangesResponse(BaseModel):
+    since: datetime
+    memory_type: str | None = None
+    total: int
+    groups: list[MemoryChangeGroup]
+
+
 class ConflictOut(BaseModel):
     id: UUID
     memory_id_a: UUID
@@ -333,6 +346,14 @@ class ImportResponse(BaseModel):
     summaries_created: int
     lessons_created: int
     operations_applied: int
+
+
+class ConsolidationOut(BaseModel):
+    granularity: str
+    period_start: datetime
+    period_end: datetime
+    executed_at: datetime
+    written: list[UUID]
 
 
 # --------------------------------------------------------------------------- #
@@ -740,6 +761,18 @@ class LiveRebuildOut(BaseModel):
     channels_rebuilt: int = 0
     deleted_derived_rows: int = 0
     channels: list[LiveChannelDerivedOut] = Field(default_factory=list)
+
+
+class LiveRetentionOut(BaseModel):
+    completed_at: datetime
+    days: int
+    cutoff: datetime
+    dry_run: bool
+    events_scanned: int = 0
+    events_deleted: int = 0
+    events_kept_latest: int = 0
+    events_protected: int = 0
+    channels_updated: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -1701,11 +1734,31 @@ class WakeArbitrationOut(BaseModel):
     session_id: UUID | None = None
     blocked: bool = False
     block_reason: str | None = None
+    challenge_nonce: str | None = None
+    challenge_phrase: str | None = None
 
 
 class RuntimeTransitionRequest(BaseModel):
     to_state: Literal["verifying", "awake", "processing", "responding", "follow_up", "idle"]
     reason: str | None = None
+
+
+class RuntimeVerifyRequest(BaseModel):
+    session_id: UUID
+    nonce: str = Field(min_length=1, max_length=256)
+    samples: list[str] = Field(min_length=1, max_length=20)
+    phrase: str | None = Field(default=None, max_length=512)
+    liveness_proof: str | None = None
+    live_score: float | None = Field(default=None, ge=0, le=1)
+    audio_sha256: str | None = Field(default=None, max_length=64)
+
+
+class RuntimeVerifyResponse(BaseModel):
+    session_id: UUID
+    verified: bool
+    state: str
+    confidence: float = 0.0
+    reason: str = ""
 
 
 class RuntimeSessionOut(BaseModel):
@@ -2276,3 +2329,8 @@ class PersonalizationCalibrateResponse(BaseModel):
 class PersonalizationRollbackRequest(BaseModel):
     target_version: int = Field(ge=1)
     reason: str = "rollback personalization calibration"
+
+
+class PersonalizationDeleteResponse(BaseModel):
+    deleted: int
+    applied: bool = False

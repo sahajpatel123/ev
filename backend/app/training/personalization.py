@@ -23,7 +23,6 @@ from app.models import (
 )
 from app.services.access_log import log_access
 from app.training.consent import active_consent, require_consent
-from app.utils.text import utcnow
 
 TRACK = "life_data_personalization"
 

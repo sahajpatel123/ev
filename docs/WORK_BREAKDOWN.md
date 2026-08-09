@@ -138,46 +138,56 @@ without EVIE changing. Success means no ungrounded personal claim survives, ever
 HUD contract renders perfectly, every filter decision is recorded in a ledger,
 and the filter measurably gets better from the user's corrections.
 
-### 3.1 Input filter — **Design**
+### 3.1 Input filter — **Built**
 Every inbound utterance passes IdentityGate, InputGuard (injection/PII/privacy
 caps), intent/state compile, MemoryBroker, and ContextCompiler before reaching
-the provider. Direction: implement as a wrapper in the chat/voice pipeline with
-per-stage logs.
+the provider. Implemented in `app/filter/input_filter.py` and wired into the
+chat pipeline: unverified speakers block, injection attempts block/flag,
+credentials are redacted from the provider-bound message with
+`never_send_to_model` privacy, and every decision is ledgered. Voice-enrollment
+identity remains future work (see §5).
 
-### 3.2 Output filter — **Design**
+### 3.2 Output filter — **Partial**
 Structural validation → grounding audit → persona/style → safety → critic loop →
-finalize. Direction: implement deterministic stages first (contracts, length,
-redaction, entity grounding), then the critic pass.
+finalize. Deterministic stages are implemented in `app/filter/output_filter.py`
+(HUD contract validation/repair, claim grounding audit, persona/length,
+safety redaction, rule-based critic loop, honest fallback). A provider-backed
+LLM critic is the remaining gap.
 
-### 3.3 Grounding audit — **Design**
+### 3.3 Grounding audit — **Built**
 Claims are checked against the memories actually in context (entity/date/number
-overlap, semantic similarity, optional critic). Direction: build a claim
-extractor + verifier with an eval corpus of seeded facts.
+overlap, dates, significant tokens); unsupported personal claims are removed
+before the response is finalized, and the audit is reported per claim.
+Semantic-similarity verification and a seeded eval corpus are future additions.
 
-### 3.4 Persona & style enforcement — **Design**
+### 3.4 Persona & style enforcement — **Built**
 Mode, length ±40%, directness, assertiveness ceiling, challenge-evidence gating,
-and urgency conciseness are enforced after generation. Direction: rule-based
-checks now; learned voice profile later.
+and urgency conciseness are enforced after generation with rule-based checks;
+a learned voice profile is future work.
 
-### 3.5 Safety & privacy filter — **Design**
+### 3.5 Safety & privacy filter — **Built**
 Output-side secret/PII redaction, toxicity, manipulation, dependency nudging,
-jailbreak leaks. Direction: deterministic detectors first; local model for
-semantic checks later.
+jailbreak leaks — deterministic detectors implemented; a local model for
+semantic checks is future work.
 
-### 3.6 Critic & refine loop — **Design**
+### 3.6 Critic & refine loop — **Partial**
 LLM-as-judge rubric (grounding, persona, actionability, honesty, contract) with
-max two refinement iterations and staged trust. Direction: same-model critic
-first; separate local critic for privacy; learned feedback model after ledger
-data accumulates.
+max two refinement iterations and staged trust. A deterministic rubric judge is
+implemented; same-model critic first, then a separate local critic for privacy,
+then a learned feedback model after ledger data accumulates.
 
-### 3.7 Filter ledger — **Design**
+### 3.7 Filter ledger — **Built**
 Every filter decision (draft, edits, scores, flags, iterations, cost) is
-recorded. Direction: new table + aggregates that feed thresholds and the
-self-evaluation engine.
+recorded in `filter_ledger` with stage/action/severity/detail/envelope hash,
+exposed via `/v1/filter/ledger` and `/v1/filter/ledger/aggregate`, and ready to
+feed thresholds and the self-evaluation engine.
 
-### 3.8 Filter-as-API & replay tests — **Design**
-`/v1/filter` for tests/CLI plus snapshot replay of historical drafts. Direction:
-build after deterministic stages; use for regression and tuning.
+### 3.8 Filter-as-API & replay tests — **Built**
+`POST /v1/filter/evaluate` runs the input filter on a message and the output
+filter on a draft (or the full provider pipeline when no draft is given),
+records everything to the ledger, and is covered by
+`tests/test_intelligence_filter.py`. Snapshot replay of historical drafts is a
+future addition.
 
 ### 3.9 Streaming refinement — **Design**
 Buffered-final first: stream raw text, then emit a `refined` event; chunk-filter
@@ -359,10 +369,14 @@ Implemented: consent-gated multi-sample enrollment, encrypted/versioned
 voiceprints, re-enrollment chains, rollback, revocation, data-subject deletion,
 and portable export (`/v1/voice/*`, `/v1/training/*`).
 
-### 7.2 Life-data personalization — **Partial**
+### 7.2 Life-data personalization — **Built**
 Importance scoring, patterns, preferences, and self-evaluation already
 personalize retrieval. Direction: add recommendation-follow/ignore learning and
-per-domain calibration.
+per-domain calibration. Implemented: consent-gated, evidence-backed importance
+calibration — per-memory-type multipliers derived from logged corrections,
+usefulness, and recommendation-follow signals, versioned for rollback, applied
+transparently by hybrid retrieval, and fully redactable on request
+(`/v1/training/personalization/*`).
 
 ### 7.3 Adapter fine-tuning (LoRA) — **Future**
 Train an EVIE adapter on filtered responses + user corrections to encode voice,
@@ -417,7 +431,10 @@ implement collectors on each OS; user manages collection.
 Live events are immutable with consumed flags; `POST /v1/live/rebuild`
 deterministically drops and replays the per-channel derived layer
 (`live_derived_state`) from the recorded stream, marking every folded event
-consumed. Direction: retention policy and scheduled rebuild jobs.
+consumed. `POST /v1/live/retention` enforces the configured window (dry-run
+first; only consumed events past the window, latest and provenance-linked
+events always kept). Direction: scheduled rebuild/retention jobs and
+real-time streaming (WebSocket/SSE).
 
 ---
 
@@ -512,12 +529,16 @@ User-tagged labels over user-owned media/live events, linked to entities.
 Direction: on-device vision model suggestions, always user-confirmed.
 
 ### 10.5 Digital twin — **Built**
-Summary of facts, preferences, goals, patterns, relationship, health. Direction:
-versioned twin snapshots and "what do you know about me?" explainability.
+Summary of facts, preferences, goals, patterns, relationship, health, with
+per-item provenance (`source_event_ids`, `updated_at`, `version`) linking every
+twin claim to its source events and audit trail. Direction: versioned twin
+snapshots and "what do you know about me?" time-travel views.
 
 ### 10.6 HUD schemas — **Built**
-`ev.hud.card.v1`, `briefing.v1`, `focus.v1`, `route.v1`. Direction: render on
-Watch/widget/AR and add alert schema.
+`ev.hud.card.v1`, `briefing.v1`, `focus.v1`, `route.v1`, `alert.v1`, enforced by
+a central `HUD_SCHEMAS` registry (`validate_hud`) that every surface output
+passes through. `GET /v1/hud/alerts` renders pending alerts as strict HUD cards.
+Direction: render on Watch/widget/AR.
 
 ### 10.7 Tactical mode — **Built**
 Pre-event briefings with risks, options, decision history. Direction: trigger
@@ -581,6 +602,16 @@ privacy pass-through.
 ### 11.4 Sandboxed code/file tools — **Future**
 Read/write/run in sandboxes with per-call approval and versioned drafts. Direction:
 design approval matrix and audit trail.
+
+### 11.5 Action dispatcher & rollback — **Built**
+Write-side actions are formally declared capabilities with payload schemas,
+output shapes, permission scopes, approval requirements, read-only boundaries,
+and undoability markers (`GET /v1/runtime/action-specs`). The runtime rejects
+unknown action types and malformed payloads, routes every action through the
+permission matrix, logs route/decide/execute/fail/rollback to the access log,
+and rolls back executed undoable actions (`POST /v1/runtime/actions/{id}/rollback`);
+routine rollback also transitions the linked action. Direction: add real
+web/file/code/API adapters behind the same registry.
 
 ---
 
@@ -710,12 +741,15 @@ world, never surveils strangers, and never sends raw content without permission.
 Success means "what does this photo show?" and "what was I working on?" are
 answered from real perception with provenance.
 
-### 15.1 Vision understanding — **Future**
-EVIE must interpret images/video it is given (photos, screenshots, documents):
-OCR, scene/object recognition, and face-free identity hints, always over
-user-owned media and user-confirmed (recognition log). Direction: add an adapter
-over a vision-capable provider or a local model, with the same
-`never_send_to_model` boundary and confirmation flow.
+### 15.1 Vision understanding — **Built**
+EVIE interprets images/documents it is given over user-owned media:
+`POST /v1/vision/analyze` runs a permissioned analysis over an attachment,
+prefers on-device derived text (OCR/extraction) over raw media, sends raw
+images only with explicit permission and a vision-capable provider, records
+every perception with provenance (attachment + source event + provider +
+`raw_sent` flag), and writes model-suggested labels to the recognition log as
+pending (`source="model"`) until the user confirms them. Direction: add
+on-device OCR adapters and face-free identity hints.
 
 ### 15.2 Screen awareness — **Partial**
 The live screen channel yields derived context (active app, document/code summary)
@@ -736,10 +770,12 @@ coordinates/addresses in model-facing context), surfaced as `location_presence`
 EV Sense signals and route-briefing context. Direction: add opt-in on-device
 collectors and route-briefing integration.
 
-### 15.5 Multimodal provider input — **Future**
-When the user explicitly shares an image/audio snippet, the gateway must support
-multimodal provider payloads under the same permission rules. Direction: extend
-the gateway contract and filter envelope to carry typed media references.
+### 15.5 Multimodal provider input — **Built**
+The provider contract carries typed media parts (`ChatMessage.media` with
+`MediaPart`), the OpenAI-compatible provider renders image/audio/text content
+arrays, and providers advertise `supports_media` so raw transmission is never
+attempted on a text-only provider. Same permission and privacy rules apply.
+Direction: extend the filter envelope to audit media references on every call.
 
 ---
 
@@ -813,13 +849,19 @@ Export, correction, and deletion must cover voiceprints, training snapshots, and
 ledger data — not just events/memories. Direction: extend the existing export and
 tombstone paths to every new store.
 
-### 17.4 Regional compliance — **Design**
-GDPR, EU AI Act, BIPA, and data-residency rules differ by region. Direction:
-configuration for residency, retention windows, and disclosure requirements.
+### 17.4 Regional compliance — **Built (partial)**
+GDPR, EU AI Act, BIPA, and data-residency rules differ by region. Implemented as
+`app/compliance/policy.py` + `POST /v1/compliance/retention/sweep`: region,
+retention windows, residency mode, remote-processing gates, and disclosure text
+are all configuration-driven (`EV_REGION`, `EV_RETENTION_*`, `EV_RESIDENCY_MODE`,
+`EV_ALLOW_REMOTE_*`), enforced at erasure/sweep time rather than hard-coded.
+Direction: per-account policy rows and scheduled sweep jobs.
 
-### 17.5 Transparency center — **Design**
-An in-app page explaining exactly what is stored, what is trained, and what leaves
-the machine. Direction: build alongside onboarding; source of truth for trust.
+### 17.5 Transparency center — **Built (partial)**
+Implemented as `GET /v1/compliance/transparency`: a machine-readable report of
+what is stored (with retention and deletion paths), what is trained (per-track
+consent status), what is processed, and what is transmitted (provider, endpoint,
+remote flag). Direction: render as an in-app page alongside onboarding.
 
 ---
 

@@ -16,6 +16,10 @@ from app.schemas import (
     ConsentGrant,
     ConsentOut,
     ConsentRevoke,
+    PersonalizationCalibrateResponse,
+    PersonalizationCalibrationOut,
+    PersonalizationDeleteResponse,
+    PersonalizationRollbackRequest,
     TrainingTrack,
     VoiceDeleteRequest,
     VoiceEnrollmentDetailOut,
@@ -29,6 +33,8 @@ from app.schemas import (
 )
 from app.services.access_log import log_access
 from app.training import consent as consent_service
+from app.training import personalization as personalization_service
+from app.training.consent import ConsentRequiredError
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
 
@@ -47,6 +53,18 @@ def _voice_http(exc: VoiceError) -> HTTPException:
             headers={"X-Error-Code": exc.code},
         )
     return HTTPException(status_code=exc.status, detail=exc.message, headers={"X-Error-Code": exc.code})
+
+
+def _personalization_http(exc: Exception) -> HTTPException:
+    if isinstance(exc, ConsentRequiredError):
+        return HTTPException(
+            status_code=403,
+            detail="Consent required: grant life_data_personalization consent before calibrating",
+            headers={"X-Error-Code": "consent_required"},
+        )
+    if isinstance(exc, KeyError):
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=422, detail=str(exc))
 
 
 @router.post("/consent", response_model=ConsentOut, status_code=201)
@@ -247,3 +265,81 @@ async def voice_export(
         ],
         voiceprints=[VoicePrintExportOut(**vp) for vp in data["voiceprints"]],
     )
+
+
+# --------------------------------------------------------------------------- #
+# Life-data personalization — evidence-backed importance/retrieval calibration
+# --------------------------------------------------------------------------- #
+
+
+@router.post(
+    "/personalization/calibrate",
+    response_model=PersonalizationCalibrateResponse,
+    status_code=201,
+)
+async def personalization_calibrate(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> PersonalizationCalibrateResponse:
+    try:
+        row = await personalization_service.calibrate(session, actor=actor)
+        evidence = row.evidence
+    except ConsentRequiredError as exc:
+        raise _personalization_http(exc) from exc
+    await session.commit()
+    return PersonalizationCalibrateResponse(
+        calibration=PersonalizationCalibrationOut.model_validate(row),
+        evidence=evidence,
+        applied=bool(row.calibrations),
+    )
+
+
+@router.get("/personalization/calibration", response_model=PersonalizationCalibrationOut | None)
+async def personalization_calibration(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> PersonalizationCalibrationOut | None:
+    row = await personalization_service.current_calibration(session)
+    if row is None:
+        return None
+    return PersonalizationCalibrationOut.model_validate(row)
+
+
+@router.get("/personalization/history", response_model=list[PersonalizationCalibrationOut])
+async def personalization_history(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[PersonalizationCalibrationOut]:
+    rows = await personalization_service.list_calibrations(session)
+    return [PersonalizationCalibrationOut.model_validate(r) for r in rows]
+
+
+@router.post("/personalization/rollback", response_model=PersonalizationCalibrationOut)
+async def personalization_rollback(
+    data: PersonalizationRollbackRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> PersonalizationCalibrationOut:
+    try:
+        row = await personalization_service.rollback(
+            session,
+            target_version=data.target_version,
+            actor=actor,
+            reason=data.reason,
+        )
+    except (ConsentRequiredError, KeyError) as exc:
+        raise _personalization_http(exc) from exc
+    await session.commit()
+    return PersonalizationCalibrationOut.model_validate(row)
+
+
+@router.post("/personalization/delete", response_model=PersonalizationDeleteResponse)
+async def personalization_delete(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> PersonalizationDeleteResponse:
+    deleted = await personalization_service.delete_all(
+        session, actor=actor, reason="user deleted personalization data"
+    )
+    await session.commit()
+    return PersonalizationDeleteResponse(deleted=deleted, applied=False)
