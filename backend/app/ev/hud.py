@@ -7,6 +7,8 @@ the exact same field contract.
 
 from __future__ import annotations
 
+from typing import Protocol, cast
+
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,12 +19,18 @@ from app.ev.user_state import build_user_state
 from app.models import WatchlistItem
 from app.schemas import (
     HudAlertOut,
+    HudAlertTier,
     HudCardOut,
     HudFocusOut,
     RouteBriefingOut,
     TacticalBriefOut,
 )
 from app.utils.text import utcnow
+
+
+class _HudPayload(Protocol):
+    schema_version: str
+
 
 HUD_SCHEMAS: dict[str, type[BaseModel]] = {
     "ev.hud.card.v1": HudCardOut,
@@ -33,7 +41,7 @@ HUD_SCHEMAS: dict[str, type[BaseModel]] = {
 }
 
 
-def validate_hud(payload: dict | BaseModel) -> tuple[str, BaseModel]:
+def validate_hud(payload: dict | _HudPayload) -> tuple[str, BaseModel]:
     """Validate any HUD payload against its declared schema version."""
     schema_version = (
         payload["schema_version"] if isinstance(payload, dict) else payload.schema_version
@@ -98,7 +106,7 @@ async def alerts_card(session: AsyncSession) -> list[HudAlertOut]:
             title=alert.title,
             body=alert.body,
             priority=alert.priority,
-            tier=alert.tier,
+            tier=cast(HudAlertTier, alert.tier),
             kind=alert.kind,
             rationale=alert.rationale,
             meta={

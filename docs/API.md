@@ -45,6 +45,7 @@
 | POST | `/v1/fleet/tasks/{id}/accept` · `/start` · `/complete` · `/fail` · `/cancel` | Device-scoped task lifecycle | FR-FLEET |
 | GET | `/v1/commands` · `/v1/commands/{id}` | Auditable E.D.I.T.H. command ledger | FR-SEC-XX |
 | GET | `/v1/ops/center` · `/v1/twin` · `/v1/hud/focus` | Ops center / digital twin / HUD overlay | FR-HUD |
+| GET | `/v1/hud/card` · `/v1/hud/alerts` · `/v1/hud/route` | Strict HUD surface schemas (`ev.hud.*.v1`) | FR-HUD-01 |
 | POST | `/v1/gateway/chat` · `/v1/gateway/tools` · GET `/v1/gateway/models` | Internal gateway (model-agnostic) | FR-SYS-03 |
 | GET | `/v1/integrations/catalog` · `/v1/integrations` · POST `/v1/integrations` | Adapter catalog + install | FR-INT-01 |
 | GET/PATCH/DELETE | `/v1/integrations/{id}` · `/v1/integrations/{id}/scopes` | Integration lifecycle + scope changes | FR-INT-02 |
