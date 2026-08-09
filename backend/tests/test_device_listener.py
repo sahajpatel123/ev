@@ -105,7 +105,10 @@ async def test_listener_voice_cycle_runs_full_lifecycle() -> None:
         resp = await client.post(
             "/v1/voice/enroll",
             json={
-                "samples": [{"audio_b64": b64(SAMPLE_A)} for _ in range(5)],
+                "samples": [
+                    {"audio_b64": b64(SAMPLE_A), "liveness_proof": "live"}
+                    for _ in range(5)
+                ],
                 "reason": "listener test",
             },
         )

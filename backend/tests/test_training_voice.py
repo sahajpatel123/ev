@@ -21,7 +21,10 @@ def b64(data: bytes) -> str:
 
 def sample_payload(sample: bytes, count: int = 5) -> dict:
     return {
-        "samples": [{"audio_b64": b64(sample)} for _ in range(count)],
+        "samples": [
+            {"audio_b64": b64(sample), "liveness_proof": "live"}
+            for _ in range(count)
+        ],
         "reason": "test enrollment",
     }
 
@@ -42,6 +45,25 @@ async def test_voice_enrollment_requires_consent(client: AsyncClient) -> None:
     resp = await client.post("/v1/voice/enroll", json=sample_payload(SAMPLE_A))
     assert resp.status_code == 403
     assert "consent" in resp.json()["detail"].lower()
+
+
+async def test_voice_enrollment_rejects_non_live_samples(
+    client: AsyncClient,
+) -> None:
+    await grant_voice_consent(client)
+    resp = await client.post(
+        "/v1/voice/enroll",
+        json={
+            "samples": [
+                {"audio_b64": b64(SAMPLE_A), "liveness_proof": "replay"}
+                for _ in range(5)
+            ],
+            "reason": "replay enrollment attempt",
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.headers.get("x-error-code") == "enroll_liveness"
+    assert "liveness" in resp.json()["detail"].lower()
 
 
 async def test_voice_verify_requires_consent(client: AsyncClient) -> None:

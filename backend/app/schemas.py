@@ -2285,6 +2285,8 @@ class VoiceSampleIn(BaseModel):
     text: str | None = Field(default=None, max_length=512)
     features: list[float] | None = None
     audio_b64: str | None = None
+    liveness_proof: Literal["live", "replay", "synthetic", "converted"] | None = None
+    live_score: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class VoiceEnrollmentCreate(BaseModel):

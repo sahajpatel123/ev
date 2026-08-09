@@ -36,7 +36,10 @@ async def enroll_owner(client: AsyncClient) -> None:
     resp = await client.post(
         "/v1/voice/enroll",
         json={
-            "samples": [{"audio_b64": sample} for sample in owner_samples()],
+            "samples": [
+                {"audio_b64": sample, "liveness_proof": "live"}
+                for sample in owner_samples()
+            ],
             "reason": "lifecycle test enrollment",
         },
     )

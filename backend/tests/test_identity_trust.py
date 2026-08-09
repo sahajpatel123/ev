@@ -340,7 +340,8 @@ async def test_voice_enrollment_and_session_bound_to_owner(
         "/v1/voice/enroll",
         json={
             "samples": [
-                {"text": f"owner sample {i}"} for i in range(5)
+                {"text": f"owner sample {i}", "liveness_proof": "live"}
+                for i in range(5)
             ],
             "reason": "binding test",
         },

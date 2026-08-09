@@ -384,12 +384,14 @@ spoken to — always evidence-backed, always consent-gated, always rollback-able
 Success means personalization improves measured outcomes (fewer corrections,
 better predictions) without ever leaking or misusing the training data.
 
-### 7.1 Voice enrollment training — **Partial**
+### 7.1 Voice enrollment training — **Built**
 Samples → voiceprints + liveness calibration; "training" here is enrollment, not
 LLM weight updates. Direction: multi-sample enrollment, versioning, revocation.
-Implemented: consent-gated multi-sample enrollment, encrypted/versioned
-voiceprints, re-enrollment chains, rollback, revocation, data-subject deletion,
-and portable export (`/v1/voice/*`, `/v1/training/*`).
+Implemented: consent-gated multi-sample enrollment with per-sample liveness
+gating (replay/synthetic/converted samples are rejected before a voiceprint is
+created), encrypted/versioned voiceprints, re-enrollment chains, rollback,
+revocation, data-subject deletion, and portable export (`/v1/voice/*`,
+`/v1/training/*`).
 
 ### 7.2 Life-data personalization — **Built**
 Importance scoring, patterns, preferences, and self-evaluation already
@@ -426,8 +428,10 @@ sweeps (`/v1/training/corpus/*`).
 ### 7.5 Filter self-improvement — **Built**
 Ledger aggregates (defect precision/recall, over-refinement, correction rate)
 recalibrate thresholds monthly, and an explicitly applied recalibration
-becomes the live filter policy. Direction: automate monthly application and
-reporting. Implemented: consent-gated, versioned recalibration reports from
+becomes the live filter policy. The runtime daemon automatically writes one
+consent-gated report per calendar month (`/v1/training/filter/*` still gates
+application); thresholds are proposed, never silently applied. Implemented:
+consent-gated, versioned recalibration reports from
 ledger aggregates (blocks, redactions, repairs, over-refinement) plus user
 correction/usefulness signals, deterministic threshold proposals, an apply
 endpoint that stores the concrete runtime policy (critic iteration cap,

@@ -143,7 +143,10 @@ async def test_voice_utterance_with_http_asr_and_tts(
     resp = await client_post(
         "/v1/voice/enroll",
         {
-            "samples": [{"audio_b64": b64(SAMPLE_A)} for _ in range(5)],
+            "samples": [
+                {"audio_b64": b64(SAMPLE_A), "liveness_proof": "live"}
+                for _ in range(5)
+            ],
             "reason": "provider test",
         },
     )

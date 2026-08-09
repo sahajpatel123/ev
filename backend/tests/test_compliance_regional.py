@@ -25,7 +25,10 @@ def b64(data: bytes) -> str:
 
 def sample_payload(sample: bytes, count: int = 5) -> dict:
     return {
-        "samples": [{"audio_b64": b64(sample)} for _ in range(count)],
+        "samples": [
+            {"audio_b64": b64(sample), "liveness_proof": "live"}
+            for _ in range(count)
+        ],
         "reason": "compliance test enrollment",
     }
 

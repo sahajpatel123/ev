@@ -308,6 +308,14 @@ class VoiceRuntime:
         self._enforce_remote_voiceprint_gate()
         if len(samples) < 5:
             raise VoiceError("Enrollment requires at least 5 voice samples", code="enroll_samples")
+        for index, sample in enumerate(samples, start=1):
+            live_ok, live_conf, live_reason = await self.liveness.check(sample=sample)
+            if not live_ok:
+                raise VoiceError(
+                    f"Enrollment sample {index} failed liveness: {live_reason}",
+                    status=422,
+                    code="enroll_liveness",
+                )
         payload = await self.verifier.enroll(samples, reason=reason)
         ciphertext, salt = encrypt_payload(payload, master_key=self.master_key)
         current = await self._current_enrollment()
