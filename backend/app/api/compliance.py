@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor, require_master
+from app.auth import require_actor, require_master, require_owner_trust
 from app.compliance.erasure import erase_biometric_data, retention_sweep
 from app.compliance.policy import policy_summary
 from app.compliance.schemas import (
+    AccessLogEntryOut,
+    AccessLogPageOut,
     CompliancePolicyOut,
     ErasureOut,
     ErasureRequest,
@@ -18,6 +21,8 @@ from app.compliance.schemas import (
 )
 from app.compliance.transparency import transparency_report
 from app.db import get_session
+from app.models import AccessLog
+from app.services.access_log import log_access
 from app.utils.text import utcnow
 
 router = APIRouter(prefix="/v1/compliance", tags=["compliance"])
@@ -65,4 +70,64 @@ async def retention_sweep_endpoint(
         corpus_snapshots_redacted=result["corpus_snapshots_redacted"],
         access_logs_deleted=result["access_logs_deleted"],
         policy_retention_days=result["policy_retention_days"],
+    )
+
+
+@router.get("/access-log", response_model=AccessLogPageOut)
+async def access_log_page(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    actor: str | None = Query(default=None, max_length=128),
+    action: str | None = Query(default=None, max_length=32),
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    session: AsyncSession = Depends(get_session),
+    ctx=Depends(require_owner_trust),
+) -> AccessLogPageOut:
+    """Export the access log itself: paged, filterable, owner-trusted."""
+    from datetime import datetime
+
+    filters = []
+    if actor:
+        filters.append(AccessLog.actor == actor)
+    if action:
+        filters.append(AccessLog.action == action)
+    if since:
+        filters.append(AccessLog.occurred_at >= datetime.fromisoformat(since))
+    if until:
+        filters.append(AccessLog.occurred_at <= datetime.fromisoformat(until))
+
+    total = (
+        await session.execute(
+            select(func.count(AccessLog.id)).where(*filters)
+        )
+    ).scalar_one()
+    rows = list(
+        (
+            await session.execute(
+                select(AccessLog)
+                .where(*filters)
+                .order_by(AccessLog.occurred_at.desc(), AccessLog.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    await log_access(
+        session,
+        actor=ctx.actor,
+        action="access_log.read",
+        endpoint="GET /v1/compliance/access-log",
+        resource_type="access_log",
+        resource_ids=[],
+        details={"limit": limit, "offset": offset, "actor": actor, "action": action},
+    )
+    await session.commit()
+    return AccessLogPageOut(
+        logs=[AccessLogEntryOut.model_validate(row) for row in rows],
+        total=int(total),
+        limit=limit,
+        offset=offset,
     )
