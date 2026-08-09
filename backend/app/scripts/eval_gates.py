@@ -549,6 +549,127 @@ async def run_latency_gate() -> GateResult:
     )
 
 
+async def run_restore_gate() -> GateResult:
+    """M4 restore-drill gate: backup → verify → mutate → wipe → restore.
+
+    Exercises the real API path (``/v1/backup``) so the documented exit gate
+    "restore drill verified" is a reproducible, measured check rather than a
+    manual procedure.
+    """
+
+    started = time.perf_counter()
+    import httpx
+
+    from app.config import settings
+    from app.main import app
+
+    passphrase = "eval-restore-passphrase-123"
+    checks: list[Check] = []
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {settings.master_key}"},
+        timeout=20.0,
+    ) as client:
+        seed = await client.post(
+            "/v1/events",
+            json={
+                "source": "eval",
+                "event_type": "note",
+                "text": "restore drill original event",
+                "privacy_level": "normal",
+            },
+        )
+        checks.append(
+            _check("seed_event_created", seed.status_code == 201, f"HTTP {seed.status_code}")
+        )
+
+        backup = await client.post("/v1/backup", json={"passphrase": passphrase})
+        checks.append(
+            _check(
+                "backup_created",
+                backup.status_code == 201,
+                f"HTTP {backup.status_code}: {backup.text[:200]}",
+            )
+        )
+        if backup.status_code != 201:
+            return _gate("restore_drill", checks, int((time.perf_counter() - started) * 1000))
+        backup_path = backup.json()["path"]
+        events_at_backup = backup.json()["counts"].get("events", 0)
+
+        verify = await client.post(
+            "/v1/backup/verify",
+            json={"path": backup_path, "passphrase": passphrase},
+        )
+        body = verify.json()
+        checks.append(
+            _check(
+                "backup_verified",
+                verify.status_code == 200 and body.get("valid") and body.get("checksum_match"),
+                f"valid={body.get('valid')}, checksum={body.get('checksum_match')}",
+            )
+        )
+
+        mutation = await client.post(
+            "/v1/events",
+            json={
+                "source": "eval",
+                "event_type": "note",
+                "text": "post-backup mutation",
+                "privacy_level": "normal",
+            },
+        )
+        checks.append(
+            _check("mutation_created", mutation.status_code == 201, f"HTTP {mutation.status_code}")
+        )
+
+        restore = await client.post(
+            "/v1/backup/restore",
+            json={
+                "path": backup_path,
+                "passphrase": passphrase,
+                "mode": "wipe",
+                "confirm_wipe": True,
+            },
+        )
+        restore_body = restore.json()
+        checks.append(
+            _check(
+                "wipe_restore_succeeded",
+                restore.status_code == 200,
+                f"HTTP {restore.status_code}: {restore.text[:200]}",
+            )
+        )
+        checks.append(
+            _check(
+                "restore_matches_backup",
+                restore.status_code == 200
+                and restore_body.get("events_restored") == events_at_backup,
+                f"events_at_backup={events_at_backup}, restored={restore_body.get('events_restored')}",
+            )
+        )
+
+        timeline = await client.get("/v1/timeline")
+        events = timeline.json().get("events", [])
+        texts = [str((e.get("content") or {}).get("text") or "") for e in events]
+        checks.append(
+            _check(
+                "post_backup_event_removed",
+                "post-backup mutation" not in texts,
+                f"timeline_count={len(events)}",
+            )
+        )
+        checks.append(
+            _check(
+                "original_event_present",
+                "restore drill original event" in texts,
+                f"timeline_count={len(events)}",
+            )
+        )
+
+    return _gate("restore_drill", checks, int((time.perf_counter() - started) * 1000))
+
+
 def run_roadmap_gate(spec: dict) -> GateResult:
     started = time.perf_counter()
     paths = cast(dict, spec.get("paths") or {})
@@ -600,6 +721,7 @@ async def _run_all(session) -> list[GateResult]:
         run_voice_gate(spec),
         run_observability_gate(spec),
         await run_latency_gate(),
+        await run_restore_gate(),
         run_roadmap_gate(spec),
     ]
     return gates

@@ -29,6 +29,15 @@
     "/v1/audit/{memory_id}": [
       "get"
     ],
+    "/v1/backup": [
+      "post"
+    ],
+    "/v1/backup/restore": [
+      "post"
+    ],
+    "/v1/backup/verify": [
+      "post"
+    ],
     "/v1/chat": [
       "post"
     ],
@@ -146,6 +155,9 @@
     "/v1/focus": [
       "get",
       "post"
+    ],
+    "/v1/focus/suggest": [
+      "get"
     ],
     "/v1/focus/{focus_id}/end": [
       "post"
@@ -383,6 +395,9 @@
     "/v1/relationship": [
       "get"
     ],
+    "/v1/recall/week": [
+      "get"
+    ],
     "/v1/research/sessions": [
       "get",
       "post"
@@ -530,6 +545,21 @@
       "post"
     ],
     "/v1/training/consent/{track}/revoke": [
+      "post"
+    ],
+    "/v1/training/filter/self-improve": [
+      "post"
+    ],
+    "/v1/training/filter/recalibration": [
+      "get"
+    ],
+    "/v1/training/filter/recalibration/history": [
+      "get"
+    ],
+    "/v1/training/filter/recalibration/rollback": [
+      "post"
+    ],
+    "/v1/training/filter/recalibration/delete": [
       "post"
     ],
     "/v1/training/corpus/build": [

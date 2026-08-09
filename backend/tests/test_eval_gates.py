@@ -48,6 +48,13 @@ async def test_latency_gate_passes(client) -> None:
     assert result.passed, result.to_dict()
 
 
+async def test_restore_drill_gate_passes(client) -> None:
+    from app.scripts.eval_gates import run_restore_gate
+
+    result = await run_restore_gate()
+    assert result.passed, result.to_dict()
+
+
 def test_roadmap_gate_passes() -> None:
     result = run_roadmap_gate(_spec())
     assert result.passed, result.to_dict()

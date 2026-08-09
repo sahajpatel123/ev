@@ -31,6 +31,7 @@ must be fixed before new behavior ships.
 | `voice` | Voice endpoints present; training enrollment accepts base64 string samples | Voice surface regressed or the consent-gated contract changed shape |
 | `observability` | Health, calibration, evaluations summary, gateway calls, ops center, filter ledger endpoints exist; latency/cost budgets defined | Observability surface missing or budgets removed |
 | `latency` | In-process ASGI measurement of health, event ack, timeline, and chat against the documented budgets | Measured p50 latency exceeds event 1000 ms / chat 1500 ms / timeline 500 ms |
+| `restore_drill` | Real `/v1/backup` round-trip: seed → backup → verify → mutate → wipe-restore → verify timeline matches the backup | Backup unusable, verification fails, or wipe restore does not return the exact backed-up state |
 | `roadmap` | M0–M5 exit-gate endpoints all present per `ROADMAP.md` | A milestone's documented API surface regresses |
 
 ## 3. API contract stability
