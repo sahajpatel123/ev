@@ -37,6 +37,7 @@
 | GET | `/v1/health` | System + provider health | FR-DIAG-01 |
 | POST | `/v1/devices` · GET `/v1/devices` · DELETE `/v1/devices/{id}` | Device pairing/lifecycle | FR-SEC-01 |
 | GET | `/v1/gear` | Gear telemetry (M5) | FR-GEAR-01..03 |
+| POST | `/v1/gear/scan` | Ranked, deduped gear alerts (battery/storage/CPU/memory) | FR-GEAR-03 |
 | GET | `/v1/alerts` · POST `/v1/alerts/{id}/dismiss` | Alerts (M5) | FR-ALERT-02..04 |
 | GET | `/v1/research/sessions` · POST `/v1/research/sessions` · POST `/v1/research/sessions/{id}/notes` | Research (M5) | FR-RESEARCH-01..04 |
 | GET | `/v1/projects` · POST `/v1/projects` · GET/POST `/v1/projects/{id}/bom` · POST `/v1/projects/{id}/print-jobs` | Maker (M5) | FR-MAKER-01..04 |
