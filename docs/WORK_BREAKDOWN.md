@@ -288,30 +288,42 @@ availability with home-lab ownership: always on, always reachable, never
 annoying, and observable — you can see every pulse of the system. Success means
 wake-to-reply in seconds on any device and zero silent failures.
 
-### 6.1 Always-on runtime state machine — **Design**
+### 6.1 Always-on runtime state machine — **Built (partial)**
 IDLE → VERIFYING → AWAKE → PROCESSING → RESPONDING → FOLLOW-UP → IDLE, with
-timeouts and quiet hours. Direction: implement as a daemon with per-device
-listener agents and a central orchestrator.
+timeouts and quiet hours, is implemented as a centralized runtime with
+`runtime_sessions`, a legal-transition engine, `POST /v1/runtime/wake`,
+`POST /v1/runtime/transition`, and `GET /v1/runtime/status`. Direction:
+implement the always-on daemon with per-device listener agents that drive these
+endpoints.
 
 ### 6.2 Device fleet as "ears" — **Built (partial)**
-Fleet status, gear telemetry, and task dispatch exist. Direction: add
-audio-capture capability negotiation and device arbitration for wake events.
+Fleet status, gear telemetry, task dispatch, and wake arbitration exist:
+`POST /v1/runtime/wake` scores online wake-capable devices by signal, battery,
+proximity, and heartbeat recency, and the winner drives the state machine.
+Direction: add audio-capture capability negotiation and low-power listener
+agents on each device.
 
 ### 6.3 Queue & background workers — **Built**
-Redis/RQ ingestion pipeline with sync fallback. Direction: add filter jobs,
-consolidation jobs, and dead-letter handling with retries.
+Redis/RQ ingestion pipeline with sync fallback, plus dead-letter records
+(`dead_letters`) with retry/discard endpoints and worker-boundary capture.
+Direction: add filter jobs and consolidation jobs, and wire DLQ retries into
+the RQ re-enqueue path.
 
 ### 6.4 Heartbeat & health monitoring — **Partial**
-`/v1/health` and calibration diagnostics exist. Direction: full runtime health
-checks (listeners, ASR, TTS, provider, queues) with alerts.
+`/v1/health`, calibration diagnostics, device heartbeats
+(`POST /v1/runtime/heartbeat`, `runtime_heartbeats`), and a runtime status
+summary exist. Direction: full runtime health checks (listeners, ASR, TTS,
+provider, queues) with alerts.
 
 ### 6.5 Action router — **Built (partial)**
 Commands become approved actions: searches, fleet tasks, HUD cards,
 notifications — each with a permission check and ledger entry. The E.D.I.T.H.
 command ledger now records focus, fleet, and recognition commands with actor,
 target, payload, status, and result; fleet tasks are device-scoped and
-capability-checked through a full lifecycle. Direction: extend the ledger to
-notifications and future web/file/code actions, and add an approval matrix.
+capability-checked through a full lifecycle. The runtime action router
+(`approved_actions`) adds a per-action approval matrix with approve/deny/
+execute endpoints. Direction: extend the ledger to notifications and future
+web/file/code actions.
 
 ### 6.6 Notifications & attention budget — **Built (partial)**
 Quiet hours, daily alert budget, intervention tiers exist. Direction: extend to
@@ -536,12 +548,19 @@ without being asked twice.
 
 ### 11.1 Tool registry & dispatch — **Built**
 Memory, timeline, person, project, goals, patterns, calculate, health, gear,
-alerts, research tools with safe AST calculator. Direction: add web, file, code,
-and API tools behind permissions.
+alerts, and research tools with a safe AST calculator. Every tool is a formally
+declared capability: explicit input schema (types, bounds, enums, no unknown
+arguments), output shape, permission scope, read-only boundary, and undoability
+marker. The dispatcher validates arguments, enforces sensitive-tool permission
+gates, rejects unknown tools, checks the declared output shape, and writes a
+full access-log entry for every invocation. Direction: add web, file, code, and
+API tools behind the same permission matrix.
 
 ### 11.2 Tool selection intelligence — **Built**
-Rule-based intent routing. Direction: add model-assisted selection fallback with
-the same safety caps.
+Rule-based intent routing covering arithmetic and percentage math, person
+lookups, projects, goals, health, gear, alerts/calendar, research, patterns, and
+timeline queries. Direction: add model-assisted selection fallback with the same
+safety caps.
 
 ### 11.3 Permissioned web/search — **Future**
 `search_web` with provider interface and citations. Direction: design adapter +

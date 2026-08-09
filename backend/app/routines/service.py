@@ -9,7 +9,7 @@ undo/rollback records.  Permission authority stays in
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev.ev_sense import quiet_hours_active
-from app.models import LiveChannel, LiveEvent, Routine, RoutineRun
+from app.models import Event, LiveChannel, LiveEvent, Routine, RoutineRun
 from app.routines.schedule import next_run_after, validate_cron
 from app.schemas import (
     ApprovedActionCreate,
@@ -429,21 +429,21 @@ def _apply_op(op: str, actual, expected) -> bool:
 def _match_trigger(
     spec: dict,
     *,
-    event: object | None = None,
-    live_event: object | None = None,
+    event: Event | None = None,
+    live_event: LiveEvent | None = None,
     channel: LiveChannel | None = None,
 ) -> bool:
     if event is not None:
-        event_type = getattr(event, "event_type")
-        source = getattr(event, "source", None)
-        data = getattr(event, "content") or {}
+        event_type = event.event_type
+        source = event.source
+        data = event.content or {}
         channel_kind = None
     else:
-        event_type = getattr(live_event, "event_type")
-        source = getattr(live_event, "collector", None) or (
+        event_type = live_event.event_type
+        source = live_event.collector or (
             channel.name if channel is not None else None
         )
-        data = getattr(live_event, "payload") or {}
+        data = live_event.payload or {}
         channel_kind = channel.kind if channel else None
     if "event_type" in spec and not _value_matches(spec["event_type"], event_type):
         return False
@@ -473,7 +473,7 @@ async def _last_run(session: AsyncSession, routine_id) -> RoutineRun | None:
 async def consider_event(
     session: AsyncSession,
     *,
-    event: object | None = None,
+    event: Event | None = None,
     live_event: LiveEvent | None = None,
     channel: LiveChannel | None = None,
 ) -> list[RoutineRun]:
@@ -497,17 +497,16 @@ async def consider_event(
             if previous is not None and (utcnow() - previous.created_at).total_seconds() < routine.cooldown_seconds:
                 continue
         source = event if event is not None else live_event
-        digest = getattr(source, "sha256")
+        digest = source.sha256
         snapshot_source = (
-            getattr(source, "source", None)
+            source.source
             if event is not None
-            else (getattr(source, "collector", None) or (channel.name if channel else None))
+            else (source.collector or (channel.name if channel else None))
         )
-        if event is not None:
-            snapshot_payload = getattr(source, "content", {}) or {}
-        else:
-            snapshot_payload = getattr(source, "payload", {}) or {}
-        dedupe_key = f"trig:{routine.id}:{getattr(source, 'id')}:{digest}"
+        snapshot_payload = (
+            source.content or {} if event is not None else source.payload or {}
+        )
+        dedupe_key = f"trig:{routine.id}:{source.id}:{digest}"
         run = await _insert_run(
             session,
             _new_run(
@@ -515,10 +514,10 @@ async def consider_event(
                 dedupe_key=dedupe_key,
                 status="queued",
                 triggered_at=utcnow(),
-                trigger_event_id=getattr(event, "id", None),
-                trigger_live_event_id=getattr(live_event, "id", None),
+                trigger_event_id=event.id if event is not None else None,
+                trigger_live_event_id=live_event.id if live_event is not None else None,
                 trigger_snapshot={
-                    "event_type": getattr(source, "event_type"),
+                    "event_type": source.event_type,
                     "source": snapshot_source,
                     "channel_kind": channel.kind if channel is not None else None,
                     "payload": snapshot_payload,

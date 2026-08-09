@@ -66,7 +66,34 @@ EVApp
 - Mac desktop (optional later): Tauri/Electron wrapper around the same SPA or a
   native SwiftUI client; system tray quick capture.
 - CLI (`clients/cli`): `ev capture`, `ev ask`, `ev timeline`, `ev memories`,
-  `ev audit`, `ev export`, `ev doctor` — scriptable and headless-friendly.
+  `ev audit`, `ev correct`, `ev forget`, `ev restore`, `ev card`, `ev doctor`,
+  `ev checkup`, `ev export`, `ev queue`, `ev sync` — scriptable and
+  headless-friendly (see §4.1).
+
+### 4.1 CLI reference
+
+Environment: `EV_API_URL` (default `http://127.0.0.1:8000`), `EV_API_KEY`
+(master or registered-device token), and `EV_CLI_QUEUE_DIR` (default
+`~/.ev/queue`) for the offline capture queue.
+
+```text
+ev capture "remember this" | ev capture -       # text or stdin -> event
+ev ask "what did I decide about X?"
+ev timeline --limit 20                           # recent events + cursor
+ev memories --type decision --search sqlite
+ev audit <memory_id>                             # why does EV know this?
+ev correct <memory_id> "fixed text" --reason ...
+ev forget <memory_id> | ev restore <memory_id>
+ev card                                          # ev.hud.card.v1 text render
+ev doctor | ev checkup                           # health / full calibration
+ev export --output ev-bundle.json
+ev queue | ev sync                               # offline captures -> server
+```
+
+`ev capture` writes to the local queue when the server is unreachable; every
+queued capture carries an `Idempotency-Key`. `ev sync` replays the queue: 201
+marks synced, 409 drops the duplicate, 422 quarantines the record, and a
+connectivity failure leaves the queue intact for the next attempt.
 
 ## 5. HUD rendering targets (M5)
 
@@ -113,4 +140,3 @@ Client ◄── {events, next_cursor}
 | Tactical card | ✓ | ✓ | ✓ | — |
 | Health read (M5) | ✓ | ✓ | — | — |
 | Maker flows (M5) | ✓ | — | ✓ | ✓ |
-

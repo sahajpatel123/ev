@@ -36,8 +36,7 @@ def _audio_embedding(sample: bytes, dim: int) -> list[float]:
         chunk = sample[offset : offset + 512]
         digest = hashlib.sha256(chunk).digest()
         index = int.from_bytes(digest[:4], "big") % dim
-        sign = 1.0 if digest[4] % 2 == 0 else -1.0
-        vector[index] += sign
+        vector[index] += 1.0
     norm = math.sqrt(sum(v * v for v in vector)) or 1.0
     return [v / norm for v in vector]
 

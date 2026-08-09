@@ -7,9 +7,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor
+from app.auth import ActorContext, require_actor_context, require_owner_trust
 from app.config import settings
 from app.db import get_session
+from app.models import VoiceSession
 from app.schemas import (
     ConsentOut,
     MemoryDelta,
@@ -49,6 +50,18 @@ def _http(exc: VoiceError) -> HTTPException:
     )
 
 
+def _guard_session(row: VoiceSession, ctx: ActorContext) -> None:
+    """A voice session belongs to the device that woke it — no silent inheritance."""
+    if ctx.is_master:
+        return
+    if ctx.device_id is None or row.device_id != str(ctx.device_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Voice session belongs to another device",
+            headers={"X-Error-Code": "session_device_mismatch"},
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Enrollment & voiceprint management
 # --------------------------------------------------------------------------- #
@@ -58,7 +71,7 @@ def _http(exc: VoiceError) -> HTTPException:
 async def enroll_voice(
     data: VoiceEnrollmentCreate,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_owner_trust),
 ) -> VoiceEnrollResponse:
     runtime = _runtime(session)
     try:
@@ -79,7 +92,7 @@ async def enroll_voice(
 @router.get("/enrollments", response_model=list[VoiceEnrollmentDetailOut])
 async def list_enrollments(
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_owner_trust),
 ) -> list[VoiceEnrollmentDetailOut]:
     rows = await _runtime(session).list_enrollments()
     return [VoiceEnrollmentDetailOut.model_validate(r) for r in rows]
@@ -88,7 +101,7 @@ async def list_enrollments(
 @router.get("/enrollments/export", response_model=VoiceExportOut)
 async def export_enrollments(
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_owner_trust),
 ) -> VoiceExportOut:
     data = await _runtime(session).export_voiceprints()
     return VoiceExportOut(
@@ -104,7 +117,7 @@ async def revoke_enrollment(
     enrollment_id: UUID,
     data: VoiceRevokeRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_owner_trust),
 ) -> VoiceEnrollmentDetailOut:
     try:
         row = await _runtime(session).revoke(enrollment_id, reason=data.reason)
@@ -119,7 +132,7 @@ async def delete_enrollment(
     enrollment_id: UUID,
     data: VoiceDeleteRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_owner_trust),
 ) -> VoiceEnrollmentDetailOut:
     try:
         row = await _runtime(session).delete(enrollment_id, reason=data.reason)
@@ -134,7 +147,7 @@ async def rollback_enrollment(
     enrollment_id: UUID,
     data: VoiceRollbackRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_owner_trust),
 ) -> VoiceEnrollmentDetailOut:
     try:
         row = await _runtime(session).rollback(
@@ -157,12 +170,12 @@ async def rollback_enrollment(
 async def wake(
     data: VoiceWakeRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> VoiceWakeResponse:
     runtime = _runtime(session)
     try:
         outcome = await runtime.handle_wake(
-            device_id=data.device_id,
+            device_id=str(ctx.device_id) if ctx.is_device else data.device_id,
             audio_ref=data.audio_ref,
             text_hint=data.text_hint,
             wake_word=data.wake_word,
@@ -184,9 +197,12 @@ async def wake(
 async def verify(
     data: VoiceSessionVerifyRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> VoiceSessionVerifyResponse:
     runtime = _runtime(session)
+    row = await session.get(VoiceSession, data.session_id)
+    if row is not None:
+        _guard_session(row, ctx)
     try:
         outcome = await runtime.handle_verify(
             session_id=data.session_id,
@@ -214,9 +230,12 @@ async def verify(
 async def utterance(
     data: VoiceUtteranceRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> VoiceUtteranceResponse:
     runtime = _runtime(session)
+    row = await session.get(VoiceSession, data.session_id)
+    if row is not None:
+        _guard_session(row, ctx)
     try:
         outcome = await runtime.handle_utterance(
             session_id=data.session_id,
@@ -273,8 +292,11 @@ async def utterance(
 async def session_status(
     session_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> VoiceStatusOut:
+    row = await session.get(VoiceSession, session_id)
+    if row is not None:
+        _guard_session(row, ctx)
     try:
         status = await _runtime(session).status(session_id)
     except VoiceError as exc:
@@ -297,8 +319,11 @@ async def session_status(
 async def end_session(
     session_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> VoiceStatusOut:
+    row = await session.get(VoiceSession, session_id)
+    if row is not None:
+        _guard_session(row, ctx)
     try:
         status = await _runtime(session).handle_end(session_id, reason="user-ended")
     except VoiceError as exc:

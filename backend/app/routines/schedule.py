@@ -106,9 +106,8 @@ def next_run_after(
         elif dom_restricted:
             if day.day not in doms:
                 continue
-        elif dow_restricted:
-            if cron_weekday not in dows:
-                continue
+        elif dow_restricted and cron_weekday not in dows:
+            continue
         for hour in sorted(hours):
             for minute in sorted(minutes):
                 candidate = datetime(
