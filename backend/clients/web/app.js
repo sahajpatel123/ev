@@ -301,6 +301,59 @@ async function refreshTimeline() {
   }
 }
 
+function transparencyRows(items) {
+  return (items || [])
+    .map(
+      (item) =>
+        "<tr><td>" +
+        Object.entries(item)
+          .map(
+            ([key, value]) =>
+              `<span class="muted">${escapeHtml(key)}</span> ` +
+              escapeHtml(Array.isArray(value) ? value.join(", ") : value ?? "")
+          )
+          .join("<br>") +
+        "</td></tr>"
+    )
+    .join("");
+}
+
+async function loadTransparency() {
+  const policy = $("transparency-policy");
+  const report = $("transparency-report");
+  try {
+    const [policyData, transparency] = await Promise.all([
+      api("/v1/compliance/policy"),
+      api("/v1/compliance/transparency"),
+    ]);
+    policy.innerHTML =
+      `<p><strong>region</strong> ${escapeHtml(policyData.region)} · ` +
+      `<strong>residency</strong> ${escapeHtml(policyData.residency_mode)} · ` +
+      `<strong>local only</strong> ${policyData.local_residency_required}</p>` +
+      `<p class="muted">retention days: ${Object.entries(policyData.retention_days)
+        .map(([key, value]) => `${key}=${value}`)
+        .join(", ")}</p>` +
+      `<ul>${(policyData.disclosures || [])
+        .map((item) => `<li>${escapeHtml(item)}</li>`)
+        .join("")}</ul>`;
+    report.innerHTML =
+      `<h3>Stored</h3><table class="transparency-table"><tbody>` +
+      transparencyRows(transparency.stored) +
+      "</tbody></table>" +
+      `<h3>Trained</h3><table class="transparency-table"><tbody>` +
+      transparencyRows(transparency.trained) +
+      "</tbody></table>" +
+      `<h3>Processed</h3><table class="transparency-table"><tbody>` +
+      transparencyRows(transparency.processed) +
+      "</tbody></table>" +
+      `<h3>Transmitted</h3><table class="transparency-table"><tbody>` +
+      transparencyRows(transparency.transmitted) +
+      "</tbody></table>";
+  } catch (error) {
+    showError(report, error);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   $("api-url").value = store.url;
   $("api-key").value = store.key;
@@ -310,6 +363,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("ask-form").addEventListener("submit", ask);
   $("memory-load").addEventListener("click", browseMemories);
   $("timeline-load").addEventListener("click", refreshTimeline);
+  $("transparency-load").addEventListener("click", loadTransparency);
   refreshHud();
   refreshTimeline();
   updateQueueStatus();

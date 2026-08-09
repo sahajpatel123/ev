@@ -251,3 +251,43 @@ async def test_scheduled_compliance_sweep_job_enforces_retention(
     await db_session.refresh(enrollment)
     assert enrollment.status == "deleted"
     assert enrollment.ciphertext is None
+
+
+async def test_retention_sweep_prunes_expired_access_logs(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.compliance.erasure import retention_sweep
+    from app.models import AccessLog
+
+    monkeypatch.setenv("EV_RETENTION_ACCESS_LOG_DAYS", "7")
+    await grant_voice_consent(client)
+
+    old = AccessLog(actor="test", action="read", occurred_at=utcnow() - timedelta(days=10))
+    recent = AccessLog(actor="test", action="read", occurred_at=utcnow())
+    db_session.add_all([old, recent])
+    await db_session.commit()
+    old_id = old.id
+    recent_id = recent.id
+
+    report = await retention_sweep(
+        db_session, reason="retention policy", actor="scheduler"
+    )
+    assert report["access_logs_deleted"] == 1
+
+    remaining_ids = (
+        (await db_session.execute(select(AccessLog.id))).scalars().all()
+    )
+    assert old_id not in remaining_ids
+    assert recent_id in remaining_ids
+
+
+async def test_web_transparency_panel_served(client: AsyncClient) -> None:
+    resp = await client.get("/app/")
+    assert resp.status_code == 200, resp.text
+    assert 'id="ev-transparency"' in resp.text
+    assert "transparency-load" in resp.text
+
+    js = await client.get("/app/app.js")
+    assert js.status_code == 200, js.text
+    assert "/v1/compliance/transparency" in js.text
+    assert "/v1/compliance/policy" in js.text

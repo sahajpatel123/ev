@@ -168,3 +168,24 @@ button:hover {
   border-top: 1px dashed var(--border);
   padding-top: 10px;
 }
+
+.transparency h3 {
+  margin: 0.75rem 0 0.25rem;
+}
+
+.transparency ul {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+}
+
+.transparency-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.transparency-table td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.5rem;
+  vertical-align: top;
+}

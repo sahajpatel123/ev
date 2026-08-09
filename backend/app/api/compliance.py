@@ -62,5 +62,7 @@ async def retention_sweep_endpoint(
         ran_at=utcnow(),
         voiceprints_deleted=result["voiceprints_deleted"],
         enrollment_ids=result["enrollment_ids"],
+        corpus_snapshots_redacted=result["corpus_snapshots_redacted"],
+        access_logs_deleted=result["access_logs_deleted"],
         policy_retention_days=result["policy_retention_days"],
     )

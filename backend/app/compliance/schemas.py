@@ -45,4 +45,6 @@ class RetentionSweepOut(BaseModel):
     ran_at: datetime
     voiceprints_deleted: int
     enrollment_ids: list[str]
+    corpus_snapshots_redacted: int = 0
+    access_logs_deleted: int = 0
     policy_retention_days: int

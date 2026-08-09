@@ -6,20 +6,21 @@ import contextlib
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.compliance.models import DataErasureRecord
 from app.config import settings
 from app.memory.writer import redact_memories_for_event
-from app.models import Attachment, Event, VoiceEnrollment
+from app.models import AccessLog, Attachment, Event, VoiceEnrollment
 from app.services.access_log import log_access
 from app.services.event_service import EventService
 from app.storage.object_store import get_object_store
 from app.training import consent as consent_service
+from app.training import corpus as corpus_service
 from app.voice.lifecycle import VoiceRuntime
 
-from .policy import VOICEPRINT, deletion_due, policy_summary
+from .policy import ACCESS_LOG, VOICEPRINT, deletion_due, policy_summary
 
 BIOMETRIC_TRACKS = ("voice_enrollment", "training_corpus")
 
@@ -39,6 +40,10 @@ async def erase_biometric_data(
         )
         if row is not None:
             consents_revoked += 1
+
+    corpus_snapshots_redacted = await corpus_service.delete_all(
+        session, actor=actor, reason=f"data subject erasure: {reason}"
+    )
 
     enrollments = list(
         (await session.execute(select(VoiceEnrollment))).scalars().all()
@@ -90,6 +95,7 @@ async def erase_biometric_data(
         "consents_revoked": consents_revoked,
         "enrollments_processed": len(enrollments),
         "enrollment_ids": enrollment_ids,
+        "corpus_snapshots_redacted": corpus_snapshots_redacted,
         "events_tombstoned": len(voice_events),
         "memories_redacted": memories_redacted,
         "attachments_deleted": attachments_deleted,
@@ -138,9 +144,31 @@ async def retention_sweep(
         if deletion_due(VOICEPRINT, reference, now=now):
             await runtime.delete(enrollment.id, reason=reason)
             deleted_ids.append(str(enrollment.id))
+    corpus_deleted = await corpus_service.delete_due_snapshots(session, now=now, reason=reason)
+    access_rows = list((await session.execute(select(AccessLog))).scalars().all())
+    stale_access = [
+        row for row in access_rows if deletion_due(ACCESS_LOG, row.occurred_at, now=now)
+    ]
+    access_logs_deleted = 0
+    if stale_access:
+        await log_access(
+            session,
+            actor=actor,
+            action="retention",
+            endpoint="POST /v1/compliance/retention/sweep",
+            resource_type="access_log",
+            resource_ids=[row.id for row in stale_access],
+            details={"deleted": len(stale_access)},
+        )
+        await session.execute(
+            delete(AccessLog).where(AccessLog.id.in_([row.id for row in stale_access]))
+        )
+        access_logs_deleted = len(stale_access)
     summary = policy_summary()
     return {
         "voiceprints_deleted": len(deleted_ids),
         "enrollment_ids": deleted_ids,
+        "corpus_snapshots_redacted": corpus_deleted,
+        "access_logs_deleted": access_logs_deleted,
         "policy_retention_days": summary["retention_days"][VOICEPRINT],
     }
