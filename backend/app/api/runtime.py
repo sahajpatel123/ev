@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -93,6 +94,48 @@ async def runtime_health(
     report = await runtime_service.runtime_health(session)
     await session.commit()
     return report
+
+
+@router.get("/sync")
+async def runtime_sync(
+    since: datetime | None = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """Cross-device runtime state snapshot for convergent client sync."""
+    status_out = await runtime_service.runtime_status(session)
+    events = await runtime_service.list_runtime_events(
+        session, since=since, limit=limit
+    )
+    await session.commit()
+    return {
+        "schema_version": "ev.runtime.sync.v1",
+        "generated_at": datetime.now().astimezone().isoformat(),
+        "runtime": {
+            "state": status_out.state,
+            "session_id": str(status_out.session.id) if status_out.session else None,
+            "session_state": status_out.session.state if status_out.session else None,
+            "device_id": str(status_out.session.device_id) if status_out.session else None,
+            "quiet_hours_active": status_out.quiet_hours_active,
+            "attention": status_out.attention,
+            "dead_letters": status_out.dead_letters,
+            "actions_pending": status_out.actions_pending,
+        },
+        "devices": [device.model_dump(mode="json") for device in status_out.devices],
+        "events": [
+            {
+                "id": str(event.id),
+                "occurred_at": event.occurred_at.isoformat(),
+                "kind": event.kind,
+                "device_id": str(event.device_id) if event.device_id else None,
+                "session_id": str(event.session_id) if event.session_id else None,
+                "action_id": str(event.action_id) if event.action_id else None,
+                "payload": event.payload,
+            }
+            for event in events
+        ],
+    }
 
 
 @router.post("/actions", response_model=ApprovedActionOut, status_code=201)

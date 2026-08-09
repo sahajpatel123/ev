@@ -335,3 +335,61 @@ async def test_daemon_tick_expires_stale_session_and_reports(
     assert report["health"]["state"] == "idle"
     assert report["health"]["overall"] in ("ok", "degraded", "failed")
     assert "re_enqueued" in report
+
+
+async def test_runtime_events_log_lifecycle_pulses(client: AsyncClient) -> None:
+    device = await register_device(client, "pulse-phone")
+    await heartbeat(client, str(device["id"]))
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+    )
+    assert resp.status_code == 200
+
+    resp = await client.post("/v1/runtime/transition", json={"to_state": "awake"})
+    assert resp.status_code == 200
+
+    resp = await client.post(
+        "/v1/runtime/actions",
+        json={"action_type": "search_memory", "title": "log me", "auto_approve": True},
+    )
+    assert resp.status_code == 201
+
+    resp = await client.post(
+        "/v1/runtime/dead-letters",
+        json={"queue": "ingestion", "job_id": "pulse-dlq", "payload": {}, "error": "boom"},
+    )
+    assert resp.status_code == 201
+
+    resp = await client.get("/v1/runtime/sync")
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["schema_version"] == "ev.runtime.sync.v1"
+    kinds = {event["kind"] for event in payload["events"]}
+    assert {"wake", "heartbeat", "transition", "action", "dead_letter"} <= kinds
+
+
+async def test_runtime_sync_returns_convergent_snapshot(client: AsyncClient) -> None:
+    phone = await register_device(client, "sync-phone")
+    watch = await register_device(client, "sync-watch")
+    await heartbeat(client, str(phone["id"]))
+    await heartbeat(client, str(watch["id"]))
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(phone["id"]), "signal_score": 0.8}],
+    )
+    assert resp.status_code == 200
+    session_id = resp.json()["session_id"]
+
+    resp = await client.get("/v1/runtime/sync")
+    payload = resp.json()
+    assert payload["runtime"]["state"] == "verifying"
+    assert payload["runtime"]["session_id"] == session_id
+    assert len(payload["devices"]) == 2
+    assert all(device["presence"] == "online" for device in payload["devices"])
+    assert any(event["kind"] == "wake" for event in payload["events"])
+
+    # Since filter: a future cursor returns nothing new, an old cursor returns all.
+    future = "2999-01-01T00:00:00Z"
+    resp = await client.get(f"/v1/runtime/sync?since={future}")
+    assert resp.json()["events"] == []

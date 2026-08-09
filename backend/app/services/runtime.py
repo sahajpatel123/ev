@@ -23,13 +23,16 @@ from app.models import (
     DeadLetter,
     Device,
     Prediction,
+    RuntimeEvent,
     RuntimeHeartbeat,
     RuntimeSession,
+    VoiceAttemptLog,
 )
 from app.schemas import (
     ApprovedActionCreate,
     RuntimeDeviceOut,
     RuntimeHeartbeatCreate,
+    RuntimeSessionOut,
     RuntimeStatusOut,
     WakeArbitrationOut,
     WakeCandidateOut,
@@ -53,7 +56,7 @@ LEGAL_TRANSITIONS: dict[str, set[str]] = {
 # Unknown action types are rejected at routing time; nothing can invoke a
 # capability that is not explicitly declared.
 ACTION_PERMISSIONS: dict[str, bool] = {
-    spec["name"]: bool(spec["requires_approval"]) for spec in ACTION_SPECS
+    str(spec["name"]): bool(spec["requires_approval"]) for spec in ACTION_SPECS
 }
 
 
@@ -73,6 +76,48 @@ def _state_timeout(state: str) -> timedelta:
             "follow_up": settings.runtime_followup_timeout_seconds,
         }.get(state, 0)
     )
+
+
+async def record_runtime_event(
+    session: AsyncSession,
+    *,
+    kind: str,
+    payload: dict | None = None,
+    device_id: UUID | None = None,
+    session_id: UUID | None = None,
+    action_id: UUID | None = None,
+) -> RuntimeEvent:
+    """Append one immutable runtime observability event."""
+    event = RuntimeEvent(
+        kind=kind,
+        device_id=device_id,
+        session_id=session_id,
+        action_id=action_id,
+        payload=payload or {},
+    )
+    session.add(event)
+    await session.flush()
+    return event
+
+
+async def list_runtime_events(
+    session: AsyncSession,
+    *,
+    since: datetime | None = None,
+    limit: int = 100,
+    kind: str | None = None,
+) -> list[RuntimeEvent]:
+    stmt = (
+        select(RuntimeEvent)
+        .order_by(RuntimeEvent.occurred_at.desc())
+        .limit(min(limit, 1000))
+    )
+    if since is not None:
+        stmt = stmt.where(RuntimeEvent.occurred_at > since)
+    if kind is not None:
+        stmt = stmt.where(RuntimeEvent.kind == kind)
+    rows = (await session.execute(stmt)).scalars().all()
+    return list(rows)
 
 
 async def active_session(session: AsyncSession) -> RuntimeSession | None:
@@ -111,13 +156,215 @@ async def transition(
         raise ValueError(
             f"Illegal runtime transition {runtime_session.state} -> {to_state}"
         )
+    if to_state == "awake" and not runtime_session.owner_verified:
+        raise ValueError(
+            "Owner speaker verification required before entering awake"
+        )
     runtime_session.state = to_state
     runtime_session.updated_at = utcnow()
     if to_state == "idle":
         runtime_session.ended_at = utcnow()
         runtime_session.end_reason = reason or "done"
+    await record_runtime_event(
+        session,
+        kind="transition",
+        payload={"to_state": to_state, "reason": reason, "end_reason": runtime_session.end_reason},
+        device_id=runtime_session.device_id,
+        session_id=runtime_session.id,
+    )
     await session.flush()
     return runtime_session
+
+
+async def mark_verified(
+    session: AsyncSession,
+    runtime_session: RuntimeSession,
+    *,
+    confidence: float,
+    verifier_name: str,
+) -> RuntimeSession:
+    """Mark a runtime session owner-verified and move it to awake."""
+    if runtime_session.state != "verifying":
+        raise ValueError(f"Cannot verify in state {runtime_session.state}")
+    runtime_session.owner_verified = True
+    runtime_session.speaker_confidence = confidence
+    runtime_session.verifier_name = verifier_name
+    runtime_session.verified_at = utcnow()
+    await record_runtime_event(
+        session,
+        kind="verify",
+        payload={
+            "accepted": True,
+            "confidence": confidence,
+            "verifier": verifier_name,
+        },
+        device_id=runtime_session.device_id,
+        session_id=runtime_session.id,
+    )
+    return await transition(session, runtime_session, "awake", reason="owner_verified")
+
+
+async def _log_voice_attempt(
+    session: AsyncSession,
+    *,
+    kind: str,
+    outcome: str,
+    session_id,
+    device_id: str | None = None,
+    reason: str | None = None,
+    **metadata,
+) -> None:
+    session.add(
+        VoiceAttemptLog(
+            device_id=device_id,
+            kind=kind,
+            outcome=outcome,
+            session_id=session_id,
+            reason=reason,
+            metadata_=metadata,
+        )
+    )
+    await session.flush()
+
+
+async def verify_owner(
+    session: AsyncSession,
+    runtime_session: RuntimeSession,
+    *,
+    nonce: str,
+    samples: list[str],
+    phrase: str | None = None,
+    liveness_proof: str | None = None,
+    live_score: float | None = None,
+    audio_sha256: str | None = None,
+) -> dict:
+    """Anti-spoof + owner speaker verification for one runtime wake cycle."""
+    from app.voice.anti_spoof import LivenessGate, ReplayError, ReplayGuard
+    from app.voice.lifecycle import VoiceRuntime
+
+    device_id = str(runtime_session.device_id) if runtime_session.device_id else None
+    guard = ReplayGuard(session)
+    try:
+        await guard.consume(nonce, purpose="verify", session_id=runtime_session.id)
+    except ReplayError as exc:
+        await _log_voice_attempt(
+            session,
+            kind="replay",
+            outcome="rejected",
+            session_id=runtime_session.id,
+            device_id=device_id,
+            reason=str(exc),
+            purpose="verify",
+        )
+        await record_runtime_event(
+            session,
+            kind="verify",
+            payload={"accepted": False, "reason": f"replay:{exc}"},
+            device_id=runtime_session.device_id,
+            session_id=runtime_session.id,
+        )
+        raise
+
+    if audio_sha256 and await guard.fingerprint_replayed(
+        audio_sha256, device_id=device_id
+    ):
+        await _log_voice_attempt(
+            session,
+            kind="replay",
+            outcome="rejected",
+            session_id=runtime_session.id,
+            device_id=device_id,
+            reason="audio fingerprint already accepted",
+            purpose="verify",
+        )
+        await record_runtime_event(
+            session,
+            kind="verify",
+            payload={"accepted": False, "reason": "replay:audio_fingerprint"},
+            device_id=runtime_session.device_id,
+            session_id=runtime_session.id,
+        )
+        raise ReplayError("audio fingerprint already accepted")
+
+    live_ok, live_conf, live_reason = await LivenessGate().check(
+        sample={
+            "liveness_proof": liveness_proof,
+            "live_score": live_score,
+        },
+        challenge_phrase=phrase,
+        expected_phrase=runtime_session.challenge_phrase,
+    )
+    if not live_ok:
+        await _log_voice_attempt(
+            session,
+            kind="verify",
+            outcome="rejected",
+            session_id=runtime_session.id,
+            device_id=device_id,
+            reason=live_reason,
+            liveness_confidence=live_conf,
+            audio_sha256=audio_sha256,
+        )
+        await record_runtime_event(
+            session,
+            kind="verify",
+            payload={"accepted": False, "reason": f"liveness:{live_reason}"},
+            device_id=runtime_session.device_id,
+            session_id=runtime_session.id,
+        )
+        return {"verified": False, "confidence": live_conf, "reason": live_reason}
+
+    runtime = VoiceRuntime(session, master_key=settings.master_key)
+    result = await runtime.verify_samples([{"audio_b64": sample} for sample in samples])
+    if not result["accepted"]:
+        await _log_voice_attempt(
+            session,
+            kind="refusal",
+            outcome="refused",
+            session_id=runtime_session.id,
+            device_id=device_id,
+            reason="unknown voice",
+            confidence=result["score"],
+            threshold=result["threshold"],
+            audio_sha256=audio_sha256,
+        )
+        await record_runtime_event(
+            session,
+            kind="verify",
+            payload={
+                "accepted": False,
+                "reason": "score_below_threshold",
+                "score": result["score"],
+                "threshold": result["threshold"],
+            },
+            device_id=runtime_session.device_id,
+            session_id=runtime_session.id,
+        )
+        return {
+            "verified": False,
+            "confidence": result["score"],
+            "reason": "Unknown voice — polite refusal. Only the owner can activate EVIE.",
+        }
+
+    await mark_verified(
+        session,
+        runtime_session,
+        confidence=result["score"],
+        verifier_name=runtime.verifier.name,
+    )
+    await _log_voice_attempt(
+        session,
+        kind="verify",
+        outcome="accepted",
+        session_id=runtime_session.id,
+        device_id=device_id,
+        reason="owner verified",
+        confidence=result["score"],
+        verifier=runtime.verifier.name,
+        liveness_confidence=live_conf,
+        audio_sha256=audio_sha256,
+    )
+    return {"verified": True, "confidence": result["score"], "reason": "owner_verified"}
 
 
 async def _device_map(
@@ -197,6 +444,15 @@ async def arbitrate_wake(
             best = (score, intent, device)
 
     if best is None:
+        await record_runtime_event(
+            session,
+            kind="wake",
+            payload={
+                "blocked": True,
+                "block_reason": "no_eligible_device",
+                "candidate_count": len(intents),
+            },
+        )
         return WakeArbitrationOut(
             candidates=candidates,
             state="idle",
@@ -209,6 +465,17 @@ async def arbitrate_wake(
         for candidate in candidates:
             if candidate.device_id == device.id:
                 candidate.reason = "quiet_hours"
+        await record_runtime_event(
+            session,
+            kind="wake",
+            payload={
+                "blocked": True,
+                "block_reason": "quiet_hours",
+                "candidate_count": len(intents),
+                "best_device_id": str(device.id),
+            },
+            device_id=device.id,
+        )
         return WakeArbitrationOut(
             candidates=candidates,
             state="idle",
@@ -233,11 +500,37 @@ async def arbitrate_wake(
     session.add(runtime_session)
     await session.flush()
 
+    # Owner-only activation: issue a single-use challenge bound to this wake.
+    from app.voice.anti_spoof import ReplayGuard
+
+    guard = ReplayGuard(session)
+    challenge = await guard.issue(
+        purpose="verify",
+        session_id=runtime_session.id,
+        ttl_seconds=settings.runtime_verify_timeout_seconds,
+    )
+    runtime_session.challenge_nonce = challenge.nonce
+    runtime_session.challenge_phrase = challenge.phrase
+    runtime_session.wake_word = "evie"
+    await session.flush()
+
     for candidate in candidates:
         candidate.selected = candidate.device_id == device.id and candidate.score == score
         if candidate.selected:
             candidate.reason = "winner"
 
+    await record_runtime_event(
+        session,
+        kind="wake",
+        payload={
+            "winner_device_id": str(device.id),
+            "winner_score": score,
+            "candidate_count": len(intents),
+            "blocked": False,
+        },
+        device_id=device.id,
+        session_id=runtime_session.id,
+    )
     return WakeArbitrationOut(
         winner=WakeCandidateOut(
             device_id=device.id,
@@ -249,6 +542,8 @@ async def arbitrate_wake(
         candidates=candidates,
         state="verifying",
         session_id=runtime_session.id,
+        challenge_nonce=runtime_session.challenge_nonce,
+        challenge_phrase=runtime_session.challenge_phrase,
     )
 
 
@@ -276,7 +571,19 @@ async def record_heartbeat(
     if current is not None and current.device_id == device.id:
         current.last_heartbeat_at = now
         current.updated_at = now  # liveness: a heartbeat refreshes the session timeout
-        await session.flush()
+    await record_runtime_event(
+        session,
+        kind="heartbeat",
+        payload={
+            "status": data.status,
+            "listener_state": data.listener_state,
+            "battery_percent": data.battery_percent,
+            "latency_ms": data.latency_ms,
+        },
+        device_id=device.id,
+        session_id=current.id if current is not None else None,
+    )
+    await session.flush()
     return heartbeat
 
 
@@ -311,6 +618,18 @@ async def route_action(
     )
     session.add(action)
     await session.flush()
+    await record_runtime_event(
+        session,
+        kind="action",
+        payload={
+            "action_type": action.action_type,
+            "status": action.status,
+            "requires_approval": action.requires_approval,
+        },
+        device_id=action.device_id,
+        session_id=action.session_id,
+        action_id=action.id,
+    )
     await log_access(
         session,
         actor=requested_by,
@@ -353,6 +672,14 @@ async def decide_action(
         action.denied_reason = reason or "denied"
     action.updated_at = now
     await session.flush()
+    await record_runtime_event(
+        session,
+        kind="action",
+        payload={"action_type": action.action_type, "decision": decision, "status": action.status},
+        device_id=action.device_id,
+        session_id=action.session_id,
+        action_id=action.id,
+    )
     await log_access(
         session,
         actor=actor,
@@ -382,6 +709,14 @@ async def execute_action(
     action.result = result or {}
     action.updated_at = utcnow()
     await session.flush()
+    await record_runtime_event(
+        session,
+        kind="action",
+        payload={"action_type": action.action_type, "status": action.status},
+        device_id=action.device_id,
+        session_id=action.session_id,
+        action_id=action.id,
+    )
     await log_access(
         session,
         actor=actor,
@@ -415,6 +750,14 @@ async def rollback_action(
     action.rolled_back_reason = reason or "rolled back by user"
     action.updated_at = utcnow()
     await session.flush()
+    await record_runtime_event(
+        session,
+        kind="action",
+        payload={"action_type": action.action_type, "status": action.status},
+        device_id=action.device_id,
+        session_id=action.session_id,
+        action_id=action.id,
+    )
     await log_access(
         session,
         actor=actor,
@@ -438,6 +781,14 @@ async def fail_action(session: AsyncSession, action_id: UUID, *, error: str) -> 
     action.error = error
     action.updated_at = utcnow()
     await session.flush()
+    await record_runtime_event(
+        session,
+        kind="action",
+        payload={"action_type": action.action_type, "status": action.status, "error": error},
+        device_id=action.device_id,
+        session_id=action.session_id,
+        action_id=action.id,
+    )
     await log_access(
         session,
         actor="system",
@@ -478,6 +829,17 @@ async def record_dead_letter(
                 else "new"
             )
             await session.flush()
+            await record_runtime_event(
+                session,
+                kind="dead_letter",
+                payload={
+                    "queue": queue,
+                    "job_id": job_id,
+                    "attempts": existing.attempts,
+                    "status": existing.status,
+                    "repeated": True,
+                },
+            )
             return existing
     letter = DeadLetter(
         queue=queue,
@@ -490,6 +852,11 @@ async def record_dead_letter(
     )
     session.add(letter)
     await session.flush()
+    await record_runtime_event(
+        session,
+        kind="dead_letter",
+        payload={"queue": queue, "job_id": job_id, "attempts": letter.attempts, "status": letter.status},
+    )
     return letter
 
 
@@ -501,6 +868,11 @@ async def retry_dead_letter(session: AsyncSession, letter_id: UUID) -> DeadLette
         raise ValueError("Resolved dead letters cannot be retried")
     letter.status = "retrying"
     await session.flush()
+    await record_runtime_event(
+        session,
+        kind="dead_letter",
+        payload={"queue": letter.queue, "job_id": letter.job_id, "status": letter.status},
+    )
     _re_enqueue_dead_letter(letter)
     return letter
 
@@ -536,6 +908,11 @@ async def discard_dead_letter(session: AsyncSession, letter_id: UUID) -> DeadLet
         raise KeyError(f"Dead letter {letter_id} not found")
     letter.status = "discarded"
     await session.flush()
+    await record_runtime_event(
+        session,
+        kind="dead_letter",
+        payload={"queue": letter.queue, "job_id": letter.job_id, "status": letter.status},
+    )
     return letter
 
 
@@ -546,6 +923,11 @@ async def resolve_dead_letter(session: AsyncSession, letter_id: UUID) -> DeadLet
     letter.status = "resolved"
     letter.resolved_at = utcnow()
     await session.flush()
+    await record_runtime_event(
+        session,
+        kind="dead_letter",
+        payload={"queue": letter.queue, "job_id": letter.job_id, "status": letter.status},
+    )
     return letter
 
 
@@ -693,11 +1075,21 @@ async def daemon_tick(session: AsyncSession) -> dict:
         ).scalars().all()
     )
     re_enqueued = sum(1 for letter in retrying_rows if _re_enqueue_dead_letter(letter))
+    health = await runtime_health(session)
+    await record_runtime_event(
+        session,
+        kind="daemon",
+        payload={
+            "expired_session_id": str(expired_session_id) if expired_session_id else None,
+            "re_enqueued": re_enqueued,
+            "overall": health["overall"],
+        },
+    )
 
     return {
         "expired_session_id": str(expired_session_id) if expired_session_id else None,
         "re_enqueued": re_enqueued,
-        "health": await runtime_health(session),
+        "health": health,
     }
 
 
@@ -763,7 +1155,7 @@ async def runtime_status(session: AsyncSession) -> RuntimeStatusOut:
     )
     return RuntimeStatusOut(
         state=current.state if current else "idle",
-        session=latest,
+        session=RuntimeSessionOut.model_validate(latest) if latest else None,
         devices=devices,
         online_count=online_count,
         quiet_hours_active=quiet_hours_active(now),
