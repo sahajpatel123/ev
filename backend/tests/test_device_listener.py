@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 

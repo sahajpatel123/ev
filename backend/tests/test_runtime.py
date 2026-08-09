@@ -511,3 +511,17 @@ async def test_runtime_sync_returns_convergent_snapshot(client: AsyncClient) -> 
     future = "2999-01-01T00:00:00Z"
     resp = await client.get(f"/v1/runtime/sync?since={future}")
     assert resp.json()["events"] == []
+
+
+async def test_runtime_sync_reports_policy_and_empty_latency(client: AsyncClient) -> None:
+    resp = await client.get("/v1/runtime/sync")
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["policy"]["daily_alert_budget"] == settings.daily_alert_budget
+    assert payload["policy"]["heartbeat_grace_seconds"] == settings.runtime_heartbeat_grace_seconds
+    assert payload["latency"]["session_id"] is None
+    assert all(
+        value is None
+        for key, value in payload["latency"].items()
+        if key != "session_id"
+    )

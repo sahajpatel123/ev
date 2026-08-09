@@ -20,6 +20,7 @@ from app.ev import vision
 from app.ev.live import query_live_events
 from app.ev.user_state import build_user_state
 from app.gateway.providers import DeepSeekProvider, MockProvider
+from app.gateway.service import ModelGateway
 
 
 async def test_audio_scene_context_and_signal_exclude_transcript(
@@ -677,3 +678,51 @@ def test_request_envelope_audits_media_refs() -> None:
     dumped = envelope.to_dict()
     assert dumped["media_refs"][0]["ref"] == "att-1"
     assert dumped["media_refs"][0]["raw"] is False
+
+
+async def test_gateway_preserves_media_and_redacts_media_secrets() -> None:
+    provider = FakeVisionProvider()
+    gateway = ModelGateway(provider)
+    message = ChatMessage(
+        role="user",
+        content="Analyze",
+        media=[
+            MediaPart(
+                kind="text",
+                content_type="text/plain",
+                text="api_key=sk-abcdefghijklmnopqrstuvwxyz123456",
+                ref="att-1",
+            )
+        ],
+    )
+    call = await gateway.chat(
+        [message],
+        envelope=RequestEnvelope(request_id="req-media", strategy={}),
+    )
+    assert call.status == "ok"
+    seen = provider.seen_messages[0]
+    assert len(seen.media) == 1
+    assert seen.media[0].text == "[credential redacted]"
+    assert seen.media[0].ref == "att-1"
+
+
+async def test_gateway_blocks_forbidden_media_text_before_provider() -> None:
+    provider = FakeVisionProvider()
+    gateway = ModelGateway(provider)
+    message = ChatMessage(
+        role="user",
+        content="Analyze",
+        media=[
+            MediaPart(
+                kind="text",
+                text="this is never_send_to_model content",
+                ref="att-1",
+            )
+        ],
+    )
+    call = await gateway.chat(
+        [message],
+        envelope=RequestEnvelope(request_id="req-blocked", strategy={}),
+    )
+    assert call.status == "blocked"
+    assert provider.seen_messages == []

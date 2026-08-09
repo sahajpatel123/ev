@@ -17,7 +17,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from app.contracts import ChatMessage, RequestEnvelope
+from app.contracts import ChatMessage, MediaPart, RequestEnvelope
 
 MODEL_FORBIDDEN_MARKERS: tuple[str, ...] = (
     "never_send_to_model",
@@ -113,6 +113,17 @@ def guard_model_payload(
                 f"Blocked provider payload: message name={message.name!r} contains "
                 "never_send_to_model content"
             )
+        for part in message.media:
+            if part.text and _contains_forbidden(part.text):
+                raise ModelBoundaryViolation(
+                    f"Blocked provider payload: message role={message.role!r} media "
+                    f"part kind={part.kind!r} contains never_send_to_model content"
+                )
+            if part.data_url and _contains_forbidden(part.data_url):
+                raise ModelBoundaryViolation(
+                    f"Blocked provider payload: message role={message.role!r} media "
+                    f"part kind={part.kind!r} data_url contains forbidden content"
+                )
 
     if envelope is not None:
         for path, value in _envelope_strings(envelope):
@@ -129,6 +140,17 @@ def guard_model_payload(
                 role=message.role,
                 content=redact_secrets(message.content),
                 name=message.name,
+                media=[
+                    MediaPart(
+                        kind=part.kind,
+                        content_type=part.content_type,
+                        data_url=part.data_url,
+                        text=redact_secrets(part.text) if part.text else None,
+                        ref=part.ref,
+                        sha256=part.sha256,
+                    )
+                    for part in message.media
+                ],
             )
         )
     return sanitized
