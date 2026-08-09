@@ -38,7 +38,12 @@ material. Integration `config` is non-secret and rejects secret-looking keys.
   required), preserving least privilege.
 - Revocation (`DELETE /v1/integrations/{id}`) is immediate: status -> revoked,
   ciphertext + fingerprints wiped, live channel deactivated. All action and
-  webhook gates fail closed.
+  webhook gates fail closed. When `config.revoke_remote: true`, the adapter's
+  provider-side revocation hook is also called (best effort; local revocation
+  always proceeds).
+- OAuth refresh (`POST /v1/integrations/{id}/credentials/refresh`) exchanges
+  the vaulted refresh token through the adapter's refresh flow and re-encrypts
+  the new token; no token material is logged.
 
 ## 4. Webhooks
 
@@ -79,6 +84,7 @@ Plugins extend EV with custom skills/commands:
 | GET/POST | `/v1/integrations` |
 | GET/PATCH/DELETE | `/v1/integrations/{id}` / `.../scopes` |
 | POST/GET | `/v1/integrations/{id}/credentials` |
+| POST | `/v1/integrations/{id}/credentials/refresh` |
 | POST | `/v1/integrations/{id}/webhook-secret` |
 | POST | `/v1/integrations/{id}/actions` |
 | GET | `/v1/integrations/{id}/events` |

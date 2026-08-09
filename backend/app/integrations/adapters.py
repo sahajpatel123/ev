@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from app.gateway.validation import validate_arguments
 from app.schemas import LiveEventCreate
 
 
@@ -80,6 +81,10 @@ class Adapter:
             raise KeyError(f"unknown action '{action}'")
         if spec.scope not in scopes:
             raise PermissionError(f"scope '{spec.scope}' is not granted")
+        effective_args, issues = validate_arguments(args or {}, spec.parameters)
+        if issues:
+            raise ValueError("; ".join(issues))
+        args = effective_args
         if config.get("provider") == "http":
             base_url = config.get("base_url")
             if not base_url:
@@ -93,6 +98,67 @@ class Adapter:
                 response.raise_for_status()
                 return response.json()
         return {"ok": True, "mode": "local", "action": action}
+
+    async def refresh_token(
+        self,
+        *,
+        token: str,
+        refresh_token: str,
+        config: dict,
+    ) -> dict:
+        """Exchange a refresh token for a new access token (OAuth refresh flow).
+
+        Returns ``{access_token, refresh_token?, expires_at?, token_type?}``.
+        Provider-specific implementations live behind this adapter method; the
+        plaintext refresh token is never logged or stored outside the vault.
+        """
+        if config.get("provider") == "http":
+            base_url = config.get("base_url")
+            if not base_url:
+                raise ValueError("provider=http requires base_url in integration config")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{base_url.rstrip('/')}/oauth/refresh",
+                    json={"refresh_token": refresh_token},
+                )
+                response.raise_for_status()
+                data = response.json()
+            access_token = data.get("access_token")
+            if not isinstance(access_token, str) or len(access_token) < 8:
+                raise ValueError("refresh response is missing a valid access_token")
+            return {
+                "access_token": access_token,
+                "refresh_token": data.get("refresh_token") or refresh_token,
+                "expires_at": data.get("expires_at"),
+                "token_type": data.get("token_type") or "Bearer",
+            }
+        raise NotImplementedError(
+            f"{self.slug} does not support token refresh in local mode"
+        )
+
+    async def revoke_remote(
+        self,
+        *,
+        token: str,
+        config: dict,
+    ) -> dict:
+        """Best-effort provider-side revocation of a granted credential.
+
+        Called during integration revocation when ``config.revoke_remote`` is
+        set. Local revocation always proceeds even if the provider call fails.
+        """
+        if config.get("provider") == "http":
+            base_url = config.get("base_url")
+            if not base_url:
+                raise ValueError("provider=http requires base_url in integration config")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{base_url.rstrip('/')}/oauth/revoke",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                response.raise_for_status()
+                return response.json()
+        return {"ok": True, "mode": "local"}
 
 
 @dataclass(frozen=True)
@@ -358,6 +424,9 @@ class IntegrationRegistry:
             raise ValueError(f"adapter '{adapter.slug}' is already registered")
         self._adapters[adapter.slug] = adapter
 
+    def unregister(self, slug: str) -> None:
+        self._adapters.pop(slug, None)
+
     def get(self, slug: str) -> Adapter | None:
         return self._adapters.get(slug)
 
@@ -366,4 +435,3 @@ class IntegrationRegistry:
 
 
 registry = IntegrationRegistry()
-

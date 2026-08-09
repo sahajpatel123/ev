@@ -175,6 +175,23 @@ async def list_credentials(
 
 
 @router.post(
+    "/integrations/{integration_id}/credentials/refresh",
+    response_model=IntegrationCredentialOut,
+)
+async def refresh_oauth_credential(
+    integration_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> IntegrationCredentialOut:
+    try:
+        result = await integrations.refresh_oauth(session, integration_id, actor=actor)
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+    await session.commit()
+    return result
+
+
+@router.post(
     "/integrations/{integration_id}/webhook-secret",
     response_model=WebhookSecretOut,
     status_code=201,

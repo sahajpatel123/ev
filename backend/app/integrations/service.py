@@ -373,6 +373,79 @@ async def _webhook_secret(
     return vault.decrypt(row.encrypted_access)
 
 
+def _parse_expires(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(float(value), tz=UTC)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return None
+
+
+async def refresh_oauth(
+    session: AsyncSession,
+    integration_id: UUID,
+    actor: str,
+) -> IntegrationCredentialOut:
+    """Refresh an OAuth access token through the adapter's refresh flow."""
+    integration = await _active_integration(session, integration_id)
+    adapter = registry.get(integration.adapter)
+    if adapter is None:
+        raise LookupError(f"adapter '{integration.adapter}' is unavailable")
+    credential = await _credential(session, integration_id, "oauth")
+    if (
+        credential is None
+        or credential.revoked_at is not None
+        or not credential.encrypted_access
+        or not credential.encrypted_refresh
+    ):
+        raise LookupError("integration has no refreshable OAuth credential")
+    token = vault.decrypt(credential.encrypted_access)
+    refresh = vault.decrypt(credential.encrypted_refresh)
+    try:
+        try:
+            outcome = await adapter.refresh_token(
+                token=token,
+                refresh_token=refresh,
+                config=integration.config or {},
+            )
+        except NotImplementedError as exc:
+            raise ValueError(str(exc)) from exc
+    finally:
+        del token, refresh
+    access_token = outcome.get("access_token")
+    if not isinstance(access_token, str) or len(access_token) < 8:
+        raise ValueError("adapter refresh flow returned an invalid access token")
+    credential.encrypted_access = vault.encrypt(access_token)
+    new_refresh = outcome.get("refresh_token")
+    if isinstance(new_refresh, str) and len(new_refresh) >= 8:
+        credential.encrypted_refresh = vault.encrypt(new_refresh)
+    token_type = outcome.get("token_type")
+    if isinstance(token_type, str):
+        credential.token_type = token_type
+    expires = _parse_expires(outcome.get("expires_at"))
+    if expires is not None:
+        credential.expires_at = expires
+    credential.token_fingerprint = vault.fingerprint(access_token)
+    credential.revoked_at = None
+    integration.last_used_at = utcnow()
+    await log_access(
+        session,
+        actor=actor,
+        action="integration.credential_refresh",
+        endpoint="POST /v1/integrations/{id}/credentials/refresh",
+        resource_type="integration_credential",
+        resource_ids=[credential.id],
+        details={"adapter": integration.adapter, "rotated": True},
+    )
+    return _credential_out(credential)
+
+
 async def update_scopes(
     session: AsyncSession,
     integration_id: UUID,
@@ -425,6 +498,31 @@ async def revoke(
     row.status = "revoked"
     row.revoked_at = utcnow()
     row.revoked_reason = reason
+    remote_revocation: dict | None = None
+    remote_revocation_error: str | None = None
+    if row.config.get("revoke_remote"):
+        oauth = await _credential(session, integration_id, "oauth")
+        if (
+            oauth is not None
+            and oauth.revoked_at is None
+            and oauth.encrypted_access is not None
+        ):
+            token = vault.decrypt(oauth.encrypted_access)
+            adapter = registry.get(row.adapter)
+            try:
+                if adapter is not None:
+                    remote_result = await adapter.revoke_remote(
+                        token=token,
+                        config=row.config or {},
+                    )
+                    remote_revocation = {
+                        "ok": bool(remote_result.get("ok", True)),
+                        "mode": remote_result.get("mode", "provider"),
+                    }
+            except Exception as exc:  # noqa: BLE001 - best effort, local revoke proceeds
+                remote_revocation_error = f"{type(exc).__name__}: {exc}"
+            finally:
+                del token
     credentials = await _credentials_for(session, integration_id)
     for credential in credentials:
         credential.revoked_at = utcnow()
@@ -443,7 +541,12 @@ async def revoke(
         endpoint="DELETE /v1/integrations/{id}",
         resource_type="integration",
         resource_ids=[row.id],
-        details={"adapter": row.adapter, "reason": reason},
+        details={
+            "adapter": row.adapter,
+            "reason": reason,
+            "remote_revocation": remote_revocation,
+            "remote_revocation_error": remote_revocation_error,
+        },
     )
     return _integration_out(row, credentials)
 

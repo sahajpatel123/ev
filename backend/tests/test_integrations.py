@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.integrations import vault
+from app.integrations.adapters import Adapter, AdapterAction, CalendarAdapter, registry
 from app.integrations.webhooks import (
     SignatureError,
     SlidingWindowRateLimiter,
@@ -39,11 +40,20 @@ DEFAULT_SCOPES = {
 }
 
 
+class RefreshTestAdapter(Adapter):
+    async def refresh_token(self, *, token: str, refresh_token: str, config: dict) -> dict:
+        return {
+            "access_token": "new-access-token-9999",
+            "refresh_token": "new-refresh-token-8888",
+            "expires_at": "2027-01-01T00:00:00Z",
+        }
+
+
 async def install(client: AsyncClient, adapter: str = "calendar", **overrides) -> dict:
     payload = {
         "adapter": adapter,
         "name": f"My {adapter}",
-        "scopes": DEFAULT_SCOPES[adapter],
+        "scopes": overrides.get("scopes") or DEFAULT_SCOPES[adapter],
         **overrides,
     }
     resp = await client.post("/v1/integrations", json=payload)
@@ -233,6 +243,105 @@ async def test_action_scope_enforcement(client: AsyncClient) -> None:
         json={"action": "messaging.list_messages", "args": {}},
     )
     assert resp.status_code == 410
+
+
+async def test_action_arguments_are_validated(client: AsyncClient) -> None:
+    integration = await install(client, "calendar", scopes=["calendar:read", "calendar:act"])
+    integration_id = integration["id"]
+    await store_oauth(client, integration_id)
+
+    resp = await client.post(
+        f"/v1/integrations/{integration_id}/actions",
+        json={"action": "calendar.create_event", "args": {}},
+    )
+    assert resp.status_code == 400
+    assert "summary" in resp.json()["detail"]
+    assert "start" in resp.json()["detail"]
+
+    resp = await client.post(
+        f"/v1/integrations/{integration_id}/actions",
+        json={
+            "action": "calendar.create_event",
+            "args": {"summary": "Lunch", "start": "2026-08-10T09:00:00Z"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["result"]["ok"] is True
+
+
+async def test_oauth_refresh_flow(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    adapter = RefreshTestAdapter(
+        slug="test_refresh",
+        name="Test Refresh",
+        description="refresh-capable test adapter",
+        capabilities=("test:read",),
+        default_scopes=("test:read",),
+        actions=(AdapterAction("test.read", "test:read", "read something"),),
+    )
+    registry.register(adapter)
+    try:
+        integration = await install(
+            client,
+            "test_refresh",
+            scopes=["test:read"],
+        )
+        integration_id = integration["id"]
+        await store_oauth(client, integration_id)
+
+        resp = await client.post(
+            f"/v1/integrations/{integration_id}/credentials/refresh"
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["configured"] is True
+
+        row = (
+            await db_session.execute(
+                select(IntegrationCredential).where(
+                    IntegrationCredential.integration_id == UUID(integration_id),
+                    IntegrationCredential.kind == "oauth",
+                )
+            )
+        ).scalar_one()
+        assert vault.decrypt(row.encrypted_access) == "new-access-token-9999"
+        assert vault.decrypt(row.encrypted_refresh) == "new-refresh-token-8888"
+        assert row.token_fingerprint == sha256_hex("new-access-token-9999")
+    finally:
+        registry.unregister("test_refresh")
+
+
+async def test_revoke_calls_provider_hook_when_configured(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: AsyncSession,
+) -> None:
+    revoked_tokens: list[str] = []
+
+    async def fake_revoke_remote(self, *, token: str, config: dict) -> dict:
+        revoked_tokens.append(token)
+        return {"ok": True, "mode": "test-provider"}
+
+    monkeypatch.setattr(CalendarAdapter, "revoke_remote", fake_revoke_remote)
+    integration = await install(client, "calendar", config={"revoke_remote": True})
+    integration_id = integration["id"]
+    await store_oauth(client, integration_id)
+
+    resp = await client.delete(f"/v1/integrations/{integration_id}")
+    assert resp.status_code == 200, resp.text
+
+    audit = (
+        await db_session.execute(
+            select(AccessLog).where(AccessLog.action == "integration.revoke")
+        )
+    ).scalars().all()
+    assert audit
+    assert revoked_tokens == ["super-secret-token-123456"], audit[-1].details
+    assert audit[-1].details["remote_revocation"] == {
+        "ok": True,
+        "mode": "test-provider",
+    }
 
 
 async def test_webhook_hmac_ingest_replay_and_privacy(

@@ -47,9 +47,11 @@
 | GET | `/v1/ops/center` · `/v1/twin` · `/v1/hud/focus` | Ops center / digital twin / HUD overlay | FR-HUD |
 | GET | `/v1/hud/card` · `/v1/hud/alerts` · `/v1/hud/route` | Strict HUD surface schemas (`ev.hud.*.v1`) | FR-HUD-01 |
 | POST | `/v1/gateway/chat` · `/v1/gateway/tools` · GET `/v1/gateway/models` | Internal gateway (model-agnostic) | FR-SYS-03 |
+| POST | `/v1/filter/evaluate` | Filter input/output replay (draft or full pipeline) | FR-ORCH-05 |
+| GET | `/v1/filter/ledger` · `/v1/filter/ledger/aggregate` | Filter-decision audit trail + aggregates | FR-ORCH-06 |
 | GET | `/v1/integrations/catalog` · `/v1/integrations` · POST `/v1/integrations` | Adapter catalog + install | FR-INT-01 |
 | GET/PATCH/DELETE | `/v1/integrations/{id}` · `/v1/integrations/{id}/scopes` | Integration lifecycle + scope changes | FR-INT-02 |
-| POST/GET | `/v1/integrations/{id}/credentials` · POST `/v1/integrations/{id}/webhook-secret` | Encrypted credential vault + webhook secrets | FR-INT-02 |
+| POST/GET | `/v1/integrations/{id}/credentials` · POST `/v1/integrations/{id}/credentials/refresh` · POST `/v1/integrations/{id}/webhook-secret` | Encrypted credential vault + OAuth refresh + webhook secrets | FR-INT-02 |
 | POST/GET | `/v1/integrations/{id}/actions` · `/v1/integrations/{id}/events` | Permissioned actions + event history | FR-INT-03 |
 | POST | `/v1/integrations/webhook/{id}` | HMAC-verified webhook ingress (no bearer auth) | FR-INT-04 |
 | POST/GET | `/v1/plugins` · `/v1/plugins/{id}` · `/approve` · `/reject` · `/enable` · `/disable` | Plugin manifest lifecycle + approval | FR-INT-05 |
@@ -226,6 +228,22 @@ ledger; `GET /v1/ops/center` includes the five most recent commands.
 Clients never call the gateway directly; `/v1/chat` is the only model-facing entry
 point from the product surface. Every model call through either entry point is
 logged to `model_calls` when `EV_MODEL_CALL_LOG_ENABLED=true`.
+
+## 12.5 Intelligence filter
+
+- `POST /v1/filter/evaluate` — body `{message, draft?, conversation_id?}`.
+  With `draft`: runs the input filter on `message` and the output filter on
+  `draft` against retrieved memory (replay/tuning). Without `draft`: runs the
+  full pipeline (input filter → gateway → output filter → ledger). Returns the
+  input decision, the output report (draft, final text, claims, scores, flags,
+  iterations, passed), and ledger ids.
+- `GET /v1/filter/ledger` — filter-decision rows (stage/action/severity/detail/
+  envelope hash), newest first.
+- `GET /v1/filter/ledger/aggregate` — counts by stage/action, blocked inputs,
+  redactions, repairs, refinements, and over-refinement rate.
+
+Every `/v1/chat` response includes `filter_report`, and streaming chat emits a
+`filter-report` SSE event, so clients can show what the filter changed and why.
 
 ## 13. Error codes
 
