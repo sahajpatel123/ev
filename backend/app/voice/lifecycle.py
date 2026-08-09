@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.compliance.policy import remote_processing_allowed
 from app.config import settings
-from app.ev import conversation
 from app.models import (
     ConsentRecord,
     VoiceAttemptLog,
@@ -21,7 +20,7 @@ from app.models import (
     VoicePrint,
     VoiceSession,
 )
-from app.schemas import ChatRequest, EventCreate
+from app.schemas import EventCreate
 from app.services.event_service import EventService
 from app.training.consent import ConsentRequiredError, require_consent
 from app.utils.text import utcnow
@@ -40,7 +39,7 @@ from app.voice.contracts import (
 from app.voice.security import decrypt_payload, encrypt_payload
 from app.voice.sensitive import REVERIFY_PURPOSE, classify_sensitive
 from app.voice.speaker import ProfileSpeakerVerifier
-from app.voice.tts import get_synthesizer, speech_style_from_strategy
+from app.voice.tts import get_synthesizer
 from app.voice.wake import default_wake_engine
 
 
@@ -938,10 +937,13 @@ class VoiceRuntime:
             )
 
         row.state = VoiceState.PROCESSING
-        transcript = await self.transcriber.transcribe(
-            audio_ref=audio_ref,
+        from app.voice.pipeline import run_chat_tts_pipeline, transcribe_input
+
+        transcript = await transcribe_input(
+            self.transcriber,
+            text=text,
             audio_b64=audio_b64,
-            text_hint=text,
+            audio_ref=audio_ref,
             language=language,
         )
         sensitive_purpose = classify_sensitive(transcript.text)
@@ -972,25 +974,14 @@ class VoiceRuntime:
                     code=exc.code,
                 ) from exc
             reverified = True
-        thread = await conversation.resolve_thread(self.session, conversation_id)
-        from app.api.core import run_chat_pipeline
-
-        pipeline = await run_chat_pipeline(
-            ChatRequest(
-                message=transcript.text,
-                conversation_id=thread.id,
-                device_id=row.device_id,
-            ),
+        outcome = await run_chat_tts_pipeline(
             self.session,
-            self.actor,
-            thread_id=thread.id,
-            source="voice",
-            user_event_type="voice.transcript",
-            event_privacy="sensitive",
+            actor=self.actor,
+            device_id=row.device_id,
+            transcript=transcript,
+            conversation_id=conversation_id,
+            synthesizer=self.synthesizer,
         )
-        strategy = pipeline["strategy"]
-        style = speech_style_from_strategy(strategy)
-        synthesis = await self.synthesizer.synthesize(pipeline["result"].text, style=style)
 
         now = utcnow()
         row.state = VoiceState.FOLLOW_UP
@@ -1002,25 +993,25 @@ class VoiceRuntime:
             "accepted",
             session_id=row.id,
             device_id=row.device_id,
-            transcript_chars=len(transcript.text),
-            reply_chars=len(pipeline["result"].text),
-            asr_provider=transcript.provider,
-            tts_provider=synthesis.provider,
-            model=pipeline["result"].model,
+            transcript_chars=len(outcome.transcript.text),
+            reply_chars=len(outcome.reply),
+            asr_provider=outcome.transcript.provider,
+            tts_provider=outcome.tts.provider,
+            model=outcome.model,
             sensitive_purpose=sensitive_purpose,
             reverified=reverified,
         )
         return UtteranceOutcome(
             session_id=str(row.id),
             state=VoiceState.FOLLOW_UP,
-            transcript=transcript,
-            reply=pipeline["result"].text,
-            conversation_id=str(thread.id),
-            tts=synthesis,
-            style=style,
-            model=pipeline["result"].model,
-            context_tokens=pipeline["context_tokens"],
-            memory_deltas=pipeline["memory_deltas"],
+            transcript=outcome.transcript,
+            reply=outcome.reply,
+            conversation_id=outcome.conversation_id,
+            tts=outcome.tts,
+            style=outcome.style,
+            model=outcome.model,
+            context_tokens=outcome.context_tokens,
+            memory_deltas=outcome.memory_deltas,
         )
 
     # ------------------------------------------------------------------ #

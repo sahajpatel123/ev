@@ -86,13 +86,16 @@ async def test_corpus_build_harvests_and_excludes(
     resp = await client.post("/v1/training/corpus/build")
     assert resp.status_code == 201, resp.text
     payload = resp.json()
-    assert payload["excluded_never_send_to_model"] == 2
-    assert payload["entry_count"] == 5  # 2 response + 1 filter + 2 normal events
+    # The API-key event is escalated to never_send_to_model at ingestion by the
+    # PII classifier, so only the plain event is harvestable.
+    assert payload["excluded_never_send_to_model"] == 3
+    assert payload["entry_count"] == 4  # 2 response + 1 filter + 1 normal event
     assert payload["snapshot"]["version"] == 1
     assert payload["snapshot"]["is_current"] is True
     assert payload["snapshot"]["content_hash"]
     assert payload["snapshot"]["source_counts"]["response_log"] == 2
     assert payload["snapshot"]["source_counts"]["filter_ledger"] == 1
+    assert payload["snapshot"]["source_counts"]["events"] == 1
 
     resp = await client.get("/v1/training/corpus/1/export")
     assert resp.status_code == 200, resp.text
@@ -101,7 +104,7 @@ async def test_corpus_build_harvests_and_excludes(
     assert "Secret plan never leaves the machine" not in texts
     assert "Health data is sensitive" not in texts
     assert "sk-1234567890abcdefghijklmnop" not in texts
-    assert "[credential redacted]" in texts
+    assert "API key" not in texts
     assert "Focus on the memory browser." in texts
     assert "That may have happened." in texts
 

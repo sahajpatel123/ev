@@ -10,6 +10,7 @@ rebuilt from the recorded stream.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -24,6 +25,7 @@ from app.schemas import (
     LiveEventCreate,
     LiveStatusOut,
 )
+from app.security.pii import classify_pii, escalate_privacy
 from app.utils.text import canonical_json, sha256_hex, utcnow
 
 # More restrictive = higher order.
@@ -100,6 +102,8 @@ async def ingest_events(
     for data in events:
         occurred_at = data.occurred_at or utcnow()
         effective = effective_privacy(channel.privacy_level, data.privacy_level)
+        pii_categories = classify_pii(json.dumps(data.payload, default=str))
+        effective = escalate_privacy(effective, pii_categories)
         canonical = canonical_json(
             {
                 "channel_id": str(channel.id),
@@ -362,14 +366,19 @@ def live_context_line(
         if derived["place"]:
             line += f" coarse={derived['place']}"
         return line
+    if channel is not None and channel.kind == "screen":
+        app = payload.get("app") or "unknown"
+        details = [f"app={app}"]
+        for key in ("document", "code_file", "meeting"):
+            value = payload.get(key)
+            if value:
+                details.append(f"{key}={str(value)[:80]}")
+        line = f"[{source}] screen {' '.join(details)}"
+        summary = payload.get("summary")
+        if summary:
+            line += f" {str(summary)[:120]}"
+        return line
     if access == "model" and channel is not None:
-        if channel.kind == "screen":
-            app = payload.get("app") or "unknown"
-            summary = payload.get("summary")
-            line = f"[{source}] screen app={app}"
-            if summary:
-                line += f" {str(summary)[:120]}"
-            return line
         if channel.kind == "vision":
             summary = payload.get("summary") or payload.get("label") or "vision event"
             return f"[{source}] vision {str(summary)[:120]}"

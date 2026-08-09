@@ -13,7 +13,13 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext, require_actor, require_master, require_reverification
+from app.auth import (
+    ActorContext,
+    require_actor,
+    require_actor_context,
+    require_master,
+    require_reverification,
+)
 from app.config import settings
 from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
@@ -83,6 +89,7 @@ from app.schemas import (
     RebuildOut,
     TimelineResponse,
     UserStateOut,
+    WeekRecallOut,
 )
 from app.services.access_log import log_access
 from app.services.consolidation import next_period_start, run_consolidation
@@ -330,6 +337,36 @@ async def timeline(
     )
     await session.commit()
     return TimelineResponse(events=[EventOut.model_validate(e) for e in events], next_cursor=next_cursor)
+
+
+@router.get("/recall/week", response_model=WeekRecallOut)
+async def recall_week(
+    week_start: datetime = Query(...),
+    limit_events: int = Query(default=500, ge=1, le=2000),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> WeekRecallOut:
+    """Reconstruct a past week: events, end-of-week memory state, consolidation."""
+    from app.services.recall import reconstruct_week
+
+    if week_start.tzinfo is None:
+        week_start = week_start.replace(tzinfo=UTC)
+    result = await reconstruct_week(session, week_start=week_start, limit_events=limit_events)
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/recall/week",
+        resource_type="event",
+        resource_ids=[e.id for e in result.events[:50]],
+        details={
+            "week_start": week_start.isoformat(),
+            "events": result.event_count,
+            "memories": result.memory_count,
+        },
+    )
+    await session.commit()
+    return result
 
 
 @router.get("/memories", response_model=MemoryListResponse)
@@ -1277,8 +1314,18 @@ async def gateway_models(
 async def gateway_chat(
     data: GatewayChatRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> GatewayChatResponse:
+    actor = ctx.actor
+    sensitive_allowed = data.allow_sensitive_tools
+    if sensitive_allowed and not (
+        ctx.is_master or (ctx.device is not None and ctx.device.trust_level == "owner")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Sensitive tools require owner-level trust",
+            headers={"X-Error-Code": "owner_trust_required"},
+        )
     request_id = data.request_id or str(uuid4())
     memories = [
         MemoryRef(
@@ -1307,7 +1354,7 @@ async def gateway_chat(
         tools=tool_specs_from_dicts(data.tools),
         model=data.model,
         temperature=data.temperature,
-        allow_sensitive_tools=data.allow_sensitive_tools,
+        allow_sensitive_tools=sensitive_allowed,
     )
     if settings.model_call_log_enabled:
         await log_model_call(session, call=call, actor=actor)

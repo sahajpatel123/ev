@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +23,7 @@ CHALLENGE_PHRASES = (
 )
 
 
-def _aware(value):
+def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=utcnow().tzinfo)
@@ -77,8 +77,8 @@ class ReplayGuard:
             raise ReplayError("nonce bound to a different session")
         if row.consumed_at is not None:
             raise ReplayError("nonce already used (replay)")
-        expires_at = row.expires_at
-        if _aware(expires_at) is None or _aware(expires_at) < now:
+        expires_at = _aware(row.expires_at)
+        if expires_at is None or expires_at < now:
             raise ReplayError("nonce expired")
         row.consumed_at = now
         await self.session.flush()
@@ -86,7 +86,7 @@ class ReplayGuard:
             nonce=row.nonce,
             phrase=row.challenge_phrase or "",
             purpose=row.purpose,
-            expires_at=expires_at,
+            expires_at=expires_at or utcnow(),
         )
 
     async def fingerprint_replayed(

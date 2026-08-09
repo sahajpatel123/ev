@@ -176,7 +176,7 @@ async def redeem_recovery(
 async def create_reverification(
     data: ReverificationRequest,
     session: AsyncSession = Depends(get_session),
-    ctx: ActorContext = Depends(require_actor_context),
+    ctx: ActorContext = Depends(require_owner_trust),
 ) -> ReverificationResponse:
     try:
         owner = await identity.require_owner(session)

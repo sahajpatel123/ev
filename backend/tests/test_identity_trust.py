@@ -464,3 +464,83 @@ async def test_passkey_registration_binding_and_revocation(
     revoked = await client.delete(f"/v1/identity/passkeys/{passkey_id}")
     assert revoked.status_code == 200
     assert (await client.get("/v1/identity/passkeys")).json() == []
+
+
+async def test_reverification_issuance_requires_owner_trust(
+    client: httpx.AsyncClient,
+) -> None:
+    await create_owner(client)
+    plain = await create_device(client, "plain-pad")
+    denied = await _client(
+        {"Authorization": f"Bearer {plain['token']}"}
+    ).post(
+        "/v1/identity/reverification",
+        json={"purpose": "memory.delete"},
+    )
+    assert denied.status_code == 403
+    assert denied.headers.get("X-Error-Code") == "owner_trust_required"
+
+
+async def test_integration_action_and_management_require_trust(
+    client: httpx.AsyncClient,
+) -> None:
+    await create_owner(client)
+    plain = await create_device(client, "plain-pad")
+    owner_device = await create_device(client, "owner-phone", trust_level="owner")
+    plain_client = _client({"Authorization": f"Bearer {plain['token']}"})
+
+    # External writes need a fresh purpose-bound re-verification proof.
+    action = await plain_client.post(
+        f"/v1/integrations/{uuid4()}/actions",
+        json={"action": "calendar.create_event", "args": {}},
+    )
+    assert action.status_code == 403
+    assert action.headers.get("X-Error-Code") == "reverification_required"
+
+    # A plain device cannot even issue a re-verification proof.
+    issue = await plain_client.post(
+        "/v1/identity/reverification",
+        json={"purpose": "integration.action"},
+    )
+    assert issue.status_code == 403
+
+    # Owner device can issue a proof; auth then passes and the missing
+    # integration surfaces a 404 instead of a permission error.
+    owner_client = _client({"Authorization": f"Bearer {owner_device['token']}"})
+    proof = (
+        await owner_client.post(
+            "/v1/identity/reverification",
+            json={"purpose": "integration.action"},
+        )
+    ).json()["token"]
+    passed = await owner_client.post(
+        f"/v1/integrations/{uuid4()}/actions",
+        json={"action": "calendar.create_event", "args": {}},
+        headers={"X-EV-Reverify": proof},
+    )
+    assert passed.status_code != 403
+
+    # Credential/integration management stays master-only.
+    manage = await plain_client.post(
+        "/v1/integrations",
+        json={"adapter": "calendar", "name": "Bad", "scopes": ["calendar:read"]},
+    )
+    assert manage.status_code == 403
+
+
+async def test_sensitive_tools_require_owner_trust(
+    client: httpx.AsyncClient,
+) -> None:
+    await create_owner(client)
+    plain = await create_device(client, "plain-pad")
+    denied = await _client(
+        {"Authorization": f"Bearer {plain['token']}"}
+    ).post(
+        "/v1/gateway/chat",
+        json={
+            "messages": [{"role": "user", "content": "health please"}],
+            "allow_sensitive_tools": True,
+        },
+    )
+    assert denied.status_code == 403
+    assert denied.headers.get("X-Error-Code") == "owner_trust_required"

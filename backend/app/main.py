@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
 from app.api import (
+    backup,
     companion,
     compliance,
     core,
@@ -48,6 +49,7 @@ app.add_middleware(
 )
 
 app.include_router(core.router)
+app.include_router(backup.router)
 app.include_router(ev.router)
 app.include_router(companion.router)
 app.include_router(edith.router)

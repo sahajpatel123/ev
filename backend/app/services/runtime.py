@@ -453,6 +453,149 @@ async def verify_owner(
     return {"verified": True, "confidence": result["score"], "reason": "owner_verified"}
 
 
+async def handle_utterance(
+    session: AsyncSession,
+    runtime_session: RuntimeSession,
+    *,
+    text: str | None = None,
+    audio_b64: str | None = None,
+    audio_ref: str | None = None,
+    language: str = "en",
+    conversation_id=None,
+    follow_up: bool = False,
+    reverify_token: str | None = None,
+    ctx=None,
+) -> dict:
+    """Process one utterance on the centralized runtime session.
+
+    Runs the same voice pipeline as the voice-session lifecycle (ASR → chat/
+    intelligence/memory → TTS) and drives the runtime state machine through
+    processing → responding → follow_up. Owner-only activation and sensitive
+    re-verification are enforced here, not in the client.
+    """
+    from app.voice.lifecycle import VoiceError, VoiceRuntime
+    from app.voice.pipeline import run_chat_tts_pipeline, transcribe_input
+    from app.voice.sensitive import REVERIFY_PURPOSE, classify_sensitive
+
+    now = utcnow()
+    if runtime_session.ended_at is not None:
+        raise VoiceError(
+            "Runtime voice session ended — wake EVIE again",
+            status=428,
+            code="session_ended",
+        )
+    if not runtime_session.owner_verified:
+        raise VoiceError(
+            "Owner speaker verification required before voice utterance",
+            status=403,
+            code="not_verified",
+        )
+    if follow_up:
+        if runtime_session.state != "follow_up":
+            raise VoiceError(
+                f"Follow-up only valid from follow_up state (current: {runtime_session.state})",
+                status=409,
+                code="invalid_state",
+            )
+        updated_at = _aware(runtime_session.updated_at) or now
+        if now - updated_at > timedelta(seconds=settings.runtime_followup_timeout_seconds):
+            await transition(session, runtime_session, "idle", reason="follow_up_expired")
+            raise VoiceError(
+                "30-second follow-up window expired — wake EVIE again",
+                status=428,
+                code="follow_up_expired",
+            )
+    elif runtime_session.state != "awake":
+        raise VoiceError(
+            f"Utterance only valid from awake state (current: {runtime_session.state})",
+            status=409,
+            code="invalid_state",
+        )
+
+    runtime = VoiceRuntime(session, master_key=settings.master_key)
+    transcript = await transcribe_input(
+        runtime.transcriber,
+        text=text,
+        audio_b64=audio_b64,
+        audio_ref=audio_ref,
+        language=language,
+    )
+    sensitive_purpose = classify_sensitive(transcript.text)
+    reverified = False
+    if sensitive_purpose is not None:
+        if not reverify_token or ctx is None:
+            raise VoiceError(
+                "Re-verification required for sensitive voice command "
+                f"({sensitive_purpose}). Issue a proof via "
+                "POST /v1/identity/reverification with purpose "
+                f"{REVERIFY_PURPOSE!r}, then retry with the token.",
+                status=403,
+                code="reverification_required",
+            )
+        from app.identity.service import IdentityError, consume_reverification
+
+        try:
+            await consume_reverification(
+                session,
+                token=reverify_token,
+                purpose=REVERIFY_PURPOSE,
+                ctx=ctx,
+            )
+        except IdentityError as exc:
+            raise VoiceError(exc.message, status=exc.status, code=exc.code) from exc
+        reverified = True
+
+    await transition(session, runtime_session, "processing", reason="utterance_start")
+    outcome = await run_chat_tts_pipeline(
+        session,
+        actor="voice",
+        device_id=str(runtime_session.device_id) if runtime_session.device_id else None,
+        transcript=transcript,
+        conversation_id=conversation_id,
+        synthesizer=runtime.synthesizer,
+    )
+    await transition(session, runtime_session, "responding", reason="reply_ready")
+    await transition(session, runtime_session, "follow_up", reason="reply_delivered")
+    device_id = str(runtime_session.device_id) if runtime_session.device_id else None
+    await _log_voice_attempt(
+        session,
+        kind="utterance" if not follow_up else "follow_up",
+        outcome="accepted",
+        session_id=runtime_session.id,
+        device_id=device_id,
+        transcript_chars=len(outcome.transcript.text),
+        reply_chars=len(outcome.reply),
+        asr_provider=outcome.transcript.provider,
+        tts_provider=outcome.tts.provider,
+        model=outcome.model,
+        sensitive_purpose=sensitive_purpose,
+        reverified=reverified,
+    )
+    await record_runtime_event(
+        session,
+        kind="utterance",
+        payload={
+            "follow_up": follow_up,
+            "transcript_chars": len(outcome.transcript.text),
+            "reply_chars": len(outcome.reply),
+            "sensitive_purpose": sensitive_purpose,
+            "reverified": reverified,
+        },
+        device_id=runtime_session.device_id,
+        session_id=runtime_session.id,
+    )
+    return {
+        "transcript": outcome.transcript,
+        "reply": outcome.reply,
+        "conversation_id": outcome.conversation_id,
+        "tts": outcome.tts,
+        "style": outcome.style,
+        "model": outcome.model,
+        "context_tokens": outcome.context_tokens,
+        "memory_deltas": outcome.memory_deltas,
+    }
+
+
 async def _device_map(
     session: AsyncSession, device_ids: list[UUID]
 ) -> dict[UUID, Device]:

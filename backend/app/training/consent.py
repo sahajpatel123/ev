@@ -6,6 +6,8 @@ disables the track; deleting biometric data is handled by the voice service.
 
 from __future__ import annotations
 
+from typing import get_args
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +15,7 @@ from app.models import ConsentRecord
 from app.schemas import TrainingTrack
 from app.utils.text import utcnow
 
-TRACKS: set[str] = set(TrainingTrack.__args__)
+TRACKS: set[str] = set(get_args(TrainingTrack))
 
 
 class ConsentRequiredError(Exception):

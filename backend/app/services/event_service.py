@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -8,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Event
 from app.schemas import EventCreate
+from app.security.pii import classify_pii, escalate_privacy
 from app.services.access_log import log_access
 from app.utils.text import canonical_json, sha256_hex, utcnow
 
@@ -25,6 +27,14 @@ class EventService:
         idempotency_key: str | None = None,
     ) -> Event:
         content = data.effective_content()
+        pii_categories = classify_pii(
+            (content or {}).get("text"),
+            json.dumps(content, default=str),
+        )
+        privacy_level = escalate_privacy(data.privacy_level, pii_categories)
+        metadata = dict(data.metadata or {})
+        if pii_categories:
+            metadata["pii_categories"] = pii_categories
         occurred_at = data.occurred_at or utcnow()
         if occurred_at.tzinfo is not None:
             occurred_at = occurred_at.astimezone(UTC)
@@ -34,22 +44,22 @@ class EventService:
         canonical = canonical_json(
             {
                 "content": content,
-                "metadata": data.metadata,
+                "metadata": metadata,
                 "source": data.source,
                 "event_type": data.event_type,
                 "occurred_at": hash_occurred_at,
-                "privacy_level": data.privacy_level,
+                "privacy_level": privacy_level,
             }
         )
         event = Event(
             source=data.source,
             event_type=data.event_type,
             content=content,
-            metadata_=data.metadata,
+            metadata_=metadata,
             occurred_at=occurred_at,
             device_id=data.device_id,
             conversation_id=data.conversation_id,
-            privacy_level=data.privacy_level,
+            privacy_level=privacy_level,
             sha256=sha256_hex(canonical),
             idempotency_key_hash=sha256_hex(idempotency_key) if idempotency_key else None,
         )

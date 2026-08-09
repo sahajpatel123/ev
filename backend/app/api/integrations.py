@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor
+from app.auth import ActorContext, require_actor, require_master, require_reverification
 from app.db import get_session
 from app.integrations import plugins as plugin_service
 from app.integrations import service as integrations
@@ -80,7 +80,7 @@ async def list_integrations(
 async def install_integration(
     data: IntegrationCreate,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> IntegrationOut:
     try:
         row = await integrations.install(session, data, actor=actor)
@@ -107,7 +107,7 @@ async def update_integration_scopes(
     integration_id: UUID,
     data: IntegrationScopeUpdate,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> IntegrationOut:
     try:
         result = await integrations.update_scopes(session, integration_id, data, actor=actor)
@@ -122,7 +122,7 @@ async def revoke_integration(
     integration_id: UUID,
     reason: str = "user revoked",
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> IntegrationOut:
     try:
         result = await integrations.revoke(session, integration_id, actor=actor, reason=reason)
@@ -146,7 +146,7 @@ async def store_oauth_credential(
     integration_id: UUID,
     data: IntegrationCredentialCreate,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> IntegrationCredentialOut:
     try:
         result = await integrations.store_oauth(session, integration_id, data, actor=actor)
@@ -163,7 +163,7 @@ async def store_oauth_credential(
 async def list_credentials(
     integration_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> list[IntegrationCredentialOut]:
     try:
         row = await session.get(Integration, integration_id)
@@ -181,7 +181,7 @@ async def list_credentials(
 async def refresh_oauth_credential(
     integration_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> IntegrationCredentialOut:
     try:
         result = await integrations.refresh_oauth(session, integration_id, actor=actor)
@@ -199,7 +199,7 @@ async def refresh_oauth_credential(
 async def rotate_webhook_secret(
     integration_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> WebhookSecretOut:
     try:
         result = await integrations.create_webhook_secret(session, integration_id, actor=actor)
@@ -222,8 +222,9 @@ async def run_integration_action(
     integration_id: UUID,
     data: IntegrationActionRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_reverification("integration.action")),
 ) -> IntegrationActionOut:
+    actor = ctx.actor
     try:
         result = await integrations.execute_action(
             session,
@@ -294,7 +295,7 @@ async def list_plugins(
 async def submit_plugin(
     data: PluginManifest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> PluginOut:
     try:
         row = await plugin_service.submit(session, data.model_dump(), actor=actor)
@@ -320,7 +321,7 @@ async def get_plugin(
 async def approve_plugin(
     plugin_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> PluginOut:
     try:
         result = await plugin_service.approve(session, plugin_id, actor=actor)
@@ -335,7 +336,7 @@ async def reject_plugin(
     plugin_id: UUID,
     data: PluginRejectRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> PluginOut:
     try:
         result = await plugin_service.reject(session, plugin_id, actor=actor, reason=data.reason)
@@ -349,7 +350,7 @@ async def reject_plugin(
 async def disable_plugin(
     plugin_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> PluginOut:
     try:
         result = await plugin_service.set_enabled(session, plugin_id, actor=actor, enabled=False)
@@ -363,7 +364,7 @@ async def disable_plugin(
 async def enable_plugin(
     plugin_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> PluginOut:
     try:
         result = await plugin_service.set_enabled(session, plugin_id, actor=actor, enabled=True)
@@ -382,8 +383,9 @@ async def run_plugin_command(
     command_name: str,
     data: PluginCommandRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_reverification("integration.action")),
 ) -> PluginCommandOut:
+    actor = ctx.actor
     try:
         result = await plugin_service.run_command(
             session,

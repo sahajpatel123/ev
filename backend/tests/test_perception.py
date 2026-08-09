@@ -212,6 +212,46 @@ async def test_perception_signals_use_recent_permissioned_events_only(
     assert "audio_in_call" not in predictions
 
 
+async def test_screen_model_context_uses_derived_fields_not_raw_text(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    await client.post(
+        "/v1/live/events",
+        json={
+            "channel": "screen-activity",
+            "kind": "screen",
+            "events": [
+                {
+                    "event_type": "focus_change",
+                    "payload": {
+                        "app": "Xcode",
+                        "code_file": "retrieval.py",
+                        "document": "EV Architecture",
+                        "meeting": "standup",
+                        "text": "raw screen pixels would never belong here",
+                    },
+                }
+            ],
+        },
+    )
+
+    user_state = await build_user_state(db_session, access="user")
+    screen_lines = [line for line in user_state.live_context if "screen-activity" in line]
+    assert screen_lines
+    assert "app=Xcode" in screen_lines[0]
+    assert "code_file=retrieval.py" in screen_lines[0]
+    assert "document=EV Architecture" in screen_lines[0]
+    assert "meeting=standup" in screen_lines[0]
+    assert "raw screen pixels" not in screen_lines[0]
+
+    model_state = await build_user_state(db_session, access="model")
+    model_lines = [line for line in model_state.live_context if "screen-activity" in line]
+    assert model_lines
+    assert "code_file=retrieval.py" in model_lines[0]
+    assert "raw screen pixels" not in model_lines[0]
+
+
 class FakeVisionProvider:
     """Deterministic vision-capable provider used only in tests."""
 

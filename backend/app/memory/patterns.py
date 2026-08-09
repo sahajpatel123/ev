@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from collections.abc import Sequence
 from datetime import timedelta
 from uuid import uuid4
 
@@ -144,7 +145,7 @@ class PatternEngine:
     async def detect_stalled_goals(
         self,
         *,
-        rows: list[Event],
+        rows: Sequence[Event],
         anchor,
         window_days: int,
         recent_days: int,
@@ -222,7 +223,7 @@ class PatternEngine:
     async def detect_stalled_projects(
         self,
         *,
-        rows: list[Event],
+        rows: Sequence[Event],
         anchor,
         window_days: int,
         recent_days: int,

@@ -272,6 +272,7 @@ class Device(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_reason: Mapped[str | None] = mapped_column(String(256))
     capabilities: Mapped[list] = mapped_column(JSONType, default=list)
 
 
@@ -1335,6 +1336,30 @@ class TrainingCorpusSnapshot(Base):
     consent_id: Mapped[UUID | None] = mapped_column(ForeignKey("consent_records.id"))
     supersedes_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("training_corpus_snapshots.id")
+    )
+    redacted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class FilterRecalibration(Base):
+    """Versioned filter self-improvement report driven by the filter ledger.
+
+    Ledger aggregates (block rate, over-refinement, redactions, repairs) plus
+    user correction/usefulness signals produce deterministic threshold
+    proposals. Snapshots are consent-gated, rollback-able, and erasable.
+    """
+
+    __tablename__ = "filter_recalibrations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    metrics: Mapped[dict] = mapped_column(JSONType, default=dict)
+    proposals: Mapped[list] = mapped_column(JSONType, default=list)
+    reason_for_change: Mapped[str] = mapped_column(Text, default="ledger-driven recalibration")
+    consent_id: Mapped[UUID | None] = mapped_column(ForeignKey("consent_records.id"))
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("filter_recalibrations.id")
     )
     redacted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

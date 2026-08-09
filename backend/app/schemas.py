@@ -1430,6 +1430,12 @@ class GearSnapshotOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class GearScanResponse(BaseModel):
+    scanned_devices: int
+    alerts_created: list[AlertOut] = Field(default_factory=list)
+    duplicates_skipped: int = 0
+
+
 # --------------------------------------------------------------------------- #
 # Decision intelligence
 # --------------------------------------------------------------------------- #

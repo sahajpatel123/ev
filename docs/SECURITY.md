@@ -92,6 +92,18 @@ content is redacted at the boundary.
 - Backup destination is user-controlled (external disk, Tailscale NAS, user's own
   S3) — never a third-party default.
 
+**Implemented (v1):** `POST /v1/backup` writes an authenticated-encrypted
+`ev.backup.v1` bundle (scrypt-derived Fernet key from a user-held passphrase,
+independent of `EV_MASTER_KEY`) containing the immutable event log, attachment
+metadata, registered devices, the access log, and the derived-memory snapshot.
+`POST /v1/backup/verify` decrypts and checksum-verifies a bundle without
+touching the database. `POST /v1/backup/restore` supports `merge` (deduplicated
+event-sourced restore + rebuild) and `wipe` (confirmed destructive drill that
+clears the personal-data layer, restores the bundle, and regenerates derived
+memory). All three endpoints require the master key. Tests cover the full
+wipe→restore→verify drill, tamper detection, wrong-passphrase rejection, and
+device-token denial.
+
 ## 8. Model boundary contract (tested)
 
 1. `Retriever.search(access="model")` excludes `never_send_to_model` rows.

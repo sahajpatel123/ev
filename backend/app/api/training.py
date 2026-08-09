@@ -16,6 +16,11 @@ from app.schemas import (
     ConsentGrant,
     ConsentOut,
     ConsentRevoke,
+    FilterRecalibrationBuildResponse,
+    FilterRecalibrationDeleteResponse,
+    FilterRecalibrationOut,
+    FilterRecalibrationRollbackRequest,
+    FilterThresholdProposalOut,
     PersonalizationCalibrateResponse,
     PersonalizationCalibrationOut,
     PersonalizationDeleteResponse,
@@ -40,6 +45,7 @@ from app.schemas import (
 from app.services.access_log import log_access
 from app.training import consent as consent_service
 from app.training import corpus as corpus_service
+from app.training import filter_improvement as filter_improvement_service
 from app.training import personalization as personalization_service
 from app.training.consent import ConsentRequiredError
 from app.utils.text import utcnow
@@ -449,3 +455,86 @@ async def corpus_delete(
     )
     await session.commit()
     return TrainingCorpusDeleteResponse(deleted=deleted, redacted=True)
+
+
+# --------------------------------------------------------------------------- #
+# Filter self-improvement — ledger-driven recalibration reports
+# --------------------------------------------------------------------------- #
+
+
+@router.post(
+    "/filter/self-improve",
+    response_model=FilterRecalibrationBuildResponse,
+    status_code=201,
+)
+async def filter_self_improve(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> FilterRecalibrationBuildResponse:
+    try:
+        row = await filter_improvement_service.recalibrate(session, actor=actor)
+    except ConsentRequiredError as exc:
+        raise _training_http(exc, track="filter_self_improvement") from exc
+    await session.commit()
+    return FilterRecalibrationBuildResponse(
+        recalibration=FilterRecalibrationOut.model_validate(row),
+        proposals=[FilterThresholdProposalOut.model_validate(p) for p in row.proposals],
+        applied=False,
+    )
+
+
+@router.get("/filter/recalibration", response_model=FilterRecalibrationOut | None)
+async def filter_recalibration(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> FilterRecalibrationOut | None:
+    row = await filter_improvement_service.current_recalibration(session)
+    if row is None:
+        return None
+    return FilterRecalibrationOut.model_validate(row)
+
+
+@router.get("/filter/recalibration/history", response_model=list[FilterRecalibrationOut])
+async def filter_recalibration_history(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[FilterRecalibrationOut]:
+    rows = await filter_improvement_service.list_recalibrations(session)
+    return [FilterRecalibrationOut.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/filter/recalibration/rollback",
+    response_model=FilterRecalibrationOut,
+)
+async def filter_recalibration_rollback(
+    data: FilterRecalibrationRollbackRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> FilterRecalibrationOut:
+    try:
+        row = await filter_improvement_service.rollback(
+            session,
+            target_version=data.target_version,
+            actor=actor,
+            reason=data.reason,
+        )
+    except (ConsentRequiredError, KeyError) as exc:
+        raise _training_http(exc, track="filter_self_improvement") from exc
+    await session.commit()
+    return FilterRecalibrationOut.model_validate(row)
+
+
+@router.post(
+    "/filter/recalibration/delete",
+    response_model=FilterRecalibrationDeleteResponse,
+)
+async def filter_recalibration_delete(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> FilterRecalibrationDeleteResponse:
+    deleted = await filter_improvement_service.delete_all(
+        session, actor=actor, reason="user deleted filter recalibration data"
+    )
+    await session.commit()
+    return FilterRecalibrationDeleteResponse(deleted=deleted, redacted=True)

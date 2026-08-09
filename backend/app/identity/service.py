@@ -253,7 +253,7 @@ async def redeem_recovery_code(
         select(RecoveryCode).where(RecoveryCode.code_hash == code_hash)
     )
     row = result.scalar_one_or_none()
-    expires_at = as_utc(row.expires_at)
+    expires_at = as_utc(row.expires_at) if row is not None else None
     if (
         row is None
         or row.owner_id != owner.id
@@ -370,7 +370,7 @@ async def consume_reverification(
     )
     proof = result.scalar_one_or_none()
     now = utcnow()
-    proof_expires_at = as_utc(proof.expires_at)
+    proof_expires_at = as_utc(proof.expires_at) if proof is not None else None
     if (
         proof is None
         or proof.purpose != purpose

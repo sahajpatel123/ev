@@ -391,10 +391,13 @@ credentials are redacted, snapshots are deterministic (content hash),
 rollback-able, exportable, and erased by data-subject erasure and retention
 sweeps (`/v1/training/corpus/*`).
 
-### 7.5 Filter self-improvement — **Design**
+### 7.5 Filter self-improvement — **Built**
 Ledger aggregates (defect precision/recall, over-refinement, correction rate)
 recalibrate thresholds monthly. Direction: automate the report and threshold
-proposals.
+proposals. Implemented: consent-gated, versioned recalibration reports from
+ledger aggregates (blocks, redactions, repairs, over-refinement) plus user
+correction/usefulness signals, with deterministic threshold proposals,
+rollback, history, and erasure (`/v1/training/filter/*`).
 
 ### 7.6 Personalization privacy & consent — **Built**
 Every training track requires explicit consent, data deletion, and

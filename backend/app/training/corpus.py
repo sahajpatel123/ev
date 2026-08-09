@@ -74,13 +74,14 @@ async def _filter_entries(session: AsyncSession) -> list[dict]:
     )
     entries: list[dict] = []
     for row in rows:
-        if row.stage in EXCLUDED_FILTER_STAGES or not (row.final_text or "").strip():
+        text = (row.final_text or "").strip()
+        if row.stage in EXCLUDED_FILTER_STAGES or not text:
             continue
         entries.append(
             {
                 "kind": "filter",
                 "role": "assistant",
-                "text": _scrub(row.final_text),
+                "text": _scrub(text),
                 "source": f"filter_ledger:{row.id}",
                 "signals": {
                     "stage": row.stage,
