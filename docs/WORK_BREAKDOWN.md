@@ -66,8 +66,10 @@ and a "what did I forget?" review surface.
 Every read/write/export/delete is logged with actor, endpoint, resource, and
 request id. The log itself is exportable via `GET /v1/compliance/access-log`
 (paged, actor/action/time filters, owner-trusted, read audited) and pruned by
-the retention sweep (`EV_RETENTION_ACCESS_LOG_DAYS`). Direction: anomaly
-detection on access patterns.
+the retention sweep (`EV_RETENTION_ACCESS_LOG_DAYS`). `GET
+/v1/compliance/anomalies` runs rule-based detection for deletion spikes,
+export/backup bursts, and repeated failed actions; direction: adaptive
+thresholds and ML baselines.
 
 ### 1.9 Export, import, deletion — **Built (partial)**
 Full export bundles events, memories, entities, relationships, conflicts;
@@ -416,11 +418,17 @@ sweeps (`/v1/training/corpus/*`).
 
 ### 7.5 Filter self-improvement — **Built**
 Ledger aggregates (defect precision/recall, over-refinement, correction rate)
-recalibrate thresholds monthly. Direction: automate the report and threshold
-proposals. Implemented: consent-gated, versioned recalibration reports from
+recalibrate thresholds monthly, and an explicitly applied recalibration
+becomes the live filter policy. Direction: automate monthly application and
+reporting. Implemented: consent-gated, versioned recalibration reports from
 ledger aggregates (blocks, redactions, repairs, over-refinement) plus user
-correction/usefulness signals, with deterministic threshold proposals,
-rollback, history, and erasure (`/v1/training/filter/*`).
+correction/usefulness signals, deterministic threshold proposals, an apply
+endpoint that stores the concrete runtime policy (critic iteration cap,
+grounding evidence bar, input-guard severity, persona enforcement, EV Sense
+confidence floor), runtime consumption by the filter and EV Sense, rollback
+that restores the previously applied policy, history, and erasure
+(`/v1/training/filter/*`). Nothing changes at runtime until a report is
+explicitly applied, and revocation/deletion returns the system to defaults.
 
 ### 7.6 Personalization privacy & consent — **Built**
 Every training track requires explicit consent, data deletion, and

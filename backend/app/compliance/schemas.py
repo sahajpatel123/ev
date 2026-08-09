@@ -70,3 +70,18 @@ class AccessLogPageOut(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class AccessAnomalyOut(BaseModel):
+    kind: str
+    severity: str
+    actor: str
+    count: int
+    window_minutes: int
+    detail: str
+
+
+class AccessAnomaliesOut(BaseModel):
+    detected_at: datetime
+    window_minutes: int
+    anomalies: list[AccessAnomalyOut] = Field(default_factory=list)

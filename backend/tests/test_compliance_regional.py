@@ -377,3 +377,59 @@ async def test_access_log_endpoint_requires_owner_trust(
     async with plain:
         resp = await plain.get("/v1/compliance/access-log")
     assert resp.status_code == 403
+
+
+async def test_access_anomaly_detection_rules(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    now = utcnow()
+    rows = [
+        AccessLog(actor="bot", action="data_erasure", occurred_at=now),
+        AccessLog(actor="bot", action="data_erasure", occurred_at=now),
+        AccessLog(actor="bot", action="data_erasure", occurred_at=now),
+        AccessLog(actor="bot", action="data_erasure", occurred_at=now),
+        AccessLog(actor="bot", action="data_erasure", occurred_at=now),
+        AccessLog(actor="master", action="voice_export", occurred_at=now),
+        AccessLog(actor="master", action="voice_export", occurred_at=now),
+        AccessLog(actor="master", action="voice_export", occurred_at=now),
+        *[
+            AccessLog(actor="attacker", action="voice_verify_failed", occurred_at=now)
+            for _ in range(10)
+        ],
+        # Outside the window: must not inflate counts.
+        AccessLog(
+            actor="bot",
+            action="data_erasure",
+            occurred_at=now - timedelta(days=1),
+        ),
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    resp = await client.get("/v1/compliance/anomalies?window_minutes=60")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["window_minutes"] == 60
+    kinds = {anomaly["kind"] for anomaly in body["anomalies"]}
+    assert {"deletion_spike", "export_spike", "failure_burst"} <= kinds
+
+    deletion = next(
+        anomaly for anomaly in body["anomalies"] if anomaly["kind"] == "deletion_spike"
+    )
+    assert deletion["actor"] == "bot"
+    assert deletion["count"] == 5
+    assert deletion["severity"] == "high"
+
+    export = next(
+        anomaly for anomaly in body["anomalies"] if anomaly["kind"] == "export_spike"
+    )
+    assert export["actor"] == "master"
+    assert export["count"] == 3
+
+    # The scan itself is audited.
+    audit_rows = (
+        await db_session.execute(
+            select(AccessLog).where(AccessLog.action == "access_anomaly_scan")
+        )
+    ).scalars().all()
+    assert len(audit_rows) == 1

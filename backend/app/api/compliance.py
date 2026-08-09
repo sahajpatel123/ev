@@ -7,9 +7,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_actor, require_master, require_owner_trust
+from app.compliance.anomaly import detect_access_anomalies
 from app.compliance.erasure import erase_biometric_data, retention_sweep
 from app.compliance.policy import policy_summary
 from app.compliance.schemas import (
+    AccessAnomaliesOut,
+    AccessAnomalyOut,
     AccessLogEntryOut,
     AccessLogPageOut,
     CompliancePolicyOut,
@@ -130,4 +133,38 @@ async def access_log_page(
         total=int(total),
         limit=limit,
         offset=offset,
+    )
+
+
+@router.get("/anomalies", response_model=AccessAnomaliesOut)
+async def access_anomalies(
+    window_minutes: int = Query(default=60, ge=5, le=1440),
+    deletion_threshold: int = Query(default=5, ge=1, le=1000),
+    export_threshold: int = Query(default=3, ge=1, le=1000),
+    failure_threshold: int = Query(default=10, ge=1, le=1000),
+    session: AsyncSession = Depends(get_session),
+    ctx=Depends(require_owner_trust),
+) -> AccessAnomaliesOut:
+    """Rule-based anomaly scan over recent access-log patterns."""
+    anomalies = await detect_access_anomalies(
+        session,
+        window_minutes=window_minutes,
+        deletion_threshold=deletion_threshold,
+        export_threshold=export_threshold,
+        failure_threshold=failure_threshold,
+    )
+    await log_access(
+        session,
+        actor=ctx.actor,
+        action="access_anomaly_scan",
+        endpoint="GET /v1/compliance/anomalies",
+        resource_type="access_log",
+        resource_ids=[],
+        details={"window_minutes": window_minutes, "anomalies": len(anomalies)},
+    )
+    await session.commit()
+    return AccessAnomaliesOut(
+        detected_at=utcnow(),
+        window_minutes=window_minutes,
+        anomalies=[AccessAnomalyOut(**item) for item in anomalies],
     )
