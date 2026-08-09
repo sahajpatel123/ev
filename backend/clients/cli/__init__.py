@@ -324,6 +324,27 @@ async def card(
     return resp.json()
 
 
+async def quickcard(
+    topic: str,
+    *,
+    stakes: str | None = None,
+    context: str | None = None,
+    ttl_seconds: int = 3600,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """HUD tactical quick card (ev.hud.quickcard.v1), cached < 800 ms reads."""
+    params: dict[str, Any] = {"topic": topic, "ttl_seconds": ttl_seconds}
+    if stakes:
+        params["stakes"] = stakes
+    if context:
+        params["context"] = context
+    c = client or _client()
+    resp = await c.get("/v1/tactical/quick", params=params)
+    if resp.status_code != 200:
+        raise CliError(f"quickcard failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
 async def doctor(
     *,
     client: httpx.AsyncClient | None = None,
@@ -530,6 +551,28 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"[{hud['schema_version']}] {hud['title']} (priority {hud['priority']})")
         print(hud["body"])
         return 0
+    if cmd == "quickcard":
+        async with _client() as client:
+            hud = await quickcard(
+                args.topic,
+                stakes=args.stakes,
+                context=args.context,
+                ttl_seconds=args.ttl,
+                client=client,
+            )
+        print(f"[{hud['schema_version']}] {hud['objective']}")
+        print(hud["summary"])
+        parts = []
+        if hud.get("next_action"):
+            parts.append(f"next: {hud['next_action']}")
+        if hud.get("top_risk"):
+            parts.append(f"risk: {hud['top_risk']}")
+        parts.append(
+            f"people {hud.get('people_count', 0)} · options {hud.get('options_count', 0)} "
+            f"· history {hud.get('decision_history_count', 0)}"
+        )
+        print(" | ".join(parts))
+        return 0
     if cmd == "doctor":
         async with _client() as client:
             health = await doctor(client=client)
@@ -655,6 +698,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_restore.add_argument("memory_id")
 
     sub.add_parser("card", help="render the ev.hud.card.v1 status card")
+    p_quickcard = sub.add_parser(
+        "quickcard",
+        help="render the ev.hud.quickcard.v1 tactical quick card",
+    )
+    p_quickcard.add_argument("topic", help="briefing topic, e.g. 'Renegotiation with X'")
+    p_quickcard.add_argument("--stakes", default=None, help="stakes context")
+    p_quickcard.add_argument("--context", default=None, help="extra context")
+    p_quickcard.add_argument("--ttl", type=int, default=3600, help="cache TTL seconds")
     sub.add_parser("doctor", help="EV health check")
     sub.add_parser("checkup", help="run full diagnostics/calibration")
 

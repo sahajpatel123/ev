@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sahajpatel123/ev/blob/main/docs/schemas/ev-hud-quickcard-v1.json",
+  "title": "EV tactical quick card",
+  "description": "ev.hud.quickcard.v1 — compact tactical briefing for <800 ms HUD reads on Watch complications, widgets, web, and CLI (`ev quickcard`).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "objective",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "ev.hud.quickcard.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "objective": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "next_action": {
+      "type": ["string", "null"]
+    },
+    "top_risk": {
+      "type": ["string", "null"]
+    },
+    "people_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "options_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "decision_history_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "meta": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

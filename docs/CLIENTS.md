@@ -88,6 +88,7 @@ ev audit <memory_id>                             # why does EV know this?
 ev correct <memory_id> "fixed text" --reason ...
 ev forget <memory_id> | ev restore <memory_id>
 ev card                                          # ev.hud.card.v1 text render
+ev quickcard "Renegotiation with X"               # ev.hud.quickcard.v1 (<800 ms)
 ev doctor | ev checkup                           # health / full calibration
 ev export --output ev-bundle.json
 ev import ev-bundle.json --mode merge            # event-sourced restore/merge

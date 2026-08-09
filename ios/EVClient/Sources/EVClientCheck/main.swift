@@ -62,6 +62,37 @@ do {
     print("FAIL: unsupported HUD: \(error)")
 }
 
+// 7. Tactical quick card: decode, validate, render consistently.
+do {
+    let json = """
+    {
+      "schema_version": "ev.hud.quickcard.v1",
+      "generated_at": "2026-08-09T12:00:00Z",
+      "objective": "Renegotiation with X",
+      "summary": "2 prior fixed-term wins; cap scope in writing.",
+      "next_action": "Send the draft cap",
+      "top_risk": "Scope creep",
+      "people_count": 3,
+      "options_count": 2,
+      "decision_history_count": 4,
+      "meta": {}
+    }
+    """
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let card = try decoder.decode(HUDQuickCard.self, from: Data(json.utf8))
+    try card.validate()
+    expect(
+        card.renderText().hasPrefix("[ev.hud.quickcard.v1] Renegotiation with X"),
+        "quick card render includes schema + objective"
+    )
+    expect(card.renderText().contains("next: Send the draft cap"), "quick card render includes next action")
+    print("ok: quick card decode/validate/render")
+} catch {
+    failures.append("quick card: \(error)")
+    print("FAIL: quick card: \(error)")
+}
+
 // 2. Capture sends Idempotency-Key and returns the event.
 do {
     var capturedKey: String?

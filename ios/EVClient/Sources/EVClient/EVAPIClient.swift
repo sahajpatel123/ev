@@ -194,6 +194,28 @@ public struct EVAPIClient: Sendable {
         return card
     }
 
+    public func quickCard(
+        topic: String,
+        stakes: String? = nil,
+        context: String? = nil,
+        ttlSeconds: Int = 3600
+    ) async throws -> HUDQuickCard {
+        var items = [
+            URLQueryItem(name: "topic", value: topic),
+            URLQueryItem(name: "ttl_seconds", value: String(ttlSeconds)),
+        ]
+        if let stakes {
+            items.append(URLQueryItem(name: "stakes", value: stakes))
+        }
+        if let context {
+            items.append(URLQueryItem(name: "context", value: context))
+        }
+        let (_, data) = try await send("/v1/tactical/quick", queryItems: items)
+        let card = try decode(HUDQuickCard.self, from: data)
+        try card.validate()
+        return card
+    }
+
     public func health() async throws -> HealthResponse {
         let (_, data) = try await send("/v1/health")
         return try decode(HealthResponse.self, from: data)

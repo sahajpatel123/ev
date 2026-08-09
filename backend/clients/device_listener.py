@@ -105,7 +105,7 @@ class DeviceListener:
 
     async def sync_state(self, since: str | None = None) -> dict:
         """Fetch the convergent cross-device runtime snapshot."""
-        params = {"limit": 200}
+        params: dict[str, str | int] = {"limit": 200}
         if since:
             params["since"] = since
         response = await self.client.get("/v1/runtime/sync", params=params)
