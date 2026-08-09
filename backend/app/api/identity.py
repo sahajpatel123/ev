@@ -6,18 +6,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor_context, require_master, ActorContext
+from app.auth import ActorContext, require_actor_context, require_master
 from app.db import get_session
 from app.identity import service as identity
-from app.models import Device, OwnerIdentity, RecoveryCode
-from app.utils.text import utcnow
+from app.models import Device, RecoveryCode
 from app.schemas import (
     DeviceOut,
     IdentityStatusOut,
     OwnerCreateRequest,
     OwnerCreateResponse,
-    RecoveryCodesResponse,
     RecoveryCodeOut,
+    RecoveryCodesResponse,
     RecoveryRedeemRequest,
     RecoveryRedeemResponse,
     ReverificationConsumeRequest,
@@ -26,6 +25,7 @@ from app.schemas import (
     ReverificationResponse,
     TrustMatrixOut,
 )
+from app.utils.text import utcnow
 
 router = APIRouter(prefix="/v1/identity", tags=["identity"])
 
