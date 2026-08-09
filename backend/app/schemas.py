@@ -348,6 +348,10 @@ class ExportBundle(BaseModel):
     memories: list[MemoryOut]
     entities: list[dict]
     relationships: list[dict]
+    conflicts: list[ConflictOut] = Field(default_factory=list)
+    attachments: list[AttachmentOut] = Field(default_factory=list)
+    devices: list[DeviceOut] = Field(default_factory=list)
+    access_log: list[AccessLogOut] = Field(default_factory=list)
     conflicts: list[ConflictOut]
 
 
