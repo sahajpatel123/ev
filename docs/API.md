@@ -207,7 +207,10 @@ ledger; `GET /v1/ops/center` includes the five most recent commands.
 - `POST /v1/gateway/chat` — messages + optional tools + request envelope
   (`request_id`, `strategy`, `memories`, `context`) → `GatewayChatResponse`
   with provider, model, latency, and per-call tool-validation outcomes.
-- `POST /v1/gateway/tools` — declarative tool dispatch (used by orchestrator).
+- `POST /v1/gateway/tools` — declarative tool dispatch (used by orchestrator);
+  accepts `allow_sensitive` and `request_id`, validates arguments against the
+  registry schema, enforces the sensitive-tool permission gate, and writes every
+  invocation (ok/denied/rejected/error) to the access log.
 - `GET /v1/gateway/models` — provider + available models.
 - `GET /v1/gateway/calls?limit=&request_id=` — audit view of model calls
   (provider, model, latency, usage, envelope, tool validation, errors).
