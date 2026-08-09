@@ -258,3 +258,79 @@ async def test_follow_up_window_expires(client: AsyncClient, db_session: AsyncSe
     assert resp.json()["detail"] == (
         "30-second follow-up window expired — say 'EVIE' to wake again"
     )
+
+
+async def _establish_owner(client: AsyncClient) -> None:
+    resp = await client.post("/v1/identity/owner", json={"display_name": "EVIE Owner"})
+    assert resp.status_code == 201, resp.text
+
+
+async def _verified_session(client: AsyncClient, device_id: str) -> dict:
+    wake_out = await wake(client, device_id)
+    verify_out = await verify(
+        client,
+        session_id=wake_out["session_id"],
+        nonce=wake_out["challenge_nonce"],
+        phrase=wake_out["challenge_phrase"],
+        samples=[b64(SAMPLE_A)],
+    )
+    assert verify_out["verified"] is True
+    return wake_out
+
+
+async def test_sensitive_voice_command_requires_reverification(
+    client: AsyncClient,
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    await _establish_owner(client)
+    session = await _verified_session(client, "mac-sensitive")
+
+    resp = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": session["session_id"],
+            "text": "Delete all my memories",
+        },
+    )
+    assert resp.status_code == 403
+    assert resp.headers.get("x-error-code") == "reverification_required"
+
+    resp = await client.post(
+        "/v1/identity/reverification",
+        json={
+            "purpose": "voice.sensitive_action",
+            "voice_session_id": session["session_id"],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["token"]
+
+    resp = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": session["session_id"],
+            "text": "Delete all my memories",
+            "reverify_token": token,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["reply"]
+
+
+async def test_sensitive_voice_command_rejects_bad_proof(client: AsyncClient) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    await _establish_owner(client)
+    session = await _verified_session(client, "mac-badproof")
+
+    resp = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": session["session_id"],
+            "text": "Transfer money to an external account",
+            "reverify_token": "bogus-token",
+        },
+    )
+    assert resp.status_code == 403
+    assert resp.headers.get("x-error-code") == "reverification_rejected"

@@ -38,6 +38,7 @@ from app.voice.contracts import (
     WakeWordEngine,
 )
 from app.voice.security import decrypt_payload, encrypt_payload
+from app.voice.sensitive import REVERIFY_PURPOSE, classify_sensitive
 from app.voice.speaker import ProfileSpeakerVerifier
 from app.voice.tts import get_synthesizer, speech_style_from_strategy
 from app.voice.wake import default_wake_engine
@@ -891,6 +892,8 @@ class VoiceRuntime:
         *,
         session_id,
         text: str | None = None,
+        reverify_token: str | None = None,
+        ctx=None,
         audio_b64: str | None = None,
         audio_ref: str | None = None,
         language: str = "en",
@@ -941,6 +944,34 @@ class VoiceRuntime:
             text_hint=text,
             language=language,
         )
+        sensitive_purpose = classify_sensitive(transcript.text)
+        reverified = False
+        if sensitive_purpose is not None:
+            if not reverify_token or ctx is None:
+                raise VoiceError(
+                    "Re-verification required for sensitive voice command "
+                    f"({sensitive_purpose}). Issue a proof via "
+                    "POST /v1/identity/reverification with purpose "
+                    f"{REVERIFY_PURPOSE!r}, then retry with the token.",
+                    status=403,
+                    code="reverification_required",
+                )
+            from app.identity.service import IdentityError, consume_reverification
+
+            try:
+                await consume_reverification(
+                    self.session,
+                    token=reverify_token,
+                    purpose=REVERIFY_PURPOSE,
+                    ctx=ctx,
+                )
+            except IdentityError as exc:
+                raise VoiceError(
+                    exc.message,
+                    status=exc.status,
+                    code=exc.code,
+                ) from exc
+            reverified = True
         thread = await conversation.resolve_thread(self.session, conversation_id)
         from app.api.core import run_chat_pipeline
 
@@ -976,6 +1007,8 @@ class VoiceRuntime:
             asr_provider=transcript.provider,
             tts_provider=synthesis.provider,
             model=pipeline["result"].model,
+            sensitive_purpose=sensitive_purpose,
+            reverified=reverified,
         )
         return UtteranceOutcome(
             session_id=str(row.id),

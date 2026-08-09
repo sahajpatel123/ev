@@ -59,10 +59,12 @@ OWNER_ACTIONS = {
 # Sensitive actions that require a fresh, purpose-bound re-verification proof
 # even when the voice session is already unlocked.
 REVERIFY_ACTIONS = {
+    "integration.action",
     "memory.delete",
     "voice.revoke",
     "voice.delete",
     "recovery.rotate",
+    "voice.sensitive_action",
 }
 
 RECOVERY_CODE_COUNT = 8
@@ -103,7 +105,7 @@ def trust_allows(action: str, ctx: ActorContext, device: Device | None = None) -
         return True
     if device is None or device.id != ctx.device_id:
         return False
-    required = OWNER_ACTIONS.get(action, TRUST_DEVICE)
+    required = TRUST_OWNER if action in OWNER_ACTIONS else TRUST_DEVICE
     return TRUST_RANK.get(level, 0) >= TRUST_RANK[required]
 
 
@@ -116,9 +118,11 @@ def _new_recovery_code() -> str:
     return "-".join(groups)
 
 
-def as_utc(value: datetime | None) -> datetime | None:
-    """SQLite returns naive datetimes; normalize to tz-aware UTC for comparisons."""
-    if value is None or value.tzinfo is not None:
+def as_utc(value: datetime | None) -> datetime:
+    """Normalize to tz-aware UTC; None means 'no expiry' and compares as now."""
+    if value is None:
+        return utcnow()
+    if value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
 
@@ -249,12 +253,13 @@ async def redeem_recovery_code(
         select(RecoveryCode).where(RecoveryCode.code_hash == code_hash)
     )
     row = result.scalar_one_or_none()
+    expires_at = as_utc(row.expires_at)
     if (
         row is None
         or row.owner_id != owner.id
         or row.consumed_at is not None
         or row.revoked_at is not None
-        or (row.expires_at is not None and as_utc(row.expires_at) < now)
+        or (expires_at is not None and expires_at < now)
     ):
         owner.recovery_failures += 1
         if owner.recovery_failures >= RECOVERY_MAX_FAILURES:
@@ -365,11 +370,12 @@ async def consume_reverification(
     )
     proof = result.scalar_one_or_none()
     now = utcnow()
+    proof_expires_at = as_utc(proof.expires_at)
     if (
         proof is None
         or proof.purpose != purpose
         or proof.consumed_at is not None
-        or as_utc(proof.expires_at) < now
+        or (proof_expires_at is not None and proof_expires_at < now)
         or (proof.device_id is not None and proof.device_id != ctx.device_id)
     ):
         raise IdentityError(

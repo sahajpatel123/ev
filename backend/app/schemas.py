@@ -256,6 +256,37 @@ class MemoryListResponse(BaseModel):
     total: int
 
 
+class WeekRecallMemoryOut(BaseModel):
+    id: UUID
+    memory_type: str
+    text: str
+    importance: float
+    event_time: datetime
+    payload: dict = Field(default_factory=dict)
+
+
+class WeekRecallConsolidationOut(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    summary: str
+    topics: list[dict] = Field(default_factory=list)
+    event_count: int = 0
+
+
+class WeekRecallOut(BaseModel):
+    week_start: datetime
+    week_end: datetime
+    as_of: datetime
+    events: list[EventOut] = Field(default_factory=list)
+    memories: list[WeekRecallMemoryOut] = Field(default_factory=list)
+    decisions: list[WeekRecallMemoryOut] = Field(default_factory=list)
+    goals: list[WeekRecallMemoryOut] = Field(default_factory=list)
+    consolidation: WeekRecallConsolidationOut | None = None
+    event_count: int = 0
+    memory_count: int = 0
+    top_topics: list[str] = Field(default_factory=list)
+
+
 class MemoryChangeGroup(BaseModel):
     version_group: UUID
     memory_type: str
@@ -354,6 +385,58 @@ class ConsolidationOut(BaseModel):
     period_end: datetime
     executed_at: datetime
     written: list[UUID]
+
+
+# --------------------------------------------------------------------------- #
+# Backup & restore
+# --------------------------------------------------------------------------- #
+
+
+class BackupCreateRequest(BaseModel):
+    passphrase: str = Field(min_length=8, max_length=512)
+    destination: str | None = Field(default=None, max_length=1024)
+
+
+class BackupOut(BaseModel):
+    path: str
+    schema_version: str
+    created_at: datetime
+    checksum: str
+    size_bytes: int
+    counts: dict
+
+
+class BackupVerifyRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=1024)
+    passphrase: str = Field(min_length=1, max_length=512)
+
+
+class BackupVerifyOut(BaseModel):
+    valid: bool
+    schema_version: str
+    created_at: datetime | None = None
+    counts: dict = Field(default_factory=dict)
+    checksum_match: bool = False
+    reason: str | None = None
+
+
+class BackupRestoreRequest(BaseModel):
+    path: str = Field(min_length=1, max_length=1024)
+    passphrase: str = Field(min_length=8, max_length=512)
+    mode: Literal["merge", "wipe"] = "merge"
+    confirm_wipe: bool = False
+
+
+class BackupRestoreOut(BaseModel):
+    mode: str
+    restored_at: datetime
+    events_restored: int
+    events_skipped: int
+    attachments_restored: int
+    devices_restored: int
+    access_log_restored: int
+    backup_counts: dict
+    rebuild: dict
 
 
 # --------------------------------------------------------------------------- #
@@ -846,6 +929,7 @@ class VoiceUtteranceRequest(BaseModel):
     text: str | None = Field(default=None, max_length=200_000)
     audio_b64: str | None = None
     audio_ref: str | None = None
+    reverify_token: str | None = None
     language: str = "en"
     conversation_id: UUID | None = None
     follow_up: bool = False
@@ -902,6 +986,20 @@ class FocusDesignationOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class FocusSuggestion(BaseModel):
+    label: str
+    kind: Literal["task", "project", "person", "topic", "goal"]
+    reason: str
+    source: str
+    score: float = Field(default=0.0, ge=0.0, le=1.0)
+    target_id: str | None = None
+
+
+class FocusSuggestResponse(BaseModel):
+    generated_at: datetime
+    suggestions: list[FocusSuggestion] = Field(default_factory=list)
 
 
 class FleetTaskCreate(BaseModel):
@@ -1127,7 +1225,14 @@ class RecoveryRedeemResponse(BaseModel):
 
 
 class ReverificationRequest(BaseModel):
-    purpose: Literal["memory.delete", "voice.revoke", "voice.delete", "recovery.rotate"]
+    purpose: Literal[
+        "integration.action",
+        "memory.delete",
+        "voice.revoke",
+        "voice.delete",
+        "recovery.rotate",
+        "voice.sensitive_action",
+    ]
     voice_session_id: UUID | None = None
 
 
@@ -1139,7 +1244,14 @@ class ReverificationResponse(BaseModel):
 
 class ReverificationConsumeRequest(BaseModel):
     token: str = Field(min_length=8, max_length=256)
-    purpose: Literal["memory.delete", "voice.revoke", "voice.delete", "recovery.rotate"]
+    purpose: Literal[
+        "integration.action",
+        "memory.delete",
+        "voice.revoke",
+        "voice.delete",
+        "recovery.rotate",
+        "voice.sensitive_action",
+    ]
 
 
 class ReverificationConsumeResponse(BaseModel):
@@ -2431,3 +2543,48 @@ class TrainingCorpusDeleteResponse(BaseModel):
 class TrainingCorpusExportOut(BaseModel):
     snapshot: TrainingCorpusSnapshotOut
     entries: list[TrainingCorpusEntryOut] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Training & personalization — filter self-improvement from the ledger
+# --------------------------------------------------------------------------- #
+
+
+class FilterThresholdProposalOut(BaseModel):
+    name: str
+    direction: Literal["increase", "decrease", "keep"]
+    current_value: float | None = None
+    target_value: float | None = None
+    rationale: str
+    evidence: dict = Field(default_factory=dict)
+
+
+class FilterRecalibrationOut(BaseModel):
+    id: UUID
+    version: int
+    is_current: bool
+    metrics: dict
+    proposals: list[FilterThresholdProposalOut] = Field(default_factory=list)
+    reason_for_change: str
+    consent_id: UUID | None = None
+    supersedes_id: UUID | None = None
+    redacted: bool = False
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class FilterRecalibrationBuildResponse(BaseModel):
+    recalibration: FilterRecalibrationOut
+    proposals: list[FilterThresholdProposalOut] = Field(default_factory=list)
+    applied: bool = False
+
+
+class FilterRecalibrationRollbackRequest(BaseModel):
+    target_version: int = Field(ge=1)
+    reason: str = "rollback filter recalibration"
+
+
+class FilterRecalibrationDeleteResponse(BaseModel):
+    deleted: int
+    redacted: bool = True

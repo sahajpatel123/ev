@@ -262,6 +262,8 @@ async def utterance(
             text=data.text,
             audio_b64=data.audio_b64,
             audio_ref=data.audio_ref,
+            reverify_token=data.reverify_token,
+            ctx=ctx,
             language=data.language,
             conversation_id=data.conversation_id,
             follow_up=data.follow_up,
