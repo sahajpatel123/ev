@@ -112,11 +112,14 @@ The last ~10 turns are injected as a continuous window so "continue" works
 without restating context. Direction: make the window adaptive (importance and
 recency weighted) and compress older turns into rolling summaries.
 
-### 2.4 1M-token window strategy — **Design**
-The window is a scratch workspace, not a life-dump: rolling summary → recent
-turns → retrieved memories → progressive tool-loaded deep dives. Direction:
-implement a ContextCompiler that plans window usage per request and monitors
-budget in real time.
+### 2.4 1M-token window strategy — **Built**
+The window is a scratch workspace, not a life-dump. `app/context/compiler.py`
+implements the ContextCompiler: deterministic per-request window planning
+(strategy → user state → live context → rollup → retrieved memory → history →
+open questions) with a real-time budget monitor report (per-section tokens,
+included/dropped items, remaining budget). The chat assembler delegates to it
+and depth profiles scale the budget. Direction: expose the plan in chat
+responses and add progressive tool-loaded deep dives.
 
 ### 2.5 Whole-life recall — **Partial**
 "Remember my whole life" = memory store + hierarchical retrieval, not a lifetime
@@ -611,8 +614,10 @@ declared capability: explicit input schema (types, bounds, enums, no unknown
 arguments), output shape, permission scope, read-only boundary, and undoability
 marker. The dispatcher validates arguments, enforces sensitive-tool permission
 gates, rejects unknown tools, checks the declared output shape, and writes a
-full access-log entry for every invocation. Direction: add web, file, code, and
-API tools behind the same permission matrix.
+full access-log entry for every invocation. Chat runs a bounded tool loop (max
+3 rounds) that executes validated calls through the dispatcher and feeds tool
+results back to the provider, with sensitive tools gated per request. Direction:
+add web, file, code, and API tools behind the same permission matrix.
 
 ### 11.2 Tool selection intelligence — **Built**
 Rule-based intent routing covering arithmetic and percentage math, person
