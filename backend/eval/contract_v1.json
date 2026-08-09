@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-08-09T14:29:51.900320+00:00",
+  "locked_at": "2026-08-09T14:34:10.086223+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -306,6 +306,12 @@
     "/v1/live/stream": [
       "get"
     ],
+    "/v1/maintenance/prune-backups": [
+      "post"
+    ],
+    "/v1/maintenance/purge-tombstoned-blobs": [
+      "post"
+    ],
     "/v1/memories": [
       "get"
     ],
@@ -555,33 +561,42 @@
     "/v1/tools": [
       "get"
     ],
+    "/v1/tools/execute": [
+      "post"
+    ],
+    "/v1/tools/files/read": [
+      "post"
+    ],
+    "/v1/tools/files/write": [
+      "post"
+    ],
+    "/v1/training/adapter": [
+      "get"
+    ],
+    "/v1/training/adapter/activate": [
+      "post"
+    ],
+    "/v1/training/adapter/delete": [
+      "post"
+    ],
+    "/v1/training/adapter/register": [
+      "post"
+    ],
+    "/v1/training/adapter/rollback": [
+      "post"
+    ],
+    "/v1/training/adapter/{adapter_id}": [
+      "get"
+    ],
     "/v1/training/consent": [
       "get",
       "post"
     ],
     "/v1/training/consent/{track}/revoke": [
-        "post"
-    ],
-    "/v1/training/adapter": [
-        "get"
-    ],
-    "/v1/training/adapter/{adapter_id}": [
-        "get"
-    ],
-    "/v1/training/adapter/activate": [
-        "post"
-    ],
-    "/v1/training/adapter/delete": [
-        "post"
-    ],
-    "/v1/training/adapter/register": [
-        "post"
-    ],
-    "/v1/training/adapter/rollback": [
-        "post"
+      "post"
     ],
     "/v1/training/corpus/build": [
-        "post"
+      "post"
     ],
     "/v1/training/corpus/current": [
       "get"

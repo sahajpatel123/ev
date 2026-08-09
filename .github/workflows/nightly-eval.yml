@@ -1,0 +1,31 @@
+name: nightly-eval
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --extra s3 --extra dev
+
+      - name: Run evaluation gates
+        working-directory: backend
+        run: uv run python -m app.scripts.eval_gates --report eval/nightly-$(date +%Y%m%d).json
+
+      - name: Upload nightly eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-eval-report
+          path: backend/eval/nightly-*.json
+          if-no-files-found: error

@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --extra s3 --extra dev
+
+      - name: Lint
+        working-directory: backend
+        run: uv run ruff check app clients tests
+
+      - name: Type check
+        working-directory: backend
+        run: uv run mypy app clients
+
+      - name: Test
+        working-directory: backend
+        run: uv run pytest -q
+
+      - name: Evaluation gates (contract, retrieval, filter, voice, latency, restore drill, roadmap)
+        working-directory: backend
+        run: uv run python -m app.scripts.eval_gates --report eval/last-run.json
+
+      - name: Upload eval report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: backend/eval/last-run.json
+          if-no-files-found: error

@@ -21,6 +21,9 @@ five-minute execution loop: API contract drift, filter regressions, retrieval
 quality drift, missing observability, or broken roadmap gates fail the run and
 must be fixed before new behavior ships.
 
+GitHub Actions runs the same gates on every push to `main` (`.github/workflows/ci.yml`)
+and publishes a nightly eval report artifact (`.github/workflows/nightly-eval.yml`).
+
 ## 2. Evaluation gates
 
 | Gate | Checks | Fails when |

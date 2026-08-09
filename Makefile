@@ -30,6 +30,9 @@ compose-down:
 migrate:
 	cd backend && uv run alembic upgrade head
 
+update-contract:
+	cd backend && uv run python -m app.scripts.update_contract
+
 seed:
 	cd backend && uv run python -m app.scripts.seed
 
