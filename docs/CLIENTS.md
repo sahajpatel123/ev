@@ -33,6 +33,9 @@ EVApp
 ### 2.2 Stack
 
 - SwiftUI + MVVM; async/await; URLSession streaming for SSE.
+- Shared client package: `ios/EVClient` (API client, `ev.hud.card.v1` model +
+  compact renderer, offline capture queue with idempotency keys) used by both
+  iPhone and Watch targets; headless validation via `swift run EVClientCheck`.
 - Local store: SQLite/Core Data mirror for offline queue + cached browse.
 - Keychain: master key/device token; biometric unlock option.
 - HealthKit: read HR/HRV/sleep/activity with per-metric permission; no write-back.
