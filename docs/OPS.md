@@ -59,7 +59,9 @@ From `EVALUATION.md` §8 and `DEPLOYMENT.md` §10, enforced in
 
 Measured values live in `/v1/gateway/calls` (latency, provider, model, tokens),
 `/v1/evaluations/summary` (calibration), `/v1/diagnostics/calibrate` (component
-health), `/v1/filter/ledger/aggregate` (filter decisions), and `/v1/ops/center`.
+health), `/v1/filter/ledger/aggregate` (filter decisions), `/v1/ops/center`, and
+`/v1/ops/metrics` (latency percentiles, error counts, and estimated cost vs the
+monthly budget).
 
 ## 5. Failure recovery & graceful degradation
 

@@ -23,19 +23,13 @@ from pathlib import Path
 from typing import cast
 
 # Budgets are engineering invariants from docs/EVALUATION.md §8 and
-# docs/DEPLOYMENT.md §10. Keep them in code so gates can enforce them and the
-# ops center can render them without a second source of truth.
-LATENCY_BUDGETS_MS = {
-    "event_ack": 1000,
-    "chat_first_token": 1500,
-    "timeline_browse": 500,
-    "tactical_briefing": 3000,
-    "tactical_quick_card": 800,
-}
-
-MONTHLY_COST_BUDGET_USD = 40.0
-
-HEALTH_BUDGET_MS = 200
+# docs/DEPLOYMENT.md §10. They live in app.ops.budgets so the eval gates, the
+# ops metrics endpoint, and the ops center share one source of truth.
+from app.ops.budgets import (
+    HEALTH_BUDGET_MS,
+    LATENCY_BUDGETS_MS,
+    MONTHLY_COST_BUDGET_USD,
+)
 
 CONTRACT_MANIFEST = Path(__file__).resolve().parents[2] / "eval" / "contract_v1.json"
 
@@ -446,6 +440,7 @@ def run_observability_gate(spec: dict) -> GateResult:
         ("/v1/evaluations/summary", "get"),
         ("/v1/gateway/calls", "get"),
         ("/v1/ops/center", "get"),
+        ("/v1/ops/metrics", "get"),
         ("/v1/filter/ledger", "get"),
         ("/v1/filter/ledger/aggregate", "get"),
     ]

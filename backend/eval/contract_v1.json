@@ -210,6 +210,9 @@
     "/v1/hud/focus": [
       "get"
     ],
+    "/v1/hud/ops": [
+      "get"
+    ],
     "/v1/hud/route": [
       "get"
     ],
