@@ -397,14 +397,18 @@ usefulness, and recommendation-follow signals, versioned for rollback, applied
 transparently by hybrid retrieval, and fully redactable on request
 (`/v1/training/personalization/*`).
 
-### 7.3 Adapter fine-tuning (LoRA) — **Partial**
+### 7.3 Adapter fine-tuning (LoRA) — **Built (deterministic style adapter)**
 Train an EVIE adapter on filtered responses + user corrections to encode voice,
 style, and working style. Direction: versioned adapters, eval gates, rollback;
 requires corpus from the filter ledger. Implemented: consent-gated versioned
 adapter registry bound to corpus snapshots, deterministic eval gates
 (non-empty corpus, corrections present, no leaked secrets), activate/rollback
-and erasure (`/v1/training/adapter/*`). Actual weight training remains
-provider-dependent (local LoRA or hosted fine-tune).
+and erasure (`/v1/training/adapter/*`), plus a deterministic style-profile
+adapter that learns from rated responses and corrected replies — word-count
+targets per mode, citation/bullet/directness preferences — stored with the
+adapter, applied by the output filter only while consent is active, and fully
+erasable. Actual weight training remains provider-dependent and optional
+(local LoRA or hosted fine-tune).
 
 ### 7.4 Training corpus harvesting — **Built**
 Derive versioned snapshots from events, response logs, and ledger with user
