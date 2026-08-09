@@ -66,6 +66,8 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
 - `POST /v1/live/channels/{id}/events` — single-channel batch
 - `POST /v1/live/events` — cross-channel batch (auto-creates channel)
 - `GET /v1/live/channels/{id}/events`, `GET /v1/live/status`
+- `GET /v1/live/stream` — SSE tail of live events with `access=user|model`
+  privacy slices; `since=` replays the window before tailing
 - `POST /v1/live/rebuild` — deterministic replay of the live stream into the
   derived layer (resets and marks `consumed`)
 - `POST /v1/live/retention` — applies the configured retention window

@@ -383,10 +383,15 @@ Train an EVIE adapter on filtered responses + user corrections to encode voice,
 style, and working style. Direction: versioned adapters, eval gates, rollback;
 requires corpus from the filter ledger.
 
-### 7.4 Training corpus harvesting — **Design**
+### 7.4 Training corpus harvesting — **Built**
 Derive versioned snapshots from events, response logs, and ledger with user
 consent; exclude `never_send_to_model` content. Direction: build the corpus
-pipeline before any fine-tuning.
+pipeline before any fine-tuning. Implemented: consent-gated, versioned corpus
+snapshots from rated response logs, filter-ledger final texts, and normal
+events — `never_send_to_model`/sensitive content is never included,
+credentials are redacted, snapshots are deterministic (content hash),
+rollback-able, exportable, and erased by data-subject erasure and retention
+sweeps (`/v1/training/corpus/*`).
 
 ### 7.5 Filter self-improvement — **Design**
 Ledger aggregates (defect precision/recall, over-refinement, correction rate)

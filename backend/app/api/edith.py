@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ActorContext, require_actor, require_actor_context
@@ -217,6 +220,39 @@ async def live_status(
     actor: str = Depends(require_actor),
 ) -> LiveStatusOut:
     return await live.status(session)
+
+
+@router.get("/live/stream")
+async def live_event_stream(
+    access: str = Query(default="user", pattern="^(user|model)$"),
+    since: datetime | None = Query(default=None),
+    poll_interval: float = Query(default=1.0, ge=0.1, le=30.0),
+    timeout_seconds: float | None = Query(default=None, ge=0.1, le=3600.0),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> StreamingResponse:
+    """SSE tail of newly ingested live events; ``since=`` replays first."""
+    from app.services.live_stream import stream_live_events
+
+    async def event_source():
+        try:
+            async for item in stream_live_events(
+                session,
+                access=access,
+                since=since,
+                poll_interval=poll_interval,
+                timeout_seconds=timeout_seconds,
+            ):
+                yield f"event: live\ndata: {json.dumps(item, default=str)}\n\n"
+            yield "event: done\ndata: {}\n\n"
+        except asyncio.CancelledError:
+            return
+
+    return StreamingResponse(
+        event_source(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/live/rebuild", response_model=LiveRebuildOut)
