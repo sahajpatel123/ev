@@ -26,6 +26,11 @@ def _text(value: Any, limit: int) -> str:
     return str(value)[:limit]
 
 
+def _make_client(timeout: float = 10.0) -> httpx.AsyncClient:
+    """Create the provider HTTP client; a seam for tests to inject a mock provider."""
+    return httpx.AsyncClient(timeout=timeout)
+
+
 @dataclass(frozen=True)
 class AdapterAction:
     name: str
@@ -89,7 +94,7 @@ class Adapter:
             base_url = config.get("base_url")
             if not base_url:
                 raise ValueError("provider=http requires base_url in integration config")
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with _make_client() as client:
                 response = await client.post(
                     f"{base_url.rstrip('/')}/actions/{action}",
                     headers={"Authorization": f"Bearer {token}"},
@@ -116,7 +121,7 @@ class Adapter:
             base_url = config.get("base_url")
             if not base_url:
                 raise ValueError("provider=http requires base_url in integration config")
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with _make_client() as client:
                 response = await client.post(
                     f"{base_url.rstrip('/')}/oauth/refresh",
                     json={"refresh_token": refresh_token},
@@ -151,7 +156,7 @@ class Adapter:
             base_url = config.get("base_url")
             if not base_url:
                 raise ValueError("provider=http requires base_url in integration config")
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with _make_client() as client:
                 response = await client.post(
                     f"{base_url.rstrip('/')}/oauth/revoke",
                     headers={"Authorization": f"Bearer {token}"},
