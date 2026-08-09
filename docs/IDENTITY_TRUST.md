@@ -71,3 +71,11 @@ Verify, utterance, follow-up, status, and end reject any other device
   recovery path; revokes the prior fleet and prints a fresh owner device token.
 - `ev identity verify --purpose memory.delete` — prints a single-use proof to
   pass as `X-EV-Reverify` for sensitive API calls.
+
+## Intelligence filter
+
+Voice-originated turns now flow through the input filter as
+`SpeakerIdentity(method="voiceprint", confidence=<verified session score>)`
+instead of a generic `auth_token` identity, so low-confidence owner
+verification flags command/decision intents exactly like the plan's IdentityGate
+specifies. Text/API turns keep `auth_token` semantics.

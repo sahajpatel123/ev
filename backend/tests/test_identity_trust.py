@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import httpx
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -591,3 +593,56 @@ async def test_compliance_writes_require_master(
         json={"reason": "device test"},
     )
     assert sweep.status_code == 403
+
+
+async def test_voice_pipeline_forwards_voiceprint_identity_to_filter(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.filter.envelope import SpeakerIdentity
+    from app.schemas import InteractionStrategy
+    from app.voice.contracts import SynthesisResult, Transcript
+    from app.voice.pipeline import run_chat_tts_pipeline
+
+    captured: dict = {}
+
+    async def fake_pipeline(data, session, actor, **kwargs):  # noqa: ANN001
+        captured["speaker"] = kwargs.get("speaker")
+        captured["source"] = kwargs.get("source")
+        return {
+            "strategy": InteractionStrategy(
+                mode="casual",
+                intent="chat",
+                urgency=0.1,
+                emotional_state="neutral",
+                length_target="one to two sentences",
+                directness="low to medium",
+                assertiveness=1,
+                rationale="test",
+            ),
+            "result": SimpleNamespace(text="ok", model=None),
+            "context_tokens": 0,
+            "memory_deltas": [],
+        }
+
+    monkeypatch.setattr("app.api.core.run_chat_pipeline", fake_pipeline)
+
+    class FakeSynth:
+        async def synthesize(self, text: str, *, style=None) -> SynthesisResult:
+            return SynthesisResult(text=text, provider="dev", content_type="text/plain")
+
+    outcome = await run_chat_tts_pipeline(
+        db_session,
+        actor="voice",
+        device_id="dev-1",
+        transcript=Transcript(text="hi", confidence=0.95),
+        synthesizer=FakeSynth(),
+        speaker_confidence=0.83,
+    )
+    speaker = captured["speaker"]
+    assert isinstance(speaker, SpeakerIdentity)
+    assert speaker.method == "voiceprint"
+    assert speaker.verified is True
+    assert speaker.confidence == 0.83
+    assert captured["source"] == "voice"
+    assert outcome.reply == "ok"

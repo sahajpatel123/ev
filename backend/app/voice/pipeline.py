@@ -56,10 +56,12 @@ async def run_chat_tts_pipeline(
     transcript: Transcript,
     conversation_id=None,
     synthesizer,
+    speaker_confidence: float | None = None,
 ) -> PipelineOutcome:
     """Conversation/intelligence-filter/memory/provider pipeline + TTS reply."""
     thread = await conversation.resolve_thread(session, conversation_id)
     from app.api.core import run_chat_pipeline
+    from app.filter.envelope import SpeakerIdentity
 
     pipeline = await run_chat_pipeline(
         ChatRequest(
@@ -73,6 +75,12 @@ async def run_chat_tts_pipeline(
         source="voice",
         user_event_type="voice.transcript",
         event_privacy="sensitive",
+        speaker=SpeakerIdentity(
+            actor_id=actor,
+            verified=True,
+            confidence=speaker_confidence if speaker_confidence is not None else 1.0,
+            method="voiceprint",
+        ),
     )
     strategy = pipeline["strategy"]
     from app.voice.tts import speech_style_from_strategy
