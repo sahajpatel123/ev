@@ -122,6 +122,15 @@ public struct RuntimeSync: Decodable, Sendable, Equatable {
     public let devices: [RuntimeSyncDevice]
     public let events: [RuntimeEventOut]
     public let latency: RuntimeLatency
+    public let digest: DigestState?
+}
+
+/// The latest delivered alert digest (nil before any digest exists).
+public struct DigestState: Decodable, Sendable, Equatable {
+    public let digestId: String?
+    public let delivered: Int
+    public let source: String?
+    public let generatedAt: String?
 }
 
 /// Headless listener: heartbeats the runtime, participates in wake arbitration,

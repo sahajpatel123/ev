@@ -199,7 +199,6 @@ public struct EVAPIClient: Sendable {
         } catch {
             throw EVAPIError.transport(error.localizedDescription)
         }
-        print("attach: received \(responseData.count) bytes, status \(String(describing: (response as? HTTPURLResponse)?.statusCode))")
         guard let http = response as? HTTPURLResponse else {
             throw EVAPIError.transport("non-HTTP response")
         }
@@ -252,8 +251,8 @@ public struct EVAPIClient: Sendable {
         return try decode(MemoryListResponse.self, from: data)
     }
 
-    public func audit(memoryID: String) async throws -> AuditResponse {
-        let (_, data) = try await send("/v1/audit/\(memoryID)")
+    public func audit(memoryId: String) async throws -> AuditResponse {
+        let (_, data) = try await send("/v1/audit/\(memoryId)")
         return try decode(AuditResponse.self, from: data)
     }
 

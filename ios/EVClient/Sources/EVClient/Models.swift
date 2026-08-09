@@ -80,7 +80,7 @@ public struct EventOut: Codable, Sendable, Equatable {
     public let content: [String: String]
     public let metadata: [String: AnyCodable]?
     public let deviceID: String?
-    public let conversationID: String?
+    public let conversationId: String?
     public let privacyLevel: String
     public let sha256: String
     public let tombstonedAt: String?
@@ -101,7 +101,7 @@ public struct CaptureResponse: Codable, Sendable, Equatable {
 
 public struct AttachmentOut: Codable, Sendable, Equatable {
     public let id: String
-    public let eventID: String
+    public let eventId: String
     public let filename: String
     public let contentType: String?
     public let sizeBytes: Int
@@ -116,7 +116,7 @@ public struct AttachmentCreateResponse: Codable, Sendable, Equatable {
 }
 
 public struct ProvenanceItem: Codable, Sendable, Equatable {
-    public let memoryID: String
+    public let memoryId: String
     public let text: String
     public let memoryType: String
     public let score: Double
@@ -125,7 +125,7 @@ public struct ProvenanceItem: Codable, Sendable, Equatable {
 
 public struct ChatResponse: Codable, Sendable, Equatable {
     public let reply: String
-    public let conversationID: String?
+    public let conversationId: String?
     public let model: String?
     public let contextTokens: Int
     public let contextDepth: String?

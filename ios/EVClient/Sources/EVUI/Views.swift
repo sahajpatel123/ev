@@ -163,7 +163,7 @@ public struct MemoryBrowserView: View {
         memories = (try? await client.memories(limit: 50))?.memories ?? []
     }
 
-    private func showAudit(_ memoryID: String) async {
-        selected = try? await client.audit(memoryID: memoryID)
+    private func showAudit(_ memoryId: String) async {
+        selected = try? await client.audit(memoryId: memoryId)
     }
 }

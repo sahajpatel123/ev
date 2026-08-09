@@ -143,7 +143,6 @@ do {
         }
         """
         let responseData = Data(response.utf8)
-        print("mock: handler invoked, request=\(request.url?.path ?? "?") body=\(receivedBody.count) bytes response=\(responseData.count) bytes")
         return (httpResponse(201, contentLength: responseData.count), responseData)
     }
     do {
@@ -325,6 +324,8 @@ do {
     expect(sync.devices.first?.deviceId == "dev-ios", "sync device")
     expect(sync.events.first?.kind == "wake", "sync event feed")
     expect(sync.latency.wakeToAwakeMs == nil, "sync latency while verifying")
+    expect(sync.digest?.digestId == "digest-1", "sync digest id")
+    expect(sync.digest?.delivered == 3, "sync digest delivered count")
     print("ok: runtime sync snapshot")
 } catch {
     failures.append("runtime listener: \(error)")

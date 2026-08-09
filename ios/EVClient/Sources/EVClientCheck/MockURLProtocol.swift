@@ -150,6 +150,12 @@ func syncBody() -> String {
         "wake_to_processing_ms": null,
         "wake_to_responding_ms": null,
         "wake_to_follow_up_ms": null
+      },
+      "digest": {
+        "digest_id": "digest-1",
+        "delivered": 3,
+        "source": "runtime_daemon",
+        "generated_at": "2026-08-09T07:00:00Z"
       }
     }
     """
