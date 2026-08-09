@@ -7,13 +7,19 @@ the model-facing slice never carries raw transcripts or exact coordinates.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts import ChatMessage, ChatResult, MediaPart
+from app.ev import vision
 from app.ev.live import query_live_events
 from app.ev.user_state import build_user_state
+from app.gateway.providers import DeepSeekProvider, MockProvider
 
 
 async def test_audio_scene_context_and_signal_exclude_transcript(
@@ -203,3 +209,333 @@ async def test_perception_signals_use_recent_permissioned_events_only(
     assert resp.status_code == 200, resp.text
     predictions = {p["kind"] for p in resp.json()["predictions"]}
     assert "audio_in_call" not in predictions
+
+
+class FakeVisionProvider:
+    """Deterministic vision-capable provider used only in tests."""
+
+    name = "fake-vision"
+    supports_media = True
+
+    def __init__(self) -> None:
+        self.seen_messages = []
+
+    async def chat(
+        self,
+        messages,
+        *,
+        model=None,
+        temperature=0.7,
+    ) -> ChatResult:
+        self.seen_messages.extend(messages)
+        return ChatResult(
+            text=(
+                "SUMMARY: A person at a workbench with a laptop.\n"
+                "LABEL: workbench 0.92\n"
+                "LABEL: Maya 0.88"
+            ),
+            usage={},
+            model="fake-vision-model",
+        )
+
+    async def chat_with_tools(
+        self,
+        messages,
+        tools,
+        *,
+        model=None,
+        temperature=0.7,
+    ) -> ChatResult:
+        return await self.chat(messages, model=model, temperature=temperature)
+
+    async def list_models(self) -> list[str]:
+        return ["fake-vision-model"]
+
+
+async def upload_attachment(
+    client: AsyncClient,
+    *,
+    content: bytes = b"fake-image-bytes",
+    content_type: str = "image/png",
+    filename: str = "photo.png",
+    metadata: dict | None = None,
+    privacy_level: str = "normal",
+) -> str:
+    resp = await client.post(
+        "/v1/attachments",
+        files={"file": (filename, content, content_type)},
+        data={
+            "metadata": json.dumps(metadata or {}),
+            "privacy_level": privacy_level,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["attachment"]["id"]
+
+
+async def test_vision_analyze_requires_permission(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    attachment_id = await upload_attachment(client)
+    with pytest.raises(PermissionError):
+        await vision.analyze_attachment(
+            db_session,
+            UUID(attachment_id),
+            actor="master",
+            permission=False,
+            provider=FakeVisionProvider(),
+        )
+
+    resp = await client.post(
+        "/v1/vision/analyze",
+        json={"attachment_id": attachment_id, "permission": False},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "permission" in resp.json()["detail"].lower()
+
+    resp = await client.get("/v1/vision/perceptions")
+    assert resp.json() == []
+
+
+async def test_vision_analyze_derived_text_never_sends_raw(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    attachment_id = await upload_attachment(
+        client,
+        metadata={"derived_text": "Invoice EV-42 total 100 USD"},
+    )
+    provider = FakeVisionProvider()
+    row = await vision.analyze_attachment(
+        db_session,
+        UUID(attachment_id),
+        actor="master",
+        permission=True,
+        allow_raw=False,
+        provider=provider,
+    )
+    await db_session.commit()
+
+    payload = row.payload
+    assert payload["raw_sent"] is False
+    assert payload["derived_text_used"] is True
+    assert payload["provider"] == "fake-vision"
+    assert payload["source_event_id"]
+    assert "workbench" in payload["summary"].lower()
+    assert "data:image" not in json.dumps(payload)
+
+    assert len(provider.seen_messages) == 2
+    media = provider.seen_messages[1].media
+    assert len(media) == 1
+    assert media[0].data_url is None
+    assert "Invoice EV-42" in (media[0].text or "")
+    assert media[0].ref == attachment_id
+
+    # Suggestions are pending (source=model), not durable identity yet.
+    recognitions = (
+        await client.get("/v1/vision/log")
+    ).json()
+    suggestions = [r for r in recognitions if r["source"] == "model"]
+    assert {r["label"] for r in suggestions} >= {"workbench", "Maya"}
+    assert all(r["entity_id"] is None for r in suggestions)
+
+
+async def test_vision_analyze_raw_sends_data_url_when_permitted(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    attachment_id = await upload_attachment(client)
+    provider = FakeVisionProvider()
+    row = await vision.analyze_attachment(
+        db_session,
+        UUID(attachment_id),
+        actor="master",
+        permission=True,
+        allow_raw=True,
+        provider=provider,
+    )
+    await db_session.commit()
+
+    assert row.payload["raw_sent"] is True
+    assert row.payload["content_type"] == "image/png"
+    # The raw bytes are transmitted to the provider but never persisted in the
+    # perception record itself (only provenance hashes are kept).
+    assert "data:image" not in json.dumps(row.payload)
+    media = provider.seen_messages[1].media
+    assert media[0].data_url and media[0].data_url.startswith("data:image/png;base64,")
+    assert media[0].sha256
+
+
+async def test_vision_analyze_blocks_raw_for_sensitive_source(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    attachment_id = await upload_attachment(
+        client,
+        metadata={"derived_text": "private strategy notes"},
+        privacy_level="sensitive",
+    )
+    provider = FakeVisionProvider()
+    row = await vision.analyze_attachment(
+        db_session,
+        UUID(attachment_id),
+        actor="master",
+        permission=True,
+        allow_raw=True,
+        provider=provider,
+    )
+    await db_session.commit()
+
+    # Fail closed: no provider call at all for sensitive sources.
+    assert provider.seen_messages == []
+    assert row.payload["raw_sent"] is False
+    assert "blocked" in row.payload["summary"].lower()
+    assert row.privacy_level == "sensitive"
+    assert (await client.get("/v1/vision/log")).json() == []
+
+
+async def test_vision_confirm_promotes_model_suggestion(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    attachment_id = await upload_attachment(
+        client,
+        metadata={"derived_text": "Maya at the workbench"},
+    )
+    await vision.analyze_attachment(
+        db_session,
+        UUID(attachment_id),
+        actor="master",
+        permission=True,
+        allow_raw=False,
+        provider=FakeVisionProvider(),
+    )
+    await db_session.commit()
+
+    suggestions = [
+        r for r in (await client.get("/v1/vision/log")).json() if r["source"] == "model"
+    ]
+    target = next(r for r in suggestions if r["label"] == "Maya")
+    resp = await client.post(
+        f"/v1/vision/recognitions/{target['id']}/confirm",
+        json={"entity_type": "person"},
+    )
+    assert resp.status_code == 200, resp.text
+    confirmed = resp.json()
+    assert confirmed["source"] == "user"
+    assert confirmed["entity_id"] is not None
+
+    resp = await client.get("/v1/people/Maya/whereabouts")
+    assert resp.status_code == 200
+    assert resp.json()["entity_id"] == confirmed["entity_id"]
+
+    # Confirming again is idempotent.
+    resp = await client.post(
+        f"/v1/vision/recognitions/{target['id']}/confirm",
+        json={"entity_type": "person"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["source"] == "user"
+
+
+async def test_vision_perception_context_flows_into_state(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    attachment_id = await upload_attachment(
+        client,
+        metadata={"derived_text": "workbench with laptop"},
+    )
+    await vision.analyze_attachment(
+        db_session,
+        UUID(attachment_id),
+        actor="master",
+        permission=True,
+        allow_raw=False,
+        provider=FakeVisionProvider(),
+    )
+    await db_session.commit()
+
+    state = (await client.get("/v1/state")).json()
+    vision_lines = [line for line in state["live_context"] if "vision" in line.lower()]
+    assert vision_lines
+    assert "workbench" in vision_lines[0].lower()
+
+    perceptions = (await client.get("/v1/vision/perceptions")).json()
+    assert len(perceptions) == 1
+    assert perceptions[0]["raw_sent"] is False
+    assert perceptions[0]["permission_granted_by"] == "master"
+    assert perceptions[0]["labels"]
+
+    model_state = await build_user_state(db_session, access="model")
+    assert any("workbench" in line.lower() for line in model_state.live_context)
+
+
+async def test_vision_never_sends_raw_to_text_only_provider(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    attachment_id = await upload_attachment(client)
+    provider = MockProvider()
+    row = await vision.analyze_attachment(
+        db_session,
+        UUID(attachment_id),
+        actor="master",
+        permission=True,
+        allow_raw=True,
+        provider=provider,
+    )
+    await db_session.commit()
+
+    assert row.payload["raw_sent"] is False
+    assert "data:image" not in json.dumps(row.payload)
+    assert row.payload["summary"].startswith("Attachment metadata only")
+
+
+def test_deepseek_provider_renders_multimodal_content_parts() -> None:
+    provider = DeepSeekProvider(
+        base_url="http://localhost:0",
+        api_key=None,
+        default_model="deepseek-v4",
+    )
+
+    image = ChatMessage(
+        role="user",
+        content="Describe this",
+        media=[
+            MediaPart(
+                kind="image",
+                content_type="image/png",
+                data_url="data:image/png;base64,AAAA",
+                ref="att-1",
+                sha256="abc",
+            )
+        ],
+    )
+    payload = provider._message_payload(image)
+    assert payload["content"][0] == {"type": "text", "text": "Describe this"}
+    assert payload["content"][1] == {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,AAAA"},
+    }
+
+    audio = ChatMessage(
+        role="user",
+        content="",
+        media=[
+            MediaPart(
+                kind="audio",
+                content_type="audio/mpeg",
+                data_url="data:audio/mpeg;base64,BBBB",
+            )
+        ],
+    )
+    audio_payload = provider._message_payload(audio)
+    assert audio_payload["content"][0]["input_audio"] == {
+        "data": "BBBB",
+        "format": "mp3",
+    }
+
+    plain = ChatMessage(role="user", content="plain text")
+    assert provider._message_payload(plain) == {"role": "user", "content": "plain text"}

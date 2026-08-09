@@ -10,11 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ActorContext, require_actor, require_actor_context
 from app.db import get_session
-from app.ev import conversation, edith, live
+from app.ev import conversation, edith, live, vision
 from app.ev.rollup import build_rollup
-from app.models import LiveChannel
+from app.models import LiveChannel, LiveEvent
 from app.schemas import (
     CommandOut,
+    ConfirmRecognitionRequest,
     ConversationDetail,
     ConversationMessageOut,
     ConversationOut,
@@ -35,11 +36,14 @@ from app.schemas import (
     LiveEventCreate,
     LiveEventOut,
     LiveRebuildOut,
+    LiveRetentionOut,
     LiveStatusOut,
     OpsCenterOut,
     RecognitionCreate,
     RecognitionOut,
     TwinOut,
+    VisionAnalyzeRequest,
+    VisionPerceptionOut,
 )
 from app.services.access_log import log_access
 
@@ -227,6 +231,26 @@ async def rebuild_live_derived(
     result = await rebuild_live_derived_state(session, actor=actor, reason=reason)
     await session.commit()
     return LiveRebuildOut(**result)
+
+
+@router.post("/live/retention", response_model=LiveRetentionOut)
+async def apply_live_retention_policy(
+    days: int | None = Query(default=None, ge=1, le=3650),
+    dry_run: bool = Query(default=True),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> LiveRetentionOut:
+    """Apply the live-event retention window (dry-run by default)."""
+    from app.services.live_retention import apply_live_retention
+
+    result = await apply_live_retention(
+        session,
+        days=days,
+        dry_run=dry_run,
+        actor=actor,
+    )
+    await session.commit()
+    return LiveRetentionOut(**result)
 
 
 # --------------------------------------------------------------------------- #
@@ -503,6 +527,77 @@ async def recognition_log(
 ) -> list[RecognitionOut]:
     rows = await edith.list_recognition(session, limit=limit)
     return [RecognitionOut.model_validate(row) for row in rows]
+
+
+def _perception_out(row: LiveEvent) -> VisionPerceptionOut:
+    payload = row.payload or {}
+    return VisionPerceptionOut(
+        id=row.id,
+        attachment_id=UUID(payload["attachment_id"]) if payload.get("attachment_id") else None,
+        source_event_id=UUID(payload["source_event_id"]) if payload.get("source_event_id") else None,
+        summary=payload.get("summary") or "",
+        labels=payload.get("labels") or [],
+        confidence=payload.get("confidence") or 0.0,
+        provider=payload.get("provider") or "",
+        raw_sent=bool(payload.get("raw_sent")),
+        permission_granted_by=payload.get("permission_granted_by"),
+        created_at=row.occurred_at,
+    )
+
+
+@router.post("/vision/analyze", response_model=VisionPerceptionOut, status_code=201)
+async def analyze_vision(
+    data: VisionAnalyzeRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> VisionPerceptionOut:
+    try:
+        row = await vision.analyze_attachment(
+            session,
+            data.attachment_id,
+            actor=actor,
+            permission=data.permission,
+            allow_raw=data.allow_raw,
+            prompt=data.prompt,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Attachment not found") from None
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    await session.commit()
+    return _perception_out(row)
+
+
+@router.post("/vision/recognitions/{recognition_id}/confirm", response_model=RecognitionOut)
+async def confirm_vision_recognition(
+    recognition_id: UUID,
+    data: ConfirmRecognitionRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> RecognitionOut:
+    try:
+        row = await vision.confirm_recognition(
+            session,
+            recognition_id,
+            actor=actor,
+            entity_type=data.entity_type if data else "thing",
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Recognition not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return RecognitionOut.model_validate(row)
+
+
+@router.get("/vision/perceptions", response_model=list[VisionPerceptionOut])
+async def list_vision_perceptions(
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[VisionPerceptionOut]:
+    rows = await vision.list_perceptions(session, limit=limit)
+    return [_perception_out(row) for row in rows]
 
 
 @router.get("/commands", response_model=list[CommandOut])
