@@ -16,8 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AdapterRegistration
 from app.services.access_log import log_access
-from app.training.consent import require_consent
+from app.training.consent import active_consent, require_consent
 from app.training.corpus import get_snapshot
+from app.training.style_adapter import build_style_profile
 from app.utils.text import utcnow
 
 TRACK = "adapter_fine_tuning"
@@ -25,6 +26,7 @@ SECRET_PATTERN = re.compile(r"\bsk-[A-Za-z0-9]{16,}\b")
 
 
 def _eval_gates(entries: list[dict]) -> dict:
+    profile = build_style_profile(entries)
     gates = {
         "corpus_nonempty": len(entries) > 0,
         "corrections_present": any(
@@ -34,8 +36,15 @@ def _eval_gates(entries: list[dict]) -> dict:
         "secrets_absent": not any(
             SECRET_PATTERN.search(str(entry.get("text", ""))) for entry in entries
         ),
+        "style_profile_derived": profile["signal_coverage"]["assistant"] > 0,
+        "style_signal_coverage": profile["signal_coverage"]["rated"] >= 1,
     }
-    return {"gates": gates, "passed": all(gates.values())}
+    return {
+        "gates": gates,
+        "passed": all(gates.values()),
+        "profile": profile,
+        "profile_hash": profile["profile_hash"],
+    }
 
 
 async def _latest_adapter(session: AsyncSession, name: str) -> AdapterRegistration | None:
@@ -60,6 +69,36 @@ async def _active_adapter(session: AsyncSession, name: str) -> AdapterRegistrati
         )
     )
     return result.scalar_one_or_none()
+
+
+async def active_style_profile(session: AsyncSession) -> dict | None:
+    """Return the active adapter's deterministic style profile, if any.
+
+    Privacy gate: the profile is only applied while ``adapter_fine_tuning``
+    consent is still active and an adapter has been explicitly activated.
+    Revoking consent (or rolling back/deleting the adapter) immediately stops
+    the profile from influencing responses.
+    """
+
+    if await active_consent(session, TRACK) is None:
+        return None
+    result = await session.execute(
+        select(AdapterRegistration)
+        .where(
+            AdapterRegistration.is_current.is_(True),
+            AdapterRegistration.redacted.is_(False),
+            AdapterRegistration.status == "active",
+        )
+        .order_by(AdapterRegistration.updated_at.desc())
+        .limit(1)
+    )
+    row = result.scalar_one_or_none()
+    if row is None:
+        return None
+    profile = (row.eval_metrics or {}).get("profile")
+    if not isinstance(profile, dict) or not profile.get("profile_hash"):
+        return None
+    return profile
 
 
 async def register(

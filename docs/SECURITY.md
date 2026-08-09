@@ -198,6 +198,9 @@ retention job.
   /v1/integrations/{id}/credentials/refresh` exchanges them through the
   adapter's refresh flow, re-encrypts the new access token, and logs only
   metadata (never token material).
+- **Vault key rotation:** `POST /v1/integrations/vault/rotate` (master key
+  only) re-encrypts all integration credentials under a new vault key in place
+  and then swaps the active key; plaintext is never logged or persisted.
 - **Webhook integrity:** ingress requires `X-EV-Signature: sha256=<hex>` over
   `X-EV-Timestamp.body`, rejects timestamps outside the skew window, and
   rate-limits per integration, with a hard body-size cap

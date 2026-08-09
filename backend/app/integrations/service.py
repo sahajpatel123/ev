@@ -23,6 +23,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.ev.live import create_channel, ingest_events, list_events
 from app.integrations import vault, webhooks
 from app.integrations.adapters import registry
@@ -590,6 +591,50 @@ async def revoke(
         },
     )
     return _integration_out(row, credentials)
+
+
+async def rotate_vault(
+    session: AsyncSession,
+    *,
+    new_key: str,
+    actor: str,
+) -> dict:
+    """Re-encrypt every vaulted credential under a new vault key (master-only).
+
+    The rotation decrypts each ciphertext with the current key and immediately
+    re-encrypts it with the new key, then swaps the active vault key. Plaintext
+    exists only in memory for one credential at a time; nothing is logged.
+    """
+    if len(new_key) < 16:
+        raise ValueError("vault key must be at least 16 characters")
+    credentials = (
+        await session.execute(select(IntegrationCredential))
+    ).scalars().all()
+    reencrypted = 0
+    for credential in credentials:
+        changed = False
+        if credential.encrypted_access:
+            plaintext = vault.decrypt(credential.encrypted_access)
+            credential.encrypted_access = vault.encrypt_with(new_key, plaintext)
+            changed = True
+        if credential.encrypted_refresh:
+            plaintext = vault.decrypt(credential.encrypted_refresh)
+            credential.encrypted_refresh = vault.encrypt_with(new_key, plaintext)
+            changed = True
+        if changed:
+            reencrypted += 1
+    settings.vault_key = new_key
+    vault.reset()
+    await log_access(
+        session,
+        actor=actor,
+        action="vault.rotate",
+        endpoint="POST /v1/integrations/vault/rotate",
+        resource_type="integration_credential",
+        resource_ids=[],
+        details={"reencrypted_credentials": reencrypted},
+    )
+    return {"rotated": True, "reencrypted_credentials": reencrypted}
 
 
 async def execute_action(

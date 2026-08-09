@@ -13,10 +13,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.filter.ledger import ledger_aggregate
+from app.filter.policy import proposals_to_policy
 from app.models import FilterRecalibration, Prediction, ResponseLog
 from app.services.access_log import log_access
 from app.training.consent import require_consent
-from app.filter.policy import proposals_to_policy
 from app.utils.text import utcnow
 
 TRACK = "filter_self_improvement"

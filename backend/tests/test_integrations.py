@@ -15,6 +15,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.integrations import vault
 from app.integrations.adapters import Adapter, AdapterAction, CalendarAdapter, registry
 from app.integrations.webhooks import (
@@ -738,6 +739,68 @@ async def test_scope_change_revokes_oauth_credential(client: AsyncClient) -> Non
     )
     assert resp.status_code == 200
     assert set(resp.json()["scopes"]) == {"github:read"}
+
+
+async def test_vault_key_rotation_reencrypts_credentials(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "vault_key", settings.vault_key)
+    try:
+        integration = await install(client, "calendar")
+        integration_id = integration["id"]
+        await store_oauth(client, integration_id)
+        before = (
+            await db_session.execute(
+                select(IntegrationCredential).where(
+                    IntegrationCredential.integration_id == UUID(integration_id),
+                    IntegrationCredential.kind == "oauth",
+                )
+            )
+        ).scalar_one()
+        old_cipher = before.encrypted_access
+        assert vault.decrypt(old_cipher) == "super-secret-token-123456"
+
+        # A device token cannot rotate the vault.
+        device = (await client.post("/v1/devices", json={"name": "vault-test-device"})).json()
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+            headers={"Authorization": f"Bearer {device['token']}"},
+        ) as device_client:
+            resp = await device_client.post(
+                "/v1/integrations/vault/rotate",
+                json={"new_key": "device-should-not-rotate-123456"},
+            )
+            assert resp.status_code == 403
+
+        resp = await client.post(
+            "/v1/integrations/vault/rotate",
+            json={"new_key": "new-vault-key-0123456789abcdef"},
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["reencrypted_credentials"] == 1
+
+        after = (
+            await db_session.execute(
+                select(IntegrationCredential).where(
+                    IntegrationCredential.integration_id == UUID(integration_id),
+                    IntegrationCredential.kind == "oauth",
+                )
+            )
+        ).scalar_one()
+        assert after.encrypted_access != old_cipher
+        assert vault.decrypt(after.encrypted_access) == "super-secret-token-123456"
+        assert vault.decrypt(after.encrypted_refresh) == "refresh-token-123456"
+
+        resp = await client.post(
+            "/v1/integrations/vault/rotate",
+            json={"new_key": "short"},
+        )
+        assert resp.status_code == 400
+    finally:
+        vault.reset()
 
 
 def test_webhook_signature_and_rate_limiter_units() -> None:

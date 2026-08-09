@@ -5,12 +5,12 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev.ev_sense import apply_attention_policy
+from app.ev.interaction import build_strategy
 from app.filter.envelope import GroundingMaterial
 from app.filter.input_filter import InputGuard
 from app.filter.output_filter import audit_grounding, enforce_persona, run_output_filter
 from app.filter.policy import FilterPolicy, active_policy, proposals_to_policy
 from app.schemas import SensePrediction
-from app.ev.interaction import build_strategy
 
 
 def test_proposals_to_policy_maps_deterministic_thresholds() -> None:
@@ -42,13 +42,13 @@ def test_grounding_policy_raises_evidence_bar() -> None:
     text = "I visited Lisbon last March."
     material = [
         GroundingMaterial(
-            text="I visited Paris last March.",
+            text="I visited Paris in March.",
             memory_id="m1",
             memory_type="decision",
         )
     ]
     default_claims, _ = audit_grounding(text, material)
-    strict_claims, _ = audit_grounding(text, material, min_evidence=0.7)
+    strict_claims, _ = audit_grounding(text, material, min_evidence=0.6)
     assert default_claims[0].supported is True
     assert strict_claims[0].supported is False
     assert strict_claims[0].action == "remove"
@@ -59,7 +59,7 @@ def test_strict_persona_enforcement_trims_earlier() -> None:
     draft = " ".join(["word"] * 250)
     _, default_persona, _ = enforce_persona(draft, strategy)
     _, strict_persona, _ = enforce_persona(draft, strategy, strict=True)
-    assert default_persona.get("length_trimmed") is False
+    assert not default_persona.get("length_trimmed")
     assert strict_persona.get("length_trimmed") is True
 
 

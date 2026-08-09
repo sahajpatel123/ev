@@ -29,6 +29,8 @@ from app.schemas import (
     PluginManifest,
     PluginOut,
     PluginRejectRequest,
+    VaultRotateOut,
+    VaultRotateRequest,
     WebhookIngestOut,
     WebhookSecretOut,
 )
@@ -131,6 +133,24 @@ async def revoke_integration(
         raise _integration_error(exc) from exc
     await session.commit()
     return result
+
+
+@router.post("/integrations/vault/rotate", response_model=VaultRotateOut)
+async def rotate_integration_vault(
+    data: VaultRotateRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> VaultRotateOut:
+    try:
+        result = await integrations.rotate_vault(
+            session,
+            new_key=data.new_key,
+            actor=actor,
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+    await session.commit()
+    return VaultRotateOut(**result)
 
 
 # --------------------------------------------------------------------------- #

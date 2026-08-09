@@ -539,7 +539,7 @@ async def filter_recalibration_rollback(
     response_model=FilterRecalibrationOut,
 )
 async def filter_recalibration_apply(
-    data: FilterRecalibrationApplyRequest,
+    data: FilterRecalibrationApplyRequest | None = None,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> FilterRecalibrationOut:
@@ -547,7 +547,7 @@ async def filter_recalibration_apply(
         row = await filter_improvement_service.apply_current(
             session,
             actor=actor,
-            reason=data.reason,
+            reason=data.reason if data is not None else None,
         )
     except (ConsentRequiredError, KeyError, ValueError) as exc:
         raise _training_http(exc, track="filter_self_improvement") from exc

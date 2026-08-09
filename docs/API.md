@@ -57,6 +57,7 @@
 | GET | `/v1/integrations/catalog` · `/v1/integrations` · POST `/v1/integrations` | Adapter catalog + install | FR-INT-01 |
 | GET/PATCH/DELETE | `/v1/integrations/{id}` · `/v1/integrations/{id}/scopes` | Integration lifecycle + scope changes | FR-INT-02 |
 | POST/GET | `/v1/integrations/{id}/credentials` · POST `/v1/integrations/{id}/credentials/refresh` · POST `/v1/integrations/{id}/webhook-secret` | Encrypted credential vault + OAuth refresh + webhook secrets | FR-INT-02 |
+| POST | `/v1/integrations/vault/rotate` | Re-encrypt all integration credentials under a new vault key (master only) | FR-INT-02 |
 | POST/GET | `/v1/integrations/{id}/actions` · `/v1/integrations/{id}/events` | Permissioned actions + event history | FR-INT-03 |
 | POST | `/v1/integrations/webhook/{id}` | HMAC-verified webhook ingress (no bearer auth) | FR-INT-04 |
 | POST/GET | `/v1/plugins` · `/v1/plugins/{id}` · `/approve` · `/reject` · `/enable` · `/disable` | Plugin manifest lifecycle + approval | FR-INT-05 |
@@ -246,6 +247,11 @@ logged to `model_calls` when `EV_MODEL_CALL_LOG_ENABLED=true`.
   envelope hash), newest first.
 - `GET /v1/filter/ledger/aggregate` — counts by stage/action, blocked inputs,
   redactions, repairs, refinements, and over-refinement rate.
+- `POST /v1/training/filter/recalibration/apply` — apply the current
+  ledger-derived recalibration's threshold proposals as the live filter policy
+  (critic cap, grounding evidence bar, input-guard severity, persona
+  enforcement, EV Sense confidence floor). Reversible via
+  `/v1/training/filter/recalibration/rollback`; erasure clears the policy.
 
 Every `/v1/chat` response includes `filter_report`, and streaming chat emits a
 `filter-report` SSE event, so clients can show what the filter changed and why.

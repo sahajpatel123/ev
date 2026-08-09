@@ -289,6 +289,9 @@
     "/v1/integrations/{integration_id}/webhook-secret": [
       "post"
     ],
+    "/v1/integrations/vault/rotate": [
+      "post"
+    ],
     "/v1/interaction/mode": [
       "post"
     ],

@@ -2455,6 +2455,15 @@ class IntegrationScopeUpdate(BaseModel):
     scopes: list[str] = Field(min_length=1)
 
 
+class VaultRotateRequest(BaseModel):
+    new_key: str = Field(min_length=16, max_length=512)
+
+
+class VaultRotateOut(BaseModel):
+    rotated: bool
+    reencrypted_credentials: int
+
+
 class IntegrationActionRequest(BaseModel):
     action: str = Field(min_length=1, max_length=64)
     args: dict = Field(default_factory=dict)

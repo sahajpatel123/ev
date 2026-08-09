@@ -46,6 +46,9 @@ material. Integration `config` is non-secret and rejects secret-looking keys.
 - OAuth refresh (`POST /v1/integrations/{id}/credentials/refresh`) exchanges
   the vaulted refresh token through the adapter's refresh flow and re-encrypts
   the new token; no token material is logged.
+- Vault key rotation (`POST /v1/integrations/vault/rotate`, master key only)
+  re-encrypts every credential under a new `EV_VAULT_KEY` in place; plaintext
+  exists only in memory for one credential at a time.
 
 ## 4. Webhooks
 
@@ -99,6 +102,7 @@ The old channel and its event history stay intact for the user.
 | GET/PATCH/DELETE | `/v1/integrations/{id}` / `.../scopes` |
 | POST/GET | `/v1/integrations/{id}/credentials` |
 | POST | `/v1/integrations/{id}/credentials/refresh` |
+| POST | `/v1/integrations/vault/rotate` (master key only) |
 | POST | `/v1/integrations/{id}/webhook-secret` |
 | POST | `/v1/integrations/{id}/actions` |
 | GET | `/v1/integrations/{id}/events` |
