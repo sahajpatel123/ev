@@ -34,6 +34,7 @@ from app.schemas import (
     EvaluationUpdate,
     HudAlertOut,
     HudCardOut,
+    HudOpsCardOut,
     IsolationScanOut,
     MakerNextStepOut,
     MakerProjectCreate,
@@ -323,6 +324,17 @@ async def hud_alerts(
 ) -> list[HudAlertOut]:
     """Pending alerts rendered as strict HUD cards (ev.hud.alert.v1)."""
     return await hud.alerts_card(session)
+
+
+@router.get("/hud/ops", response_model=HudOpsCardOut)
+async def hud_ops(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> HudOpsCardOut:
+    """Unified ops center as a strict HUD command card (ev.hud.ops.v1)."""
+    from app.ev.edith import ops_card
+
+    return await ops_card(session)
 
 
 @router.get("/hud/route", response_model=RouteBriefingOut)

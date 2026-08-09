@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import math
+from datetime import timedelta
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.gateway.service import GatewayCall
 from app.models import ModelCallLog
+from app.utils.text import utcnow
 
 MEMORY_TEXT_LOG_LIMIT = 160
 
@@ -51,3 +55,50 @@ async def list_model_calls(
         query = query.where(ModelCallLog.request_id == request_id)
     result = await session.execute(query)
     return list(result.scalars().all())
+
+
+def _summarize(rows: list[ModelCallLog]) -> dict:
+    """One latency/error/token summary bucket (totals or per provider/model)."""
+
+    n = len(rows)
+    latencies = sorted(r.latency_ms for r in rows)
+    p95 = latencies[min(n - 1, max(0, math.ceil(0.95 * n) - 1))] if n else 0.0
+    return {
+        "calls": n,
+        "errors": sum(1 for r in rows if r.status == "error"),
+        "blocked": sum(1 for r in rows if r.status == "blocked"),
+        "avg_latency_ms": round(sum(latencies) / n, 1) if n else 0.0,
+        "p95_latency_ms": round(p95, 1) if n else 0.0,
+        "prompt_tokens": sum(r.prompt_tokens or 0 for r in rows),
+        "completion_tokens": sum(r.completion_tokens or 0 for r in rows),
+    }
+
+
+async def model_call_stats(session: AsyncSession, *, window_hours: int = 24) -> dict:
+    """Aggregate the model-call audit trail into routing/eval evidence.
+
+    Routing between fast and deep providers stays gated by evaluation; this is
+    the evidence base that evaluation consumes (latency, errors, tokens per
+    provider/model).
+    """
+
+    cutoff = utcnow() - timedelta(hours=window_hours)
+    rows = list(
+        (
+            await session.execute(
+                select(ModelCallLog).where(ModelCallLog.created_at >= cutoff)
+            )
+        ).scalars().all()
+    )
+    buckets: dict[tuple[str, str], list[ModelCallLog]] = {}
+    for row in rows:
+        buckets.setdefault((row.provider, row.model or "unknown"), []).append(row)
+    return {
+        "generated_at": utcnow().isoformat(),
+        "window_hours": window_hours,
+        "totals": _summarize(rows),
+        "by_provider_model": [
+            {"provider": provider, "model": model, **_summarize(bucket)}
+            for (provider, model), bucket in sorted(buckets.items())
+        ],
+    }

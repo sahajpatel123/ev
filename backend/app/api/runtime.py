@@ -10,7 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor
+from app.auth import (
+    ActorContext,
+    require_actor,
+    require_actor_context,
+    require_owner_trust,
+    require_reverification,
+)
 from app.db import get_session
 from app.ev.actions import list_action_specs
 from app.models import ApprovedAction, DeadLetter
@@ -21,17 +27,23 @@ from app.schemas import (
     ApprovedActionOut,
     DeadLetterCreate,
     DeadLetterOut,
+    MemoryDelta,
     RuntimeHeartbeatCreate,
     RuntimeHeartbeatOut,
     RuntimeStatusOut,
     RuntimeTransitionRequest,
+    RuntimeUtteranceRequest,
+    RuntimeUtteranceResponse,
     RuntimeVerifyRequest,
     RuntimeVerifyResponse,
+    SpeechStyleOut,
+    TtsOut,
     WakeArbitrationOut,
     WakeIntent,
 )
 from app.services import runtime as runtime_service
 from app.voice.anti_spoof import ReplayError
+from app.voice.lifecycle import VoiceError
 
 router = APIRouter(prefix="/v1/runtime")
 
@@ -116,6 +128,81 @@ async def verify_owner(
         state=status.state,
         confidence=result.get("confidence", 0.0),
         reason=result.get("reason", ""),
+    )
+
+
+@router.post("/utterance", response_model=RuntimeUtteranceResponse)
+async def utterance(
+    data: RuntimeUtteranceRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> RuntimeUtteranceResponse:
+    """Listen → understand → act → reply on the centralized runtime session."""
+    current = await runtime_service.active_session(session)
+    if current is None:
+        raise HTTPException(status_code=409, detail="No active runtime session")
+    if data.session_id is not None and current.id != data.session_id:
+        raise HTTPException(status_code=409, detail="Session is not the active wake")
+    try:
+        result = await runtime_service.handle_utterance(
+            session,
+            current,
+            text=data.text,
+            audio_b64=data.audio_b64,
+            audio_ref=data.audio_ref,
+            language=data.language,
+            conversation_id=data.conversation_id,
+            follow_up=data.follow_up,
+            reverify_token=data.reverify_token,
+            ctx=ctx,
+        )
+    except VoiceError as exc:
+        await session.commit()
+        raise HTTPException(
+            status_code=exc.status,
+            detail=exc.message,
+            headers={"X-Error-Code": exc.code},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return RuntimeUtteranceResponse(
+        session_id=current.id,
+        state="follow_up",
+        transcript=result["transcript"].text,
+        transcript_confidence=result["transcript"].confidence,
+        reply=result["reply"],
+        conversation_id=UUID(result["conversation_id"]) if result["conversation_id"] else None,
+        tts=(
+            TtsOut(
+                provider=result["tts"].provider,
+                audio_ref=result["tts"].audio_ref,
+                content_type=result["tts"].content_type,
+                ssml=result["tts"].ssml,
+                duration_ms=result["tts"].duration_ms,
+            )
+            if result["tts"]
+            else None
+        ),
+        style=(
+            SpeechStyleOut(
+                urgency=result["style"].urgency,
+                warmth=result["style"].warmth,
+                brevity=result["style"].brevity,
+                mode=result["style"].mode,
+                length_target=result["style"].length_target,
+                directness=result["style"].directness,
+            )
+            if result["style"]
+            else None
+        ),
+        model=result["model"],
+        context_tokens=result["context_tokens"],
+        memory_deltas=[
+            MemoryDelta.model_validate(d)
+            for d in (result["memory_deltas"] or [])
+            if isinstance(d, dict)
+        ],
     )
 
 
@@ -252,8 +339,9 @@ async def approve_action(
     action_id: UUID,
     data: ActionDecisionRequest | None = None,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_reverification("runtime.action")),
 ) -> ApprovedActionOut:
+    actor = ctx.actor
     try:
         action = await runtime_service.decide_action(
             session,
@@ -275,8 +363,9 @@ async def deny_action(
     action_id: UUID,
     data: ActionDecisionRequest | None = None,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_owner_trust),
 ) -> ApprovedActionOut:
+    actor = ctx.actor
     try:
         action = await runtime_service.decide_action(
             session,
@@ -298,8 +387,9 @@ async def execute_action(
     action_id: UUID,
     data: ActionDecisionRequest | None = None,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_reverification("runtime.action")),
 ) -> ApprovedActionOut:
+    actor = ctx.actor
     try:
         action = await runtime_service.execute_action(
             session,
@@ -320,8 +410,9 @@ async def rollback_action(
     action_id: UUID,
     data: ActionDecisionRequest | None = None,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_reverification("runtime.action")),
 ) -> ApprovedActionOut:
+    actor = ctx.actor
     try:
         action = await runtime_service.rollback_action(
             session,

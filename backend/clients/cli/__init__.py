@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import mimetypes
 import os
 import sys
 import uuid
@@ -159,6 +160,41 @@ async def capture(
             "idempotency_key": idempotency_key,
         }
     raise CliError(f"capture failed ({resp.status_code}): {resp.text[:500]}")
+
+
+async def attach(
+    path: str | Path,
+    *,
+    source: str = "attachment",
+    event_type: str = "file",
+    privacy_level: str = "normal",
+    device_id: str | None = None,
+    metadata: dict | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Capture a file/share as an attachment event (multipart upload)."""
+    file_path = Path(path)
+    if not file_path.is_file():
+        raise CliError(f"file not found: {path}")
+    c = client or _client(120.0)
+    content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    data: dict[str, Any] = {
+        "source": source,
+        "event_type": event_type,
+        "privacy_level": privacy_level,
+        "metadata": json.dumps(metadata or {}),
+    }
+    if device_id:
+        data["device_id"] = device_id
+    with file_path.open("rb") as fh:
+        resp = await c.post(
+            "/v1/attachments",
+            data=data,
+            files={"file": (file_path.name, fh, content_type)},
+        )
+    if resp.status_code != 201:
+        raise CliError(f"attach failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
 
 
 async def sync_captures(
@@ -492,6 +528,24 @@ async def _run(args: argparse.Namespace) -> int:
             for delta in result.get("memory_delta", []):
                 print(f"  memory {delta['action']}: {delta['memory_type']} — {delta['text'][:100]}")
         return 0
+    if cmd == "attach":
+        async with _client(120.0) as client:
+            result = await attach(
+                args.file,
+                source=args.source,
+                event_type=args.event_type,
+                privacy_level=args.privacy,
+                device_id=args.device_id,
+                client=client,
+            )
+        attachment = result["attachment"]
+        event = result["event"]
+        print(
+            f"attached {event['id']} -> {attachment['id']} "
+            f"({attachment['filename']}, {attachment['size_bytes']} bytes, "
+            f"sha256 {attachment['sha256'][:12]})"
+        )
+        return 0
     if cmd == "ask":
         async with _client(120.0) as client:
             result = await ask(args.question, client=client)
@@ -667,6 +721,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_capture.add_argument("--event-type", default="note", help="event type (default: note)")
     p_capture.add_argument("--privacy", default="normal", choices=["private", "normal", "sensitive", "never_send_to_model"])
     p_capture.add_argument("--device-id", default=None, help="device identifier")
+
+    p_attach = sub.add_parser("attach", help="capture a file/share as an attachment event")
+    p_attach.add_argument("file", help="path to the file to capture")
+    p_attach.add_argument("--source", default="attachment", help="event source")
+    p_attach.add_argument("--event-type", default="file", help="event type")
+    p_attach.add_argument(
+        "--privacy",
+        default="normal",
+        choices=["private", "normal", "sensitive", "never_send_to_model"],
+    )
+    p_attach.add_argument("--device-id", default=None, help="device identifier")
 
     p_ask = sub.add_parser("ask", help="ask EV a question")
     p_ask.add_argument("question")

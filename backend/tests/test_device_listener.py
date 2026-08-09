@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from uuid import UUID
 
 from httpx import ASGITransport, AsyncClient
@@ -11,6 +12,12 @@ from app.main import app
 from app.models import RuntimeSession
 from app.services import runtime as runtime_service
 from clients.device_listener import DeviceListener
+
+SAMPLE_A = b"owner-voice-sample-" * 40
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
 
 
 def _listener_client() -> AsyncClient:
@@ -80,3 +87,41 @@ async def test_listener_wake_and_sync_convergence(db_session) -> None:
         snapshot = await listener.sync_state()
         assert snapshot["latency"]["wake_to_awake_ms"] is not None
         assert snapshot["latency"]["wake_to_awake_ms"] >= 0
+
+
+async def test_listener_voice_cycle_runs_full_lifecycle() -> None:
+    async with _listener_client() as client:
+        resp = await client.post(
+            "/v1/devices",
+            json={"name": "voice-pi", "capabilities": ["voice", "wake"]},
+        )
+        assert resp.status_code == 201, resp.text
+        device_id = resp.json()["device"]["id"]
+
+        resp = await client.post(
+            "/v1/training/consent", json={"track": "voice_enrollment"}
+        )
+        assert resp.status_code == 201
+        resp = await client.post(
+            "/v1/voice/enroll",
+            json={
+                "samples": [{"audio_b64": b64(SAMPLE_A)} for _ in range(5)],
+                "reason": "listener test",
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        resp = await client.post("/v1/identity/owner", json={"display_name": "Listener Owner"})
+        assert resp.status_code == 201, resp.text
+
+        listener = DeviceListener(client, device_id)
+        await listener.heartbeat()
+        result = await listener.voice_cycle(
+            phrase="",
+            samples=[b64(SAMPLE_A)],
+            text="Remind me to water the plants",
+            follow_up_text="Actually, tomorrow",
+        )
+        assert result["reply"]["state"] == "follow_up"
+        assert result["reply"]["reply"]
+        assert result["follow_up"]["state"] == "follow_up"
+        assert result["follow_up"]["transcript"] == "Actually, tomorrow"

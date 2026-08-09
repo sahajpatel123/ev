@@ -111,6 +111,9 @@ def main() -> int:
     ]
     try:
         wait_healthy(base_url)
+        attachment = Path(tmp) / "note.txt"
+        attachment.write_text("E2E attachment capture integrity check.", encoding="utf-8")
+        checks.insert(1, (["attach", str(attachment)], "attached ", "attach failed"))
         for args, expected, label in checks:
             result = run_cli(base_url, args)
             if expected and expected not in result.stdout:

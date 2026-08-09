@@ -18,10 +18,12 @@ Every external system is an `Adapter` in `app/integrations/adapters.py`:
 - `act(...)` — local deterministic mode, or HTTP forwarding with the vault
   token when `config.provider == "http"` and `base_url` is set.
 
-Built-in adapters: **calendar, health, github, smart_home, messaging**. New
-adapters are registered in the `IntegrationRegistry`; provider logic stays
+Built-in adapters: **calendar, health, github, smart_home, messaging, search**.
+New adapters are registered in the `IntegrationRegistry`; provider logic stays
 behind this interface so EV core never changes when an integration is added or
-replaced.
+replaced. The `search` adapter is the permissioned web/research surface from
+plan §11.3: `search.query` runs through a configured provider or a
+deterministic local mode.
 
 ## 2. Encrypted credential vault
 

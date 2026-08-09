@@ -171,6 +171,34 @@ async def test_quiet_hours_block_wake_unless_urgent(
     assert outcome["state"] == "verifying"
 
 
+async def test_focus_mode_blocks_wake_unless_urgent(client: AsyncClient) -> None:
+    device = await register_device(client, "focus-phone")
+    await heartbeat(client, str(device["id"]))
+    resp = await client.post(
+        "/v1/focus",
+        json={"label": "Deep work", "kind": "task", "reason": "ship the runtime"},
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(device["id"]), "signal_score": 0.8, "priority": 0.5}],
+    )
+    assert resp.status_code == 200
+    outcome = resp.json()
+    assert outcome["blocked"] is True
+    assert outcome["block_reason"] == "focus_mode"
+
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(device["id"]), "signal_score": 0.8, "priority": 0.95}],
+    )
+    assert resp.status_code == 200
+    outcome = resp.json()
+    assert outcome["blocked"] is False
+    assert outcome["state"] == "verifying"
+
+
 async def test_runtime_state_machine_lifecycle_and_invalid_transition(
     client: AsyncClient,
 ) -> None:
@@ -701,6 +729,7 @@ async def test_runtime_sync_reports_policy_and_empty_latency(client: AsyncClient
     payload = resp.json()
     assert payload["policy"]["daily_alert_budget"] == settings.daily_alert_budget
     assert payload["policy"]["heartbeat_grace_seconds"] == settings.runtime_heartbeat_grace_seconds
+    assert payload["policy"]["focus_urgent_threshold"] == settings.runtime_focus_urgent_threshold
     assert payload["latency"]["session_id"] is None
     assert all(
         value is None

@@ -22,6 +22,7 @@ from app.schemas import (
     HudAlertTier,
     HudCardOut,
     HudFocusOut,
+    HudOpsCardOut,
     HudQuickCardOut,
     RouteBriefingOut,
     TacticalBriefOut,
@@ -40,6 +41,7 @@ HUD_SCHEMAS: dict[str, type[BaseModel]] = {
     "ev.hud.route.v1": RouteBriefingOut,
     "ev.hud.alert.v1": HudAlertOut,
     "ev.hud.quickcard.v1": HudQuickCardOut,
+    "ev.hud.ops.v1": HudOpsCardOut,
 }
 
 

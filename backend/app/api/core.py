@@ -99,7 +99,7 @@ from app.services.model_call import list_model_calls, log_model_call
 from app.services.processor import ensure_processed
 from app.services.rebuild import rebuild_derived_state
 from app.storage.object_store import get_object_store, sha256_bytes
-from app.utils.text import sha256_hex, token_estimate, utcnow
+from app.utils.text import sha256_hex, utcnow
 
 router = APIRouter(prefix="/v1")
 
@@ -943,10 +943,17 @@ async def run_chat_pipeline(
         if settings.model_call_log_enabled:
             await log_model_call(session, call=call, actor=actor)
 
+        critic = None
+        if settings.filter_critic_enabled and strategy.mode in settings.filter_critic_modes:
+            from app.filter.critic import GatewayCritic
+
+            critic = GatewayCritic(gateway, request_id=request_id, envelope=envelope)
         report = await run_output_filter(
             result.text,
             strategy=strategy,
             grounding=grounding,
+            max_iterations=settings.filter_critic_max_iterations,
+            critic=critic,
         )
         result.text = report.final_text
         for flag in report.flags:
@@ -985,6 +992,11 @@ async def run_chat_pipeline(
                 "claims": [c.to_dict() for c in report.claims],
                 "iterations": report.iterations,
                 "passed": report.passed,
+                "critic_costs": [
+                    edit["costs"]
+                    for edit in report.edits
+                    if edit.get("type") == "critic_revision"
+                ],
             },
             final_text=report.final_text,
             scores=report.critic,
@@ -1146,69 +1158,19 @@ def _assemble_context(
     rollup_summary: str | None = None,
     open_questions: list[str] | None = None,
 ) -> tuple[str, int]:
-    parts = [strategy_text]
-    state_text = (
-        f"USER STATE: activity={user_state.activity}; project={user_state.active_project}; "
-        f"goal={user_state.active_goal}; task={user_state.current_task}; "
-        f"topics={', '.join(user_state.recent_topics[:5])}; "
-        f"open_decisions={len(user_state.open_decisions)}."
+    """Compile the request window through the ContextCompiler (plan 2.4)."""
+    from app.context.compiler import ContextCompiler
+
+    plan = ContextCompiler().compile(
+        memories=memories,
+        user_state=user_state,
+        strategy_text=strategy_text,
+        budget=budget,
+        history=history,
+        rollup_summary=rollup_summary,
+        open_questions=open_questions,
     )
-    parts.append(state_text)
-    used_tokens = sum(token_estimate(p) for p in parts)
-    if user_state.live_context:
-        live_header = "LIVE CONTEXT (permissioned live sensors; separate from memory):"
-        if used_tokens + token_estimate(live_header) <= budget:
-            parts.append(live_header)
-            used_tokens += token_estimate(live_header)
-        for line in user_state.live_context[:5]:
-            if used_tokens + token_estimate(line) > budget:
-                break
-            parts.append(f"- {line}")
-            used_tokens += token_estimate(f"- {line}")
-    if rollup_summary:
-        chunk = rollup_summary
-        if used_tokens + token_estimate(chunk) > budget:
-            reserve = max(0, budget - used_tokens - 1)
-            if reserve > 0:
-                chunk = chunk[: reserve * 4]
-        parts.append(chunk)
-        used_tokens += token_estimate(chunk)
-    header = "RETRIEVED MEMORY (newest/highest score first):"
-    parts.append(header)
-    used_tokens += token_estimate(header)
-    for m in memories:
-        line = (
-            f"- [{m.memory_type}] (score {m.score:.2f}, {m.event_time.date().isoformat() if m.event_time else '?'}, "
-            f"conf {m.confidence:.2f}): {m.text}"
-        )
-        if used_tokens + token_estimate(line) > budget:
-            break
-        parts.append(line)
-        used_tokens += token_estimate(line)
-    if history:
-        header = "CONVERSATION HISTORY (continuous window, oldest first):"
-        if used_tokens + token_estimate(header) <= budget:
-            parts.append(header)
-            used_tokens += token_estimate(header)
-        for item in history:
-            line = f"- {item['role']}: {item['text'][:1000]}"
-            if used_tokens + token_estimate(line) > budget:
-                break
-            parts.append(line)
-            used_tokens += token_estimate(line)
-    if open_questions:
-        header = "OPEN QUESTIONS (answer these when relevant or when resuming):"
-        if used_tokens + token_estimate(header) <= budget:
-            parts.append(header)
-            used_tokens += token_estimate(header)
-        for question in open_questions:
-            line = f"- {question}"
-            if used_tokens + token_estimate(line) > budget:
-                break
-            parts.append(line)
-            used_tokens += token_estimate(line)
-    context = "\n".join(parts)
-    return context, used_tokens
+    return plan.text, plan.used_tokens
 
 
 def _resolve_depth(requested: str, message: str) -> str:

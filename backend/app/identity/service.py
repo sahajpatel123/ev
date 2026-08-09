@@ -61,6 +61,7 @@ OWNER_ACTIONS = {
 REVERIFY_ACTIONS = {
     "integration.action",
     "memory.delete",
+    "runtime.action",
     "voice.revoke",
     "voice.delete",
     "recovery.rotate",

@@ -123,11 +123,16 @@ class MemoryDelta(BaseModel):
 
 
 class ProvenanceItem(BaseModel):
-    memory_id: UUID
+    memory_id: UUID | None = None
     text: str
     memory_type: str
-    score: float
-    components: dict[str, float]
+    score: float = 0.0
+    components: dict[str, float] = Field(default_factory=dict)
+    kind: str = "memory"
+    attachment_id: UUID | None = None
+    perception_event_id: UUID | None = None
+    source_event_id: UUID | None = None
+    raw_sent: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -227,6 +232,8 @@ class ChatRequest(BaseModel):
     stream: bool = False
     model: str | None = None
     context_depth: Literal["auto", "standard", "deep", "deepest"] = "auto"
+    attachment_id: UUID | None = None
+    allow_raw_media: bool = False
 
 
 class ChatResponse(BaseModel):

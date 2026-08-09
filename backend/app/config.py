@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     deepseek_api_key: str | None = None
     deepseek_model: str = "deepseek-v4-flash-0731"
 
+    # Intelligence filter: optional provider-backed critic (staged trust).
+    filter_critic_enabled: bool = False
+    filter_critic_max_iterations: int = 2
+    filter_critic_modes: tuple[str, ...] = ("coaching", "emergency", "analytical")
+
     # Orchestrator
     context_budget_tokens: int = 20_000
     max_retrieval_memories: int = 50
@@ -89,6 +94,7 @@ class Settings(BaseSettings):
     runtime_heartbeat_grace_seconds: int = 300
     runtime_dlq_max_attempts: int = 3
     runtime_urgent_priority_threshold: float = 0.7
+    runtime_focus_urgent_threshold: float = 0.85
     runtime_daemon_tick_seconds: int = 30
 
     # Routines & automations
@@ -109,6 +115,10 @@ class Settings(BaseSettings):
     s3_bucket: str = "ev"
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
+
+    # Retention / maintenance
+    tombstone_blob_retention_days: int = 30
+    backup_retention_count: int = 7
 
     # Integrations & ecosystem
     # Separate key for encrypting integration credentials. If empty, EV derives

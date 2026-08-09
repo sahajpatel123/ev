@@ -116,10 +116,18 @@ async def test_catalog_and_install_validation(client: AsyncClient) -> None:
     resp = await client.get("/v1/integrations/catalog")
     assert resp.status_code == 200
     catalog = {item["adapter"]: item for item in resp.json()}
-    assert set(catalog) == {"calendar", "health", "github", "smart_home", "messaging"}
+    assert set(catalog) == {
+        "calendar",
+        "health",
+        "github",
+        "smart_home",
+        "messaging",
+        "search",
+    }
     assert catalog["github"]["capabilities"] == ["github:read", "github:act"]
     assert catalog["health"]["min_privacy"] == "sensitive"
     assert catalog["calendar"]["actions"][0]["name"] == "calendar.list_upcoming"
+    assert catalog["search"]["actions"][0]["name"] == "search.query"
 
     integration = await install(client, "calendar", scopes=["calendar:read", "calendar:act"])
     assert integration["status"] == "active"
@@ -269,6 +277,29 @@ async def test_action_arguments_are_validated(client: AsyncClient) -> None:
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["result"]["ok"] is True
+
+
+async def test_search_adapter_permissioned_action(client: AsyncClient) -> None:
+    integration = await install(client, "search", scopes=["search:read"])
+    integration_id = integration["id"]
+    await store_oauth(client, integration_id)
+
+    resp = await client.post(
+        f"/v1/integrations/{integration_id}/actions",
+        json={"action": "search.query", "args": {"query": "EV memory engine"}},
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    assert result["mode"] == "local"
+    assert result["query"] == "EV memory engine"
+    assert result["results"] == []
+
+    resp = await client.post(
+        f"/v1/integrations/{integration_id}/actions",
+        json={"action": "search.query", "args": {"max_results": 5}},
+    )
+    assert resp.status_code == 400
+    assert "query" in resp.json()["detail"]
 
 
 async def test_oauth_refresh_flow(

@@ -27,10 +27,10 @@ BIO_VERBS = (
     r"traveled|travelled|going|planning|thinking|considering|am|have|had|was|were"
 )
 PERSONAL_CLAIM_RE = re.compile(
-    rf"\b(?:I|we|you)\s+(?:{BIO_VERBS})\b|\b(?:your)\s+"
+    rf"\b((?:I|we|you)\s+(?:{BIO_VERBS})\b[^.!?\n]{{0,160}}|\b(?:your)\s+"
     r"(?:project|goal|decision|preference|plan|trip|meeting|interview|health|sleep|"
     r"work|job|house|car|appointment|deadline|birthday|wedding|visit|talk|"
-    r"history|budget|family|friend|friends|team|office|school|college|boss|client)\b",
+    r"history|budget|family|friend|friends|team|office|school|college|boss|client)\b)",
     re.IGNORECASE,
 )
 
@@ -239,8 +239,8 @@ def audit_grounding(text: str, material: list[GroundingMaterial]) -> tuple[list[
             if overlap > best:
                 best = overlap
                 evidence = [mem.memory_id]
-        supported = bool(
-            best >= 0.5 or (evidence and best >= 0.4 and len(claim_tokens) <= 3)
+        supported = (len(claim_tokens) >= 2 and best >= 0.5) or (
+            bool(claim_dates) and best >= 0.9
         )
         action = "keep" if supported else "remove"
         claims.append(
@@ -497,8 +497,14 @@ async def run_output_filter(
     strategy: InteractionStrategy,
     grounding: list[GroundingMaterial],
     max_iterations: int = 2,
+    critic=None,
 ) -> OutputReport:
-    """Run all output stages with a bounded critic loop (max two refinements)."""
+    """Run all output stages with a bounded critic loop (max two refinements).
+
+    ``critic`` is an optional provider-backed judge (see ``app.filter.critic``).
+    When provided, it may revise the draft between deterministic passes; when
+    absent or unparseable, the deterministic refiner is the fallback.
+    """
 
     report = OutputReport(draft=draft, final_text=draft)
     for iteration in range(max_iterations + 1):
@@ -537,6 +543,35 @@ async def run_output_filter(
         if report.passed or iteration == max_iterations:
             break
         refined = DeterministicCritic().refine(report.final_text, scores)
+        if critic is not None:
+            revision = await critic.revise(
+                draft=report.final_text,
+                strategy=strategy,
+                grounding=grounding,
+                claims=report.claims,
+                deterministic_scores=scores,
+                iteration=iteration,
+            )
+            if revision.used_provider and revision.revised_text and revision.revised_text != report.final_text:
+                refined = revision.revised_text
+                report.critic = revision.scores
+                report.edits.append(
+                    {
+                        "type": "critic_revision",
+                        "iteration": iteration,
+                        "issues": revision.issues,
+                        "costs": revision.costs,
+                    }
+                )
+                report.flags.append(
+                    FilterFlag(
+                        "output",
+                        "critic_revision",
+                        "info",
+                        detail=f"Iteration {iteration + 1} revised by provider critic",
+                        action="refine",
+                    )
+                )
         if refined == report.final_text:
             break
         report.final_text = refined

@@ -98,3 +98,25 @@ async def test_digital_twin_is_explainable(client: AsyncClient) -> None:
     audit_events = {e["id"] for e in audit.json()["source_events"]}
     assert set(goal["source_event_ids"]) <= audit_events
     assert audit_events
+
+
+async def test_ops_hud_card_matches_ops_center(client: AsyncClient) -> None:
+    await post_event(client, "I decided to use SQLite for local testing.")
+    await client.post(
+        "/v1/focus",
+        json={"label": "Ship EV ops card", "kind": "goal"},
+    )
+
+    resp = await client.get("/v1/hud/ops")
+    assert resp.status_code == 200, resp.text
+    card = resp.json()
+    schema_name, validated = validate_hud(card)
+    assert schema_name == "ev.hud.ops.v1"
+    assert validated.focus_locked is True
+    assert validated.command_cards
+    assert validated.summary
+
+    ops = (await client.get("/v1/ops/center")).json()
+    assert card["pending_alerts"] == len(ops["alerts"])
+    assert card["online_devices"] == ops["fleet"]["online_count"]
+    assert card["open_decisions"] == len(ops["open_decisions"])

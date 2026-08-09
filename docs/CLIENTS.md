@@ -81,6 +81,7 @@ Environment: `EV_API_URL` (default `http://127.0.0.1:8000`), `EV_API_KEY`
 
 ```text
 ev capture "remember this" | ev capture -       # text or stdin -> event
+ev attach note.pdf                              # file/share -> attachment event
 ev ask "what did I decide about X?"
 ev timeline --limit 20                           # recent events + cursor
 ev memories --type decision --search sqlite

@@ -7,6 +7,8 @@ from httpx import AsyncClient
 from app.config import settings
 from app.contracts import ChatResult, ToolCall
 from app.gateway.providers import register_provider
+from app.models import ModelCallLog
+from app.services.model_call import model_call_stats
 
 
 class ToolMockProvider:
@@ -115,3 +117,44 @@ async def test_gateway_chat_forwards_tools_validates_and_audits(
         assert rows[0]["envelope_hash"] == "hash-abc-123"
     finally:
         settings.chat_provider = original
+
+
+async def test_model_call_stats_aggregates_routing_evidence(
+    client: AsyncClient, db_session
+) -> None:
+    """Latency/error/token evidence per provider and model for eval-gated routing."""
+
+    for i, (provider, model, status, latency) in enumerate(
+        [
+            ("mock", "mock-model", "ok", 10.0),
+            ("mock", "mock-model", "error", 200.0),
+            ("deepseek", "deepseek-v4-flash-0731", "ok", 50.0),
+        ]
+    ):
+        db_session.add(
+            ModelCallLog(
+                request_id=f"stats-req-{i}",
+                actor="tester",
+                provider=provider,
+                model=model,
+                status=status,
+                latency_ms=latency,
+                prompt_tokens=10,
+                completion_tokens=5,
+                envelope={},
+            )
+        )
+    await db_session.flush()
+
+    stats = await model_call_stats(db_session, window_hours=24)
+    assert stats["totals"]["calls"] == 3
+    assert stats["totals"]["errors"] == 1
+    assert stats["totals"]["avg_latency_ms"] == round((10 + 200 + 50) / 3, 1)
+    assert stats["totals"]["p95_latency_ms"] == 200.0
+    assert stats["totals"]["prompt_tokens"] == 30
+
+    by_provider = {b["provider"]: b for b in stats["by_provider_model"]}
+    assert by_provider["mock"]["calls"] == 2
+    assert by_provider["mock"]["errors"] == 1
+    assert by_provider["deepseek"]["model"] == "deepseek-v4-flash-0731"
+    assert by_provider["deepseek"]["calls"] == 1

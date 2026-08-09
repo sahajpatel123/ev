@@ -135,7 +135,8 @@ async def run_full_filter_pipeline(
         "goals in mind.\n\n"
         f"{context}"
     )
-    call = await ModelGateway(provider).chat(
+    gateway = ModelGateway(provider)
+    call = await gateway.chat(
         [
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=decision.provider_message),
@@ -147,10 +148,17 @@ async def run_full_filter_pipeline(
     if call.status == "error":
         draft = "I couldn't reach the reasoning provider, so I can't give a grounded answer right now."
 
+    critic = None
+    if settings.filter_critic_enabled and strategy.mode in settings.filter_critic_modes:
+        from app.filter.critic import GatewayCritic
+
+        critic = GatewayCritic(gateway, request_id=request_id, envelope=envelope)
     report = await run_output_filter(
         draft,
         strategy=strategy,
         grounding=grounding,
+        max_iterations=settings.filter_critic_max_iterations,
+        critic=critic,
     )
     ledger_ids: list[UUID] = []
     for flag in report.flags:
@@ -189,6 +197,11 @@ async def run_full_filter_pipeline(
                 "claims": [c.to_dict() for c in report.claims],
                 "iterations": report.iterations,
                 "passed": report.passed,
+                "critic_costs": [
+                    edit["costs"]
+                    for edit in report.edits
+                    if edit.get("type") == "critic_revision"
+                ],
             },
             final_text=report.final_text,
             scores=report.critic,

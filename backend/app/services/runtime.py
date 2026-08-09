@@ -22,6 +22,7 @@ from app.models import (
     ApprovedAction,
     DeadLetter,
     Device,
+    FocusDesignation,
     Prediction,
     RuntimeEvent,
     RuntimeHeartbeat,
@@ -49,7 +50,7 @@ LEGAL_TRANSITIONS: dict[str, set[str]] = {
     "awake": {"processing", "idle"},
     "processing": {"responding", "idle"},
     "responding": {"follow_up", "idle"},
-    "follow_up": {"idle"},
+    "follow_up": {"processing", "idle"},
 }
 
 # Action type -> requires approval, derived from the formal action registry.
@@ -127,6 +128,7 @@ def runtime_policy() -> dict:
         "quiet_hours_end": settings.quiet_hours_end,
         "daily_alert_budget": settings.daily_alert_budget,
         "urgent_priority_threshold": settings.runtime_urgent_priority_threshold,
+        "focus_urgent_threshold": settings.runtime_focus_urgent_threshold,
         "verify_timeout_seconds": settings.runtime_verify_timeout_seconds,
         "awake_timeout_seconds": settings.runtime_awake_timeout_seconds,
         "processing_timeout_seconds": settings.runtime_processing_timeout_seconds,
@@ -710,6 +712,38 @@ async def arbitrate_wake(
             state="idle",
             blocked=True,
             block_reason="quiet_hours",
+        )
+
+    focus = (
+        await session.execute(
+            select(FocusDesignation)
+            .where(FocusDesignation.active.is_(True))
+            .order_by(FocusDesignation.started_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if focus is not None and intent.priority < settings.runtime_focus_urgent_threshold:
+        for candidate in candidates:
+            if candidate.device_id == device.id:
+                candidate.reason = "focus_mode"
+        await record_runtime_event(
+            session,
+            kind="wake",
+            payload={
+                "blocked": True,
+                "block_reason": "focus_mode",
+                "focus_id": str(focus.id),
+                "focus_label": focus.label,
+                "candidate_count": len(intents),
+                "best_device_id": str(device.id),
+            },
+            device_id=device.id,
+        )
+        return WakeArbitrationOut(
+            candidates=candidates,
+            state="idle",
+            blocked=True,
+            block_reason="focus_mode",
         )
 
     await expire_stale(session, now)

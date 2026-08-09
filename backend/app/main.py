@@ -18,6 +18,7 @@ from app.api import (
     filter,
     identity,
     integrations,
+    maintenance,
     ops,
     routines,
     runtime,
@@ -62,6 +63,7 @@ app.include_router(training.router)
 app.include_router(voice.router)
 app.include_router(filter.router)
 app.include_router(integrations.router)
+app.include_router(maintenance.router)
 app.include_router(ops.router)
 app.include_router(compliance.router)
 app.include_router(tools.router)

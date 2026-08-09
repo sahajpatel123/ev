@@ -36,6 +36,7 @@ from app.schemas import (
     FocusSuggestResponse,
     HealthSummaryOut,
     HudFocusOut,
+    HudOpsCardOut,
     OpsCenterOut,
     RecognitionCreate,
     TwinOut,
@@ -680,6 +681,26 @@ async def ops_center(session: AsyncSession) -> OpsCenterOut:
         ],
         next_actions=next_actions,
         recent_commands=[CommandOut.model_validate(c) for c in commands],
+    )
+
+
+async def ops_card(session: AsyncSession) -> HudOpsCardOut:
+    """Compact HUD rendering of the ops center (ev.hud.ops.v1)."""
+    ops = await ops_center(session)
+    return HudOpsCardOut(
+        schema_version="ev.hud.ops.v1",
+        generated_at=utcnow(),
+        summary=ops.next_actions[0] if ops.next_actions else "No active operations",
+        focus_locked=ops.focus is not None,
+        online_devices=ops.fleet.online_count if ops.fleet else 0,
+        pending_alerts=len(ops.alerts),
+        open_decisions=len(ops.open_decisions),
+        command_cards=ops.next_actions[:3],
+        meta={
+            "active_goal": ops.state.active_goal,
+            "current_task": ops.state.current_task,
+            "recent_commands": [c.command_type for c in ops.recent_commands[:3]],
+        },
     )
 
 

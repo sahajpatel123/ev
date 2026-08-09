@@ -101,7 +101,90 @@ class DeviceListener:
             ],
         )
         response.raise_for_status()
+        outcome = response.json()
+        self.session_id = outcome.get("session_id")
+        return outcome
+
+    async def verify_owner(
+        self,
+        *,
+        nonce: str,
+        phrase: str,
+        samples: list[str],
+        liveness_proof: str = "live",
+        audio_sha256: str | None = None,
+    ) -> dict:
+        """Complete owner speaker verification with anti-spoofing."""
+        payload: dict[str, Any] = {
+            "session_id": self.session_id,
+            "nonce": nonce,
+            "phrase": phrase,
+            "samples": samples,
+            "liveness_proof": liveness_proof,
+        }
+        if audio_sha256:
+            payload["audio_sha256"] = audio_sha256
+        response = await self.client.post("/v1/runtime/verify", json=payload)
+        response.raise_for_status()
         return response.json()
+
+    async def utterance(
+        self,
+        *,
+        text: str | None = None,
+        audio_b64: str | None = None,
+        follow_up: bool = False,
+        reverify_token: str | None = None,
+    ) -> dict:
+        """Send one utterance (or 30-second follow-up) to the runtime."""
+        payload: dict[str, Any] = {
+            "session_id": self.session_id,
+            "text": text,
+            "audio_b64": audio_b64,
+            "follow_up": follow_up,
+            "reverify_token": reverify_token,
+        }
+        response = await self.client.post(
+            "/v1/runtime/utterance",
+            json={key: value for key, value in payload.items() if value is not None},
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def voice_cycle(
+        self,
+        *,
+        phrase: str,
+        samples: list[str],
+        text: str,
+        follow_up_text: str | None = None,
+        signal_score: float = 0.9,
+        proximity_score: float = 1.0,
+        priority: float = 0.8,
+    ) -> dict:
+        """Run the full voice loop: wake → verify → listen → reply → follow-up."""
+        wake = await self.wake(
+            signal_score=signal_score,
+            proximity_score=proximity_score,
+            priority=priority,
+        )
+        if wake.get("blocked"):
+            return {"blocked": True, "block_reason": wake.get("block_reason")}
+        # The runtime issues the challenge at wake; the device relays it to the
+        # owner and the owner's repetition is verified below.
+        phrase = phrase or wake.get("challenge_phrase") or ""
+        verified = await self.verify_owner(
+            nonce=wake["challenge_nonce"],
+            phrase=phrase,
+            samples=samples,
+        )
+        if not verified.get("verified"):
+            return verified
+        reply = await self.utterance(text=text)
+        if follow_up_text and reply.get("state") == "follow_up":
+            follow_up = await self.utterance(text=follow_up_text, follow_up=True)
+            return {"reply": reply, "follow_up": follow_up}
+        return {"reply": reply}
 
     async def sync_state(self, since: str | None = None) -> dict:
         """Fetch the convergent cross-device runtime snapshot."""
@@ -150,6 +233,11 @@ def main() -> None:
     parser.add_argument("--proximity", type=float, default=0.5)
     parser.add_argument("--priority", type=float, default=0.5)
     parser.add_argument("--battery", type=float, default=None)
+    parser.add_argument("--voice-cycle", action="store_true", help="Run wake → verify → say → follow-up")
+    parser.add_argument("--challenge-phrase", default=os.environ.get("EV_CHALLENGE_PHRASE", ""))
+    parser.add_argument("--verify-sample", default=os.environ.get("EV_VERIFY_SAMPLE", ""))
+    parser.add_argument("--say", default=os.environ.get("EV_SAY", ""))
+    parser.add_argument("--follow-up-say", default=os.environ.get("EV_FOLLOW_UP_SAY", ""))
     args = parser.parse_args()
 
     listener = DeviceListener(
@@ -166,6 +254,19 @@ def main() -> None:
         if args.once:
             await listener.heartbeat()
             print("[listener] one-shot heartbeat ok")
+            return
+        if args.voice_cycle:
+            if not args.challenge_phrase or not args.verify_sample or not args.say:
+                raise SystemExit(
+                    "--voice-cycle needs --challenge-phrase, --verify-sample (base64), --say"
+                )
+            result = await listener.voice_cycle(
+                phrase=args.challenge_phrase,
+                samples=[args.verify_sample],
+                text=args.say,
+                follow_up_text=args.follow_up_say or None,
+            )
+            print(f"[listener] voice cycle: {result}")
             return
         await listener.run_loop(
             interval_seconds=args.interval,

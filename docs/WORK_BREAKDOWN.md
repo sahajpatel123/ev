@@ -622,9 +622,13 @@ safety caps.
 integration config, deterministic local mode, per-call permission, and vault
 credentials. Direction: citation-aware result parsing and per-call approval UI.
 
-### 11.4 Sandboxed code/file tools — **Future**
-Read/write/run in sandboxes with per-call approval and versioned drafts. Direction:
-design approval matrix and audit trail.
+### 11.4 Sandboxed code/file tools — **Built**
+`/v1/tools/execute` + `/v1/tools/files/read|write` run inside a sandbox root
+(`EV_SANDBOX_ROOT`, default `storage/sandbox`): no shell, minimal environment,
+hard timeouts, bounded output, traversal rejection, size caps, owner-trust
+gate, and full access-log audit per call. The `execute_command` action spec is
+backed by the same executor. Direction: versioned drafts and per-call approval
+UI.
 
 ### 11.5 Action dispatcher & rollback — **Built**
 Write-side actions are formally declared capabilities with payload schemas,
@@ -731,8 +735,10 @@ Success means every important change ships with evidence, and the system degrade
 gracefully when something fails.
 
 ### 14.1 Deployment — **Partial**
-Docker Compose (Postgres/pgvector, Redis, MinIO), Tailscale plan. Direction:
-finish Dockerfile/compose wiring and TLS.
+Docker Compose (Postgres/pgvector, Redis, MinIO), Tailscale plan, and an
+Alembic migration chain (`alembic upgrade head` creates the full schema from
+the ORM metadata; `make migrate` runs it). Direction: finish Dockerfile/compose
+wiring, TLS, and future schema-evolution migrations.
 
 ### 14.2 Evaluation suite — **Partial**
 30+ API tests; retrieval/filter/voice evals planned. Direction: add seeded corpus

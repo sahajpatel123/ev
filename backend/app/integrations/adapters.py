@@ -332,6 +332,37 @@ class MessagingAdapter(Adapter):
         ]
 
 
+@dataclass(frozen=True)
+class SearchAdapter(Adapter):
+    """Permissioned web/research search behind the standard adapter contract."""
+
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        result = await super().act(
+            action=action,
+            args=args,
+            token=token,
+            scopes=scopes,
+            config=config,
+        )
+        if result.get("mode") == "local":
+            return {
+                "ok": True,
+                "mode": "local",
+                "action": action,
+                "query": args.get("query"),
+                "results": [],
+            }
+        return result
+
+
 BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
     CalendarAdapter(
         slug="calendar",
@@ -411,6 +442,31 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
         actions=(
             AdapterAction("messaging.list_messages", "messaging:read", "List recent messages"),
             AdapterAction("messaging.send", "messaging:act", "Send a message"),
+        ),
+    ),
+    SearchAdapter(
+        slug="search",
+        name="Web Search",
+        description="Permissioned web/research search with a provider interface.",
+        capabilities=("search:read",),
+        default_scopes=("search:read",),
+        min_privacy="normal",
+        privacy_kind="app",
+        event_types=(),
+        actions=(
+            AdapterAction(
+                "search.query",
+                "search:read",
+                "Run a permissioned web search and return cited results",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "minLength": 1, "maxLength": 500},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+                    },
+                    "required": ["query"],
+                },
+            ),
         ),
     ),
 )

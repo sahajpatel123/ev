@@ -8,6 +8,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.ev.interaction import build_strategy
+from app.filter.critic import CriticRevision
 from app.filter.envelope import GroundingMaterial, SpeakerIdentity
 from app.filter.input_filter import InputFilter, resolve_privacy_level
 from app.filter.output_filter import run_output_filter
@@ -131,6 +132,78 @@ async def test_safety_redacts_secrets_in_output() -> None:
     assert "test@example.com" not in report.final_text
     assert "sk-abcdefghijklmnopqrstuvwx" not in report.final_text
     assert report.safety["redactions"] >= 2
+
+
+# --------------------------------------------------------------------------- #
+# Provider-backed critic loop
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCritic:
+    def __init__(self, revision: CriticRevision) -> None:
+        self.revision = revision
+        self.calls = 0
+
+    async def revise(self, **kwargs) -> CriticRevision:
+        self.calls += 1
+        return self.revision
+
+
+async def test_provider_critic_revises_and_is_audited() -> None:
+    strategy = build_strategy("Help me.")
+    critic = _FakeCritic(
+        CriticRevision(
+            revised_text="You can handle this on your own.",
+            scores={"grounding": 1.0, "persona": 1.0, "safety": 1.0, "contract": 1.0, "overall": 1.0},
+            issues=["dependency nudging detected"],
+            costs={"prompt_tokens": 50, "completion_tokens": 20},
+        )
+    )
+    report = await run_output_filter(
+        "Only I can help you with this.",
+        strategy=strategy,
+        grounding=[],
+        critic=critic,
+    )
+    assert critic.calls >= 1
+    assert "handle" in report.final_text
+    assert any(f.name == "critic_revision" for f in report.flags)
+    assert any(e["type"] == "critic_revision" and e["costs"]["prompt_tokens"] == 50 for e in report.edits)
+
+
+async def test_provider_critic_falls_back_when_unavailable() -> None:
+    strategy = build_strategy("What did I decide?")
+    critic = _FakeCritic(
+        CriticRevision(
+            revised_text="",
+            scores={},
+            issues=["critic unavailable"],
+            used_provider=False,
+        )
+    )
+    report = await run_output_filter(
+        "You decided to move to Mars next week.",
+        strategy=strategy,
+        grounding=[],
+        critic=critic,
+    )
+    assert "Mars" not in report.final_text
+    assert "can't confirm" in report.final_text.lower()
+
+
+async def test_chat_with_critic_enabled_is_resilient(client: AsyncClient, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "filter_critic_enabled", True)
+    monkeypatch.setattr(settings, "filter_critic_modes", ("analytical",))
+    resp = await client.post(
+        "/v1/chat",
+        json={"message": "Compare the options in detail."},
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["reply"]
+    assert payload["filter_report"] is not None
 
 
 # --------------------------------------------------------------------------- #

@@ -25,6 +25,7 @@
 | GET | `/v1/events/{id}` | Read event | FR-MEM-01 |
 | DELETE | `/v1/events/{id}` | Tombstone + redact | FR-SEC-04 |
 | GET | `/v1/timeline` | Event timeline | FR-MEM-06 |
+| GET | `/v1/recall/week` | Reconstruct a past week (events + end-of-week memory state + consolidation) | FR-MEM-06, FR-MEM-03 |
 | POST | `/v1/chat` | Chat (SSE streaming) | FR-ORCH-01..03 |
 | GET | `/v1/memories` | Browse memories | FR-MEM-03 |
 | GET | `/v1/memories/{id}` | Memory detail | FR-MEM-02 |
@@ -48,6 +49,7 @@
 | GET | `/v1/commands` · `/v1/commands/{id}` | Auditable E.D.I.T.H. command ledger | FR-SEC-XX |
 | GET | `/v1/ops/center` · `/v1/twin` · `/v1/hud/focus` | Ops center / digital twin / HUD overlay | FR-HUD |
 | GET | `/v1/hud/card` · `/v1/hud/alerts` · `/v1/hud/route` | Strict HUD surface schemas (`ev.hud.*.v1`) | FR-HUD-01 |
+| GET | `/v1/hud/ops` | Unified ops center as HUD command card (`ev.hud.ops.v1`) | FR-HUD-01 |
 | POST | `/v1/tactical/prepare` · GET `/v1/tactical/quick` | Tactical quick cards (`ev.hud.quickcard.v1`, cached) | FR-TACTICAL-03 |
 | POST | `/v1/gateway/chat` · `/v1/gateway/tools` · GET `/v1/gateway/models` | Internal gateway (model-agnostic) | FR-SYS-03 |
 | POST | `/v1/filter/evaluate` | Filter input/output replay (draft or full pipeline) | FR-ORCH-05 |

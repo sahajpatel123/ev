@@ -10,6 +10,7 @@ from httpx import AsyncClient
 
 from clients.cli import (
     QUEUE_FILENAME,
+    attach,
     audit,
     capture,
     card,
@@ -223,3 +224,25 @@ async def test_cli_onboarding_creates_first_memories_and_audit(
     assert first["memory"]["id"]
     assert first["source_events"]
     assert first["versions"]
+
+
+async def test_cli_attach_file_capture_roundtrip(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    path = tmp_path / "note.txt"
+    payload = b"Attachment capture integrity check for EV."
+    path.write_bytes(payload)
+
+    result = await attach(path, client=client)
+    attachment = result["attachment"]
+    event = result["event"]
+
+    assert attachment["filename"] == "note.txt"
+    assert attachment["size_bytes"] == len(payload)
+    assert event["source"] == "attachment"
+    assert event["event_type"] == "file"
+    assert (event.get("content") or {}).get("filename") == "note.txt"
+
+    resp = await client.get(f"/v1/attachments/{attachment['id']}")
+    assert resp.status_code == 200
+    assert resp.content == payload

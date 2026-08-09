@@ -544,3 +544,30 @@ async def test_sensitive_tools_require_owner_trust(
     )
     assert denied.status_code == 403
     assert denied.headers.get("X-Error-Code") == "owner_trust_required"
+
+
+async def test_runtime_action_approval_requires_reverification(
+    client: httpx.AsyncClient,
+) -> None:
+    await create_owner(client)
+    plain = await create_device(client, "plain-pad")
+    owner_device = await create_device(client, "owner-phone", trust_level="owner")
+    plain_client = _client({"Authorization": f"Bearer {plain['token']}"})
+
+    denied = await plain_client.post(f"/v1/runtime/actions/{uuid4()}/approve", json={})
+    assert denied.status_code == 403
+    assert denied.headers.get("X-Error-Code") == "reverification_required"
+
+    owner_client = _client({"Authorization": f"Bearer {owner_device['token']}"})
+    proof = (
+        await owner_client.post(
+            "/v1/identity/reverification",
+            json={"purpose": "runtime.action"},
+        )
+    ).json()["token"]
+    passed = await owner_client.post(
+        f"/v1/runtime/actions/{uuid4()}/approve",
+        json={},
+        headers={"X-EV-Reverify": proof},
+    )
+    assert passed.status_code != 403
