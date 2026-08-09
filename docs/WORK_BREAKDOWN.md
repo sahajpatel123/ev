@@ -279,9 +279,10 @@ Wake → verify → listen → process → respond → 30s follow-up → idle is
 implemented in `app/voice/lifecycle.py` with session timeouts, replay guards,
 and consent gating on wake/verify.
 
-### 5.7 Voice enrollment UX — **Partial**
-Enrollment/verify/rollback/revoke/delete/export APIs exist; an in-workbench
-enrollment flow with sample progress feedback is the remaining UX gap.
+### 5.7 Voice enrollment UX — **Built**
+The web workbench now has a voice enrollment panel: consent grant, 5-sample
+microphone capture with progress feedback, enroll, status, and
+revoke/delete, backed by the audited APIs.
 
 ---
 

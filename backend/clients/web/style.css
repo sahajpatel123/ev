@@ -190,3 +190,11 @@ button:hover {
   padding: 0.35rem 0.5rem;
   vertical-align: top;
 }
+
+.voice-status {
+  margin-top: 8px;
+}
+
+.voice-status p {
+  margin: 4px 0;
+}

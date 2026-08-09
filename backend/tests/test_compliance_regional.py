@@ -293,6 +293,19 @@ async def test_web_transparency_panel_served(client: AsyncClient) -> None:
     assert "/v1/compliance/policy" in js.text
 
 
+async def test_web_voice_enrollment_panel_served(client: AsyncClient) -> None:
+    resp = await client.get("/app/")
+    assert resp.status_code == 200, resp.text
+    assert 'id="ev-voice"' in resp.text
+    assert "voice-enroll" in resp.text
+
+    js = await client.get("/app/app.js")
+    assert js.status_code == 200, js.text
+    assert "/v1/voice/enroll" in js.text
+    assert "/v1/voice/enrollments/" in js.text
+    assert "/v1/training/consent" in js.text
+
+
 def test_daemon_compliance_sweep_schedule(monkeypatch) -> None:
     from app.workers import runtime_daemon
 

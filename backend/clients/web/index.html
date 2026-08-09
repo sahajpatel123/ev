@@ -100,6 +100,25 @@
       <div id="transparency-policy" class="transparency"></div>
       <div id="transparency-report" class="transparency"></div>
     </section>
+
+    <section id="ev-voice" class="panel">
+      <h2>Voice enrollment</h2>
+      <div class="row">
+        <button id="voice-status" type="button">Refresh status</button>
+        <button id="voice-consent" type="button">Grant voice consent</button>
+      </div>
+      <div id="voice-status-body" class="voice-status"></div>
+      <div class="row">
+        <button id="voice-record" type="button">Record sample</button>
+        <button id="voice-reset" type="button">Clear samples</button>
+        <span id="voice-samples" class="muted">0/5 samples</span>
+      </div>
+      <div class="row">
+        <button id="voice-enroll" type="button" disabled>Enroll voiceprint (5 samples)</button>
+      </div>
+      <p id="voice-result" class="result"></p>
+      <ul id="voice-enrollments" class="list"></ul>
+    </section>
   </main>
 
   <script src="/app/app.js" defer></script>

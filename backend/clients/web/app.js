@@ -467,6 +467,171 @@ async function loadTransparency() {
   }
 }
 
+let voiceSamples = [];
+let voiceRecorder = null;
+let voiceChunks = [];
+
+function updateVoiceSampleUi() {
+  const count = voiceSamples.length;
+  $("voice-samples").textContent = `${count}/5 samples`;
+  $("voice-enroll").disabled = count < 5;
+}
+
+function b64FromBuffer(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+async function refreshVoiceStatus() {
+  const body = $("voice-status-body");
+  const list = $("voice-enrollments");
+  try {
+    const [consents, enrollments] = await Promise.all([
+      api("/v1/training/consent"),
+      api("/v1/voice/enrollments"),
+    ]);
+    const active = (consents || []).find(
+      (c) => c.track === "voice_enrollment" && !c.revoked_at
+    );
+    body.innerHTML =
+      `<p><strong>consent</strong> ${active ? "active" : "not granted"}` +
+      (active
+        ? ` · v${active.consent_version} · ${escapeHtml(active.granted_at)}`
+        : "") +
+      `</p>`;
+    list.innerHTML = (enrollments || [])
+      .map(
+        (enrollment) =>
+          `<li><strong>v${enrollment.version}</strong> ${escapeHtml(enrollment.status)} · ` +
+          `${enrollment.sample_count} samples · ${escapeHtml(enrollment.encoder)}` +
+          ` <button class="voice-revoke" data-id="${enrollment.id}">revoke</button>` +
+          ` <button class="voice-delete" data-id="${enrollment.id}">delete</button></li>`
+      )
+      .join("");
+    list.querySelectorAll(".voice-revoke").forEach((button) => {
+      button.addEventListener("click", () => revokeEnrollment(button.dataset.id));
+    });
+    list.querySelectorAll(".voice-delete").forEach((button) => {
+      button.addEventListener("click", () => deleteEnrollment(button.dataset.id));
+    });
+  } catch (error) {
+    showError(body, error);
+  }
+}
+
+async function grantVoiceConsent() {
+  const result = $("voice-result");
+  try {
+    await api("/v1/training/consent", {
+      method: "POST",
+      body: JSON.stringify({ track: "voice_enrollment" }),
+    });
+    result.textContent = "voice consent granted";
+    refreshVoiceStatus();
+  } catch (error) {
+    showError(result, error);
+  }
+}
+
+async function recordVoiceSample() {
+  const result = $("voice-result");
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    result.textContent = "microphone capture is not available in this context";
+    return;
+  }
+  if (voiceRecorder && voiceRecorder.state === "recording") {
+    result.textContent = "already recording — wait for the sample to finish";
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    voiceChunks = [];
+    voiceRecorder = new MediaRecorder(stream);
+    voiceRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        voiceChunks.push(event.data);
+      }
+    };
+    voiceRecorder.onstop = async () => {
+      stream.getTracks().forEach((track) => track.stop());
+      const blob = new Blob(voiceChunks, {
+        type: voiceRecorder.mimeType || "audio/webm",
+      });
+      const buffer = await blob.arrayBuffer();
+      voiceSamples.push(b64FromBuffer(buffer));
+      updateVoiceSampleUi();
+      result.textContent = `sample ${voiceSamples.length}/5 recorded (${blob.size} bytes)`;
+    };
+    voiceRecorder.start();
+    setTimeout(() => {
+      if (voiceRecorder && voiceRecorder.state === "recording") {
+        voiceRecorder.stop();
+      }
+    }, 2000);
+    result.textContent = "recording…";
+  } catch (error) {
+    showError(result, error);
+  }
+}
+
+async function enrollVoiceprint() {
+  const result = $("voice-result");
+  if (voiceSamples.length < 5) {
+    result.textContent = "record 5 samples first";
+    return;
+  }
+  try {
+    const response = await api("/v1/voice/enroll", {
+      method: "POST",
+      body: JSON.stringify({
+        samples: voiceSamples.map((sample) => ({ audio_b64: sample })),
+        reason: "workbench enrollment",
+      }),
+    });
+    voiceSamples = [];
+    updateVoiceSampleUi();
+    result.textContent = `enrolled v${response.enrollment.version} (${response.sample_count} samples, raw audio not stored)`;
+    refreshVoiceStatus();
+  } catch (error) {
+    showError(result, error);
+  }
+}
+
+async function revokeEnrollment(enrollmentId) {
+  const result = $("voice-result");
+  try {
+    await api(`/v1/voice/enrollments/${enrollmentId}/revoke`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "revoked from workbench" }),
+    });
+    result.textContent = "enrollment revoked";
+    refreshVoiceStatus();
+  } catch (error) {
+    showError(result, error);
+  }
+}
+
+async function deleteEnrollment(enrollmentId) {
+  const result = $("voice-result");
+  if (!window.confirm("Permanently delete this voiceprint? This cannot be undone.")) {
+    return;
+  }
+  try {
+    await api(`/v1/voice/enrollments/${enrollmentId}/delete`, {
+      method: "POST",
+      body: JSON.stringify({ reason: "deleted from workbench" }),
+    });
+    result.textContent = "voiceprint deleted";
+    refreshVoiceStatus();
+  } catch (error) {
+    showError(result, error);
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   $("api-url").value = store.url;
   $("api-key").value = store.key;
@@ -479,8 +644,18 @@ document.addEventListener("DOMContentLoaded", () => {
   $("memory-load").addEventListener("click", browseMemories);
   $("timeline-load").addEventListener("click", refreshTimeline);
   $("transparency-load").addEventListener("click", loadTransparency);
+  $("voice-status").addEventListener("click", refreshVoiceStatus);
+  $("voice-consent").addEventListener("click", grantVoiceConsent);
+  $("voice-record").addEventListener("click", recordVoiceSample);
+  $("voice-reset").addEventListener("click", () => {
+    voiceSamples = [];
+    updateVoiceSampleUi();
+    $("voice-result").textContent = "samples cleared";
+  });
+  $("voice-enroll").addEventListener("click", enrollVoiceprint);
   refreshHud();
   refreshTimeline();
+  updateVoiceSampleUi();
   updateQueueStatus();
   renderOnboardingList();
 });
