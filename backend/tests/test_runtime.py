@@ -12,7 +12,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models import RuntimeSession
-from app.services.runtime import daemon_tick
+from app.services.runtime import daemon_tick, mark_verified
 from app.utils.text import utcnow
 
 SAMPLE_A = b"owner-voice-sample-" * 40
@@ -790,3 +790,71 @@ async def test_daemon_builds_quiet_hours_digest_once(
     second = await daemon_tick(db_session)
     await db_session.commit()
     assert second["digest"] is None  # one digest per day
+
+
+async def test_full_runtime_lifecycle_e2e(client: AsyncClient, db_session) -> None:
+    """End-to-end wake -> verify -> process -> respond -> follow-up -> idle
+    across two devices, with latency markers and the event chain observable."""
+    phone = await register_device(client, "e2e-phone")
+    watch = await register_device(client, "e2e-watch")
+    await heartbeat(client, str(phone["id"]))
+    await heartbeat(client, str(watch["id"]))
+
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[
+            {
+                "device_id": str(phone["id"]),
+                "signal_score": 0.9,
+                "battery_percent": 80.0,
+                "proximity_score": 1.0,
+                "priority": 0.6,
+            },
+            {
+                "device_id": str(watch["id"]),
+                "signal_score": 0.2,
+                "battery_percent": 30.0,
+                "proximity_score": 0.2,
+                "priority": 0.6,
+            },
+        ],
+    )
+    assert resp.status_code == 200, resp.text
+    outcome = resp.json()
+    assert outcome["winner"]["device_id"] == str(phone["id"])
+    assert outcome["state"] == "verifying"
+    session_id = UUID(outcome["session_id"])
+
+    row = (
+        await db_session.execute(select(RuntimeSession).where(RuntimeSession.id == session_id))
+    ).scalar_one()
+    await mark_verified(db_session, row, confidence=0.95, verifier_name="test")
+    await db_session.commit()
+    assert row.owner_verified is True
+
+    status = (await client.get("/v1/runtime/status")).json()
+    assert status["state"] == "awake"
+    assert status["session"]["device_id"] == str(phone["id"])
+
+    for to_state in ("processing", "responding", "follow_up", "idle"):
+        resp = await client.post("/v1/runtime/transition", json={"to_state": to_state})
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["state"] == to_state
+
+    sync = (await client.get("/v1/runtime/sync")).json()
+    assert sync["runtime"]["state"] == "idle"
+    assert sync["runtime"]["session_id"] == str(session_id)
+    latency = sync["latency"]
+    for key in (
+        "wake_to_awake_ms",
+        "wake_to_processing_ms",
+        "wake_to_responding_ms",
+        "wake_to_follow_up_ms",
+    ):
+        assert latency[key] is not None, key
+    kinds = [event["kind"] for event in sync["events"]]
+    assert kinds.count("transition") >= 5
+    assert "wake" in kinds
+    assert "verify" in kinds
+    assert len(sync["devices"]) == 2
+    assert all(device["presence"] == "online" for device in sync["devices"])
