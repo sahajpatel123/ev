@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 PrivacyLevel = Literal["private", "normal", "sensitive", "never_send_to_model"]
 MemoryType = Literal[
@@ -53,7 +53,7 @@ class EventOut(BaseModel):
     source: str
     event_type: str
     content: dict
-    metadata: dict = Field(validation_alias="metadata_")
+    metadata: dict = Field(validation_alias=AliasChoices("metadata", "metadata_"))
     device_id: str | None
     conversation_id: UUID | None
     privacy_level: str
@@ -316,6 +316,23 @@ class RebuildOut(BaseModel):
     deleted_entities: int
     deleted_relationships: int
     deleted_conflicts: int
+
+
+class ImportResponse(BaseModel):
+    mode: str
+    events_imported: int
+    events_skipped: int
+    completed_at: datetime
+    reason: str
+    events_total: int
+    events_replayed: int
+    tombstoned_events: int
+    redacted_memories: int
+    memories_created: int
+    patterns_created: int
+    summaries_created: int
+    lessons_created: int
+    operations_applied: int
 
 
 # --------------------------------------------------------------------------- #
@@ -700,6 +717,29 @@ class LiveStatusOut(BaseModel):
     channels: list[LiveChannelStatus] = Field(default_factory=list)
     total_events_24h: int = 0
     consumed_24h: int = 0
+
+
+class LiveChannelDerivedOut(BaseModel):
+    channel_id: UUID
+    channel_name: str
+    kind: str
+    event_count: int = 0
+    consumed_count: int = 0
+    first_event_at: datetime | None = None
+    last_event_at: datetime | None = None
+    latest_event_id: UUID | None = None
+    signals: list = Field(default_factory=list)
+
+
+class LiveRebuildOut(BaseModel):
+    completed_at: datetime
+    reason: str
+    events_total: int = 0
+    events_replayed: int = 0
+    consumed_count: int = 0
+    channels_rebuilt: int = 0
+    deleted_derived_rows: int = 0
+    channels: list[LiveChannelDerivedOut] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -1441,6 +1481,22 @@ class RelationshipOut(BaseModel):
     decision_review_rate: float | None = None
     devices: int = 0
     updated_at: datetime | None = None
+
+
+class ProactiveTuningOut(BaseModel):
+    """Derived, inspectable calibration of assertiveness and proactive delivery."""
+
+    challenge_ceiling: int = Field(default=3, ge=0, le=3)
+    budget_adjustment: int = Field(default=0, ge=-2, le=2)
+    daily_budget: int = Field(default=5, ge=0, le=20)
+    proactivity_factor: float = Field(default=1.0, ge=0.0, le=2.0)
+    challenge_acceptance_rate: float | None = None
+    intervention_appropriate_rate: float | None = None
+    useful_rate: float | None = None
+    followed_rate: float | None = None
+    correction_rate: float | None = None
+    prediction_accuracy: float | None = None
+    rationale: str
 
 
 class EvaluationUpdate(BaseModel):

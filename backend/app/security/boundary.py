@@ -62,6 +62,11 @@ def _walk_strings(obj: Any, path: str, out: list[tuple[str, str]]) -> None:
         return
     if isinstance(obj, dict):
         for key, value in obj.items():
+            if key == "privacy_level":
+                # Classification labels are audit metadata, not provider-bound
+                # content. Scanning them would block legitimate redacted
+                # payloads whose label is never_send_to_model.
+                continue
             _walk_strings(value, f"{path}.{key}", out)
         return
     if isinstance(obj, (list, tuple)):

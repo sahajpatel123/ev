@@ -7,7 +7,16 @@ from uuid import uuid4
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Device, VoiceSession
+from app.main import app
+from app.models import VoiceSession
+
+
+def _client(headers: dict | None = None) -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers=headers or {},
+    )
 
 
 async def create_owner(client: httpx.AsyncClient) -> dict:
@@ -21,7 +30,7 @@ async def create_device(client: httpx.AsyncClient, name: str, trust_level: str =
         "/v1/devices",
         json={"name": name, "capabilities": ["voice"], "trust_level": trust_level},
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     return resp.json()
 
 
@@ -57,16 +66,10 @@ async def test_plain_device_cannot_manage_identity(
     token = device["token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    resp = await httpx.AsyncClient(
-        base_url="http://test",
-        headers=headers,
-    ).post("/v1/identity/recovery/codes")
+    resp = await _client(headers).post("/v1/identity/recovery/codes")
     assert resp.status_code == 403
 
-    resp = await httpx.AsyncClient(
-        base_url="http://test",
-        headers=headers,
-    ).post("/v1/identity/owner", json={"display_name": "Nope"})
+    resp = await _client(headers).post("/v1/identity/owner", json={"display_name": "Nope"})
     assert resp.status_code == 403
 
 
@@ -78,7 +81,7 @@ async def test_recovery_redeem_resets_fleet_and_is_single_use(
     old_token = old["token"]
     code = owner["recovery_codes"][0]["code"]
 
-    anon = httpx.AsyncClient(base_url="http://test")
+    anon = _client()
     resp = await anon.post(
         "/v1/identity/recovery/redeem",
         json={"code": code, "device_name": "new-phone", "capabilities": ["voice"]},
@@ -91,17 +94,11 @@ async def test_recovery_redeem_resets_fleet_and_is_single_use(
     new_token = body["token"]
 
     # The old device is revoked by the recovery reset.
-    old_resp = await httpx.AsyncClient(
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {old_token}"},
-    ).get("/v1/identity/status")
+    old_resp = await _client({"Authorization": f"Bearer {old_token}"}).get("/v1/identity/status")
     assert old_resp.status_code == 401
 
     # The fresh owner device works.
-    new_resp = await httpx.AsyncClient(
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {new_token}"},
-    ).get("/v1/identity/status")
+    new_resp = await _client({"Authorization": f"Bearer {new_token}"}).get("/v1/identity/status")
     assert new_resp.status_code == 200
     assert new_resp.json()["trust_level"] == "owner"
 
@@ -115,7 +112,7 @@ async def test_recovery_redeem_resets_fleet_and_is_single_use(
 
 async def test_recovery_lockout_after_failed_attempts(client: httpx.AsyncClient) -> None:
     owner = await create_owner(client)
-    anon = httpx.AsyncClient(base_url="http://test")
+    anon = _client()
     for _ in range(5):
         resp = await anon.post(
             "/v1/identity/recovery/redeem",
@@ -137,7 +134,7 @@ async def test_reverification_is_purpose_bound_and_single_use(
     device = await create_device(client, "owner-phone", trust_level="owner")
     token = device["token"]
     headers = {"Authorization": f"Bearer {token}"}
-    dev_client = httpx.AsyncClient(base_url="http://test", headers=headers)
+    dev_client = _client(headers)
 
     issued = await dev_client.post(
         "/v1/identity/reverification",
@@ -178,19 +175,15 @@ async def test_reverification_rejects_different_device(
     await create_owner(client)
     owner_device = await create_device(client, "owner-phone", trust_level="owner")
     other_device = await create_device(client, "roommate-pad")
-    dev_client = httpx.AsyncClient(
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {owner_device['token']}"},
-    )
+    dev_client = _client({"Authorization": f"Bearer {owner_device['token']}"})
     issued = await dev_client.post(
         "/v1/identity/reverification",
         json={"purpose": "memory.delete"},
     )
     proof = issued.json()["token"]
 
-    other = await httpx.AsyncClient(
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {other_device['token']}"},
+    other = await _client(
+        {"Authorization": f"Bearer {other_device['token']}"}
     ).post(
         "/v1/identity/reverification/consume",
         json={"token": proof, "purpose": "memory.delete"},
@@ -203,9 +196,8 @@ async def test_voice_enrollment_requires_owner_trust(
 ) -> None:
     await create_owner(client)
     plain = await create_device(client, "guest-pad")
-    resp = await httpx.AsyncClient(
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {plain['token']}"},
+    resp = await _client(
+        {"Authorization": f"Bearer {plain['token']}"}
     ).post("/v1/voice/enroll", json={"samples": [], "reason": "x"})
     assert resp.status_code == 403
     assert resp.headers.get("X-Error-Code") == "owner_trust_required"
@@ -227,10 +219,7 @@ async def test_voice_session_cannot_be_inherited_by_another_device(
     db_session.add(session)
     await db_session.commit()
 
-    b = httpx.AsyncClient(
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {device_b['token']}"},
-    )
+    b = _client({"Authorization": f"Bearer {device_b['token']}"})
     status = await b.get(f"/v1/voice/sessions/{session.id}")
     assert status.status_code == 403
     assert status.headers.get("X-Error-Code") == "session_device_mismatch"
@@ -242,10 +231,7 @@ async def test_voice_session_cannot_be_inherited_by_another_device(
     assert utterance.status_code == 403
     assert utterance.headers.get("X-Error-Code") == "session_device_mismatch"
 
-    a = httpx.AsyncClient(
-        base_url="http://test",
-        headers={"Authorization": f"Bearer {device_a['token']}"},
-    )
+    a = _client({"Authorization": f"Bearer {device_a['token']}"})
     ok = await a.get(f"/v1/voice/sessions/{session.id}")
     assert ok.status_code == 200
 

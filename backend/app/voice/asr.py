@@ -7,7 +7,7 @@ into a typed Transcript so the full voice pipeline is testable end-to-end.
 
 from __future__ import annotations
 
-from app.voice.contracts import Transcript, Transcriber
+from app.voice.contracts import Transcriber, Transcript
 
 
 class EchoTranscriber:

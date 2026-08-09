@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     runtime_heartbeat_grace_seconds: int = 300
     runtime_dlq_max_attempts: int = 3
     runtime_urgent_priority_threshold: float = 0.7
+    runtime_daemon_tick_seconds: int = 30
 
     # Routines & automations
     scheduler_tick_seconds: int = 60

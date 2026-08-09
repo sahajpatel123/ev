@@ -643,6 +643,31 @@ class LiveEvent(Base):
     consumed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 
+class LiveDerivedState(Base):
+    """Deterministic per-channel derived state, rebuilt from live events.
+
+    Dropped and replayed from the immutable ``live_events`` stream by
+    ``POST /v1/live/rebuild``; never edited in place.  Contains only derived
+    summaries and signal flags (with live-event provenance), never raw payloads.
+    """
+
+    __tablename__ = "live_derived_state"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    channel_id: Mapped[UUID] = mapped_column(
+        ForeignKey("live_channels.id"), unique=True, index=True
+    )
+    event_count: Mapped[int] = mapped_column(Integer, default=0)
+    consumed_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    latest_event_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("live_events.id"), index=True
+    )
+    signals: Mapped[list] = mapped_column(JSONType, default=list)
+    rebuilt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class FocusDesignation(Base):
     """E.D.I.T.H.-style targeting adapted to attention: what EV is locked onto."""
 

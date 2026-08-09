@@ -11,14 +11,23 @@ def process_event(event_id: str) -> list[dict]:
     from uuid import UUID
 
     try:
-        return asyncio.run(process_event_sync(UUID(event_id)))
+        result = asyncio.run(process_event_sync(UUID(event_id)))
     except Exception as exc:  # noqa: BLE001 - worker boundary: record and re-raise
         from app.services.runtime import record_dead_letter_sync
 
         record_dead_letter_sync(
             queue="ingestion",
             job_id=event_id,
-            payload={"event_id": event_id},
+            payload={
+                "event_id": event_id,
+                "entrypoint": "app.workers.jobs.process_event",
+                "args": [event_id],
+            },
             error=f"{type(exc).__name__}: {exc}",
         )
         raise
+    else:
+        from app.services.runtime import resolve_dead_letter_sync
+
+        resolve_dead_letter_sync(queue="ingestion", job_id=event_id)
+        return result

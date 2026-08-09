@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from datetime import timedelta
+from uuid import UUID
 
 import pytest
 from httpx import AsyncClient
@@ -23,7 +24,7 @@ def b64(data: bytes) -> str:
 
 
 def owner_samples() -> list[str]:
-    return [b64(SAMPLE_A + bytes([i])) for i in range(5)]
+    return [b64(SAMPLE_A) for _ in range(5)]
 
 
 async def grant_voice_consent(client: AsyncClient) -> None:
@@ -33,8 +34,11 @@ async def grant_voice_consent(client: AsyncClient) -> None:
 
 async def enroll_owner(client: AsyncClient) -> None:
     resp = await client.post(
-        "/v1/training/voice/enroll",
-        json={"samples": owner_samples()},
+        "/v1/voice/enroll",
+        json={
+            "samples": [{"audio_b64": sample} for sample in owner_samples()],
+            "reason": "lifecycle test enrollment",
+        },
     )
     assert resp.status_code == 201, resp.text
 
@@ -237,7 +241,7 @@ async def test_follow_up_window_expires(client: AsyncClient, db_session: AsyncSe
     )
     assert resp.status_code == 200
 
-    row = await db_session.get(VoiceSession, wake_out["session_id"])
+    row = await db_session.get(VoiceSession, UUID(wake_out["session_id"]))
     assert row is not None
     row.follow_up_until = utcnow() - timedelta(seconds=1)
     await db_session.commit()

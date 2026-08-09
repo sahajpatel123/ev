@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -108,6 +108,13 @@ def _new_recovery_code() -> str:
     for i in range(0, 10, 2):
         groups.append(raw[i : i + 2].hex().upper())
     return "-".join(groups)
+
+
+def as_utc(value: datetime | None) -> datetime | None:
+    """SQLite returns naive datetimes; normalize to tz-aware UTC for comparisons."""
+    if value is None or value.tzinfo is not None:
+        return value
+    return value.replace(tzinfo=UTC)
 
 
 async def get_owner(session: AsyncSession) -> OwnerIdentity | None:
@@ -224,7 +231,8 @@ async def redeem_recovery_code(
     """
     owner = await require_owner(session)
     now = utcnow()
-    if owner.recovery_locked_until is not None and owner.recovery_locked_until > now:
+    locked_until = as_utc(owner.recovery_locked_until)
+    if locked_until is not None and locked_until > now:
         raise IdentityError(
             "Recovery temporarily locked after too many failed attempts — try again later",
             status=429,
@@ -240,7 +248,7 @@ async def redeem_recovery_code(
         or row.owner_id != owner.id
         or row.consumed_at is not None
         or row.revoked_at is not None
-        or (row.expires_at is not None and row.expires_at < now)
+        or (row.expires_at is not None and as_utc(row.expires_at) < now)
     ):
         owner.recovery_failures += 1
         if owner.recovery_failures >= RECOVERY_MAX_FAILURES:
@@ -355,7 +363,7 @@ async def consume_reverification(
         proof is None
         or proof.purpose != purpose
         or proof.consumed_at is not None
-        or proof.expires_at < now
+        or as_utc(proof.expires_at) < now
         or (proof.device_id is not None and proof.device_id != ctx.device_id)
     ):
         raise IdentityError(

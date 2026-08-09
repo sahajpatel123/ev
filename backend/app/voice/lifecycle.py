@@ -22,7 +22,6 @@ from app.models import (
 )
 from app.schemas import ChatRequest, EventCreate
 from app.services.event_service import EventService
-from app.services.processor import ensure_processed
 from app.training.consent import ConsentRequiredError, require_consent
 from app.utils.text import utcnow
 from app.voice.anti_spoof import LivenessGate, ReplayError, ReplayGuard

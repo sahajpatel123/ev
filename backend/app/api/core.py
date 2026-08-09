@@ -19,6 +19,7 @@ from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
 from app.ev import alert_radar, conversation
 from app.ev import rollup as rollup_service
+from app.ev.calibration import proactive_tuning
 from app.ev.interaction import build_strategy, strategy_block
 from app.ev.personality import get_current, identity_block, to_dict
 from app.ev.self_eval import log_response
@@ -679,6 +680,7 @@ async def run_chat_pipeline(
     pattern_confidence = max((p.confidence for p in memories if p.memory_type == "pattern"), default=0.0)
     loop_count = max((loop["count"] for loop in loops), default=0)
     profile = await get_current(session)
+    tuning = await proactive_tuning(session)
     pending_alerts = await alert_radar.list_alerts(session, status="pending", limit=10)
     alert_priority = max((a.priority for a in pending_alerts), default=0.0)
     alert_tier = next(
@@ -693,6 +695,7 @@ async def run_chat_pipeline(
         profile=to_dict(profile),
         pending_alert_priority=alert_priority,
         pending_alert_tier=alert_tier,
+        challenge_ceiling=tuning.challenge_ceiling,
     )
     model_rollup = await rollup_service.model_safe_rollup(session, thread_id)
     state = await conversation.get_or_create_state(session, thread_id)
@@ -820,6 +823,11 @@ async def run_chat_pipeline(
                     envelope_hash=envelope_hash,
                     model=result.model,
                 )
+        seen_flags = {(f.stage, f.name) for f in report.flags}
+        for flag in decision.flags:
+            if (flag.stage, flag.name) not in seen_flags:
+                report.flags.append(flag)
+                seen_flags.add((flag.stage, flag.name))
         await record_decision(
             session,
             request_id=request_id,

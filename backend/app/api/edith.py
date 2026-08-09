@@ -34,6 +34,7 @@ from app.schemas import (
     LiveEventBatchRequest,
     LiveEventCreate,
     LiveEventOut,
+    LiveRebuildOut,
     LiveStatusOut,
     OpsCenterOut,
     RecognitionCreate,
@@ -212,6 +213,20 @@ async def live_status(
     actor: str = Depends(require_actor),
 ) -> LiveStatusOut:
     return await live.status(session)
+
+
+@router.post("/live/rebuild", response_model=LiveRebuildOut)
+async def rebuild_live_derived(
+    reason: str = Query(default="manual rebuild", max_length=200),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> LiveRebuildOut:
+    """Deterministically rebuild per-channel live derived state from the stream."""
+    from app.services.live_rebuild import rebuild_live_derived_state
+
+    result = await rebuild_live_derived_state(session, actor=actor, reason=reason)
+    await session.commit()
+    return LiveRebuildOut(**result)
 
 
 # --------------------------------------------------------------------------- #

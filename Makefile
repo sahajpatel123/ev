@@ -1,4 +1,4 @@
-.PHONY: install dev test lint typecheck compose-up compose-down migrate seed
+.PHONY: install dev test eval lint typecheck compose-up compose-down migrate seed
 
 install:
 	cd backend && uv sync --extra s3 --extra dev
@@ -8,6 +8,9 @@ dev:
 
 test:
 	cd backend && uv run pytest -q
+
+eval:
+	cd backend && uv run python -m app.scripts.eval_gates --report eval/last-run.json
 
 lint:
 	cd backend && uv run ruff check app clients tests

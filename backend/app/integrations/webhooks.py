@@ -26,7 +26,7 @@ class RateLimitError(Exception):
     """The integration exceeded its webhook rate limit."""
 
 
-def _header_value(headers: dict | None, name: str) -> str | None:
+def header_value(headers: dict | None, name: str) -> str | None:
     if not headers:
         return None
     for key, value in headers.items():
@@ -47,8 +47,8 @@ def verify_webhook_signature(
     Raises :class:`SignatureError` on any malformed, stale, or mismatched
     signature. The timestamp check bounds replay windows.
     """
-    signature = _header_value(headers, "X-EV-Signature") or ""
-    timestamp = _header_value(headers, "X-EV-Timestamp") or ""
+    signature = header_value(headers, "X-EV-Signature") or ""
+    timestamp = header_value(headers, "X-EV-Timestamp") or ""
     if not signature.startswith(SIGNATURE_PREFIX):
         raise SignatureError("missing or malformed X-EV-Signature")
     try:

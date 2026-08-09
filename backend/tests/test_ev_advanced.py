@@ -5,8 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ev.ev_sense import apply_attention_policy
+from app.ev.self_eval import log_response, update_evaluation
 from app.main import app
+from app.schemas import EvaluationUpdate, SensePrediction
 
 
 async def post_event(
@@ -497,3 +501,70 @@ async def test_device_pairing_and_revocation(client: AsyncClient) -> None:
     ) as revoked_client:
         resp = await revoked_client.get("/v1/timeline")
         assert resp.status_code == 401
+
+
+async def test_self_eval_calibrates_challenge_and_budget(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Low challenge acceptance must lower the challenge ceiling and alert budget."""
+    await post_event(client, "I decided to use SQLite for local testing.")
+    await post_event(client, "I decided to use SQLite for local testing, and document the choice.")
+
+    response_ids = []
+    for i in range(3):
+        row = await log_response(
+            db_session,
+            request_text=f"Should I keep switching tools? {i}",
+            reply_text="A strong recommendation.",
+            mode="coaching",
+            strategy={"challenge": True},
+            provenance_ids=[],
+            context_tokens=100,
+            model="mock",
+        )
+        response_ids.append(row.id)
+    for response_id in response_ids:
+        await update_evaluation(
+            db_session,
+            response_id,
+            EvaluationUpdate(intervention_appropriate=False),
+        )
+    await db_session.commit()
+
+    resp = await client.get("/v1/calibration/tuning")
+    assert resp.status_code == 200
+    tuning = resp.json()
+    assert tuning["challenge_ceiling"] == 2
+    assert tuning["budget_adjustment"] == -1
+    assert tuning["daily_budget"] == 4
+    assert tuning["challenge_acceptance_rate"] == 0.0
+    assert tuning["intervention_appropriate_rate"] == 0.0
+    assert "below 40%" in tuning["rationale"]
+
+    resp = await client.post(
+        "/v1/interaction/mode",
+        json={"message": "I keep re-evaluating SQLite instead of moving on"},
+    )
+    assert resp.status_code == 200
+    strategy = resp.json()["strategy"]
+    assert strategy["mode"] == "coaching"
+    assert strategy["challenge"] is False
+    assert strategy["assertiveness"] <= 2
+    assert "calibrated challenge ceiling=2" in strategy["rationale"]
+
+
+async def test_calibrated_budget_limits_delivery(db_session: AsyncSession) -> None:
+    prediction = SensePrediction(
+        kind="deadline",
+        text="Deadline approaching",
+        confidence=0.9,
+        intervention_score=0.5,
+        why_now="Because a deadline exists",
+        basis_ids=["x"],
+        tier="notify",
+        deliver=True,
+    )
+    result = await apply_attention_policy(db_session, [prediction], budget_override=0)
+    assert result[0].deliver is False
+    assert result[0].tier == "mention_later"

@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import time
+from uuid import UUID
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -132,6 +133,18 @@ async def test_catalog_and_install_validation(client: AsyncClient) -> None:
     assert resp.status_code == 400
     assert "already exists" in resp.json()["detail"]
 
+    resp = await client.post(
+        "/v1/integrations",
+        json={
+            "adapter": "github",
+            "name": "Secret config",
+            "scopes": ["github:read"],
+            "config": {"api_key": "do-not-put-here"},
+        },
+    )
+    assert resp.status_code == 400
+    assert "credential vault" in resp.json()["detail"]
+
     health = await install(client, "health", privacy_level="normal")
     assert health["privacy_level"] == "sensitive"  # adapter privacy floor is enforced
 
@@ -160,7 +173,7 @@ async def test_vault_encrypts_and_never_exposes_tokens(
     row = (
         await db_session.execute(
             select(IntegrationCredential).where(
-                IntegrationCredential.integration_id == integration_id
+                IntegrationCredential.integration_id == UUID(integration_id)
             )
         )
     ).scalar_one()
@@ -296,12 +309,12 @@ async def test_webhook_hmac_ingest_replay_and_privacy(
         health_secret,
     )
     assert result["accepted"] == 1
-    channel = await db_session.get(LiveChannel, health["live_channel_id"])
+    channel = await db_session.get(LiveChannel, UUID(health["live_channel_id"]))
     assert channel.privacy_level == "sensitive"
     event = (
         await db_session.execute(
             select(LiveEvent)
-            .where(LiveEvent.channel_id == health["live_channel_id"])
+            .where(LiveEvent.channel_id == UUID(health["live_channel_id"]))
             .order_by(LiveEvent.occurred_at.desc())
         )
     ).scalar_one()
@@ -311,7 +324,7 @@ async def test_webhook_hmac_ingest_replay_and_privacy(
     creds = (
         await db_session.execute(
             select(IntegrationCredential).where(
-                IntegrationCredential.integration_id == health_id,
+                IntegrationCredential.integration_id == UUID(health_id),
                 IntegrationCredential.kind == "webhook_secret",
             )
         )
@@ -344,17 +357,17 @@ async def test_revocation_is_immediate(
     assert revoked["credential_configured"] is False
     assert revoked["webhook_configured"] is False
 
-    row = await db_session.get(Integration, integration_id)
+    row = await db_session.get(Integration, UUID(integration_id))
     assert row.status == "revoked"
     credentials = (
         await db_session.execute(
             select(IntegrationCredential).where(
-                IntegrationCredential.integration_id == integration_id
+                IntegrationCredential.integration_id == UUID(integration_id)
             )
         )
     ).scalars().all()
     assert all(c.encrypted_access is None and c.token_fingerprint is None for c in credentials)
-    channel = await db_session.get(LiveChannel, integration["live_channel_id"])
+    channel = await db_session.get(LiveChannel, UUID(integration["live_channel_id"]))
     assert channel.active is False
 
     resp = await client.post(
@@ -543,7 +556,7 @@ async def test_plugin_lifecycle_and_sandbox(
     assert len(resp.json()["emitted_events"]) == 1
     assert resp.json()["emitted_events"][0]["event_type"] == "plugin.event"
 
-    row = await db_session.get(Plugin, plugin_id)
+    row = await db_session.get(Plugin, UUID(plugin_id))
     assert row.status == "approved"
 
 

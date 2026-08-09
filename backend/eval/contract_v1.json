@@ -1,0 +1,531 @@
+{
+  "locked_at": "2026-08-09T12:45:16+00:00",
+  "paths": {
+    "/v1/alerts": [
+      "get"
+    ],
+    "/v1/alerts/scan": [
+      "get"
+    ],
+    "/v1/alerts/watchlist": [
+      "get",
+      "post"
+    ],
+    "/v1/alerts/watchlist/{item_id}": [
+      "delete"
+    ],
+    "/v1/alerts/{alert_id}/dismiss": [
+      "post"
+    ],
+    "/v1/attachments": [
+      "post"
+    ],
+    "/v1/attachments/{attachment_id}": [
+      "get"
+    ],
+    "/v1/calibration/tuning": [
+      "get"
+    ],
+    "/v1/audit/{memory_id}": [
+      "get"
+    ],
+    "/v1/chat": [
+      "post"
+    ],
+    "/v1/commands": [
+      "get"
+    ],
+    "/v1/commands/{command_id}": [
+      "get"
+    ],
+    "/v1/companionship/scan": [
+      "post"
+    ],
+    "/v1/conflicts": [
+      "get"
+    ],
+    "/v1/continue": [
+      "post"
+    ],
+    "/v1/conversation": [
+      "get"
+    ],
+    "/v1/conversation/reset": [
+      "post"
+    ],
+    "/v1/conversations": [
+      "get"
+    ],
+    "/v1/decisions": [
+      "get"
+    ],
+    "/v1/decisions/{decision_id}/outcome": [
+      "post"
+    ],
+    "/v1/devices": [
+      "get",
+      "post"
+    ],
+    "/v1/devices/{device_id}": [
+      "delete"
+    ],
+    "/v1/diagnostics/calibrate": [
+      "post"
+    ],
+    "/v1/evaluations": [
+      "get"
+    ],
+    "/v1/evaluations/summary": [
+      "get"
+    ],
+    "/v1/evaluations/{response_id}": [
+      "post"
+    ],
+    "/v1/events": [
+      "post"
+    ],
+    "/v1/events/{event_id}": [
+      "delete",
+      "get"
+    ],
+    "/v1/export": [
+      "post"
+    ],
+    "/v1/filter/evaluate": [
+      "post"
+    ],
+    "/v1/filter/ledger": [
+      "get"
+    ],
+    "/v1/filter/ledger/aggregate": [
+      "get"
+    ],
+    "/v1/fleet": [
+      "get"
+    ],
+    "/v1/fleet/tasks": [
+      "get",
+      "post"
+    ],
+    "/v1/fleet/tasks/pending": [
+      "get"
+    ],
+    "/v1/fleet/tasks/{task_id}": [
+      "get"
+    ],
+    "/v1/fleet/tasks/{task_id}/accept": [
+      "post"
+    ],
+    "/v1/fleet/tasks/{task_id}/cancel": [
+      "post"
+    ],
+    "/v1/fleet/tasks/{task_id}/complete": [
+      "post"
+    ],
+    "/v1/fleet/tasks/{task_id}/fail": [
+      "post"
+    ],
+    "/v1/fleet/tasks/{task_id}/start": [
+      "post"
+    ],
+    "/v1/focus": [
+      "get",
+      "post"
+    ],
+    "/v1/focus/{focus_id}/end": [
+      "post"
+    ],
+    "/v1/gateway/calls": [
+      "get"
+    ],
+    "/v1/gateway/chat": [
+      "post"
+    ],
+    "/v1/gateway/models": [
+      "get"
+    ],
+    "/v1/gateway/select-tool": [
+      "post"
+    ],
+    "/v1/gateway/tools": [
+      "post"
+    ],
+    "/v1/gear": [
+      "get"
+    ],
+    "/v1/gear/snapshot": [
+      "post"
+    ],
+    "/v1/goals": [
+      "get"
+    ],
+    "/v1/health": [
+      "get"
+    ],
+    "/v1/health/snapshot": [
+      "post"
+    ],
+    "/v1/health/summary": [
+      "get"
+    ],
+    "/v1/health/trends": [
+      "get"
+    ],
+    "/v1/hud/card": [
+      "get"
+    ],
+    "/v1/hud/focus": [
+      "get"
+    ],
+    "/v1/hud/route": [
+      "get"
+    ],
+    "/v1/identity/owner": [
+      "post"
+    ],
+    "/v1/identity/recovery/codes": [
+      "post"
+    ],
+    "/v1/identity/recovery/redeem": [
+      "post"
+    ],
+    "/v1/identity/reverification": [
+      "post"
+    ],
+    "/v1/identity/reverification/consume": [
+      "post"
+    ],
+    "/v1/identity/status": [
+      "get"
+    ],
+    "/v1/identity/trust": [
+      "get"
+    ],
+    "/v1/integrations": [
+      "get",
+      "post"
+    ],
+    "/v1/integrations/catalog": [
+      "get"
+    ],
+    "/v1/integrations/webhook/{integration_id}": [
+      "post"
+    ],
+    "/v1/integrations/{integration_id}": [
+      "delete",
+      "get"
+    ],
+    "/v1/integrations/{integration_id}/actions": [
+      "post"
+    ],
+    "/v1/integrations/{integration_id}/credentials": [
+      "get",
+      "post"
+    ],
+    "/v1/integrations/{integration_id}/events": [
+      "get"
+    ],
+    "/v1/integrations/{integration_id}/scopes": [
+      "patch"
+    ],
+    "/v1/integrations/{integration_id}/webhook-secret": [
+      "post"
+    ],
+    "/v1/interaction/mode": [
+      "post"
+    ],
+    "/v1/live/channels": [
+      "get",
+      "post"
+    ],
+    "/v1/live/channels/{channel_id}/events": [
+      "get",
+      "post"
+    ],
+    "/v1/live/events": [
+      "post"
+    ],
+    "/v1/live/rebuild": [
+      "post"
+    ],
+    "/v1/live/status": [
+      "get"
+    ],
+    "/v1/memories": [
+      "get"
+    ],
+    "/v1/memories/{memory_id}": [
+      "get"
+    ],
+    "/v1/memories/{memory_id}/correct": [
+      "post"
+    ],
+    "/v1/memories/{memory_id}/forget": [
+      "post"
+    ],
+    "/v1/memories/{memory_id}/restore": [
+      "post"
+    ],
+    "/v1/memory/rebuild": [
+      "post"
+    ],
+    "/v1/ops/center": [
+      "get"
+    ],
+    "/v1/patterns": [
+      "get"
+    ],
+    "/v1/patterns/analyze": [
+      "post"
+    ],
+    "/v1/people": [
+      "get"
+    ],
+    "/v1/people/{name}/whereabouts": [
+      "get"
+    ],
+    "/v1/personality": [
+      "get",
+      "post"
+    ],
+    "/v1/plugins": [
+      "get",
+      "post"
+    ],
+    "/v1/plugins/{plugin_id}": [
+      "get"
+    ],
+    "/v1/plugins/{plugin_id}/approve": [
+      "post"
+    ],
+    "/v1/plugins/{plugin_id}/commands/{command_name}": [
+      "post"
+    ],
+    "/v1/plugins/{plugin_id}/disable": [
+      "post"
+    ],
+    "/v1/plugins/{plugin_id}/enable": [
+      "post"
+    ],
+    "/v1/plugins/{plugin_id}/reject": [
+      "post"
+    ],
+    "/v1/preferences": [
+      "get"
+    ],
+    "/v1/print-jobs/{job_id}/status": [
+      "post"
+    ],
+    "/v1/projects": [
+      "get",
+      "post"
+    ],
+    "/v1/projects/{project_id}": [
+      "get"
+    ],
+    "/v1/projects/{project_id}/bom": [
+      "get",
+      "post"
+    ],
+    "/v1/projects/{project_id}/bom/{item_id}": [
+      "delete"
+    ],
+    "/v1/projects/{project_id}/next-step": [
+      "get"
+    ],
+    "/v1/projects/{project_id}/print-jobs": [
+      "get",
+      "post"
+    ],
+    "/v1/projects/{project_id}/status": [
+      "patch"
+    ],
+    "/v1/relationship": [
+      "get"
+    ],
+    "/v1/research/sessions": [
+      "get",
+      "post"
+    ],
+    "/v1/research/sessions/{session_id}": [
+      "get"
+    ],
+    "/v1/research/sessions/{session_id}/conclude": [
+      "post"
+    ],
+    "/v1/research/sessions/{session_id}/notes": [
+      "post"
+    ],
+    "/v1/routines": [
+      "get",
+      "post"
+    ],
+    "/v1/routines/runs": [
+      "get"
+    ],
+    "/v1/routines/runs/{run_id}/approve": [
+      "post"
+    ],
+    "/v1/routines/runs/{run_id}/cancel": [
+      "post"
+    ],
+    "/v1/routines/runs/{run_id}/deny": [
+      "post"
+    ],
+    "/v1/routines/runs/{run_id}/execute": [
+      "post"
+    ],
+    "/v1/routines/runs/{run_id}/retry": [
+      "post"
+    ],
+    "/v1/routines/runs/{run_id}/rollback": [
+      "post"
+    ],
+    "/v1/routines/tick": [
+      "post"
+    ],
+    "/v1/routines/{routine_id}": [
+      "patch"
+    ],
+    "/v1/routines/{routine_id}/disable": [
+      "post"
+    ],
+    "/v1/routines/{routine_id}/enable": [
+      "post"
+    ],
+    "/v1/routines/{routine_id}/run": [
+      "post"
+    ],
+    "/v1/routines/{routine_id}/runs": [
+      "get"
+    ],
+    "/v1/runtime/actions": [
+      "get",
+      "post"
+    ],
+    "/v1/runtime/actions/{action_id}/approve": [
+      "post"
+    ],
+    "/v1/runtime/actions/{action_id}/deny": [
+      "post"
+    ],
+    "/v1/runtime/actions/{action_id}/execute": [
+      "post"
+    ],
+    "/v1/runtime/dead-letters": [
+      "get",
+      "post"
+    ],
+    "/v1/runtime/dead-letters/{letter_id}/discard": [
+      "post"
+    ],
+    "/v1/runtime/dead-letters/{letter_id}/retry": [
+      "post"
+    ],
+    "/v1/runtime/heartbeat": [
+      "post"
+    ],
+    "/v1/runtime/status": [
+      "get"
+    ],
+    "/v1/runtime/transition": [
+      "post"
+    ],
+    "/v1/runtime/wake": [
+      "post"
+    ],
+    "/v1/sense/predict": [
+      "post"
+    ],
+    "/v1/sense/predictions": [
+      "get"
+    ],
+    "/v1/sense/predictions/{prediction_id}/outcome": [
+      "post"
+    ],
+    "/v1/state": [
+      "get"
+    ],
+    "/v1/tactical/brief": [
+      "post"
+    ],
+    "/v1/timeline": [
+      "get"
+    ],
+    "/v1/tools": [
+      "get"
+    ],
+    "/v1/training/consent": [
+      "get",
+      "post"
+    ],
+    "/v1/training/consent/{track}/revoke": [
+      "post"
+    ],
+    "/v1/training/voice/delete": [
+      "post"
+    ],
+    "/v1/training/voice/enroll": [
+      "post"
+    ],
+    "/v1/training/voice/enrollments": [
+      "get"
+    ],
+    "/v1/training/voice/export": [
+      "get"
+    ],
+    "/v1/training/voice/revoke": [
+      "post"
+    ],
+    "/v1/training/voice/rollback": [
+      "post"
+    ],
+    "/v1/training/voice/verify": [
+      "post"
+    ],
+    "/v1/twin": [
+      "get"
+    ],
+    "/v1/vision/annotate": [
+      "post"
+    ],
+    "/v1/vision/log": [
+      "get"
+    ],
+    "/v1/voice/enroll": [
+      "post"
+    ],
+    "/v1/voice/enrollments": [
+      "get"
+    ],
+    "/v1/voice/enrollments/export": [
+      "get"
+    ],
+    "/v1/voice/enrollments/{enrollment_id}/delete": [
+      "post"
+    ],
+    "/v1/voice/enrollments/{enrollment_id}/revoke": [
+      "post"
+    ],
+    "/v1/voice/enrollments/{enrollment_id}/rollback": [
+      "post"
+    ],
+    "/v1/voice/sessions/{session_id}": [
+      "get"
+    ],
+    "/v1/voice/sessions/{session_id}/end": [
+      "post"
+    ],
+    "/v1/voice/utterance": [
+      "post"
+    ],
+    "/v1/voice/verify": [
+      "post"
+    ],
+    "/v1/voice/wake": [
+      "post"
+    ]
+  },
+  "schema_version": "ev.contract.v1",
+  "stability_policy": "Additive changes only within v1; removing or renaming a locked endpoint requires a new major version and capability negotiation."
+}

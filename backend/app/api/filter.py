@@ -112,6 +112,9 @@ async def evaluate_filter(
         )
         ledger_ids.append(pipeline_row.id)
         await session.commit()
+        import sys
+
+        print("DEBUG claims:", report.to_dict()["claims"], file=sys.stderr)
         return FilterEvaluateResponse(
             request_id=request_id,
             input=decision.to_dict(),

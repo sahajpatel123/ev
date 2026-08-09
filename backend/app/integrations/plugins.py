@@ -159,38 +159,45 @@ def validate_manifest(manifest: dict) -> tuple[PluginManifest, list[str]]:
     try:
         parsed = PluginManifest.model_validate(manifest)
     except ValidationError as exc:
-        errors = []
+        parse_errors = []
         for error in exc.errors():
             location = ".".join(str(part) for part in error["loc"])
-            errors.append(f"{location}: {error['msg']}")
-        return PluginManifest(), errors
-    errors: list[str] = []
+            parse_errors.append(f"{location}: {error['msg']}")
+        return (
+            PluginManifest(name="invalid", slug="invalid", version="0", commands=[{}]),
+            parse_errors,
+        )
+    validation_errors: list[str] = []
     permissions = set(parsed.permissions)
     unknown = permissions - PLUGIN_CAPABILITIES
     if unknown:
-        errors.append(
+        validation_errors.append(
             f"permissions must be a subset of {sorted(PLUGIN_CAPABILITIES)}; unknown: {sorted(unknown)}"
         )
     if not parsed.commands:
-        errors.append("a plugin must declare at least one command")
+        validation_errors.append("a plugin must declare at least one command")
     for index, command in enumerate(parsed.commands):
         name = command.get("name")
         if not isinstance(name, str) or not name or len(name) > 64:
-            errors.append(f"commands[{index}].name must be a non-empty string <= 64 chars")
+            validation_errors.append(
+                f"commands[{index}].name must be a non-empty string <= 64 chars"
+            )
         permission = command.get("permission")
         if permission not in permissions:
-            errors.append(f"commands[{index}].permission '{permission}' is not declared in permissions")
+            validation_errors.append(
+                f"commands[{index}].permission '{permission}' is not declared in permissions"
+            )
         handler = command.get("handler")
         if not isinstance(handler, str) or not handler.strip():
-            errors.append(
+            validation_errors.append(
                 f"commands[{index}].handler must be the non-empty body of 'def run(args, context)'"
             )
         else:
             try:
                 _validate_handler_source(handler)
             except ValueError as exc:
-                errors.append(f"commands[{index}].handler: {exc}")
-    return parsed, errors
+                validation_errors.append(f"commands[{index}].handler: {exc}")
+    return parsed, validation_errors
 
 
 def checksum(manifest: dict) -> str:
@@ -344,7 +351,7 @@ def _wrap_handler(handler: str) -> str:
 async def _plugin_context(session: AsyncSession, permissions: list[str]) -> dict:
     context: dict = {}
     if "memory:read" in permissions:
-        rows = (
+        memory_rows = (
             await session.execute(
                 select(Memory)
                 .where(
@@ -357,21 +364,21 @@ async def _plugin_context(session: AsyncSession, permissions: list[str]) -> dict
         ).scalars().all()
         context["memories"] = [
             {
-                "text": row.text,
-                "memory_type": row.memory_type,
-                "importance": row.importance,
+                "text": memory.text,
+                "memory_type": memory.memory_type,
+                "importance": memory.importance,
             }
-            for row in rows
+            for memory in memory_rows
         ]
     if "live:read" in permissions:
-        rows = await query_live_events(session, access="model", limit=10)
+        live_rows = await query_live_events(session, access="model", limit=10)
         context["live_events"] = [
             {
-                "event_type": row.event_type,
-                "payload": row.payload,
-                "occurred_at": row.occurred_at.isoformat(),
+                "event_type": live_event.event_type,
+                "payload": live_event.payload,
+                "occurred_at": live_event.occurred_at.isoformat(),
             }
-            for row in rows
+            for live_event in live_rows
         ]
     return context
 
@@ -446,7 +453,7 @@ async def run_command(
         raise ValueError("plugin command must return a JSON object")
 
     emitted: list[LiveEventOut] = []
-    emit = output.get("emit")
+    emit = result.get("emit")
     if emit and "live:emit" in (row.permissions or []):
         if not isinstance(emit, list) or not emit or len(emit) > MAX_EMIT_EVENTS:
             raise ValueError(

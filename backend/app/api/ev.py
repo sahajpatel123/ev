@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import require_actor
 from app.db import get_session
 from app.ev import alert_radar, diagnostics, ev_sense, health_radar, people, personality, tactical
+from app.ev.calibration import proactive_tuning
 from app.ev.decisions import find_decision_loops, record_outcome
 from app.ev.interaction import build_strategy
 from app.ev.user_state import build_user_state
@@ -34,6 +35,7 @@ from app.schemas import (
     PersonWhereaboutsOut,
     PredictionOut,
     PredictionOutcomeUpdate,
+    ProactiveTuningOut,
     SensePredictRequest,
     SensePredictResponse,
     TacticalBriefOut,
@@ -79,7 +81,12 @@ async def sense_predict(
         window_days=data.window_days,
         active_goal=state.active_goal,
     )
-    predictions = await ev_sense.apply_attention_policy(session, predictions)
+    tuning = await proactive_tuning(session)
+    predictions = await ev_sense.apply_attention_policy(
+        session,
+        predictions,
+        budget_override=tuning.daily_budget,
+    )
     stored = await ev_sense.persist_predictions(session, predictions)
     await alert_radar.promote_predictions(session, stored)
     await session.commit()
@@ -277,6 +284,7 @@ async def interaction_mode(
     hits = await retriever.search(data.message, k=20, access="model")
     loop_count = max((loop["count"] for loop in loops), default=0)
     profile = await personality.get_current(session)
+    tuning = await proactive_tuning(session)
     strategy = build_strategy(
         data.message,
         context=data.context,
@@ -286,8 +294,18 @@ async def interaction_mode(
         profile=personality.to_dict(profile),
         pending_alert_priority=alert_priority,
         pending_alert_tier=alert_tier,
+        challenge_ceiling=tuning.challenge_ceiling,
     )
     return InteractionModeResponse(message=data.message, mode=strategy.mode, strategy=strategy)
+
+
+@router.get("/calibration/tuning", response_model=ProactiveTuningOut)
+async def calibration_tuning(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ProactiveTuningOut:
+    """Expose the derived proactive calibration so behavior changes are inspectable."""
+    return await proactive_tuning(session)
 
 
 @router.post("/decisions/{decision_id}/outcome", response_model=DecisionOutcomeOut, status_code=201)

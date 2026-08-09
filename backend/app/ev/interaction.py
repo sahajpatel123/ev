@@ -161,6 +161,7 @@ def build_strategy(
     profile: dict | None = None,
     pending_alert_priority: float = 0.0,
     pending_alert_tier: str | None = None,
+    challenge_ceiling: int | None = None,
 ) -> InteractionStrategy:
     intent = detect_intent(message)
     urgency = detect_urgency(message, context)
@@ -190,8 +191,10 @@ def build_strategy(
     challenge = level >= 3 or mode == "coaching" or alert_challenge
     if profile:
         ceiling = max(0, min(4, int(profile.get("assertiveness", 5)) - 1))
+        if challenge_ceiling is not None:
+            ceiling = min(ceiling, max(0, min(3, challenge_ceiling)))
         level = min(level, ceiling)
-        if challenge and int(profile.get("challenge_level", 3)) < 3:
+        if challenge and (int(profile.get("challenge_level", 3)) < 3 or ceiling < 3):
             challenge = False
             level = min(level, 2)
 
@@ -221,6 +224,8 @@ def build_strategy(
         rationale_parts.append(
             f"pending alert tier={pending_alert_tier or 'none'} priority={pending_alert_priority:.2f}"
         )
+    if challenge_ceiling is not None:
+        rationale_parts.append(f"calibrated challenge ceiling={challenge_ceiling}")
 
     return InteractionStrategy(
         mode=mode,

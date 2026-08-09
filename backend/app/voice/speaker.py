@@ -30,10 +30,14 @@ def _token_embedding(text: str, dim: int) -> list[float]:
 
 
 def _audio_embedding(sample: bytes, dim: int) -> list[float]:
-    """Deterministic byte-level embedding for dev/test audio samples."""
+    """Deterministic byte-level embedding for dev/test audio samples.
+
+    Uses 128-byte windows so near-identical captures (a few changed bytes)
+    still match; a production ECAPA-TDNN encoder replaces this entirely.
+    """
     vector = [0.0] * dim
-    for offset in range(0, len(sample), 512):
-        chunk = sample[offset : offset + 512]
+    for offset in range(0, len(sample), 128):
+        chunk = sample[offset : offset + 128]
         digest = hashlib.sha256(chunk).digest()
         index = int.from_bytes(digest[:4], "big") % dim
         vector[index] += 1.0

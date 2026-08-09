@@ -421,7 +421,33 @@ async def retry_dead_letter(session: AsyncSession, letter_id: UUID) -> DeadLette
         raise ValueError("Resolved dead letters cannot be retried")
     letter.status = "retrying"
     await session.flush()
+    _re_enqueue_dead_letter(letter)
     return letter
+
+
+def _re_enqueue_dead_letter(letter: DeadLetter) -> bool:
+    """Best-effort re-enqueue of a retrying dead letter back onto its queue.
+
+    Only applies in queue processing mode and only for letters whose payload
+    carries an explicit entrypoint. Failures are non-fatal: the letter stays in
+    ``retrying`` so the runtime daemon can try again on a later tick.
+    """
+    if settings.processing_mode != "queue":
+        return False
+    entrypoint = (letter.payload or {}).get("entrypoint")
+    if not entrypoint:
+        return False
+    args = (letter.payload or {}).get("args") or []
+    kwargs = (letter.payload or {}).get("kwargs") or {}
+    try:
+        from redis import Redis
+        from rq import Queue
+
+        queue = Queue(letter.queue, connection=Redis.from_url(settings.redis_url))
+        queue.enqueue(entrypoint, *args, **kwargs)
+        return True
+    except Exception:  # noqa: BLE001 - best-effort recovery; daemon retries later
+        return False
 
 
 async def discard_dead_letter(session: AsyncSession, letter_id: UUID) -> DeadLetter:
@@ -471,6 +497,132 @@ async def attention_usage(session: AsyncSession) -> dict:
         "delivered_today": delivered_today,
         "budget": settings.daily_alert_budget,
         "remaining": max(0, settings.daily_alert_budget - delivered_today),
+    }
+
+
+async def runtime_health(session: AsyncSession) -> dict:
+    """Structured runtime health: DB, state machine, listeners, queue, DLQ."""
+    checks: list[dict] = []
+    try:
+        await session.execute(select(1))
+        checks.append({"name": "database", "status": "ok"})
+    except Exception as exc:  # noqa: BLE001 - health boundary
+        checks.append(
+            {
+                "name": "database",
+                "status": "failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
+        )
+
+    current = await active_session(session)
+    state = current.state if current else "idle"
+    checks.append({"name": "state_machine", "status": "ok", "state": state})
+
+    now = utcnow()
+    grace = timedelta(seconds=settings.runtime_heartbeat_grace_seconds)
+    device_rows = list(
+        (
+            await session.execute(select(Device).where(Device.revoked_at.is_(None)))
+        ).scalars().all()
+    )
+    online = 0
+    listening = 0
+    for device in device_rows:
+        last_seen = _aware(device.last_seen_at)
+        if last_seen is None or now - last_seen > grace:
+            continue
+        online += 1
+        heartbeat = (
+            await session.execute(
+                select(RuntimeHeartbeat)
+                .where(RuntimeHeartbeat.device_id == device.id)
+                .order_by(RuntimeHeartbeat.reported_at.desc())
+                .limit(1)
+            )
+        ).scalars().first()
+        if heartbeat is not None and heartbeat.listener_state == "listening":
+            listening += 1
+    listener_status = "ok" if (not device_rows or online > 0) else "degraded"
+    checks.append(
+        {
+            "name": "listeners",
+            "status": listener_status,
+            "registered_devices": len(device_rows),
+            "online_devices": online,
+            "listening_devices": listening,
+        }
+    )
+
+    dlq = await dead_letter_summary(session)
+    if dlq["discarded"] > 0:
+        dlq_status = "degraded"
+    elif dlq["new"] > 0:
+        dlq_status = "degraded"
+    else:
+        dlq_status = "ok"
+    checks.append({"name": "dead_letters", "status": dlq_status, "counts": dlq})
+
+    if settings.processing_mode == "queue":
+        try:
+            from redis import Redis
+
+            Redis.from_url(settings.redis_url).ping()
+            queue_status = "ok"
+        except Exception:  # noqa: BLE001 - health boundary
+            queue_status = "degraded"
+    else:
+        queue_status = "ok"
+    checks.append(
+        {"name": "queue", "status": queue_status, "mode": settings.processing_mode}
+    )
+    checks.append(
+        {
+            "name": "chat_provider",
+            "status": "ok",
+            "provider": settings.chat_provider,
+        }
+    )
+
+    statuses = [check["status"] for check in checks]
+    if "failed" in statuses:
+        overall = "failed"
+    elif any(status != "ok" for status in statuses):
+        overall = "degraded"
+    else:
+        overall = "ok"
+    return {
+        "schema_version": "ev.runtime.health.v1",
+        "generated_at": now.isoformat(),
+        "overall": overall,
+        "state": state,
+        "quiet_hours_active": quiet_hours_active(now),
+        "attention": await attention_usage(session),
+        "dead_letters": dlq,
+        "checks": checks,
+    }
+
+
+async def daemon_tick(session: AsyncSession) -> dict:
+    """One 24/7 runtime daemon tick: expire stale sessions, retry DLQs, report health."""
+    before = await active_session(session)
+    await expire_stale(session)
+    after = await active_session(session)
+    expired_session_id = before.id if (before is not None and after is None) else None
+
+    retrying_rows = list(
+        (
+            await session.execute(
+                select(DeadLetter).where(DeadLetter.status == "retrying")
+            )
+        ).scalars().all()
+    )
+    re_enqueued = sum(1 for letter in retrying_rows if _re_enqueue_dead_letter(letter))
+
+    return {
+        "expired_session_id": str(expired_session_id) if expired_session_id else None,
+        "re_enqueued": re_enqueued,
+        "health": await runtime_health(session),
     }
 
 
@@ -558,6 +710,30 @@ def record_dead_letter_sync(*, queue: str, payload: dict, error: str, job_id: st
             await record_dead_letter(
                 db_session, queue=queue, payload=payload, error=error, job_id=job_id
             )
+            await db_session.commit()
+
+    asyncio.run(_go())
+
+
+def resolve_dead_letter_sync(*, queue: str, job_id: str) -> None:
+    """Sync helper marking a dead letter resolved after a successful retry."""
+    import asyncio
+
+    from app.db import SessionLocal
+
+    async def _go() -> None:
+        async with SessionLocal() as db_session:
+            rows = (
+                await db_session.execute(
+                    select(DeadLetter).where(
+                        DeadLetter.queue == queue,
+                        DeadLetter.job_id == job_id,
+                        DeadLetter.status.in_(["new", "retrying"]),
+                    )
+                )
+            ).scalars().all()
+            for row in rows:
+                await resolve_dead_letter(db_session, row.id)
             await db_session.commit()
 
     asyncio.run(_go())

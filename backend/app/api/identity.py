@@ -82,18 +82,21 @@ async def identity_status(
                 )
             )
         ).scalar_one()
-        recovery_remaining = (
+        codes = (
             await session.execute(
-                select(func.count(RecoveryCode.id)).where(
+                select(RecoveryCode).where(
                     RecoveryCode.owner_id == owner.id,
                     RecoveryCode.consumed_at.is_(None),
                     RecoveryCode.revoked_at.is_(None),
-                    RecoveryCode.expires_at > now,
                 )
             )
-        ).scalar_one()
+        ).scalars().all()
+        recovery_remaining = sum(
+            1 for c in codes if c.expires_at is None or identity.as_utc(c.expires_at) > now
+        )
         recovery_locked = (
-            owner.recovery_locked_until is not None and owner.recovery_locked_until > now
+            owner.recovery_locked_until is not None
+            and identity.as_utc(owner.recovery_locked_until) > now
         )
     return IdentityStatusOut(
         owner_established=owner is not None,
@@ -143,6 +146,8 @@ async def redeem_recovery(
             capabilities=data.capabilities,
         )
     except identity.IdentityError as exc:
+        # Persist failed-attempt accounting (brute-force lockout) before refusing.
+        await session.commit()
         raise _http(exc) from exc
     await session.commit()
     return RecoveryRedeemResponse(

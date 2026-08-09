@@ -252,8 +252,91 @@ def derive_location_context(payload: dict) -> dict:
     }
 
 
+def derive_channel_signals(channel: LiveChannel, events: list[LiveEvent]) -> list[dict]:
+    """Deterministic per-channel derived signal flags from a replay slice.
+
+    Mirrors the EV Sense signal rules so rebuilt derived state is identical
+    across replays.  Signals carry basis live-event ids (provenance) and only
+    minimal derived representations -- never raw payload content.
+    """
+    signals: list[dict] = []
+    if not events:
+        return signals
+
+    late_night: list[LiveEvent] = []
+    health_anomalies: list[tuple[LiveEvent, str]] = []
+    audio_in_call: list[LiveEvent] = []
+    location_events: list[LiveEvent] = []
+
+    for event in events:
+        hour = _aware(event.occurred_at).hour
+        if channel.kind == "screen" and (hour >= 23 or hour < 5):
+            late_night.append(event)
+        if channel.kind == "audio":
+            derived = derive_audio_context(event.payload or {})
+            if derived["in_call"]:
+                audio_in_call.append(event)
+        if channel.kind == "location":
+            location_events.append(event)
+        if channel.kind == "health":
+            payload = event.payload or {}
+            heart_rate = payload.get("heart_rate") or payload.get("bpm")
+            readiness = payload.get("readiness")
+            sleep_hours = payload.get("sleep_hours")
+            if heart_rate is not None and (heart_rate < 40 or heart_rate > 110):
+                health_anomalies.append((event, f"heart_rate {heart_rate}"))
+            if readiness is not None and readiness < 40:
+                health_anomalies.append((event, f"readiness {readiness}"))
+            if sleep_hours is not None and sleep_hours < 4:
+                health_anomalies.append((event, f"sleep_hours {sleep_hours}"))
+
+    if len(late_night) >= 2:
+        signals.append(
+            {
+                "kind": "screen_late_night",
+                "count": len(late_night),
+                "latest_at": max(late_night, key=lambda e: _aware(e.occurred_at)).occurred_at.isoformat(),
+                "basis_ids": [str(e.id) for e in late_night[:5]],
+            }
+        )
+    if health_anomalies:
+        latest_event, detail = max(health_anomalies, key=lambda pair: _aware(pair[0].occurred_at))
+        signals.append(
+            {
+                "kind": "live_health_signal",
+                "count": len(health_anomalies),
+                "detail": detail,
+                "latest_at": _aware(latest_event.occurred_at).isoformat(),
+                "basis_ids": [str(e.id) for e, _ in health_anomalies[:5]],
+            }
+        )
+    if audio_in_call:
+        signals.append(
+            {
+                "kind": "audio_in_call",
+                "count": len(audio_in_call),
+                "latest_at": max(audio_in_call, key=lambda e: _aware(e.occurred_at)).occurred_at.isoformat(),
+                "basis_ids": [str(e.id) for e in audio_in_call[:5]],
+            }
+        )
+    if location_events:
+        latest = max(location_events, key=lambda e: _aware(e.occurred_at))
+        derived = derive_location_context(latest.payload or {})
+        signals.append(
+            {
+                "kind": "location_presence",
+                "count": len(location_events),
+                "presence": derived["presence"],
+                "place": derived["place"],
+                "latest_at": _aware(latest.occurred_at).isoformat(),
+                "basis_ids": [str(e.id) for e in location_events[:5]],
+            }
+        )
+    return signals
+
+
 def live_context_line(
-    channel: LiveChannel,
+    channel: LiveChannel | None,
     event: LiveEvent,
     *,
     access: str = "user",

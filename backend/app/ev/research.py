@@ -125,19 +125,29 @@ class ResearchService:
 
 async def _build_conclusion_memory(
     session: AsyncSession,
-    research: ResearchSession,
+    research: ResearchSession | None,
     event: Event,
 ) -> Memory:
     """Create the derived summary memory for a research.conclusion event."""
-    conclusion = research.conclusion or ""
+    session_id = (
+        research.id
+        if research is not None
+        else UUID((event.metadata_ or {}).get("research_session_id", ""))
+    )
+    if research is not None:
+        conclusion = research.conclusion or ""
+        question = research.question
+    else:
+        conclusion = ((event.content or {}).get("text") or "").removeprefix("Research concluded: ")
+        question = await _session_question(session, session_id)
     memory = Memory(
         memory_type="summary",
         text=f"Research conclusion: {conclusion}",
         payload={
             "kind": "research_conclusion",
-            "question": research.question,
+            "question": question,
             "conclusion": conclusion,
-            "research_session_id": str(research.id),
+            "research_session_id": str(session_id),
         },
         importance=0.7,
         confidence=0.85,
@@ -150,7 +160,7 @@ async def _build_conclusion_memory(
         fingerprint=fingerprint(
             {
                 "memory_type": "summary",
-                "research_session_id": str(research.id),
+                "research_session_id": str(session_id),
                 "conclusion": normalize_text(conclusion),
             }
         ),
@@ -163,23 +173,53 @@ async def _build_conclusion_memory(
     await session.flush()
 
     # Provenance: the conclusion traces to every event in the session.
-    service = ResearchService(session)
-    session_events = await service._session_event_ids(research.id)
+    if research is not None:
+        service = ResearchService(session)
+        session_events = await service._session_event_ids(research.id)
+    else:
+        session_events = await _session_event_ids_from_events(session, session_id)
     session_events.add(event.id)
     for event_id in session_events:
         session.add(MemoryEvent(memory_id=memory.id, event_id=event_id))
     return memory
 
 
+async def _session_question(session: AsyncSession, session_id: UUID) -> str:
+    rows = (
+        await session.execute(select(Event).where(Event.event_type == "research.session"))
+    ).scalars().all()
+    for event in rows:
+        if (event.metadata_ or {}).get("research_session_id") != str(session_id):
+            continue
+        text = (event.content or {}).get("text") or ""
+        if text.startswith("Research: "):
+            return text.removeprefix("Research: ")
+    return ""
+
+
+async def _session_event_ids_from_events(session: AsyncSession, session_id: UUID) -> set[UUID]:
+    rows = (await session.execute(select(Event).where(Event.source == "research"))).scalars().all()
+    return {
+        event.id
+        for event in rows
+        if (event.metadata_ or {}).get("research_session_id") == str(session_id)
+    }
+
+
 async def recreate_conclusion_memory(session: AsyncSession, event: Event) -> Memory | None:
-    """Replay a research.conclusion event into its derived summary memory."""
+    """Replay a research.conclusion event into its derived summary memory.
+
+    Fully event-sourced: the question and provenance are reconstructed from the
+    session's raw events, so import/restore does not depend on research_sessions
+    rows surviving.
+    """
     session_id = (event.metadata_ or {}).get("research_session_id")
     if not session_id:
         return None
-    research = await session.get(ResearchSession, UUID(session_id))
-    if research is None or not research.conclusion:
+    conclusion = ((event.content or {}).get("text") or "").removeprefix("Research concluded: ")
+    if not conclusion:
         return None
-    return await _build_conclusion_memory(session, research, event)
+    return await _build_conclusion_memory(session, None, event)
 
 
 async def list_sessions(

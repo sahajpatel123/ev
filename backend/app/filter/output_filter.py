@@ -239,7 +239,9 @@ def audit_grounding(text: str, material: list[GroundingMaterial]) -> tuple[list[
             if overlap > best:
                 best = overlap
                 evidence = [mem.memory_id]
-        supported = best >= 0.5 or (evidence and best >= 0.4 and len(claim_tokens) <= 3)
+        supported = bool(
+            best >= 0.5 or (evidence and best >= 0.4 and len(claim_tokens) <= 3)
+        )
         action = "keep" if supported else "remove"
         claims.append(
             Claim(

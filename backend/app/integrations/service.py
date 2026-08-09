@@ -16,6 +16,8 @@ Security invariants enforced here:
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
+from typing import Literal, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -47,9 +49,46 @@ PRIVACY_ORDER = {
     "never_send_to_model": 3,
 }
 
+SECRET_CONFIG_MARKERS = (
+    "token",
+    "secret",
+    "password",
+    "apikey",
+    "api_key",
+    "authorization",
+    "credential",
+    "client_secret",
+    "private_key",
+)
+
+LiveChannelKind = Literal["screen", "audio", "health", "app", "vision", "location"]
+
 
 def _privacy_order(value: str) -> int:
     return PRIVACY_ORDER.get(value, 0)
+
+
+def _validate_config(config: dict) -> None:
+    offending = [
+        key
+        for key in config
+        if any(marker in str(key).lower() for marker in SECRET_CONFIG_MARKERS)
+    ]
+    if offending:
+        raise ValueError(
+            "integration config must not contain credentials "
+            f"(offending keys: {sorted(offending)}); use the credential vault instead"
+        )
+
+
+def _webhook_occurred_at(headers: dict) -> datetime | None:
+    timestamp = webhooks.header_value(headers, "X-EV-Timestamp")
+    if not timestamp:
+        return None
+    try:
+        return datetime.fromtimestamp(float(timestamp), tz=UTC)
+    except (TypeError, ValueError):
+        return None
 
 
 def _integration_out(row: Integration, credentials: list[IntegrationCredential]) -> IntegrationOut:
@@ -162,7 +201,8 @@ async def install(
         raise PermissionError(
             f"scopes must be a non-empty subset of {sorted(adapter.capabilities)}"
         )
-    privacy = data.privacy_level
+    _validate_config(data.config)
+    privacy: str = data.privacy_level
     if _privacy_order(privacy) < _privacy_order(adapter.min_privacy):
         privacy = adapter.min_privacy
     slug = data.slug or adapter.slug
@@ -175,7 +215,7 @@ async def install(
         session,
         LiveChannelCreate(
             name=f"integration:{slug}",
-            kind=adapter.privacy_kind,
+            kind=cast(LiveChannelKind, adapter.privacy_kind),
             privacy_level=privacy,
             metadata={"collector": f"integration:{slug}", "adapter": adapter.slug},
         ),
@@ -494,6 +534,14 @@ async def ingest_webhook(
             channel_id=integration.live_channel_id,
             event_ids=[],
         )
+    occurred_at = _webhook_occurred_at(headers)
+    if occurred_at is not None:
+        events = [
+            event
+            if event.occurred_at is not None
+            else event.model_copy(update={"occurred_at": occurred_at})
+            for event in events
+        ]
     channel = await session.get(LiveChannel, integration.live_channel_id)
     if channel is None or not channel.active:
         raise LookupError("integration live channel is inactive")

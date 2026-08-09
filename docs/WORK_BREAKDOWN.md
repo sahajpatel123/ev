@@ -348,9 +348,12 @@ spoken to — always evidence-backed, always consent-gated, always rollback-able
 Success means personalization improves measured outcomes (fewer corrections,
 better predictions) without ever leaking or misusing the training data.
 
-### 7.1 Voice enrollment training — **Design**
+### 7.1 Voice enrollment training — **Partial**
 Samples → voiceprints + liveness calibration; "training" here is enrollment, not
 LLM weight updates. Direction: multi-sample enrollment, versioning, revocation.
+Implemented: consent-gated multi-sample enrollment, encrypted/versioned
+voiceprints, re-enrollment chains, rollback, revocation, data-subject deletion,
+and portable export (`/v1/voice/*`, `/v1/training/*`).
 
 ### 7.2 Life-data personalization — **Partial**
 Importance scoring, patterns, preferences, and self-evaluation already
@@ -372,9 +375,12 @@ Ledger aggregates (defect precision/recall, over-refinement, correction rate)
 recalibrate thresholds monthly. Direction: automate the report and threshold
 proposals.
 
-### 7.6 Personalization privacy & consent — **Design**
+### 7.6 Personalization privacy & consent — **Built**
 Every training track requires explicit consent, data deletion, and
 exportability. Direction: document per-track consent in the privacy center.
+Implemented: per-track `consent_records` with grant/revoke lifecycle and access
+logging; voice enrollment, verification, and wake are consent-gated and
+revocation cascades to active enrollments.
 
 ---
 
@@ -404,8 +410,10 @@ Screen activity, audio transcripts, HealthKit, location (permissioned). Directio
 implement collectors on each OS; user manages collection.
 
 ### 8.4 Live-data rebuildability — **Built**
-Live events are immutable with consumed flags; derived state rebuilds. Direction:
-add replay/rebuild jobs and retention policy.
+Live events are immutable with consumed flags; `POST /v1/live/rebuild`
+deterministically drops and replays the per-channel derived layer
+(`live_derived_state`) from the recorded stream, marking every folded event
+consumed. Direction: retention policy and scheduled rebuild jobs.
 
 ---
 
@@ -705,21 +713,24 @@ user-owned media and user-confirmed (recognition log). Direction: add an adapter
 over a vision-capable provider or a local model, with the same
 `never_send_to_model` boundary and confirmation flow.
 
-### 15.2 Screen awareness — **Design**
-The live screen channel should yield derived context (active app, document, code
-file, meeting) without ever sending raw screen content to the provider. Direction:
-build OS-level collectors that emit text-level events, then feed them into user
-state and the ContextCompiler.
+### 15.2 Screen awareness — **Partial**
+The live screen channel yields derived context (active app, document/code summary)
+into user state and the ContextCompiler; the model slice never receives raw
+screen content. Direction: build OS-level collectors that emit text-level events,
+then feed them into user state and the ContextCompiler.
 
-### 15.3 Audio scene understanding — **Future**
-Distinguish speech, music, noise, and meetings from ambient audio; detect "user is
-in a call" for interruption discipline. Direction: add after ASR; keep raw audio
-on-device by default.
+### 15.3 Audio scene understanding — **Built**
+Audio live events derive a minimal scene representation (speech/music/noise,
+in-call/meeting) with confidence, surfaced as `audio_in_call` EV Sense signals
+with live-event provenance. Raw audio and transcripts are never included in the
+model-facing slice. Direction: add on-device scene classification behind the
+existing channel contract.
 
-### 15.4 Location & presence — **Future**
-Permissioned, coarse location/live presence to power route briefings and
-context-aware replies ("you're at the airport"). Direction: opt-in channel with
-privacy level and on-device processing preference.
+### 15.4 Location & presence — **Built**
+Location live events derive coarse place + presence context (never exact
+coordinates/addresses in model-facing context), surfaced as `location_presence`
+EV Sense signals and route-briefing context. Direction: add opt-in on-device
+collectors and route-briefing integration.
 
 ### 15.5 Multimodal provider input — **Future**
 When the user explicitly shares an image/audio snippet, the gateway must support

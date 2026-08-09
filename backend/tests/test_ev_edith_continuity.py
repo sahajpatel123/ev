@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev.live import query_live_events
+from app.ev.rollup import build_rollup, model_safe_rollup
 
 
 async def post_event(client: AsyncClient, text: str) -> dict:
@@ -142,6 +144,33 @@ async def test_tombstone_rebuilds_rollup_without_redacted_text(client: AsyncClie
 
     resp = await client.get("/v1/conversation")
     assert "Qubit-9" not in resp.json()["rollup"]["summary"]
+
+
+async def test_model_safe_rollup_excludes_never_send_content(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    await client.post("/v1/chat", json={"message": "Working on the retrieval ranking algorithm."})
+    thread_id = UUID((await client.get("/v1/conversation")).json()["conversation"]["id"])
+    await client.post(
+        "/v1/events",
+        json={
+            "source": "chat",
+            "event_type": "message.user",
+            "text": "Qubit-9 is the secret project codename.",
+            "privacy_level": "never_send_to_model",
+            "conversation_id": str(thread_id),
+        },
+    )
+
+    rollup = await build_rollup(db_session, thread_id)
+    assert "Qubit-9" in rollup.summary
+    assert "retrieval ranking" in rollup.summary.lower()
+
+    safe = await model_safe_rollup(db_session, thread_id)
+    assert "Qubit-9" not in safe.summary
+    assert not any("Qubit-9" in q for q in safe.open_questions)
+    assert "retrieval ranking" in safe.summary.lower()
 
 
 async def test_live_data_recording_and_state_feed(client: AsyncClient) -> None:

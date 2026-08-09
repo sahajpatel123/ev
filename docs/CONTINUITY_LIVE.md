@@ -56,6 +56,9 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
   nothing is edited. A unique `(channel_id, sha256)` constraint makes replays
   idempotent, and event privacy is fail-closed (never less restrictive than
   the channel's granted permission).
+- `live_derived_state` — per-channel derived rollups (counts, first/last
+  event, signal flags with basis live-event ids). Dropped and replayed
+  deterministically by `POST /v1/live/rebuild`; never edited in place.
 
 ### API
 
@@ -63,6 +66,8 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
 - `POST /v1/live/channels/{id}/events` — single-channel batch
 - `POST /v1/live/events` — cross-channel batch (auto-creates channel)
 - `GET /v1/live/channels/{id}/events`, `GET /v1/live/status`
+- `POST /v1/live/rebuild` — deterministic replay of the live stream into the
+  derived layer (resets and marks `consumed`)
 
 ### Use
 
@@ -72,7 +77,8 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
 - The chat context compiler includes a separate, privacy-filtered
   `LIVE CONTEXT` section; `never_send_to_model` channels/events never reach
   the model-facing slice.
-- `consumed` flag marks events already folded into derived state (rebuildable).
+- `consumed` flag marks events already folded into derived state; rebuild
+  resets it, replays the stream, and re-marks folded events.
 
 ## 3. E.D.I.T.H. layer (see `EDITH_RESEARCH.md`)
 

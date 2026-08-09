@@ -24,7 +24,6 @@ from app.routines.service import (
 )
 from app.schemas import RoutineCreate, RoutineRunDecisionRequest
 
-
 # --------------------------------------------------------------------------- #
 # Cron parsing
 # --------------------------------------------------------------------------- #

@@ -433,12 +433,15 @@ def _match_trigger(
     live_event: LiveEvent | None = None,
     channel: LiveChannel | None = None,
 ) -> bool:
-    if event is not None:
+    if event is None and live_event is None:
+        return False
+    if isinstance(event, Event):
         event_type = event.event_type
-        source = event.source
+        source: str | None = event.source
         data = event.content or {}
         channel_kind = None
     else:
+        assert live_event is not None
         event_type = live_event.event_type
         source = live_event.collector or (
             channel.name if channel is not None else None
@@ -480,6 +483,8 @@ async def consider_event(
     """Evaluate enabled trigger routines against one event/live event."""
     if event is None and live_event is None:
         return []
+    if event is not None and live_event is not None:
+        raise ValueError("Pass exactly one of event or live_event")
     rows = (
         await session.execute(
             select(Routine).where(
@@ -496,17 +501,23 @@ async def consider_event(
             previous = await _last_run(session, routine.id)
             if previous is not None and (utcnow() - previous.created_at).total_seconds() < routine.cooldown_seconds:
                 continue
-        source = event if event is not None else live_event
-        digest = source.sha256
-        snapshot_source = (
-            source.source
-            if event is not None
-            else (source.collector or (channel.name if channel else None))
-        )
-        snapshot_payload = (
-            source.content or {} if event is not None else source.payload or {}
-        )
-        dedupe_key = f"trig:{routine.id}:{source.id}:{digest}"
+        snapshot_source: str | None
+        if isinstance(event, Event):
+            digest = event.sha256
+            snapshot_source = event.source
+            snapshot_payload = event.content or {}
+            source_id = event.id
+            source_type = event.event_type
+        else:
+            assert live_event is not None
+            digest = live_event.sha256
+            snapshot_source = live_event.collector or (
+                channel.name if channel is not None else None
+            )
+            snapshot_payload = live_event.payload or {}
+            source_id = live_event.id
+            source_type = live_event.event_type
+        dedupe_key = f"trig:{routine.id}:{source_id}:{digest}"
         run = await _insert_run(
             session,
             _new_run(
@@ -517,7 +528,7 @@ async def consider_event(
                 trigger_event_id=event.id if event is not None else None,
                 trigger_live_event_id=live_event.id if live_event is not None else None,
                 trigger_snapshot={
-                    "event_type": source.event_type,
+                    "event_type": source_type,
                     "source": snapshot_source,
                     "channel_kind": channel.kind if channel is not None else None,
                     "payload": snapshot_payload,
@@ -674,12 +685,8 @@ async def execute_run(
     data: RoutineRunDecisionRequest | None = None,
 ) -> RoutineRun:
     run = await get_run(session, run_id)
-    if run.status not in ("approved", "awaiting_approval") or run.action_id is None:
+    if run.status != "approved" or run.action_id is None:
         raise ValueError("Only approved runs can be executed")
-    if run.status == "awaiting_approval":
-        await runtime_service.decide_action(
-            session, run.action_id, actor=actor, decision="approve"
-        )
     action = await runtime_service.execute_action(
         session,
         run.action_id,
@@ -739,7 +746,12 @@ async def retry_run(
     run.finished_at = None
     run.started_at = utcnow()
     run.updated_at = utcnow()
-    await _route_action_for_run(session, run, routine, actor=f"retry:{actor}")
+    try:
+        await _route_action_for_run(session, run, routine, actor=f"retry:{actor}")
+    except Exception as exc:  # noqa: BLE001 - run-level failure isolation
+        run.status = "failed"
+        run.error = f"{type(exc).__name__}: {exc}"
+        run.finished_at = utcnow()
     await log_access(
         session,
         actor=actor,

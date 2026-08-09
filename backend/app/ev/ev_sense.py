@@ -51,6 +51,8 @@ def quiet_hours_active(now: datetime | None = None) -> bool:
 async def apply_attention_policy(
     session: AsyncSession,
     predictions: list[SensePrediction],
+    *,
+    budget_override: int | None = None,
 ) -> list[SensePrediction]:
     """Quiet-hours + daily delivery budget; never downgrade notify_card."""
     now = utcnow()
@@ -65,7 +67,8 @@ async def apply_attention_policy(
         )
     ).scalars().all()
     delivered_today = len(delivered_rows)
-    remaining = max(0, settings.daily_alert_budget - delivered_today)
+    daily_budget = budget_override if budget_override is not None else settings.daily_alert_budget
+    remaining = max(0, daily_budget - delivered_today)
     updated: list[SensePrediction] = []
     for prediction in predictions:
         tier = prediction.tier

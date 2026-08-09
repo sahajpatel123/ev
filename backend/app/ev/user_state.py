@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from datetime import timedelta
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -147,7 +148,7 @@ async def build_user_state(
 
     updated_at = events[0].occurred_at if events else None
     live_rows = await live.query_live_events(session, access=access, since=since, limit=5)
-    channel_map: dict = {}
+    channel_map: dict[UUID, LiveChannel] = {}
     if live_rows:
         channel_ids = {row.channel_id for row in live_rows}
         channel_rows = await session.execute(
