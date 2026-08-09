@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime
-from typing import Literal
+from datetime import UTC, datetime
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -57,6 +57,7 @@ from app.schemas import (
     ChatRequest,
     ChatResponse,
     ConflictOut,
+    ConsolidationOut,
     DeviceCreate,
     DeviceCreateResponse,
     DeviceOut,
@@ -71,16 +72,20 @@ from app.schemas import (
     GatewayChatResponse,
     GatewayToolCall,
     ImportResponse,
+    MemoryChangeGroup,
+    MemoryChangesResponse,
     MemoryDelta,
     MemoryListResponse,
     MemoryOut,
     ModelCallOut,
+    PrivacyLevel,
     ProvenanceItem,
     RebuildOut,
     TimelineResponse,
     UserStateOut,
 )
 from app.services.access_log import log_access
+from app.services.consolidation import next_period_start, run_consolidation
 from app.services.event_service import EventService
 from app.services.importer import import_bundle
 from app.services.model_call import list_model_calls, log_model_call
@@ -191,7 +196,7 @@ async def create_event(
     request: Request,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
-) -> EventCreateResponse:
+) -> EventCreateResponse | JSONResponse:
     request_id = request.headers.get("X-Request-Id") or str(uuid4())
     idempotency_key = request.headers.get("Idempotency-Key")
     if idempotency_key:
@@ -375,6 +380,71 @@ async def list_memories(
     return MemoryListResponse(
         memories=[await _memory_out(session, m) for m in rows],
         total=len(rows),
+    )
+
+
+@router.get("/memories/changes", response_model=MemoryChangesResponse)
+async def memory_changes(
+    since: datetime,
+    memory_type: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> MemoryChangesResponse:
+    """Version-chain query: what has the user changed their mind about since ``since``."""
+    if since.tzinfo is not None:
+        since = since.astimezone(UTC).replace(tzinfo=None)
+    stmt = select(Memory).where(Memory.valid_from >= since)
+    if memory_type:
+        stmt = stmt.where(Memory.memory_type == memory_type)
+    changed = list((await session.execute(stmt.limit(limit * 4))).scalars().all())
+    group_ids = {m.version_group for m in changed}
+    if not group_ids:
+        return MemoryChangesResponse(since=since, memory_type=memory_type, total=0, groups=[])
+
+    versions = list(
+        (
+            await session.execute(
+                select(Memory)
+                .where(Memory.version_group.in_(group_ids))
+                .order_by(Memory.version_group, Memory.version.asc())
+            )
+        ).scalars().all()
+    )
+    grouped: dict[UUID, list[Memory]] = {}
+    for memory in versions:
+        grouped.setdefault(memory.version_group, []).append(memory)
+
+    groups: list[MemoryChangeGroup] = []
+    for version_group, rows in grouped.items():
+        # "How has my thinking changed" = version chains that were revised after
+        # `since` (a new single-version memory is new knowledge, not a change).
+        if len(rows) < 2 or rows[-1].valid_from < since:
+            continue
+        groups.append(
+            MemoryChangeGroup(
+                version_group=version_group,
+                memory_type=rows[-1].memory_type,
+                versions=[await _memory_out(session, m) for m in rows],
+            )
+        )
+    groups.sort(key=lambda g: g.versions[-1].valid_from, reverse=True)
+    groups = groups[:limit]
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/memories/changes",
+        resource_type="memory",
+        resource_ids=[m.id for g in groups for m in g.versions],
+        details={"since": since.isoformat(), "groups": len(groups)},
+    )
+    await session.commit()
+    return MemoryChangesResponse(
+        since=since,
+        memory_type=memory_type,
+        total=len(groups),
+        groups=groups,
     )
 
 
@@ -608,7 +678,7 @@ async def run_chat_pipeline(
     thread_id: UUID,
     source: str = "chat",
     user_event_type: str = "message.user",
-    event_privacy: str = "normal",
+    event_privacy: PrivacyLevel = "normal",
 ) -> dict:
     retriever = Retriever(session)
     request_id = str(uuid4())
@@ -630,8 +700,10 @@ async def run_chat_pipeline(
             method="auth_token",
         ),
     )
-    effective_event_privacy = (
-        event_privacy if event_privacy != "normal" else input_decision.privacy_level
+    effective_event_privacy: PrivacyLevel = (
+        event_privacy
+        if event_privacy != "normal"
+        else cast(PrivacyLevel, input_decision.privacy_level)
     )
 
     # Capture the user message as an immutable event.
@@ -1326,6 +1398,7 @@ router.get("/patterns", response_model=MemoryListResponse)(_typed_browse("patter
 async def analyze_patterns(
     window_days: int = Query(default=30, ge=1, le=365),
     min_count: int = Query(default=3, ge=2, le=20),
+    recent_days: int = Query(default=7, ge=1, le=90),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> dict:
@@ -1343,10 +1416,56 @@ async def analyze_patterns(
         )
     )
     engine = PatternEngine(session)
-    written = await engine.analyze(window_days=window_days, min_count=min_count)
+    written = await engine.analyze(
+        window_days=window_days,
+        min_count=min_count,
+        recent_days=recent_days,
+    )
     loops = await engine.decision_loops(window_days=window_days)
     await session.commit()
     return {"written": written, "decision_loops": loops}
+
+
+@router.post("/consolidate", response_model=ConsolidationOut)
+async def consolidate(
+    granularity: Literal["day", "week", "month"] = Query(default="day"),
+    period_start: datetime = Query(...),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ConsolidationOut:
+    """Derive a deterministic period summary over the raw event log."""
+    if period_start.tzinfo is None:
+        period_start = period_start.replace(tzinfo=UTC)
+    period_end = next_period_start(period_start, granularity)
+    executed_at = utcnow()
+    await EventService(session, actor=actor).create(
+        EventCreate(
+            source="system",
+            event_type="consolidation.run",
+            text=f"Consolidation: {granularity} starting {period_start.isoformat()}",
+            metadata={
+                "granularity": granularity,
+                "period_start": period_start.isoformat(),
+                "period_end": period_end.isoformat(),
+                "executed_at": executed_at.isoformat(),
+            },
+        )
+    )
+    written = await run_consolidation(
+        session,
+        granularity=granularity,
+        period_start=period_start,
+        period_end=period_end,
+        as_of=executed_at,
+    )
+    await session.commit()
+    return ConsolidationOut(
+        granularity=granularity,
+        period_start=period_start,
+        period_end=period_end,
+        executed_at=executed_at,
+        written=[UUID(w) for w in written],
+    )
 
 
 @router.post("/memory/rebuild", response_model=RebuildOut)

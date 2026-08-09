@@ -9,6 +9,7 @@ updated or deleted here.
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,9 @@ from app.embeddings import get_embedder
 from app.ev.decisions import recreate_lesson_from_event
 from app.ev.memory_ops import apply_correction, apply_forget, apply_restore
 from app.ev.research import recreate_conclusion_memory
+from app.ev.vision import recognition_memory_candidate
 from app.memory.extraction import Extractor
+from app.memory.entities import get_or_create_entity
 from app.memory.patterns import PatternEngine
 from app.memory.writer import MemoryWriter, redact_memories_for_event
 from app.models import (
@@ -33,6 +36,7 @@ from app.models import (
     RecognitionLog,
 )
 from app.services.access_log import log_access
+from app.services.consolidation import run_consolidation
 from app.utils.text import utcnow
 
 MEMORY_OPERATION_TYPES = {"memory.correction", "memory.forget", "memory.restore"}
@@ -168,6 +172,43 @@ async def rebuild_derived_state(
             if await recreate_lesson_from_event(session, event) is not None:
                 counts["lessons_created"] += 1
             continue
+        if event.event_type == "recognition.confirm":
+            content = event.content or {}
+            recognition_id = content.get("recognition_id")
+            recognition = None
+            if recognition_id:
+                recognition = await session.get(RecognitionLog, UUID(str(recognition_id)))
+            label = str(content.get("label") or (recognition.label if recognition else "")).strip()
+            if not label:
+                continue
+            entity_type = str(content.get("entity_type") or "thing")
+            entity = await get_or_create_entity(session, label, entity_type)
+            if recognition is not None:
+                recognition.entity_id = entity.id
+                recognition.source = "user"
+            try:
+                confidence = float(content.get("confidence") or 0.8)
+            except (TypeError, ValueError):
+                confidence = 0.8
+            written = await writer.write_all(
+                event,
+                [
+                    recognition_memory_candidate(
+                        label=label,
+                        confidence=confidence,
+                        entity_type=entity_type,
+                        recognition_id=str(recognition_id or ""),
+                        attachment_id=content.get("attachment_id"),
+                        perception_event_id=content.get("perception_event_id"),
+                        source_event_id=content.get("source_event_id"),
+                        entity_id=str(entity.id),
+                        privacy_level=event.privacy_level or "normal",
+                        event_time=event.occurred_at,
+                    )
+                ],
+            )
+            counts["memories_created"] += len(written)
+            continue
         if event.event_type == "pattern.analyze":
             meta = event.metadata_ or {}
             try:
@@ -180,6 +221,20 @@ async def rebuild_derived_state(
                 as_of=as_of,
             )
             counts["patterns_created"] += len(written)
+            continue
+        if event.event_type == "consolidation.run":
+            meta = event.metadata_ or {}
+            try:
+                written = await run_consolidation(
+                    session,
+                    granularity=meta["granularity"],
+                    period_start=datetime.fromisoformat(meta["period_start"]),
+                    period_end=datetime.fromisoformat(meta["period_end"]),
+                    as_of=datetime.fromisoformat(meta["executed_at"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            counts["summaries_created"] += len(written)
             continue
         if event.event_type in RESEARCH_RAW_TYPES:
             continue
