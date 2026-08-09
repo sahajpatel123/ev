@@ -378,10 +378,14 @@ usefulness, and recommendation-follow signals, versioned for rollback, applied
 transparently by hybrid retrieval, and fully redactable on request
 (`/v1/training/personalization/*`).
 
-### 7.3 Adapter fine-tuning (LoRA) — **Future**
+### 7.3 Adapter fine-tuning (LoRA) — **Partial**
 Train an EVIE adapter on filtered responses + user corrections to encode voice,
 style, and working style. Direction: versioned adapters, eval gates, rollback;
-requires corpus from the filter ledger.
+requires corpus from the filter ledger. Implemented: consent-gated versioned
+adapter registry bound to corpus snapshots, deterministic eval gates
+(non-empty corpus, corrections present, no leaked secrets), activate/rollback
+and erasure (`/v1/training/adapter/*`). Actual weight training remains
+provider-dependent (local LoRA or hosted fine-tune).
 
 ### 7.4 Training corpus harvesting — **Built**
 Derive versioned snapshots from events, response logs, and ledger with user
@@ -533,7 +537,9 @@ execute tasks (capture photo, run scan, record audio) and wake arbitration.
 
 ### 10.3 Ops center — **Built**
 Aggregated dashboard (state, focus, health, alerts, fleet, decisions, patterns).
-Direction: push to HUD/AR and add command cards.
+`GET /v1/hud/ops` pushes the center to HUD as a strict `ev.hud.ops.v1` command
+card (focus lock, online devices, pending alerts, open decisions, command
+cards). Direction: render on AR surfaces.
 
 ### 10.4 Recognition log — **Built**
 User-tagged labels over user-owned media/live events, linked to entities.
@@ -610,9 +616,11 @@ lookups, projects, goals, health, gear, alerts/calendar, research, patterns, and
 timeline queries. Direction: add model-assisted selection fallback with the same
 safety caps.
 
-### 11.3 Permissioned web/search — **Future**
-`search_web` with provider interface and citations. Direction: design adapter +
-privacy pass-through.
+### 11.3 Permissioned web/search — **Built (v1 adapter)**
+`search_web` is the `search` integration adapter (`search.query`, scope
+`search:read`) behind the standard adapter framework: provider interface via
+integration config, deterministic local mode, per-call permission, and vault
+credentials. Direction: citation-aware result parsing and per-call approval UI.
 
 ### 11.4 Sandboxed code/file tools — **Future**
 Read/write/run in sandboxes with per-call approval and versioned drafts. Direction:

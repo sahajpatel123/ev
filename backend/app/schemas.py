@@ -1228,6 +1228,7 @@ class ReverificationRequest(BaseModel):
     purpose: Literal[
         "integration.action",
         "memory.delete",
+        "runtime.action",
         "voice.revoke",
         "voice.delete",
         "recovery.rotate",
@@ -1247,6 +1248,7 @@ class ReverificationConsumeRequest(BaseModel):
     purpose: Literal[
         "integration.action",
         "memory.delete",
+        "runtime.action",
         "voice.revoke",
         "voice.delete",
         "recovery.rotate",
@@ -1479,6 +1481,7 @@ class PersonWhereaboutsOut(BaseModel):
 
 class UserStateOut(BaseModel):
     activity: str | None = None
+    current_focus: str | None = None
     active_project: str | None = None
     active_goal: str | None = None
     current_task: str | None = None

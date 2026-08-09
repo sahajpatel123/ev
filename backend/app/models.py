@@ -1365,6 +1365,41 @@ class FilterRecalibration(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
+class AdapterRegistration(Base):
+    """Versioned EVIE adapter (LoRA-style) registry with eval gates.
+
+    A registration binds a corpus snapshot, runs deterministic eval gates, and
+    can be activated or rolled back. Actual weight training is provider-
+    dependent (local LoRA or hosted fine-tune); this registry is the
+    versioning/rollback/eval boundary around it.
+    """
+
+    __tablename__ = "adapter_registrations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="approved", index=True)
+    provider: Mapped[str] = mapped_column(String(64), default="local-lora")
+    base_model: Mapped[str | None] = mapped_column(String(128))
+    adapter_ref: Mapped[str | None] = mapped_column(String(512))
+    corpus_snapshot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("training_corpus_snapshots.id")
+    )
+    eval_metrics: Mapped[dict] = mapped_column(JSONType, default=dict)
+    reason_for_change: Mapped[str | None] = mapped_column(Text)
+    consent_id: Mapped[UUID | None] = mapped_column(ForeignKey("consent_records.id"))
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("adapter_registrations.id")
+    )
+    redacted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class WebhookDelivery(Base):
     """Idempotent webhook delivery ledger (provider retries are exact dedupes).
 

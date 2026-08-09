@@ -6,6 +6,8 @@ Voice enrollment/verification is delegated to the EVIE voice subsystem
 
 from __future__ import annotations
 
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +15,11 @@ from app.auth import require_actor
 from app.config import settings
 from app.db import get_session
 from app.schemas import (
+    AdapterActivateRequest,
+    AdapterDeleteResponse,
+    AdapterOut,
+    AdapterRegisterRequest,
+    AdapterRollbackRequest,
     ConsentGrant,
     ConsentOut,
     ConsentRevoke,
@@ -43,6 +50,7 @@ from app.schemas import (
     VoiceVerifyResponse,
 )
 from app.services.access_log import log_access
+from app.training import adapter as adapter_service
 from app.training import consent as consent_service
 from app.training import corpus as corpus_service
 from app.training import filter_improvement as filter_improvement_service
@@ -538,3 +546,103 @@ async def filter_recalibration_delete(
     )
     await session.commit()
     return FilterRecalibrationDeleteResponse(deleted=deleted, redacted=True)
+
+
+# --------------------------------------------------------------------------- #
+# Adapter fine-tuning — versioned adapter registry with eval gates
+# --------------------------------------------------------------------------- #
+
+
+@router.post("/adapter/register", response_model=AdapterOut, status_code=201)
+async def adapter_register(
+    data: AdapterRegisterRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> AdapterOut:
+    try:
+        row = await adapter_service.register(
+            session,
+            name=data.name,
+            provider=data.provider,
+            base_model=data.base_model,
+            adapter_ref=data.adapter_ref,
+            corpus_version=data.corpus_version,
+            actor=actor,
+            reason=data.reason,
+        )
+    except (ConsentRequiredError, KeyError) as exc:
+        raise _training_http(exc, track="adapter_fine_tuning") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    await session.commit()
+    return AdapterOut.model_validate(row)
+
+
+@router.get("/adapter", response_model=list[AdapterOut])
+async def adapter_list(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[AdapterOut]:
+    rows = await adapter_service.list_adapters(session)
+    return [AdapterOut.model_validate(r) for r in rows]
+
+
+@router.get("/adapter/{adapter_id}", response_model=AdapterOut)
+async def adapter_get(
+    adapter_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> AdapterOut:
+    try:
+        row = await adapter_service.get_adapter(session, adapter_id)
+    except KeyError as exc:
+        raise _training_http(exc) from exc
+    return AdapterOut.model_validate(row)
+
+
+@router.post("/adapter/activate", response_model=AdapterOut)
+async def adapter_activate(
+    data: AdapterActivateRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> AdapterOut:
+    try:
+        row = await adapter_service.activate(
+            session, adapter_id=data.adapter_id, actor=actor, reason=data.reason
+        )
+    except (ConsentRequiredError, KeyError) as exc:
+        raise _training_http(exc, track="adapter_fine_tuning") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    await session.commit()
+    return AdapterOut.model_validate(row)
+
+
+@router.post("/adapter/rollback", response_model=AdapterOut)
+async def adapter_rollback(
+    data: AdapterRollbackRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> AdapterOut:
+    try:
+        row = await adapter_service.rollback(
+            session, adapter_id=data.adapter_id, actor=actor, reason=data.reason
+        )
+    except (ConsentRequiredError, KeyError) as exc:
+        raise _training_http(exc, track="adapter_fine_tuning") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    await session.commit()
+    return AdapterOut.model_validate(row)
+
+
+@router.post("/adapter/delete", response_model=AdapterDeleteResponse)
+async def adapter_delete(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> AdapterDeleteResponse:
+    deleted = await adapter_service.delete_all(
+        session, actor=actor, reason="user deleted adapter data"
+    )
+    await session.commit()
+    return AdapterDeleteResponse(deleted=deleted, redacted=True)
