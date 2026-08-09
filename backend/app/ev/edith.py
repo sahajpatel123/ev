@@ -24,6 +24,7 @@ from app.models import (
     MemoryEvent,
     RecognitionLog,
 )
+from app.ops.metrics import collect_metrics
 from app.schemas import (
     AlertOut,
     CommandOut,
@@ -662,6 +663,7 @@ async def ops_center(session: AsyncSession) -> OpsCenterOut:
     if not next_actions:
         next_actions.append("No active operations — designate a focus to lock EV on target.")
     commands = await list_commands(session, actor="master", limit=5)
+    metrics = await collect_metrics(session)
     return OpsCenterOut(
         generated_at=utcnow(),
         state=state,
@@ -681,6 +683,7 @@ async def ops_center(session: AsyncSession) -> OpsCenterOut:
         ],
         next_actions=next_actions,
         recent_commands=[CommandOut.model_validate(c) for c in commands],
+        metrics=metrics,
     )
 
 
@@ -700,6 +703,9 @@ async def ops_card(session: AsyncSession) -> HudOpsCardOut:
             "active_goal": ops.state.active_goal,
             "current_task": ops.state.current_task,
             "recent_commands": [c.command_type for c in ops.recent_commands[:3]],
+            "latency_p95_ms": (ops.metrics or {}).get("latency", {}).get("p95_ms"),
+            "cost_last_30d_usd": (ops.metrics or {}).get("cost", {}).get("last_30d_usd"),
+            "cost_within_budget": (ops.metrics or {}).get("cost", {}).get("within_budget"),
         },
     )
 

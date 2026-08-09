@@ -53,6 +53,9 @@
     "/v1/compliance/access-log": [
       "get"
     ],
+    "/v1/compliance/anomalies": [
+      "get"
+    ],
     "/v1/compliance/erasure": [
       "post"
     ],

@@ -92,3 +92,37 @@ async def test_ops_metrics_aggregates_calls_latency_and_cost(
     )
     assert body["cost"]["within_budget"] is True
     assert body["cost"]["monthly_budget_usd"] == 40.0
+
+
+async def test_ops_center_includes_budget_metrics(client, db_session) -> None:
+    from uuid import uuid4
+
+    db_session.add(
+        ModelCallLog(
+            request_id=str(uuid4()),
+            actor="master",
+            provider="deepseek",
+            model="deepseek-v4-flash-0731",
+            status="ok",
+            latency_ms=150,
+            prompt_tokens=1000,
+            completion_tokens=200,
+            tool_calls=[],
+            envelope={},
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.get("/v1/ops/center")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    metrics = body.get("metrics") or {}
+    assert metrics.get("latency", {}).get("p95_ms") == 150.0
+    assert metrics.get("cost", {}).get("within_budget") is True
+    assert metrics.get("cost", {}).get("monthly_budget_usd") == 40.0
+
+    hud = await client.get("/v1/hud/ops")
+    assert hud.status_code == 200, hud.text
+    meta = hud.json().get("meta", {})
+    assert meta.get("latency_p95_ms") == 150.0
+    assert meta.get("cost_within_budget") is True
