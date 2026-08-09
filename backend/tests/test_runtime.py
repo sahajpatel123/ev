@@ -52,6 +52,15 @@ async def register_device(
     return resp.json()["device"]
 
 
+async def post_event(client: AsyncClient, text: str) -> dict:
+    resp = await client.post(
+        "/v1/events",
+        json={"source": "test", "event_type": "note", "text": text},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["event"]
+
+
 async def heartbeat(client: AsyncClient, device_id: str, **overrides: object) -> None:
     payload = {"device_id": device_id, "status": "ok", "listener_state": "listening"}
     payload.update(overrides)
@@ -556,3 +565,32 @@ async def test_runtime_sync_reports_policy_and_empty_latency(client: AsyncClient
         for key, value in payload["latency"].items()
         if key != "session_id"
     )
+
+
+async def test_runtime_digest_batches_non_urgent_alerts(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/v1/alerts/watchlist",
+        json={"kind": "topic", "value": "digest topic", "priority": 0.4, "metadata": {}},
+    )
+    assert resp.status_code == 201, resp.text
+    await post_event(client, "thinking about the digest topic again")
+
+    resp = await client.get("/v1/alerts/scan?window_days=30")
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.get("/v1/alerts?status=pending")
+    pending = resp.json()
+    assert pending, "expected at least one pending alert"
+
+    resp = await client.post("/v1/runtime/digest")
+    assert resp.status_code == 200, resp.text
+    digest = resp.json()
+    assert digest["schema_version"] == "ev.runtime.digest.v1"
+    assert digest["delivered"] >= 1
+    assert all(alert["tier"] in ("useful", "background") for alert in digest["alerts"])
+
+    resp = await client.get("/v1/alerts?status=pending")
+    assert resp.json() == []
+
+    resp = await client.get("/v1/runtime/sync")
+    assert any(event["kind"] == "digest" for event in resp.json()["events"])

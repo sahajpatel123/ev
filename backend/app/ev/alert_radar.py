@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from dateutil import parser as date_parser
 from sqlalchemy import func, select
@@ -213,6 +213,45 @@ async def dismiss_alert(session: AsyncSession, alert_id: UUID, reason: str = "di
     alert.dismissed_at = utcnow()
     alert.dismissed_reason = reason
     return alert
+
+
+async def build_digest(session: AsyncSession, *, limit: int = 50) -> dict:
+    """Batch pending non-urgent alerts into one quiet-hours-friendly digest.
+
+    Urgent alerts are never swallowed by the digest; only ``useful`` and
+    ``background`` tiers are batched. Delivered alerts are marked with their
+    digest id so delivery is observable and auditable.
+    """
+    pending = [
+        alert
+        for alert in await list_alerts(session, status="pending", limit=min(limit, 200))
+        if alert.tier in ("useful", "background")
+    ]
+    digest_id = uuid4().hex
+    delivered: list[dict] = []
+    for alert in pending:
+        alert.status = "delivered"
+        alert.delivered_at = utcnow()
+        details = dict(alert.details or {})
+        details["delivery"] = "digest"
+        details["digest_id"] = digest_id
+        alert.details = details
+        delivered.append(
+            {
+                "id": str(alert.id),
+                "title": alert.title,
+                "body": alert.body,
+                "priority": alert.priority,
+                "tier": alert.tier,
+            }
+        )
+    return {
+        "schema_version": "ev.runtime.digest.v1",
+        "digest_id": digest_id,
+        "generated_at": utcnow().isoformat(),
+        "delivered": len(delivered),
+        "alerts": delivered,
+    }
 
 
 async def promote_predictions(session: AsyncSession, predictions: list[Prediction]) -> list[Alert]:

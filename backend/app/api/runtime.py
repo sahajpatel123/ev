@@ -185,6 +185,27 @@ async def runtime_sync(
     }
 
 
+@router.post("/digest")
+async def runtime_digest(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """Batch pending non-urgent alerts into one quiet-hours-friendly digest."""
+    from app.ev import alert_radar
+
+    result = await alert_radar.build_digest(session)
+    await runtime_service.record_runtime_event(
+        session,
+        kind="digest",
+        payload={
+            "digest_id": result["digest_id"],
+            "delivered": result["delivered"],
+        },
+    )
+    await session.commit()
+    return result
+
+
 @router.post("/actions", response_model=ApprovedActionOut, status_code=201)
 async def route_action(
     data: ApprovedActionCreate,
