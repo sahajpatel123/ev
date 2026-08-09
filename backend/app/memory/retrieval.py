@@ -21,6 +21,10 @@ SCORE_WEIGHTS = {
     "importance": 0.15,
     "relationship": 0.10,
     "confidence": 0.05,
+    # Informational components exposed for transparency; the documented
+    # scoring formula above is unchanged, so they carry zero weight.
+    "importance_base": 0.0,
+    "personalization": 0.0,
 }
 
 
@@ -140,7 +144,7 @@ class Retriever:
                 "relationship": round(relationship, 4),
                 "confidence": round(confidence, 4),
             }
-            score = sum(SCORE_WEIGHTS[k] * v for k, v in components.items())
+            score = sum(SCORE_WEIGHTS[k] * components[k] for k in SCORE_WEIGHTS)
             if score < min_score:
                 continue
             scored.append(
