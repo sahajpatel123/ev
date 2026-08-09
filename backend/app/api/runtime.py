@@ -240,12 +240,14 @@ async def runtime_sync(
         session, since=since, limit=limit
     )
     latency = await runtime_service.runtime_latency(session)
+    digest = await runtime_service.digest_state(session)
     await session.commit()
     return {
         "schema_version": "ev.runtime.sync.v1",
         "generated_at": datetime.now().astimezone().isoformat(),
         "policy": runtime_service.runtime_policy(),
         "latency": latency,
+        "digest": digest,
         "runtime": {
             "state": status_out.state,
             "session_id": str(status_out.session.id) if status_out.session else None,

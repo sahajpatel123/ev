@@ -736,6 +736,7 @@ async def test_runtime_sync_reports_policy_and_empty_latency(client: AsyncClient
         for key, value in payload["latency"].items()
         if key != "session_id"
     )
+    assert payload["digest"] is None
 
 
 async def test_runtime_digest_batches_non_urgent_alerts(client: AsyncClient) -> None:
@@ -764,7 +765,11 @@ async def test_runtime_digest_batches_non_urgent_alerts(client: AsyncClient) -> 
     assert resp.json() == []
 
     resp = await client.get("/v1/runtime/sync")
-    assert any(event["kind"] == "digest" for event in resp.json()["events"])
+    sync = resp.json()
+    assert any(event["kind"] == "digest" for event in sync["events"])
+    assert sync["digest"] is not None
+    assert sync["digest"]["digest_id"] == digest["digest_id"]
+    assert sync["digest"]["delivered"] == digest["delivered"]
 
 
 async def test_daemon_builds_quiet_hours_digest_once(

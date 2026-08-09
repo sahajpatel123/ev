@@ -1457,6 +1457,27 @@ async def maybe_build_digest(session: AsyncSession) -> dict | None:
     return result
 
 
+async def digest_state(session: AsyncSession) -> dict | None:
+    """Latest delivered alert digest, derived from the runtime event log."""
+    event = (
+        await session.execute(
+            select(RuntimeEvent)
+            .where(RuntimeEvent.kind == "digest")
+            .order_by(RuntimeEvent.occurred_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if event is None:
+        return None
+    payload = event.payload or {}
+    return {
+        "digest_id": payload.get("digest_id"),
+        "delivered": payload.get("delivered", 0),
+        "source": payload.get("source", "manual"),
+        "generated_at": event.occurred_at.isoformat(),
+    }
+
+
 async def runtime_status(session: AsyncSession) -> RuntimeStatusOut:
     await expire_stale(session)
     current = await active_session(session)
