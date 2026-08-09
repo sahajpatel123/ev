@@ -39,8 +39,10 @@ recovery, one-tap disable, and undo records.
   immediately. Manual `POST /v1/routines/{id}/run` remains available for
   explicit owner-triggered runs.
 - **Undo**: routines marked `undoable` support
-  `POST /v1/routines/runs/{id}/rollback`, which records the reversal payload
-  and transitions the run to `rolled_back`.
+  `POST /v1/routines/runs/{id}/rollback`, which records the reversal payload,
+  transitions the run to `rolled_back`, and — when the run has a linked action —
+  rolls the action back through the runtime action dispatcher
+  (`POST /v1/runtime/actions/{id}/rollback`) so both records stay consistent.
 - **Reusable templates**: a curated template library (`morning-brief`,
   `weekly-review`, `backup-reminder`, `decision-followup`, `deadline-brief`,
   `low-readiness-reschedule`, `deployment-checklist`) instantiates real
