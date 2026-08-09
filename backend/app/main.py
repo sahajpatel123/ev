@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.api import (
     companion,
+    compliance,
     core,
     edith,
     ev,
@@ -57,6 +58,7 @@ app.include_router(training.router)
 app.include_router(voice.router)
 app.include_router(filter.router)
 app.include_router(integrations.router)
+app.include_router(compliance.router)
 app.include_router(web.router)
 
 
