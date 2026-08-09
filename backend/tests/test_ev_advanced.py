@@ -20,15 +20,19 @@ async def post_event(
     event_type: str = "note",
     source: str = "test",
     privacy_level: str = "normal",
+    occurred_at: str | None = None,
 ) -> dict:
+    body: dict = {
+        "source": source,
+        "event_type": event_type,
+        "text": text,
+        "privacy_level": privacy_level,
+    }
+    if occurred_at is not None:
+        body["occurred_at"] = occurred_at
     resp = await client.post(
         "/v1/events",
-        json={
-            "source": source,
-            "event_type": event_type,
-            "text": text,
-            "privacy_level": privacy_level,
-        },
+        json=body,
     )
     assert resp.status_code == 201, resp.text
     return resp.json()["event"]
@@ -568,3 +572,51 @@ async def test_calibrated_budget_limits_delivery(db_session: AsyncSession) -> No
     result = await apply_attention_policy(db_session, [prediction], budget_override=0)
     assert result[0].deliver is False
     assert result[0].tier == "mention_later"
+
+
+async def test_pattern_engine_detects_goal_drift_and_project_abandonment(
+    client: AsyncClient,
+) -> None:
+    """Silent active goals and projects must produce evidence-backed patterns."""
+    now = datetime.now(UTC)
+    await post_event(
+        client,
+        "I want to build the EV demo.",
+        occurred_at=(now - timedelta(days=20)).isoformat(),
+    )
+    await post_event(
+        client,
+        "Working on @ev-demo integration today.",
+        occurred_at=(now - timedelta(days=12)).isoformat(),
+    )
+    await post_event(
+        client,
+        "Deploying @ev-demo to staging.",
+        occurred_at=(now - timedelta(days=9)).isoformat(),
+    )
+
+    resp = await client.post("/v1/patterns/analyze?window_days=30&min_count=2")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["written"]
+
+    resp = await client.get("/v1/patterns")
+    assert resp.status_code == 200
+    patterns = resp.json()["memories"]
+    kinds = {(p["payload"] or {}).get("kind") for p in patterns}
+    assert "goal_drift" in kinds
+    assert "project_abandonment" in kinds
+
+    goal_drift = next(p for p in patterns if (p["payload"] or {}).get("kind") == "goal_drift")
+    assert goal_drift["payload"]["silence_days"] >= 7
+    assert len(goal_drift["payload"]["evidence"]) >= 2
+
+    abandoned = next(
+        p for p in patterns if (p["payload"] or {}).get("kind") == "project_abandonment"
+    )
+    assert abandoned["payload"]["count"] >= 2
+    assert abandoned["payload"]["silence_days"] >= 7
+
+    resp = await client.post("/v1/sense/predict", json={"window_days": 30})
+    assert resp.status_code == 200, resp.text
+    pattern_predictions = [p for p in resp.json()["predictions"] if p["kind"] == "pattern"]
+    assert any("quiet for" in p["text"] or "hasn't been mentioned" in p["text"] for p in pattern_predictions)

@@ -10,12 +10,19 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Event, Memory, MemoryEvent
+from app.models import Entity, Event, Memory, MemoryEvent
 from app.utils.text import fingerprint, normalize_text, utcnow
 
 DECISION_RE = r"\b(decided|decision|choose|choosing|compare|comparing|which one|which model)\b"
 TOOL_CHURN_RE = r"\b(switched|switching|moved to|migrating|trying out|switching to)\b"
 QUESTION_RE = r"\?"
+
+
+def _as_aware(value, anchor):
+    """SQLite returns naive datetimes; normalize against the analysis anchor."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=anchor.tzinfo)
+    return value
 
 
 def classify_topic(text: str) -> tuple[str, str]:
@@ -54,6 +61,7 @@ class PatternEngine:
         *,
         window_days: int = 30,
         min_count: int = 3,
+        recent_days: int = 7,
         as_of=None,
     ) -> list[str]:
         """Derive behavioral patterns. `as_of` replays a historical analysis job."""
@@ -113,6 +121,168 @@ class PatternEngine:
                 latest_observed,
             )
             written.append(memory_id)
+        written.extend(
+            await self.detect_stalled_goals(
+                rows=rows,
+                anchor=anchor,
+                window_days=window_days,
+                recent_days=recent_days,
+                min_mentions=max(2, min_count - 1),
+            )
+        )
+        written.extend(
+            await self.detect_stalled_projects(
+                rows=rows,
+                anchor=anchor,
+                window_days=window_days,
+                recent_days=recent_days,
+                min_mentions=max(2, min_count - 1),
+            )
+        )
+        return written
+
+    async def detect_stalled_goals(
+        self,
+        *,
+        rows: list[Event],
+        anchor,
+        window_days: int,
+        recent_days: int,
+        min_mentions: int,
+    ) -> list[str]:
+        """Emit goal_drift patterns when an active goal has recent evidence gaps."""
+        recent_cutoff = anchor - timedelta(days=recent_days)
+        goal_rows = (
+            await self.session.execute(
+                select(Memory).where(
+                    Memory.memory_type == "goal",
+                    Memory.is_current.is_(True),
+                    Memory.redacted.is_(False),
+                )
+            )
+        ).scalars().all()
+        active_goals = [
+            goal
+            for goal in goal_rows
+            if (goal.payload or {}).get("status", "active") == "active"
+        ]
+        written: list[str] = []
+        for goal in active_goals:
+            payload = goal.payload or {}
+            goal_text = str(payload.get("goal") or goal.text)[:200]
+            tokens = {t for t in re.findall(r"[a-z0-9']+", normalize_text(goal_text)) if len(t) >= 4}
+            if not tokens:
+                continue
+            mentions = [
+                event
+                for event in rows
+                if tokens.intersection(
+                    set(re.findall(r"[a-z0-9']+", normalize_text((event.content or {}).get("text") or "")))
+                )
+            ]
+            if len(mentions) < min_mentions:
+                continue
+            if any(_as_aware(event.occurred_at, anchor) >= recent_cutoff for event in mentions):
+                continue
+            latest_observed = max(event.occurred_at for event in mentions)
+            latest_observed_aware = _as_aware(latest_observed, anchor)
+            silence_days = max(0, int((anchor - latest_observed_aware).total_seconds() // 86400))
+            count = len(mentions)
+            confidence = round(min(0.9, 0.5 + 0.08 * count), 3)
+            topic = " ".join(normalize_text(goal_text).split()[:6])
+            pattern_payload = {
+                "behavior": f"Active goal '{topic}' has not been engaged recently",
+                "topic": topic,
+                "kind": "goal_drift",
+                "goal": goal_text,
+                "count": count,
+                "window_days": window_days,
+                "recent_days": recent_days,
+                "silence_days": silence_days,
+                "first_observed": min(event.occurred_at for event in mentions).isoformat(),
+                "latest_observed": latest_observed_aware.isoformat(),
+                "evidence": [str(event.id) for event in mentions],
+            }
+            text = (
+                f"Pattern (goal_drift): goal '{topic}' was engaged {count} times but "
+                f"has been quiet for {silence_days} days (window {window_days}d, recent {recent_days}d)."
+            )
+            memory_id = await self._write_pattern(
+                topic,
+                "goal_drift",
+                text,
+                pattern_payload,
+                confidence,
+                mentions,
+                latest_observed,
+            )
+            written.append(memory_id)
+        return written
+
+    async def detect_stalled_projects(
+        self,
+        *,
+        rows: list[Event],
+        anchor,
+        window_days: int,
+        recent_days: int,
+        min_mentions: int,
+    ) -> list[str]:
+        """Emit project_abandonment patterns when a project goes silent."""
+        recent_cutoff = anchor - timedelta(days=recent_days)
+        entity_rows = (
+            await self.session.execute(
+                select(Entity).where(Entity.entity_type == "project")
+            )
+        ).scalars().all()
+        names = [normalize_text(entity.name) for entity in entity_rows]
+        mentions: dict[str, list[Event]] = defaultdict(list)
+        for event in rows:
+            text = normalize_text((event.content or {}).get("text") or "")
+            for name in names:
+                if name and name in text:
+                    mentions[name].append(event)
+            for token in re.findall(r"@([a-z0-9_]+)", text):
+                mentions[token].append(event)
+
+        written: list[str] = []
+        for topic, events in mentions.items():
+            if len(events) < min_mentions:
+                continue
+            if any(_as_aware(event.occurred_at, anchor) >= recent_cutoff for event in events):
+                continue
+            latest_observed = max(event.occurred_at for event in events)
+            latest_observed_aware = _as_aware(latest_observed, anchor)
+            silence_days = max(0, int((anchor - latest_observed_aware).total_seconds() // 86400))
+            count = len(events)
+            confidence = round(min(0.9, 0.5 + 0.08 * count), 3)
+            pattern_payload = {
+                "behavior": f"Project '{topic}' has not been engaged recently",
+                "topic": topic,
+                "kind": "project_abandonment",
+                "count": count,
+                "window_days": window_days,
+                "recent_days": recent_days,
+                "silence_days": silence_days,
+                "first_observed": min(event.occurred_at for event in events).isoformat(),
+                "latest_observed": latest_observed_aware.isoformat(),
+                "evidence": [str(event.id) for event in events],
+            }
+            text = (
+                f"Pattern (project_abandonment): project '{topic}' was engaged {count} "
+                f"times but has been quiet for {silence_days} days (window {window_days}d, "
+                f"recent {recent_days}d)."
+            )
+            memory_id = await self._write_pattern(
+                topic,
+                "project_abandonment",
+                text,
+                pattern_payload,
+                confidence,
+                events,
+                latest_observed,
+            )
+            written.append(memory_id)
         return written
 
     async def _write_pattern(
@@ -143,7 +313,13 @@ class PatternEngine:
             ),
             None,
         )
-        if match and (match.payload or {}).get("count", 0) >= payload["count"]:
+        existing_count = (match.payload or {}).get("count", 0) if match else 0
+        existing_silence = (match.payload or {}).get("silence_days", 0) if match else 0
+        if (
+            match
+            and existing_count >= payload.get("count", 0)
+            and existing_silence >= payload.get("silence_days", 0)
+        ):
             # Same or stronger evidence already stored; just add provenance.
             await self._link_events(match, events)
             return str(match.id)

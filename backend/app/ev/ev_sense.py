@@ -146,6 +146,7 @@ async def generate_predictions(
     for pattern in pattern_rows:
         payload = pattern.payload or {}
         topic = payload.get("topic") or ""
+        kind = payload.get("kind") or ""
         relevance = 0.9 if goal and goal in normalize_text(topic) else 0.5
         score = _score(
             importance=0.6,
@@ -155,10 +156,22 @@ async def generate_predictions(
             benefit=0.5,
         )
         tier, deliver = intervention_tier(score)
+        if kind == "goal_drift":
+            text = (
+                f"Goal '{topic}' has been quiet for {payload.get('silence_days', '?')} days — "
+                "is it still a priority, or should it be closed?"
+            )
+        elif kind == "project_abandonment":
+            text = (
+                f"Project '{topic}' hasn't been mentioned in {payload.get('silence_days', '?')} "
+                "days — resume it or close it out."
+            )
+        else:
+            text = f"Pattern: '{topic}' recurs frequently — prepare for it before it happens."
         predictions.append(
             SensePrediction(
                 kind="pattern",
-                text=f"Pattern: '{topic}' recurs frequently — prepare for it before it happens.",
+                text=text,
                 confidence=pattern.confidence,
                 intervention_score=score,
                 why_now=(
