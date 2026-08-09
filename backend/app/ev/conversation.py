@@ -5,6 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ConversationState, ConversationThread, Event
@@ -16,19 +17,32 @@ DEFAULT_TITLE = "EV — continuous conversation"
 
 
 async def get_default_thread(session: AsyncSession) -> ConversationThread:
+    existing = await _find_default_thread(session)
+    if existing is not None:
+        return existing
+    candidate = ConversationThread(title=DEFAULT_TITLE, is_default=True)
+    try:
+        async with session.begin_nested():
+            session.add(candidate)
+            await session.flush()
+    except IntegrityError:
+        # Another request created the default thread first; the partial unique
+        # index guarantees exactly one, so adopt the winner.
+        existing = await _find_default_thread(session)
+        if existing is None:
+            raise
+        return existing
+    return candidate
+
+
+async def _find_default_thread(session: AsyncSession) -> ConversationThread | None:
     result = await session.execute(
         select(ConversationThread)
         .where(ConversationThread.is_default.is_(True))
         .order_by(ConversationThread.created_at.asc())
         .limit(1)
     )
-    thread = result.scalars().first()
-    if thread is not None:
-        return thread
-    thread = ConversationThread(title=DEFAULT_TITLE, is_default=True)
-    session.add(thread)
-    await session.flush()
-    return thread
+    return result.scalars().first()
 
 
 async def resolve_thread(
@@ -85,7 +99,7 @@ async def history(
     limit: int = 50,
     access: str = "user",
 ) -> list[Event]:
-    """Recent message events in a thread.
+    """The most recent ``limit`` message events in a thread, oldest first.
 
     ``access="model"`` enforces the payload boundary here too: conversation
     history is assembled into provider context, so ``never_send_to_model`` and
@@ -98,7 +112,7 @@ async def history(
             Event.tombstoned_at.is_(None),
             Event.event_type.in_(["message.user", "message.assistant"]),
         )
-        .order_by(Event.occurred_at.asc())
+        .order_by(Event.occurred_at.desc(), Event.id.desc())
         .limit(min(limit, 200))
     )
     if access == "model":
@@ -106,7 +120,7 @@ async def history(
             Event.privacy_level.notin_(("never_send_to_model", "sensitive"))
         )
     result = await session.execute(stmt)
-    return list(result.scalars().all())
+    return list(reversed(result.scalars().all()))
 
 
 async def list_threads(session: AsyncSession) -> list[ConversationThread]:

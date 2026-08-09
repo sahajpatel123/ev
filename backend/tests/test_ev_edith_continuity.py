@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev import conversation
 from app.ev.live import query_live_events
 from app.ev.rollup import build_rollup, model_safe_rollup
+from app.models import ConversationThread
 from app.schemas import EventCreate
 from app.services.event_service import EventService
 
@@ -55,6 +59,68 @@ async def test_single_continuous_conversation_window(client: AsyncClient) -> Non
     resp = await client.get("/v1/conversation")
     assert resp.json()["state"]["focus"] is None
     assert len(resp.json()["messages"]) == 4  # history preserved, only working state reset
+
+
+async def test_history_returns_most_recent_window(db_session: AsyncSession) -> None:
+    thread = await conversation.get_default_thread(db_session)
+    service = EventService(db_session, actor="test")
+    for i in range(25):
+        await service.create(
+            EventCreate(
+                source="chat",
+                event_type="message.user",
+                text=f"message {i}",
+                conversation_id=thread.id,
+            )
+        )
+        await service.create(
+            EventCreate(
+                source="chat",
+                event_type="message.assistant",
+                text=f"reply {i}",
+                conversation_id=thread.id,
+            )
+        )
+    await db_session.flush()
+
+    recent = await conversation.history(db_session, thread.id, limit=10)
+    texts = [(event.content or {}).get("text") for event in recent]
+    assert len(texts) == 10
+    assert texts[0] == "message 20"
+    assert texts[-1] == "reply 24"
+    assert "message 0" not in texts
+    assert "reply 0" not in texts
+
+
+async def test_conversation_endpoint_returns_recent_window(client: AsyncClient) -> None:
+    await client.post("/v1/chat", json={"message": "message 0"})
+    for i in range(1, 12):
+        await client.post("/v1/chat", json={"message": f"message {i}"})
+
+    resp = await client.get("/v1/conversation?limit=4")
+    assert resp.status_code == 200, resp.text
+    messages = resp.json()["messages"]
+    assert len(messages) == 4
+    assert messages[0]["text"] == "message 10"
+    assert "message 11" in messages[-1]["text"]
+
+
+async def test_single_default_thread_invariant(db_session: AsyncSession) -> None:
+    first = await conversation.get_default_thread(db_session)
+    second = await conversation.get_default_thread(db_session)
+    assert first.id == second.id
+
+    threads = (
+        await db_session.execute(select(ConversationThread))
+    ).scalars().all()
+    assert sum(1 for t in threads if t.is_default) == 1
+
+    # The partial unique index rejects a second default row even when bypassing
+    # get_default_thread.
+    with pytest.raises(IntegrityError):
+        async with db_session.begin_nested():
+            db_session.add(ConversationThread(title="duplicate", is_default=True))
+            await db_session.flush()
 
 
 async def test_rolling_summary_and_progressive_depth(client: AsyncClient) -> None:
