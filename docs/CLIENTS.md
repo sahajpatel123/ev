@@ -111,7 +111,9 @@ kept in `localStorage`; same-origin API is the default, so `connect-src 'self'`
 holds. Captures made while offline are queued in `localStorage`
 (`ev.offlineQueue`) with idempotency keys and replayed by "Sync queue": 201
 synced, 409 dropped, 422 quarantined (`ev.quarantine`) — the same contract as
-the CLI `ev sync`.
+the CLI `ev sync`. A "Getting started" panel walks the first memories and then
+shows the first audit trail (UX onboarding steps 3–4), matching the CLI
+`ev onboarding` flow.
 
 ## 5. HUD rendering targets (M5)
 

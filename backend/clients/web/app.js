@@ -56,6 +56,7 @@ function showError(target, error) {
 
 const OFFLINE_KEY = "ev.offlineQueue";
 const QUARANTINE_KEY = "ev.quarantine";
+const ONBOARDING_KEY = "ev.onboarding";
 
 function readQueue() {
   try {
@@ -96,6 +97,77 @@ function quarantineRecord(record, reason) {
   }
   entries.push({ ...record, quarantined_at: new Date().toISOString(), reason });
   localStorage.setItem(QUARANTINE_KEY, JSON.stringify(entries));
+}
+
+function readOnboardingTexts() {
+  try {
+    const texts = JSON.parse(localStorage.getItem(ONBOARDING_KEY) || "[]");
+    return Array.isArray(texts) ? texts : [];
+  } catch {
+    return [];
+  }
+}
+
+function renderOnboardingList() {
+  const texts = readOnboardingTexts();
+  $("onboarding-list").innerHTML = texts
+    .map((text) => `<li>${escapeHtml(text)}</li>`)
+    .join("");
+}
+
+function addOnboardingText() {
+  const input = $("onboarding-text");
+  const text = input.value.trim();
+  if (!text) {
+    return;
+  }
+  const texts = readOnboardingTexts();
+  texts.push(text);
+  localStorage.setItem(ONBOARDING_KEY, JSON.stringify(texts));
+  input.value = "";
+  renderOnboardingList();
+}
+
+async function finishOnboarding() {
+  const result = $("onboarding-result");
+  const texts = readOnboardingTexts();
+  if (!texts.length) {
+    result.textContent = "add at least one thing first";
+    return;
+  }
+  const events = [];
+  for (const text of texts) {
+    const response = await api("/v1/events", {
+      method: "POST",
+      body: JSON.stringify({
+        source: "web",
+        event_type: "note",
+        text,
+        privacy_level: "normal",
+      }),
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    });
+    events.push(response.event);
+  }
+  localStorage.removeItem(ONBOARDING_KEY);
+  renderOnboardingList();
+
+  let auditLine = "";
+  try {
+    const search = await api(
+      "/v1/memories?q=" + encodeURIComponent(texts[0]) + "&limit=1"
+    );
+    const memory = (search.memories || [])[0];
+    if (memory) {
+      const audit = await api("/v1/audit/" + memory.id);
+      auditLine = ` First audit: ${audit.memory.text} (${audit.source_events.length} source events)`;
+    }
+  } catch {
+    auditLine = "";
+  }
+  result.textContent = `EV remembers ${events.length} things.` + auditLine;
+  refreshTimeline();
+  refreshHud();
 }
 
 async function connect(event) {
@@ -358,6 +430,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("api-url").value = store.url;
   $("api-key").value = store.key;
   $("connection-form").addEventListener("submit", connect);
+  $("onboarding-add").addEventListener("click", addOnboardingText);
+  $("onboarding-finish").addEventListener("click", finishOnboarding);
   $("capture-form").addEventListener("submit", capture);
   $("sync-queue").addEventListener("click", syncQueue);
   $("ask-form").addEventListener("submit", ask);
@@ -367,6 +441,14 @@ document.addEventListener("DOMContentLoaded", () => {
   refreshHud();
   refreshTimeline();
   updateQueueStatus();
+  renderOnboardingList();
 });
 
-window.EV = { queueCapture, syncQueue, readQueue };
+window.EV = {
+  queueCapture,
+  syncQueue,
+  readQueue,
+  addOnboardingText,
+  finishOnboarding,
+  readOnboardingTexts,
+};

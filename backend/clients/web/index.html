@@ -24,6 +24,20 @@
       </form>
     </section>
 
+    <section id="ev-onboarding" class="panel">
+      <h2>Getting started</h2>
+      <p class="muted">Tell EV three things you want it to remember — then see
+        the audit trail it builds for each one.</p>
+      <div class="row">
+        <input id="onboarding-text" type="text" autocomplete="off"
+               placeholder="e.g. I prefer fixed-term contracts">
+        <button id="onboarding-add" type="button">Add</button>
+        <button id="onboarding-finish" type="button">Finish &amp; show audit</button>
+      </div>
+      <ul id="onboarding-list" class="list"></ul>
+      <p id="onboarding-result" class="result"></p>
+    </section>
+
     <section id="ev-hud-card" class="panel">
       <h2>HUD card <span id="hud-schema" class="schema"></span></h2>
       <div id="hud-body" class="hud-body"></div>

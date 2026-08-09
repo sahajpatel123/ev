@@ -71,3 +71,20 @@ async def test_web_uses_idempotent_capture_keys(client: AsyncClient) -> None:
     html = (await client.get("/app")).text
     assert 'id="sync-queue"' in html
     assert 'id="queue-status"' in html
+
+
+async def test_web_has_onboarding_panel(client: AsyncClient) -> None:
+    html = (await client.get("/app")).text
+    assert 'id="ev-onboarding"' in html
+    assert 'id="onboarding-text"' in html
+    assert 'id="onboarding-finish"' in html
+
+    js = (await client.get("/app/app.js")).text
+    assert "ev.onboarding" in js
+    assert "finishOnboarding" in js
+    assert "readOnboardingTexts" in js
+    # The panel captures through the same idempotent event path as web capture
+    # and demonstrates the first audit (UX onboarding steps 3-4).
+    assert 'source: "web"' in js
+    assert "Idempotency-Key" in js
+    assert "/v1/audit/" in js
