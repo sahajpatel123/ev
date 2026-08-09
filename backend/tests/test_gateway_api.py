@@ -145,6 +145,7 @@ async def test_model_call_stats_aggregates_routing_evidence(
             )
         )
     await db_session.flush()
+    await db_session.commit()
 
     stats = await model_call_stats(db_session, window_hours=24)
     assert stats["totals"]["calls"] == 3
@@ -158,3 +159,12 @@ async def test_model_call_stats_aggregates_routing_evidence(
     assert by_provider["mock"]["errors"] == 1
     assert by_provider["deepseek"]["model"] == "deepseek-v4-flash-0731"
     assert by_provider["deepseek"]["calls"] == 1
+
+    resp = await client.get("/v1/gateway/stats", params={"window_hours": 24})
+    assert resp.status_code == 200, resp.text
+    endpoint_stats = resp.json()
+    assert endpoint_stats["totals"]["calls"] == 3
+    assert endpoint_stats["totals"]["errors"] == 1
+    assert endpoint_stats["window_hours"] == 24
+    endpoint_providers = {b["provider"] for b in endpoint_stats["by_provider_model"]}
+    assert endpoint_providers == {"mock", "deepseek"}

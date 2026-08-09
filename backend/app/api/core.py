@@ -20,6 +20,7 @@ from app.auth import (
     require_master,
     require_reverification,
 )
+from app.context.compiler import ContextPlan
 from app.config import settings
 from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
@@ -96,7 +97,7 @@ from app.services.access_log import log_access
 from app.services.consolidation import next_period_start, run_consolidation
 from app.services.event_service import EventService
 from app.services.importer import import_bundle
-from app.services.model_call import list_model_calls, log_model_call
+from app.services.model_call import list_model_calls, log_model_call, model_call_stats
 from app.services.processor import ensure_processed
 from app.services.rebuild import rebuild_derived_state
 from app.services.tool_loop import run_tool_loop
@@ -689,6 +690,7 @@ async def chat(
         memory_delta=[MemoryDelta.model_validate(d) for d in pipeline["memory_deltas"]],
         provenance=pipeline["provenance"],
         filter_report=pipeline.get("filter_report"),
+        context_plan=pipeline.get("context_plan"),
     )
 
 
@@ -705,6 +707,8 @@ async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, 
             yield _sse("provenance", item.model_dump())
         if pipeline.get("filter_report") is not None:
             yield _sse("filter-report", pipeline["filter_report"].model_dump())
+        if pipeline.get("context_plan") is not None:
+            yield _sse("context-plan", pipeline["context_plan"])
         yield _sse("delta", {"text": pipeline["result"].text})
         yield _sse(
             "done",
@@ -730,6 +734,7 @@ async def run_chat_pipeline(
     source: str = "chat",
     user_event_type: str = "message.user",
     event_privacy: PrivacyLevel = "normal",
+    speaker: SpeakerIdentity | None = None,
 ) -> dict:
     retriever = Retriever(session)
     request_id = str(uuid4())
@@ -743,14 +748,15 @@ async def run_chat_pipeline(
     # attempts block the turn entirely.
     input_filter = InputFilter(session)
     filter_policy = await active_policy(session)
+    speaker_identity = speaker or SpeakerIdentity(
+        actor_id=actor,
+        verified=True,
+        confidence=1.0,
+        method="auth_token",
+    )
     input_decision = input_filter.guard(
         message=data.message,
-        speaker=SpeakerIdentity(
-            actor_id=actor,
-            verified=True,
-            confidence=1.0,
-            method="auth_token",
-        ),
+        speaker=speaker_identity,
         policy=filter_policy,
     )
     effective_event_privacy: PrivacyLevel = (
@@ -796,12 +802,7 @@ async def run_chat_pipeline(
             memories.sort(key=lambda m: m.score, reverse=True)
     decision, memories, grounding, _strategy_hint = await input_filter.run(
         message=data.message,
-        speaker=SpeakerIdentity(
-            actor_id=actor,
-            verified=True,
-            confidence=1.0,
-            method="auth_token",
-        ),
+        speaker=speaker_identity,
         decision=input_decision,
         memories=memories,
         k=retrieval_k,
@@ -915,7 +916,7 @@ async def run_chat_pipeline(
             )
         ]
 
-    context, context_tokens = _assemble_context(
+    context, context_tokens, context_plan = _assemble_context(
         memories,
         user_state=user_state,
         strategy_text=strategy_block(strategy),
@@ -1152,6 +1153,7 @@ async def run_chat_pipeline(
         "provenance": provenance,
         "strategy": strategy,
         "filter_report": FilterReportOut.model_validate(report.to_dict()),
+        "context_plan": context_plan.to_dict() if context_plan is not None else None,
     }
 
 
@@ -1239,7 +1241,7 @@ def _assemble_context(
     history: list[dict] | None = None,
     rollup_summary: str | None = None,
     open_questions: list[str] | None = None,
-) -> tuple[str, int]:
+) -> tuple[str, int, ContextPlan]:
     """Compile the request window through the ContextCompiler (plan 2.4)."""
     from app.context.compiler import ContextCompiler
 
@@ -1253,7 +1255,7 @@ def _assemble_context(
         rollup_summary=rollup_summary,
         open_questions=open_questions,
     )
-    return plan.text, plan.used_tokens
+    return plan.text, plan.used_tokens, plan
 
 
 def _resolve_depth(requested: str, message: str) -> str:
@@ -1433,6 +1435,21 @@ async def gateway_calls(
 
     rows = await list_model_calls(session, limit=limit, request_id=request_id)
     return [ModelCallOut.model_validate(row) for row in rows]
+
+
+@router.get("/gateway/stats")
+async def gateway_stats(
+    window_hours: int = Query(default=24, ge=1, le=720),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """Latency/error/token evidence per provider and model from the audit trail.
+
+    This is the evidence base for eval-gated model routing; the routing policy
+    itself stays disabled until evaluation justifies it.
+    """
+
+    return await model_call_stats(session, window_hours=window_hours)
 
 
 @router.get("/people", response_model=MemoryListResponse)
