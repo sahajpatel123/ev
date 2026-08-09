@@ -64,8 +64,10 @@ and a "what did I forget?" review surface.
 
 ### 1.8 Access log & read/write audit — **Built**
 Every read/write/export/delete is logged with actor, endpoint, resource, and
-request id. Direction: add retention policy, anomaly detection on access, and
-export of the log itself.
+request id. The log itself is exportable via `GET /v1/compliance/access-log`
+(paged, actor/action/time filters, owner-trusted, read audited) and pruned by
+the retention sweep (`EV_RETENTION_ACCESS_LOG_DAYS`). Direction: anomaly
+detection on access patterns.
 
 ### 1.9 Export, import, deletion — **Built (partial)**
 Full export bundles events, memories, entities, relationships, conflicts;
@@ -305,20 +307,23 @@ availability with home-lab ownership: always on, always reachable, never
 annoying, and observable — you can see every pulse of the system. Success means
 wake-to-reply in seconds on any device and zero silent failures.
 
-### 6.1 Always-on runtime state machine — **Built (partial)**
+### 6.1 Always-on runtime state machine — **Built**
 IDLE → VERIFYING → AWAKE → PROCESSING → RESPONDING → FOLLOW-UP → IDLE, with
 timeouts and quiet hours, is implemented as a centralized runtime with
 `runtime_sessions`, a legal-transition engine, `POST /v1/runtime/wake`,
-`POST /v1/runtime/transition`, and `GET /v1/runtime/status`. Direction:
-implement the always-on daemon with per-device listener agents that drive these
-endpoints.
+`POST /v1/runtime/verify`, `POST /v1/runtime/transition`, and
+`GET /v1/runtime/status`. The always-on daemon (`workers/runtime_daemon.py`,
+`runtime_daemon` compose service) expires stale sessions, re-enqueues retrying
+dead letters, builds the quiet-hours digest, and runs health checks; per-device
+listener agents (Python `clients/device_listener.py`, Swift `RuntimeListener`)
+drive these endpoints. Direction: notification delivery for digests.
 
-### 6.2 Device fleet as "ears" — **Built (partial)**
+### 6.2 Device fleet as "ears" — **Built**
 Fleet status, gear telemetry, task dispatch, and wake arbitration exist:
 `POST /v1/runtime/wake` scores online wake-capable devices by signal, battery,
-proximity, and heartbeat recency, and the winner drives the state machine.
-Direction: add audio-capture capability negotiation and low-power listener
-agents on each device.
+proximity, and heartbeat recency, gates quiet hours and focus mode, and the
+winner drives the state machine. Direction: audio-capture capability
+negotiation and on-device wake-word engines (Sensory/AON1100-class).
 
 ### 6.3 Queue & background workers — **Built**
 Redis/RQ ingestion pipeline with sync fallback, plus dead-letter records
@@ -331,10 +336,9 @@ jobs and consolidation jobs.
 `/v1/health`, calibration diagnostics, device heartbeats
 (`POST /v1/runtime/heartbeat`, `runtime_heartbeats`), and a runtime status
 summary exist. `GET /v1/runtime/health` reports DB, state machine, listener,
-queue, and dead-letter health, and `workers/runtime_daemon.py` ticks
+queue, ASR/TTS, and dead-letter health, and `workers/runtime_daemon.py` ticks
 continuously to expire stale sessions, re-enqueue retrying dead letters, and
-keep the runtime observable. Direction: extend health checks to ASR/TTS
-provider latency with alerts.
+keep the runtime observable. Direction: provider latency budgets with alerts.
 
 ### 6.5 Action router — **Built (partial)**
 Commands become approved actions: searches, fleet tasks, HUD cards,
@@ -347,12 +351,18 @@ execute endpoints. Direction: extend the ledger to notifications and future
 web/file/code actions.
 
 ### 6.6 Notifications & attention budget — **Built (partial)**
-Quiet hours, daily alert budget, intervention tiers exist. Direction: extend to
-voice interruptions ("only interrupt if urgent during focus") and digest mode.
+Quiet hours, daily alert budget, intervention tiers, focus-mode wake gating
+("only interrupt if urgent during focus"), and quiet-hours digest batching
+(manual + daemon-scheduled, surfaced through `/v1/runtime/sync`) exist.
+Direction: APNs/local notification delivery for digests and voice
+interruptions.
 
-### 6.7 Offline capture & sync — **Future**
-Clients queue voice/text/live events offline and sync when back. Direction:
-define client sync protocol and conflict-free idempotent ingestion.
+### 6.7 Offline capture & sync — **Built (partial)**
+Clients queue voice/text/live events offline and sync when back: web workbench,
+CLI (`ev queue`/`ev sync`), and iOS `OfflineCaptureQueue` share one idempotent
+contract (201 synced, 409 duplicate, 422 quarantined); runtime state converges
+through `/v1/runtime/sync`. Direction: background-fetch/watch sync and device
+presence-aware queue routing.
 
 ---
 
@@ -792,8 +802,11 @@ prefers on-device derived text (OCR/extraction) over raw media, sends raw
 images only with explicit permission and a vision-capable provider, records
 every perception with provenance (attachment + source event + provider +
 `raw_sent` flag), and writes model-suggested labels to the recognition log as
-pending (`source="model"`) until the user confirms them. Direction: add
-on-device OCR adapters and face-free identity hints.
+pending (`source="model"`) until the user confirms them. `POST /v1/chat`
+accepts `attachment_id` (with `allow_raw_media`) and answers "what does this
+photo show?" from the recorded perception, surfacing it in the context window
+and chat provenance with the perception event id. Direction: add on-device OCR
+adapters and face-free identity hints.
 
 ### 15.2 Screen awareness — **Partial**
 The live screen channel yields derived context (active app, document/code summary)

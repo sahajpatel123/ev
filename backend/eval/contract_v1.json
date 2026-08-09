@@ -50,6 +50,9 @@
     "/v1/companionship/scan": [
       "post"
     ],
+    "/v1/compliance/access-log": [
+      "get"
+    ],
     "/v1/compliance/erasure": [
       "post"
     ],
@@ -717,6 +720,9 @@
     ],
     "/v1/voice/wake": [
       "post"
+    ],
+    "/v1/compliance/access-log": [
+      "get"
     ]
   },
   "schema_version": "ev.contract.v1",
