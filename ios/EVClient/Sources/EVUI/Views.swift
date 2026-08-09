@@ -96,7 +96,7 @@ public struct CaptureView: View {
             text = ""
         } catch EVAPIError.transport {
             do {
-                try queue.enqueue(payload)
+                _ = try queue.enqueue(payload)
                 status = "offline — queued for sync"
             } catch {
                 status = "queue error: \(error)"
