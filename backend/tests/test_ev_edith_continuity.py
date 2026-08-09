@@ -334,10 +334,16 @@ async def test_live_permission_fail_closed_and_replay_idempotent(
     resp = await client.get(f"/v1/live/channels/{channel_id}/events")
     assert len(resp.json()) == 1
 
-    # The user can still see their own live data...
+    # The user can still see their own live data (derived, never raw screen
+    # pixels even in the user-facing state line)...
     resp = await client.get("/v1/state")
     assert resp.status_code == 200
-    assert any("top-secret screen text" in line for line in resp.json()["live_context"])
+    state_lines = [
+        line for line in resp.json()["live_context"] if "private-screen" in line
+    ]
+    assert state_lines
+    assert "screen app=SecretApp" in state_lines[0]
+    assert "top-secret screen text" not in state_lines[0]
 
     # ...but the model-facing slice excludes the channel and its events entirely.
     user_rows = await query_live_events(db_session, access="user")

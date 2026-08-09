@@ -118,10 +118,12 @@ turns → retrieved memories → progressive tool-loaded deep dives. Direction:
 implement a ContextCompiler that plans window usage per request and monitors
 budget in real time.
 
-### 2.5 Whole-life recall — **Design**
+### 2.5 Whole-life recall — **Partial**
 "Remember my whole life" = memory store + hierarchical retrieval, not a lifetime
-in context. Direction: long-horizon indexes, time-travel queries, and
-"reconstruct any past week" commands with provenance.
+in context. `GET /v1/recall/week` reconstructs any past week: raw events,
+end-of-week versioned memory state (validity-window time travel), weekly
+period-summary consolidation, and decisions/goals with provenance. Direction:
+month-over-month "how has my thinking changed" comparisons and a recall UI.
 
 ---
 
@@ -568,8 +570,10 @@ Projects, BOM, print queue, reorder signals. Direction: OctoPrint adapter and
 learned build sequences.
 
 ### 10.11 Gear telemetry & diagnostics — **Built**
-Device snapshots and calibration checks. Direction: battery/backup alerts and
-"EV checkup" scheduled runs.
+Device snapshots and calibration checks, plus `POST /v1/gear/scan` turning the
+latest per-device snapshot into ranked, fingerprint-deduped alerts (battery,
+storage, CPU, memory) with quiet-hours suppression for non-urgent tiers.
+Direction: backup alerts and scheduled "EV checkup" runs.
 
 ### 10.12 Navigation & route briefings — **Built**
 Next-commitment leave-by cards. Direction: real maps integration later.
@@ -655,7 +659,10 @@ scrypt-derived keys. TLS termination remains deployment-side.
 ### 12.4 Secret/PII protection — **Built**
 `app/security/boundary.py` redacts credentials and blocks
 `never_send_to_model` payloads at the model boundary; input/output filters
-apply the same rules to transcripts and drafts.
+apply the same rules to transcripts and drafts; `app/security/pii.py`
+auto-classifies stored events and live events at ingestion, escalating
+credentials/cards/SSNs to `never_send_to_model` and emails/phones to
+`sensitive` so model-facing slices exclude them by default.
 
 ### 12.5 Backups & restore drill — **Built**
 `app/services/backup.py` writes authenticated-encrypted `ev.backup.v1`

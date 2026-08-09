@@ -378,10 +378,9 @@ def live_context_line(
         if summary:
             line += f" {str(summary)[:120]}"
         return line
-    if access == "model" and channel is not None:
-        if channel.kind == "vision":
-            summary = payload.get("summary") or payload.get("label") or "vision event"
-            return f"[{source}] vision {str(summary)[:120]}"
+    if access == "model" and channel is not None and channel.kind == "vision":
+        summary = payload.get("summary") or payload.get("label") or "vision event"
+        return f"[{source}] vision {str(summary)[:120]}"
     snippet = payload.get("text") or payload.get("summary") or event.event_type
     return f"[{source}] {str(snippet)[:160]}"
 
