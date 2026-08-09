@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-08-09T12:45:16+00:00",
+  "locked_at": "2026-08-09T14:29:51.900320+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -23,9 +23,6 @@
     "/v1/attachments/{attachment_id}": [
       "get"
     ],
-    "/v1/calibration/tuning": [
-      "get"
-    ],
     "/v1/audit/{memory_id}": [
       "get"
     ],
@@ -37,6 +34,9 @@
     ],
     "/v1/backup/verify": [
       "post"
+    ],
+    "/v1/calibration/tuning": [
+      "get"
     ],
     "/v1/chat": [
       "post"
@@ -180,6 +180,9 @@
     "/v1/gear": [
       "get"
     ],
+    "/v1/gear/scan": [
+      "post"
+    ],
     "/v1/gear/snapshot": [
       "post"
     ],
@@ -198,10 +201,10 @@
     "/v1/health/trends": [
       "get"
     ],
-    "/v1/hud/card": [
+    "/v1/hud/alerts": [
       "get"
     ],
-    "/v1/hud/alerts": [
+    "/v1/hud/card": [
       "get"
     ],
     "/v1/hud/focus": [
@@ -324,6 +327,9 @@
     "/v1/ops/center": [
       "get"
     ],
+    "/v1/ops/metrics": [
+      "get"
+    ],
     "/v1/patterns": [
       "get"
     ],
@@ -392,10 +398,10 @@
     "/v1/projects/{project_id}/status": [
       "patch"
     ],
-    "/v1/relationship": [
+    "/v1/recall/week": [
       "get"
     ],
-    "/v1/recall/week": [
+    "/v1/relationship": [
       "get"
     ],
     "/v1/research/sessions": [
@@ -411,18 +417,12 @@
     "/v1/research/sessions/{session_id}/notes": [
       "post"
     ],
-    "/v1/routines/overview": [
-      "get"
-    ],
-    "/v1/routines/templates": [
-      "get"
-    ],
-    "/v1/routines/templates/{slug}/instantiate": [
-      "post"
-    ],
     "/v1/routines": [
       "get",
       "post"
+    ],
+    "/v1/routines/overview": [
+      "get"
     ],
     "/v1/routines/runs": [
       "get"
@@ -445,6 +445,12 @@
     "/v1/routines/runs/{run_id}/rollback": [
       "post"
     ],
+    "/v1/routines/templates": [
+      "get"
+    ],
+    "/v1/routines/templates/{slug}/instantiate": [
+      "post"
+    ],
     "/v1/routines/tick": [
       "post"
     ],
@@ -463,12 +469,12 @@
     "/v1/routines/{routine_id}/runs": [
       "get"
     ],
+    "/v1/runtime/action-specs": [
+      "get"
+    ],
     "/v1/runtime/actions": [
       "get",
       "post"
-    ],
-    "/v1/runtime/action-specs": [
-      "get"
     ],
     "/v1/runtime/actions/{action_id}/approve": [
       "post"
@@ -492,11 +498,14 @@
     "/v1/runtime/dead-letters/{letter_id}/retry": [
       "post"
     ],
-    "/v1/runtime/heartbeat": [
+    "/v1/runtime/digest": [
       "post"
     ],
     "/v1/runtime/health": [
       "get"
+    ],
+    "/v1/runtime/heartbeat": [
+      "post"
     ],
     "/v1/runtime/status": [
       "get"
@@ -505,6 +514,9 @@
       "get"
     ],
     "/v1/runtime/transition": [
+      "post"
+    ],
+    "/v1/runtime/utterance": [
       "post"
     ],
     "/v1/runtime/verify": [
@@ -545,25 +557,28 @@
       "post"
     ],
     "/v1/training/consent/{track}/revoke": [
-      "post"
+        "post"
     ],
-    "/v1/training/filter/self-improve": [
-      "post"
+    "/v1/training/adapter": [
+        "get"
     ],
-    "/v1/training/filter/recalibration": [
-      "get"
+    "/v1/training/adapter/{adapter_id}": [
+        "get"
     ],
-    "/v1/training/filter/recalibration/history": [
-      "get"
+    "/v1/training/adapter/activate": [
+        "post"
     ],
-    "/v1/training/filter/recalibration/rollback": [
-      "post"
+    "/v1/training/adapter/delete": [
+        "post"
     ],
-    "/v1/training/filter/recalibration/delete": [
-      "post"
+    "/v1/training/adapter/register": [
+        "post"
+    ],
+    "/v1/training/adapter/rollback": [
+        "post"
     ],
     "/v1/training/corpus/build": [
-      "post"
+        "post"
     ],
     "/v1/training/corpus/current": [
       "get"
@@ -579,6 +594,21 @@
     ],
     "/v1/training/corpus/{version}/export": [
       "get"
+    ],
+    "/v1/training/filter/recalibration": [
+      "get"
+    ],
+    "/v1/training/filter/recalibration/delete": [
+      "post"
+    ],
+    "/v1/training/filter/recalibration/history": [
+      "get"
+    ],
+    "/v1/training/filter/recalibration/rollback": [
+      "post"
+    ],
+    "/v1/training/filter/self-improve": [
+      "post"
     ],
     "/v1/training/personalization/calibrate": [
       "post"
@@ -619,10 +649,10 @@
     "/v1/twin": [
       "get"
     ],
-    "/v1/vision/annotate": [
+    "/v1/vision/analyze": [
       "post"
     ],
-    "/v1/vision/analyze": [
+    "/v1/vision/annotate": [
       "post"
     ],
     "/v1/vision/log": [
