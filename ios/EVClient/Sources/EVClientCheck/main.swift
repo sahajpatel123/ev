@@ -208,6 +208,52 @@ do {
     print("FAIL: HUD endpoint: \(error)")
 }
 
+// 8. Runtime listener: heartbeat, wake arbitration, sync snapshot.
+do {
+    MockURLProtocol.handler = { request in
+        expect(request.url?.path == "/v1/runtime/heartbeat", "heartbeat path")
+        return (httpResponse(201), Data(heartbeatBody(deviceID: "dev-ios").utf8))
+    }
+    let listener = RuntimeListener(client: client)
+    let heartbeat = try await listener.heartbeat(
+        deviceID: "dev-ios",
+        batteryPercent: 71.0,
+        latencyMs: 14
+    )
+    expect(heartbeat.deviceId == "dev-ios", "heartbeat device id")
+    expect(heartbeat.status == "ok", "heartbeat status")
+    expect(heartbeat.listenerState == "listening", "heartbeat listener state")
+    expect(heartbeat.batteryPercent == 71.0, "heartbeat battery")
+    print("ok: runtime heartbeat")
+
+    MockURLProtocol.handler = { request in
+        expect(request.url?.path == "/v1/runtime/wake", "wake path")
+        return (httpResponse(200), Data(wakeBody(deviceID: "dev-ios", sessionID: "sess-1").utf8))
+    }
+    let wake = try await listener.wake(deviceID: "dev-ios", signalScore: 0.9, priority: 0.8)
+    expect(wake.state == "verifying", "wake state")
+    expect(wake.winner?.deviceId == "dev-ios", "wake winner")
+    expect(wake.sessionId == "sess-1", "wake session id")
+    expect(wake.blocked == false, "wake not blocked")
+    print("ok: wake arbitration")
+
+    MockURLProtocol.handler = { request in
+        expect(request.url?.path == "/v1/runtime/sync", "sync path")
+        return (httpResponse(200), Data(syncBody().utf8))
+    }
+    let sync = try await listener.syncState()
+    expect(sync.schemaVersion == "ev.runtime.sync.v1", "sync schema version")
+    expect(sync.runtime.state == "verifying", "sync runtime state")
+    expect(sync.runtime.sessionId == "sess-1", "sync session id")
+    expect(sync.devices.first?.deviceId == "dev-ios", "sync device")
+    expect(sync.events.first?.kind == "wake", "sync event feed")
+    expect(sync.latency.wakeToAwakeMs == nil, "sync latency while verifying")
+    print("ok: runtime sync snapshot")
+} catch {
+    failures.append("runtime listener: \(error)")
+    print("FAIL: runtime listener: \(error)")
+}
+
 if failures.isEmpty {
     print("EVClientCheck: all checks passed")
     exit(0)
