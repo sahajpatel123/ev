@@ -542,8 +542,10 @@ passes through. `GET /v1/hud/alerts` renders pending alerts as strict HUD cards.
 Direction: render on Watch/widget/AR.
 
 ### 10.7 Tactical mode — **Built**
-Pre-event briefings with risks, options, decision history. Direction: trigger
-from calendar/live context and cache quick cards.
+Pre-event briefings with risks, options, decision history, plus cached
+`ev.hud.quickcard.v1` cards (`POST /v1/tactical/prepare`, `GET
+/v1/tactical/quick`) so in-the-moment HUD reads hit the cache path
+(FR-TACTICAL-03 < 800 ms). Direction: trigger from calendar/live context.
 
 ### 10.8 Person finder — **Built**
 Last seen, mentions, relationships over user-owned memory. Direction: sightings

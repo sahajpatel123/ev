@@ -13,6 +13,7 @@ from app.db import get_session
 from app.ev import alert_radar, diagnostics, ev_sense, health_radar, people, personality, tactical
 from app.ev.calibration import proactive_tuning
 from app.ev.decisions import find_decision_loops, record_outcome
+from app.ev.edith import record_command
 from app.ev.interaction import build_strategy
 from app.ev.user_state import build_user_state
 from app.memory.retrieval import Retriever
@@ -30,6 +31,7 @@ from app.schemas import (
     HealthSnapshotOut,
     HealthSummaryOut,
     HealthTrendOut,
+    HudQuickCardOut,
     InteractionModeRequest,
     InteractionModeResponse,
     PersonWhereaboutsOut,
@@ -40,6 +42,7 @@ from app.schemas import (
     SensePredictResponse,
     TacticalBriefOut,
     TacticalBriefRequest,
+    TacticalQuickRequest,
     WatchlistCreate,
     WatchlistOut,
 )
@@ -65,6 +68,49 @@ async def tactical_brief(
 ) -> TacticalBriefOut:
     """Pre-event HUD briefing (ev.hud.briefing.v1) grounded in personal memory."""
     return await tactical.build_briefing(session, data)
+
+
+@router.post("/tactical/prepare", response_model=HudQuickCardOut)
+async def tactical_prepare(
+    data: TacticalQuickRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> HudQuickCardOut:
+    """Precompute and cache a tactical quick card (ev.hud.quickcard.v1)."""
+    card = await tactical.prepare_quick_card(session, data)
+    await record_command(
+        session,
+        command_type="tactical.quickcard.prepare",
+        actor=actor,
+        target_type="topic",
+        target_id=data.topic,
+        request={"topic": data.topic, "stakes": data.stakes},
+        result={"card": card.objective, "schema_version": card.schema_version},
+        status="completed",
+    )
+    await session.commit()
+    return card
+
+
+@router.get("/tactical/quick", response_model=HudQuickCardOut)
+async def tactical_quick(
+    topic: str = Query(min_length=1, max_length=500),
+    stakes: str | None = None,
+    context: str | None = None,
+    ttl_seconds: int = Query(default=3600, ge=0, le=86400 * 7),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> HudQuickCardOut:
+    """HUD quick card: cached read when fresh, otherwise rebuild + cache (<800 ms target)."""
+    request = TacticalQuickRequest(
+        topic=topic,
+        stakes=stakes,
+        context=context,
+        ttl_seconds=ttl_seconds,
+    )
+    card, _ = await tactical.get_quick_card(session, request)
+    await session.commit()
+    return card
 
 
 @router.post("/sense/predict", response_model=SensePredictResponse)

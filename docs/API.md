@@ -46,6 +46,7 @@
 | GET | `/v1/commands` · `/v1/commands/{id}` | Auditable E.D.I.T.H. command ledger | FR-SEC-XX |
 | GET | `/v1/ops/center` · `/v1/twin` · `/v1/hud/focus` | Ops center / digital twin / HUD overlay | FR-HUD |
 | GET | `/v1/hud/card` · `/v1/hud/alerts` · `/v1/hud/route` | Strict HUD surface schemas (`ev.hud.*.v1`) | FR-HUD-01 |
+| POST | `/v1/tactical/prepare` · GET `/v1/tactical/quick` | Tactical quick cards (`ev.hud.quickcard.v1`, cached) | FR-TACTICAL-03 |
 | POST | `/v1/gateway/chat` · `/v1/gateway/tools` · GET `/v1/gateway/models` | Internal gateway (model-agnostic) | FR-SYS-03 |
 | POST | `/v1/filter/evaluate` | Filter input/output replay (draft or full pipeline) | FR-ORCH-05 |
 | GET | `/v1/filter/ledger` · `/v1/filter/ledger/aggregate` | Filter-decision audit trail + aggregates | FR-ORCH-06 |

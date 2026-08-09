@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -10,17 +11,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.embeddings import get_embedder
 from app.ev.decisions import find_decision_loops
 from app.memory.retrieval import Retriever
-from app.models import DecisionOutcome, Entity, MemoryEntity
+from app.models import DecisionOutcome, Entity, MemoryEntity, TacticalCard
 from app.schemas import (
-    ProvenanceItem as ProvenanceSchema,
-)
-from app.schemas import (
+    HudQuickCardOut,
     TacticalBriefOut,
     TacticalBriefRequest,
     TacticalOption,
+    TacticalQuickRequest,
     TacticalRisk,
 )
+from app.schemas import (
+    ProvenanceItem as ProvenanceSchema,
+)
 from app.utils.text import normalize_text, utcnow
+
+
+def _aware(value):
+    return value if value.tzinfo is not None else value.replace(tzinfo=utcnow().tzinfo)
 
 
 async def build_briefing(session: AsyncSession, request: TacticalBriefRequest) -> TacticalBriefOut:
@@ -166,3 +173,100 @@ async def build_briefing(session: AsyncSession, request: TacticalBriefRequest) -
         talking_points=talking_points,
         provenance=provenance,
     )
+
+
+def _quick_summary(brief: TacticalBriefOut) -> str:
+    if brief.recommendation:
+        return brief.recommendation
+    if brief.risks:
+        return f"Risks flagged: {brief.risks[0].description}"
+    if brief.options:
+        return brief.options[0].summary
+    return "No prior evidence on this topic — treat as a first evaluation."
+
+
+async def build_quick_card(
+    session: AsyncSession,
+    request: TacticalQuickRequest,
+) -> HudQuickCardOut:
+    """Assemble a compact quick card from a full briefing (used for caching)."""
+    brief = await build_briefing(
+        session,
+        TacticalBriefRequest(
+            topic=request.topic,
+            stakes=request.stakes,
+            context=request.context,
+            include_options=True,
+        ),
+    )
+    return HudQuickCardOut(
+        schema_version="ev.hud.quickcard.v1",
+        generated_at=utcnow(),
+        objective=request.topic,
+        summary=_quick_summary(brief),
+        next_action=brief.recommendation,
+        top_risk=brief.risks[0].description if brief.risks else None,
+        people_count=len(brief.people),
+        options_count=len(brief.options),
+        decision_history_count=len(brief.decision_history),
+        meta={
+            "stakes": request.stakes,
+            "provenance_count": len(brief.provenance),
+        },
+    )
+
+
+async def get_quick_card(
+    session: AsyncSession,
+    request: TacticalQuickRequest,
+    *,
+    force: bool = False,
+) -> tuple[HudQuickCardOut, str]:
+    """Return a fresh cached quick card or build and cache one.
+
+    Returns `(card, source)` where source is ``"cache"`` or ``"fresh"``.
+    """
+    now = utcnow()
+    key = normalize_text(request.topic)
+    row = (
+        await session.execute(
+            select(TacticalCard)
+            .where(TacticalCard.topic == key)
+            .order_by(TacticalCard.created_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if (
+        row is not None
+        and not force
+        and request.ttl_seconds > 0
+        and row.expires_at is not None
+        and _aware(row.expires_at) > now
+    ):
+        row.hit_count = (row.hit_count or 0) + 1
+        row.last_hit_at = now
+        await session.flush()
+        card = HudQuickCardOut.model_validate(row.payload)
+        card.meta = {**card.meta, "source": "cache", "hit_count": row.hit_count}
+        return card, "cache"
+
+    card = await build_quick_card(session, request)
+    if row is None:
+        row = TacticalCard(topic=key, schema_version="ev.hud.quickcard.v1")
+        session.add(row)
+    row.payload = card.model_dump(mode="json")
+    row.expires_at = now + timedelta(seconds=max(1, request.ttl_seconds))
+    row.hit_count = (row.hit_count or 0) + 1
+    row.last_hit_at = now
+    await session.flush()
+    card.meta = {**card.meta, "source": "fresh", "hit_count": row.hit_count}
+    return card, "fresh"
+
+
+async def prepare_quick_card(
+    session: AsyncSession,
+    request: TacticalQuickRequest,
+) -> HudQuickCardOut:
+    """Precompute and cache a quick card (background pre-event path)."""
+    card, _ = await get_quick_card(session, request, force=True)
+    return card
