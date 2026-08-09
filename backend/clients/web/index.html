@@ -34,7 +34,11 @@
       <form id="capture-form">
         <textarea id="capture-text" rows="3" maxlength="200000"
                   placeholder="Remember this…"></textarea>
-        <button type="submit">Remember</button>
+        <div class="row">
+          <button type="submit">Remember</button>
+          <button id="sync-queue" type="button">Sync queue</button>
+          <span id="queue-status" class="muted"></span>
+        </div>
       </form>
       <p id="capture-result" class="result"></p>
     </section>

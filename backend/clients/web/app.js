@@ -54,6 +54,50 @@ function showError(target, error) {
   target.textContent = "error: " + error.message;
 }
 
+const OFFLINE_KEY = "ev.offlineQueue";
+const QUARANTINE_KEY = "ev.quarantine";
+
+function readQueue() {
+  try {
+    const records = JSON.parse(localStorage.getItem(OFFLINE_KEY) || "[]");
+    return Array.isArray(records) ? records : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeQueue(records) {
+  localStorage.setItem(OFFLINE_KEY, JSON.stringify(records));
+  updateQueueStatus();
+}
+
+function updateQueueStatus() {
+  $("queue-status").textContent = readQueue().length
+    ? `${readQueue().length} queued offline`
+    : "";
+}
+
+function queueCapture(payload) {
+  const records = readQueue();
+  records.push({
+    idempotency_key: crypto.randomUUID(),
+    queued_at: new Date().toISOString(),
+    payload,
+  });
+  writeQueue(records);
+}
+
+function quarantineRecord(record, reason) {
+  const entries = [];
+  try {
+    entries.push(...JSON.parse(localStorage.getItem(QUARANTINE_KEY) || "[]"));
+  } catch {
+    // start fresh
+  }
+  entries.push({ ...record, quarantined_at: new Date().toISOString(), reason });
+  localStorage.setItem(QUARANTINE_KEY, JSON.stringify(entries));
+}
+
 async function connect(event) {
   event.preventDefault();
   store.url = $("api-url").value.trim();
@@ -109,8 +153,55 @@ async function capture(event) {
     refreshTimeline();
     refreshHud();
   } catch (error) {
+    if (error instanceof TypeError) {
+      queueCapture(payload);
+      result.textContent = `offline — queued for sync (${readQueue().length} pending)`;
+      return;
+    }
     showError(result, error);
   }
+}
+
+async function syncQueue() {
+  const result = $("capture-result");
+  const records = readQueue();
+  if (!records.length) {
+    result.textContent = "queue is empty";
+    return;
+  }
+  const remaining = [];
+  let synced = 0;
+  let dropped = 0;
+  let quarantined = 0;
+  for (const record of records) {
+    const headers = { "Content-Type": "application/json", "Idempotency-Key": record.idempotency_key };
+    if (store.key) {
+      headers["Authorization"] = "Bearer " + store.key;
+    }
+    try {
+      const response = await fetch(baseUrl() + "/v1/events", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(record.payload),
+      });
+      if (response.status === 201) {
+        synced += 1;
+      } else if (response.status === 409) {
+        dropped += 1;
+      } else if (response.status === 400 || response.status === 422) {
+        quarantined += 1;
+        quarantineRecord(record, (await response.text()).slice(0, 500));
+      } else {
+        remaining.push(record);
+      }
+    } catch {
+      remaining.push(record);
+      break;
+    }
+  }
+  writeQueue(remaining);
+  result.textContent =
+    `synced ${synced}, duplicates ${dropped}, quarantined ${quarantined}, remaining ${remaining.length}`;
 }
 
 async function ask(event) {
@@ -215,9 +306,13 @@ document.addEventListener("DOMContentLoaded", () => {
   $("api-key").value = store.key;
   $("connection-form").addEventListener("submit", connect);
   $("capture-form").addEventListener("submit", capture);
+  $("sync-queue").addEventListener("click", syncQueue);
   $("ask-form").addEventListener("submit", ask);
   $("memory-load").addEventListener("click", browseMemories);
   $("timeline-load").addEventListener("click", refreshTimeline);
   refreshHud();
   refreshTimeline();
+  updateQueueStatus();
 });
+
+window.EV = { queueCapture, syncQueue, readQueue };

@@ -63,3 +63,11 @@ async def test_web_uses_idempotent_capture_keys(client: AsyncClient) -> None:
     js = (await client.get("/app/app.js")).text
     assert "Idempotency-Key" in js
     assert "crypto.randomUUID()" in js
+    assert "ev.offlineQueue" in js
+    assert "ev.quarantine" in js
+    assert "queueCapture" in js
+    assert "syncQueue" in js
+    assert "window.EV" in js
+    html = (await client.get("/app")).text
+    assert 'id="sync-queue"' in html
+    assert 'id="queue-status"' in html

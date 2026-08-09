@@ -102,7 +102,10 @@ Served at `/app` by the FastAPI app (no third-party scripts, strict CSP,
 (`ev.hud.card.v1`), capture (with idempotency keys), chat with provenance
 chips, memory browser + audit drill-down, and timeline. The API URL/key are
 kept in `localStorage`; same-origin API is the default, so `connect-src 'self'`
-holds.
+holds. Captures made while offline are queued in `localStorage`
+(`ev.offlineQueue`) with idempotency keys and replayed by "Sync queue": 201
+synced, 409 dropped, 422 quarantined (`ev.quarantine`) — the same contract as
+the CLI `ev sync`.
 
 ## 5. HUD rendering targets (M5)
 
