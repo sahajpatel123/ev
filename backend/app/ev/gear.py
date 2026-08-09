@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev.ev_sense import quiet_hours_active
 from app.models import Alert, GearSnapshot
-from app.utils.text import fingerprint, utcnow
+from app.utils.text import fingerprint
 
 LOW_BATTERY_PCT = 20.0
 CRITICAL_BATTERY_PCT = 10.0

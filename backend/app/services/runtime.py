@@ -1366,12 +1366,14 @@ async def daemon_tick(session: AsyncSession) -> dict:
     )
     re_enqueued = sum(1 for letter in retrying_rows if _re_enqueue_dead_letter(letter))
     health = await runtime_health(session)
+    digest = await maybe_build_digest(session)
     await record_runtime_event(
         session,
         kind="daemon",
         payload={
             "expired_session_id": str(expired_session_id) if expired_session_id else None,
             "re_enqueued": re_enqueued,
+            "digest_delivered": bool(digest),
             "overall": health["overall"],
         },
     )
@@ -1379,8 +1381,46 @@ async def daemon_tick(session: AsyncSession) -> dict:
     return {
         "expired_session_id": str(expired_session_id) if expired_session_id else None,
         "re_enqueued": re_enqueued,
+        "digest": digest,
         "health": health,
     }
+
+
+async def maybe_build_digest(session: AsyncSession) -> dict | None:
+    """Build the quiet-hours alert digest once per day, if it is due.
+
+    Runs only during quiet hours and only when no digest has already been
+    delivered today (deduped through the append-only runtime event log), so the
+    daemon never spams or double-delivers.
+    """
+    from app.ev import alert_radar
+
+    if not quiet_hours_active():
+        return None
+    start_of_day = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    delivered_today = int(
+        (
+            await session.execute(
+                select(func.count(RuntimeEvent.id)).where(
+                    RuntimeEvent.kind == "digest",
+                    RuntimeEvent.occurred_at >= start_of_day,
+                )
+            )
+        ).scalar_one()
+    )
+    if delivered_today > 0:
+        return None
+    result = await alert_radar.build_digest(session)
+    await record_runtime_event(
+        session,
+        kind="digest",
+        payload={
+            "digest_id": result["digest_id"],
+            "delivered": result["delivered"],
+            "source": "runtime_daemon",
+        },
+    )
+    return result
 
 
 async def runtime_status(session: AsyncSession) -> RuntimeStatusOut:

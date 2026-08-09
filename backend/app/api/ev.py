@@ -10,7 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_actor
 from app.db import get_session
-from app.ev import alert_radar, diagnostics, ev_sense, health_radar, people, personality, tactical
+from app.ev import (
+    alert_radar,
+    diagnostics,
+    ev_sense,
+    gear,
+    health_radar,
+    people,
+    personality,
+    tactical,
+)
 from app.ev.calibration import proactive_tuning
 from app.ev.decisions import find_decision_loops, record_outcome
 from app.ev.edith import record_command
@@ -25,6 +34,7 @@ from app.schemas import (
     CalibrationReport,
     DecisionOutcomeCreate,
     DecisionOutcomeOut,
+    GearScanResponse,
     GearSnapshotCreate,
     GearSnapshotOut,
     HealthSnapshotCreate,
@@ -411,3 +421,18 @@ async def list_gear(
         stmt = stmt.where(GearSnapshot.device_id == device_id)
     rows = list((await session.execute(stmt)).scalars().all())
     return [GearSnapshotOut.model_validate(r) for r in rows]
+
+
+@router.post("/gear/scan", response_model=GearScanResponse)
+async def scan_gear_alerts(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> GearScanResponse:
+    """Scan latest device snapshots and create ranked, deduped gear alerts."""
+    result = await gear.scan_gear(session)
+    await session.commit()
+    return GearScanResponse(
+        scanned_devices=result["scanned_devices"],
+        alerts_created=[AlertOut.model_validate(a) for a in result["alerts_created"]],
+        duplicates_skipped=result["duplicates_skipped"],
+    )

@@ -271,6 +271,148 @@ async def test_runtime_verify_rejects_nonce_replay(client: AsyncClient) -> None:
     assert resp.headers.get("x-error-code") == "replay_rejected"
 
 
+async def _verified_runtime_session(client: AsyncClient, device_id: str) -> dict:
+    device = await register_device(client, device_id)
+    await heartbeat(client, str(device["id"]))
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+    )
+    outcome = resp.json()
+    resp = await client.post(
+        "/v1/runtime/verify",
+        json={
+            "session_id": outcome["session_id"],
+            "nonce": outcome["challenge_nonce"],
+            "phrase": outcome["challenge_phrase"],
+            "samples": [b64(SAMPLE_A)],
+            "liveness_proof": "live",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["verified"] is True
+    return outcome
+
+
+async def test_runtime_utterance_full_cycle(client: AsyncClient) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    outcome = await _verified_runtime_session(client, "mac-voice")
+
+    resp = await client.post(
+        "/v1/runtime/utterance",
+        json={
+            "session_id": outcome["session_id"],
+            "text": "Remind me to call mom tomorrow",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["state"] == "follow_up"
+    assert payload["transcript"] == "Remind me to call mom tomorrow"
+    assert payload["reply"]
+    assert payload["tts"]["ssml"].startswith("<speak>")
+    assert payload["conversation_id"]
+
+    resp = await client.post(
+        "/v1/runtime/utterance",
+        json={
+            "session_id": outcome["session_id"],
+            "text": "Also buy milk",
+            "follow_up": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["reply"]
+
+
+async def test_runtime_utterance_requires_owner_verification(
+    client: AsyncClient,
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    device = await register_device(client, "mac-unverified")
+    await heartbeat(client, str(device["id"]))
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+    )
+    outcome = resp.json()
+    resp = await client.post(
+        "/v1/runtime/utterance",
+        json={"session_id": outcome["session_id"], "text": "hello evie"},
+    )
+    assert resp.status_code == 403
+    assert resp.headers.get("x-error-code") == "not_verified"
+
+
+async def test_runtime_sensitive_utterance_requires_reverification(
+    client: AsyncClient,
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    resp = await client.post("/v1/identity/owner", json={"display_name": "Runtime Owner"})
+    assert resp.status_code == 201, resp.text
+    outcome = await _verified_runtime_session(client, "mac-sensitive")
+
+    resp = await client.post(
+        "/v1/runtime/utterance",
+        json={"session_id": outcome["session_id"], "text": "Delete all my memories"},
+    )
+    assert resp.status_code == 403
+    assert resp.headers.get("x-error-code") == "reverification_required"
+
+    resp = await client.post(
+        "/v1/identity/reverification",
+        json={"purpose": "voice.sensitive_action"},
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["token"]
+    resp = await client.post(
+        "/v1/runtime/utterance",
+        json={
+            "session_id": outcome["session_id"],
+            "text": "Delete all my memories",
+            "reverify_token": token,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+async def test_runtime_follow_up_window_expires(
+    client: AsyncClient, db_session
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    outcome = await _verified_runtime_session(client, "mac-followup-expire")
+    resp = await client.post(
+        "/v1/runtime/utterance",
+        json={"session_id": outcome["session_id"], "text": "Set a timer"},
+    )
+    assert resp.status_code == 200
+
+    row = (
+        await db_session.execute(
+            select(RuntimeSession).where(RuntimeSession.id == UUID(outcome["session_id"]))
+        )
+    ).scalar_one()
+    row.updated_at = utcnow() - timedelta(
+        seconds=settings.runtime_followup_timeout_seconds + 5
+    )
+    await db_session.commit()
+
+    resp = await client.post(
+        "/v1/runtime/utterance",
+        json={
+            "session_id": outcome["session_id"],
+            "text": "Actually five minutes",
+            "follow_up": True,
+        },
+    )
+    assert resp.status_code == 428
+    assert resp.headers.get("x-error-code") == "follow_up_expired"
+
+
 async def test_stale_session_times_out(client: AsyncClient, db_session) -> None:
     device = await register_device(client, "stale-echo")
     await heartbeat(client, str(device["id"]))
@@ -594,3 +736,28 @@ async def test_runtime_digest_batches_non_urgent_alerts(client: AsyncClient) -> 
 
     resp = await client.get("/v1/runtime/sync")
     assert any(event["kind"] == "digest" for event in resp.json()["events"])
+
+
+async def test_daemon_builds_quiet_hours_digest_once(
+    client: AsyncClient, db_session, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "quiet_hours_start", "00:00")
+    monkeypatch.setattr(settings, "quiet_hours_end", "23:59")
+    resp = await client.post(
+        "/v1/alerts/watchlist",
+        json={"kind": "topic", "value": "daemon digest topic", "priority": 0.4, "metadata": {}},
+    )
+    assert resp.status_code == 201, resp.text
+    await post_event(client, "the daemon digest topic came up again")
+    resp = await client.get("/v1/alerts/scan?window_days=30")
+    assert resp.status_code == 200, resp.text
+
+    report = await daemon_tick(db_session)
+    await db_session.commit()
+    assert report["digest"] is not None
+    assert report["digest"]["delivered"] >= 1
+    assert report["health"]["overall"] in ("ok", "degraded", "failed")
+
+    second = await daemon_tick(db_session)
+    await db_session.commit()
+    assert second["digest"] is None  # one digest per day
