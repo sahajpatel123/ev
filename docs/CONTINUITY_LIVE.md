@@ -68,6 +68,9 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
 - `GET /v1/live/channels/{id}/events`, `GET /v1/live/status`
 - `POST /v1/live/rebuild` — deterministic replay of the live stream into the
   derived layer (resets and marks `consumed`)
+- `POST /v1/live/retention` — applies the configured retention window
+  (dry-run by default); only consumed events past the window are removed, and
+  the latest event per channel plus provenance-linked events are always kept
 
 ### Use
 
@@ -79,6 +82,9 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
   the model-facing slice.
 - `consumed` flag marks events already folded into derived state; rebuild
   resets it, replays the stream, and re-marks folded events.
+- Retention only touches consumed events past the window (default 90 days,
+  `EV_LIVE_EVENT_RETENTION_DAYS`); per-channel derived rollups are recomputed
+  from the retained stream so replayability stays deterministic.
 
 ## 3. E.D.I.T.H. layer (see `EDITH_RESEARCH.md`)
 

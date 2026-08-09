@@ -31,3 +31,20 @@ def process_event(event_id: str) -> list[dict]:
 
         resolve_dead_letter_sync(queue="ingestion", job_id=event_id)
         return result
+
+
+def run_live_retention(days: int | None = None) -> dict:
+    """Scheduled/CLI entrypoint for the live-event retention window."""
+    import asyncio
+
+    from app.services.live_retention import apply_live_retention
+
+    async def _run() -> dict:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as session:
+            result = await apply_live_retention(session, days=days, actor="scheduler")
+            await session.commit()
+            return result
+
+    return asyncio.run(_run())

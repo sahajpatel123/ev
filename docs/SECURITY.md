@@ -126,6 +126,7 @@ context leaves the machine; raw memory never does.
 | Memories | Extraction pipeline | Postgres `memories` | Indefinite (versioned) | Redacted when source tombstoned |
 | Health snapshots | HealthKit import | Postgres `health_snapshots` | 24 months, then summarized | Immediate on revoke/delete |
 | Gear telemetry | Client telemetry | Postgres `gear_telemetry` | 90 days | Immediate on revoke/delete |
+| Live events | Permissioned collectors | Postgres `live_events` | `EV_LIVE_EVENT_RETENTION_DAYS` (default 90) | Retention job (`POST /v1/live/retention`); only consumed events past the window, latest + provenance-linked events always kept |
 | Alerts | Alert radar | Postgres `alerts` | 12 months | Immediate on delete |
 | Research sources | Research assistant | Postgres + blobs | Indefinite | Tombstone + blob schedule |
 | Projects/BOM/prints | Maker flows | Postgres | Indefinite | User delete |
@@ -152,7 +153,14 @@ retention job.
   revoked, wipes credential ciphertext and fingerprints, and deactivates the
   bound live channel. Every gate (actions, webhooks, credentials) fails closed
   afterward; previously granted tokens are discarded at the vault, and
-  provider-issued tokens should additionally be revoked at the provider.
+  provider-issued tokens should additionally be revoked at the provider. When
+  `config.revoke_remote: true`, the adapter calls the provider revocation
+  endpoint with the vault token (best effort; the local wipe always proceeds
+  and the outcome is access-logged).
+- **OAuth refresh:** refresh tokens are vault-encrypted; `POST
+  /v1/integrations/{id}/credentials/refresh` exchanges them through the
+  adapter's refresh flow, re-encrypts the new access token, and logs only
+  metadata (never token material).
 - **Webhook integrity:** ingress requires `X-EV-Signature: sha256=<hex>` over
   `X-EV-Timestamp.body`, rejects timestamps outside the skew window, and
   rate-limits per integration. Verified payloads enter the immutable live-event
