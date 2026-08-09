@@ -2326,6 +2326,15 @@ class VoiceVerifyRequest(BaseModel):
     samples: list[str] = Field(min_length=1, max_length=20)
 
 
+class TrainingVoiceEnrollRequest(BaseModel):
+    """Base64 audio samples plus shared liveness evidence for training enroll."""
+
+    samples: list[str] = Field(min_length=5, max_length=20)
+    liveness_proof: Literal["live", "replay", "synthetic", "converted"] | None = None
+    live_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    reason: str | None = Field(default=None, max_length=512)
+
+
 class VoiceVerifyResponse(BaseModel):
     accepted: bool
     score: float

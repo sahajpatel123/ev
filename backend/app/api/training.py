@@ -40,6 +40,7 @@ from app.schemas import (
     TrainingCorpusRollbackRequest,
     TrainingCorpusSnapshotOut,
     TrainingTrack,
+    TrainingVoiceEnrollRequest,
     VoiceDeleteRequest,
     VoiceEnrollmentDetailOut,
     VoiceEnrollResponse,
@@ -156,16 +157,23 @@ async def revoke_consent(
 
 @router.post("/voice/enroll", response_model=VoiceEnrollResponse, status_code=201)
 async def voice_enroll(
-    data: VoiceVerifyRequest,
+    data: TrainingVoiceEnrollRequest,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> VoiceEnrollResponse:
     """Enroll with base64 audio samples (raw bytes are discarded immediately)."""
     runtime = _runtime(session)
     try:
+        samples = [{"audio_b64": sample} for sample in data.samples]
+        if data.liveness_proof is not None:
+            for sample in samples:
+                sample["liveness_proof"] = data.liveness_proof
+        if data.live_score is not None:
+            for sample in samples:
+                sample["live_score"] = data.live_score
         enrollment = await runtime.enroll(
-            [{"audio_b64": sample} for sample in data.samples],
-            reason="training voice enrollment",
+            samples,
+            reason=data.reason or "training voice enrollment",
         )
     except VoiceError as exc:
         raise _voice_http(exc) from exc

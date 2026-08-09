@@ -467,7 +467,10 @@ async def run_voice_gate(spec: dict) -> GateResult:
 
         enroll = await client.post(
             "/v1/training/voice/enroll",
-            json={"samples": samples(owner, 5)},
+            json={
+                "samples": samples(owner, 5),
+                "liveness_proof": "live",
+            },
         )
         enroll_body = enroll.json() if enroll.headers.get("content-type", "").startswith("application/json") else {}
         checks.append(
