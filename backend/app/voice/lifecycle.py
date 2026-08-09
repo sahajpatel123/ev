@@ -197,15 +197,25 @@ class VoiceRuntime:
             )
         )
         for row in result.scalars().all():
+            prior_state = row.state
             row.state = VoiceState.ENDED
             row.ended_at = now
-            row.end_reason = "session timeout"
+            row.end_reason = (
+                "silence-lock"
+                if prior_state in (
+                    VoiceState.AWAKE,
+                    VoiceState.PROCESSING,
+                    VoiceState.RESPONDING,
+                    VoiceState.FOLLOW_UP,
+                )
+                else "verification timeout"
+            )
             await self._log(
                 "timeout",
                 "timeout",
                 session_id=row.id,
                 device_id=row.device_id,
-                reason="session timeout",
+                reason=row.end_reason,
             )
 
     async def _active_session(self, device_id: str) -> VoiceSession | None:
@@ -580,6 +590,7 @@ class VoiceRuntime:
         self,
         *,
         device_id: str,
+        priority: float = 0.5,
         audio_ref: str | None = None,
         text_hint: str | None = None,
         wake_word: str = "evie",
@@ -609,6 +620,23 @@ class VoiceRuntime:
                 state=VoiceState.IDLE,
                 owner_enrolled=(await self._current_enrollment()) is not None,
                 message="Wake word not detected",
+            )
+        from app.ev.ev_sense import quiet_hours_active
+
+        if quiet_hours_active(utcnow()) and priority < settings.runtime_urgent_priority_threshold:
+            await self._log(
+                "refusal",
+                "refused",
+                device_id=device_id,
+                reason="quiet hours",
+                wake_word=wake_word,
+                priority=priority,
+            )
+            return WakeOutcome(
+                session_id=None,
+                state=VoiceState.IDLE,
+                owner_enrolled=(await self._current_enrollment()) is not None,
+                message="EVIE is resting during quiet hours. Urgent requests only.",
             )
         await self._require_voice_consent()
         self._enforce_remote_voiceprint_gate()
@@ -936,7 +964,6 @@ class VoiceRuntime:
                 code="invalid_state",
             )
 
-        row.state = VoiceState.PROCESSING
         from app.voice.pipeline import run_chat_tts_pipeline, transcribe_input
 
         transcript = await transcribe_input(
@@ -974,6 +1001,7 @@ class VoiceRuntime:
                     code=exc.code,
                 ) from exc
             reverified = True
+        row.state = VoiceState.PROCESSING
         outcome = await run_chat_tts_pipeline(
             self.session,
             actor=self.actor,
@@ -981,6 +1009,7 @@ class VoiceRuntime:
             transcript=transcript,
             conversation_id=conversation_id,
             synthesizer=self.synthesizer,
+            speaker_confidence=row.speaker_confidence,
         )
 
         now = utcnow()

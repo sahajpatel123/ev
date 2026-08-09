@@ -334,3 +334,63 @@ async def test_sensitive_voice_command_rejects_bad_proof(client: AsyncClient) ->
     )
     assert resp.status_code == 403
     assert resp.headers.get("x-error-code") == "reverification_rejected"
+
+
+async def test_quiet_hours_block_non_urgent_wake(
+    client: AsyncClient, monkeypatch
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    monkeypatch.setattr("app.ev.ev_sense.quiet_hours_active", lambda *_: True)
+
+    resp = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-quiet", "text_hint": "hey evie"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["state"] == "idle"
+    assert "quiet hours" in (resp.json()["message"] or "").lower()
+
+    resp = await client.post(
+        "/v1/voice/wake",
+        json={
+            "device_id": "mac-quiet",
+            "text_hint": "hey evie",
+            "priority": 0.9,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["state"] == "verifying"
+
+
+async def test_silence_lock_ends_idle_session(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    wake_out = await wake(client, "mac-silence")
+    verify_out = await verify(
+        client,
+        session_id=wake_out["session_id"],
+        nonce=wake_out["challenge_nonce"],
+        phrase=wake_out["challenge_phrase"],
+        samples=[b64(SAMPLE_A)],
+    )
+    assert verify_out["verified"] is True
+
+    row = await db_session.get(VoiceSession, UUID(wake_out["session_id"]))
+    assert row is not None
+    row.expires_at = utcnow() - timedelta(seconds=1)
+    await db_session.commit()
+
+    resp = await client.post(
+        "/v1/voice/utterance",
+        json={"session_id": wake_out["session_id"], "text": "hello evie"},
+    )
+    assert resp.status_code == 428
+
+    resp = await client.get(f"/v1/voice/sessions/{wake_out['session_id']}")
+    assert resp.status_code == 200
+    status = resp.json()
+    assert status["state"] == "ended"
+    assert status["end_reason"] == "silence-lock"

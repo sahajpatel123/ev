@@ -92,6 +92,7 @@ async def enroll_voice(
             reason=data.reason,
         )
     except VoiceError as exc:
+        await session.commit()
         raise _http(exc) from exc
     owner = await identity_service.get_owner(session)
     if owner is not None:
@@ -137,6 +138,7 @@ async def revoke_enrollment(
     try:
         row = await _runtime(session).revoke(enrollment_id, reason=data.reason)
     except VoiceError as exc:
+        await session.commit()
         raise _http(exc) from exc
     await session.commit()
     return VoiceEnrollmentDetailOut.model_validate(row)
@@ -152,6 +154,7 @@ async def delete_enrollment(
     try:
         row = await _runtime(session).delete(enrollment_id, reason=data.reason)
     except VoiceError as exc:
+        await session.commit()
         raise _http(exc) from exc
     await session.commit()
     return VoiceEnrollmentDetailOut.model_validate(row)
@@ -171,6 +174,7 @@ async def rollback_enrollment(
             reason=data.reason,
         )
     except VoiceError as exc:
+        await session.commit()
         raise _http(exc) from exc
     await session.commit()
     return VoiceEnrollmentDetailOut.model_validate(row)
@@ -191,11 +195,13 @@ async def wake(
     try:
         outcome = await runtime.handle_wake(
             device_id=str(ctx.device_id) if ctx.is_device else data.device_id,
+            priority=data.priority,
             audio_ref=data.audio_ref,
             text_hint=data.text_hint,
             wake_word=data.wake_word,
         )
     except VoiceError as exc:
+        await session.commit()
         raise _http(exc) from exc
     if outcome.session_id is not None:
         session_row = await session.get(VoiceSession, UUID(outcome.session_id))
@@ -235,6 +241,7 @@ async def verify(
             audio_sha256=data.audio_sha256,
         )
     except VoiceError as exc:
+        await session.commit()
         raise _http(exc) from exc
     await session.commit()
     return VoiceSessionVerifyResponse(
@@ -269,6 +276,7 @@ async def utterance(
             follow_up=data.follow_up,
         )
     except VoiceError as exc:
+        await session.commit()
         raise _http(exc) from exc
     await session.commit()
     return VoiceUtteranceResponse(
@@ -323,6 +331,7 @@ async def session_status(
     try:
         status = await _runtime(session).status(session_id)
     except VoiceError as exc:
+        await session.commit()
         raise _http(exc) from exc
     return VoiceStatusOut(
         session_id=UUID(status.session_id) if status.session_id else None,
@@ -350,6 +359,7 @@ async def end_session(
     try:
         status = await _runtime(session).handle_end(session_id, reason="user-ended")
     except VoiceError as exc:
+        await session.commit()
         raise _http(exc) from exc
     await session.commit()
     return VoiceStatusOut(
