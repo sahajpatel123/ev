@@ -503,41 +503,47 @@ Readiness score, z-score anomalies, trends, morning brief. Direction: HealthKit
 connector, sleep/stress correlations, and readiness-informed scheduling.
 
 ### 9.2 Alert radar — **Built**
-Watchlist, scan, priority scoring, dedup, dismiss lifecycle. Direction:
-permissioned external sources (calendar, GitHub, RSS) and digest builder.
+Watchlist, scan, priority scoring, dedup, dismiss lifecycle, quiet-hours digest
+(`ev.runtime.digest.v1`). Direction: permissioned external sources (calendar,
+GitHub, RSS) and digest scheduling/notification routing.
 
 ### 9.3 EV Sense predictive layer — **Built**
 Decision loops, patterns, deadlines, health anomalies, guardrails, reorders;
-intervention scoring with why-now and outcome tracking. Direction: improve
-prediction calibration from outcomes and add next-action cards.
+intervention scoring with why-now and outcome tracking; reviewed outcomes
+calibrate future confidence; deliverable predictions promote to alert-radar
+alerts. Direction: add next-action cards.
 
 ### 9.4 Behavioral pattern engine — **Built**
-Research loops, tool churn, repeated questions, with evidence/frequency/confidence.
-Direction: add goal-drift and project-abandonment detectors.
+Research loops, tool churn, repeated questions, goal drift, and project
+abandonment, with evidence/frequency/confidence/silence windows. Direction:
+decision-delay and drift-trend detectors.
 
 ### 9.5 Decision intelligence — **Built**
 Loops, expected-vs-actual outcomes, auto-lessons, follow-ups. Direction: decision
 review scheduling and "decision ledger" UI.
 
 ### 9.6 User state engine — **Built**
-Activity, project, goal, task, topics, constraints, live context. Direction:
-continuous update via live data and focus designations.
+Activity, project, goal, task, active focus designation, topics, constraints,
+live context. Direction: continuous update via live data and focus-suggestion
+ranking.
 
 ### 9.7 Interaction intelligence — **Built**
 Modes, intent, urgency, emotion, assertiveness L0–L3, strategy block. Direction:
-calibrate with relationship stats and self-evaluation.
+calibrated challenge ceiling and alert budget from self-evaluation and
+relationship outcomes; apply calibration to filter/personality surfaces.
 
 ### 9.8 Personality engine — **Built**
 Versioned profile with assertiveness/challenge ceilings. Direction: connect all
 output surfaces (voice, HUD, alerts) to the profile.
 
 ### 9.9 Relationship model — **Built**
-Interaction stats, corrections, follow rates, challenge acceptance. Direction:
-use these to adapt intervention thresholds and tone.
+Interaction stats, corrections, follow rates, challenge acceptance, prediction
+accuracy, decision review rate. Direction: use these to adapt tone.
 
 ### 9.10 Self-evaluation — **Built**
-Response log + aggregates by mode. Direction: feed filter thresholds and
-personality updates.
+Response log + aggregates by mode; derived proactive tuning exposed at
+`GET /v1/calibration/tuning` and applied to challenges and alert budgets.
+Direction: feed filter thresholds and personality updates.
 
 ---
 
@@ -654,7 +660,8 @@ safety caps.
 `search_web` is the `search` integration adapter (`search.query`, scope
 `search:read`) behind the standard adapter framework: provider interface via
 integration config, deterministic local mode, per-call permission, and vault
-credentials. Direction: citation-aware result parsing and per-call approval UI.
+credentials. Results are normalized to a canonical cited shape (bounded,
+sanitized, http(s)-only, numbered citations). Direction: per-call approval UI.
 
 ### 11.4 Sandboxed code/file tools — **Built**
 `/v1/tools/execute` + `/v1/tools/files/read|write` run inside a sandbox root
