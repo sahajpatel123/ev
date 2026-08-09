@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -48,3 +49,24 @@ class RetentionSweepOut(BaseModel):
     corpus_snapshots_redacted: int = 0
     access_logs_deleted: int = 0
     policy_retention_days: int
+
+
+class AccessLogEntryOut(BaseModel):
+    id: UUID
+    occurred_at: datetime
+    actor: str
+    action: str
+    endpoint: str | None
+    resource_type: str | None
+    resource_ids: list
+    request_id: str | None
+    details: dict
+
+    model_config = {"from_attributes": True}
+
+
+class AccessLogPageOut(BaseModel):
+    logs: list[AccessLogEntryOut] = Field(default_factory=list)
+    total: int
+    limit: int
+    offset: int

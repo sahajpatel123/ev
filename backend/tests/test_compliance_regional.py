@@ -6,11 +6,13 @@ import base64
 from datetime import timedelta
 from uuid import UUID
 
+import httpx
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.compliance.models import DataErasureRecord
+from app.main import app
 from app.models import AccessLog, ConsentRecord, Event, VoiceEnrollment
 from app.utils.text import utcnow
 
@@ -320,3 +322,58 @@ def test_daemon_compliance_sweep_schedule(monkeypatch) -> None:
     monkeypatch.setenv("EV_COMPLIANCE_SWEEP_HOURS", "not-a-number")
     runtime_daemon._COMPLIANCE_LAST_RUN = 0.0
     assert runtime_daemon._compliance_due() is True  # safe default 24h
+
+
+async def test_access_log_endpoint_pages_and_filters(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    rows = [
+        AccessLog(actor="bot", action="consent_grant", details={"i": 1}),
+        AccessLog(actor="master", action="voice_export", details={"i": 2}),
+        AccessLog(actor="bot", action="voice_delete", details={"i": 3}),
+    ]
+    db_session.add_all(rows)
+    await db_session.commit()
+
+    resp = await client.get("/v1/compliance/access-log?limit=10")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["total"] >= 3
+    assert body["limit"] == 10
+    assert body["offset"] == 0
+    assert len(body["logs"]) >= 3
+    actions = {log["action"] for log in body["logs"]}
+    assert {"consent_grant", "voice_export", "voice_delete"} <= actions
+
+    resp = await client.get("/v1/compliance/access-log?actor=bot&action=voice_delete")
+    assert resp.status_code == 200, resp.text
+    filtered = resp.json()
+    assert filtered["total"] == 1
+    assert filtered["logs"][0]["actor"] == "bot"
+    assert filtered["logs"][0]["action"] == "voice_delete"
+
+    # The export read itself is audited.
+    audit_rows = (
+        await db_session.execute(
+            select(AccessLog).where(AccessLog.action == "access_log.read")
+        )
+    ).scalars().all()
+    assert len(audit_rows) >= 1
+
+
+async def test_access_log_endpoint_requires_owner_trust(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    device = await client.post(
+        "/v1/devices", json={"name": "plain-token", "capabilities": []}
+    )
+    assert device.status_code == 201, device.text
+    token = device.json()["token"]
+    plain = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    async with plain:
+        resp = await plain.get("/v1/compliance/access-log")
+    assert resp.status_code == 403
