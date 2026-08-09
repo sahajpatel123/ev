@@ -30,6 +30,7 @@ must be fixed before new behavior ships.
 | `filter` | Benign input passes; injection blocked; credentials redacted; HUD contract repaired; grounded claims kept, ungrounded removed | Any deterministic filter invariant breaks |
 | `voice` | Voice endpoints present; training enrollment accepts base64 string samples | Voice surface regressed or the consent-gated contract changed shape |
 | `observability` | Health, calibration, evaluations summary, gateway calls, ops center, filter ledger endpoints exist; latency/cost budgets defined | Observability surface missing or budgets removed |
+| `latency` | In-process ASGI measurement of health, event ack, timeline, and chat against the documented budgets | Measured p50 latency exceeds event 1000 ms / chat 1500 ms / timeline 500 ms |
 | `roadmap` | M0–M5 exit-gate endpoints all present per `ROADMAP.md` | A milestone's documented API surface regresses |
 
 ## 3. API contract stability

@@ -54,6 +54,9 @@ async def route_briefing(session: AsyncSession) -> RouteBriefingOut:
         prep_checklist.append("Carry one open decision and settle it before the day ends.")
     if not prep_checklist:
         prep_checklist.append("No active destination — set a deadline watch item with a location and date.")
+    location_lines = [line for line in state.live_context if "] location " in line]
+    if location_lines:
+        notes.append(f"Live context: {location_lines[0]}")
 
     return RouteBriefingOut(
         schema_version="ev.hud.route.v1",
@@ -64,4 +67,3 @@ async def route_briefing(session: AsyncSession) -> RouteBriefingOut:
         prep_checklist=prep_checklist,
         notes=notes,
     )
-

@@ -14,20 +14,31 @@ from __future__ import annotations
 import base64
 import json
 import re
+from datetime import datetime
 from typing import Literal, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.contracts import ChatMessage, ChatProvider, MediaPart
+from app.contracts import (
+    ChatMessage,
+    ChatProvider,
+    EntityRef,
+    MediaPart,
+    MemoryCandidate,
+    RequestEnvelope,
+)
 from app.ev.edith import record_command
 from app.ev.live import get_or_create_channel, ingest_events
 from app.gateway.providers import get_chat_provider
+from app.gateway.service import ModelGateway
 from app.memory.entities import get_or_create_entity
+from app.memory.writer import MemoryWriter
 from app.models import Attachment, Event, LiveChannel, LiveEvent, RecognitionLog
-from app.schemas import LiveEventCreate
+from app.schemas import EventCreate, LiveEventCreate
 from app.services.access_log import log_access
+from app.services.event_service import EventService
 from app.storage.object_store import get_object_store
 
 # Model processing is denied for these privacy levels (matches the live-data
@@ -38,6 +49,7 @@ MODEL_BLOCKED_LEVELS = {"sensitive", "never_send_to_model"}
 RAW_BLOCKED_LEVELS = {"sensitive", "private", "never_send_to_model"}
 
 LABEL_CONFIDENCE_FLOOR = 0.6
+PrivacyLevel = Literal["private", "normal", "sensitive", "never_send_to_model"]
 
 
 def _parse_labels(text: str) -> list[dict]:
@@ -113,6 +125,7 @@ def _perception_payload(
     attachment: Attachment,
     event: Event,
     derived_text_used: bool,
+    request_id: str | None,
 ) -> dict:
     return {
         "summary": summary,
@@ -129,7 +142,49 @@ def _perception_payload(
         "sha256": attachment.sha256,
         "content_type": attachment.content_type,
         "derived_text_used": derived_text_used,
+        "request_id": request_id,
     }
+
+
+def recognition_memory_candidate(
+    *,
+    label: str,
+    confidence: float,
+    entity_type: str,
+    recognition_id: str,
+    attachment_id: str | None,
+    perception_event_id: str | None,
+    source_event_id: str | None,
+    entity_id: str,
+    privacy_level: str,
+    event_time: datetime | None,
+) -> MemoryCandidate:
+    """Canonical observation memory for one user-confirmed recognition.
+
+    Used by both the live confirmation path and the rebuild replay so the
+    derived memory is deterministic and provenance-linked to the same raw
+    ``recognition.confirm`` event.
+    """
+    return MemoryCandidate(
+        memory_type="observation",
+        text=f"Recognized {label} in a shared attachment (user-confirmed).",
+        payload={
+            "kind": "recognition",
+            "recognition_id": recognition_id,
+            "label": label,
+            "confidence": confidence,
+            "attachment_id": attachment_id,
+            "perception_event_id": perception_event_id,
+            "source_event_id": source_event_id,
+            "entity_id": entity_id,
+        },
+        importance=0.55,
+        confidence=confidence,
+        source_type="explicit",
+        privacy_level=privacy_level,
+        event_time=event_time,
+        entities=[EntityRef(name=label, entity_type=entity_type)],
+    )
 
 
 async def analyze_attachment(
@@ -210,14 +265,34 @@ async def analyze_attachment(
                 else "Summarize this derived document text and suggest labels."
             )
         )
-        result = await provider.chat(
-            [
-                ChatMessage(role="system", content=system),
-                ChatMessage(role="user", content=user_content, media=media),
-            ]
+        request_id = str(uuid4())
+        messages = [
+            ChatMessage(role="system", content=system),
+            ChatMessage(role="user", content=user_content, media=media),
+        ]
+        envelope = RequestEnvelope(
+            request_id=request_id,
+            strategy={"mode": "perception"},
+            metadata={
+                "privacy_level": privacy,
+                "permission_granted_by": actor,
+            },
+            media_refs=[
+                {
+                    "kind": part.kind,
+                    "content_type": part.content_type,
+                    "ref": part.ref,
+                    "sha256": part.sha256,
+                    "raw": raw_sent,
+                    "derived_text_used": derived_text_used,
+                }
+                for part in media
+            ],
         )
-        summary = _extract_summary(result.text)
-        labels = _parse_labels(result.text)
+        call = await ModelGateway(provider).chat(messages, envelope=envelope)
+        summary = _extract_summary(call.result.text)
+        labels = _parse_labels(call.result.text)
+        request_id_value = request_id
     else:
         if not model_allowed:
             summary = (
@@ -235,6 +310,7 @@ async def analyze_attachment(
                 "media support or raw transmission was not permitted)."
             )
         labels = []
+        request_id_value = None
 
     payload = _perception_payload(
         summary=summary,
@@ -245,6 +321,7 @@ async def analyze_attachment(
         attachment=attachment,
         event=event,
         derived_text_used=derived_text_used,
+        request_id=request_id_value,
     )
     channel = await get_or_create_channel(
         session,
@@ -259,7 +336,7 @@ async def analyze_attachment(
             LiveEventCreate(
                 event_type="perception.analyze",
                 payload=payload,
-                privacy_level=cast(Literal["private", "normal", "sensitive", "never_send_to_model"], privacy),
+                privacy_level=cast(PrivacyLevel, privacy),
             )
         ],
     )
@@ -336,6 +413,49 @@ async def confirm_recognition(
     entity = await get_or_create_entity(session, row.label, entity_type)
     row.entity_id = entity.id
     row.source = "user"
+
+    source_event = None
+    if row.event_id is not None:
+        source_event = await session.get(Event, row.event_id)
+    if source_event is None and row.attachment_id is not None:
+        attachment = await session.get(Attachment, row.attachment_id)
+        if attachment is not None:
+            source_event = await session.get(Event, attachment.event_id)
+    privacy = (source_event.privacy_level if source_event is not None else "normal") or "normal"
+
+    confirm_event = await EventService(session, actor=actor).create(
+        EventCreate(
+            source="perception",
+            event_type="recognition.confirm",
+            content={
+                "recognition_id": str(row.id),
+                "label": row.label,
+                "confidence": row.confidence,
+                "entity_type": entity.entity_type,
+                "attachment_id": str(row.attachment_id) if row.attachment_id else None,
+                "source_event_id": str(row.event_id) if row.event_id else None,
+                "perception_event_id": str(row.live_event_id) if row.live_event_id else None,
+            },
+            privacy_level=cast(PrivacyLevel, privacy),
+        )
+    )
+    await MemoryWriter(session).write_all(
+        confirm_event,
+        [
+            recognition_memory_candidate(
+                label=row.label,
+                confidence=row.confidence,
+                entity_type=entity.entity_type,
+                recognition_id=str(row.id),
+                attachment_id=str(row.attachment_id) if row.attachment_id else None,
+                perception_event_id=str(row.live_event_id) if row.live_event_id else None,
+                source_event_id=str(row.event_id) if row.event_id else None,
+                entity_id=str(entity.id),
+                privacy_level=privacy,
+                event_time=confirm_event.occurred_at,
+            )
+        ],
+    )
     await session.flush()
     await record_command(
         session,
@@ -343,8 +463,16 @@ async def confirm_recognition(
         actor=actor,
         target_type="entity",
         target_id=str(entity.id),
-        request={"recognition_id": str(row.id), "label": row.label},
-        result={"entity_id": str(entity.id), "source": "user"},
+        request={
+            "recognition_id": str(row.id),
+            "label": row.label,
+            "confirm_event_id": str(confirm_event.id),
+        },
+        result={
+            "entity_id": str(entity.id),
+            "source": "user",
+            "memory": "observation",
+        },
         status="completed",
     )
     await log_access(
@@ -354,7 +482,11 @@ async def confirm_recognition(
         endpoint="POST /v1/vision/recognitions/{id}/confirm",
         resource_type="recognition",
         resource_ids=[row.id],
-        details={"label": row.label, "entity_id": str(entity.id)},
+        details={
+            "label": row.label,
+            "entity_id": str(entity.id),
+            "confirm_event_id": str(confirm_event.id),
+        },
     )
     return row
 

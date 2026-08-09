@@ -19,8 +19,8 @@ from app.ev.decisions import recreate_lesson_from_event
 from app.ev.memory_ops import apply_correction, apply_forget, apply_restore
 from app.ev.research import recreate_conclusion_memory
 from app.ev.vision import recognition_memory_candidate
-from app.memory.extraction import Extractor
 from app.memory.entities import get_or_create_entity
+from app.memory.extraction import Extractor
 from app.memory.patterns import PatternEngine
 from app.memory.writer import MemoryWriter, redact_memories_for_event
 from app.models import (
@@ -190,7 +190,7 @@ async def rebuild_derived_state(
                 confidence = float(content.get("confidence") or 0.8)
             except (TypeError, ValueError):
                 confidence = 0.8
-            written = await writer.write_all(
+            written_memories = await writer.write_all(
                 event,
                 [
                     recognition_memory_candidate(
@@ -207,7 +207,7 @@ async def rebuild_derived_state(
                     )
                 ],
             )
-            counts["memories_created"] += len(written)
+            counts["memories_created"] += len(written_memories)
             continue
         if event.event_type == "pattern.analyze":
             meta = event.metadata_ or {}

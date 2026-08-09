@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.main import app
+from app.models import RuntimeSession
+from app.services import runtime as runtime_service
 from clients.device_listener import DeviceListener
 
 
@@ -39,7 +42,7 @@ async def test_listener_heartbeat_marks_device_online() -> None:
         assert device_status["battery_percent"] == 64.0
 
 
-async def test_listener_wake_and_sync_convergence() -> None:
+async def test_listener_wake_and_sync_convergence(db_session) -> None:
     async with _listener_client() as client:
         resp = await client.post(
             "/v1/devices",
@@ -59,3 +62,21 @@ async def test_listener_wake_and_sync_convergence() -> None:
         assert snapshot["runtime"]["session_id"] == outcome["session_id"]
         assert any(device["device_id"] == device_id for device in snapshot["devices"])
         assert any(event["kind"] == "wake" for event in snapshot["events"])
+        assert snapshot["policy"]["heartbeat_grace_seconds"] > 0
+        assert snapshot["latency"]["wake_to_awake_ms"] is None  # still verifying
+
+        session_row = (
+            await db_session.execute(
+                select(RuntimeSession).where(RuntimeSession.id == UUID(outcome["session_id"]))
+            )
+        ).scalar_one()
+        await runtime_service.mark_verified(
+            db_session, session_row, confidence=0.9, verifier_name="test"
+        )
+        await db_session.commit()
+
+        resp = await client.post("/v1/runtime/transition", json={"to_state": "awake"})
+        assert resp.status_code == 200, resp.text
+        snapshot = await listener.sync_state()
+        assert snapshot["latency"]["wake_to_awake_ms"] is not None
+        assert snapshot["latency"]["wake_to_awake_ms"] >= 0

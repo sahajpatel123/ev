@@ -26,7 +26,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ev.live import create_channel, ingest_events, list_events
 from app.integrations import vault, webhooks
 from app.integrations.adapters import registry
-from app.models import Integration, IntegrationCredential, LiveChannel, LiveEvent
+from app.models import (
+    Integration,
+    IntegrationCredential,
+    LiveChannel,
+    LiveEvent,
+    WebhookDelivery,
+)
 from app.schemas import (
     IntegrationActionOut,
     IntegrationCatalogItem,
@@ -211,7 +217,42 @@ async def install(
         await session.execute(select(Integration).where(Integration.slug == slug))
     ).scalar_one_or_none()
     if existing is not None:
-        raise ValueError(f"integration slug '{slug}' already exists")
+        if existing.status == "active":
+            raise ValueError(f"integration slug '{slug}' already exists")
+        channel = await create_channel(
+            session,
+            LiveChannelCreate(
+                name=f"integration:{slug}",
+                kind=cast(LiveChannelKind, adapter.privacy_kind),
+                privacy_level=cast(PrivacyLevelLiteral, privacy),
+                metadata={"collector": f"integration:{slug}", "adapter": adapter.slug},
+            ),
+        )
+        existing.adapter = adapter.slug
+        existing.name = data.name
+        existing.scopes = sorted(set(data.scopes))
+        existing.privacy_level = privacy
+        existing.config = data.config
+        existing.live_channel_id = channel.id
+        existing.status = "active"
+        existing.revoked_at = None
+        existing.revoked_reason = None
+        existing.last_used_at = None
+        existing.last_webhook_at = None
+        await log_access(
+            session,
+            actor=actor,
+            action="integration.reinstall",
+            endpoint="POST /v1/integrations",
+            resource_type="integration",
+            resource_ids=[existing.id],
+            details={
+                "adapter": adapter.slug,
+                "scopes": sorted(set(data.scopes)),
+                "privacy_level": privacy,
+            },
+        )
+        return existing
     channel = await create_channel(
         session,
         LiveChannelCreate(
@@ -620,6 +661,27 @@ async def ingest_webhook(
         raise LookupError(f"adapter '{integration.adapter}' is unavailable")
     secret = await _webhook_secret(session, integration_id)
     webhooks.verify_webhook_signature(secret=secret, body=body, headers=headers)
+    delivery_key = webhooks.header_value(headers, "X-EV-Delivery-Id")
+    if delivery_key:
+        if len(delivery_key) > 128 or not delivery_key.strip():
+            raise ValueError("X-EV-Delivery-Id must be 1..128 non-blank characters")
+        prior = (
+            await session.execute(
+                select(WebhookDelivery).where(
+                    WebhookDelivery.integration_id == integration.id,
+                    WebhookDelivery.delivery_key == delivery_key,
+                )
+            )
+        ).scalar_one_or_none()
+        if prior is not None:
+            return WebhookIngestOut(
+                integration_id=integration.id,
+                adapter=adapter.slug,
+                accepted=0,
+                deduplicated=prior.event_count,
+                channel_id=integration.live_channel_id,
+                event_ids=[UUID(value) for value in (prior.event_ids or [])],
+            )
     if not webhooks.webhook_rate_limiter.allow(str(integration_id)):
         raise webhooks.RateLimitError("webhook rate limit exceeded")
     try:
@@ -651,6 +713,15 @@ async def ingest_webhook(
         raise LookupError("integration live channel is inactive")
     stored = await ingest_events(session, channel, events)
     integration.last_webhook_at = utcnow()
+    if delivery_key:
+        session.add(
+            WebhookDelivery(
+                integration_id=integration.id,
+                delivery_key=delivery_key,
+                event_ids=[str(event.id) for event in stored],
+                event_count=len(events),
+            )
+        )
     await log_access(
         session,
         actor=f"integration:{integration.slug}",

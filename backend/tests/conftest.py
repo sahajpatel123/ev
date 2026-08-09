@@ -25,10 +25,15 @@ from app.main import app
 
 @pytest.fixture(autouse=True)
 async def fresh_db() -> AsyncIterator[None]:
+    # SQLite + aiosqlite connections are bound to the event loop that created
+    # them. Tests run on a fresh loop each time, so dispose before and after so
+    # a stale worker thread cannot hold a write lock across tests.
+    await engine.dispose()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield
+    await engine.dispose()
 
 
 @pytest.fixture

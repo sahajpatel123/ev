@@ -15,7 +15,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.contracts import ChatMessage, ChatResult, MediaPart
+from app.contracts import ChatMessage, ChatResult, MediaPart, RequestEnvelope
 from app.ev import vision
 from app.ev.live import query_live_events
 from app.ev.user_state import build_user_state
@@ -322,6 +322,7 @@ async def test_vision_analyze_derived_text_never_sends_raw(
     assert payload["derived_text_used"] is True
     assert payload["provider"] == "fake-vision"
     assert payload["source_event_id"]
+    assert payload["request_id"]
     assert "workbench" in payload["summary"].lower()
     assert "data:image" not in json.dumps(payload)
 
@@ -359,6 +360,7 @@ async def test_vision_analyze_raw_sends_data_url_when_permitted(
 
     assert row.payload["raw_sent"] is True
     assert row.payload["content_type"] == "image/png"
+    assert row.payload["request_id"]
     # The raw bytes are transmitted to the provider but never persisted in the
     # perception record itself (only provenance hashes are kept).
     assert "data:image" not in json.dumps(row.payload)
@@ -437,6 +439,24 @@ async def test_vision_confirm_promotes_model_suggestion(
     )
     assert resp.status_code == 200
     assert resp.json()["source"] == "user"
+
+    # Confirmation becomes durable, queryable memory with provenance.
+    resp = await client.get("/v1/memories?memory_type=observation")
+    assert resp.status_code == 200, resp.text
+    memories = [
+        m for m in resp.json()["memories"] if m["payload"].get("recognition_id") == target["id"]
+    ]
+    assert memories, resp.json()
+    memory = memories[0]
+    assert memory["memory_type"] == "observation"
+    assert memory["source_type"] == "explicit"
+    assert "Maya" in memory["text"]
+    assert memory["entities"]
+
+    audit = (await client.get(f"/v1/audit/{memory['id']}")).json()
+    assert audit["memory"]["id"] == memory["id"]
+    assert audit["source_events"]
+    assert any(e["event_type"] == "recognition.confirm" for e in audit["source_events"])
 
 
 async def test_vision_perception_context_flows_into_state(
@@ -539,3 +559,121 @@ def test_deepseek_provider_renders_multimodal_content_parts() -> None:
 
     plain = ChatMessage(role="user", content="plain text")
     assert provider._message_payload(plain) == {"role": "user", "content": "plain text"}
+
+
+async def test_vision_confirm_memory_survives_rebuild(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    attachment_id = await upload_attachment(
+        client,
+        metadata={"derived_text": "workbench"},
+    )
+    await vision.analyze_attachment(
+        db_session,
+        UUID(attachment_id),
+        actor="master",
+        permission=True,
+        allow_raw=False,
+        provider=FakeVisionProvider(),
+    )
+    await db_session.commit()
+
+    suggestions = [
+        r for r in (await client.get("/v1/vision/log")).json() if r["source"] == "model"
+    ]
+    target = next(r for r in suggestions if r["label"] == "workbench")
+    resp = await client.post(
+        f"/v1/vision/recognitions/{target['id']}/confirm",
+        json={"entity_type": "thing"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.post("/v1/memory/rebuild")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["events_replayed"] > 0
+
+    # The confirmed recognition is re-derived from its raw event after rebuild.
+    resp = await client.get("/v1/memories?memory_type=observation")
+    assert resp.status_code == 200, resp.text
+    memories = [
+        m for m in resp.json()["memories"] if m["payload"].get("recognition_id") == target["id"]
+    ]
+    assert memories, resp.json()
+    assert "workbench" in memories[0]["text"]
+    assert memories[0]["entities"]
+
+    # Recognition remains user-confirmed and entity-linked after rebuild.
+    resp = await client.get("/v1/vision/log")
+    confirmed = next(r for r in resp.json() if r["id"] == target["id"])
+    assert confirmed["source"] == "user"
+    assert confirmed["entity_id"] is not None
+
+
+async def test_route_briefing_includes_permissioned_location_context(
+    client: AsyncClient,
+) -> None:
+    tomorrow = (datetime.now(UTC) + timedelta(days=1)).isoformat()
+    await client.post(
+        "/v1/alerts/watchlist",
+        json={
+            "kind": "deadline",
+            "value": "Airport pickup",
+            "priority": 0.7,
+            "metadata": {
+                "date": tomorrow,
+                "location": "Airport",
+                "travel_minutes": 45,
+                "prep": "Bring charger",
+            },
+        },
+    )
+    await client.post(
+        "/v1/live/events",
+        json={
+            "channel": "location-coarse",
+            "kind": "location",
+            "events": [
+                {
+                    "event_type": "location_change",
+                    "payload": {
+                        "place": "Bengaluru Airport",
+                        "presence": "present",
+                        "latitude": 12.99,
+                        "longitude": 77.6,
+                        "text": "12.99, 77.6",
+                    },
+                }
+            ],
+        },
+    )
+
+    resp = await client.get("/v1/hud/route")
+    assert resp.status_code == 200, resp.text
+    route = resp.json()
+    assert route["destination"] == "Airport"
+    context_notes = [n for n in route["notes"] if "Live context" in n]
+    assert context_notes, route["notes"]
+    assert "Bengaluru Airport" in context_notes[0]
+    assert "12.99" not in context_notes[0]
+    assert "77.6" not in context_notes[0]
+
+
+def test_request_envelope_audits_media_refs() -> None:
+    envelope = RequestEnvelope(
+        request_id="req-1",
+        strategy={"mode": "perception"},
+        media_refs=[
+            {
+                "kind": "text",
+                "content_type": "text/plain",
+                "ref": "att-1",
+                "sha256": "abc",
+                "raw": False,
+                "derived_text_used": True,
+            }
+        ],
+    )
+    dumped = envelope.to_dict()
+    assert dumped["media_refs"][0]["ref"] == "att-1"
+    assert dumped["media_refs"][0]["raw"] is False

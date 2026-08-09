@@ -162,7 +162,19 @@ async def calibrate(
     evidence = await gather_evidence(session)
     multipliers = derive_calibrations(evidence)
     current = await current_calibration(session)
-    version = (current.version + 1) if current is not None else 1
+    max_version = max(
+        (
+            (
+                await session.execute(
+                    select(PersonalizationCalibration.version)
+                )
+            )
+            .scalars()
+            .all()
+        ),
+        default=0,
+    )
+    version = max_version + 1
     if current is not None:
         current.is_current = False
     row = PersonalizationCalibration(

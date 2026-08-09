@@ -41,6 +41,13 @@ def test_observability_gate_passes() -> None:
     assert result.passed, result.to_dict()
 
 
+async def test_latency_gate_passes(client) -> None:
+    from app.scripts.eval_gates import run_latency_gate
+
+    result = await run_latency_gate()
+    assert result.passed, result.to_dict()
+
+
 def test_roadmap_gate_passes() -> None:
     result = run_roadmap_gate(_spec())
     assert result.passed, result.to_dict()

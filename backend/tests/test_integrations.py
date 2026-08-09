@@ -8,7 +8,9 @@ import json
 import time
 from uuid import UUID
 
+import httpx
 import pytest
+from fastapi import FastAPI, Header, Request
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -440,6 +442,173 @@ async def test_webhook_hmac_ingest_replay_and_privacy(
     ).scalar_one()
     assert health_secret not in creds.encrypted_access
     assert vault.decrypt(creds.encrypted_access) == health_secret
+
+
+async def test_webhook_delivery_id_is_idempotent(client: AsyncClient) -> None:
+    calendar = await install(client, "calendar")
+    calendar_id = calendar["id"]
+    resp = await client.post(f"/v1/integrations/{calendar_id}/webhook-secret")
+    secret = resp.json()["secret"]
+    payload = {"summary": "Retried delivery", "start": "2026-08-10T10:00:00Z"}
+
+    headers = signed_headers(payload, secret)
+    headers["X-EV-Delivery-Id"] = "provider-delivery-42"
+    resp = await client.post(
+        f"/v1/integrations/webhook/{calendar_id}",
+        content=json.dumps(payload),
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    first = resp.json()
+    assert first["accepted"] == 1
+
+    # A provider retry with a fresh timestamp but the same delivery id is a
+    # database-level dedupe, not a new event.
+    headers = signed_headers(payload, secret, timestamp=int(time.time()) + 2)
+    headers["X-EV-Delivery-Id"] = "provider-delivery-42"
+    resp = await client.post(
+        f"/v1/integrations/webhook/{calendar_id}",
+        content=json.dumps(payload),
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    replay = resp.json()
+    assert replay["accepted"] == 0
+    assert replay["deduplicated"] == 1
+    assert replay["event_ids"] == first["event_ids"]
+
+    # A genuinely new delivery with the same payload ingests a new event
+    # (different signed timestamp -> different event time).
+    headers = signed_headers(payload, secret, timestamp=int(time.time()) + 4)
+    headers["X-EV-Delivery-Id"] = "provider-delivery-43"
+    resp = await client.post(
+        f"/v1/integrations/webhook/{calendar_id}",
+        content=json.dumps(payload),
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["accepted"] == 1
+
+
+async def test_reinstall_after_revoke_revives_same_slug(client: AsyncClient) -> None:
+    first = await install(client, "calendar", slug="work-calendar")
+    first_id = first["id"]
+
+    resp = await client.delete(f"/v1/integrations/{first_id}")
+    assert resp.status_code == 200
+
+    resp = await client.post(
+        "/v1/integrations",
+        json={
+            "adapter": "calendar",
+            "slug": "work-calendar",
+            "name": "Work Calendar v2",
+            "scopes": ["calendar:read"],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    second = resp.json()
+    assert second["id"] == first_id
+    assert second["status"] == "active"
+    assert second["live_channel_id"] != first["live_channel_id"]
+
+    resp = await client.post(f"/v1/integrations/{first_id}/webhook-secret")
+    secret = resp.json()["secret"]
+    result = await webhook(client, first_id, {"summary": "After reinstall"}, secret)
+    assert result["accepted"] == 1
+
+
+async def test_http_adapter_mode_uses_vault_token(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: AsyncSession,
+) -> None:
+    provider = FastAPI()
+
+    @provider.post("/actions/calendar.create_event")
+    async def create_event(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        body = await request.json()
+        return {
+            "ok": True,
+            "summary": body.get("summary"),
+            "auth_prefix": (authorization or "")[:7],
+        }
+
+    @provider.post("/oauth/refresh")
+    async def refresh(request: Request) -> dict:
+        await request.json()
+        return {
+            "access_token": "provider-refreshed-123456",
+            "refresh_token": "provider-refresh-2-9999",
+            "expires_at": "2028-01-01T00:00:00Z",
+        }
+
+    @provider.post("/oauth/revoke")
+    async def revoke(
+        request: Request,
+        authorization: str | None = Header(default=None),
+    ) -> dict:
+        return {"ok": True, "revoked": bool(authorization)}
+
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: httpx.AsyncClient(
+            transport=ASGITransport(app=provider),
+            base_url="http://provider",
+        ),
+    )
+
+    integration = await install(
+        client,
+        "calendar",
+        scopes=["calendar:read", "calendar:act"],
+        config={
+            "provider": "http",
+            "base_url": "http://provider",
+            "revoke_remote": True,
+        },
+    )
+    integration_id = integration["id"]
+    await store_oauth(client, integration_id)
+
+    resp = await client.post(
+        f"/v1/integrations/{integration_id}/actions",
+        json={
+            "action": "calendar.create_event",
+            "args": {"summary": "HTTP event", "start": "2026-08-10T11:00:00Z"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    assert result["auth_prefix"] == "Bearer "
+    assert result["summary"] == "HTTP event"
+
+    resp = await client.post(f"/v1/integrations/{integration_id}/credentials/refresh")
+    assert resp.status_code == 200, resp.text
+    row = (
+        await db_session.execute(
+            select(IntegrationCredential).where(
+                IntegrationCredential.integration_id == UUID(integration_id),
+                IntegrationCredential.kind == "oauth",
+            )
+        )
+    ).scalar_one()
+    assert vault.decrypt(row.encrypted_access) == "provider-refreshed-123456"
+    assert vault.decrypt(row.encrypted_refresh) == "provider-refresh-2-9999"
+
+    resp = await client.delete(f"/v1/integrations/{integration_id}")
+    assert resp.status_code == 200
+    audit = (
+        await db_session.execute(
+            select(AccessLog).where(AccessLog.action == "integration.revoke")
+        )
+    ).scalars().all()
+    assert audit
+    assert audit[-1].details["remote_revocation"] == {"ok": True, "mode": "provider"}
 
 
 async def test_revocation_is_immediate(

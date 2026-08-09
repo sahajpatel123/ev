@@ -60,10 +60,17 @@ context leaves the machine; raw memory never does.
 | --- | --- |
 | Ingestion | Level stored on event + propagated to derived memories |
 | Storage | Level indexed; redaction cascade on tombstone |
-| Retrieval | `access="model"` excludes `never_send_to_model` in SQL; `sensitive` requires explicit per-item opt-in |
+| Retrieval | `access="model"` excludes `never_send_to_model` in SQL; `sensitive` is excluded unless explicitly opted in per item |
 | Prompt assembly | Boundary test asserts absence; context builder is the only gateway to the model |
 | Export | All levels included (user owns the data); export is authenticated |
 | Logs | Access log stores ids, not content |
+
+**Enforced in code:** retrieval, conversation history, the model-safe rollup,
+user state, and the live-data slice all exclude `never_send_to_model` (and
+`sensitive` without opt-in) before anything reaches the provider. The gateway
+additionally runs a deterministic payload guard on every call: forbidden
+markers block the call before the provider is invoked, and credential-like
+content is redacted at the boundary.
 
 ## 6. Deletion & redaction
 
@@ -88,12 +95,24 @@ context leaves the machine; raw memory never does.
 ## 8. Model boundary contract (tested)
 
 1. `Retriever.search(access="model")` excludes `never_send_to_model` rows.
-2. `Orchestrator.build_context()` accepts only retrieved items; no code path reads
+2. `sensitive` rows are excluded unless explicitly opted in per item.
+3. `Orchestrator.build_context()` accepts only retrieved items; no code path reads
    raw events into the prompt.
-3. Tests instrument the exact payload sent to the chat provider and assert:
+4. Tests instrument the exact payload sent to the chat provider and assert:
    - No `never_send_to_model` content (by id and text).
    - Assembled context ≤ budget.
    - Tool results bounded and terminating.
+5. The gateway payload guard blocks any provider-bound message or envelope
+   string carrying a `never_send_to_model` marker and redacts credentials
+   before the provider call; blocked calls are recorded as `blocked`, never
+   sent.
+
+## 8a. Privilege separation
+
+- Device tokens authenticate a registered device and may read/write ordinary
+  data, but **cannot** create or revoke devices, list devices, or export the
+  full data bundle. Those surfaces require the master key (`require_master`).
+- Biometric voice deletion/export follow the same master-key ownership rule.
 
 ## 9. App security
 
@@ -164,7 +183,9 @@ retention job.
 - **Webhook integrity:** ingress requires `X-EV-Signature: sha256=<hex>` over
   `X-EV-Timestamp.body`, rejects timestamps outside the skew window, and
   rate-limits per integration. Verified payloads enter the immutable live-event
-  pipeline with idempotent dedupe and fail-closed privacy.
+  pipeline with idempotent dedupe and fail-closed privacy. `X-EV-Delivery-Id`
+  is a database-level idempotency key so provider retries return the original
+  result instead of creating duplicate events.
 - **Plugin sandbox:** plugins are inert until a master-key approval; commands
   run in an isolated subprocess (`python -I -S`) with AST-level rejection of
   imports, dunders, filesystem/network builtins, and dangerous calls. Plugins

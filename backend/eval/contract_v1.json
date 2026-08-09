@@ -513,6 +513,12 @@
     "/v1/tactical/brief": [
       "post"
     ],
+    "/v1/tactical/prepare": [
+      "post"
+    ],
+    "/v1/tactical/quick": [
+      "get"
+    ],
     "/v1/timeline": [
       "get"
     ],

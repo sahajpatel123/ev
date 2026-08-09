@@ -60,6 +60,7 @@ class SynthesisResult:
     text: str
     provider: str
     audio_ref: str | None = None
+    audio: bytes | None = None
     content_type: str | None = None
     ssml: str | None = None
     duration_ms: int | None = None
@@ -111,6 +112,7 @@ class Transcriber(Protocol):
         self,
         *,
         audio_ref: str | None = None,
+        audio_b64: str | None = None,
         text_hint: str | None = None,
         language: str = "en",
     ) -> Transcript: ...

@@ -39,6 +39,23 @@ class Settings(BaseSettings):
     voiceprint_dim: int = 192
     voiceprint_threshold: float = 0.72
 
+    # Voice ASR (speech-to-text). echo = offline transcript hints (dev/test);
+    # openai_compat = any OpenAI-compatible /audio/transcriptions endpoint.
+    voice_asr_provider: str = "echo"  # echo | openai_compat
+    voice_asr_base_url: str | None = None
+    voice_asr_api_key: str | None = None
+    voice_asr_model: str = "whisper-1"
+
+    # Voice TTS (natural speech with urgency/warmth/brevity controls).
+    # meta = offline SSML metadata (dev/test); openai_compat = any
+    # OpenAI-compatible /audio/speech endpoint.
+    voice_tts_provider: str = "meta"  # meta | openai_compat
+    voice_tts_base_url: str | None = None
+    voice_tts_api_key: str | None = None
+    voice_tts_model: str = "gpt-4o-mini-tts"
+    voice_tts_voice: str = "alloy"
+    voice_tts_format: str = "mp3"
+
     # Chat gateway
     chat_provider: str = "echo"  # echo | mock | deepseek
     model_call_log_enabled: bool = True

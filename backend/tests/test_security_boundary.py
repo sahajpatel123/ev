@@ -182,7 +182,12 @@ async def test_chat_excludes_sensitive_memories_without_opt_in(
 
 async def test_rollup_excludes_never_send_and_sensitive_content(
     client: AsyncClient,
+    db_session,
 ) -> None:
+    from uuid import UUID
+
+    from app.ev.rollup import model_safe_rollup
+
     resp = await client.post("/v1/chat", json={"message": "planning the demo"})
     assert resp.status_code == 200, resp.text
     conversation_id = resp.json()["conversation_id"]
@@ -206,10 +211,18 @@ async def test_rollup_excludes_never_send_and_sensitive_content(
     resp = await client.get("/v1/conversation")
     assert resp.status_code == 200, resp.text
     summary = resp.json()["rollup"]["summary"]
-    assert "Qubit-9" not in summary
-    assert "Cardiac episode" not in summary
+    # The user-facing rollup is complete (the user owns their data)...
+    assert "Qubit-9" in summary
+    assert "Cardiac" in summary
     assert "planning" in summary
     assert "demo" in summary
+
+    # ...but the model-facing view physically excludes restricted content.
+    safe = await model_safe_rollup(db_session, UUID(conversation_id))
+    assert "Qubit-9" not in safe.summary
+    assert "Cardiac" not in safe.summary
+    assert "planning" in safe.summary
+    assert "demo" in safe.summary
 
 
 async def test_device_token_cannot_manage_devices_or_export(

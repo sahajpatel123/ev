@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from app.gateway.validation import validate_arguments
 
-
 ACTION_SPECS = [
     {
         "name": "search_memory",

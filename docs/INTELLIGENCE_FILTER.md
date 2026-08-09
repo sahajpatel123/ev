@@ -1,8 +1,10 @@
 # EVIE Intelligence Filter — Architecture v2 (full-duplex, voice-aware, 24/7)
 
-**Status:** architecture design (no implementation yet). Supersedes v1
-(output-only filter). This version treats the filter as the complete **EVIE
-runtime** between the user and the provider brain.
+**Status:** architecture + implementation (deterministic stages live in
+`backend/app/filter/`; the LLM critic and voice/wake hardware tracks remain
+future work). Supersedes v1 (output-only filter). This version treats the
+filter as the complete **EVIE runtime** between the user and the provider
+brain.
 
 ## 1. Independent review of v1 (unbiased)
 
@@ -139,20 +141,26 @@ Every inbound utterance passes through:
 
 Stages (from v1, kept and tightened):
 
-1. **Structural** — validate HUD/JSON contracts; deterministic repair; extract
-   claims.
-2. **Grounding audit** — deterministic (entity/date/number vs context),
-   semantic (claim embeddings vs memory), optional critic. Unsupported
-   personal claims are removed/softened, never kept.
-3. **Persona & style** — enforce mode, length ±40%, directness, assertiveness
-   ceiling, challenge-evidence gating, urgency conciseness, EVIE voice profile.
+1. **Structural** — validate HUD/JSON contracts (`ev.hud.card.v1`,
+   `ev.hud.briefing.v1`, `ev.hud.route.v1`); deterministic repair of missing
+   fields or unparseable JSON; extract claims. *(implemented)*
+2. **Grounding audit** — deterministic claim extraction and verification
+   (entity/date/number overlap against the memories actually in context).
+   Unsupported personal claims are removed, never kept; the audit trails in
+   the filter report. Semantic/embedding verification and an optional critic
+   are future refinements. *(implemented, deterministic)*
+3. **Persona & style** — enforce mode, length bounds, EVIE voice
+   (no generic-assistant phrasing), challenge-evidence gating, and urgency
+   conciseness. *(implemented, rule-based)*
 4. **Safety & privacy** — output-side PII/secret redaction, toxicity,
-   manipulation, dependency nudging, jailbreak leaks.
-5. **Critic & refine** — rubric judge (grounding, persona, actionability,
-   honesty, contract validity); max 2 iterations; staged trust (casual skips,
-   coaching/emergency/health/decision always).
+   manipulation/dependency nudging, jailbreak leaks. *(implemented,
+   deterministic detectors)*
+5. **Critic & refine** — deterministic rubric judge (grounding, persona,
+   actionability, honesty, contract validity) with a max-two-iteration
+   refinement loop; staged trust. A provider-backed LLM critic is future work.
+   *(implemented, rule-based)*
 6. **Finalize** — filter report, response log, SSE `filter-report` event,
-   honest fallback on repeated failure.
+   honest fallback on repeated failure. *(implemented)*
 
 ## 7. Training tracks ("train the model from my data")
 
@@ -234,8 +242,10 @@ IDLE ──wake word──▶ VERIFYING ──voice ok──▶ AWAKE
   provider.
 - Voice samples: attachments with privacy level `sensitive` by default.
 - Audio transcript: becomes an immutable event; audio itself is user-owned.
-- Filter ledger: new table (draft, edits, scores, iterations, costs, envelope
-  hash) + aggregates.
+- Filter ledger: `filter_ledger` table (request id, stage, action, name,
+  severity, detail, draft, final text, scores, iterations, costs, envelope
+  hash, model) + `/v1/filter/ledger` and `/v1/filter/ledger/aggregate`.
+  *(implemented)*
 - Training corpus: versioned snapshots derived from the ledger and events;
   rebuildable, exportable, deletable with the user's data.
 

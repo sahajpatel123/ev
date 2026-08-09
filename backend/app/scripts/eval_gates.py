@@ -35,6 +35,8 @@ LATENCY_BUDGETS_MS = {
 
 MONTHLY_COST_BUDGET_USD = 40.0
 
+HEALTH_BUDGET_MS = 200
+
 CONTRACT_MANIFEST = Path(__file__).resolve().parents[2] / "eval" / "contract_v1.json"
 
 # Roadmap exit gates from docs/ROADMAP.md §3-§8, expressed as API-surface checks.
@@ -481,6 +483,72 @@ def run_observability_gate(spec: dict) -> GateResult:
     return _gate("observability", checks, int((time.perf_counter() - started) * 1000))
 
 
+async def run_latency_gate() -> GateResult:
+    """Measure real API latencies against the documented budgets.
+
+    Runs in-process against the ASGI app with a warm database so results are
+    deterministic enough for a regression gate while still measuring the actual
+    request path (auth, DB, processor, gateway).
+    """
+
+    started = time.perf_counter()
+    import httpx
+
+    from app.config import settings
+    from app.main import app
+
+    checks: list[Check] = []
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {settings.master_key}"},
+        timeout=10.0,
+    ) as client:
+        # Warm up: first request after DB creation may pay connection/compile cost.
+        await client.get("/v1/health")
+
+        for name, method, path, payload in (
+            ("health", "GET", "/v1/health", None),
+            ("event_ack", "POST", "/v1/events", {
+                "source": "eval",
+                "event_type": "note",
+                "text": "EV eval gate latency probe.",
+                "privacy_level": "normal",
+            }),
+            ("timeline_browse", "GET", "/v1/timeline", None),
+            ("chat_first_token", "POST", "/v1/chat", {"message": "ping", "stream": False}),
+        ):
+            tick = time.perf_counter()
+            if method == "GET":
+                resp = await client.get(path)
+            else:
+                resp = await client.post(path, json=payload)
+            elapsed_ms = (time.perf_counter() - tick) * 1000
+            if resp.status_code >= 400:
+                checks.append(
+                    _check(
+                        f"latency_{name}",
+                        False,
+                        f"{method} {path} returned HTTP {resp.status_code}",
+                    )
+                )
+                continue
+            budget = HEALTH_BUDGET_MS if name == "health" else LATENCY_BUDGETS_MS[name]
+            checks.append(
+                _check(
+                    f"latency_{name}",
+                    elapsed_ms <= budget,
+                    f"measured={elapsed_ms:.1f}ms, budget={budget}ms",
+                )
+            )
+
+    return _gate(
+        "latency",
+        checks,
+        int((time.perf_counter() - started) * 1000),
+    )
+
+
 def run_roadmap_gate(spec: dict) -> GateResult:
     started = time.perf_counter()
     paths = cast(dict, spec.get("paths") or {})
@@ -520,14 +588,16 @@ def build_report(gates: list[GateResult]) -> dict:
 
 async def _run_all(session) -> list[GateResult]:
     spec = _openapi()
-    return [
+    gates = [
         run_api_contract_gate(spec),
         run_filter_gate(),
         await run_retrieval_gate(session),
         run_voice_gate(spec),
         run_observability_gate(spec),
+        await run_latency_gate(),
         run_roadmap_gate(spec),
     ]
+    return gates
 
 
 async def _main(report_path: Path) -> int:

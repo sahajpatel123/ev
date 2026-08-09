@@ -147,6 +147,7 @@ class RequestEnvelope:
     device_id: str | None = None
     context_tokens: int = 0
     metadata: dict = field(default_factory=dict)
+    media_refs: list[dict] = field(default_factory=list)
 
     def to_dict(self, *, memory_text_limit: int | None = None) -> dict:
         return {
@@ -157,6 +158,7 @@ class RequestEnvelope:
             "device_id": self.device_id,
             "context_tokens": self.context_tokens,
             "metadata": self.metadata,
+            "media_refs": self.media_refs,
         }
 
 

@@ -53,7 +53,10 @@ material. Integration `config` is non-secret and rejects secret-looking keys.
 2. Rejects timestamps outside `EV_WEBHOOK_MAX_SKEW_SECONDS` (replay window).
 3. Rate-limits per integration (`EV_WEBHOOK_RATE_LIMIT` /
    `EV_WEBHOOK_WINDOW_SECONDS`).
-4. Translates the payload with the adapter and ingests it into the
+4. Treats `X-EV-Delivery-Id` as an idempotency key: a provider retry with the
+   same delivery id returns the original result instead of duplicating events
+   (unique `(integration, delivery_key)` ledger row).
+5. Translates the payload with the adapter and ingests it into the
    integration's live channel through `app/ev/live.py` — immutable,
    idempotent (sha256 dedupe), fail-closed privacy, provenance preserved for
    EV Sense.
@@ -76,7 +79,14 @@ Plugins extend EV with custom skills/commands:
 - `live:emit` lets a command push validated events into a `plugin:{slug}` live
   channel; every run is access-logged.
 
-## 6. Endpoint map
+## 6. Reinstall after revocation
+
+Revoking an integration does not burn its slug: reinstalling with the same
+slug revives the row with a fresh live channel and a clean slate (credentials
+were already wiped, so re-authorization and a new webhook secret are required).
+The old channel and its event history stay intact for the user.
+
+## 7. Endpoint map
 
 | Method | Path |
 | --- | --- |
@@ -93,7 +103,7 @@ Plugins extend EV with custom skills/commands:
 | GET/POST | `/v1/plugins/{id}` · `/approve` · `/reject` · `/enable` · `/disable` |
 | POST | `/v1/plugins/{id}/commands/{command}` |
 
-## 7. Tests
+## 8. Tests
 
 `backend/tests/test_integrations.py` covers adapter catalog/validation, vault
 encryption and non-exposure, scope enforcement, scope-change credential

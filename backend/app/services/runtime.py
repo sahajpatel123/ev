@@ -120,6 +120,92 @@ async def list_runtime_events(
     return list(rows)
 
 
+def runtime_policy() -> dict:
+    """Runtime arbitration/attention policy snapshot for clients and observers."""
+    return {
+        "quiet_hours_start": settings.quiet_hours_start,
+        "quiet_hours_end": settings.quiet_hours_end,
+        "daily_alert_budget": settings.daily_alert_budget,
+        "urgent_priority_threshold": settings.runtime_urgent_priority_threshold,
+        "verify_timeout_seconds": settings.runtime_verify_timeout_seconds,
+        "awake_timeout_seconds": settings.runtime_awake_timeout_seconds,
+        "processing_timeout_seconds": settings.runtime_processing_timeout_seconds,
+        "respond_timeout_seconds": settings.runtime_respond_timeout_seconds,
+        "followup_timeout_seconds": settings.runtime_followup_timeout_seconds,
+        "heartbeat_grace_seconds": settings.runtime_heartbeat_grace_seconds,
+        "dlq_max_attempts": settings.runtime_dlq_max_attempts,
+        "daemon_tick_seconds": settings.runtime_daemon_tick_seconds,
+    }
+
+
+async def runtime_latency(
+    session: AsyncSession,
+    *,
+    session_id: UUID | None = None,
+) -> dict:
+    """Wake-to-reply stage latencies for the latest wake cycle, from the event log.
+
+    Returns None for stages that have not happened yet (e.g. the session is
+    still verifying), so clients can show partial progress without guessing.
+    """
+    if session_id is None:
+        latest = (
+            await session.execute(
+                select(RuntimeSession).order_by(RuntimeSession.started_at.desc()).limit(1)
+            )
+        ).scalars().first()
+        session_id = latest.id if latest else None
+    if session_id is None:
+        return {
+            "session_id": None,
+            "wake_to_awake_ms": None,
+            "wake_to_processing_ms": None,
+            "wake_to_responding_ms": None,
+            "wake_to_follow_up_ms": None,
+        }
+
+    events = list(
+        (
+            await session.execute(
+                select(RuntimeEvent)
+                .where(RuntimeEvent.session_id == session_id)
+                .order_by(RuntimeEvent.occurred_at.asc())
+            )
+        ).scalars().all()
+    )
+    markers: dict[str, datetime] = {}
+    for event in events:
+        if event.kind == "wake" and "wake" not in markers:
+            markers["wake"] = event.occurred_at
+        if event.kind == "transition":
+            to_state = (event.payload or {}).get("to_state")
+            if to_state in ("awake", "processing", "responding", "follow_up"):
+                markers.setdefault(to_state, event.occurred_at)
+    wake_at = _aware(markers.get("wake"))
+    if wake_at is None:
+        return {
+            "session_id": str(session_id),
+            "wake_to_awake_ms": None,
+            "wake_to_processing_ms": None,
+            "wake_to_responding_ms": None,
+            "wake_to_follow_up_ms": None,
+        }
+
+    def _ms(target: datetime | None) -> int | None:
+        if target is None:
+            return None
+        delta = (_aware(target) or wake_at) - wake_at
+        return max(0, int(delta.total_seconds() * 1000))
+
+    return {
+        "session_id": str(session_id),
+        "wake_to_awake_ms": _ms(markers.get("awake")),
+        "wake_to_processing_ms": _ms(markers.get("processing")),
+        "wake_to_responding_ms": _ms(markers.get("responding")),
+        "wake_to_follow_up_ms": _ms(markers.get("follow_up")),
+    }
+
+
 async def active_session(session: AsyncSession) -> RuntimeSession | None:
     result = await session.execute(
         select(RuntimeSession)

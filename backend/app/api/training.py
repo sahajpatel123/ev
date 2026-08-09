@@ -20,6 +20,12 @@ from app.schemas import (
     PersonalizationCalibrationOut,
     PersonalizationDeleteResponse,
     PersonalizationRollbackRequest,
+    TrainingCorpusBuildResponse,
+    TrainingCorpusDeleteResponse,
+    TrainingCorpusEntryOut,
+    TrainingCorpusExportOut,
+    TrainingCorpusRollbackRequest,
+    TrainingCorpusSnapshotOut,
     TrainingTrack,
     VoiceDeleteRequest,
     VoiceEnrollmentDetailOut,
@@ -33,6 +39,7 @@ from app.schemas import (
 )
 from app.services.access_log import log_access
 from app.training import consent as consent_service
+from app.training import corpus as corpus_service
 from app.training import personalization as personalization_service
 from app.training.consent import ConsentRequiredError
 from app.utils.text import utcnow
@@ -55,11 +62,11 @@ def _voice_http(exc: VoiceError) -> HTTPException:
     return HTTPException(status_code=exc.status, detail=exc.message, headers={"X-Error-Code": exc.code})
 
 
-def _personalization_http(exc: Exception) -> HTTPException:
+def _training_http(exc: Exception, *, track: str = "life_data_personalization") -> HTTPException:
     if isinstance(exc, ConsentRequiredError):
         return HTTPException(
             status_code=403,
-            detail="Consent required: grant life_data_personalization consent before calibrating",
+            detail=f"Consent required: grant {track} consent before using this track",
             headers={"X-Error-Code": "consent_required"},
         )
     if isinstance(exc, KeyError):
@@ -285,7 +292,7 @@ async def personalization_calibrate(
         row = await personalization_service.calibrate(session, actor=actor)
         evidence = row.evidence
     except ConsentRequiredError as exc:
-        raise _personalization_http(exc) from exc
+        raise _training_http(exc) from exc
     await session.commit()
     return PersonalizationCalibrateResponse(
         calibration=PersonalizationCalibrationOut.model_validate(row),
@@ -328,7 +335,7 @@ async def personalization_rollback(
             reason=data.reason,
         )
     except (ConsentRequiredError, KeyError) as exc:
-        raise _personalization_http(exc) from exc
+        raise _training_http(exc) from exc
     await session.commit()
     return PersonalizationCalibrationOut.model_validate(row)
 
@@ -343,3 +350,102 @@ async def personalization_delete(
     )
     await session.commit()
     return PersonalizationDeleteResponse(deleted=deleted, applied=False)
+
+
+# --------------------------------------------------------------------------- #
+# Training corpus harvesting (consent-gated, versioned, erasable)
+# --------------------------------------------------------------------------- #
+
+
+@router.post("/corpus/build", response_model=TrainingCorpusBuildResponse, status_code=201)
+async def corpus_build(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> TrainingCorpusBuildResponse:
+    try:
+        snapshot, excluded = await corpus_service.build_snapshot(session, actor=actor)
+    except ConsentRequiredError as exc:
+        raise _training_http(exc, track="training_corpus") from exc
+    await session.commit()
+    return TrainingCorpusBuildResponse(
+        snapshot=TrainingCorpusSnapshotOut.model_validate(snapshot),
+        entry_count=snapshot.entry_count,
+        excluded_never_send_to_model=excluded,
+    )
+
+
+@router.get("/corpus/current", response_model=TrainingCorpusSnapshotOut | None)
+async def corpus_current(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> TrainingCorpusSnapshotOut | None:
+    row = await corpus_service.current_snapshot(session)
+    if row is None:
+        return None
+    return TrainingCorpusSnapshotOut.model_validate(row)
+
+
+@router.get("/corpus/history", response_model=list[TrainingCorpusSnapshotOut])
+async def corpus_history(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[TrainingCorpusSnapshotOut]:
+    rows = await corpus_service.list_snapshots(session)
+    return [TrainingCorpusSnapshotOut.model_validate(r) for r in rows]
+
+
+@router.get("/corpus/{version}/export", response_model=TrainingCorpusExportOut)
+async def corpus_export(
+    version: int,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> TrainingCorpusExportOut:
+    try:
+        row = await corpus_service.get_snapshot(session, version)
+    except KeyError as exc:
+        raise _training_http(exc) from exc
+    await log_access(
+        session,
+        actor=actor,
+        action="corpus_export",
+        endpoint=f"GET /v1/training/corpus/{version}/export",
+        resource_type="training_corpus",
+        resource_ids=[row.id],
+        details={"version": version, "entry_count": row.entry_count},
+    )
+    await session.commit()
+    return TrainingCorpusExportOut(
+        snapshot=TrainingCorpusSnapshotOut.model_validate(row),
+        entries=[TrainingCorpusEntryOut.model_validate(e) for e in row.entries],
+    )
+
+
+@router.post("/corpus/rollback", response_model=TrainingCorpusSnapshotOut)
+async def corpus_rollback(
+    data: TrainingCorpusRollbackRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> TrainingCorpusSnapshotOut:
+    try:
+        row = await corpus_service.rollback(
+            session,
+            target_version=data.target_version,
+            actor=actor,
+            reason=data.reason,
+        )
+    except (ConsentRequiredError, KeyError) as exc:
+        raise _training_http(exc, track="training_corpus") from exc
+    await session.commit()
+    return TrainingCorpusSnapshotOut.model_validate(row)
+
+
+@router.post("/corpus/delete", response_model=TrainingCorpusDeleteResponse)
+async def corpus_delete(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> TrainingCorpusDeleteResponse:
+    deleted = await corpus_service.delete_all(
+        session, actor=actor, reason="user deleted training corpus data"
+    )
+    await session.commit()
+    return TrainingCorpusDeleteResponse(deleted=deleted, redacted=True)
