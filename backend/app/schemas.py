@@ -844,6 +844,7 @@ class TtsOut(BaseModel):
 class VoiceUtteranceRequest(BaseModel):
     session_id: UUID
     text: str | None = Field(default=None, max_length=200_000)
+    audio_b64: str | None = None
     audio_ref: str | None = None
     language: str = "en"
     conversation_id: UUID | None = None

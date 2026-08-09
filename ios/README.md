@@ -17,6 +17,9 @@ and CLI clients — one backend, one memory, one sync contract.
   persist with idempotency keys; `sync(using:)` applies the same contract as
   `ev sync` and the web client: 201 synced, 409 duplicate dropped, 422
   quarantined, network failure preserves the queue.
+- **`EVUI`** — shared SwiftUI views (`TodayView` with HUD card, `CaptureView`
+  with offline queue fallback, `MemoryBrowserView` with audit drill-down) that
+  compile on macOS and are imported by the iPhone/Watch app targets.
 
 ## Module map for the app targets
 
@@ -42,3 +45,10 @@ cd EVClient && swift run EVClientCheck
 runs with Command Line Tools alone). It verifies HUD decode/validate/render,
 idempotent capture (201/409), and offline-queue sync/drop/quarantine/preserve
 behavior against a mocked HTTP transport.
+
+`EVUIValidate` builds the shared SwiftUI views on macOS so the UI layer is
+compile-checked before it is wired into the iOS/Watch app targets:
+
+```sh
+swift run EVUIValidate
+```

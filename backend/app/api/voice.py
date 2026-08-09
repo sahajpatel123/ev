@@ -260,6 +260,7 @@ async def utterance(
         outcome = await runtime.handle_utterance(
             session_id=data.session_id,
             text=data.text,
+            audio_b64=data.audio_b64,
             audio_ref=data.audio_ref,
             language=data.language,
             conversation_id=data.conversation_id,

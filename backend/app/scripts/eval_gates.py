@@ -588,10 +588,15 @@ def build_report(gates: list[GateResult]) -> dict:
 
 async def _run_all(session) -> list[GateResult]:
     spec = _openapi()
+    retrieval = await run_retrieval_gate(session)
+    # Release the retrieval session's transaction before the latency gate
+    # performs its own writes through the app's session (SQLite serializes
+    # writers; an open read transaction would lock the file).
+    await session.commit()
     gates = [
         run_api_contract_gate(spec),
         run_filter_gate(),
-        await run_retrieval_gate(session),
+        retrieval,
         run_voice_gate(spec),
         run_observability_gate(spec),
         await run_latency_gate(),

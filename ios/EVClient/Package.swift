@@ -12,9 +12,12 @@ let package = Package(
     products: [
         .library(name: "EVClient", targets: ["EVClient"]),
         .executable(name: "EVClientCheck", targets: ["EVClientCheck"]),
+        .executable(name: "EVUIValidate", targets: ["EVUIValidate"]),
     ],
     targets: [
         .target(name: "EVClient"),
         .executableTarget(name: "EVClientCheck", dependencies: ["EVClient"]),
+        .target(name: "EVUI", dependencies: ["EVClient"]),
+        .executableTarget(name: "EVUIValidate", dependencies: ["EVUI"]),
     ]
 )

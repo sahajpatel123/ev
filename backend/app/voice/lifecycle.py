@@ -26,7 +26,7 @@ from app.services.event_service import EventService
 from app.training.consent import ConsentRequiredError, require_consent
 from app.utils.text import utcnow
 from app.voice.anti_spoof import LivenessGate, ReplayError, ReplayGuard
-from app.voice.asr import EchoTranscriber
+from app.voice.asr import get_transcriber
 from app.voice.contracts import (
     LivenessChecker,
     SpeakerVerifier,
@@ -39,7 +39,7 @@ from app.voice.contracts import (
 )
 from app.voice.security import decrypt_payload, encrypt_payload
 from app.voice.speaker import ProfileSpeakerVerifier
-from app.voice.tts import MetaSynthesizer, speech_style_from_strategy
+from app.voice.tts import get_synthesizer, speech_style_from_strategy
 from app.voice.wake import default_wake_engine
 
 
@@ -153,8 +153,8 @@ class VoiceRuntime:
         self.actor = actor
         self.wake_engine = wake_engine or default_wake_engine()
         self.verifier = verifier or ProfileSpeakerVerifier()
-        self.transcriber = transcriber or EchoTranscriber()
-        self.synthesizer = synthesizer or MetaSynthesizer()
+        self.transcriber = transcriber or get_transcriber()
+        self.synthesizer = synthesizer or get_synthesizer()
         self.liveness = liveness or LivenessGate()
         self.follow_up_seconds = follow_up_seconds
         self.verify_timeout_seconds = verify_timeout_seconds
@@ -891,6 +891,7 @@ class VoiceRuntime:
         *,
         session_id,
         text: str | None = None,
+        audio_b64: str | None = None,
         audio_ref: str | None = None,
         language: str = "en",
         conversation_id=None,
@@ -936,6 +937,7 @@ class VoiceRuntime:
         row.state = VoiceState.PROCESSING
         transcript = await self.transcriber.transcribe(
             audio_ref=audio_ref,
+            audio_b64=audio_b64,
             text_hint=text,
             language=language,
         )
