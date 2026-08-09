@@ -16,4 +16,5 @@ build/
 .coverage
 htmlcov/
 node_modules/
+.build/
 backend/eval/last-run.json
