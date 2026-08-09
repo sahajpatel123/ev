@@ -51,8 +51,11 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
 - `live_channels` — named permissioned sources (`screen`, `audio`, `health`,
   `app`, `vision`, `location`) with a privacy level and metadata.
 - `live_events` — immutable units of live data: `channel_id`, `occurred_at`,
-  `ingested_at`, `event_type`, `payload`, `device_id`, `privacy_level`,
-  `sha256`, `consumed`. Derived state rebuilds from these; nothing is edited.
+  `ingested_at`, `event_type`, `payload`, `device_id`, `collector`,
+  `privacy_level`, `sha256`, `consumed`. Derived state rebuilds from these;
+  nothing is edited. A unique `(channel_id, sha256)` constraint makes replays
+  idempotent, and event privacy is fail-closed (never less restrictive than
+  the channel's granted permission).
 
 ### API
 
@@ -66,6 +69,9 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
 - `GET /v1/state` includes `live_context` (recent live snippets).
 - EV Sense and the ops center can consume live signals (e.g., late-night screen
   activity feeds the isolation guardrail; health-belt events feed readiness).
+- The chat context compiler includes a separate, privacy-filtered
+  `LIVE CONTEXT` section; `never_send_to_model` channels/events never reach
+  the model-facing slice.
 - `consumed` flag marks events already folded into derived state (rebuildable).
 
 ## 3. E.D.I.T.H. layer (see `EDITH_RESEARCH.md`)
@@ -80,6 +86,8 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
 ## 4. Invariants
 
 - Raw events and live events are immutable (tombstone/append-only).
+- Every live event carries explicit collector provenance and its effective
+  privacy level; ingestion never widens a channel's granted permission.
 - `never_send_to_model` content is excluded at retrieval/context assembly.
 - Resetting a conversation never deletes history.
 - One default thread always exists; `conversation_id` in chat responses is stable.

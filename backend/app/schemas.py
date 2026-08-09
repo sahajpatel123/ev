@@ -1873,7 +1873,6 @@ class VoiceEnrollmentDetailOut(BaseModel):
     consent_id: UUID | None = None
     revoked_at: datetime | None = None
     revoked_reason: str | None = None
-    redacted: bool = False
     supersedes_id: UUID | None = None
     superseded_by_id: UUID | None = None
     reason_for_change: str | None = None
@@ -1941,3 +1940,149 @@ class VoiceExportOut(BaseModel):
     consents: list[ConsentOut] = Field(default_factory=list)
     enrollments: list[VoiceEnrollmentDetailOut] = Field(default_factory=list)
     voiceprints: list[VoicePrintExportOut] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- #
+# Integrations & ecosystem
+# --------------------------------------------------------------------------- #
+
+
+class IntegrationCatalogItem(BaseModel):
+    adapter: str
+    name: str
+    description: str
+    capabilities: list[str]
+    default_scopes: list[str]
+    min_privacy: str
+    privacy_kind: str
+    event_types: list[str]
+    actions: list[dict]
+
+
+class IntegrationCreate(BaseModel):
+    adapter: str = Field(min_length=1, max_length=64)
+    slug: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    name: str = Field(min_length=1, max_length=128)
+    scopes: list[str] = Field(min_length=1)
+    privacy_level: PrivacyLevel = "normal"
+    config: dict = Field(default_factory=dict)
+
+
+class IntegrationOut(BaseModel):
+    id: UUID
+    slug: str
+    adapter: str
+    name: str
+    scopes: list
+    status: str
+    privacy_level: str
+    config: dict
+    live_channel_id: UUID | None = None
+    credential_configured: bool = False
+    webhook_configured: bool = False
+    last_used_at: datetime | None = None
+    last_webhook_at: datetime | None = None
+    revoked_at: datetime | None = None
+    revoked_reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class IntegrationCredentialCreate(BaseModel):
+    access_token: str = Field(min_length=8)
+    refresh_token: str | None = None
+    token_type: str = "Bearer"
+    provider_account_id: str | None = Field(default=None, max_length=256)
+    scopes: list[str] | None = None
+    expires_at: datetime | None = None
+
+
+class IntegrationCredentialOut(BaseModel):
+    kind: str
+    configured: bool
+    scopes: list = Field(default_factory=list)
+    provider_account_id: str | None = None
+    token_fingerprint_prefix: str | None = None
+    expires_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class WebhookSecretOut(BaseModel):
+    configured: bool
+    rotated_at: datetime | None = None
+    # Returned exactly once, on creation/rotation; never re-served later.
+    secret: str | None = None
+
+
+class IntegrationScopeUpdate(BaseModel):
+    scopes: list[str] = Field(min_length=1)
+
+
+class IntegrationActionRequest(BaseModel):
+    action: str = Field(min_length=1, max_length=64)
+    args: dict = Field(default_factory=dict)
+
+
+class IntegrationActionOut(BaseModel):
+    adapter: str
+    action: str
+    result: dict
+    executed_at: datetime
+
+
+class WebhookIngestOut(BaseModel):
+    integration_id: UUID
+    adapter: str
+    accepted: int
+    deduplicated: int
+    channel_id: UUID
+    event_ids: list[UUID] = Field(default_factory=list)
+
+
+class PluginManifest(BaseModel):
+    schema_version: Literal["ev.plugin.v1"] = "ev.plugin.v1"
+    name: str = Field(min_length=1, max_length=128)
+    slug: str = Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$")
+    version: str = Field(min_length=1, max_length=32)
+    description: str = Field(default="", max_length=512)
+    permissions: list[str] = Field(default_factory=list)
+    commands: list[dict] = Field(min_length=1, max_length=50)
+
+
+class PluginOut(BaseModel):
+    id: UUID
+    slug: str
+    name: str
+    version: str
+    status: str
+    permissions: list
+    checksum: str
+    manifest: dict
+    approved_at: datetime | None = None
+    approved_by: str | None = None
+    rejected_reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PluginCommandRequest(BaseModel):
+    args: dict = Field(default_factory=dict)
+
+
+class PluginCommandOut(BaseModel):
+    plugin_id: UUID
+    plugin: str
+    command: str
+    result: dict
+    emitted_events: list[LiveEventOut] = Field(default_factory=list)
+    executed_at: datetime

@@ -193,7 +193,8 @@ def test_gateway_prevalidates_model_tool_calls() -> None:
         [health_spec],
         sensitive_allowed=True,
     )
-    assert allowed[0].status == "ok"
+    assert allowed[0].status in {"ok", "rectified"}
+    assert allowed[0].rectified_arguments["window_days"] == 14
 
 
 def test_output_shape_validation() -> None:

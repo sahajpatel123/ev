@@ -6,12 +6,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
 from app.contracts import ChatMessage, ChatResult, ChatProvider, ToolSpec
 from app.gateway.providers import register_provider
 from app.gateway.service import ModelGateway
+from app.main import app
 from app.security.boundary import ModelBoundaryViolation, guard_model_payload, redact_secrets
 
 
@@ -217,6 +218,8 @@ async def test_device_token_cannot_manage_devices_or_export(
     device_id = registered["device"]["id"]
 
     async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
         headers={"Authorization": f"Bearer {device_token}"},
     ) as device_client:
         resp = await device_client.post("/v1/devices", json={"name": "rogue"})

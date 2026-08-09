@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
-from app.api import companion, core, edith, ev, filter, routines, runtime, training, voice
+from app.api import companion, core, edith, ev, filter, identity, routines, runtime, training, voice
 from app.config import settings
 from app.db import init_db
 
@@ -37,6 +37,7 @@ app.include_router(core.router)
 app.include_router(ev.router)
 app.include_router(companion.router)
 app.include_router(edith.router)
+app.include_router(identity.router)
 app.include_router(routines.router)
 app.include_router(runtime.router)
 app.include_router(training.router)

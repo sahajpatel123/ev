@@ -164,6 +164,10 @@ async def ingest_channel_events(
     if channel is None:
         raise HTTPException(status_code=404, detail="Live channel not found")
     rows = await live.ingest_events(session, channel, events)
+    from app.routines.service import consider_event
+
+    for row in rows:
+        await consider_event(session, live_event=row, channel=channel)
     await session.commit()
     return [LiveEventOut.model_validate(row) for row in rows]
 
@@ -194,6 +198,10 @@ async def ingest_live_batch(
         privacy_level=data.privacy_level,
     )
     rows = await live.ingest_events(session, channel, data.events)
+    from app.routines.service import consider_event
+
+    for row in rows:
+        await consider_event(session, live_event=row, channel=channel)
     await session.commit()
     return [LiveEventOut.model_validate(row) for row in rows]
 

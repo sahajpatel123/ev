@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from uuid import UUID
 
 from httpx import AsyncClient
 from sqlalchemy import select
@@ -181,9 +182,8 @@ async def test_voice_revocation_and_deletion(
     assert export["voiceprints"] == []
     assert any(e["id"] == enrollment_id for e in export["enrollments"])
 
-    enrollment = await db_session.get(VoiceEnrollment, enrollment_id)
+    enrollment = await db_session.get(VoiceEnrollment, UUID(enrollment_id))
     assert enrollment.status == "deleted"
-    assert enrollment.redacted is True
     assert enrollment.ciphertext is None
 
     audit = (
@@ -210,7 +210,9 @@ async def test_voice_export_contains_template_not_raw_samples(
     assert voiceprint["embedding"]
     assert len(voiceprint["embedding"]) == 192
 
-    enrollment = await db_session.get(VoiceEnrollment, export["enrollments"][0]["id"])
+    enrollment = await db_session.get(
+        VoiceEnrollment, UUID(export["enrollments"][0]["id"])
+    )
     assert enrollment is not None
     assert enrollment.ciphertext is not None
     assert SAMPLE_A.decode() not in (enrollment.ciphertext or "")

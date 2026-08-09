@@ -768,6 +768,7 @@ class VoiceEnrollment(Base):
     encoder: Mapped[str] = mapped_column(String(32), default="hash")
     encoder_model: Mapped[str | None] = mapped_column(String(128))
     privacy_level: Mapped[str] = mapped_column(String(32), default="sensitive")
+    redacted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     consent_id: Mapped[UUID | None] = mapped_column(ForeignKey("consent_records.id"))
     ciphertext: Mapped[str | None] = mapped_column(Text)  # Fernet token
     salt: Mapped[str | None] = mapped_column(String(64))

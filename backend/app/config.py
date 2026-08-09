@@ -73,6 +73,10 @@ class Settings(BaseSettings):
     runtime_dlq_max_attempts: int = 3
     runtime_urgent_priority_threshold: float = 0.7
 
+    # Routines & automations
+    scheduler_tick_seconds: int = 60
+    scheduler_max_days_lookahead: int = 366
+
     # Object storage
     object_store_backend: str = "local"  # local | s3
     storage_root: str = "./storage"

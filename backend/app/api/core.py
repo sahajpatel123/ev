@@ -169,6 +169,7 @@ async def health() -> dict:
             "gear_telemetry",
             "fleet_lifecycle",
             "command_ledger",
+            "routines_automations",
         ],
         "providers": {
             "chat": settings.chat_provider,
@@ -218,6 +219,9 @@ async def create_event(
         request_id=request_id,
         idempotency_key=idempotency_key,
     )
+    from app.routines.service import consider_event
+
+    await consider_event(session, event=event)
     await session.commit()
     deltas = await ensure_processed(event.id)
     return EventCreateResponse(
@@ -690,16 +694,17 @@ async def run_chat_pipeline(
         pending_alert_tier=alert_tier,
     )
     rollup = await rollup_service.build_rollup(session, thread_id)
+    model_rollup = await rollup_service.model_safe_rollup(session, thread_id)
     state = await conversation.get_or_create_state(session, thread_id)
     open_questions = list(
-        dict.fromkeys([*(rollup.open_questions or []), *(state.pending_questions or [])])
+        dict.fromkeys([*(model_rollup.open_questions or []), *(state.pending_questions or [])])
     )[:5]
     context, context_tokens = _assemble_context(
         memories,
         user_state=user_state,
         strategy_text=strategy_block(strategy),
         budget=budget,
-        rollup_summary=rollup.summary,
+        rollup_summary=model_rollup.summary,
         open_questions=open_questions,
         history=[
             {
@@ -749,7 +754,7 @@ async def run_chat_pipeline(
             metadata={
                 "context_depth": depth,
                 "open_questions": open_questions,
-                "rollup_summary": (rollup.summary[:500] if rollup.summary else None),
+                "rollup_summary": (model_rollup.summary[:500] if model_rollup.summary else None),
                 "user_state": {
                     "activity": user_state.activity,
                     "current_task": user_state.current_task,
@@ -767,7 +772,8 @@ async def run_chat_pipeline(
             "goals in mind.\n\n"
             f"{context}"
         )
-        gateway = ModelGateway(get_chat_provider())
+        provider = get_chat_provider()
+        gateway = ModelGateway(provider)
         call = await gateway.chat(
             [
                 ChatMessage(role="system", content=system_prompt),
@@ -823,7 +829,7 @@ async def run_chat_pipeline(
             name="intelligence_filter",
             detail={
                 "context_tokens": context_tokens,
-                "provider": get_chat_provider().name,
+                "provider": provider.name,
                 "claims": [c.to_dict() for c in report.claims],
                 "iterations": report.iterations,
                 "passed": report.passed,

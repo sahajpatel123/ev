@@ -6,11 +6,10 @@ from __future__ import annotations
 from datetime import timedelta
 from uuid import UUID
 
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.config import settings
-from app.main import app
 from app.models import RuntimeSession
 from app.utils.text import utcnow
 

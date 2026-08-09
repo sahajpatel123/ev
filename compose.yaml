@@ -75,7 +75,26 @@ services:
       redis:
         condition: service_started
 
+  scheduler:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.workers.scheduler"]
+    env_file: .env
+    environment:
+      EV_DATABASE_URL: postgresql+psycopg://ev:ev@db:5432/ev
+      EV_REDIS_URL: redis://redis:6379/0
+      EV_OBJECT_STORE_BACKEND: s3
+      EV_S3_ENDPOINT_URL: http://minio:9000
+      EV_S3_BUCKET: ev
+      EV_S3_ACCESS_KEY: ev
+      EV_S3_SECRET_KEY: ev-secret
+      EV_PROCESSING_MODE: queue
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
 volumes:
   pgdata:
   miniodata:
-

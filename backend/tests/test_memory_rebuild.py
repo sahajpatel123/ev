@@ -12,6 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Conflict, Entity, EntityRelationship, Event, Memory, MemoryEvent
 
 
+def _utc_iso(value: datetime | None) -> str | None:
+    """Normalize a DB datetime to UTC-naive ISO for content comparison."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).replace(tzinfo=None).isoformat()
+
+
 async def post_event(
     client: AsyncClient,
     text: str,
@@ -69,8 +78,8 @@ async def derived_snapshot(session: AsyncSession) -> dict:
             m.source_type,
             m.is_current,
             m.redacted,
-            m.valid_from.isoformat(),
-            m.valid_until.isoformat() if m.valid_until else None,
+            _utc_iso(m.valid_from),
+            _utc_iso(m.valid_until),
             fp_by_id.get(str(m.superseded_by_id)),
             tuple(sorted(provenance.get(str(m.id), []))),
         )
