@@ -586,8 +586,10 @@ Direction: on-device vision model suggestions, always user-confirmed.
 ### 10.5 Digital twin — **Built**
 Summary of facts, preferences, goals, patterns, relationship, health, with
 per-item provenance (`source_event_ids`, `updated_at`, `version`) linking every
-twin claim to its source events and audit trail. Direction: versioned twin
-snapshots and "what do you know about me?" time-travel views.
+twin claim to its source events and audit trail, plus time travel:
+`GET /v1/twin?as_of={ts}` returns the twin as it stood at a past moment using
+the versioned memory chain. Direction: snapshot diffs ("what changed in my
+twin this month?").
 
 ### 10.6 HUD schemas — **Built**
 `ev.hud.card.v1`, `briefing.v1`, `focus.v1`, `route.v1`, `alert.v1`, enforced by

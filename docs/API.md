@@ -48,6 +48,7 @@
 | POST | `/v1/fleet/tasks/{id}/accept` · `/start` · `/complete` · `/fail` · `/cancel` | Device-scoped task lifecycle | FR-FLEET |
 | GET | `/v1/commands` · `/v1/commands/{id}` | Auditable E.D.I.T.H. command ledger | FR-SEC-XX |
 | GET | `/v1/ops/center` · `/v1/twin` · `/v1/hud/focus` | Ops center / digital twin / HUD overlay | FR-HUD |
+| GET | `/v1/twin?as_of={ts}` | Digital twin at a past moment (time travel) | FR-MEM-02 |
 | GET | `/v1/hud/card` · `/v1/hud/alerts` · `/v1/hud/route` | Strict HUD surface schemas (`ev.hud.*.v1`) | FR-HUD-01 |
 | GET | `/v1/hud/ops` | Unified ops center as HUD command card (`ev.hud.ops.v1`) | FR-HUD-01 |
 | POST | `/v1/tactical/prepare` · GET `/v1/tactical/quick` | Tactical quick cards (`ev.hud.quickcard.v1`, cached) | FR-TACTICAL-03 |
