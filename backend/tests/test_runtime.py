@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models import RuntimeSession
+from app.services.runtime import daemon_tick
 from app.utils.text import utcnow
 
 
@@ -268,3 +269,69 @@ async def test_dead_letter_record_retry_discard(client: AsyncClient) -> None:
     resp = await client.post(f"/v1/runtime/dead-letters/{letter['id']}/discard")
     assert resp.status_code == 200
     assert resp.json()["status"] == "discarded"
+
+
+async def test_dead_letter_carries_entrypoint_for_recovery(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/v1/runtime/dead-letters",
+        json={
+            "queue": "ingestion",
+            "job_id": "job-recover",
+            "payload": {
+                "event_id": "e9",
+                "entrypoint": "app.workers.jobs.process_event",
+                "args": ["e9"],
+            },
+            "error": "boom",
+        },
+    )
+    assert resp.status_code == 201
+    letter = resp.json()
+    assert letter["payload"]["entrypoint"] == "app.workers.jobs.process_event"
+
+    resp = await client.post(f"/v1/runtime/dead-letters/{letter['id']}/retry")
+    assert resp.status_code == 200
+    # In sync test mode there is no Redis to re-enqueue onto, but the letter
+    # must remain observable in a retryable state rather than disappearing.
+    assert resp.json()["status"] == "retrying"
+
+
+async def test_runtime_health_reports_checks(client: AsyncClient) -> None:
+    device = await register_device(client, "health-phone")
+    await heartbeat(client, str(device["id"]), battery_percent=55.0)
+
+    resp = await client.get("/v1/runtime/health")
+    assert resp.status_code == 200, resp.text
+    report = resp.json()
+    assert report["schema_version"] == "ev.runtime.health.v1"
+    assert report["overall"] in ("ok", "degraded", "failed")
+    names = {check["name"] for check in report["checks"]}
+    assert {"database", "state_machine", "listeners", "dead_letters", "queue", "chat_provider"} <= names
+    listeners = next(c for c in report["checks"] if c["name"] == "listeners")
+    assert listeners["online_devices"] == 1
+    assert listeners["listening_devices"] == 1
+
+
+async def test_daemon_tick_expires_stale_session_and_reports(
+    client: AsyncClient, db_session
+) -> None:
+    device = await register_device(client, "daemon-echo")
+    await heartbeat(client, str(device["id"]))
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+    )
+    session_id = UUID(resp.json()["session_id"])
+
+    row = (
+        await db_session.execute(select(RuntimeSession).where(RuntimeSession.id == session_id))
+    ).scalar_one()
+    row.updated_at = utcnow() - timedelta(seconds=settings.runtime_verify_timeout_seconds + 5)
+    await db_session.commit()
+
+    report = await daemon_tick(db_session)
+    await db_session.commit()
+    assert report["expired_session_id"] == str(session_id)
+    assert report["health"]["state"] == "idle"
+    assert report["health"]["overall"] in ("ok", "degraded", "failed")
+    assert "re_enqueued" in report

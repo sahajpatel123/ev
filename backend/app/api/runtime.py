@@ -11,8 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_actor
 from app.db import get_session
+from app.ev.actions import list_action_specs
 from app.models import ApprovedAction, DeadLetter
 from app.schemas import (
+    ActionSpecOut,
     ActionDecisionRequest,
     ApprovedActionCreate,
     ApprovedActionOut,
@@ -82,23 +84,46 @@ async def status(
     return result
 
 
+@router.get("/health")
+async def runtime_health(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """Structured runtime health: DB, state machine, listeners, queue, DLQ."""
+    report = await runtime_service.runtime_health(session)
+    await session.commit()
+    return report
+
+
 @router.post("/actions", response_model=ApprovedActionOut, status_code=201)
 async def route_action(
     data: ApprovedActionCreate,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> ApprovedActionOut:
-    action = await runtime_service.route_action(
-        session, data, requested_by=actor, device_id=data.device_id
-    )
+    try:
+        action = await runtime_service.route_action(
+            session, data, requested_by=actor, device_id=data.device_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
     await session.commit()
     return ApprovedActionOut.model_validate(action)
+
+
+@router.get("/action-specs", response_model=list[ActionSpecOut])
+async def action_specs(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[ActionSpecOut]:
+    """Declared action capabilities: schemas, permissions, undoability."""
+    return [ActionSpecOut.model_validate(spec) for spec in list_action_specs()]
 
 
 @router.get("/actions", response_model=list[ApprovedActionOut])
 async def list_actions(
     status_filter: Literal[
-        "pending", "approved", "denied", "executed", "failed"
+        "pending", "approved", "denied", "executed", "failed", "rolled_back"
     ] | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
@@ -170,6 +195,28 @@ async def execute_action(
             action_id,
             actor=actor,
             result=data.result if data else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return ApprovedActionOut.model_validate(action)
+
+
+@router.post("/actions/{action_id}/rollback", response_model=ApprovedActionOut)
+async def rollback_action(
+    action_id: UUID,
+    data: ActionDecisionRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ApprovedActionOut:
+    try:
+        action = await runtime_service.rollback_action(
+            session,
+            action_id,
+            actor=actor,
+            reason=data.reason if data else None,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
