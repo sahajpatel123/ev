@@ -200,10 +200,11 @@ retention job.
   metadata (never token material).
 - **Webhook integrity:** ingress requires `X-EV-Signature: sha256=<hex>` over
   `X-EV-Timestamp.body`, rejects timestamps outside the skew window, and
-  rate-limits per integration. Verified payloads enter the immutable live-event
-  pipeline with idempotent dedupe and fail-closed privacy. `X-EV-Delivery-Id`
-  is a database-level idempotency key so provider retries return the original
-  result instead of creating duplicate events.
+  rate-limits per integration, with a hard body-size cap
+  (`EV_WEBHOOK_MAX_BODY_BYTES`). Verified payloads enter the immutable
+  live-event pipeline with idempotent dedupe and fail-closed privacy.
+  `X-EV-Delivery-Id` is a database-level idempotency key so provider retries
+  return the original result instead of creating duplicate events.
 - **Plugin sandbox:** plugins are inert until a master-key approval; commands
   run in an isolated subprocess (`python -I -S`) with AST-level rejection of
   imports, dunders, filesystem/network builtins, and dangerous calls. Plugins

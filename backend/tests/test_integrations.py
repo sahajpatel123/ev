@@ -521,6 +521,21 @@ async def test_webhook_delivery_id_is_idempotent(client: AsyncClient) -> None:
     assert resp.json()["accepted"] == 1
 
 
+async def test_webhook_body_size_is_capped(client: AsyncClient) -> None:
+    calendar = await install(client, "calendar")
+    calendar_id = calendar["id"]
+    resp = await client.post(f"/v1/integrations/{calendar_id}/webhook-secret")
+    secret = resp.json()["secret"]
+    payload = {"summary": "x" * 2_000_000, "start": "2026-08-10T10:00:00Z"}
+    resp = await client.post(
+        f"/v1/integrations/webhook/{calendar_id}",
+        content=json.dumps(payload),
+        headers=signed_headers(payload, secret),
+    )
+    assert resp.status_code == 413
+    assert "exceeds" in resp.json()["detail"]
+
+
 async def test_reinstall_after_revoke_revives_same_slug(client: AsyncClient) -> None:
     first = await install(client, "calendar", slug="work-calendar")
     first_id = first["id"]

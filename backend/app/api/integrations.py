@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ActorContext, require_actor, require_master, require_reverification
+from app.config import settings
 from app.db import get_session
 from app.integrations import plugins as plugin_service
 from app.integrations import service as integrations
@@ -261,6 +262,11 @@ async def webhook_ingest(
 ) -> WebhookIngestOut:
     """External webhook ingress: HMAC-verified, replay-protected, rate-limited."""
     body = await request.body()
+    if len(body) > settings.webhook_max_body_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"webhook body exceeds {settings.webhook_max_body_bytes} bytes",
+        )
     try:
         result = await integrations.ingest_webhook(
             session,

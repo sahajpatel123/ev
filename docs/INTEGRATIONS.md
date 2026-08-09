@@ -55,10 +55,12 @@ material. Integration `config` is non-secret and rejects secret-looking keys.
 2. Rejects timestamps outside `EV_WEBHOOK_MAX_SKEW_SECONDS` (replay window).
 3. Rate-limits per integration (`EV_WEBHOOK_RATE_LIMIT` /
    `EV_WEBHOOK_WINDOW_SECONDS`).
-4. Treats `X-EV-Delivery-Id` as an idempotency key: a provider retry with the
+4. Caps payload size at `EV_WEBHOOK_MAX_BODY_BYTES` (default 1 MiB) so oversized
+   deliveries are rejected before parsing or storage.
+5. Treats `X-EV-Delivery-Id` as an idempotency key: a provider retry with the
    same delivery id returns the original result instead of duplicating events
    (unique `(integration, delivery_key)` ledger row).
-5. Translates the payload with the adapter and ingests it into the
+6. Translates the payload with the adapter and ingests it into the
    integration's live channel through `app/ev/live.py` — immutable,
    idempotent (sha256 dedupe), fail-closed privacy, provenance preserved for
    EV Sense.
