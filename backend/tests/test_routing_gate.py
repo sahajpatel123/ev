@@ -75,3 +75,11 @@ async def test_routing_gate_rejects_latency_over_budget(db_session: AsyncSession
     assert result.passed is False
     latency = next(check for check in result.checks if check.name == "latency_budget")
     assert latency.passed is False
+
+
+async def test_routing_gate_cli_path_works_without_injected_session() -> None:
+    """The no-session path (used by the CLI) initializes tables and fails closed."""
+
+    result = await run_routing_gate(min_calls=5)
+    assert result.passed is False
+    assert result.checks[0].name == "evidence_volume"

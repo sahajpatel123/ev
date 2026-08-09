@@ -18,7 +18,7 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import SessionLocal
+from app.db import SessionLocal, init_db
 from app.services.model_call import model_call_stats
 
 
@@ -54,6 +54,7 @@ async def run_routing_gate(
     if session is not None:
         stats = await model_call_stats(session, window_hours=window_hours)
     else:
+        await init_db()
         async with SessionLocal() as own_session:
             stats = await model_call_stats(own_session, window_hours=window_hours)
 
