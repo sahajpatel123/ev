@@ -349,6 +349,108 @@ async def restore(
     return resp.json()
 
 
+async def identity_status(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client()
+    resp = await c.get("/v1/identity/status")
+    if resp.status_code != 200:
+        raise CliError(f"identity status failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def identity_owner_create(
+    display_name: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client()
+    resp = await c.post("/v1/identity/owner", json={"display_name": display_name})
+    if resp.status_code != 201:
+        raise CliError(f"owner creation failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def identity_passkey_add(
+    credential_id: str,
+    name: str,
+    *,
+    device_id: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client()
+    payload: dict[str, Any] = {"credential_id": credential_id, "name": name}
+    if device_id:
+        payload["device_id"] = device_id
+    resp = await c.post("/v1/identity/passkeys", json=payload)
+    if resp.status_code != 201:
+        raise CliError(f"passkey registration failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def identity_passkey_list(
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> list[dict]:
+    c = client or _client()
+    resp = await c.get("/v1/identity/passkeys")
+    if resp.status_code != 200:
+        raise CliError(f"passkey list failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def identity_passkey_remove(
+    passkey_id: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client()
+    resp = await c.delete(f"/v1/identity/passkeys/{passkey_id}")
+    if resp.status_code != 200:
+        raise CliError(f"passkey revocation failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def identity_recovery_redeem(
+    code: str,
+    device_name: str,
+    *,
+    capabilities: list[str] | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Recovery is deliberately unauthenticated: no EV_API_KEY is required."""
+    payload = {
+        "code": code,
+        "device_name": device_name,
+        "capabilities": capabilities or [],
+    }
+    if client is None:
+        async with httpx.AsyncClient(base_url=api_url(), timeout=30.0) as anon:
+            resp = await anon.post("/v1/identity/recovery/redeem", json=payload)
+    else:
+        resp = await client.post("/v1/identity/recovery/redeem", json=payload)
+    if resp.status_code != 201:
+        raise CliError(f"recovery redeem failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def identity_reverification_issue(
+    purpose: str,
+    *,
+    session_id: str | None = None,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client()
+    payload: dict[str, Any] = {"purpose": purpose}
+    if session_id:
+        payload["voice_session_id"] = session_id
+    resp = await c.post("/v1/identity/reverification", json=payload)
+    if resp.status_code != 200:
+        raise CliError(f"re-verification failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
 async def card(
     *,
     client: httpx.AsyncClient | None = None,
@@ -705,6 +807,82 @@ async def _run(args: argparse.Namespace) -> int:
         for error in summary["errors"]:
             print(f"  error: {error}", file=sys.stderr)
         return 0
+    if cmd == "identity":
+        action = args.identity_command
+        if action == "status":
+            async with _client() as client:
+                status = await identity_status(client=client)
+            print(f"owner: {'established' if status['owner_established'] else 'NOT ESTABLISHED'}")
+            print(f"trust: {status['trust_level']}  actor: {status['actor']}")
+            print(f"devices: {status['devices_active']}  passkeys: {status['passkeys_active']}")
+            print(f"recovery codes remaining: {status['recovery_codes_remaining']}")
+            print(f"recovery locked: {status['recovery_locked']}")
+            return 0
+        if action == "owner":
+            async with _client() as client:
+                result = await identity_owner_create(args.name, client=client)
+            print(f"owner {result['owner_id']} created: {result['display_name']}")
+            print("one-time recovery codes (store offline, never in EV):")
+            for item in result["recovery_codes"]:
+                print(f"  {item['label']}: {item['code']}  (expires {item['expires_at']})")
+            return 0
+        if action == "passkey":
+            passkey_action = args.identity_passkey_command
+            if passkey_action == "add":
+                async with _client() as client:
+                    result = await identity_passkey_add(
+                        args.credential_id,
+                        args.name,
+                        device_id=args.device_id,
+                        client=client,
+                    )
+                print(f"passkey {result['passkey']['id']} registered: {result['passkey']['name']}")
+                return 0
+            if passkey_action == "list":
+                async with _client() as client:
+                    rows = await identity_passkey_list(client=client)
+                if not rows:
+                    print("no passkeys registered")
+                    return 0
+                for row in rows:
+                    print(
+                        f"{row['id']}  {row['name']}  "
+                        f"device={row.get('device_id') or 'any'}  "
+                        f"created={row['created_at']}"
+                    )
+                return 0
+            if passkey_action == "remove":
+                async with _client() as client:
+                    result = await identity_passkey_remove(args.passkey_id, client=client)
+                print(f"passkey {result['id']} revoked ({result['revoked_reason']})")
+                return 0
+            raise CliError(f"unknown identity passkey command: {passkey_action}")
+        if action == "recovery":
+            result = await identity_recovery_redeem(
+                args.code,
+                args.device_name,
+                capabilities=args.capability,
+            )
+            print(f"recovery redeemed -> owner {result['owner_id']}")
+            print(f"new device {result['device']['id']} ({result['device']['trust_level']})")
+            print(f"device token: {result['token']}")
+            print("prior devices were revoked; store this token in the keychain.")
+            return 0
+        if action == "verify":
+            async with _client() as client:
+                result = await identity_reverification_issue(
+                    args.purpose,
+                    session_id=args.session_id,
+                    client=client,
+                )
+            print(result["token"])
+            print(
+                f"purpose={result['purpose']} expires={result['expires_at']} "
+                "(single-use; pass as X-EV-Reverify)",
+                file=sys.stderr,
+            )
+            return 0
+        raise CliError(f"unknown identity command: {action}")
     raise CliError(f"unknown command: {cmd}")
 
 
@@ -791,6 +969,51 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("queue", help="list queued offline captures")
     sub.add_parser("sync", help="send queued offline captures")
+
+    p_identity = sub.add_parser("identity", help="identity & trust lifecycle")
+    id_sub = p_identity.add_subparsers(dest="identity_command", required=True)
+    id_sub.add_parser("status", help="show owner binding and trust state")
+    p_owner = id_sub.add_parser("owner", help="establish the owner identity (master key)")
+    p_owner.add_argument("--name", default="Owner", help="display name")
+    p_passkey = id_sub.add_parser("passkey", help="manage passkeys")
+    pk_sub = p_passkey.add_subparsers(dest="identity_passkey_command", required=True)
+    p_pk_add = pk_sub.add_parser("add", help="register a WebAuthn credential id")
+    p_pk_add.add_argument("--credential-id", required=True, help="WebAuthn credential id")
+    p_pk_add.add_argument("--name", required=True, help="human label")
+    p_pk_add.add_argument("--device-id", default=None, help="bound device id")
+    pk_sub.add_parser("list", help="list registered passkeys")
+    p_pk_remove = pk_sub.add_parser("remove", help="revoke a passkey (master key)")
+    p_pk_remove.add_argument("passkey_id", help="passkey id to revoke")
+    p_recovery = id_sub.add_parser(
+        "recovery",
+        help="redeem a one-time recovery code (no API key required)",
+    )
+    p_recovery.add_argument("--code", required=True, help="recovery code")
+    p_recovery.add_argument("--device-name", required=True, help="new device name")
+    p_recovery.add_argument(
+        "--capability",
+        action="append",
+        default=[],
+        help="device capability (repeatable)",
+    )
+    p_verify = id_sub.add_parser(
+        "verify",
+        help="issue a single-use re-verification proof for a sensitive action",
+    )
+    p_verify.add_argument(
+        "--purpose",
+        required=True,
+        choices=[
+            "integration.action",
+            "memory.delete",
+            "runtime.action",
+            "voice.revoke",
+            "voice.delete",
+            "recovery.rotate",
+            "voice.sensitive_action",
+        ],
+    )
+    p_verify.add_argument("--session-id", default=None, help="bound voice session id")
     return parser
 
 

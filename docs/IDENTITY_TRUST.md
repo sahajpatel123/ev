@@ -59,3 +59,15 @@ Voice sessions are bound to the device that woke them and to the owner record.
 Verify, utterance, follow-up, status, and end reject any other device
 (`session_device_mismatch`) or any device of a different owner
 (`session_owner_mismatch`), so an unlocked session cannot be silently inherited.
+
+## CLI surface
+
+`ev identity` exposes the lifecycle to scripts and headless clients:
+
+- `ev identity status` — owner binding, trust level, devices, passkeys, recovery.
+- `ev identity owner --name "..."` — master-only ceremony; prints one-time codes.
+- `ev identity passkey add|list|remove` — passkey binding/revocation.
+- `ev identity recovery redeem --code ... --device-name ...` — unauthenticated
+  recovery path; revokes the prior fleet and prints a fresh owner device token.
+- `ev identity verify --purpose memory.delete` — prints a single-use proof to
+  pass as `X-EV-Reverify` for sensitive API calls.

@@ -18,6 +18,13 @@ from clients.cli import (
     enqueue_capture,
     export_bundle,
     forget,
+    identity_owner_create,
+    identity_passkey_add,
+    identity_passkey_list,
+    identity_passkey_remove,
+    identity_recovery_redeem,
+    identity_reverification_issue,
+    identity_status,
     import_bundle_file,
     list_queue,
     memories,
@@ -246,3 +253,42 @@ async def test_cli_attach_file_capture_roundtrip(
     resp = await client.get(f"/v1/attachments/{attachment['id']}")
     assert resp.status_code == 200
     assert resp.content == payload
+
+
+async def test_cli_identity_owner_passkey_lifecycle(client: AsyncClient) -> None:
+    status = await identity_status(client=client)
+    assert status["owner_established"] is False
+
+    owner = await identity_owner_create("Sahaj", client=client)
+    assert owner["owner_id"]
+    assert len(owner["recovery_codes"]) == 8
+
+    status = await identity_status(client=client)
+    assert status["owner_established"] is True
+    assert status["trust_level"] == "master"
+
+    registered = await identity_passkey_add(
+        "cli-credential-id-0001",
+        "cli key",
+        client=client,
+    )
+    passkey_id = registered["passkey"]["id"]
+    rows = await identity_passkey_list(client=client)
+    assert len(rows) == 1
+
+    revoked = await identity_passkey_remove(passkey_id, client=client)
+    assert revoked["revoked_at"] is not None
+    assert await identity_passkey_list(client=client) == []
+
+
+async def test_cli_identity_verify_and_recovery_redeem(client: AsyncClient) -> None:
+    owner = await identity_owner_create("Sahaj", client=client)
+    proof = await identity_reverification_issue("memory.delete", client=client)
+    assert proof["token"]
+    assert proof["purpose"] == "memory.delete"
+
+    # Recovery redeem works through the same API (real CLI path is unauthenticated).
+    code = owner["recovery_codes"][0]["code"]
+    redeemed = await identity_recovery_redeem(code, "new-phone", client=client)
+    assert redeemed["device"]["trust_level"] == "owner"
+    assert redeemed["token"]
