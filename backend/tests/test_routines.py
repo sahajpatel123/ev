@@ -492,6 +492,7 @@ async def test_repeated_failures_create_deduplicated_alerts(
     assert alerts[0].kind == "automation_failure"
     assert "fragile" in alerts[0].title
     assert alerts[0].details["routine_id"] == str(routine.id)
+    assert (await overview(db_session)).pending_failure_alerts == 1
 
     # Same pending alert suppresses re-alerting.
     assert await detect_repeated_failures(db_session) == []

@@ -37,6 +37,10 @@ from app.utils.text import sha256_hex, utcnow
 TRIGGER_OPS = {"eq", "ne", "lt", "lte", "gt", "gte", "contains", "in", "exists"}
 
 
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=utcnow().tzinfo)
+
+
 def _validate_trigger_spec(spec: dict) -> None:
     if not isinstance(spec, dict):
         raise ValueError("Trigger spec must be an object")
@@ -934,7 +938,7 @@ async def overview(session: AsyncSession, *, now: datetime | None = None) -> Rou
             select(RoutineRun).order_by(RoutineRun.created_at.desc()).limit(500)
         )
     ).scalars().all()
-    runs_24h = [r for r in runs if r.created_at >= since]
+    runs_24h = [r for r in runs if _aware(r.created_at) >= since]
     failed_24h = [r for r in runs_24h if r.status == "failed"]
     awaiting = [r for r in runs if r.status == "awaiting_approval"]
     pending_alerts = (
