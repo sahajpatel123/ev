@@ -15,9 +15,12 @@ from clients.cli import (
     card,
     correct,
     enqueue_capture,
+    export_bundle,
     forget,
+    import_bundle_file,
     list_queue,
     memories,
+    onboarding,
     restore,
     sync_captures,
     timeline,
@@ -184,3 +187,39 @@ async def test_sync_quarantines_invalid_payload(client: AsyncClient, tmp_path: P
     assert quarantine.exists()
     entries = [json.loads(line) for line in quarantine.read_text().splitlines()]
     assert entries[0]["idempotency_key"] == "cli-invalid-key"
+
+
+async def test_cli_import_bundle_merge_roundtrip(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    await capture("Import me later.", client=client)
+    bundle = await export_bundle(client=client)
+    path = tmp_path / "bundle.json"
+    path.write_text(json.dumps(bundle, default=str), encoding="utf-8")
+
+    summary = await import_bundle_file(path, mode="merge", client=client)
+    assert summary["completed_at"]
+    assert summary["events_total"] >= 1
+    # Same DB: every event already exists, so the merge dedupes by content hash.
+    assert summary["events_imported"] == 0
+    assert summary["events_skipped"] >= 1
+
+
+async def test_cli_onboarding_creates_first_memories_and_audit(
+    client: AsyncClient,
+) -> None:
+    result = await onboarding(
+        [
+            "I prefer fixed-term contracts for client work.",
+            "Goal: ship EV this month.",
+            "Sam likes local AI tools.",
+        ],
+        client=client,
+    )
+    assert len(result["events"]) == 3
+    assert all(event["source"] == "onboarding" for event in result["events"])
+    assert result["audits"]
+    first = result["audits"][0]
+    assert first["memory"]["id"]
+    assert first["source_events"]
+    assert first["versions"]

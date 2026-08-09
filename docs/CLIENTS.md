@@ -87,6 +87,8 @@ ev forget <memory_id> | ev restore <memory_id>
 ev card                                          # ev.hud.card.v1 text render
 ev doctor | ev checkup                           # health / full calibration
 ev export --output ev-bundle.json
+ev import ev-bundle.json --mode merge            # event-sourced restore/merge
+ev onboarding "first memory" ...                 # guided first memories + audit
 ev queue | ev sync                               # offline captures -> server
 ```
 

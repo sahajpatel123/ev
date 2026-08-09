@@ -581,9 +581,9 @@ async def _run(args: argparse.Namespace) -> int:
         async with _client() as client:
             result = await onboarding(texts, client=client)
         print(f"EV remembers {len(result['events'])} things.")
-        for audit in result["audits"]:
-            memory = audit["memory"]
-            sources = len(audit["source_events"])
+        for trail in result["audits"]:
+            memory = trail["memory"]
+            sources = len(trail["source_events"])
             print(
                 f"  audit: {memory['memory_type']} v{memory['version']} — "
                 f"{memory['text'][:80]} ({sources} source events)"
