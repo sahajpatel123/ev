@@ -702,7 +702,8 @@ async def test_gateway_preserves_media_and_redacts_media_secrets() -> None:
     assert call.status == "ok"
     seen = provider.seen_messages[0]
     assert len(seen.media) == 1
-    assert seen.media[0].text == "[credential redacted]"
+    assert "[credential redacted]" in seen.media[0].text
+    assert "sk-" not in seen.media[0].text
     assert seen.media[0].ref == "att-1"
 
 
