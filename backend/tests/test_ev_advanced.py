@@ -476,6 +476,18 @@ async def test_user_state_engine(client: AsyncClient) -> None:
     assert state["updated_at"] is not None
 
 
+async def test_user_state_includes_active_focus(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/v1/focus",
+        json={"label": "Ship EV demo", "kind": "goal", "reason": "test"},
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.get("/v1/state")
+    assert resp.status_code == 200
+    assert resp.json()["current_focus"] == "Ship EV demo"
+
+
 async def test_device_pairing_and_revocation(client: AsyncClient) -> None:
     resp = await client.post(
         "/v1/devices",

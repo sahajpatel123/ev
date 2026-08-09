@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev import live
-from app.models import DecisionOutcome, Entity, Event, LiveChannel, Memory
+from app.models import DecisionOutcome, Entity, Event, FocusDesignation, LiveChannel, Memory
 from app.schemas import UserStateOut
 from app.utils.text import utcnow
 
@@ -72,6 +72,16 @@ async def build_user_state(
         if payload.get("status", "active") == "active":
             active_goal = goal.text
             break
+
+    # Active focus designation: what EV is currently locked onto.
+    focus_stmt = (
+        select(FocusDesignation)
+        .where(FocusDesignation.active.is_(True))
+        .order_by(FocusDesignation.started_at.desc())
+        .limit(1)
+    )
+    focus_row = (await session.execute(focus_stmt)).scalars().first()
+    current_focus = focus_row.label if focus_row else None
 
     # Active project from @mentions or project entities in recent memories.
     active_project = None
@@ -161,6 +171,7 @@ async def build_user_state(
     ]
     return UserStateOut(
         activity=_infer_activity(recent_text),
+        current_focus=current_focus,
         active_project=active_project,
         active_goal=active_goal,
         current_task=current_task,
