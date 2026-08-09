@@ -332,6 +332,50 @@ class MessagingAdapter(Adapter):
         ]
 
 
+SEARCH_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
+    "url": ("url", "link", "href"),
+    "title": ("title", "name", "headline"),
+    "snippet": ("snippet", "description", "summary", "text"),
+    "published_at": ("published_at", "published", "date", "publishedAt"),
+}
+
+SEARCH_RESULT_LIMIT = 20
+SEARCH_TEXT_LIMIT = 500
+
+
+def normalize_search_results(raw: list | None) -> dict:
+    """Canonical cited-result shape: bounded, sanitized, deterministic.
+
+    Provider payloads vary (url/link/href, title/name, snippet/description),
+    so every result is normalized to ``{title, url, snippet, published_at}``,
+    restricted to http(s) URLs, length-bounded, capped at 20 results, and
+    accompanied by a numbered citation list for traceable quoting.
+    """
+    normalized: list[dict] = []
+    for item in (raw or [])[:SEARCH_RESULT_LIMIT]:
+        if not isinstance(item, dict):
+            continue
+        result: dict = {"title": "", "url": "", "snippet": "", "published_at": None}
+        for result_field, keys in SEARCH_RESULT_FIELDS.items():
+            for key in keys:
+                value = item.get(key)
+                if isinstance(value, str) and value.strip():
+                    result[result_field] = value.strip()[:SEARCH_TEXT_LIMIT]
+                    break
+        url = result["url"]
+        if not url.startswith(("http://", "https://")):
+            continue
+        normalized.append(result)
+    return {
+        "results": normalized,
+        "citations": [
+            {"index": index, "title": result["title"] or result["url"], "url": result["url"]}
+            for index, result in enumerate(normalized, start=1)
+        ],
+        "result_count": len(normalized),
+    }
+
+
 @dataclass(frozen=True)
 class SearchAdapter(Adapter):
     """Permissioned web/research search behind the standard adapter contract."""
@@ -358,9 +402,9 @@ class SearchAdapter(Adapter):
                 "mode": "local",
                 "action": action,
                 "query": args.get("query"),
-                "results": [],
+                **normalize_search_results([]),
             }
-        return result
+        return {**result, **normalize_search_results(result.get("results"))}
 
 
 BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
