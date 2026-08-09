@@ -49,6 +49,8 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("get_patterns", 2, "The message asks about behavior patterns.")
     if any(t in lowered for t in ("when did", "history", "timeline", "what happened")):
         add("search_timeline", 2, "The message asks about past events.")
+    if any(t in lowered for t in ("decision", "decided", "what did i decide")):
+        add("search_decisions", 3, "The message asks about past decisions.")
     add("search_memory", 1, "Default: personal memory lookup.")
 
     best = max(scores, key=lambda item: item[1])

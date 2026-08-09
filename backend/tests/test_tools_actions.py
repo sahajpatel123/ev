@@ -16,6 +16,9 @@ async def test_registry_declares_execution_boundaries(client) -> None:
     assert specs
     names = {s["name"] for s in specs}
     assert "calculate" in names
+    assert "search_decisions" in names
+    decisions_spec = next(s for s in specs if s["name"] == "search_decisions")
+    assert decisions_spec["output"]["required"] == ["count", "results"]
     for spec in specs:
         assert spec["parameters"]["additionalProperties"] is False
         assert isinstance(spec["output"], dict)
@@ -149,11 +152,35 @@ async def test_tool_selection_routes_extended_intents(client) -> None:
         "compute 12 * 12": "calculate",
         "who is Maya?": "get_person",
         "anything on my calendar tomorrow?": "get_upcoming_alerts",
+        "what did I decide about SQLite?": "search_decisions",
     }
     for message, expected in cases.items():
         resp = await client.post("/v1/gateway/select-tool", json={"message": message})
         assert resp.status_code == 200, resp.text
         assert resp.json()["selected"] == expected, message
+
+
+async def test_search_decisions_tool_returns_decision_memory(client) -> None:
+    resp = await client.post(
+        "/v1/events",
+        json={
+            "source": "test",
+            "event_type": "note",
+            "text": "I decided to use SQLite for local testing.",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.post(
+        "/v1/gateway/tools",
+        json={"name": "search_decisions", "arguments": {"query": "SQLite", "k": 5}},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["result"]["count"] >= 1
+    assert all(r["memory_type"] == "decision" for r in body["result"]["results"])
+    assert any("SQLite" in r["text"] for r in body["result"]["results"])
 
 
 def test_gateway_prevalidates_model_tool_calls() -> None:

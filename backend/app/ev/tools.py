@@ -130,6 +130,24 @@ TOOL_SPECS = [
         "undoable": False,
     },
     {
+        "name": "search_decisions",
+        "description": "Search past decisions (current and historical decision memory).",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "k": {"type": "integer", "minimum": 1, "maximum": 20, "default": 10},
+            },
+            "required": ["query"],
+        },
+        "output": {"type": "object", "required": ["count", "results"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "memory:read",
+        "undoable": False,
+    },
+    {
         "name": "search_timeline",
         "description": "Search the raw event timeline.",
         "parameters": {
@@ -393,6 +411,27 @@ async def _handle(session: AsyncSession, name: str, args: dict) -> dict:
                     "provenance": h.source_event_ids,
                 }
                 for h in memory_hits[: int(args.get("k", 10))]
+            ],
+        }
+    if name == "search_decisions":
+        decision_hits = await retriever.search(
+            str(args.get("query", "")),
+            k=int(args.get("k", 10)),
+            access="model",
+            memory_types=["decision"],
+        )
+        return {
+            "count": len(decision_hits),
+            "results": [
+                {
+                    "id": h.memory_id,
+                    "text": h.text,
+                    "memory_type": h.memory_type,
+                    "score": h.score,
+                    "date": h.event_time.isoformat() if h.event_time else None,
+                    "provenance": h.source_event_ids,
+                }
+                for h in decision_hits[: int(args.get("k", 10))]
             ],
         }
     if name == "search_timeline":
