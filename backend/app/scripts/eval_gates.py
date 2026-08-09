@@ -20,6 +20,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 # Budgets are engineering invariants from docs/EVALUATION.md §8 and
 # docs/DEPLOYMENT.md §10. Keep them in code so gates can enforce them and the
@@ -37,7 +38,7 @@ MONTHLY_COST_BUDGET_USD = 40.0
 CONTRACT_MANIFEST = Path(__file__).resolve().parents[2] / "eval" / "contract_v1.json"
 
 # Roadmap exit gates from docs/ROADMAP.md §3-§8, expressed as API-surface checks.
-ROADMAP_GATES = {
+ROADMAP_GATES: dict[str, dict[str, object]] = {
     "M0-skeleton": {
         "endpoints": [
             ("/v1/events", "post"),
@@ -275,7 +276,7 @@ def run_filter_gate() -> GateResult:
     checks.append(
         _check(
             "grounded_claim_kept",
-            claims and claims[0].supported and claims[0].action == "keep",
+            bool(claims and claims[0].supported and claims[0].action == "keep"),
             f"claims={[c.action for c in claims]}",
         )
     )
@@ -287,9 +288,11 @@ def run_filter_gate() -> GateResult:
     checks.append(
         _check(
             "ungrounded_claim_removed",
-            claims_unsupported
-            and not claims_unsupported[0].supported
-            and claims_unsupported[0].action == "remove",
+            bool(
+                claims_unsupported
+                and not claims_unsupported[0].supported
+                and claims_unsupported[0].action == "remove"
+            ),
             f"claims={[c.action for c in claims_unsupported]}",
         )
     )
@@ -480,20 +483,22 @@ def run_observability_gate(spec: dict) -> GateResult:
 
 def run_roadmap_gate(spec: dict) -> GateResult:
     started = time.perf_counter()
-    paths = spec.get("paths", {})
+    paths = cast(dict, spec.get("paths") or {})
     checks: list[Check] = []
     for milestone, gate in ROADMAP_GATES.items():
-        missing = [
-            f"{method.upper()} {path}"
-            for path, method in gate["endpoints"]
-            if method not in {m.lower() for m in paths.get(path, {})}
-        ]
+        missing: list[str] = []
+        endpoints = cast(list[tuple[str, str]], gate.get("endpoints") or [])
+        for path, method in endpoints:
+            methods = cast(set, paths.get(path, {}))
+            if method not in {m.lower() for m in methods}:
+                missing.append(f"{method.upper()} {path}")
+        note = gate.get("note")
         checks.append(
             _check(
                 milestone,
                 not missing,
                 "missing=" + (", ".join(sorted(missing)) if missing else "all endpoints present.")
-                + (f" {gate.get('note', '')}" if gate.get("note") else ""),
+                + (f" {note}" if note else ""),
             )
         )
     return _gate("roadmap", checks, int((time.perf_counter() - started) * 1000))

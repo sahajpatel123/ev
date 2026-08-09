@@ -41,8 +41,23 @@
     "/v1/companionship/scan": [
       "post"
     ],
+    "/v1/compliance/erasure": [
+      "post"
+    ],
+    "/v1/compliance/policy": [
+      "get"
+    ],
+    "/v1/compliance/retention/sweep": [
+      "post"
+    ],
+    "/v1/compliance/transparency": [
+      "get"
+    ],
     "/v1/conflicts": [
       "get"
+    ],
+    "/v1/consolidate": [
+      "post"
     ],
     "/v1/continue": [
       "post"
@@ -186,6 +201,13 @@
     "/v1/identity/owner": [
       "post"
     ],
+    "/v1/identity/passkeys": [
+      "get",
+      "post"
+    ],
+    "/v1/identity/passkeys/{passkey_id}": [
+      "delete"
+    ],
     "/v1/identity/recovery/codes": [
       "post"
     ],
@@ -228,6 +250,9 @@
       "get",
       "post"
     ],
+    "/v1/integrations/{integration_id}/credentials/refresh": [
+      "post"
+    ],
     "/v1/integrations/{integration_id}/events": [
       "get"
     ],
@@ -254,10 +279,19 @@
     "/v1/live/rebuild": [
       "post"
     ],
+    "/v1/live/retention": [
+      "post"
+    ],
     "/v1/live/status": [
       "get"
     ],
+    "/v1/live/stream": [
+      "get"
+    ],
     "/v1/memories": [
+      "get"
+    ],
+    "/v1/memories/changes": [
       "get"
     ],
     "/v1/memories/{memory_id}": [
@@ -452,7 +486,13 @@
     "/v1/runtime/status": [
       "get"
     ],
+    "/v1/runtime/sync": [
+      "get"
+    ],
     "/v1/runtime/transition": [
+      "post"
+    ],
+    "/v1/runtime/verify": [
       "post"
     ],
     "/v1/runtime/wake": [
@@ -486,6 +526,39 @@
     "/v1/training/consent/{track}/revoke": [
       "post"
     ],
+    "/v1/training/corpus/build": [
+      "post"
+    ],
+    "/v1/training/corpus/current": [
+      "get"
+    ],
+    "/v1/training/corpus/delete": [
+      "post"
+    ],
+    "/v1/training/corpus/history": [
+      "get"
+    ],
+    "/v1/training/corpus/rollback": [
+      "post"
+    ],
+    "/v1/training/corpus/{version}/export": [
+      "get"
+    ],
+    "/v1/training/personalization/calibrate": [
+      "post"
+    ],
+    "/v1/training/personalization/calibration": [
+      "get"
+    ],
+    "/v1/training/personalization/delete": [
+      "post"
+    ],
+    "/v1/training/personalization/history": [
+      "get"
+    ],
+    "/v1/training/personalization/rollback": [
+      "post"
+    ],
     "/v1/training/voice/delete": [
       "post"
     ],
@@ -513,8 +586,17 @@
     "/v1/vision/annotate": [
       "post"
     ],
+    "/v1/vision/analyze": [
+      "post"
+    ],
     "/v1/vision/log": [
       "get"
+    ],
+    "/v1/vision/perceptions": [
+      "get"
+    ],
+    "/v1/vision/recognitions/{recognition_id}/confirm": [
+      "post"
     ],
     "/v1/voice/enroll": [
       "post"
