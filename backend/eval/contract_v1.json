@@ -616,6 +616,9 @@
     "/v1/training/filter/recalibration": [
       "get"
     ],
+    "/v1/training/filter/recalibration/apply": [
+      "post"
+    ],
     "/v1/training/filter/recalibration/delete": [
       "post"
     ],

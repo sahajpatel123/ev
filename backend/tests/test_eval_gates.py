@@ -31,8 +31,8 @@ def test_filter_gate_passes() -> None:
     assert result.passed, result.to_dict()
 
 
-def test_voice_gate_passes() -> None:
-    result = run_voice_gate(_spec())
+async def test_voice_gate_passes() -> None:
+    result = await run_voice_gate(_spec())
     assert result.passed, result.to_dict()
 
 

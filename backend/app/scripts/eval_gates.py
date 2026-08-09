@@ -387,7 +387,7 @@ async def run_retrieval_gate(session) -> GateResult:
     return _gate("retrieval", checks, int((time.perf_counter() - started) * 1000))
 
 
-def run_voice_gate(spec: dict) -> GateResult:
+async def run_voice_gate(spec: dict) -> GateResult:
     started = time.perf_counter()
     checks: list[Check] = []
     required = [
@@ -428,6 +428,109 @@ def run_voice_gate(spec: dict) -> GateResult:
             f"samples item type={item_type!r}",
         )
     )
+
+    # Live round-trip: consent -> enroll (base64 samples) -> verify owner ->
+    # reject intruder -> export template. Exercises the real consent-gated
+    # voiceprint path, not just the OpenAPI surface.
+    import base64
+
+    import httpx
+
+    from app.config import settings
+    from app.main import app
+
+    owner = b"owner-voice-sample-" * 40
+    intruder = b"other-speaker-sample-" * 40
+
+    def samples(pattern: bytes, count: int) -> list[str]:
+        return [
+            base64.b64encode(pattern + bytes([i])).decode("ascii")
+            for i in range(count)
+        ]
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {settings.master_key}"},
+        timeout=20.0,
+    ) as client:
+        consent = await client.post(
+            "/v1/training/consent", json={"track": "voice_enrollment"}
+        )
+        checks.append(
+            _check(
+                "voice_consent_granted",
+                consent.status_code == 201,
+                f"HTTP {consent.status_code}",
+            )
+        )
+
+        enroll = await client.post(
+            "/v1/training/voice/enroll",
+            json={"samples": samples(owner, 5)},
+        )
+        enroll_body = enroll.json() if enroll.headers.get("content-type", "").startswith("application/json") else {}
+        checks.append(
+            _check(
+                "voice_enrolled",
+                enroll.status_code == 201,
+                f"HTTP {enroll.status_code}: {enroll.text[:160]}",
+            )
+        )
+        checks.append(
+            _check(
+                "voice_enrollment_shape",
+                enroll.status_code == 201
+                and enroll_body.get("sample_count") == 5
+                and enroll_body.get("raw_samples_stored") is False,
+                f"sample_count={enroll_body.get('sample_count')}, "
+                f"raw_samples_stored={enroll_body.get('raw_samples_stored')}",
+            )
+        )
+
+        owner_verify = await client.post(
+            "/v1/training/voice/verify",
+            json={"samples": samples(owner, 3)},
+        )
+        owner_body = owner_verify.json() if owner_verify.headers.get("content-type", "").startswith("application/json") else {}
+        checks.append(
+            _check(
+                "owner_voice_accepted",
+                owner_verify.status_code == 200 and owner_body.get("accepted") is True,
+                f"accepted={owner_body.get('accepted')}, score={owner_body.get('score')}, "
+                f"threshold={owner_body.get('threshold')}",
+            )
+        )
+
+        intruder_verify = await client.post(
+            "/v1/training/voice/verify",
+            json={"samples": samples(intruder, 3)},
+        )
+        intruder_body = intruder_verify.json() if intruder_verify.headers.get("content-type", "").startswith("application/json") else {}
+        checks.append(
+            _check(
+                "intruder_voice_rejected",
+                intruder_verify.status_code == 200
+                and intruder_body.get("accepted") is False
+                and intruder_body.get("reason") == "score_below_threshold",
+                f"accepted={intruder_body.get('accepted')}, "
+                f"reason={intruder_body.get('reason')}",
+            )
+        )
+
+        export = await client.get("/v1/training/voice/export")
+        export_body = export.json() if export.headers.get("content-type", "").startswith("application/json") else {}
+        prints = export_body.get("voiceprints") or []
+        checks.append(
+            _check(
+                "voice_export_template",
+                export.status_code == 200
+                and len(prints) == 1
+                and len(prints[0].get("embedding") or []) == 192,
+                f"voiceprints={len(prints)}, "
+                f"embedding_dim={len(prints[0].get('embedding') or []) if prints else None}",
+            )
+        )
     return _gate("voice", checks, int((time.perf_counter() - started) * 1000))
 
 
@@ -713,7 +816,7 @@ async def _run_all(session) -> list[GateResult]:
         run_api_contract_gate(spec),
         run_filter_gate(),
         retrieval,
-        run_voice_gate(spec),
+        await run_voice_gate(spec),
         run_observability_gate(spec),
         await run_latency_gate(),
         await run_restore_gate(),

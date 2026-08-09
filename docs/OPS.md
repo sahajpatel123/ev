@@ -32,7 +32,7 @@ and publishes a nightly eval report artifact (`.github/workflows/nightly-eval.ym
 | `api_contract` | Locked manifest `backend/eval/contract_v1.json` matches live OpenAPI; every v1 route is intentional | A locked endpoint disappears or an unlocked v1 route appears |
 | `retrieval` | Seeded corpus; target in top-5; `never_send_to_model` excluded; score components and weights present | Target not retrieved, privacy boundary leaks, or scoring formula drifts |
 | `filter` | Benign input passes; injection blocked; credentials redacted; HUD contract repaired; grounded claims kept, ungrounded removed | Any deterministic filter invariant breaks |
-| `voice` | Voice endpoints present; training enrollment accepts base64 string samples | Voice surface regressed or the consent-gated contract changed shape |
+| `voice` | Voice endpoints present; live round-trip: consent → enroll → owner accepted → intruder rejected → export template (192-dim) | Voice surface regressed, consent gate broken, or owner/intruder discrimination fails |
 | `observability` | Health, calibration, evaluations summary, gateway calls, ops center, filter ledger endpoints exist; latency/cost budgets defined | Observability surface missing or budgets removed |
 | `latency` | In-process ASGI measurement of health, event ack, timeline, and chat against the documented budgets | Measured p50 latency exceeds event 1000 ms / chat 1500 ms / timeline 500 ms |
 | `restore_drill` | Real `/v1/backup` round-trip: seed → backup → verify → mutate → wipe-restore → verify timeline matches the backup | Backup unusable, verification fails, or wipe restore does not return the exact backed-up state |
