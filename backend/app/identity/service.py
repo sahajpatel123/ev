@@ -242,7 +242,8 @@ async def redeem_recovery_code(
     owner = await require_owner(session)
     now = utcnow()
     locked_until = owner.recovery_locked_until
-    if locked_until is not None and as_utc(locked_until) > now:
+    locked_until_aware = as_utc(locked_until) if locked_until is not None else None
+    if locked_until_aware is not None and locked_until_aware > now:
         raise IdentityError(
             "Recovery temporarily locked after too many failed attempts — try again later",
             status=429,

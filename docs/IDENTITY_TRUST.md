@@ -27,9 +27,15 @@ purpose-bound proof (`identity_reverifications`):
 
 - `POST /v1/identity/reverification` issues a 5-minute, single-use proof bound
   to the device and purpose (`memory.delete`, `voice.revoke`, `voice.delete`,
-  `recovery.rotate`).
+  `recovery.rotate`, `integration.action`, `voice.sensitive_action`). Issuance
+  itself requires owner-level trust, so a plain device cannot mint proofs.
 - `DELETE /v1/events/{id}` requires a `memory.delete` proof for device actors.
 - Voice revoke/delete require matching proofs.
+- External writes (`/v1/integrations/{id}/actions`, plugin commands) require an
+  `integration.action` proof; integration/plugin credential management is
+  master-only.
+- Sensitive model tools (`allow_sensitive_tools`) require owner-level trust;
+  a plain device cannot self-grant them.
 - Proofs are consumed once, expire, and are rejected from a different device.
 
 ## Recovery

@@ -1789,6 +1789,21 @@ class HudQuickCardOut(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class HudOpsCardOut(BaseModel):
+    """Unified ops center rendered as a strict HUD card (ev.hud.ops.v1)."""
+
+    schema_version: Literal["ev.hud.ops.v1"] = "ev.hud.ops.v1"
+    generated_at: datetime
+    title: str = "Ops center"
+    summary: str
+    focus_locked: bool = False
+    online_devices: int = Field(default=0, ge=0)
+    pending_alerts: int = Field(default=0, ge=0)
+    open_decisions: int = Field(default=0, ge=0)
+    command_cards: list[str] = Field(default_factory=list)
+    meta: dict = Field(default_factory=dict)
+
+
 class RouteBriefingOut(BaseModel):
     schema_version: Literal["ev.hud.route.v1"] = "ev.hud.route.v1"
     generated_at: datetime
@@ -1922,6 +1937,31 @@ class RuntimeVerifyResponse(BaseModel):
     state: str
     confidence: float = 0.0
     reason: str = ""
+
+
+class RuntimeUtteranceRequest(BaseModel):
+    session_id: UUID | None = None
+    text: str | None = Field(default=None, max_length=200_000)
+    audio_b64: str | None = None
+    audio_ref: str | None = None
+    reverify_token: str | None = None
+    language: str = "en"
+    conversation_id: UUID | None = None
+    follow_up: bool = False
+
+
+class RuntimeUtteranceResponse(BaseModel):
+    session_id: UUID
+    state: str
+    transcript: str
+    transcript_confidence: float = 0.0
+    reply: str
+    conversation_id: UUID | None = None
+    tts: TtsOut | None = None
+    style: SpeechStyleOut | None = None
+    model: str | None = None
+    context_tokens: int = 0
+    memory_deltas: list[MemoryDelta] = Field(default_factory=list)
 
 
 class RuntimeSessionOut(BaseModel):
@@ -2592,5 +2632,54 @@ class FilterRecalibrationRollbackRequest(BaseModel):
 
 
 class FilterRecalibrationDeleteResponse(BaseModel):
+    deleted: int
+    redacted: bool = True
+
+
+# --------------------------------------------------------------------------- #
+# Training & personalization — versioned adapter registry (LoRA path)
+# --------------------------------------------------------------------------- #
+
+
+class AdapterRegisterRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    provider: str = Field(default="local-lora", min_length=1, max_length=64)
+    base_model: str | None = Field(default=None, max_length=128)
+    adapter_ref: str | None = Field(default=None, max_length=512)
+    corpus_version: int = Field(ge=1)
+    reason: str | None = Field(default=None, max_length=512)
+
+
+class AdapterOut(BaseModel):
+    id: UUID
+    name: str
+    version: int
+    is_current: bool
+    status: str
+    provider: str
+    base_model: str | None = None
+    adapter_ref: str | None = None
+    corpus_snapshot_id: UUID | None = None
+    eval_metrics: dict = Field(default_factory=dict)
+    reason_for_change: str | None = None
+    supersedes_id: UUID | None = None
+    redacted: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class AdapterActivateRequest(BaseModel):
+    adapter_id: UUID
+    reason: str = "activate adapter"
+
+
+class AdapterRollbackRequest(BaseModel):
+    adapter_id: UUID
+    reason: str = "rollback adapter"
+
+
+class AdapterDeleteResponse(BaseModel):
     deleted: int
     redacted: bool = True

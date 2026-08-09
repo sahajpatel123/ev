@@ -97,9 +97,11 @@ async def identity_status(
                 )
             )
         ).scalars().all()
-        recovery_remaining = sum(
-            1 for c in codes if c.expires_at is None or identity.as_utc(c.expires_at) > now
-        )
+        recovery_remaining = 0
+        for code in codes:
+            expires = identity.as_utc(code.expires_at) if code.expires_at is not None else None
+            if expires is None or expires > now:
+                recovery_remaining += 1
         passkeys_active = (
             await session.execute(
                 select(func.count(PasskeyCredential.id)).where(
@@ -108,10 +110,9 @@ async def identity_status(
                 )
             )
         ).scalar_one()
-        recovery_locked = (
-            owner.recovery_locked_until is not None
-            and identity.as_utc(owner.recovery_locked_until) > now
-        )
+        locked_until = owner.recovery_locked_until
+        locked_until_aware = identity.as_utc(locked_until) if locked_until is not None else None
+        recovery_locked = locked_until_aware is not None and locked_until_aware > now
     return IdentityStatusOut(
         owner_established=owner is not None,
         owner_id=owner.id if owner else None,
