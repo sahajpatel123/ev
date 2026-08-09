@@ -20,8 +20,8 @@ from app.auth import (
     require_master,
     require_reverification,
 )
-from app.context.compiler import ContextPlan
 from app.config import settings
+from app.context.compiler import ContextPlan
 from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
 from app.ev import alert_radar, conversation, tools, vision
@@ -698,6 +698,10 @@ def _sse(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
+def _text_chunks(text: str, size: int = 24) -> list[str]:
+    return [text[i : i + size] for i in range(0, len(text), size)] or [""]
+
+
 async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, thread_id: UUID):
     try:
         pipeline = await run_chat_pipeline(data, session, actor, thread_id=thread_id)
@@ -709,7 +713,19 @@ async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, 
             yield _sse("filter-report", pipeline["filter_report"].model_dump())
         if pipeline.get("context_plan") is not None:
             yield _sse("context-plan", pipeline["context_plan"])
-        yield _sse("delta", {"text": pipeline["result"].text})
+        # Streaming refinement protocol (plan 3.9): the provider draft streams as
+        # progressive `delta` events, then the output-filtered final answer is
+        # emitted as `refined` with replace semantics.
+        final_text = pipeline["result"].text
+        report = pipeline.get("filter_report")
+        raw_text = getattr(report, "draft", None) or final_text
+        chunks = _text_chunks(raw_text)
+        for index, chunk in enumerate(chunks):
+            yield _sse(
+                "delta",
+                {"text": chunk, "final": index == len(chunks) - 1 and raw_text == final_text},
+            )
+        yield _sse("refined", {"text": final_text, "replaces": True})
         yield _sse(
             "done",
             {
