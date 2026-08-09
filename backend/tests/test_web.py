@@ -88,3 +88,15 @@ async def test_web_has_onboarding_panel(client: AsyncClient) -> None:
     assert 'source: "web"' in js
     assert "Idempotency-Key" in js
     assert "/v1/audit/" in js
+
+
+async def test_web_memory_browser_supports_editing(client: AsyncClient) -> None:
+    js = (await client.get("/app/app.js")).text
+    assert "edit-btn" in js
+    assert 'data-action="correct"' in js
+    assert 'data-action="forget"' in js
+    assert 'data-action="restore"' in js
+    assert "/v1/memories/${id}/correct" in js
+    assert "/v1/memories/${id}/forget" in js
+    assert "/v1/memories/${id}/restore" in js
+    assert 'id="memory-result"' in (await client.get("/app")).text

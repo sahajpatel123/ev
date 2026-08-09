@@ -158,7 +158,8 @@ button:hover {
   color: var(--muted);
 }
 
-.audit-btn {
+.audit-btn,
+.edit-btn {
   font-size: 12px;
   padding: 2px 8px;
 }

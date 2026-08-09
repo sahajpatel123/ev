@@ -319,6 +319,10 @@ async function browseMemories() {
       .map(
         (memory) =>
           `<li><button class="audit-btn" data-id="${memory.id}">audit</button> ` +
+          `<button class="edit-btn" data-action="correct" data-id="${memory.id}" ` +
+          `data-text="${escapeHtml(memory.text)}">correct</button> ` +
+          `<button class="edit-btn" data-action="forget" data-id="${memory.id}">forget</button> ` +
+          `<button class="edit-btn" data-action="restore" data-id="${memory.id}">restore</button> ` +
           `<strong>${escapeHtml(memory.memory_type)} v${memory.version}</strong> ` +
           `${escapeHtml(memory.text.slice(0, 120))} ` +
           `<span class="muted">conf ${memory.confidence}</span></li>`
@@ -327,6 +331,43 @@ async function browseMemories() {
     list.querySelectorAll(".audit-btn").forEach((button) => {
       button.addEventListener("click", () => showAudit(button.dataset.id));
     });
+    if (!list.dataset.editBound) {
+      list.dataset.editBound = "1";
+      list.addEventListener("click", async (event) => {
+        const button = event.target.closest(".edit-btn");
+        if (!button) {
+          return;
+        }
+        const id = button.dataset.id;
+        const action = button.dataset.action;
+        try {
+          if (action === "correct") {
+            const corrected = window.prompt("Corrected text", button.dataset.text || "");
+            if (!corrected) {
+              return;
+            }
+            await api(`/v1/memories/${id}/correct`, {
+              method: "POST",
+              body: JSON.stringify({ corrected_text: corrected, reason: "web correction" }),
+            });
+          } else if (action === "forget") {
+            if (!window.confirm("Forget this memory? History stays auditable.")) {
+              return;
+            }
+            await api(`/v1/memories/${id}/forget`, {
+              method: "POST",
+              body: JSON.stringify({ reason: "web requested" }),
+            });
+          } else if (action === "restore") {
+            await api(`/v1/memories/${id}/restore`, { method: "POST" });
+          }
+          $("memory-result").textContent = "memory updated";
+          browseMemories();
+        } catch (error) {
+          showError($("memory-result"), error);
+        }
+      });
+    }
   } catch (error) {
     showError(list, error);
   }

@@ -113,7 +113,8 @@ holds. Captures made while offline are queued in `localStorage`
 synced, 409 dropped, 422 quarantined (`ev.quarantine`) — the same contract as
 the CLI `ev sync`. A "Getting started" panel walks the first memories and then
 shows the first audit trail (UX onboarding steps 3–4), matching the CLI
-`ev onboarding` flow.
+`ev onboarding` flow. The memory browser also edits in place — correct, forget,
+and restore — matching the CLI `ev correct/forget/restore` versioned endpoints.
 
 ## 5. HUD rendering targets (M5)
 
