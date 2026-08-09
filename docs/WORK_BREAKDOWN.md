@@ -72,15 +72,15 @@ Full export bundles events, memories, entities, relationships, conflicts;
 tombstone delete redacts derived rows. Direction: implement import/restore round-
 trip and scheduled encrypted backups (see §13).
 
-### 1.10 Long-horizon consolidation — **Partial**
-Daily/weekly/monthly summaries are planned as additional derived indexes over raw
-events. Direction: add consolidation worker jobs and "how has my thinking changed
-since…?" queries over version chains.
+### 1.10 Long-horizon consolidation — **Built**
+Daily/weekly/monthly period summaries are derived memories
+(`app/services/consolidation.py`, `POST /v1/consolidate`) with deterministic
+reruns, versioned supersession, provenance links, and rebuild support.
 
-### 1.11 Storage of voiceprints & biometrics — **Design**
-Voice samples and derived voiceprints must be encrypted at rest, versioned, and
-never sent to the provider. Direction: dedicated `voice_prints` + encrypted
-sample attachments with re-enrollment flow and revocation.
+### 1.11 Storage of voiceprints & biometrics — **Built**
+Voice samples are hashed and discarded; encrypted, versioned voiceprint
+templates (Fernet at rest) live in `voice_enrollments` + `voice_prints` with
+re-enrollment chains, rollback, revocation, and data-subject deletion.
 
 ---
 
@@ -249,39 +249,37 @@ experience that is private: wake, verify, listen, understand, act, reply, and a
 wake word never fires for strangers, replay attacks fail, and voice feels as
 natural as talking to a person who knows you.
 
-### 5.1 Wake word engine ("EVIE") — **Design**
-Always-on low-power on-device detection (Sensory/AON1100-class pattern); wake
-triggers a larger processor burst for ASR. Direction: choose a wake-word SDK/model
-and a multi-stage power architecture per device.
+### 5.1 Wake word engine ("EVIE") — **Built (dev)**
+Deterministic wake engines in `app/voice/wake.py` with multi-stage
+low_power/burst semantics; production Sensory/AON1100-class model is a
+provider swap behind the same contract.
 
-### 5.2 Speaker verification (owner-only) — **Design**
-Enroll voice samples → ECAPA-TDNN voiceprints (encrypted, versioned); verify
-every wake event; unknown voices get a polite refusal. Direction: enrollment UI,
-threshold tuning, re-enrollment when voice changes.
+### 5.2 Speaker verification (owner-only) — **Built**
+Enroll voice samples → encrypted, versioned voiceprints; every wake/verify
+path checks the owner; unknown voices get a polite refusal and the session
+ends. Remote encoders require explicit regional-policy approval.
 
-### 5.3 Anti-spoofing / liveness — **Design**
-Block replay, synthesis, and voice-conversion with liveness checks and
-challenge-response. Direction: evaluate lightweight countermeasures and degrade
-to text verification for sensitive actions.
+### 5.3 Anti-spoofing / liveness — **Built**
+`app/voice/anti_spoof.py` implements single-use challenge nonces, audio
+fingerprint replay rejection, and a liveness gate; failed liveness ends the
+session.
 
-### 5.4 Speech-to-text (ASR) — **Design**
-Whisper-class on-device or local-server transcription with punctuation and
-streaming. Direction: latency budget (~300 ms wake→ASR ready), multi-language,
-and transcript-as-event recording.
+### 5.4 Speech-to-text (ASR) — **Built**
+`app/voice/asr.py` supports the deterministic dev transcriber and an
+OpenAI-compatible provider; transcripts are recorded as sensitive events.
 
-### 5.5 Text-to-speech (TTS) — **Design**
-Natural EVIE voice with emotion/urgency modulation and streaming. Direction:
-pick provider (local or cloud, permissioned), voice consistency across devices.
+### 5.5 Text-to-speech (TTS) — **Built**
+`app/voice/tts.py` synthesizes with urgency/warmth/brevity styles via the dev
+or OpenAI-compatible provider; audio refs are returned to clients.
 
-### 5.6 Voice session lifecycle — **Design**
-Wake → verify → listen → process → respond → 30-second follow-up window without
-re-wake → idle. Direction: implement the runtime state machine (see §6) and
-device arbitration (closest/online device wins).
+### 5.6 Voice session lifecycle — **Built**
+Wake → verify → listen → process → respond → 30s follow-up → idle is
+implemented in `app/voice/lifecycle.py` with session timeouts, replay guards,
+and consent gating on wake/verify.
 
-### 5.7 Voice enrollment UX — **Design**
-Onboarding flow: sample phrases, progress feedback, re-record, liveness
-calibration, privacy disclosure. Direction: build after speaker-verification
-core is selected.
+### 5.7 Voice enrollment UX — **Partial**
+Enrollment/verify/rollback/revoke/delete/export APIs exist; an in-workbench
+enrollment flow with sample progress feedback is the remaining UX gap.
 
 ---
 
@@ -645,16 +643,19 @@ and per-device scopes.
 payloads. Direction: extend boundary tests to voice transcripts and filter critic
 payloads.
 
-### 12.3 Encryption — **Partial**
-TLS in transit planned; storage encryption via OS volumes. Direction: encrypt
-voiceprints/samples and backups explicitly.
+### 12.3 Encryption — **Built (partial)**
+Voiceprints, backups, and integration vault secrets are Fernet-encrypted with
+scrypt-derived keys. TLS termination remains deployment-side.
 
-### 12.4 Secret/PII protection — **Design**
-Input and output guards detect keys, tokens, phone numbers, addresses. Direction:
-implement detectors + redaction policies.
+### 12.4 Secret/PII protection — **Built**
+`app/security/boundary.py` redacts credentials and blocks
+`never_send_to_model` payloads at the model boundary; input/output filters
+apply the same rules to transcripts and drafts.
 
-### 12.5 Backups & restore drill — **Future**
-Encrypted backups and periodic restore tests. Direction: script and document.
+### 12.5 Backups & restore drill — **Built**
+`app/services/backup.py` writes authenticated-encrypted `ev.backup.v1`
+bundles with a user-held passphrase; `tests/test_backup.py` covers create,
+verify, tamper detection, and wipe → restore → count equivalence.
 
 ### 12.6 Ethics guardrails — **Built**
 No stranger surveillance, no manipulation, anti-dependency guardrails,
@@ -842,34 +843,32 @@ stored, trained, and sent. The vision is a personal AI that you can defend in
 front of a regulator — because the architecture made compliance structural, not
 an afterthought. Success means deletion requests are fully honored everywhere.
 
-### 17.1 Biometric data handling — **Design**
-Voiceprints are biometric data under GDPR and laws like Illinois BIPA: they need
-encryption, access control, retention limits, and deletion on request. Direction:
-document a biometric-data policy and design the storage schema around it.
+### 17.1 Biometric data handling — **Built**
+Voiceprints are encrypted at rest (Fernet + scrypt), access-controlled by
+consent, retention-limited by regional policy, and deletable on request with
+propagation to derived stores and object-store blobs.
 
-### 17.2 Consent lifecycle — **Design**
-Separate, explicit consent per track: voice enrollment, training corpus, live-data
-collection, integrations — each revocable without breaking core memory. Direction:
-consent records with timestamps and revocation UI.
+### 17.2 Consent lifecycle — **Built**
+Per-track `consent_records` (voice enrollment, training corpus, live data,
+adapters, filter self-improvement) with grant/revoke timestamps, reasons,
+versions, idempotency, and access logging; revocation cascades to enrollments.
 
-### 17.3 Data subject rights — **Design**
-Export, correction, and deletion must cover voiceprints, training snapshots, and
-ledger data — not just events/memories. Direction: extend the existing export and
-tombstone paths to every new store.
+### 17.3 Data subject rights — **Built**
+Export covers voiceprints, consents, enrollments, and corpus snapshots;
+erasure revokes consent, deletes voiceprints + corpus snapshots, tombstones
+voice events, redacts derived memories, removes blobs, and writes a purge
+manifest for backup/replica handling.
 
-### 17.4 Regional compliance — **Built (partial)**
-GDPR, EU AI Act, BIPA, and data-residency rules differ by region. Implemented as
-`app/compliance/policy.py` + `POST /v1/compliance/retention/sweep`: region,
-retention windows, residency mode, remote-processing gates, and disclosure text
-are all configuration-driven (`EV_REGION`, `EV_RETENTION_*`, `EV_RESIDENCY_MODE`,
-`EV_ALLOW_REMOTE_*`), enforced at erasure/sweep time rather than hard-coded.
-Direction: per-account policy rows and scheduled sweep jobs.
+### 17.4 Regional compliance — **Built**
+Region, retention windows, residency mode, remote-processing gates, and
+disclosures are configuration-driven (`EV_REGION`, `EV_RETENTION_*`,
+`EV_RESIDENCY_MODE`, `EV_ALLOW_REMOTE_*`) and enforced at the processing
+boundary, erasure, and scheduled sweep (`EV_COMPLIANCE_SWEEP_HOURS`).
 
-### 17.5 Transparency center — **Built (partial)**
-Implemented as `GET /v1/compliance/transparency`: a machine-readable report of
-what is stored (with retention and deletion paths), what is trained (per-track
-consent status), what is processed, and what is transmitted (provider, endpoint,
-remote flag). Direction: render as an in-app page alongside onboarding.
+### 17.5 Transparency center — **Built**
+`GET /v1/compliance/transparency` reports what is stored/trained/processed/
+transmitted with retention and deletion paths; the web workbench renders the
+report in a Privacy & transparency panel.
 
 ---
 
@@ -931,29 +930,26 @@ failure. The vision is an EVIE that quietly handles the predictable parts of a
 life so the user only steps in for decisions. Success means automations run
 reliably for months, never surprise the user, and can be switched off in one tap.
 
-### 19.1 Scheduled routines — **Design**
-A 24/7 assistant should run recurring actions: morning brief, weekly review,
-backup, decision follow-ups. Direction: scheduler (cron-style) with missed-run
-handling and quiet-hour awareness.
+### 19.1 Scheduled routines — **Built**
+`app/routines/service.py` + `POST /v1/routines` run scheduled routines with
+timezone, quiet-hours skip, backfill limits, cooldowns, and missed-run
+handling.
 
-### 19.2 Trigger-based automations — **Design**
-If-then rules over state/live data: "when a deadline is 24h out, prepare a brief";
-"when readiness drops, reschedule heavy work". Direction: rule engine with
-conditions from EV Sense signals.
+### 19.2 Trigger-based automations — **Built**
+Routines accept trigger conditions over state/live data and fire on matching
+events with dedupe keys.
 
-### 19.3 Approval & undo — **Design**
-Automations that act (write, send, execute) are logged; sensitive ones require
-approval; undo/rollback where possible. Direction: action ledger + reversal
-handlers (reuse fleet-task pattern).
+### 19.3 Approval & undo — **Built**
+Routine actions route through `ApprovedAction` (approval required when
+flagged) and support undo/rollback with a run-level undo status.
 
-### 19.4 Routine library — **Future**
-Pre-built routines (deployment checklist, weekly health review, project
-close-out) that personalize from history. Direction: template library +
-learned-sequence suggestions (maker next-step already seeds this).
+### 19.4 Routine library — **Built**
+Template library and repeated-failure alerting ship in the routines service;
+learned-sequence suggestions remain future work.
 
-### 19.5 Automation observability — **Design**
-Run history, failures, and notification trail for every automation. Direction:
-dashboard + alert on repeated failure.
+### 19.5 Automation observability — **Built**
+Run history, attempts, errors, undo state, and failure alerts are exposed via
+the routines API and observability overview.
 
 ---
 

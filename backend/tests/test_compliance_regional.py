@@ -291,3 +291,19 @@ async def test_web_transparency_panel_served(client: AsyncClient) -> None:
     assert js.status_code == 200, js.text
     assert "/v1/compliance/transparency" in js.text
     assert "/v1/compliance/policy" in js.text
+
+
+def test_daemon_compliance_sweep_schedule(monkeypatch) -> None:
+    from app.workers import runtime_daemon
+
+    runtime_daemon._COMPLIANCE_LAST_RUN = 0.0
+    monkeypatch.setenv("EV_COMPLIANCE_SWEEP_HOURS", "0")
+    assert runtime_daemon._compliance_due() is False  # disabled
+
+    monkeypatch.setenv("EV_COMPLIANCE_SWEEP_HOURS", "24")
+    assert runtime_daemon._compliance_due() is True
+    assert runtime_daemon._compliance_due() is False  # cooldown active
+
+    monkeypatch.setenv("EV_COMPLIANCE_SWEEP_HOURS", "not-a-number")
+    runtime_daemon._COMPLIANCE_LAST_RUN = 0.0
+    assert runtime_daemon._compliance_due() is True  # safe default 24h

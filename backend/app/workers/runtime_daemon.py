@@ -9,10 +9,33 @@ fails silently.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 from app.config import settings
 from app.services.runtime import record_dead_letter_sync
+
+_COMPLIANCE_LAST_RUN = 0.0
+
+
+def _compliance_due() -> bool:
+    """True when the scheduled biometric retention sweep should run now.
+
+    Cadence is ``EV_COMPLIANCE_SWEEP_HOURS`` (default 24); a value <= 0
+    disables the scheduled sweep (the on-demand API still works).
+    """
+    global _COMPLIANCE_LAST_RUN
+    raw = os.getenv("EV_COMPLIANCE_SWEEP_HOURS", "24")
+    try:
+        hours = float(raw)
+    except ValueError:
+        hours = 24.0
+    if hours <= 0:
+        return False
+    if time.monotonic() - _COMPLIANCE_LAST_RUN < hours * 3600:
+        return False
+    _COMPLIANCE_LAST_RUN = time.monotonic()
+    return True
 
 
 async def tick_once() -> dict:
@@ -21,6 +44,12 @@ async def tick_once() -> dict:
 
     async with SessionLocal() as session:
         report = await daemon_tick(session)
+        if _compliance_due():
+            from app.compliance.erasure import retention_sweep
+
+            report["compliance"] = await retention_sweep(
+                session, reason="scheduled compliance sweep", actor="scheduler"
+            )
         await session.commit()
         return report
 
