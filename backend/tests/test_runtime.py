@@ -3,6 +3,7 @@ action routing, and dead-letter recovery."""
 
 from __future__ import annotations
 
+import base64
 from datetime import timedelta
 from uuid import UUID
 
@@ -13,6 +14,29 @@ from app.config import settings
 from app.models import RuntimeSession
 from app.services.runtime import daemon_tick
 from app.utils.text import utcnow
+
+SAMPLE_A = b"owner-voice-sample-" * 40
+SAMPLE_B = b"other-speaker-sample-" * 40
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
+
+
+async def grant_voice_consent(client: AsyncClient) -> None:
+    resp = await client.post("/v1/training/consent", json={"track": "voice_enrollment"})
+    assert resp.status_code == 201, resp.text
+
+
+async def enroll_owner(client: AsyncClient) -> None:
+    resp = await client.post(
+        "/v1/voice/enroll",
+        json={
+            "samples": [{"audio_b64": b64(SAMPLE_A)} for _ in range(5)],
+            "reason": "runtime test enrollment",
+        },
+    )
+    assert resp.status_code == 201, resp.text
 
 
 async def register_device(
@@ -141,6 +165,8 @@ async def test_quiet_hours_block_wake_unless_urgent(
 async def test_runtime_state_machine_lifecycle_and_invalid_transition(
     client: AsyncClient,
 ) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
     device = await register_device(client, "mac-mini")
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
@@ -148,14 +174,92 @@ async def test_runtime_state_machine_lifecycle_and_invalid_transition(
         json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
     )
     assert resp.status_code == 200
+    outcome = resp.json()
+    assert outcome["challenge_nonce"]
+    assert outcome["challenge_phrase"]
 
-    for to_state in ["awake", "processing", "responding", "follow_up", "idle"]:
+    resp = await client.post(
+        "/v1/runtime/verify",
+        json={
+            "session_id": outcome["session_id"],
+            "nonce": outcome["challenge_nonce"],
+            "phrase": outcome["challenge_phrase"],
+            "samples": [b64(SAMPLE_A)],
+            "liveness_proof": "live",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["verified"] is True
+    assert resp.json()["state"] == "awake"
+
+    for to_state in ["processing", "responding", "follow_up", "idle"]:
         resp = await client.post("/v1/runtime/transition", json={"to_state": to_state})
         assert resp.status_code == 200, resp.text
         assert resp.json()["state"] == to_state
 
     resp = await client.post("/v1/runtime/transition", json={"to_state": "processing"})
     assert resp.status_code == 409
+
+
+async def test_transition_to_awake_requires_owner_verification(
+    client: AsyncClient,
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    device = await register_device(client, "mac-gated")
+    await heartbeat(client, str(device["id"]))
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+    )
+    outcome = resp.json()
+
+    resp = await client.post("/v1/runtime/transition", json={"to_state": "awake"})
+    assert resp.status_code == 409
+    assert "verification" in resp.json()["detail"].lower()
+
+    # A stranger's voice cannot unlock the session either.
+    resp = await client.post(
+        "/v1/runtime/verify",
+        json={
+            "session_id": outcome["session_id"],
+            "nonce": outcome["challenge_nonce"],
+            "phrase": outcome["challenge_phrase"],
+            "samples": [b64(SAMPLE_B)],
+            "liveness_proof": "live",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["verified"] is False
+
+    resp = await client.post("/v1/runtime/transition", json={"to_state": "awake"})
+    assert resp.status_code == 409
+
+
+async def test_runtime_verify_rejects_nonce_replay(client: AsyncClient) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    device = await register_device(client, "mac-replay")
+    await heartbeat(client, str(device["id"]))
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+    )
+    outcome = resp.json()
+    payload = {
+        "session_id": outcome["session_id"],
+        "nonce": outcome["challenge_nonce"],
+        "phrase": outcome["challenge_phrase"],
+        "samples": [b64(SAMPLE_A)],
+        "liveness_proof": "live",
+    }
+    resp = await client.post("/v1/runtime/verify", json=payload)
+    assert resp.status_code == 200
+    assert resp.json()["verified"] is True
+
+    resp = await client.post("/v1/runtime/verify", json=payload)
+    assert resp.status_code == 403
+    assert resp.headers.get("x-error-code") == "replay_rejected"
 
 
 async def test_stale_session_times_out(client: AsyncClient, db_session) -> None:
@@ -338,6 +442,8 @@ async def test_daemon_tick_expires_stale_session_and_reports(
 
 
 async def test_runtime_events_log_lifecycle_pulses(client: AsyncClient) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
     device = await register_device(client, "pulse-phone")
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
@@ -345,9 +451,21 @@ async def test_runtime_events_log_lifecycle_pulses(client: AsyncClient) -> None:
         json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
     )
     assert resp.status_code == 200
+    outcome = resp.json()
 
-    resp = await client.post("/v1/runtime/transition", json={"to_state": "awake"})
-    assert resp.status_code == 200
+    resp = await client.post(
+        "/v1/runtime/verify",
+        json={
+            "session_id": outcome["session_id"],
+            "nonce": outcome["challenge_nonce"],
+            "phrase": outcome["challenge_phrase"],
+            "samples": [b64(SAMPLE_A)],
+            "liveness_proof": "live",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["verified"] is True
+    assert resp.json()["state"] == "awake"
 
     resp = await client.post(
         "/v1/runtime/actions",

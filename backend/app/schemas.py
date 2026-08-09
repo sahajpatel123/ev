@@ -508,6 +508,13 @@ class TacticalBriefRequest(BaseModel):
     include_options: bool = True
 
 
+class TacticalQuickRequest(BaseModel):
+    topic: str = Field(min_length=1, max_length=500)
+    stakes: str | None = None
+    context: str | None = None
+    ttl_seconds: int = Field(default=3600, ge=0, le=86400 * 7)
+
+
 class TacticalRisk(BaseModel):
     description: str
     likelihood: float = Field(ge=0.0, le=1.0)
@@ -1081,7 +1088,28 @@ class IdentityStatusOut(BaseModel):
     actor: str = ""
     devices_active: int = 0
     recovery_codes_remaining: int = 0
+    passkeys_active: int = 0
     recovery_locked: bool = False
+
+
+class PasskeyRegisterRequest(BaseModel):
+    credential_id: str = Field(min_length=8, max_length=1024)
+    name: str = Field(min_length=1, max_length=128)
+    device_id: UUID | None = None
+
+
+class PasskeyOut(BaseModel):
+    id: UUID
+    name: str
+    device_id: UUID | None = None
+    created_at: datetime
+    revoked_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class PasskeyRegisterResponse(BaseModel):
+    passkey: PasskeyOut
 
 
 class RecoveryRedeemRequest(BaseModel):
@@ -1623,6 +1651,21 @@ class HudAlertOut(BaseModel):
     tier: HudAlertTier = "notify"
     kind: str | None = None
     rationale: str | None = None
+    meta: dict = Field(default_factory=dict)
+
+
+class HudQuickCardOut(BaseModel):
+    """Compact tactical quick card (ev.hud.quickcard.v1) for <800 ms HUD reads."""
+
+    schema_version: Literal["ev.hud.quickcard.v1"] = "ev.hud.quickcard.v1"
+    generated_at: datetime
+    objective: str
+    summary: str
+    next_action: str | None = None
+    top_risk: str | None = None
+    people_count: int = Field(default=0, ge=0)
+    options_count: int = Field(default=0, ge=0)
+    decision_history_count: int = Field(default=0, ge=0)
     meta: dict = Field(default_factory=dict)
 
 
@@ -2334,3 +2377,55 @@ class PersonalizationRollbackRequest(BaseModel):
 class PersonalizationDeleteResponse(BaseModel):
     deleted: int
     applied: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# Training & personalization — consent-gated corpus harvesting
+# --------------------------------------------------------------------------- #
+
+
+class TrainingCorpusEntryOut(BaseModel):
+    kind: str
+    role: Literal["user", "assistant", "system"]
+    text: str
+    source: str
+    signals: dict = Field(default_factory=dict)
+    hash: str
+
+
+class TrainingCorpusSnapshotOut(BaseModel):
+    id: UUID
+    version: int
+    is_current: bool
+    name: str
+    entry_count: int
+    source_counts: dict
+    content_hash: str | None
+    reason_for_change: str
+    consent_id: UUID | None = None
+    supersedes_id: UUID | None = None
+    redacted: bool = False
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TrainingCorpusBuildResponse(BaseModel):
+    snapshot: TrainingCorpusSnapshotOut
+    entry_count: int
+    excluded_never_send_to_model: int
+
+
+class TrainingCorpusRollbackRequest(BaseModel):
+    target_version: int = Field(ge=1)
+    reason: str = "rollback training corpus snapshot"
+
+
+class TrainingCorpusDeleteResponse(BaseModel):
+    deleted: int
+    redacted: bool = True
+
+
+class TrainingCorpusExportOut(BaseModel):
+    snapshot: TrainingCorpusSnapshotOut
+    entries: list[TrainingCorpusEntryOut] = Field(default_factory=list)

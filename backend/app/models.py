@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    Index,
     JSON,
     Boolean,
     DateTime,
@@ -14,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -346,6 +348,21 @@ class Alert(Base):
     details: Mapped[dict] = mapped_column(JSONType, default=dict)
 
 
+class TacticalCard(Base):
+    """Cached tactical quick card (ev.hud.quickcard.v1) for <800 ms HUD reads."""
+
+    __tablename__ = "tactical_cards"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    topic: Mapped[str] = mapped_column(String(500), index=True)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    schema_version: Mapped[str] = mapped_column(String(32), default="ev.hud.quickcard.v1")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_hit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Prediction(Base):
     """A stored EV Sense prediction with tracked outcome."""
 
@@ -575,6 +592,15 @@ class ConversationThread(Base):
     """One lifelong conversation window. The user talks to EV, not to chat #N."""
 
     __tablename__ = "conversation_threads"
+    __table_args__ = (
+        Index(
+            "uq_conversation_threads_one_default",
+            "is_default",
+            unique=True,
+            sqlite_where=text("is_default = 1"),
+            postgresql_where=text("is_default"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     title: Mapped[str] = mapped_column(String(256), default="EV — continuous conversation")
@@ -1282,4 +1308,32 @@ class PersonalizationCalibration(Base):
     supersedes_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("personalization_calibrations.id")
     )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class TrainingCorpusSnapshot(Base):
+    """Versioned training corpus snapshot (consent-gated, rebuildable, erasable).
+
+    Entries are harvested from rated response logs, filter-ledger final texts,
+    and normal/sensitive-excluded events. `never_send_to_model` and sensitive
+    content is never included; credentials are redacted before storage. A
+    snapshot is reproducible from the same sources (deterministic content hash).
+    """
+
+    __tablename__ = "training_corpus_snapshots"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    name: Mapped[str] = mapped_column(String(128), default="evie-training-corpus")
+    entries: Mapped[list] = mapped_column(JSONType, default=list)
+    source_counts: Mapped[dict] = mapped_column(JSONType, default=dict)
+    entry_count: Mapped[int] = mapped_column(Integer, default=0)
+    content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    reason_for_change: Mapped[str] = mapped_column(Text, default="corpus harvest")
+    consent_id: Mapped[UUID | None] = mapped_column(ForeignKey("consent_records.id"))
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("training_corpus_snapshots.id")
+    )
+    redacted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

@@ -25,10 +25,13 @@ from app.schemas import (
     RuntimeHeartbeatOut,
     RuntimeStatusOut,
     RuntimeTransitionRequest,
+    RuntimeVerifyRequest,
+    RuntimeVerifyResponse,
     WakeArbitrationOut,
     WakeIntent,
 )
 from app.services import runtime as runtime_service
+from app.voice.anti_spoof import ReplayError
 
 router = APIRouter(prefix="/v1/runtime")
 
@@ -73,6 +76,47 @@ async def transition(
         raise HTTPException(status_code=409, detail=str(exc)) from None
     await session.commit()
     return await runtime_service.runtime_status(session)
+
+
+@router.post("/verify", response_model=RuntimeVerifyResponse)
+async def verify_owner(
+    data: RuntimeVerifyRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> RuntimeVerifyResponse:
+    """Owner speaker verification with anti-spoofing for the active wake."""
+    current = await runtime_service.active_session(session)
+    if current is None:
+        raise HTTPException(status_code=409, detail="No active runtime session")
+    if current.id != data.session_id:
+        raise HTTPException(status_code=409, detail="Session is not the active wake")
+    try:
+        result = await runtime_service.verify_owner(
+            session,
+            current,
+            nonce=data.nonce,
+            samples=data.samples,
+            phrase=data.phrase,
+            liveness_proof=data.liveness_proof,
+            live_score=data.live_score,
+            audio_sha256=data.audio_sha256,
+        )
+    except ReplayError as exc:
+        await session.commit()
+        raise HTTPException(
+            status_code=403,
+            detail=f"Replay attack rejected: {exc}",
+            headers={"X-Error-Code": "replay_rejected"},
+        ) from exc
+    await session.commit()
+    status = await runtime_service.runtime_status(session)
+    return RuntimeVerifyResponse(
+        session_id=current.id,
+        verified=result["verified"],
+        state=status.state,
+        confidence=result.get("confidence", 0.0),
+        reason=result.get("reason", ""),
+    )
 
 
 @router.get("/status", response_model=RuntimeStatusOut)
