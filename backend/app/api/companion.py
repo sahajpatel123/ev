@@ -32,6 +32,7 @@ from app.schemas import (
     BomItemOut,
     ContinueResponse,
     EvaluationUpdate,
+    HudAlertOut,
     HudCardOut,
     IsolationScanOut,
     MakerNextStepOut,
@@ -313,6 +314,15 @@ async def hud_card(
     actor: str = Depends(require_actor),
 ) -> HudCardOut:
     return await hud.status_card(session)
+
+
+@router.get("/hud/alerts", response_model=list[HudAlertOut])
+async def hud_alerts(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[HudAlertOut]:
+    """Pending alerts rendered as strict HUD cards (ev.hud.alert.v1)."""
+    return await hud.alerts_card(session)
 
 
 @router.get("/hud/route", response_model=RouteBriefingOut)

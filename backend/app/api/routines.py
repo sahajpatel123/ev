@@ -16,13 +16,65 @@ from app.schemas import (
     RoutineCreate,
     RoutineManualRunRequest,
     RoutineOut,
+    RoutineOverviewOut,
     RoutineRunDecisionRequest,
     RoutineRunOut,
+    RoutineTemplateInstantiateRequest,
+    RoutineTemplateOut,
     RoutineTickOut,
     RoutineUpdate,
 )
 
 router = APIRouter(prefix="/v1/routines")
+
+
+@router.get("/templates", response_model=list[RoutineTemplateOut])
+async def list_templates(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[RoutineTemplateOut]:
+    from app.routines.templates import list_templates
+
+    return [RoutineTemplateOut(**vars(t)) for t in list_templates()]
+
+
+@router.post(
+    "/templates/{slug}/instantiate",
+    response_model=RoutineOut,
+    status_code=201,
+)
+async def instantiate_template(
+    slug: str,
+    data: RoutineTemplateInstantiateRequest | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> RoutineOut:
+    from pydantic import ValidationError
+
+    try:
+        routine = await routines_service.instantiate_template(
+            session,
+            slug,
+            actor=actor,
+            name=data.name if data else None,
+            overrides=data.overrides if data else None,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    await session.commit()
+    return RoutineOut.model_validate(routine)
+
+
+@router.get("/overview", response_model=RoutineOverviewOut)
+async def overview(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> RoutineOverviewOut:
+    result = await routines_service.overview(session)
+    await session.commit()
+    return result
 
 
 @router.post("", response_model=RoutineOut, status_code=201)

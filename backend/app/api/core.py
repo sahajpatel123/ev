@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor, require_master
+from app.auth import ActorContext, require_actor, require_master, require_reverification
 from app.config import settings
 from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
@@ -70,6 +70,7 @@ from app.schemas import (
     GatewayChatRequest,
     GatewayChatResponse,
     GatewayToolCall,
+    ImportResponse,
     MemoryDelta,
     MemoryListResponse,
     MemoryOut,
@@ -81,6 +82,7 @@ from app.schemas import (
 )
 from app.services.access_log import log_access
 from app.services.event_service import EventService
+from app.services.importer import import_bundle
 from app.services.model_call import list_model_calls, log_model_call
 from app.services.processor import ensure_processed
 from app.services.rebuild import rebuild_derived_state
@@ -172,6 +174,8 @@ async def health() -> dict:
             "fleet_lifecycle",
             "command_ledger",
             "routines_automations",
+            "integrations",
+            "plugins",
         ],
         "providers": {
             "chat": settings.chat_provider,
@@ -258,10 +262,11 @@ async def tombstone_event(
     event_id: UUID,
     reason: str = Query(default="user-requested", max_length=200),
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_reverification("memory.delete")),
 ) -> EventOut:
     from app.memory.writer import redact_memories_for_event
 
+    actor = ctx.actor
     service = EventService(session, actor=actor)
     try:
         event = await service.tombstone(event_id, reason)
@@ -492,6 +497,22 @@ async def export_all(
     )
 
 
+@router.post("/import", response_model=ImportResponse)
+async def import_bundle_endpoint(
+    bundle: ExportBundle,
+    mode: Literal["merge", "replace"] = Query(default="merge"),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> ImportResponse:
+    """Import an export bundle: insert raw events, then rebuild derived state."""
+    try:
+        result = await import_bundle(session, bundle, mode=mode, actor=actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return ImportResponse(**result)
+
+
 def _entity_dict(entity: Entity) -> dict:
     return {
         "id": str(entity.id),
@@ -675,6 +696,20 @@ async def run_chat_pipeline(
         draft=data.message,
         final_text=decision.provider_message,
     )
+    for flag in decision.flags:
+        if flag.action != "allow":
+            await record_decision(
+                session,
+                request_id=request_id,
+                conversation_id=thread_id,
+                stage="input",
+                action=flag.action,
+                name=flag.name,
+                severity=flag.severity,
+                detail={"flag": flag.detail},
+                draft=data.message,
+                final_text=decision.provider_message,
+            )
     await session.commit()
     loops = await PatternEngine(session).decision_loops(min_count=2)
     pattern_confidence = max((p.confidence for p in memories if p.memory_type == "pattern"), default=0.0)

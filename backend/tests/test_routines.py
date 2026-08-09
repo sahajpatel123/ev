@@ -15,13 +15,17 @@ from app.routines.service import (
     approve_run,
     consider_event,
     create_routine,
+    detect_repeated_failures,
     execute_run,
+    instantiate_template,
     list_runs,
     manual_run,
+    overview,
     retry_run,
     rollback_run,
     tick,
 )
+from app.routines.templates import list_templates
 from app.schemas import RoutineCreate, RoutineRunDecisionRequest
 
 # --------------------------------------------------------------------------- #
@@ -397,3 +401,157 @@ async def test_api_live_trigger_fires_automation(client, db_session: AsyncSessio
     assert resp.status_code == 200
     assert len(resp.json()) == 1
     assert resp.json()[0]["status"] == "executed"
+
+
+# --------------------------------------------------------------------------- #
+# Template library
+# --------------------------------------------------------------------------- #
+
+
+async def test_template_library_lists_and_instantiates(
+    db_session: AsyncSession,
+) -> None:
+    slugs = [t.slug for t in list_templates()]
+    assert "morning-brief" in slugs
+    assert "deadline-brief" in slugs
+
+    routine = await instantiate_template(
+        db_session,
+        "morning-brief",
+        name="My brief",
+        overrides={"action_payload": {"title": "My brief"}},
+    )
+    await db_session.commit()
+
+    assert routine.kind == "scheduled"
+    assert routine.schedule == "0 8 * * 1-5"
+    assert routine.action_payload == {"title": "My brief"}
+    assert routine.metadata_["template_slug"] == "morning-brief"
+    assert "daily" in routine.metadata_["template_tags"]
+
+
+async def test_instantiate_unknown_template_raises(
+    db_session: AsyncSession,
+) -> None:
+    with pytest.raises(KeyError):
+        await instantiate_template(db_session, "no-such-template")
+
+
+async def test_api_templates_instantiate_and_overview(client) -> None:
+    resp = await client.get("/v1/routines/templates")
+    assert resp.status_code == 200
+    slugs = [t["slug"] for t in resp.json()]
+    assert "morning-brief" in slugs
+
+    resp = await client.post(
+        "/v1/routines/templates/morning-brief/instantiate",
+        json={"name": "My brief"},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["metadata"]["template_slug"] == "morning-brief"
+
+    resp = await client.post("/v1/routines/templates/nope/instantiate", json={})
+    assert resp.status_code == 404
+
+    resp = await client.get("/v1/routines/overview")
+    assert resp.status_code == 200
+    assert resp.json()["routines_total"] == 1
+    assert resp.json()["routines_scheduled"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Observability: repeated-failure alerts + overview
+# --------------------------------------------------------------------------- #
+
+
+async def test_repeated_failures_create_deduplicated_alerts(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routine = await create_routine(
+        db_session,
+        RoutineCreate(
+            name="fragile",
+            kind="trigger",
+            trigger={"event_type": "x"},
+            action_type="hud_card",
+        ),
+    )
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("app.services.runtime.route_action", broken)
+    for _ in range(3):
+        run = await manual_run(db_session, routine.id, actor="owner")
+    await db_session.commit()
+    assert run.status == "failed"
+
+    alerts = await detect_repeated_failures(db_session)
+    await db_session.commit()
+    assert len(alerts) == 1
+    assert alerts[0].kind == "automation_failure"
+    assert "fragile" in alerts[0].title
+    assert alerts[0].details["routine_id"] == str(routine.id)
+
+    # Same pending alert suppresses re-alerting.
+    assert await detect_repeated_failures(db_session) == []
+
+    # A successful run breaks the streak; no new alert is created.
+    monkeypatch.undo()
+    run = await manual_run(db_session, routine.id, actor="owner")
+    await db_session.commit()
+    assert run.status == "executed"
+    assert await detect_repeated_failures(db_session) == []
+
+
+async def test_failure_threshold_not_reached_no_alert(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routine = await create_routine(
+        db_session,
+        RoutineCreate(
+            name="almost",
+            kind="trigger",
+            trigger={"event_type": "y"},
+            action_type="hud_card",
+        ),
+    )
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("app.services.runtime.route_action", broken)
+    for _ in range(2):
+        await manual_run(db_session, routine.id, actor="owner")
+    await db_session.commit()
+
+    assert await detect_repeated_failures(db_session) == []
+
+
+async def test_overview_reports_runs_and_failures(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    routine = await create_routine(
+        db_session,
+        RoutineCreate(
+            name="noisy",
+            kind="trigger",
+            trigger={"event_type": "z"},
+            action_type="hud_card",
+        ),
+    )
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("down")
+
+    monkeypatch.setattr("app.services.runtime.route_action", broken)
+    for _ in range(2):
+        await manual_run(db_session, routine.id, actor="owner")
+    await db_session.commit()
+
+    summary = await overview(db_session)
+    assert summary.routines_total == 1
+    assert summary.routines_enabled == 1
+    assert summary.runs_total == 2
+    assert summary.runs_failed_last_24h == 2
+    assert summary.latest_error == "RuntimeError: down"

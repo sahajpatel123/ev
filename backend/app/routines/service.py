@@ -9,19 +9,22 @@ undo/rollback records.  Permission authority stays in
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.ev.ev_sense import quiet_hours_active
-from app.models import Event, LiveChannel, LiveEvent, Routine, RoutineRun
+from app.models import Alert, Event, LiveChannel, LiveEvent, Routine, RoutineRun
 from app.routines.schedule import next_run_after, validate_cron
+from app.routines.templates import get_template
 from app.schemas import (
     ApprovedActionCreate,
     RoutineCreate,
+    RoutineOverviewOut,
     RoutineRunDecisionRequest,
     RoutineRunOut,
     RoutineTickOut,
@@ -29,7 +32,7 @@ from app.schemas import (
 )
 from app.services import runtime as runtime_service
 from app.services.access_log import log_access
-from app.utils.text import utcnow
+from app.utils.text import sha256_hex, utcnow
 
 TRIGGER_OPS = {"eq", "ne", "lt", "lte", "gt", "gte", "contains", "in", "exists"}
 
@@ -372,6 +375,7 @@ async def tick(
             )
             if routine.next_run_at is None:
                 break
+    outcome.failure_alerts = len(await detect_repeated_failures(session, now=now))
     await session.flush()
     return outcome
 
@@ -775,6 +779,13 @@ async def rollback_run(
         raise ValueError("Only executed runs can be rolled back")
     if run.undo_status == "done":
         raise ValueError("Run was already rolled back")
+    if run.action_id is not None:
+        await runtime_service.rollback_action(
+            session,
+            run.action_id,
+            actor=actor,
+            reason="routine rollback",
+        )
     run.status = "rolled_back"
     run.undo_status = "done"
     run.undo_payload = {
@@ -795,3 +806,156 @@ async def rollback_run(
     )
     await session.flush()
     return run
+
+
+# --------------------------------------------------------------------------- #
+# Template library (plan 19.4)
+# --------------------------------------------------------------------------- #
+
+
+async def instantiate_template(
+    session: AsyncSession,
+    slug: str,
+    *,
+    actor: str = "user",
+    name: str | None = None,
+    overrides: dict | None = None,
+) -> Routine:
+    """Create a real routine from a curated template, with optional overrides."""
+    template = get_template(slug)
+    fields: dict = {
+        "name": name or template.name,
+        "kind": template.kind,
+        "schedule": template.schedule,
+        "timezone": template.timezone,
+        "quiet_hours_skip": template.quiet_hours_skip,
+        "backfill_max": template.backfill_max,
+        "cooldown_seconds": template.cooldown_seconds,
+        "trigger": template.trigger,
+        "action_type": template.action_type,
+        "action_title": template.action_title,
+        "action_payload": template.action_payload,
+        "requires_approval": template.requires_approval,
+        "undoable": template.undoable,
+    }
+    fields.update({key: value for key, value in (overrides or {}).items() if value is not None})
+    routine = await create_routine(session, RoutineCreate(**fields), actor=actor)
+    routine.metadata_ = {
+        **(routine.metadata_ or {}),
+        "template_slug": template.slug,
+        "template_tags": list(template.tags),
+        "personalization_hints": template.personalization_hints,
+    }
+    await session.flush()
+    return routine
+
+
+# --------------------------------------------------------------------------- #
+# Observability (plan 19.5)
+# --------------------------------------------------------------------------- #
+
+
+async def detect_repeated_failures(
+    session: AsyncSession,
+    *,
+    now: datetime | None = None,
+    threshold: int | None = None,
+) -> list[Alert]:
+    """Alert when a routine's last N runs are all failures (deduplicated).
+
+    A pending alert with the same routine fingerprint suppresses re-alerting
+    until the owner dismisses it; the run history remains the source of truth.
+    """
+    now = now or utcnow()
+    threshold = threshold or settings.automation_failure_threshold
+    if threshold <= 0:
+        return []
+    created: list[Alert] = []
+    routines = await list_routines(session, enabled=True)
+    for routine in routines:
+        rows = (
+            await session.execute(
+                select(RoutineRun)
+                .where(RoutineRun.routine_id == routine.id)
+                .order_by(RoutineRun.created_at.desc())
+                .limit(threshold)
+            )
+        ).scalars().all()
+        if len(rows) < threshold or any(row.status != "failed" for row in rows):
+            continue
+        fingerprint = sha256_hex(f"automation_failure:{routine.id}")[:64]
+        existing = (
+            await session.execute(
+                select(Alert).where(
+                    Alert.fingerprint == fingerprint,
+                    Alert.status == "pending",
+                )
+            )
+        ).scalars().first()
+        if existing is not None:
+            continue
+        latest = rows[0]
+        alert = Alert(
+            kind="automation_failure",
+            title=f"Routine '{routine.name}' failing repeatedly",
+            body=(
+                f"{threshold} consecutive runs of routine '{routine.name}' failed. "
+                f"Latest error: {latest.error or 'unknown'}"
+            ),
+            priority=0.6,
+            tier="notify",
+            status="pending",
+            source="routines",
+            trigger_ids=[str(row.id) for row in rows],
+            rationale="Repeated automation failure detected from run history.",
+            fingerprint=fingerprint,
+            created_at=now,
+            details={
+                "routine_id": str(routine.id),
+                "routine_name": routine.name,
+                "failed_run_ids": [str(row.id) for row in rows],
+                "latest_error": latest.error,
+            },
+        )
+        session.add(alert)
+        created.append(alert)
+    await session.flush()
+    return created
+
+
+async def overview(session: AsyncSession, *, now: datetime | None = None) -> RoutineOverviewOut:
+    """Compact observability summary for dashboards and status surfaces."""
+    now = now or utcnow()
+    since = now.replace(microsecond=0) - timedelta(hours=24)
+    routines = await list_routines(session)
+    enabled = [r for r in routines if r.enabled]
+    runs = (
+        await session.execute(
+            select(RoutineRun).order_by(RoutineRun.created_at.desc()).limit(500)
+        )
+    ).scalars().all()
+    runs_24h = [r for r in runs if r.created_at >= since]
+    failed_24h = [r for r in runs_24h if r.status == "failed"]
+    awaiting = [r for r in runs if r.status == "awaiting_approval"]
+    pending_alerts = (
+        await session.execute(
+            select(Alert).where(
+                Alert.kind == "automation_failure",
+                Alert.status == "pending",
+            )
+        )
+    ).scalars().all()
+    latest_error = next((r.error for r in runs if r.error), None)
+    return RoutineOverviewOut(
+        routines_total=len(routines),
+        routines_enabled=len(enabled),
+        routines_scheduled=sum(1 for r in routines if r.kind == "scheduled"),
+        routines_trigger=sum(1 for r in routines if r.kind == "trigger"),
+        runs_total=len(runs),
+        runs_last_24h=len(runs_24h),
+        runs_failed_last_24h=len(failed_24h),
+        awaiting_approval=len(awaiting),
+        pending_failure_alerts=len(pending_alerts),
+        latest_error=latest_error,
+        generated_at=now,
+    )

@@ -41,6 +41,14 @@ recovery, one-tap disable, and undo records.
 - **Undo**: routines marked `undoable` support
   `POST /v1/routines/runs/{id}/rollback`, which records the reversal payload
   and transitions the run to `rolled_back`.
+- **Reusable templates**: a curated template library (`morning-brief`,
+  `weekly-review`, `backup-reminder`, `decision-followup`, `deadline-brief`,
+  `low-readiness-reschedule`, `deployment-checklist`) instantiates real
+  routines with provenance (`metadata.template_slug`) and per-user overrides.
+- **Repeated-failure alerting**: when a routine's last N runs (default 3,
+  `EV_AUTOMATION_FAILURE_THRESHOLD`) are all failures, a pending
+  `automation_failure` alert is created; identical pending alerts are
+  deduplicated by fingerprint until dismissed.
 
 ## API
 
@@ -52,6 +60,9 @@ recovery, one-tap disable, and undo records.
 | POST | `/v1/routines/{id}/enable` / `/disable` | One-tap enable/disable |
 | POST | `/v1/routines/{id}/run` | Manual run now |
 | POST | `/v1/routines/tick` | Advance due scheduled routines |
+| GET | `/v1/routines/templates` | List reusable templates |
+| POST | `/v1/routines/templates/{slug}/instantiate` | Create a routine from a template |
+| GET | `/v1/routines/overview` | Observability summary (counts, failures, pending alerts) |
 | GET | `/v1/routines/runs` | Global run history |
 | GET | `/v1/routines/{id}/runs` | Per-routine run history |
 | POST | `/v1/routines/runs/{id}/approve` / `/deny` | Approval decisions |

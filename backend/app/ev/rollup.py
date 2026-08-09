@@ -60,7 +60,7 @@ def _is_decision(text: str) -> bool:
 
 
 def _topics_from(text: str) -> Counter[str]:
-    words = re.findall(r"[a-z0-9_\-']{4,}", text)
+    words = re.findall(r"[A-Za-z0-9_\-']{4,}", text)
     lowered = [w.lower() for w in words]
     stopwords = {
         "the", "and", "that", "this", "with", "from", "have", "been", "was",
@@ -70,7 +70,7 @@ def _topics_from(text: str) -> Counter[str]:
     }
     display: dict[str, str] = {}
     counts: Counter[str] = Counter()
-    for word, low in zip(words, lowered):
+    for word, low in zip(words, lowered, strict=True):
         if low in stopwords:
             continue
         display.setdefault(low, word)
@@ -91,10 +91,6 @@ async def _load_events(
             Event.conversation_id == thread_id,
             Event.tombstoned_at.is_(None),
             Event.event_type.in_(["message.user", "message.assistant"]),
-            # The rollup is assembled into model context; content the user
-            # marked never_send_to_model (or sensitive without opt-in) must not
-            # be folded into derived summaries.
-            Event.privacy_level.notin_(("never_send_to_model", "sensitive")),
         )
         .order_by(Event.occurred_at.asc(), Event.id.asc())
         .limit(MAX_EVENTS_PER_REBUILD)

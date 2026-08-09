@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import select
@@ -25,13 +25,19 @@ class EventService:
         idempotency_key: str | None = None,
     ) -> Event:
         content = data.effective_content()
+        occurred_at = data.occurred_at or utcnow()
+        if occurred_at.tzinfo is not None:
+            occurred_at = occurred_at.astimezone(UTC)
+        # Canonical UTC-naive form survives SQLite's lossy tz round-trip, so an
+        # exported bundle can verify the same hash after a restore.
+        hash_occurred_at = occurred_at.replace(tzinfo=None).isoformat()
         canonical = canonical_json(
             {
                 "content": content,
                 "metadata": data.metadata,
                 "source": data.source,
                 "event_type": data.event_type,
-                "occurred_at": (data.occurred_at or utcnow()).isoformat(),
+                "occurred_at": hash_occurred_at,
                 "privacy_level": data.privacy_level,
             }
         )
@@ -40,7 +46,7 @@ class EventService:
             event_type=data.event_type,
             content=content,
             metadata_=data.metadata,
-            occurred_at=data.occurred_at or utcnow(),
+            occurred_at=occurred_at,
             device_id=data.device_id,
             conversation_id=data.conversation_id,
             privacy_level=data.privacy_level,

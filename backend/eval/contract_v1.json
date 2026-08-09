@@ -174,6 +174,9 @@
     "/v1/hud/card": [
       "get"
     ],
+    "/v1/hud/alerts": [
+      "get"
+    ],
     "/v1/hud/focus": [
       "get"
     ],
@@ -200,6 +203,9 @@
     ],
     "/v1/identity/trust": [
       "get"
+    ],
+    "/v1/import": [
+      "post"
     ],
     "/v1/integrations": [
       "get",
@@ -356,6 +362,15 @@
     "/v1/research/sessions/{session_id}/notes": [
       "post"
     ],
+    "/v1/routines/overview": [
+      "get"
+    ],
+    "/v1/routines/templates": [
+      "get"
+    ],
+    "/v1/routines/templates/{slug}/instantiate": [
+      "post"
+    ],
     "/v1/routines": [
       "get",
       "post"
@@ -403,6 +418,9 @@
       "get",
       "post"
     ],
+    "/v1/runtime/action-specs": [
+      "get"
+    ],
     "/v1/runtime/actions/{action_id}/approve": [
       "post"
     ],
@@ -410,6 +428,9 @@
       "post"
     ],
     "/v1/runtime/actions/{action_id}/execute": [
+      "post"
+    ],
+    "/v1/runtime/actions/{action_id}/rollback": [
       "post"
     ],
     "/v1/runtime/dead-letters": [
@@ -424,6 +445,9 @@
     ],
     "/v1/runtime/heartbeat": [
       "post"
+    ],
+    "/v1/runtime/health": [
+      "get"
     ],
     "/v1/runtime/status": [
       "get"

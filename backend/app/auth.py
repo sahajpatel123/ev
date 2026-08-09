@@ -125,3 +125,45 @@ async def require_owner_trust(
             headers={"X-Error-Code": "owner_trust_required"},
         )
     return ctx
+
+
+def require_reverification(purpose: str):
+    """Require a fresh, purpose-bound re-verification proof for a sensitive action.
+
+    The master key is the strongest factor and bypasses the proof (it is the
+    recovery root); any device actor must present a proof issued for exactly
+    this purpose, bound to the same device, and not yet consumed.
+    """
+
+    async def dependency(
+        authorization: str | None = Header(default=None),
+        x_ev_reverify: str | None = Header(default=None),
+        session: AsyncSession = Depends(get_session),
+    ) -> ActorContext:
+        ctx = await require_actor_context(authorization, session)
+        if ctx.is_master:
+            return ctx
+        if not x_ev_reverify:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Re-verification required for this sensitive action",
+                headers={"X-Error-Code": "reverification_required"},
+            )
+        from app.identity.service import IdentityError, consume_reverification
+
+        try:
+            await consume_reverification(
+                session,
+                token=x_ev_reverify,
+                purpose=purpose,
+                ctx=ctx,
+            )
+        except IdentityError as exc:
+            raise HTTPException(
+                status_code=exc.status,
+                detail=exc.message,
+                headers={"X-Error-Code": exc.code},
+            ) from exc
+        return ctx
+
+    return dependency

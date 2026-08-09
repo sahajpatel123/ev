@@ -1,7 +1,13 @@
-"""HUD-ready status cards (ev.hud.card.v1) for watch/widget/AR surfaces."""
+"""HUD-ready outputs for watch/widget/AR surfaces.
+
+Every HUD surface output validates against a strict schema in `HUD_SCHEMAS`,
+so downstream renderers (Watch complications, widgets, future AR) can rely on
+the exact same field contract.
+"""
 
 from __future__ import annotations
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,8 +15,32 @@ from app.ev import alert_radar
 from app.ev.health_radar import morning_brief
 from app.ev.user_state import build_user_state
 from app.models import WatchlistItem
-from app.schemas import HudCardOut
+from app.schemas import (
+    HudAlertOut,
+    HudCardOut,
+    HudFocusOut,
+    RouteBriefingOut,
+    TacticalBriefOut,
+)
 from app.utils.text import utcnow
+
+HUD_SCHEMAS: dict[str, type[BaseModel]] = {
+    "ev.hud.card.v1": HudCardOut,
+    "ev.hud.briefing.v1": TacticalBriefOut,
+    "ev.hud.focus.v1": HudFocusOut,
+    "ev.hud.route.v1": RouteBriefingOut,
+    "ev.hud.alert.v1": HudAlertOut,
+}
+
+
+def validate_hud(payload: dict | BaseModel) -> tuple[str, BaseModel]:
+    """Validate any HUD payload against its declared schema version."""
+    schema_version = (
+        payload["schema_version"] if isinstance(payload, dict) else payload.schema_version
+    )
+    if schema_version not in HUD_SCHEMAS:
+        raise ValueError(f"Unknown HUD schema version: {schema_version}")
+    return schema_version, HUD_SCHEMAS[schema_version].model_validate(payload)
 
 
 async def status_card(session: AsyncSession) -> HudCardOut:
@@ -56,3 +86,26 @@ async def status_card(session: AsyncSession) -> HudCardOut:
         },
     )
 
+
+async def alerts_card(session: AsyncSession) -> list[HudAlertOut]:
+    """Render pending alerts as strict HUD alert cards, highest priority first."""
+    pending = await alert_radar.list_alerts(session, status="pending", limit=5)
+    return [
+        HudAlertOut(
+            schema_version="ev.hud.alert.v1",
+            generated_at=utcnow(),
+            alert_id=alert.id,
+            title=alert.title,
+            body=alert.body,
+            priority=alert.priority,
+            tier=alert.tier,
+            kind=alert.kind,
+            rationale=alert.rationale,
+            meta={
+                "source": alert.source,
+                "fingerprint": alert.fingerprint,
+                "trigger_ids": alert.trigger_ids,
+            },
+        )
+        for alert in pending
+    ]

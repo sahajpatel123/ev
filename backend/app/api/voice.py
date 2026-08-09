@@ -7,7 +7,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext, require_actor_context, require_owner_trust
+from app.auth import (
+    ActorContext,
+    require_actor_context,
+    require_owner_trust,
+    require_reverification,
+)
 from app.config import settings
 from app.db import get_session
 from app.models import VoiceSession
@@ -117,7 +122,7 @@ async def revoke_enrollment(
     enrollment_id: UUID,
     data: VoiceRevokeRequest,
     session: AsyncSession = Depends(get_session),
-    ctx: ActorContext = Depends(require_owner_trust),
+    ctx: ActorContext = Depends(require_reverification("voice.revoke")),
 ) -> VoiceEnrollmentDetailOut:
     try:
         row = await _runtime(session).revoke(enrollment_id, reason=data.reason)
@@ -132,7 +137,7 @@ async def delete_enrollment(
     enrollment_id: UUID,
     data: VoiceDeleteRequest,
     session: AsyncSession = Depends(get_session),
-    ctx: ActorContext = Depends(require_owner_trust),
+    ctx: ActorContext = Depends(require_reverification("voice.delete")),
 ) -> VoiceEnrollmentDetailOut:
     try:
         row = await _runtime(session).delete(enrollment_id, reason=data.reason)

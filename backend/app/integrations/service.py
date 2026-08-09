@@ -62,6 +62,7 @@ SECRET_CONFIG_MARKERS = (
 )
 
 LiveChannelKind = Literal["screen", "audio", "health", "app", "vision", "location"]
+PrivacyLevelLiteral = Literal["private", "normal", "sensitive", "never_send_to_model"]
 
 
 def _privacy_order(value: str) -> int:
@@ -216,7 +217,7 @@ async def install(
         LiveChannelCreate(
             name=f"integration:{slug}",
             kind=cast(LiveChannelKind, adapter.privacy_kind),
-            privacy_level=privacy,
+            privacy_level=cast(PrivacyLevelLiteral, privacy),
             metadata={"collector": f"integration:{slug}", "adapter": adapter.slug},
         ),
     )

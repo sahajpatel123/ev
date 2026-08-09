@@ -53,7 +53,7 @@ class EventOut(BaseModel):
     source: str
     event_type: str
     content: dict
-    metadata: dict = Field(validation_alias=AliasChoices("metadata", "metadata_"))
+    metadata: dict = Field(validation_alias=AliasChoices("metadata_", "metadata"))
     device_id: str | None
     conversation_id: UUID | None
     privacy_level: str
@@ -931,6 +931,34 @@ class RecognitionOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class VisionAnalyzeRequest(BaseModel):
+    """Request vision analysis of one user-owned attachment."""
+
+    attachment_id: UUID
+    permission: bool = False
+    allow_raw: bool = False
+    prompt: str | None = Field(default=None, max_length=2000)
+
+
+class VisionPerceptionOut(BaseModel):
+    """One derived perception record with full provenance."""
+
+    id: UUID
+    attachment_id: UUID | None = None
+    source_event_id: UUID | None = None
+    summary: str
+    labels: list[dict] = Field(default_factory=list)
+    confidence: float = 0.0
+    provider: str
+    raw_sent: bool = False
+    permission_granted_by: str | None = None
+    created_at: datetime
+
+
+class ConfirmRecognitionRequest(BaseModel):
+    entity_type: Literal["person", "place", "project", "topic", "thing"] = "thing"
+
+
 class OpsCenterOut(BaseModel):
     generated_at: datetime
     state: UserStateOut
@@ -1547,6 +1575,24 @@ class HudCardOut(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+HudAlertTier = Literal["urgent", "useful", "background", "notify", "notify_card", "digest"]
+
+
+class HudAlertOut(BaseModel):
+    """One pending alert rendered as a strict HUD card (ev.hud.alert.v1)."""
+
+    schema_version: Literal["ev.hud.alert.v1"] = "ev.hud.alert.v1"
+    generated_at: datetime
+    alert_id: UUID
+    title: str
+    body: str
+    priority: float = Field(default=0.0, ge=0.0, le=1.0)
+    tier: HudAlertTier = "notify"
+    kind: str | None = None
+    rationale: str | None = None
+    meta: dict = Field(default_factory=dict)
+
+
 class RouteBriefingOut(BaseModel):
     schema_version: Literal["ev.hud.route.v1"] = "ev.hud.route.v1"
     generated_at: datetime
@@ -1724,10 +1770,23 @@ class ApprovedActionOut(BaseModel):
     executed_at: datetime | None
     result: dict | None
     error: str | None
+    rolled_back_at: datetime | None
+    rolled_back_reason: str | None
     created_at: datetime
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ActionSpecOut(BaseModel):
+    name: str
+    description: str
+    payload: dict = Field(default_factory=dict)
+    output: dict = Field(default_factory=dict)
+    requires_approval: bool = True
+    undoable: bool = False
+    permission: str
+    read_only: bool = True
 
 
 class ActionDecisionRequest(BaseModel):
@@ -1859,6 +1918,7 @@ class RoutineTickOut(BaseModel):
     created: int = 0
     skipped: int = 0
     failed: int = 0
+    failure_alerts: int = 0
     errors: list[str] = Field(default_factory=list)
     runs: list[RoutineRunOut] = Field(default_factory=list)
 
@@ -1866,6 +1926,45 @@ class RoutineTickOut(BaseModel):
 class RoutineRunDecisionRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=256)
     result: dict = Field(default_factory=dict)
+
+
+class RoutineTemplateOut(BaseModel):
+    slug: str
+    name: str
+    description: str
+    kind: str
+    schedule: str | None
+    timezone: str
+    quiet_hours_skip: bool
+    backfill_max: int
+    cooldown_seconds: int
+    trigger: dict
+    action_type: str
+    action_title: str | None
+    action_payload: dict
+    requires_approval: bool
+    undoable: bool
+    tags: list[str]
+    personalization_hints: str | None
+
+
+class RoutineTemplateInstantiateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    overrides: dict = Field(default_factory=dict)
+
+
+class RoutineOverviewOut(BaseModel):
+    routines_total: int = 0
+    routines_enabled: int = 0
+    routines_scheduled: int = 0
+    routines_trigger: int = 0
+    runs_total: int = 0
+    runs_last_24h: int = 0
+    runs_failed_last_24h: int = 0
+    awaiting_approval: int = 0
+    pending_failure_alerts: int = 0
+    latest_error: str | None = None
+    generated_at: datetime
 
 
 # --------------------------------------------------------------------------- #
@@ -1930,8 +2029,6 @@ class VoiceEnrollmentDetailOut(BaseModel):
     status: str
     privacy_level: str
     consent_id: UUID | None = None
-    revoked_at: datetime | None = None
-    revoked_reason: str | None = None
     supersedes_id: UUID | None = None
     superseded_by_id: UUID | None = None
     reason_for_change: str | None = None
@@ -2149,3 +2246,33 @@ class PluginCommandOut(BaseModel):
     result: dict
     emitted_events: list[LiveEventOut] = Field(default_factory=list)
     executed_at: datetime
+
+
+# --------------------------------------------------------------------------- #
+# Training & personalization — life-data importance/retrieval calibration
+# --------------------------------------------------------------------------- #
+
+
+class PersonalizationCalibrationOut(BaseModel):
+    id: UUID
+    version: int
+    is_current: bool
+    calibrations: dict[str, float]
+    evidence: dict
+    reason_for_change: str
+    consent_id: UUID | None = None
+    supersedes_id: UUID | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class PersonalizationCalibrateResponse(BaseModel):
+    calibration: PersonalizationCalibrationOut
+    evidence: dict
+    applied: bool
+
+
+class PersonalizationRollbackRequest(BaseModel):
+    target_version: int = Field(ge=1)
+    reason: str = "rollback personalization calibration"

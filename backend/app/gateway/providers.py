@@ -12,6 +12,7 @@ class EchoProvider:
     """Offline echo provider for zero-config local runs."""
 
     name = "echo"
+    supports_media = False
 
     def __init__(self, model: str = "echo-local") -> None:
         self.model = model
@@ -48,6 +49,7 @@ class MockProvider:
     """Deterministic provider for tests."""
 
     name = "mock"
+    supports_media = False
 
     def __init__(self, model: str = "mock-model") -> None:
         self.model = model
@@ -84,6 +86,7 @@ class DeepSeekProvider:
     """DeepSeek via the OpenAI-compatible chat completions API."""
 
     name = "deepseek"
+    supports_media = True
 
     def __init__(
         self,
@@ -101,6 +104,38 @@ class DeepSeekProvider:
             return {}
         return {"Authorization": f"Bearer {self.api_key}"}
 
+    def _message_payload(self, message: ChatMessage) -> dict:
+        """Render one message, using OpenAI-style content parts for media."""
+        if not message.media:
+            return {"role": message.role, "content": message.content}
+        parts: list[dict] = []
+        if message.content:
+            parts.append({"type": "text", "text": message.content})
+        for part in message.media:
+            if part.kind == "image" and part.data_url:
+                parts.append(
+                    {"type": "image_url", "image_url": {"url": part.data_url}}
+                )
+            elif part.kind == "audio" and part.data_url:
+                data = part.data_url
+                fmt = "wav"
+                if data.startswith("data:"):
+                    header, _, b64 = data.partition(",")
+                    data = b64
+                    if "audio/mpeg" in header:
+                        fmt = "mp3"
+                    elif "audio/mp4" in header or "audio/aac" in header:
+                        fmt = "mp4"
+                parts.append(
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": data, "format": fmt},
+                    }
+                )
+            elif part.text:
+                parts.append({"type": "text", "text": part.text})
+        return {"role": message.role, "content": parts}
+
     async def _complete(
         self,
         messages: Sequence[ChatMessage],
@@ -111,7 +146,7 @@ class DeepSeekProvider:
     ) -> ChatResult:
         payload: dict = {
             "model": model or self.default_model,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [self._message_payload(m) for m in messages],
             "temperature": temperature,
         }
         if tools:

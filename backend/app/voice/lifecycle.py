@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -120,8 +120,8 @@ class SessionStatus:
     device_id: str | None = None
     speaker_confidence: float | None = None
     follow_up_remaining_seconds: int = 0
-    expires_at: str | None = None
-    ended_at: str | None = None
+    expires_at: datetime | None = None
+    ended_at: datetime | None = None
     end_reason: str | None = None
 
 
@@ -232,6 +232,7 @@ class VoiceRuntime:
             .where(
                 VoiceEnrollment.is_current.is_(True),
                 VoiceEnrollment.status == "active",
+                VoiceEnrollment.redacted.is_(False),
             )
             .order_by(VoiceEnrollment.version.desc())
             .limit(1)
@@ -261,6 +262,12 @@ class VoiceRuntime:
             ) from exc
 
     async def _decrypt_enrollment(self, enrollment: VoiceEnrollment) -> dict:
+        if not enrollment.ciphertext or not enrollment.salt:
+            raise VoiceError(
+                "Voiceprint payload is missing (revoked or deleted)",
+                status=409,
+                code="enrollment_unavailable",
+            )
         try:
             return decrypt_payload(
                 enrollment.ciphertext,
@@ -353,8 +360,8 @@ class VoiceRuntime:
         now = utcnow()
         row.status = "revoked"
         row.is_current = False
-        row.revoked_at = now
-        row.revoked_reason = reason
+        row.redacted = True
+        row.reason_for_change = reason
         row.updated_at = now
         await self._log(
             "enrollment",
@@ -381,11 +388,11 @@ class VoiceRuntime:
         now = utcnow()
         row.status = "deleted"
         row.is_current = False
-        row.revoked_at = now
-        row.revoked_reason = reason
+        row.redacted = True
         row.ciphertext = None
         row.salt = None
         row.embedding_dim = 0
+        row.reason_for_change = reason
         row.updated_at = now
         prints = (
             await self.session.execute(
@@ -413,7 +420,7 @@ class VoiceRuntime:
         row = await self._get_enrollment(enrollment_id)
         if row.status != "active":
             raise VoiceError("Only active enrollments can be rolled back", status=409, code="not_active")
-        if row.status == "deleted" or row.ciphertext is None:
+        if row.status == "deleted" or row.redacted or row.ciphertext is None:
             raise VoiceError("Enrollment data has been deleted", status=409, code="deleted")
         if row.version == target_version:
             return row
@@ -428,14 +435,15 @@ class VoiceRuntime:
                 status=404,
                 code="version_not_found",
             )
-        if cursor.status == "deleted" or cursor.ciphertext is None:
+        if cursor.status == "deleted" or cursor.redacted or cursor.ciphertext is None:
             raise VoiceError("Target version has been deleted", status=409, code="deleted")
         row.is_current = False
         row.superseded_by_id = cursor.id
         cursor.is_current = True
-        cursor.revoked_at = None
-        cursor.revoked_reason = None
+        cursor.status = "active"
+        cursor.redacted = False
         cursor.superseded_by_id = None
+        cursor.reason_for_change = reason
         row.updated_at = utcnow()
         print_rows = (
             await self.session.execute(
@@ -470,7 +478,7 @@ class VoiceRuntime:
         enrollments = await self.list_enrollments()
         voiceprints: list[dict] = []
         for enrollment in enrollments:
-            if enrollment.status == "deleted" or not enrollment.ciphertext:
+            if enrollment.status != "active" or enrollment.redacted or not enrollment.ciphertext:
                 continue
             try:
                 payload = await self._decrypt_enrollment(enrollment)
@@ -521,7 +529,7 @@ class VoiceRuntime:
                 "version": None,
                 "reason": "no_voiceprint_enrolled",
             }
-        if enrollment.status != "active" or enrollment.status == "deleted" or not enrollment.ciphertext:
+        if enrollment.status != "active" or enrollment.redacted or not enrollment.ciphertext:
             return {
                 "accepted": False,
                 "score": 0.0,
@@ -1000,7 +1008,7 @@ class VoiceRuntime:
             device_id=row.device_id,
             speaker_confidence=row.speaker_confidence,
             follow_up_remaining_seconds=follow_up_remaining,
-            expires_at=row.expires_at.isoformat() if row.expires_at else None,
-            ended_at=row.ended_at.isoformat() if row.ended_at else None,
+            expires_at=row.expires_at,
+            ended_at=row.ended_at,
             end_reason=row.end_reason,
         )

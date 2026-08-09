@@ -9,11 +9,11 @@ __pycache__/
 venv/
 *.db
 *.sqlite3
-storage/
+/storage/
 dist/
 build/
 *.egg-info/
 .coverage
 htmlcov/
 node_modules/
-
+backend/eval/last-run.json

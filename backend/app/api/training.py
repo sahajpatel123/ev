@@ -160,6 +160,8 @@ async def voice_rollback(
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> VoiceEnrollmentDetailOut:
+    if data.enrollment_id is None:
+        raise HTTPException(status_code=422, detail="enrollment_id is required")
     try:
         enrollment = await _runtime(session).rollback(
             data.enrollment_id,
@@ -178,6 +180,8 @@ async def voice_revoke(
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> VoiceEnrollmentDetailOut:
+    if data.enrollment_id is None:
+        raise HTTPException(status_code=422, detail="enrollment_id is required")
     try:
         enrollment = await _runtime(session).revoke(
             data.enrollment_id, reason=data.reason
@@ -194,6 +198,8 @@ async def voice_delete(
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> VoiceEnrollmentDetailOut:
+    if data.enrollment_id is None:
+        raise HTTPException(status_code=422, detail="enrollment_id is required")
     try:
         enrollment = await _runtime(session).delete(
             data.enrollment_id, reason=data.reason

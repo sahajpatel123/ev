@@ -306,14 +306,18 @@ agents on each device.
 ### 6.3 Queue & background workers — **Built**
 Redis/RQ ingestion pipeline with sync fallback, plus dead-letter records
 (`dead_letters`) with retry/discard endpoints and worker-boundary capture.
-Direction: add filter jobs and consolidation jobs, and wire DLQ retries into
-the RQ re-enqueue path.
+Retrying letters re-enqueue onto their RQ queue when the payload carries an
+entrypoint, and successful jobs resolve their letters. Direction: add filter
+jobs and consolidation jobs.
 
-### 6.4 Heartbeat & health monitoring — **Partial**
+### 6.4 Heartbeat & health monitoring — **Built (partial)**
 `/v1/health`, calibration diagnostics, device heartbeats
 (`POST /v1/runtime/heartbeat`, `runtime_heartbeats`), and a runtime status
-summary exist. Direction: full runtime health checks (listeners, ASR, TTS,
-provider, queues) with alerts.
+summary exist. `GET /v1/runtime/health` reports DB, state machine, listener,
+queue, and dead-letter health, and `workers/runtime_daemon.py` ticks
+continuously to expire stale sessions, re-enqueue retrying dead letters, and
+keep the runtime observable. Direction: extend health checks to ASR/TTS
+provider latency with alerts.
 
 ### 6.5 Action router — **Built (partial)**
 Commands become approved actions: searches, fleet tasks, HUD cards,
@@ -832,28 +836,35 @@ reading what is permitted, acting only when authorized, and keeping every
 credential safe. Success means adding a new integration is a config change, and
 revoking it is instant and complete.
 
-### 18.1 Adapter framework — **Future**
-Calendar, health, GitHub, smart home, and messaging integrations need one standard
-adapter interface (capabilities, permissions, events). Direction: define the
-adapter SDK + registry before building individual connectors.
+### 18.1 Adapter framework — **Built (v1)**
+Calendar, health, GitHub, smart home, and messaging adapters implement one
+standard interface (capabilities, scopes, privacy floor, event types, actions)
+registered in `app/integrations/adapters.py`. Adding an integration is a
+registry/config change; provider specifics stay behind the adapter contract.
 
-### 18.2 OAuth & token vault — **Future**
-Third-party tokens must live encrypted in a vault with scopes, refresh handling,
-and revocation — never in memory or provider context. Direction: vault service +
-per-integration permission cards.
+### 18.2 OAuth & token vault — **Built (v1)**
+Third-party tokens and webhook secrets are Fernet-encrypted at rest
+(`app/integrations/vault.py`) with per-integration scopes, refresh-token
+storage, fingerprints for verification, and immediate revocation that wipes
+ciphertext. Plaintext never enters logs, prompts, memory, or model context.
 
-### 18.3 Webhooks & triggers — **Future**
-External systems should push events into live channels (deadline, CI failure, new
-mail) so EV Sense sees them. Direction: authenticated webhook endpoint with
-signature verification and rate limits.
+### 18.3 Webhooks & triggers — **Built (v1)**
+`POST /v1/integrations/webhook/{id}` verifies HMAC-SHA256 signatures over a
+timestamp, rejects replays outside the skew window, rate-limits per
+integration, and ingests translated events into the integration's bound live
+channel (idempotent, fail-closed privacy) so EV Sense sees them.
 
-### 18.4 Plugin & user extensions — **Future**
-Users should be able to add custom skills, commands, and macros without touching
-core code. Direction: plugin manifest + sandboxed execution + approval flow.
+### 18.4 Plugin & user extensions — **Built (v1)**
+Plugins declare a manifest with explicit permissions and command handlers;
+approval is master-key-only, and execution runs in an isolated subprocess with
+AST-level sandbox rules (no imports, dunders, filesystem, network, or dangerous
+builtins). Declared capabilities gate context and side effects (`live:emit`).
 
-### 18.5 Integration privacy — **Design**
-Every integration gets its own permission scope (read/act), and its data obeys
-`never_send_to_model` rules. Direction: extend the privacy matrix per integration.
+### 18.5 Integration privacy — **Built (v1)**
+Every integration owns its privacy scope, bound live channel, and isolated
+credentials. Scopes must be a subset of the adapter's declared capabilities,
+config cannot carry secrets (vault only), and webhook/plugin events obey the
+channel's privacy level — health defaults to `sensitive`.
 
 ---
 

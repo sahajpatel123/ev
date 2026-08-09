@@ -135,3 +135,33 @@ context leaves the machine; raw memory never does.
 
 All retention is configurable via `Settings`; export runs before any destructive
 retention job.
+
+## 13. Integrations & ecosystem security
+
+- **Adapter isolation:** every integration is its own permissioned unit: scopes,
+  privacy level, bound live channel, credentials, webhook secret, and audit
+  trail. Scopes must be a non-empty subset of the adapter's declared
+  capabilities; unknown or admin scopes are rejected at install.
+- **Credential vault:** OAuth access/refresh tokens and webhook secrets are
+  Fernet-encrypted at rest (`EV_VAULT_KEY`, or derived from the master key when
+  unset). Only a SHA-256 fingerprint is stored for verification. Plaintext
+  exists only in memory during an action/webhook call; integration config
+  rejects secret-looking keys so credentials cannot be smuggled into non-secret
+  fields, logs, prompts, or model context.
+- **Immediate revocation:** `DELETE /v1/integrations/{id}` flips status to
+  revoked, wipes credential ciphertext and fingerprints, and deactivates the
+  bound live channel. Every gate (actions, webhooks, credentials) fails closed
+  afterward; previously granted tokens are discarded at the vault, and
+  provider-issued tokens should additionally be revoked at the provider.
+- **Webhook integrity:** ingress requires `X-EV-Signature: sha256=<hex>` over
+  `X-EV-Timestamp.body`, rejects timestamps outside the skew window, and
+  rate-limits per integration. Verified payloads enter the immutable live-event
+  pipeline with idempotent dedupe and fail-closed privacy.
+- **Plugin sandbox:** plugins are inert until a master-key approval; commands
+  run in an isolated subprocess (`python -I -S`) with AST-level rejection of
+  imports, dunders, filesystem/network builtins, and dangerous calls. Plugins
+  see only the context their approved permissions allow (`memory:read`,
+  `live:read`, `live:emit`), and every run is access-logged.
+- **Auditability:** installs, credential storage, scope changes, revocation,
+  webhook ingestion, and plugin runs are all recorded in `access_log` with
+  resource ids and metadata — never with token material.

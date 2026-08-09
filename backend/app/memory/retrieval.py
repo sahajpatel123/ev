@@ -11,6 +11,7 @@ from app.contracts import RetrievedMemory
 from app.embeddings import get_embedder
 from app.memory.entities import extract_entities_from_text
 from app.models import Memory, MemoryEntity, MemoryEvent
+from app.training.personalization import calibration_multipliers
 from app.utils.text import simple_tokens
 
 SCORE_WEIGHTS = {
@@ -107,6 +108,8 @@ class Retriever:
             for row in prov_rows:
                 prov.setdefault(row.memory_id, []).append(str(row.event_id))
 
+        # Evidence-backed importance learning (consent-gated, versioned, neutral by default).
+        multipliers = await calibration_multipliers(self.session)
         now = datetime.now(UTC)
         scored: list[RetrievedMemory] = []
         for m in memories:
@@ -122,7 +125,9 @@ class Retriever:
                 base_time = base_time.replace(tzinfo=UTC)
             days = max(0.0, (now - base_time).total_seconds() / 86400.0)
             recency = math.exp(-days / 90.0)
-            importance = max(0.0, min(1.0, m.importance))
+            base_importance = max(0.0, min(1.0, m.importance))
+            multiplier = multipliers.get(m.memory_type, 1.0)
+            importance = max(0.0, min(1.0, base_importance * multiplier))
             relationship = min(1.0, memory_links.get(m.id, 0.0))
             confidence = max(0.0, min(1.0, m.confidence))
             components = {
@@ -130,6 +135,8 @@ class Retriever:
                 "keyword": round(keyword, 4),
                 "recency": round(recency, 4),
                 "importance": round(importance, 4),
+                "importance_base": round(base_importance, 4),
+                "personalization": round(multiplier, 4),
                 "relationship": round(relationship, 4),
                 "confidence": round(confidence, 4),
             }

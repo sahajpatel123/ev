@@ -77,7 +77,8 @@ class ReplayGuard:
             raise ReplayError("nonce bound to a different session")
         if row.consumed_at is not None:
             raise ReplayError("nonce already used (replay)")
-        if _aware(row.expires_at) is None or _aware(row.expires_at) < now:
+        expires_at = row.expires_at
+        if _aware(expires_at) is None or _aware(expires_at) < now:
             raise ReplayError("nonce expired")
         row.consumed_at = now
         await self.session.flush()
@@ -85,7 +86,7 @@ class ReplayGuard:
             nonce=row.nonce,
             phrase=row.challenge_phrase or "",
             purpose=row.purpose,
-            expires_at=row.expires_at,
+            expires_at=expires_at,
         )
 
     async def fingerprint_replayed(

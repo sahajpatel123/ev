@@ -988,6 +988,8 @@ class ApprovedAction(Base):
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     result: Mapped[dict | None] = mapped_column(JSONType)
     error: Mapped[str | None] = mapped_column(Text)
+    rolled_back_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    rolled_back_reason: Mapped[str | None] = mapped_column(String(256))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
@@ -1198,3 +1200,26 @@ class Plugin(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+class PersonalizationCalibration(Base):
+    """Versioned, evidence-backed retrieval calibration (life-data personalization).
+
+    One snapshot maps memory types to importance multipliers derived from logged
+    corrections/usefulness/follow signals. Only the current row is applied by
+    retrieval; older rows are kept for audit and one-step rollback.
+    """
+
+    __tablename__ = "personalization_calibrations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    calibrations: Mapped[dict] = mapped_column(JSONType, default=dict)
+    evidence: Mapped[dict] = mapped_column(JSONType, default=dict)
+    reason_for_change: Mapped[str] = mapped_column(Text, default="evidence-backed calibration")
+    consent_id: Mapped[UUID | None] = mapped_column(ForeignKey("consent_records.id"))
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("personalization_calibrations.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

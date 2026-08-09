@@ -21,6 +21,7 @@ from app.models import (
     FocusDesignation,
     GearSnapshot,
     Memory,
+    MemoryEvent,
     RecognitionLog,
 )
 from app.schemas import (
@@ -588,6 +589,16 @@ async def twin(session: AsyncSession) -> TwinOut:
     )
     by_type: dict[str, list[dict]] = {"fact": [], "preference": [], "goal": [], "pattern": []}
     confidences: list[float] = []
+    provenance_rows = (
+        await session.execute(
+            select(MemoryEvent.memory_id, MemoryEvent.event_id).where(
+                MemoryEvent.memory_id.in_([memory.id for memory in rows])
+            )
+        )
+    ).all() if rows else []
+    provenance: dict[UUID, list[UUID]] = {}
+    for memory_id, event_id in provenance_rows:
+        provenance.setdefault(memory_id, []).append(event_id)
     for memory in rows:
         by_type.setdefault(memory.memory_type, []).append(
             {
@@ -596,6 +607,9 @@ async def twin(session: AsyncSession) -> TwinOut:
                 "confidence": memory.confidence,
                 "source_type": memory.source_type,
                 "event_time": memory.event_time.isoformat(),
+                "updated_at": memory.updated_time.isoformat(),
+                "version": memory.version,
+                "source_event_ids": [str(e) for e in provenance.get(memory.id, [])],
             }
         )
         confidences.append(memory.confidence)

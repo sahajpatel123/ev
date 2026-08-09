@@ -57,10 +57,29 @@ class MemoryCandidate:
 
 
 @dataclass
+class MediaPart:
+    """One typed media reference attached to a chat message.
+
+    ``data_url`` is the raw inline representation (base64 data URL) and may
+    only be populated when explicit permission allows raw transmission.  When
+    raw content is unnecessary, providers receive ``text`` (a derived/minimal
+    representation) instead, preserving provenance via ``ref`` and ``sha256``.
+    """
+
+    kind: str  # image | audio | text | document
+    content_type: str = "application/octet-stream"
+    data_url: str | None = None
+    text: str | None = None
+    ref: str | None = None
+    sha256: str | None = None
+
+
+@dataclass
 class ChatMessage:
     role: str  # system | user | assistant | tool
     content: str
     name: str | None = None
+    media: list[MediaPart] = field(default_factory=list)
 
 
 @dataclass
@@ -143,6 +162,7 @@ class RequestEnvelope:
 
 class ChatProvider(Protocol):
     name: str
+    supports_media: bool = False
 
     async def chat(
         self,

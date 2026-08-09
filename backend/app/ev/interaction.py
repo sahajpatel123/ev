@@ -191,12 +191,13 @@ def build_strategy(
     challenge = level >= 3 or mode == "coaching" or alert_challenge
     if profile:
         ceiling = max(0, min(4, int(profile.get("assertiveness", 5)) - 1))
-        if challenge_ceiling is not None:
-            ceiling = min(ceiling, max(0, min(3, challenge_ceiling)))
         level = min(level, ceiling)
-        if challenge and (int(profile.get("challenge_level", 3)) < 3 or ceiling < 3):
+        if challenge and int(profile.get("challenge_level", 3)) < 3:
             challenge = False
             level = min(level, 2)
+    if challenge and challenge_ceiling is not None and challenge_ceiling < 3:
+        challenge = False
+        level = min(level, 2)
 
     length_targets: dict[CommunicationMode, str] = {
         "casual": "one to two sentences",

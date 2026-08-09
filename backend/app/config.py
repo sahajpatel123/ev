@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     # Routines & automations
     scheduler_tick_seconds: int = 60
     scheduler_max_days_lookahead: int = 366
+    automation_failure_threshold: int = 3
+
+    # Live data retention: the raw live stream is append-only; retention deletes
+    # only *consumed* events past the window, never the latest event of a
+    # channel or events still linked as provenance.
+    live_event_retention_days: int = 90
+    live_retention_keep_latest: bool = True
 
     # Object storage
     object_store_backend: str = "local"  # local | s3

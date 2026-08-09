@@ -79,6 +79,7 @@ class WakeWordEngine(Protocol):
         sample_rate: int = 16000,
         device_id: str | None = None,
         frames: bytes | None = None,
+        text_hint: str | None = None,
     ) -> WakeDetection: ...
 
 

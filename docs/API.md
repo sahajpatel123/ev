@@ -46,6 +46,13 @@
 | GET | `/v1/commands` · `/v1/commands/{id}` | Auditable E.D.I.T.H. command ledger | FR-SEC-XX |
 | GET | `/v1/ops/center` · `/v1/twin` · `/v1/hud/focus` | Ops center / digital twin / HUD overlay | FR-HUD |
 | POST | `/v1/gateway/chat` · `/v1/gateway/tools` · GET `/v1/gateway/models` | Internal gateway (model-agnostic) | FR-SYS-03 |
+| GET | `/v1/integrations/catalog` · `/v1/integrations` · POST `/v1/integrations` | Adapter catalog + install | FR-INT-01 |
+| GET/PATCH/DELETE | `/v1/integrations/{id}` · `/v1/integrations/{id}/scopes` | Integration lifecycle + scope changes | FR-INT-02 |
+| POST/GET | `/v1/integrations/{id}/credentials` · POST `/v1/integrations/{id}/webhook-secret` | Encrypted credential vault + webhook secrets | FR-INT-02 |
+| POST/GET | `/v1/integrations/{id}/actions` · `/v1/integrations/{id}/events` | Permissioned actions + event history | FR-INT-03 |
+| POST | `/v1/integrations/webhook/{id}` | HMAC-verified webhook ingress (no bearer auth) | FR-INT-04 |
+| POST/GET | `/v1/plugins` · `/v1/plugins/{id}` · `/approve` · `/reject` · `/enable` · `/disable` | Plugin manifest lifecycle + approval | FR-INT-05 |
+| POST | `/v1/plugins/{id}/commands/{command}` | Sandboxed plugin command execution | FR-INT-05 |
 
 ## 3. Event capture
 

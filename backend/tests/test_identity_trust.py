@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -241,3 +243,79 @@ async def test_trust_matrix_available(client: httpx.AsyncClient) -> None:
     assert "memory.delete" in body["owner_required_actions"]
     assert "memory.delete" in body["reverify_required_actions"]
     assert body["levels"]["master"] > body["levels"]["device"]
+
+
+async def test_memory_delete_requires_reverification_for_device(
+    client: httpx.AsyncClient,
+) -> None:
+    await create_owner(client)
+    device = await create_device(client, "owner-phone", trust_level="owner")
+    headers = {"Authorization": f"Bearer {device['token']}"}
+    dev_client = _client(headers)
+
+    event = (
+        await client.post(
+            "/v1/events",
+            json={"source": "test", "event_type": "note", "text": "erase me"},
+        )
+    ).json()["event"]
+
+    # A device cannot delete memory without a fresh purpose-bound proof.
+    denied = await dev_client.delete(f"/v1/events/{event['id']}")
+    assert denied.status_code == 403
+    assert denied.headers.get("X-Error-Code") == "reverification_required"
+
+    proof = (
+        await dev_client.post(
+            "/v1/identity/reverification",
+            json={"purpose": "memory.delete"},
+        )
+    ).json()["token"]
+    ok = await dev_client.delete(
+        f"/v1/events/{event['id']}",
+        headers={"X-EV-Reverify": proof},
+    )
+    assert ok.status_code == 200, ok.text
+
+    # The proof was single-use; replaying it for a second delete fails.
+    event2 = (
+        await client.post(
+            "/v1/events",
+            json={"source": "test", "event_type": "note", "text": "erase me too"},
+        )
+    ).json()["event"]
+    replay = await dev_client.delete(
+        f"/v1/events/{event2['id']}",
+        headers={"X-EV-Reverify": proof},
+    )
+    assert replay.status_code == 403
+
+
+async def test_voice_revoke_requires_reverification_for_device(
+    client: httpx.AsyncClient,
+) -> None:
+    await create_owner(client)
+    device = await create_device(client, "owner-phone", trust_level="owner")
+    headers = {"Authorization": f"Bearer {device['token']}"}
+    dev_client = _client(headers)
+
+    denied = await dev_client.post(
+        f"/v1/voice/enrollments/{uuid4()}/revoke",
+        json={"reason": "voice changed"},
+    )
+    assert denied.status_code == 403
+    assert denied.headers.get("X-Error-Code") == "reverification_required"
+
+    proof = (
+        await dev_client.post(
+            "/v1/identity/reverification",
+            json={"purpose": "voice.revoke"},
+        )
+    ).json()["token"]
+    # Authentication passes now; the runtime reports the missing enrollment.
+    passed = await dev_client.post(
+        f"/v1/voice/enrollments/{uuid4()}/revoke",
+        json={"reason": "voice changed"},
+        headers={"X-EV-Reverify": proof},
+    )
+    assert passed.status_code != 403

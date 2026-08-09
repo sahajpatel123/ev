@@ -26,6 +26,7 @@ async def tick_once() -> dict:
             "created": outcome.created,
             "skipped": outcome.skipped,
             "failed": outcome.failed,
+            "failure_alerts": outcome.failure_alerts,
             "errors": outcome.errors,
         }
 

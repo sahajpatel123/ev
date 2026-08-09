@@ -358,6 +358,52 @@ async def export_bundle(
     return resp.json()
 
 
+async def import_bundle_file(
+    path: str | Path,
+    *,
+    mode: str = "merge",
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Import an export bundle (event-sourced restore/merge)."""
+    bundle = json.loads(Path(path).read_text(encoding="utf-8"))
+    c = client or _client()
+    resp = await c.post("/v1/import", json=bundle, params={"mode": mode})
+    if resp.status_code != 200:
+        raise CliError(f"import failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def onboarding(
+    texts: list[str],
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    """Guided first memories: capture N initial memories, then show their audit."""
+    c = client or _client()
+    events: list[dict] = []
+    audits: list[dict] = []
+    for text in texts:
+        text = text.strip()
+        if not text:
+            continue
+        resp = await c.post(
+            "/v1/events",
+            json={"source": "onboarding", "event_type": "note", "text": text},
+            headers={"Idempotency-Key": f"onboarding-{uuid.uuid4()}"},
+        )
+        if resp.status_code != 201:
+            raise CliError(f"onboarding capture failed ({resp.status_code}): {resp.text[:500]}")
+        event = resp.json()["event"]
+        events.append(event)
+        search = await c.get("/v1/memories", params={"q": text, "limit": 1})
+        if search.status_code == 200 and search.json().get("memories"):
+            memory = search.json()["memories"][0]
+            audit_resp = await c.get(f"/v1/audit/{memory['id']}")
+            if audit_resp.status_code == 200:
+                audits.append(audit_resp.json())
+    return {"events": events, "audits": audits}
+
+
 # --------------------------------------------------------------------------- #
 # Output formatting + CLI entrypoint
 # --------------------------------------------------------------------------- #
@@ -506,6 +552,43 @@ async def _run(args: argparse.Namespace) -> int:
         else:
             print(text)
         return 0
+    if cmd == "import":
+        async with _client() as client:
+            summary = await import_bundle_file(
+                args.file,
+                mode=args.mode,
+                client=client,
+            )
+        print(
+            f"imported {summary['events_imported']} events "
+            f"({summary['events_skipped']} skipped) -> "
+            f"{summary['memories_created']} memories, "
+            f"{summary['patterns_created']} patterns, "
+            f"{summary['summaries_created']} summaries, "
+            f"{summary['lessons_created']} lessons"
+        )
+        return 0
+    if cmd == "onboarding":
+        texts = list(args.texts or [])
+        if not texts:
+            print("Tell EV three things you want it to remember.")
+            for _ in range(3):
+                line = input("> ").strip()
+                if line:
+                    texts.append(line)
+        if not texts:
+            raise CliError("nothing to remember")
+        async with _client() as client:
+            result = await onboarding(texts, client=client)
+        print(f"EV remembers {len(result['events'])} things.")
+        for audit in result["audits"]:
+            memory = audit["memory"]
+            sources = len(audit["source_events"])
+            print(
+                f"  audit: {memory['memory_type']} v{memory['version']} — "
+                f"{memory['text'][:80]} ({sources} source events)"
+            )
+        return 0
     if cmd == "queue":
         records = list_queue(queue_dir())
         if not records:
@@ -577,6 +660,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_export = sub.add_parser("export", help="export all events + memories as JSON")
     p_export.add_argument("--output", default=None, help="write to file instead of stdout")
+
+    p_import = sub.add_parser("import", help="import an export bundle (merge or replace)")
+    p_import.add_argument("file", help="path to an exported JSON bundle")
+    p_import.add_argument(
+        "--mode",
+        default="merge",
+        choices=["merge", "replace"],
+        help="replace only works against an empty event log (fresh restore)",
+    )
+
+    p_onboarding = sub.add_parser("onboarding", help="guided first memories + first audit")
+    p_onboarding.add_argument("texts", nargs="*", help="initial memories (interactive if omitted)")
 
     sub.add_parser("queue", help="list queued offline captures")
     sub.add_parser("sync", help="send queued offline captures")

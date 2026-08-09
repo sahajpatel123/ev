@@ -20,7 +20,6 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
 
 # Budgets are engineering invariants from docs/EVALUATION.md §8 and
 # docs/DEPLOYMENT.md §10. Keep them in code so gates can enforce them and the
@@ -465,7 +464,7 @@ def run_observability_gate(spec: dict) -> GateResult:
     checks.append(
         _check(
             "latency_budgets_defined",
-            LATENCY_BUDGETS_MS == expected_budgets,
+            expected_budgets == LATENCY_BUDGETS_MS,
             f"latency_budgets={LATENCY_BUDGETS_MS}",
         )
     )
@@ -527,14 +526,16 @@ async def _run_all(session) -> list[GateResult]:
 
 
 async def _main(report_path: Path) -> int:
-    os.environ.setdefault("EV_DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+    _tmp = tempfile.mkdtemp(prefix="ev-eval-db-")
+    os.environ.setdefault("EV_DATABASE_URL", f"sqlite+aiosqlite:///{_tmp}/eval.db")
     os.environ.setdefault("EV_PROCESSING_MODE", "sync")
     os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
     os.environ.setdefault("EV_EMBEDDING_DIM", "64")
     os.environ.setdefault("EV_MASTER_KEY", "eval-local-key")
     os.environ.setdefault("EV_STORAGE_ROOT", tempfile.mkdtemp(prefix="ev-eval-storage-"))
 
-    from app.db import Base, engine, SessionLocal
+    import app.main  # noqa: F401 - registers every model on Base.metadata
+    from app.db import Base, SessionLocal, engine
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

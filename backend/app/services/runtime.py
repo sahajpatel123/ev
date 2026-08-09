@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.ev.actions import ACTION_SPECS, get_action_spec, validate_action_payload
 from app.ev.ev_sense import quiet_hours_active
 from app.models import (
     ApprovedAction,
@@ -34,6 +35,7 @@ from app.schemas import (
     WakeCandidateOut,
     WakeIntent,
 )
+from app.services.access_log import log_access
 from app.utils.text import utcnow
 
 RUNTIME_STATES = ("idle", "verifying", "awake", "processing", "responding", "follow_up")
@@ -47,16 +49,11 @@ LEGAL_TRANSITIONS: dict[str, set[str]] = {
     "follow_up": {"idle"},
 }
 
-# Action type -> requires approval. Unknown action types default to requiring
-# approval (safe default for anything that can touch the outside world).
+# Action type -> requires approval, derived from the formal action registry.
+# Unknown action types are rejected at routing time; nothing can invoke a
+# capability that is not explicitly declared.
 ACTION_PERMISSIONS: dict[str, bool] = {
-    "search_memory": False,
-    "hud_card": False,
-    "notification": True,
-    "fleet_task": True,
-    "web_search": True,
-    "send_message": True,
-    "execute_command": True,
+    spec["name"]: bool(spec["requires_approval"]) for spec in ACTION_SPECS
 }
 
 
@@ -291,7 +288,13 @@ async def route_action(
     device_id: UUID | None = None,
     force_requires_approval: bool = False,
 ) -> ApprovedAction:
-    requires_approval = force_requires_approval or ACTION_PERMISSIONS.get(data.action_type, True)
+    spec = get_action_spec(data.action_type)
+    if spec is None:
+        raise ValueError(f"Unknown action type '{data.action_type}'")
+    issues = validate_action_payload(data.action_type, data.payload)
+    if issues:
+        raise ValueError(f"Invalid action payload: {'; '.join(issues)}")
+    requires_approval = force_requires_approval or bool(spec["requires_approval"])
     current = await active_session(session)
     approved = data.auto_approve and not requires_approval
     action = ApprovedAction(
@@ -308,6 +311,21 @@ async def route_action(
     )
     session.add(action)
     await session.flush()
+    await log_access(
+        session,
+        actor=requested_by,
+        action="action.route",
+        endpoint="POST /v1/runtime/actions",
+        resource_type="action",
+        resource_ids=[action.id],
+        details={
+            "action_type": action.action_type,
+            "requires_approval": action.requires_approval,
+            "undoable": bool(spec["undoable"]),
+            "permission": spec["permission"],
+            "read_only": bool(spec["read_only"]),
+        },
+    )
     return action
 
 
@@ -335,6 +353,15 @@ async def decide_action(
         action.denied_reason = reason or "denied"
     action.updated_at = now
     await session.flush()
+    await log_access(
+        session,
+        actor=actor,
+        action="action.decide",
+        endpoint=f"POST /v1/runtime/actions/{{id}}/{decision}",
+        resource_type="action",
+        resource_ids=[action.id],
+        details={"decision": decision, "reason": reason},
+    )
     return action
 
 
@@ -355,6 +382,51 @@ async def execute_action(
     action.result = result or {}
     action.updated_at = utcnow()
     await session.flush()
+    await log_access(
+        session,
+        actor=actor,
+        action="action.execute",
+        endpoint="POST /v1/runtime/actions/{id}/execute",
+        resource_type="action",
+        resource_ids=[action.id],
+        details={"action_type": action.action_type},
+    )
+    return action
+
+
+async def rollback_action(
+    session: AsyncSession,
+    action_id: UUID,
+    *,
+    actor: str,
+    reason: str | None = None,
+) -> ApprovedAction:
+    """Roll back an executed, undoable action through the declared registry."""
+    action = await session.get(ApprovedAction, action_id)
+    if action is None:
+        raise KeyError(f"Action {action_id} not found")
+    if action.status != "executed":
+        raise ValueError(f"Only executed actions can be rolled back (status is {action.status!r})")
+    spec = get_action_spec(action.action_type)
+    if spec is None or not spec["undoable"]:
+        raise ValueError(f"Action type '{action.action_type}' is not undoable")
+    action.status = "rolled_back"
+    action.rolled_back_at = utcnow()
+    action.rolled_back_reason = reason or "rolled back by user"
+    action.updated_at = utcnow()
+    await session.flush()
+    await log_access(
+        session,
+        actor=actor,
+        action="action.rollback",
+        endpoint="POST /v1/runtime/actions/{id}/rollback",
+        resource_type="action",
+        resource_ids=[action.id],
+        details={
+            "action_type": action.action_type,
+            "reason": action.rolled_back_reason,
+        },
+    )
     return action
 
 
@@ -366,6 +438,14 @@ async def fail_action(session: AsyncSession, action_id: UUID, *, error: str) -> 
     action.error = error
     action.updated_at = utcnow()
     await session.flush()
+    await log_access(
+        session,
+        actor="system",
+        action="action.fail",
+        resource_type="action",
+        resource_ids=[action.id],
+        details={"action_type": action.action_type, "error": error},
+    )
     return action
 
 
@@ -555,12 +635,7 @@ async def runtime_health(session: AsyncSession) -> dict:
     )
 
     dlq = await dead_letter_summary(session)
-    if dlq["discarded"] > 0:
-        dlq_status = "degraded"
-    elif dlq["new"] > 0:
-        dlq_status = "degraded"
-    else:
-        dlq_status = "ok"
+    dlq_status = "degraded" if dlq["discarded"] > 0 or dlq["new"] > 0 else "ok"
     checks.append({"name": "dead_letters", "status": dlq_status, "counts": dlq})
 
     if settings.processing_mode == "queue":
