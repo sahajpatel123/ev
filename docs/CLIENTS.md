@@ -120,6 +120,9 @@ Client ◄── {events, next_cursor}
 - Poll interval: active app 30 s; background via background fetch/APNs signal.
 - Clock skew: clients send `occurred_at`; server clamps future timestamps to
   `ingested_at` and records original in metadata.
+- Idempotency: `POST /v1/events` accepts an `Idempotency-Key` header and returns
+  409 with the existing event on replay; the key hash is stored on the event
+  row, making offline replay safe (`ev sync`).
 
 ## 7. Notifications (M5)
 
