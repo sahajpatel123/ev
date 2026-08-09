@@ -24,6 +24,7 @@ from app.filter.output_filter import run_output_filter
 from app.filter.policy import active_policy
 from app.gateway.service import ModelGateway
 from app.schemas import InteractionStrategy
+from app.training.adapter import active_style_profile
 
 
 @dataclass
@@ -42,6 +43,7 @@ class FilterRunResult:
     blocked: bool = False
     block_reason: str | None = None
     policy: dict | None = None
+    style_profile: dict | None = None
 
 
 async def run_full_filter_pipeline(
@@ -59,6 +61,7 @@ async def run_full_filter_pipeline(
 
     request_id = request_id or str(uuid4())
     policy = await active_policy(session)
+    style_profile = await active_style_profile(session)
     input_filter = InputFilter(session)
     decision, memories, grounding, strategy = await input_filter.run(
         message=message,
@@ -165,6 +168,7 @@ async def run_full_filter_pipeline(
         max_iterations=settings.filter_critic_max_iterations,
         critic=critic,
         policy=policy,
+        style_profile=style_profile,
     )
     ledger_ids: list[UUID] = []
     for flag in report.flags:
@@ -231,6 +235,7 @@ async def run_full_filter_pipeline(
         ledger_ids=ledger_ids,
         model=call.model,
         policy=policy.to_dict(),
+        style_profile=style_profile,
     )
 
 

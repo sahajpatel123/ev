@@ -42,6 +42,19 @@ DATE_RE = re.compile(
     re.IGNORECASE,
 )
 
+STYLE_CITATION_RE = re.compile(
+    r"\b(?:last (?:week|month|time|night|year)|"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?|"
+    r"20\d{2}|your memory|you (?:said|told|mentioned)|decision from|previously|based on)\b",
+    re.IGNORECASE,
+)
+STYLE_HEDGE_RE = re.compile(
+    r"\b(?:maybe|perhaps|i think|i believe|possibly|not sure|could|might|probably)\b",
+    re.IGNORECASE,
+)
+STYLE_BULLET_RE = re.compile(r"(?:^|\n)\s*(?:[-*•]|\d+[.)])")
+
 HUD_CONTRACTS: dict[str, dict] = {
     "ev.hud.card.v1": {"required": ["schema_version", "generated_at", "title", "body"]},
     "ev.hud.briefing.v1": {
@@ -311,6 +324,7 @@ def enforce_persona(
     strategy: InteractionStrategy,
     *,
     strict: bool = False,
+    style_profile: dict | None = None,
 ) -> tuple[str, dict, list[FilterFlag]]:
     flags: list[FilterFlag] = []
     persona: dict = {}
@@ -322,6 +336,11 @@ def enforce_persona(
     text = re.sub(r"^\s*(i'm sorry, but|i apologize, but)\s+", "", text, flags=re.IGNORECASE)
 
     lo, hi = WORD_COUNT_RANGES.get(strategy.mode, (5, 300))
+    if style_profile:
+        target = (style_profile.get("word_count_targets") or {}).get(strategy.mode)
+        if target:
+            lo = max(5, int(target * 0.7))
+            hi = max(lo, int(target * 1.25))
     if strict:
         hi = max(lo, int(hi * 0.8))
     words = text.split()
@@ -383,6 +402,15 @@ def enforce_persona(
         persona["urgency"] = True
         if len(text.split()) > hi:
             persona["urgency_trimmed"] = True
+
+    if style_profile:
+        if style_profile.get("prefer_citations") and not STYLE_CITATION_RE.search(text):
+            persona["citation_preferred"] = True
+        if style_profile.get("prefer_bullets") and not STYLE_BULLET_RE.search(text):
+            persona["bullets_preferred"] = True
+        if style_profile.get("prefer_direct") and STYLE_HEDGE_RE.search(text):
+            persona["hedging_present"] = True
+        persona["style_profile_applied"] = True
 
     if text != original:
         persona["voice_adjusted"] = True
@@ -515,6 +543,7 @@ async def run_output_filter(
     max_iterations: int = 2,
     critic=None,
     policy: FilterPolicy | None = None,
+    style_profile: dict | None = None,
 ) -> OutputReport:
     """Run all output stages with a bounded critic loop (max two refinements).
 
@@ -556,6 +585,7 @@ async def run_output_filter(
                 strict=(
                     policy.persona_style_enforcement if policy is not None else False
                 ),
+                style_profile=style_profile,
             )
             report.persona = persona
             report.flags.extend(persona_flags)
