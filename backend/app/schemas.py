@@ -326,6 +326,7 @@ class RebuildOut(BaseModel):
 class DeviceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     capabilities: list[str] = Field(default_factory=list)
+    trust_level: Literal["device", "owner"] = "device"
 
 
 class DeviceOut(BaseModel):
@@ -335,6 +336,8 @@ class DeviceOut(BaseModel):
     last_seen_at: datetime | None
     revoked_at: datetime | None
     capabilities: list
+    trust_level: str = "device"
+    owner_id: UUID | None = None
 
     model_config = {"from_attributes": True}
 
@@ -2043,7 +2046,7 @@ class WebhookIngestOut(BaseModel):
     adapter: str
     accepted: int
     deduplicated: int
-    channel_id: UUID
+    channel_id: UUID | None = None
     event_ids: list[UUID] = Field(default_factory=list)
 
 
@@ -2077,6 +2080,10 @@ class PluginOut(BaseModel):
 
 class PluginCommandRequest(BaseModel):
     args: dict = Field(default_factory=dict)
+
+
+class PluginRejectRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=256)
 
 
 class PluginCommandOut(BaseModel):

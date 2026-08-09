@@ -207,6 +207,93 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=utcnow().tzinfo)
 
 
+def derive_audio_context(payload: dict) -> dict:
+    """Minimal, derived audio-scene representation.
+
+    Returns scene/in-call/music/noise flags plus confidence.  Raw audio refs and
+    transcripts are intentionally never included, so model-facing context can
+    know *what kind* of audio environment the user is in without exposing the
+    content of the sound itself.
+    """
+    scene = str(payload.get("scene") or "").strip().lower()
+    confidence = payload.get("confidence")
+    if not isinstance(confidence, (int, float)) or not 0 <= confidence <= 1:
+        confidence = None
+    in_call = bool(payload.get("in_call")) or scene in {"meeting", "call", "conference"}
+    music = bool(payload.get("music")) or scene in {"music", "music_playing"}
+    noise = bool(payload.get("noise")) or scene in {"noise", "loud", "construction"}
+    return {
+        "scene": scene or "unknown",
+        "in_call": in_call,
+        "music": music,
+        "noise": noise,
+        "confidence": float(confidence) if confidence is not None else None,
+    }
+
+
+def derive_location_context(payload: dict) -> dict:
+    """Minimal, coarse location/presence representation.
+
+    Only named/coarse place labels and presence are surfaced.  Exact
+    coordinates, addresses, and raw collector text are never included, so the
+    model can know "at the airport" without receiving a precise fix.
+    """
+    place = (
+        payload.get("coarse_place")
+        or payload.get("place")
+        or payload.get("city")
+        or payload.get("neighborhood")
+    )
+    presence = str(payload.get("presence") or "unknown")[:32]
+    return {
+        "place": str(place)[:80] if place else None,
+        "presence": presence,
+        "coarse": bool(place),
+    }
+
+
+def live_context_line(
+    channel: LiveChannel,
+    event: LiveEvent,
+    *,
+    access: str = "user",
+) -> str:
+    """One derived, privacy-safe context line for a live event.
+
+    Audio and location channels always render through their minimal derived
+    representation.  For the model slice, screen and vision lines are also
+    restricted to collector-provided summaries; raw payload text is never
+    promoted to model context.
+    """
+    source = f"{channel.name}/{event.event_type}" if channel else event.event_type
+    payload = event.payload or {}
+    if channel is not None and channel.kind == "audio":
+        derived = derive_audio_context(payload)
+        line = f"[{source}] audio scene={derived['scene']} in_call={derived['in_call']}"
+        if derived["confidence"] is not None:
+            line += f" conf={derived['confidence']:.2f}"
+        return line
+    if channel is not None and channel.kind == "location":
+        derived = derive_location_context(payload)
+        line = f"[{source}] location presence={derived['presence']}"
+        if derived["place"]:
+            line += f" coarse={derived['place']}"
+        return line
+    if access == "model" and channel is not None:
+        if channel.kind == "screen":
+            app = payload.get("app") or "unknown"
+            summary = payload.get("summary")
+            line = f"[{source}] screen app={app}"
+            if summary:
+                line += f" {str(summary)[:120]}"
+            return line
+        if channel.kind == "vision":
+            summary = payload.get("summary") or payload.get("label") or "vision event"
+            return f"[{source}] vision {str(summary)[:120]}"
+    snippet = payload.get("text") or payload.get("summary") or event.event_type
+    return f"[{source}] {str(snippet)[:160]}"
+
+
 async def sense_signals(
     session: AsyncSession,
     *,
@@ -236,10 +323,18 @@ async def sense_signals(
     signals: list[dict] = []
     late_night: list[LiveEvent] = []
     health_anomalies: list[tuple[LiveEvent, str]] = []
+    audio_in_call: list[LiveEvent] = []
+    location_events: list[LiveEvent] = []
     for event, channel in rows:
         hour = _aware(event.occurred_at).hour
         if channel.kind == "screen" and (hour >= 23 or hour < 5):
             late_night.append(event)
+        if channel.kind == "audio":
+            derived = derive_audio_context(event.payload or {})
+            if derived["in_call"]:
+                audio_in_call.append(event)
+        if channel.kind == "location":
+            location_events.append(event)
         if channel.kind == "health":
             payload = event.payload or {}
             heart_rate = payload.get("heart_rate") or payload.get("bpm")
@@ -292,6 +387,52 @@ async def sense_signals(
                 "basis_ids": [str(event.id) for event, _ in health_anomalies[:5]],
             }
         )
+
+    if audio_in_call:
+        latest = max(audio_in_call, key=lambda e: _aware(e.occurred_at))
+        latest_derived = derive_audio_context(latest.payload or {})
+        confidence = latest_derived["confidence"] or 0.7
+        signals.append(
+            {
+                "kind": "audio_in_call",
+                "text": (
+                    f"Active call/meeting detected from {len(audio_in_call)} permissioned "
+                    f"audio scene events."
+                ),
+                "confidence": round(min(0.95, max(0.5, confidence)), 3),
+                "importance": 0.8,
+                "urgency": 0.5,
+                "goal_relevance": 0.6,
+                "benefit": 0.8,
+                "why_now": (
+                    f"Because audio collectors reported an in-call/meeting scene at "
+                    f"{_aware(latest.occurred_at).isoformat()}."
+                ),
+                "basis_ids": [str(event.id) for event in audio_in_call[:5]],
+            }
+        )
+
+    if location_events:
+        latest = max(location_events, key=lambda e: _aware(e.occurred_at))
+        derived = derive_location_context(latest.payload or {})
+        if derived["place"] or derived["presence"] not in {"unknown"}:
+            place_text = f"Coarse location: {derived['place']}." if derived["place"] else "Coarse location updated."
+            signals.append(
+                {
+                    "kind": "location_presence",
+                    "text": f"{place_text} Presence: {derived['presence']}.",
+                    "confidence": 0.8,
+                    "importance": 0.6,
+                    "urgency": 0.3,
+                    "goal_relevance": 0.7,
+                    "benefit": 0.7,
+                    "why_now": (
+                        f"Because the location channel reported presence "
+                        f"'{derived['presence']}' at {_aware(latest.occurred_at).isoformat()}."
+                    ),
+                    "basis_ids": [str(event.id) for event in location_events[:5]],
+                }
+            )
 
     return signals
 

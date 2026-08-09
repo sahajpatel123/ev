@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from app.contracts import ToolCall, ToolSpec
-from app.gateway.validation import validate_tool_calls, validate_output
+from app.gateway.validation import validate_output, validate_tool_calls
 from app.models import AccessLog
 
 

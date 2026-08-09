@@ -9,7 +9,7 @@ and missing optional arguments with defaults are rectified deterministically.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from app.contracts import ToolCall, ToolSpec
 
@@ -34,7 +34,7 @@ class ValidatedToolCall:
         }
 
 
-_JSON_TYPES = {
+_JSON_TYPES: dict[str, type | tuple[type, ...]] = {
     "string": str,
     "integer": int,
     "number": (int, float),
@@ -51,7 +51,7 @@ def _matches_type(value: Any, json_type: str) -> bool:
         return isinstance(value, int) and not isinstance(value, bool)
     if json_type == "number":
         return isinstance(value, (int, float)) and not isinstance(value, bool)
-    return isinstance(value, _JSON_TYPES[json_type])
+    return isinstance(value, cast(type, _JSON_TYPES[json_type]))
 
 
 def _schema_issues(name: str, value: Any, schema: dict) -> list[str]:
@@ -133,9 +133,8 @@ def validate_output(result: Any, output_schema: dict) -> list[str]:
             for key in output_schema.get("required") or []
             if key not in result
         ]
-    if expected_type == "array":
-        if not isinstance(result, list):
-            return [f"output must be {expected_type}"]
+    if expected_type == "array" and not isinstance(result, list):
+        return [f"output must be {expected_type}"]
     return []
 
 

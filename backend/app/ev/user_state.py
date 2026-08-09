@@ -154,12 +154,10 @@ async def build_user_state(
             select(LiveChannel).where(LiveChannel.id.in_(channel_ids))
         )
         channel_map = {channel.id: channel for channel in channel_rows.scalars().all()}
-    live_context = []
-    for row in live_rows:
-        channel = channel_map.get(row.channel_id)
-        source = f"{channel.name}/{row.event_type}" if channel else row.event_type
-        snippet = row.payload.get("text") or row.payload.get("summary") or row.event_type
-        live_context.append(f"[{source}] {str(snippet)[:160]}")
+    live_context = [
+        live.live_context_line(channel_map.get(row.channel_id), row, access=access)
+        for row in live_rows
+    ]
     return UserStateOut(
         activity=_infer_activity(recent_text),
         active_project=active_project,

@@ -6,7 +6,7 @@ from collections.abc import Callable
 import httpx
 
 from app.config import settings
-from app.contracts import ChatMessage, ChatResult, ToolCall, ToolSpec
+from app.contracts import ChatMessage, ChatProvider, ChatResult, ToolCall, ToolSpec
 
 
 class EchoProvider:

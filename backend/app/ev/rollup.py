@@ -60,15 +60,22 @@ def _is_decision(text: str) -> bool:
 
 
 def _topics_from(text: str) -> Counter[str]:
-    lowered = text.lower()
-    words = re.findall(r"[a-z0-9_\-']{4,}", lowered)
+    words = re.findall(r"[a-z0-9_\-']{4,}", text)
+    lowered = [w.lower() for w in words]
     stopwords = {
         "the", "and", "that", "this", "with", "from", "have", "been", "was",
         "were", "will", "would", "should", "could", "can", "has", "had",
         "for", "but", "not", "are", "you", "your", "about", "into", "than",
         "then", "there", "they", "them", "what", "why", "how", "when",
     }
-    return Counter(t for t in words if t not in stopwords)
+    display: dict[str, str] = {}
+    counts: Counter[str] = Counter()
+    for word, low in zip(words, lowered):
+        if low in stopwords:
+            continue
+        display.setdefault(low, word)
+        counts[low] += 1
+    return Counter({display[key]: count for key, count in counts.items()})
 
 
 async def _load_events(
@@ -110,7 +117,7 @@ async def _load_events(
 
 def _turn_number(rollup: ConversationRollup) -> int:
     """Next user-turn number, counting existing covered turns."""
-    return rollup.covered_turn_count + 1
+    return (rollup.covered_turn_count or 0) + 1
 
 
 def _merge_events(
@@ -118,9 +125,9 @@ def _merge_events(
     events: list[Event],
 ) -> None:
     """Fold new message events into the rollup's topics/questions/decisions/arc."""
-    topics = Counter(
-        {entry["topic"]: entry["count"] for entry in (rollup.topics or [])}
-    )
+    existing_topics: dict[str, tuple[str, int]] = {}
+    for entry in rollup.topics or []:
+        existing_topics[entry["topic"].lower()] = (entry["topic"], entry["count"])
     questions = deque((rollup.open_questions or [])[:MAX_QUESTIONS])
     decisions = deque((rollup.decisions or [])[:MAX_DECISIONS])
     arc = deque((rollup.arc or [])[-MAX_ARC_TURNS:])
@@ -134,8 +141,14 @@ def _merge_events(
         if event.event_type == "message.user":
             current_user = text
             current_turn_no = _turn_number(rollup)
-            rollup.covered_turn_count += 1
-            topics.update(_topics_from(text))
+            rollup.covered_turn_count = (rollup.covered_turn_count or 0) + 1
+            for topic, count in _topics_from(text).items():
+                key = topic.lower()
+                if key in existing_topics:
+                    display, old_count = existing_topics[key]
+                    existing_topics[key] = (display, old_count + count)
+                else:
+                    existing_topics[key] = (topic, count)
             if _is_decision(text):
                 decision = text[:240]
                 if decision not in decisions:
@@ -153,7 +166,12 @@ def _merge_events(
             current_user = None
             current_turn_no = None
 
-    rollup.topics = [{"topic": t, "count": c} for t, c in topics.most_common(MAX_TOPICS)]
+    rollup.topics = [
+        {"topic": topic, "count": count}
+        for topic, count in sorted(
+            existing_topics.values(), key=lambda item: item[1], reverse=True
+        )[:MAX_TOPICS]
+    ]
     rollup.open_questions = list(questions)[-MAX_QUESTIONS:]
     rollup.decisions = list(decisions)[-MAX_DECISIONS:]
     rollup.arc = list(arc)[-MAX_ARC_TURNS:]

@@ -63,6 +63,12 @@ ACTIVE_STATES = {
 }
 
 
+def _aware(value):
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=utcnow().tzinfo)
+
+
 class VoiceError(Exception):
     """Domain error with an HTTP-ish status for the API layer."""
 
@@ -694,7 +700,7 @@ class VoiceRuntime:
         await self._require_voice_consent()
         if row.owner_verified:
             raise VoiceError("Session already verified", status=409, code="already_verified")
-        if row.expires_at is not None and row.expires_at < utcnow():
+        if _aware(row.expires_at) is not None and _aware(row.expires_at) < utcnow():
             row.state = VoiceState.ENDED
             row.ended_at = utcnow()
             row.end_reason = "verification timeout"
@@ -888,7 +894,7 @@ class VoiceRuntime:
                     status=409,
                     code="invalid_state",
                 )
-            if row.follow_up_until is None or row.follow_up_until < utcnow():
+            if row.follow_up_until is None or _aware(row.follow_up_until) < utcnow():
                 row.state = VoiceState.ENDED
                 row.ended_at = utcnow()
                 row.end_reason = "follow-up window expired"
@@ -983,7 +989,10 @@ class VoiceRuntime:
         enrollment = await self._current_enrollment()
         follow_up_remaining = 0
         if row.state == VoiceState.FOLLOW_UP and row.follow_up_until is not None:
-            follow_up_remaining = max(0, int((row.follow_up_until - utcnow()).total_seconds()))
+            follow_up_remaining = max(
+                0,
+                int((_aware(row.follow_up_until) - utcnow()).total_seconds()),
+            )
         return SessionStatus(
             session_id=str(row.id),
             state=row.state,

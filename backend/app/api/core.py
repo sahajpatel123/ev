@@ -46,6 +46,7 @@ from app.models import (
     Memory,
     MemoryEntity,
     MemoryEvent,
+    OwnerIdentity,
 )
 from app.schemas import (
     AccessLogOut,
@@ -693,7 +694,6 @@ async def run_chat_pipeline(
         pending_alert_priority=alert_priority,
         pending_alert_tier=alert_tier,
     )
-    rollup = await rollup_service.build_rollup(session, thread_id)
     model_rollup = await rollup_service.model_safe_rollup(session, thread_id)
     state = await conversation.get_or_create_state(session, thread_id)
     open_questions = list(
@@ -1094,10 +1094,15 @@ async def create_device(
     actor: str = Depends(require_master),
 ) -> DeviceCreateResponse:
     token = secrets.token_urlsafe(32)
+    owner = (
+        await session.execute(select(OwnerIdentity).order_by(OwnerIdentity.created_at.asc()).limit(1))
+    ).scalar_one_or_none()
     device = Device(
         name=data.name,
         token_hash=sha256_hex(token),
         capabilities=data.capabilities,
+        trust_level=data.trust_level,
+        owner_id=owner.id if owner else None,
     )
     session.add(device)
     await session.flush()

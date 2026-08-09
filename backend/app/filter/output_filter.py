@@ -443,7 +443,8 @@ class DeterministicCritic:
         strategy: InteractionStrategy,
     ) -> dict:
         claims = report.claims
-        grounding = 1.0 if not claims else sum(1 for c in claims if c.supported) / len(claims)
+        kept = [c for c in claims if c.action == "keep"]
+        grounding = 1.0 if not kept else sum(1 for c in kept if c.supported) / len(kept)
         structural = report.structural
         contract = 1.0 if not structural.get("structured") else 1.0
         persona = report.persona
@@ -457,10 +458,10 @@ class DeterministicCritic:
         elif safety.get("redactions"):
             safety_score = 0.8
         honesty = 1.0
-        if claims and not all(c.supported for c in claims):
+        if any(c.action == "keep" and not c.supported for c in claims):
             honesty = 0.5
-        if claims and report.edits:
-            honesty = min(honesty, 0.8)
+        elif any(c.action == "soften" for c in claims):
+            honesty = 0.8
         actionability = 1.0
         if strategy.mode in ("coaching", "emergency", "analytical"):
             actionability = 0.6 if NEXT_ACTION_RE.search(final_text) is None else 1.0

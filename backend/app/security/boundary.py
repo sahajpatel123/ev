@@ -32,8 +32,8 @@ SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "api_key"),
     (
         re.compile(
-            r"\b(?:api[_-]?key|secret|password|passwd|token)\s*[=:]\s*"
-            r"[A-Za-z0-9_\-./+]{12,}\b",
+            r"\b(?:api[_-]?key|secret|password|passwd|token)\s*(?:[=:]|\s+(?:is|was)\s+)"
+            r"[A-Za-z0-9_\-./+]{8,}\b",
             re.IGNORECASE,
         ),
         "credential",

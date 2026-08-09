@@ -9,7 +9,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.config import settings
-from app.contracts import ChatMessage, ChatResult, ChatProvider, ToolSpec
+from app.contracts import ChatMessage, ChatResult, ToolSpec
 from app.gateway.providers import register_provider
 from app.gateway.service import ModelGateway
 from app.main import app
@@ -116,7 +116,8 @@ async def test_guard_rejects_never_send_markers_in_envelope() -> None:
 
 
 async def test_redact_secrets_utility() -> None:
-    assert redact_secrets("key: AKIAIOSFODNN7EXAMPLE") == "[credential redacted]"
+    assert "AKIAIOSFODNN7EXAMPLE" not in redact_secrets("key: AKIAIOSFODNN7EXAMPLE")
+    assert "password=supersecret123" not in redact_secrets("password=supersecret123")
     assert "sk-1234567890abcdefghijklmnopqrstuvwxyz" not in redact_secrets(
         "sk-1234567890abcdefghijklmnopqrstuvwxyz"
     )
@@ -207,7 +208,8 @@ async def test_rollup_excludes_never_send_and_sensitive_content(
     summary = resp.json()["rollup"]["summary"]
     assert "Qubit-9" not in summary
     assert "Cardiac episode" not in summary
-    assert "planning the demo" in summary
+    assert "planning" in summary
+    assert "demo" in summary
 
 
 async def test_device_token_cannot_manage_devices_or_export(

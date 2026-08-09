@@ -6,16 +6,15 @@ from dataclasses import dataclass
 
 import pytest
 
+from app.config import settings
 from app.contracts import (
     ChatMessage,
     ChatResult,
-    ChatProvider,
     MemoryRef,
     RequestEnvelope,
     ToolCall,
     ToolSpec,
 )
-from app.config import settings
 from app.gateway.providers import (
     PROVIDER_REGISTRY,
     get_chat_provider,

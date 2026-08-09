@@ -38,16 +38,6 @@ async def require_auth(authorization: str | None = Header(default=None)) -> str:
 
 
 async def require_master(authorization: str | None = Header(default=None)) -> str:
-    """Only the master key may manage identity and device trust.
-
-    A registered device token is deliberately rejected: a compromised device
-    must not be able to mint new devices, revoke the fleet, or rotate recovery
-    material (device-to-device privilege escalation).
-    """
-    return await require_auth(authorization)
-
-
-async def require_master(authorization: str | None = Header(default=None)) -> str:
     """Master-key-only gate for privileged surfaces (device management, export).
 
     A registered device token authenticates the device, but must not grant
@@ -113,3 +103,25 @@ async def require_actor_context(
         is_master=device is None,
         device=device,
     )
+
+
+async def require_owner_trust(
+    authorization: str | None = Header(default=None),
+    session: AsyncSession = Depends(get_session),
+) -> ActorContext:
+    """Require the master key or an owner-trusted device (biometric-grade).
+
+    Plain devices may chat and capture lightweight context, but enrolling or
+    revoking voiceprints and other owner-level operations require a device that
+    the owner ceremony explicitly promoted to owner trust.
+    """
+    ctx = await require_actor_context(authorization, session)
+    if ctx.is_master:
+        return ctx
+    if ctx.device is None or ctx.device.trust_level != "owner":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner-level trust required for this operation",
+            headers={"X-Error-Code": "owner_trust_required"},
+        )
+    return ctx
