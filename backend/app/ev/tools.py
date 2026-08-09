@@ -25,6 +25,7 @@ from app.gateway.validation import validate_arguments, validate_output
 from app.memory.retrieval import Retriever
 from app.models import GearSnapshot, Memory
 from app.schemas import ToolCallResponse
+from app.search.providers import get_search_provider
 from app.services.access_log import log_access
 
 MAX_EXPRESSION_LENGTH = 200
@@ -302,6 +303,27 @@ TOOL_SPECS = [
         "permission": "research:read",
         "undoable": False,
     },
+    {
+        "name": "search_web",
+        "description": (
+            "Search the web for current external information. Every result carries "
+            "a citation (title, url, snippet); never present uncited web content as memory."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string", "minLength": 1},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+            },
+            "required": ["query"],
+        },
+        "output": {"type": "object", "required": ["count", "results"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "web:search",
+        "undoable": False,
+    },
 ]
 
 
@@ -567,6 +589,23 @@ async def _handle(session: AsyncSession, name: str, args: dict) -> dict:
                     "conclusion": s.conclusion,
                 }
                 for s in sessions
+            ],
+        }
+    if name == "search_web":
+        provider = get_search_provider()
+        if provider is None:
+            raise KeyError(
+                "Web search is disabled: set EV_SEARCH_PROVIDER and an API key to enable it"
+            )
+        results = await provider.search(
+            str(args["query"]),
+            limit=int(args.get("limit", 5)),
+        )
+        return {
+            "count": len(results),
+            "results": [
+                {"title": r.title, "url": r.url, "snippet": r.snippet}
+                for r in results
             ],
         }
     raise KeyError(f"Unknown tool '{name}'")

@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 384
 
+    # Web research (plan 11.3 / D-03): none = memory-only; mock for tests;
+    # brave uses a user-supplied Brave Search API key.
+    search_provider: str = "none"  # none | mock | brave
+    brave_search_base_url: str = "https://api.search.brave.com/res/v1/web/search"
+    brave_search_api_key: str | None = None
+    search_timeout_seconds: float = 10.0
+    search_result_limit: int = 5
+
     # Voiceprint enrollment (consent-gated biometric data)
     voiceprint_provider: str = "hash"  # hash | http
     voiceprint_base_url: str | None = None
@@ -129,6 +137,7 @@ class Settings(BaseSettings):
     webhook_max_skew_seconds: int = 300
     webhook_rate_limit: int = 60
     webhook_window_seconds: int = 60
+    webhook_max_body_bytes: int = 1_048_576
     plugin_timeout_seconds: int = 3
     plugin_max_output_bytes: int = 65_536
 
