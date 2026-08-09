@@ -14,6 +14,7 @@ from app.filter.envelope import SpeakerIdentity
 from app.filter.input_filter import InputFilter
 from app.filter.ledger import ledger_aggregate, list_ledger, record_decision
 from app.filter.output_filter import run_output_filter
+from app.filter.policy import active_policy
 from app.gateway.providers import get_chat_provider
 from app.schemas import (
     FilterEvaluateRequest,
@@ -49,11 +50,13 @@ async def evaluate_filter(
         method="auth_token",
     )
     if data.draft is not None:
+        policy = await active_policy(session)
         input_filter = InputFilter(session)
         decision, memories, grounding, _ = await input_filter.run(
             message=data.message,
             speaker=speaker,
             k=50,
+            policy=policy,
         )
         ledger_ids = []
         await record_decision(
@@ -73,6 +76,7 @@ async def evaluate_filter(
             data.draft,
             strategy=strategy,
             grounding=grounding,
+            policy=policy,
         )
         for flag in report.flags:
             if flag.action != "allow":

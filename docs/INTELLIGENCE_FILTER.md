@@ -157,8 +157,11 @@ Stages (from v1, kept and tightened):
    deterministic detectors)*
 5. **Critic & refine** — deterministic rubric judge (grounding, persona,
    actionability, honesty, contract validity) with a max-two-iteration
-   refinement loop; staged trust. A provider-backed LLM critic is future work.
-   *(implemented, rule-based)*
+   refinement loop and staged trust, plus an optional provider-backed critic
+   (`app/filter/critic.py`) that judges/revises through the same neutral
+   gateway (`EV_FILTER_CRITIC_ENABLED`, staged modes). A separate local critic
+   for privacy and a learned feedback model remain future work.
+   *(implemented)*
 6. **Finalize** — filter report, response log, SSE `filter-report` event,
    honest fallback on repeated failure. *(implemented)*
 

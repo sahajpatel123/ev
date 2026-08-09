@@ -11,6 +11,7 @@ from app.filter.critic import CriticProvider, CriticRevision, GatewayCritic
 from app.filter.input_filter import InputDecision, InputFilter
 from app.filter.ledger import ledger_aggregate, list_ledger, record_decision
 from app.filter.output_filter import OutputReport, run_output_filter
+from app.filter.policy import FilterPolicy, active_policy
 
 __all__ = [
     "CriticProvider",
@@ -23,4 +24,6 @@ __all__ = [
     "list_ledger",
     "record_decision",
     "run_output_filter",
+    "FilterPolicy",
+    "active_policy",
 ]

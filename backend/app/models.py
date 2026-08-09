@@ -1346,7 +1346,9 @@ class FilterRecalibration(Base):
 
     Ledger aggregates (block rate, over-refinement, redactions, repairs) plus
     user correction/usefulness signals produce deterministic threshold
-    proposals. Snapshots are consent-gated, rollback-able, and erasable.
+    proposals. Snapshots are consent-gated, rollback-able, and erasable; an
+    explicitly applied snapshot carries the concrete runtime ``policy`` that
+    the live filter consumes.
     """
 
     __tablename__ = "filter_recalibrations"
@@ -1356,6 +1358,11 @@ class FilterRecalibration(Base):
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     metrics: Mapped[dict] = mapped_column(JSONType, default=dict)
     proposals: Mapped[list] = mapped_column(JSONType, default=list)
+    policy: Mapped[dict] = mapped_column(JSONType, default=dict)
+    applied_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), index=True
+    )
+    applied_by: Mapped[str | None] = mapped_column(String(128))
     reason_for_change: Mapped[str] = mapped_column(Text, default="ledger-driven recalibration")
     consent_id: Mapped[UUID | None] = mapped_column(ForeignKey("consent_records.id"))
     supersedes_id: Mapped[UUID | None] = mapped_column(

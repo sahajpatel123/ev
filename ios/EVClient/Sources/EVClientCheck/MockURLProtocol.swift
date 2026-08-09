@@ -30,12 +30,16 @@ func mockSession() -> URLSession {
     return URLSession(configuration: configuration)
 }
 
-func httpResponse(_ status: Int) -> HTTPURLResponse {
-    HTTPURLResponse(
+func httpResponse(_ status: Int, contentLength: Int? = nil) -> HTTPURLResponse {
+    var headers: [String: String] = [:]
+    if let contentLength {
+        headers["Content-Length"] = String(contentLength)
+    }
+    return HTTPURLResponse(
         url: URL(string: "https://ev.test/v1/events")!,
         statusCode: status,
         httpVersion: nil,
-        headerFields: nil
+        headerFields: headers
     )!
 }
 

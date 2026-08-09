@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 
 from app.ev.interaction import CommunicationMode
 from app.filter.envelope import Claim, FilterFlag, GroundingMaterial, OutputReport
+from app.filter.policy import FilterPolicy
 from app.schemas import InteractionStrategy
 from app.utils.text import normalize_text, simple_tokens
 
@@ -217,7 +218,13 @@ def _significant_tokens(text: str) -> set[str]:
     return {t for t in simple_tokens(text) if len(t) >= 4 or t.isdigit()}
 
 
-def audit_grounding(text: str, material: list[GroundingMaterial]) -> tuple[list[Claim], list[FilterFlag]]:
+def audit_grounding(
+    text: str,
+    material: list[GroundingMaterial],
+    *,
+    min_evidence: float = 0.5,
+    date_evidence: float = 0.9,
+) -> tuple[list[Claim], list[FilterFlag]]:
     """Extract personal claims and verify them against the memory in context."""
 
     flags: list[FilterFlag] = []
@@ -239,8 +246,8 @@ def audit_grounding(text: str, material: list[GroundingMaterial]) -> tuple[list[
             if overlap > best:
                 best = overlap
                 evidence = [mem.memory_id]
-        supported = (len(claim_tokens) >= 2 and best >= 0.5) or (
-            bool(claim_dates) and best >= 0.9
+        supported = (len(claim_tokens) >= 2 and best >= min_evidence) or (
+            bool(claim_dates) and best >= date_evidence
         )
         action = "keep" if supported else "remove"
         claims.append(
@@ -302,6 +309,8 @@ def _apply_claim_actions(text: str, claims: list[Claim]) -> tuple[str, list[dict
 def enforce_persona(
     text: str,
     strategy: InteractionStrategy,
+    *,
+    strict: bool = False,
 ) -> tuple[str, dict, list[FilterFlag]]:
     flags: list[FilterFlag] = []
     persona: dict = {}
@@ -313,6 +322,8 @@ def enforce_persona(
     text = re.sub(r"^\s*(i'm sorry, but|i apologize, but)\s+", "", text, flags=re.IGNORECASE)
 
     lo, hi = WORD_COUNT_RANGES.get(strategy.mode, (5, 300))
+    if strict:
+        hi = max(lo, int(hi * 0.8))
     words = text.split()
     if len(words) > hi:
         sentences = SENTENCE_RE.split(text)
@@ -334,13 +345,14 @@ def enforce_persona(
         )
     elif len(words) < lo and strategy.mode not in ("casual",):
         persona["under_length"] = True
+        persona["under_length_strict"] = strict
         flags.append(
             FilterFlag(
                 "output",
                 "under_length",
-                "info",
+                "refine" if strict else "info",
                 detail=f"{len(words)} words below {strategy.mode} target of {lo}",
-                action="flag",
+                action="refine" if strict else "flag",
             )
         )
 
@@ -451,7 +463,11 @@ class DeterministicCritic:
         contract = 1.0 if not structural.get("structured") else 1.0
         persona = report.persona
         persona_score = 1.0
-        if persona.get("length_trimmed") or persona.get("challenge_ungrounded"):
+        if (
+            persona.get("length_trimmed")
+            or persona.get("challenge_ungrounded")
+            or persona.get("under_length_strict")
+        ):
             persona_score = 0.7
         safety = report.safety
         safety_score = 1.0
@@ -498,6 +514,7 @@ async def run_output_filter(
     grounding: list[GroundingMaterial],
     max_iterations: int = 2,
     critic=None,
+    policy: FilterPolicy | None = None,
 ) -> OutputReport:
     """Run all output stages with a bounded critic loop (max two refinements).
 
@@ -506,8 +523,9 @@ async def run_output_filter(
     absent or unparseable, the deterministic refiner is the fallback.
     """
 
+    cap = policy.critic_iterations_cap if policy is not None else max_iterations
     report = OutputReport(draft=draft, final_text=draft)
-    for iteration in range(max_iterations + 1):
+    for iteration in range(cap + 1):
         report.final_text, safety, safety_flags = apply_safety(report.final_text)
         report.safety = safety
         report.flags.extend(safety_flags)
@@ -516,14 +534,29 @@ async def run_output_filter(
         report.structural = structural
         report.flags.extend(structural_flags)
 
-        claims, grounding_flags = audit_grounding(report.final_text, grounding)
+        claims, grounding_flags = audit_grounding(
+            report.final_text,
+            grounding,
+            min_evidence=(
+                policy.grounding_min_evidence if policy is not None else 0.5
+            ),
+            date_evidence=(
+                policy.grounding_date_evidence if policy is not None else 0.9
+            ),
+        )
         report.final_text, removal_edits = _apply_claim_actions(report.final_text, claims)
         report.claims = claims
         report.edits.extend(removal_edits)
         report.flags.extend(grounding_flags)
 
         if not structural.get("structured"):
-            report.final_text, persona, persona_flags = enforce_persona(report.final_text, strategy)
+            report.final_text, persona, persona_flags = enforce_persona(
+                report.final_text,
+                strategy,
+                strict=(
+                    policy.persona_style_enforcement if policy is not None else False
+                ),
+            )
             report.persona = persona
             report.flags.extend(persona_flags)
 
@@ -540,7 +573,7 @@ async def run_output_filter(
             and scores["safety"] >= 0.8
             and scores["persona"] >= 0.7
         )
-        if report.passed or iteration == max_iterations:
+        if report.passed or iteration == cap:
             break
         refined = DeterministicCritic().refine(report.final_text, scores)
         if critic is not None:

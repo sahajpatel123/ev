@@ -72,7 +72,13 @@ public struct EVAPIClient: Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.httpBody = body
+        return try await perform(request, allowedStatuses: allowedStatuses)
+    }
 
+    private func perform(
+        _ request: URLRequest,
+        allowedStatuses: Set<Int>
+    ) async throws -> (Int, Data) {
         let data: Data
         let response: URLResponse
         do {
@@ -140,6 +146,70 @@ public struct EVAPIClient: Sendable {
         default:
             throw EVAPIError.httpStatus(status, String(data: data, encoding: .utf8) ?? "")
         }
+    }
+
+    /// Upload a file/photo as an attachment event (camera, share sheet, files).
+    public func attach(
+        filename: String,
+        contentType: String,
+        data: Data,
+        source: String = "ios",
+        eventType: String = "file",
+        privacyLevel: String = "normal",
+        deviceID: String? = nil
+    ) async throws -> AttachmentCreateResponse {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        let safeFilename = filename
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+        var body = Data()
+
+        func appendField(_ name: String, _ value: String) {
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".utf8))
+            body.append(Data("\(value)\r\n".utf8))
+        }
+
+        appendField("source", source)
+        appendField("event_type", eventType)
+        appendField("privacy_level", privacyLevel)
+        if let deviceID {
+            appendField("device_id", deviceID)
+        }
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"\(safeFilename)\"\r\n".utf8
+        ))
+        body.append(Data("Content-Type: \(contentType)\r\n\r\n".utf8))
+        body.append(data)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+
+        var request = URLRequest(url: url(for: "/v1/attachments"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)",
+            forHTTPHeaderField: "Content-Type"
+        )
+        let responseData: Data
+        let response: URLResponse
+        do {
+            (responseData, response) = try await session.upload(for: request, from: body)
+        } catch {
+            throw EVAPIError.transport(error.localizedDescription)
+        }
+        print("attach: received \(responseData.count) bytes, status \(String(describing: (response as? HTTPURLResponse)?.statusCode))")
+        guard let http = response as? HTTPURLResponse else {
+            throw EVAPIError.transport("non-HTTP response")
+        }
+        guard http.statusCode == 201 else {
+            throw EVAPIError.httpStatus(
+                http.statusCode,
+                String(data: responseData, encoding: .utf8) ?? ""
+            )
+        }
+        return try decode(AttachmentCreateResponse.self, from: responseData)
     }
 
     // MARK: - Ask / browse

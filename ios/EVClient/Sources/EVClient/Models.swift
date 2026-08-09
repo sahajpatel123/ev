@@ -99,6 +99,22 @@ public struct CaptureResponse: Codable, Sendable, Equatable {
     public let memoryDelta: [MemoryDelta]
 }
 
+public struct AttachmentOut: Codable, Sendable, Equatable {
+    public let id: String
+    public let eventID: String
+    public let filename: String
+    public let contentType: String?
+    public let sizeBytes: Int
+    public let storageKey: String
+    public let sha256: String
+    public let createdAt: String
+}
+
+public struct AttachmentCreateResponse: Codable, Sendable, Equatable {
+    public let attachment: AttachmentOut
+    public let event: EventOut
+}
+
 public struct ProvenanceItem: Codable, Sendable, Equatable {
     public let memoryID: String
     public let text: String

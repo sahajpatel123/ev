@@ -25,6 +25,7 @@ from app.ev.decisions import find_decision_loops, record_outcome
 from app.ev.edith import record_command
 from app.ev.interaction import build_strategy
 from app.ev.user_state import build_user_state
+from app.filter.policy import active_policy
 from app.memory.retrieval import Retriever
 from app.models import GearSnapshot, Memory, Prediction
 from app.schemas import (
@@ -138,10 +139,12 @@ async def sense_predict(
         active_goal=state.active_goal,
     )
     tuning = await proactive_tuning(session)
+    filter_policy = await active_policy(session)
     predictions = await ev_sense.apply_attention_policy(
         session,
         predictions,
         budget_override=tuning.daily_budget,
+        confidence_floor=filter_policy.ev_sense_confidence_floor,
     )
     stored = await ev_sense.persist_predictions(session, predictions)
     await alert_radar.promote_predictions(session, stored)

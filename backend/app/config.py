@@ -119,6 +119,7 @@ class Settings(BaseSettings):
     # Retention / maintenance
     tombstone_blob_retention_days: int = 30
     backup_retention_count: int = 7
+    backup_passphrase: str | None = None
 
     # Integrations & ecosystem
     # Separate key for encrypting integration credentials. If empty, EV derives

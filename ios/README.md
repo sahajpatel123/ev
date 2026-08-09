@@ -7,9 +7,10 @@ and CLI clients — one backend, one memory, one sync contract.
 ## What it provides
 
 - **`EVAPIClient`** — async/await v1 API client: capture (with
-  `Idempotency-Key`), ask, timeline, memories, audit, HUD card, health. Bearer
-  token auth, snake_case ↔ camelCase mapping, ISO-8601 timestamps kept as
-  strings for faithful rendering.
+  `Idempotency-Key`), attachment upload (photos/files via multipart), ask,
+  timeline, memories, audit, HUD card, health. Bearer token auth, snake_case ↔
+  camelCase mapping, ISO-8601 timestamps kept as strings for faithful
+  rendering.
 - **`HUDCard`** — `ev.hud.card.v1` model with schema validation and a compact
   `renderText()` shared by Watch complications, widgets, and voice one-liners.
   Same output shape as the CLI `ev card` and web workbench HUD panel.

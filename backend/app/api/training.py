@@ -23,6 +23,7 @@ from app.schemas import (
     ConsentGrant,
     ConsentOut,
     ConsentRevoke,
+    FilterRecalibrationApplyRequest,
     FilterRecalibrationBuildResponse,
     FilterRecalibrationDeleteResponse,
     FilterRecalibrationOut,
@@ -528,6 +529,27 @@ async def filter_recalibration_rollback(
             reason=data.reason,
         )
     except (ConsentRequiredError, KeyError) as exc:
+        raise _training_http(exc, track="filter_self_improvement") from exc
+    await session.commit()
+    return FilterRecalibrationOut.model_validate(row)
+
+
+@router.post(
+    "/filter/recalibration/apply",
+    response_model=FilterRecalibrationOut,
+)
+async def filter_recalibration_apply(
+    data: FilterRecalibrationApplyRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> FilterRecalibrationOut:
+    try:
+        row = await filter_improvement_service.apply_current(
+            session,
+            actor=actor,
+            reason=data.reason,
+        )
+    except (ConsentRequiredError, KeyError, ValueError) as exc:
         raise _training_http(exc, track="filter_self_improvement") from exc
     await session.commit()
     return FilterRecalibrationOut.model_validate(row)

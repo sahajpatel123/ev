@@ -93,6 +93,83 @@ do {
     print("FAIL: quick card: \(error)")
 }
 
+// 8. Attachment upload: multipart body carries the file; response decodes.
+do {
+    var receivedBody = ""
+    var receivedContentType = ""
+    var receivedStatus = 0
+    MockURLProtocol.handler = { request in
+        var bodyData = request.httpBody ?? Data()
+        if bodyData.isEmpty, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                bodyData.append(buffer, count: count)
+            }
+        }
+        receivedBody = String(data: bodyData, encoding: .utf8) ?? ""
+        receivedContentType = request.value(forHTTPHeaderField: "Content-Type") ?? ""
+        receivedStatus = 201
+        let response = """
+        {
+          "attachment": {
+            "id": "att-1",
+            "event_id": "evt-att",
+            "filename": "photo.jpg",
+            "content_type": "image/jpeg",
+            "size_bytes": 11,
+            "storage_key": "attachments/x.bin",
+            "sha256": "abc123",
+            "created_at": "2026-08-09T12:00:00Z"
+          },
+          "event": {
+            "id": "evt-att",
+            "occurred_at": "2026-08-09T12:00:00Z",
+            "ingested_at": "2026-08-09T12:00:00Z",
+            "source": "ios",
+            "event_type": "file",
+            "content": {"filename": "photo.jpg", "content_type": "image/jpeg"},
+            "metadata": {},
+            "device_id": null,
+            "conversation_id": null,
+            "privacy_level": "normal",
+            "sha256": "abc",
+            "tombstoned_at": null,
+            "tombstone_reason": null
+          }
+        }
+        """
+        let responseData = Data(response.utf8)
+        print("mock: handler invoked, request=\(request.url?.path ?? "?") body=\(receivedBody.count) bytes response=\(responseData.count) bytes")
+        return (httpResponse(201, contentLength: responseData.count), responseData)
+    }
+    do {
+        let result = try await client.attach(
+            filename: "photo.jpg",
+            contentType: "image/jpeg",
+            data: Data("photo-bytes".utf8)
+        )
+        expect(receivedStatus == 201, "attachment request reached mock")
+        expect(receivedContentType.contains("multipart/form-data"), "attachment uses multipart content type")
+        expect(receivedBody.contains("name=\"file\""), "attachment body has file part")
+        expect(receivedBody.contains("filename=\"photo.jpg\""), "attachment body has filename")
+        expect(receivedBody.contains("photo-bytes"), "attachment body contains file data")
+        expect(result.attachment.filename == "photo.jpg", "attachment filename decoded")
+        expect(result.attachment.sizeBytes == 11, "attachment size decoded")
+        expect(result.event.source == "ios", "attachment event source decoded")
+        print("ok: attachment upload")
+    } catch {
+        failures.append("attachment: \(error)")
+        print("FAIL: attachment: \(error) (status=\(receivedStatus), body=\(receivedBody.prefix(120)))")
+    }
+} catch {
+    failures.append("attachment: \(error)")
+    print("FAIL: attachment: \(error)")
+}
+
 // 2. Capture sends Idempotency-Key and returns the event.
 do {
     var capturedKey: String?

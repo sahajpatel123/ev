@@ -78,9 +78,13 @@ content is redacted at the boundary.
   preserved for audit.
 - All memories derived from the tombstoned event are marked `redacted`; they are
   excluded from retrieval and prompts.
-- `POST /v1/export` provides the full bundle before deletion (portability).
+- `POST /v1/export` provides the full bundle before deletion (portability):
+  events, memories, entities, relationships, conflicts, attachment metadata,
+  registered devices, and the access log.
 - Blobs referenced by a tombstoned event are scheduled for deletion after the audit
-  window (configurable; default 30 days).
+  window (configurable via `EV_TOMBSTONE_BLOB_RETENTION_DAYS`, default 30 days);
+  `POST /v1/maintenance/purge-tombstoned-blobs` performs the purge while keeping
+  the tombstoned event row for audit.
 
 ## 7. Backup & restore
 
@@ -102,7 +106,9 @@ event-sourced restore + rebuild) and `wipe` (confirmed destructive drill that
 clears the personal-data layer, restores the bundle, and regenerates derived
 memory). All three endpoints require the master key. Tests cover the full
 wipe→restore→verify drill, tamper detection, wrong-passphrase rejection, and
-device-token denial.
+device-token denial. `POST /v1/maintenance/prune-backups` enforces retention
+(keep newest N, default 7), and `python -m app.scripts.backup_snapshot` creates
+an encrypted snapshot with the same passphrase rules for cron scheduling.
 
 ## 8. Model boundary contract (tested)
 

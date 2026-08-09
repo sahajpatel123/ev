@@ -58,6 +58,7 @@ class ContextCompiler:
         user_state,
         strategy_text: str,
         budget: int,
+        perception_lines: list[str] | None = None,
         history: list[dict] | None = None,
         rollup_summary: str | None = None,
         open_questions: list[str] | None = None,
@@ -88,6 +89,23 @@ class ContextCompiler:
             f"open_decisions={len(user_state.open_decisions)}."
         )
         push("user_state", state_text)
+
+        perception_lines = perception_lines or []
+        if perception_lines:
+            header = "PERCEPTION (permissioned, from the attachment you shared):"
+            perception_section: SectionPlan | None = None
+            if push("perception_header", header):
+                perception_section = sections[-1]
+            for line in perception_lines:
+                if used + token_estimate(f"- {line}") > budget:
+                    if perception_section is not None:
+                        perception_section.items_dropped += 1
+                    continue
+                parts.append(f"- {line}")
+                used += token_estimate(f"- {line}")
+                if perception_section is not None:
+                    perception_section.tokens += token_estimate(f"- {line}")
+                    perception_section.items_included += 1
 
         live_lines = list((user_state.live_context or [])[:MAX_LIVE_LINES])
         live_dropped = len(user_state.live_context or []) - len(live_lines)

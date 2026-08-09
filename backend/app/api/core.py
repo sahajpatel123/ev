@@ -23,7 +23,7 @@ from app.auth import (
 from app.config import settings
 from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
-from app.ev import alert_radar, conversation
+from app.ev import alert_radar, conversation, tools, vision
 from app.ev import rollup as rollup_service
 from app.ev.calibration import proactive_tuning
 from app.ev.interaction import build_strategy, strategy_block
@@ -38,6 +38,7 @@ from app.filter.envelope import (
 from app.filter.input_filter import InputFilter
 from app.filter.ledger import record_decision
 from app.filter.output_filter import run_output_filter
+from app.filter.policy import active_policy
 from app.gateway.providers import get_chat_provider
 from app.gateway.service import ModelGateway, tool_specs_from_dicts
 from app.memory.patterns import PatternEngine
@@ -98,6 +99,7 @@ from app.services.importer import import_bundle
 from app.services.model_call import list_model_calls, log_model_call
 from app.services.processor import ensure_processed
 from app.services.rebuild import rebuild_derived_state
+from app.services.tool_loop import run_tool_loop
 from app.storage.object_store import get_object_store, sha256_bytes
 from app.utils.text import sha256_hex, utcnow
 
@@ -584,6 +586,9 @@ async def export_all(
     entities = list((await session.execute(select(Entity))).scalars().all())
     relationships = list((await session.execute(select(EntityRelationship))).scalars().all())
     conflicts = list((await session.execute(select(Conflict))).scalars().all())
+    attachments = list((await session.execute(select(Attachment))).scalars().all())
+    devices = list((await session.execute(select(Device))).scalars().all())
+    access_rows = list((await session.execute(select(AccessLog))).scalars().all())
     await log_access(
         session,
         actor=actor,
@@ -591,7 +596,13 @@ async def export_all(
         endpoint="POST /v1/export",
         resource_type="all",
         resource_ids=[],
-        details={"events": len(events), "memories": len(memories)},
+        details={
+            "events": len(events),
+            "memories": len(memories),
+            "attachments": len(attachments),
+            "devices": len(devices),
+            "access_log": len(access_rows),
+        },
     )
     await session.commit()
     return ExportBundle(
@@ -601,6 +612,9 @@ async def export_all(
         entities=[_entity_dict(e) for e in entities],
         relationships=[_relationship_dict(r) for r in relationships],
         conflicts=[ConflictOut.model_validate(c) for c in conflicts],
+        attachments=[AttachmentOut.model_validate(a) for a in attachments],
+        devices=[DeviceOut.model_validate(d) for d in devices],
+        access_log=[AccessLogOut.model_validate(a) for a in access_rows],
     )
 
 
@@ -728,6 +742,7 @@ async def run_chat_pipeline(
     # or sent. Credentials never cross to the provider; high-severity injection
     # attempts block the turn entirely.
     input_filter = InputFilter(session)
+    filter_policy = await active_policy(session)
     input_decision = input_filter.guard(
         message=data.message,
         speaker=SpeakerIdentity(
@@ -736,6 +751,7 @@ async def run_chat_pipeline(
             confidence=1.0,
             method="auth_token",
         ),
+        policy=filter_policy,
     )
     effective_event_privacy: PrivacyLevel = (
         event_privacy
@@ -789,6 +805,7 @@ async def run_chat_pipeline(
         decision=input_decision,
         memories=memories,
         k=retrieval_k,
+        policy=filter_policy,
     )
     await record_decision(
         session,
@@ -846,11 +863,64 @@ async def run_chat_pipeline(
     open_questions = list(
         dict.fromkeys([*(model_rollup.open_questions or []), *(state.pending_questions or [])])
     )[:5]
+
+    provider = get_chat_provider()
+    perception_lines: list[str] = []
+    perception_provenance: list[ProvenanceItem] = []
+    if data.attachment_id is not None:
+        try:
+            perception_event = await vision.analyze_attachment(
+                session,
+                data.attachment_id,
+                actor=actor,
+                permission=True,
+                allow_raw=data.allow_raw_media,
+                provider=provider,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Attachment not found") from None
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from None
+        perception_payload = perception_event.payload or {}
+        summary = str(perception_payload.get("summary") or "No summary")
+        perception_lines = [summary]
+        labels = perception_payload.get("labels") or []
+        if labels:
+            perception_lines.append(
+                "suggested labels: " + ", ".join(str(item.get("label")) for item in labels)
+            )
+        perception_lines.append(
+            "provenance: "
+            f"perception_event={perception_event.id}, "
+            f"attachment={perception_payload.get('attachment_id')}, "
+            f"source_event={perception_payload.get('source_event_id')}, "
+            f"provider={perception_payload.get('provider')}, "
+            f"raw_sent={perception_payload.get('raw_sent')}"
+        )
+        perception_provenance = [
+            ProvenanceItem(
+                memory_id=None,
+                text=summary,
+                memory_type="perception",
+                score=float(perception_payload.get("confidence") or 0.0),
+                kind="perception",
+                attachment_id=data.attachment_id,
+                perception_event_id=perception_event.id,
+                source_event_id=(
+                    UUID(perception_payload["source_event_id"])
+                    if perception_payload.get("source_event_id")
+                    else None
+                ),
+                raw_sent=bool(perception_payload.get("raw_sent")),
+            )
+        ]
+
     context, context_tokens = _assemble_context(
         memories,
         user_state=user_state,
         strategy_text=strategy_block(strategy),
         budget=budget,
+        perception_lines=perception_lines,
         rollup_summary=model_rollup.summary,
         open_questions=open_questions,
         history=[
@@ -919,15 +989,20 @@ async def run_chat_pipeline(
             "goals in mind.\n\n"
             f"{context}"
         )
-        provider = get_chat_provider()
         gateway = ModelGateway(provider)
-        call = await gateway.chat(
+        call = await run_tool_loop(
+            session,
+            gateway,
             [
                 ChatMessage(role="system", content=system_prompt),
                 ChatMessage(role="user", content=decision.provider_message),
             ],
             envelope=envelope,
+            tool_specs=tool_specs_from_dicts(tools.list_tools()),
             model=data.model,
+            actor=actor,
+            allow_sensitive_tools=data.allow_sensitive_tools,
+            request_id=request_id,
         )
         result = call.result
         if call.status == "blocked":
@@ -940,8 +1015,6 @@ async def run_chat_pipeline(
                 status_code=503,
                 detail=f"Model provider unavailable: {call.error}",
             )
-        if settings.model_call_log_enabled:
-            await log_model_call(session, call=call, actor=actor)
 
         critic = None
         if settings.filter_critic_enabled and strategy.mode in settings.filter_critic_modes:
@@ -954,6 +1027,7 @@ async def run_chat_pipeline(
             grounding=grounding,
             max_iterations=settings.filter_critic_max_iterations,
             critic=critic,
+            policy=filter_policy,
         )
         result.text = report.final_text
         for flag in report.flags:
@@ -1052,15 +1126,22 @@ async def run_chat_pipeline(
     await session.commit()
 
     provenance = [
-        ProvenanceItem(
-            memory_id=UUID(m.memory_id),
-            text=m.text,
-            memory_type=m.memory_type,
-            score=m.score,
-            components=m.components,
-        )
-        for m in memories[:10]
-    ] if not decision.blocked else []
+        *perception_provenance,
+        *(
+            [
+                ProvenanceItem(
+                    memory_id=UUID(m.memory_id),
+                    text=m.text,
+                    memory_type=m.memory_type,
+                    score=m.score,
+                    components=m.components,
+                )
+                for m in memories[:10]
+            ]
+            if not decision.blocked
+            else []
+        ),
+    ]
     return {
         "result": result,
         "request_id": request_id,
@@ -1154,6 +1235,7 @@ def _assemble_context(
     user_state,
     strategy_text: str,
     budget: int,
+    perception_lines: list[str] | None = None,
     history: list[dict] | None = None,
     rollup_summary: str | None = None,
     open_questions: list[str] | None = None,
@@ -1166,6 +1248,7 @@ def _assemble_context(
         user_state=user_state,
         strategy_text=strategy_text,
         budget=budget,
+        perception_lines=perception_lines,
         history=history,
         rollup_summary=rollup_summary,
         open_questions=open_questions,

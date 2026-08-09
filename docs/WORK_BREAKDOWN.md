@@ -149,12 +149,13 @@ credentials are redacted from the provider-bound message with
 `never_send_to_model` privacy, and every decision is ledgered. Voice-enrollment
 identity remains future work (see §5).
 
-### 3.2 Output filter — **Partial**
+### 3.2 Output filter — **Built**
 Structural validation → grounding audit → persona/style → safety → critic loop →
-finalize. Deterministic stages are implemented in `app/filter/output_filter.py`
-(HUD contract validation/repair, claim grounding audit, persona/length,
-safety redaction, rule-based critic loop, honest fallback). A provider-backed
-LLM critic is the remaining gap.
+finalize. Deterministic stages plus an optional provider-backed critic are
+implemented in `app/filter/output_filter.py` / `app/filter/critic.py` (HUD
+contract validation/repair, claim grounding audit, persona/length, safety
+redaction, rule-based critic loop, honest fallback). Semantic/embedding claim
+verification remains a future refinement.
 
 ### 3.3 Grounding audit — **Built**
 Claims are checked against the memories actually in context (entity/date/number
@@ -172,11 +173,13 @@ Output-side secret/PII redaction, toxicity, manipulation, dependency nudging,
 jailbreak leaks — deterministic detectors implemented; a local model for
 semantic checks is future work.
 
-### 3.6 Critic & refine loop — **Partial**
+### 3.6 Critic & refine loop — **Built**
 LLM-as-judge rubric (grounding, persona, actionability, honesty, contract) with
-max two refinement iterations and staged trust. A deterministic rubric judge is
-implemented; same-model critic first, then a separate local critic for privacy,
-then a learned feedback model after ledger data accumulates.
+max two refinement iterations and staged trust. A deterministic rubric judge
+and a provider-backed critic through the neutral gateway
+(`app/filter/critic.py`, gated by `EV_FILTER_CRITIC_ENABLED` and staged modes)
+are implemented; a separate local critic for privacy and a learned feedback
+model after ledger data accumulates remain future work.
 
 ### 3.7 Filter ledger — **Built**
 Every filter decision (draft, edits, scores, flags, iterations, cost) is

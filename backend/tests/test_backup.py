@@ -187,3 +187,21 @@ async def test_backup_requires_master_key(client: AsyncClient) -> None:
             json={"path": "/tmp/nope.evbackup", "passphrase": PASSPHRASE},
         )
         assert resp.status_code == 403, resp.text
+
+
+async def test_export_bundle_is_complete(client: AsyncClient) -> None:
+    await post_event(client, "alpha")
+    await post_event(client, "beta", privacy_level="never_send_to_model")
+    await client.post("/v1/devices", json={"name": "phone", "capabilities": ["voice"]})
+
+    resp = await client.post("/v1/export")
+    assert resp.status_code == 200, resp.text
+    bundle = resp.json()
+    assert bundle["version"] == "1.0"
+    assert len(bundle["events"]) == 2
+    assert len(bundle["memories"]) >= 1
+    assert len(bundle["devices"]) == 1
+    assert "conflicts" in bundle
+    assert "attachments" in bundle
+    assert "access_log" in bundle
+    assert bundle["access_log"], "export should include the audit trail"

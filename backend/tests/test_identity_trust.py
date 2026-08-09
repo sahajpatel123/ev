@@ -571,3 +571,23 @@ async def test_runtime_action_approval_requires_reverification(
         headers={"X-EV-Reverify": proof},
     )
     assert passed.status_code != 403
+
+
+async def test_compliance_writes_require_master(
+    client: httpx.AsyncClient,
+) -> None:
+    await create_owner(client)
+    plain = await create_device(client, "plain-pad")
+    plain_client = _client({"Authorization": f"Bearer {plain['token']}"})
+
+    erasure = await plain_client.post(
+        "/v1/compliance/erasure",
+        json={"reason": "device test"},
+    )
+    assert erasure.status_code == 403
+
+    sweep = await plain_client.post(
+        "/v1/compliance/retention/sweep",
+        json={"reason": "device test"},
+    )
+    assert sweep.status_code == 403

@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor
+from app.auth import require_actor, require_master
 from app.compliance.erasure import erase_biometric_data, retention_sweep
 from app.compliance.policy import policy_summary
 from app.compliance.schemas import (
@@ -43,7 +43,7 @@ async def transparency(
 async def data_erasure(
     data: ErasureRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> ErasureOut:
     manifest = await erase_biometric_data(session, reason=data.reason, actor=actor)
     await session.commit()
@@ -54,7 +54,7 @@ async def data_erasure(
 async def retention_sweep_endpoint(
     data: RetentionSweepRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    actor: str = Depends(require_master),
 ) -> RetentionSweepOut:
     result = await retention_sweep(session, reason=data.reason, actor=actor)
     await session.commit()

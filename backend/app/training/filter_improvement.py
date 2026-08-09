@@ -16,6 +16,8 @@ from app.filter.ledger import ledger_aggregate
 from app.models import FilterRecalibration, Prediction, ResponseLog
 from app.services.access_log import log_access
 from app.training.consent import require_consent
+from app.filter.policy import proposals_to_policy
+from app.utils.text import utcnow
 
 TRACK = "filter_self_improvement"
 
@@ -187,6 +189,46 @@ async def recalibrate(
     return row
 
 
+async def apply_current(
+    session: AsyncSession,
+    *,
+    actor: str,
+    reason: str | None = None,
+) -> FilterRecalibration:
+    """Apply the current report's threshold proposals to the live filter.
+
+    Application is explicit and consent-gated: nothing changes at runtime
+    until the user applies a report, and the resulting policy dict is stored on
+    the version for audit and rollback.
+    """
+
+    await require_consent(session, TRACK)
+    row = await current_recalibration(session)
+    if row is None:
+        raise KeyError("No filter recalibration report to apply")
+    if not row.proposals:
+        raise ValueError("Current recalibration has no threshold proposals to apply")
+    row.policy = proposals_to_policy([p.model_dump() if hasattr(p, "model_dump") else p for p in row.proposals])
+    row.applied_at = utcnow()
+    row.applied_by = actor
+    if reason:
+        row.reason_for_change = reason
+    await log_access(
+        session,
+        actor=actor,
+        action="filter_recalibration_apply",
+        endpoint="POST /v1/training/filter/recalibration/apply",
+        resource_type="filter_recalibration",
+        resource_ids=[row.id],
+        details={
+            "version": row.version,
+            "policy": row.policy,
+            "reason": reason,
+        },
+    )
+    return row
+
+
 async def list_recalibrations(session: AsyncSession) -> list[FilterRecalibration]:
     result = await session.execute(
         select(FilterRecalibration).order_by(FilterRecalibration.version.desc())
@@ -219,6 +261,14 @@ async def rollback(
     if current is not None and current.id != target.id:
         current.is_current = False
     target.is_current = True
+    if current is not None and current.applied_at is not None:
+        # Rolling back an applied policy restores the target's concrete
+        # thresholds so behavior is reversible, not just the report pointer.
+        target.policy = proposals_to_policy(
+            [p.model_dump() if hasattr(p, "model_dump") else p for p in target.proposals]
+        )
+        target.applied_at = utcnow()
+        target.applied_by = actor
     if reason:
         target.reason_for_change = reason
     await log_access(
@@ -238,6 +288,9 @@ async def delete_all(session: AsyncSession, *, actor: str, reason: str) -> int:
     for row in rows:
         row.metrics = {}
         row.proposals = []
+        row.policy = {}
+        row.applied_at = None
+        row.applied_by = None
         row.is_current = False
         row.redacted = True
         row.reason_for_change = f"{reason} (redacted)"

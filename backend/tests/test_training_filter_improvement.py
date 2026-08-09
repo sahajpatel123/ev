@@ -135,6 +135,91 @@ async def test_filter_self_improve_derives_proposals(
     assert resp.json()["version"] == 1
 
 
+async def test_filter_recalibration_apply_stores_runtime_policy(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await seed_ledger_and_signals(db_session)
+    await grant_filter_consent(client)
+
+    resp = await client.post("/v1/training/filter/self-improve")
+    assert resp.status_code == 201, resp.text
+    version = resp.json()["recalibration"]["version"]
+
+    resp = await client.post(
+        "/v1/training/filter/recalibration/apply",
+        json={"reason": "apply ledger-derived thresholds"},
+    )
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["version"] == version
+    assert payload["applied_at"] is not None
+    assert payload["applied_by"]
+    assert payload["policy"]["critic_iterations_cap"] == 1
+    assert payload["policy"]["grounding_min_evidence"] == 0.7
+    assert payload["policy"]["input_guard_block_severity"] == "medium"
+    assert payload["policy"]["persona_style_enforcement"] is True
+
+    resp = await client.get("/v1/training/filter/recalibration")
+    assert resp.status_code == 200
+    assert resp.json()["applied_at"] is not None
+
+
+async def test_filter_recalibration_rollback_restores_applied_policy(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await seed_ledger_and_signals(db_session)
+    await grant_filter_consent(client)
+
+    resp = await client.post("/v1/training/filter/self-improve")
+    assert resp.status_code == 201
+    first_version = resp.json()["recalibration"]["version"]
+    resp = await client.post("/v1/training/filter/recalibration/apply")
+    assert resp.status_code == 200, resp.text
+
+    # More positive signals remove the persona proposal from v2.
+    db_session.add(
+        ResponseLog(
+            request_text="Great reply.",
+            reply_text="Thanks!",
+            mode="casual",
+            strategy={},
+            provenance_ids=[],
+            context_tokens=10,
+            was_useful=True,
+        )
+    )
+    await db_session.commit()
+    resp = await client.post("/v1/training/filter/self-improve")
+    assert resp.status_code == 201
+    assert resp.json()["recalibration"]["version"] == 2
+    assert resp.json()["recalibration"]["applied_at"] is None
+
+    resp = await client.post("/v1/training/filter/recalibration/apply")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["policy"]["persona_style_enforcement"] is False
+
+    resp = await client.post(
+        "/v1/training/filter/recalibration/rollback",
+        json={"target_version": first_version, "reason": "restore stricter persona"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["version"] == first_version
+    assert resp.json()["is_current"] is True
+    assert resp.json()["applied_at"] is not None
+    assert resp.json()["policy"]["persona_style_enforcement"] is True
+
+    resp = await client.post("/v1/training/filter/recalibration/delete")
+    assert resp.status_code == 200, resp.text
+    rows = list(
+        (await db_session.execute(select(FilterRecalibration))).scalars().all()
+    )
+    assert len(rows) == 2
+    assert all(row.redacted is True for row in rows)
+    assert all(row.policy == {} for row in rows)
+    assert all(row.applied_at is None for row in rows)
+    assert all(row.applied_by is None for row in rows)
+
+
 async def test_filter_self_improve_versions_rollback_and_delete(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

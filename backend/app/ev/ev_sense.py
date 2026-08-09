@@ -53,6 +53,7 @@ async def apply_attention_policy(
     predictions: list[SensePrediction],
     *,
     budget_override: int | None = None,
+    confidence_floor: float | None = None,
 ) -> list[SensePrediction]:
     """Quiet-hours + daily delivery budget; never downgrade notify_card."""
     now = utcnow()
@@ -74,6 +75,12 @@ async def apply_attention_policy(
         tier = prediction.tier
         deliver = prediction.deliver
         if deliver and quiet and tier != "notify_card":
+            tier, deliver = "mention_later", False
+        if (
+            deliver
+            and confidence_floor is not None
+            and prediction.confidence < confidence_floor
+        ):
             tier, deliver = "mention_later", False
         if deliver and remaining <= 0:
             tier, deliver = "mention_later", False

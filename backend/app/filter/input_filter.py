@@ -55,6 +55,8 @@ INJECTION_PATTERNS: list[tuple[re.Pattern[str], str, str]] = [
     ),
 ]
 
+SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3}
+
 CREDENTIAL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"), "api_key"),
     (re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"), "api_key"),
@@ -102,11 +104,21 @@ class IdentityGate:
 class InputGuard:
     """Prompt-injection, PII/secret, and privacy-level guard (deterministic)."""
 
-    def scan(self, message: str) -> tuple[list[FilterFlag], str]:
+    def scan(
+        self,
+        message: str,
+        *,
+        block_severity: str = "high",
+    ) -> tuple[list[FilterFlag], str]:
         flags: list[FilterFlag] = []
         for pattern, name, severity in INJECTION_PATTERNS:
             if pattern.search(message):
-                action = "block" if severity == "high" else "flag"
+                action = (
+                    "block"
+                    if SEVERITY_ORDER.get(severity, 0)
+                    >= SEVERITY_ORDER.get(block_severity, 0)
+                    else "flag"
+                )
                 flags.append(
                     FilterFlag(
                         "input",
@@ -212,12 +224,23 @@ class InputFilter:
         self.session = session
         self.broker = MemoryBroker(session)
 
-    def guard(self, *, message: str, speaker: SpeakerIdentity) -> InputDecision:
+    def guard(
+        self,
+        *,
+        message: str,
+        speaker: SpeakerIdentity,
+        policy=None,
+    ) -> InputDecision:
         """Run the identity + privacy guard without touching retrieval."""
 
         flags: list[FilterFlag] = []
         flags.extend(IdentityGate().check(speaker=speaker, intent=detect_intent(message)))
-        guard_flags, provider_message = InputGuard().scan(message)
+        guard_flags, provider_message = InputGuard().scan(
+            message,
+            block_severity=(
+                policy.input_guard_block_severity if policy is not None else "high"
+            ),
+        )
         flags.extend(guard_flags)
         privacy_level = resolve_privacy_level(flags)
         blocked = any(f.action == "block" for f in flags)
@@ -238,8 +261,11 @@ class InputFilter:
         strategy: InteractionStrategy | None = None,
         memories: list[RetrievedMemory] | None = None,
         k: int = 50,
+        policy=None,
     ) -> tuple[InputDecision, list[RetrievedMemory], list[GroundingMaterial], InteractionStrategy | None]:
-        decision = decision or self.guard(message=message, speaker=speaker)
+        decision = decision or self.guard(
+            message=message, speaker=speaker, policy=policy
+        )
         if memories is None:
             memories, grounding = await self.broker.retrieve(
                 decision.provider_message, k=k, access="model"

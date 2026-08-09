@@ -234,6 +234,7 @@ class ChatRequest(BaseModel):
     context_depth: Literal["auto", "standard", "deep", "deepest"] = "auto"
     attachment_id: UUID | None = None
     allow_raw_media: bool = False
+    allow_sensitive_tools: bool = False
 
 
 class ChatResponse(BaseModel):
@@ -352,7 +353,6 @@ class ExportBundle(BaseModel):
     attachments: list[AttachmentOut] = Field(default_factory=list)
     devices: list[DeviceOut] = Field(default_factory=list)
     access_log: list[AccessLogOut] = Field(default_factory=list)
-    conflicts: list[ConflictOut]
 
 
 class RebuildOut(BaseModel):
@@ -2625,6 +2625,9 @@ class FilterRecalibrationOut(BaseModel):
     is_current: bool
     metrics: dict
     proposals: list[FilterThresholdProposalOut] = Field(default_factory=list)
+    policy: dict = Field(default_factory=dict)
+    applied_at: datetime | None = None
+    applied_by: str | None = None
     reason_for_change: str
     consent_id: UUID | None = None
     supersedes_id: UUID | None = None
@@ -2643,6 +2646,10 @@ class FilterRecalibrationBuildResponse(BaseModel):
 class FilterRecalibrationRollbackRequest(BaseModel):
     target_version: int = Field(ge=1)
     reason: str = "rollback filter recalibration"
+
+
+class FilterRecalibrationApplyRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=512)
 
 
 class FilterRecalibrationDeleteResponse(BaseModel):

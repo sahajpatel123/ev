@@ -767,3 +767,80 @@ async def test_gateway_blocks_forbidden_media_text_before_provider() -> None:
     )
     assert call.status == "blocked"
     assert provider.seen_messages == []
+
+
+async def test_chat_with_attachment_includes_perception_provenance(
+    client: AsyncClient,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("app.api.core.get_chat_provider", lambda: FakeVisionProvider())
+    attachment_id = await upload_attachment(
+        client,
+        metadata={"derived_text": "Invoice EV-42 total 100 USD"},
+    )
+
+    resp = await client.post(
+        "/v1/chat",
+        json={
+            "message": "What does this attachment show?",
+            "attachment_id": attachment_id,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    perception = [p for p in body["provenance"] if p["kind"] == "perception"]
+    assert perception, body["provenance"]
+    item = perception[0]
+    assert item["attachment_id"] == attachment_id
+    assert item["perception_event_id"]
+    assert item["source_event_id"]
+    assert item["raw_sent"] is False
+    assert "workbench" in item["text"].lower()
+
+    perceptions = (await client.get("/v1/vision/perceptions")).json()
+    assert len(perceptions) == 1
+    assert perceptions[0]["raw_sent"] is False
+
+
+async def test_chat_with_sensitive_attachment_is_fail_closed(
+    client: AsyncClient,
+    monkeypatch,
+) -> None:
+    provider = FakeVisionProvider()
+    monkeypatch.setattr("app.api.core.get_chat_provider", lambda: provider)
+    attachment_id = await upload_attachment(
+        client,
+        metadata={"derived_text": "private strategy notes"},
+        privacy_level="sensitive",
+    )
+
+    resp = await client.post(
+        "/v1/chat",
+        json={
+            "message": "What is in this attachment?",
+            "attachment_id": attachment_id,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    perception = [p for p in body["provenance"] if p["kind"] == "perception"]
+    assert perception
+    assert perception[0]["raw_sent"] is False
+    assert "blocked" in perception[0]["text"].lower()
+    # The conversation itself still reaches the provider, but never with media:
+    # the sensitive attachment's analysis was blocked before any raw content.
+    assert provider.seen_messages
+    assert all(not m.media for m in provider.seen_messages)
+
+
+async def test_chat_with_missing_attachment_returns_404(
+    client: AsyncClient,
+) -> None:
+    resp = await client.post(
+        "/v1/chat",
+        json={
+            "message": "What is in this attachment?",
+            "attachment_id": "00000000-0000-0000-0000-000000000000",
+        },
+    )
+    assert resp.status_code == 404, resp.text

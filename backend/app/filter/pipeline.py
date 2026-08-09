@@ -21,6 +21,7 @@ from app.filter.envelope import (
 from app.filter.input_filter import InputDecision, InputFilter
 from app.filter.ledger import record_decision
 from app.filter.output_filter import run_output_filter
+from app.filter.policy import active_policy
 from app.gateway.service import ModelGateway
 from app.schemas import InteractionStrategy
 
@@ -40,6 +41,7 @@ class FilterRunResult:
     model: str | None = None
     blocked: bool = False
     block_reason: str | None = None
+    policy: dict | None = None
 
 
 async def run_full_filter_pipeline(
@@ -56,11 +58,13 @@ async def run_full_filter_pipeline(
     """Run the complete filter around one provider call (used by /v1/filter)."""
 
     request_id = request_id or str(uuid4())
+    policy = await active_policy(session)
     input_filter = InputFilter(session)
     decision, memories, grounding, strategy = await input_filter.run(
         message=message,
         speaker=speaker,
         k=k,
+        policy=policy,
     )
 
     if decision.blocked:
@@ -93,6 +97,7 @@ async def run_full_filter_pipeline(
             ledger_ids=[ledger_id],
             blocked=True,
             block_reason=decision.block_reason,
+            policy=policy.to_dict(),
         )
 
     strategy = strategy or build_strategy(decision.provider_message)
@@ -159,6 +164,7 @@ async def run_full_filter_pipeline(
         grounding=grounding,
         max_iterations=settings.filter_critic_max_iterations,
         critic=critic,
+        policy=policy,
     )
     ledger_ids: list[UUID] = []
     for flag in report.flags:
@@ -202,6 +208,7 @@ async def run_full_filter_pipeline(
                     for edit in report.edits
                     if edit.get("type") == "critic_revision"
                 ],
+                "policy": policy.to_dict(),
             },
             final_text=report.final_text,
             scores=report.critic,
@@ -223,6 +230,7 @@ async def run_full_filter_pipeline(
         envelope_hash=envelope_hash,
         ledger_ids=ledger_ids,
         model=call.model,
+        policy=policy.to_dict(),
     )
 
 
