@@ -8,7 +8,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.contracts import RetrievedMemory
-from app.embeddings import get_embedder
+from app.embeddings import (
+    EMBEDDING_MODEL_HASH,
+    get_embedder,
+)
 from app.memory.entities import extract_entities_from_text
 from app.models import Memory, MemoryEntity, MemoryEvent
 from app.training.personalization import calibration_multipliers
@@ -41,6 +44,23 @@ class Retriever:
     def __init__(self, session: AsyncSession, embeddings=None) -> None:
         self.session = session
         self.embeddings = embeddings or get_embedder()
+        # Model-version law: vectors from different embedding models are never
+        # comparable. NULL rows are legacy hash-era vectors (hash was the
+        # production default before this change); anything else must match the
+        # query embedder's version or semantic scoring is zeroed.
+        self.embedding_model_version = getattr(
+            self.embeddings, "model_version", EMBEDDING_MODEL_HASH
+        )
+        self.embedding_degraded = bool(getattr(self.embeddings, "degraded", False))
+        # Reranker observability: aggregated across searches so evals can prove
+        # whether the on-demand pass earns its latency.
+        self.rerank_stats = {
+            "triggered": 0,
+            "runs": 0,
+            "degraded": 0,
+            "latency_ms": 0.0,
+            "candidates": 0,
+        }
 
     async def search(
         self,
@@ -52,6 +72,7 @@ class Retriever:
         as_of: datetime | None = None,
         memory_types: list[str] | None = None,
         min_score: float = 0.0,
+        rerank: bool = True,
     ) -> list[RetrievedMemory]:
         """Hybrid retrieval with the locked default scoring formula."""
         if not query.strip():
@@ -115,9 +136,36 @@ class Retriever:
         # Evidence-backed importance learning (consent-gated, versioned, neutral by default).
         multipliers = await calibration_multipliers(self.session)
         now = datetime.now(UTC)
+
+        # Raw semantic cosine per memory, calibrated per query below so the
+        # locked 0.35 weight sees a discriminative signal (ModernBERT-class
+        # embeddings compress raw cosines into a ~0.7-0.9 band).
+        raw_semantics: dict = {}
+        for m in memories:
+            mem_version = m.embedding_model_version
+            comparable = mem_version is None or mem_version == self.embedding_model_version
+            raw_semantics[m.id] = (
+                cosine(query_emb, m.embedding)
+                if query_emb is not None and m.embedding and comparable
+                else 0.0
+            )
+        if raw_semantics and settings.semantic_normalize:
+            semantic_min = min(raw_semantics.values())
+            semantic_span = max(raw_semantics.values()) - semantic_min
+        else:
+            semantic_min = 0.0
+            semantic_span = 0.0
+
         scored: list[RetrievedMemory] = []
         for m in memories:
-            semantic = cosine(query_emb, m.embedding) if query_emb is not None and m.embedding else 0.0
+            mem_version = m.embedding_model_version
+            comparable = mem_version is None or mem_version == self.embedding_model_version
+            semantic_raw = raw_semantics.get(m.id, 0.0)
+            semantic = (
+                (semantic_raw - semantic_min) / semantic_span
+                if settings.semantic_normalize and semantic_span > 1e-9
+                else semantic_raw
+            )
             mem_tokens = simple_tokens(m.text)
             keyword = (
                 len(query_tokens & mem_tokens) / len(query_tokens | mem_tokens)
@@ -136,6 +184,7 @@ class Retriever:
             confidence = max(0.0, min(1.0, m.confidence))
             components = {
                 "semantic": round(semantic, 4),
+                "semantic_raw": round(semantic_raw, 4),
                 "keyword": round(keyword, 4),
                 "recency": round(recency, 4),
                 "importance": round(importance, 4),
@@ -143,6 +192,11 @@ class Retriever:
                 "personalization": round(multiplier, 4),
                 "relationship": round(relationship, 4),
                 "confidence": round(confidence, 4),
+                # Informational embedding provenance (zero weight; the six
+                # weighted components above are the locked formula).
+                "embedding_legacy": 1.0 if mem_version is None else 0.0,
+                "embedding_comparable": 1.0 if comparable else 0.0,
+                "embedding_degraded": 1.0 if self.embedding_degraded else 0.0,
             }
             score = sum(SCORE_WEIGHTS[k] * components[k] for k in SCORE_WEIGHTS)
             if score < min_score:
@@ -164,6 +218,31 @@ class Retriever:
                 )
             )
         scored.sort(key=lambda r: r.score, reverse=True)
+        if (
+            rerank
+            and settings.reranker_enabled
+            and k <= settings.reranker_final_k
+            and scored
+        ):
+            from app.rerank import get_reranker, should_rerank
+
+            if should_rerank(scored, k=k):
+                reranker = get_reranker()
+                if reranker is not None:
+                    top_n = min(settings.reranker_candidates, len(scored))
+                    reranked = await reranker.rerank(
+                        query,
+                        scored[:top_n],
+                        final_k=k,
+                    )
+                    self.rerank_stats["triggered"] += 1
+                    self.rerank_stats["runs"] += 1
+                    self.rerank_stats["latency_ms"] += reranked.latency_ms
+                    self.rerank_stats["candidates"] += reranked.candidates
+                    if reranked.degraded:
+                        self.rerank_stats["degraded"] += 1
+                    if not reranked.degraded and reranked.results:
+                        return reranked.results
         return scored[:k]
 
     async def search_events(

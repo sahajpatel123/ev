@@ -1,0 +1,15 @@
+{
+  "schema_version": "ev.retrieval.questions.v1",
+  "questions": [
+    {
+      "id": "q01",
+      "query": "Which coding model did I decide to use?",
+      "expected_memory_ids": ["00000000-0000-0000-0000-000000000001"]
+    },
+    {
+      "id": "q02",
+      "query": "What did I decide about the apartment lease?",
+      "expected_memory_ids": ["00000000-0000-0000-0000-000000000002"]
+    }
+  ]
+}

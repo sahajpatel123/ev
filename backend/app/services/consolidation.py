@@ -202,3 +202,194 @@ async def run_consolidation(
     await session.flush()
     await _link_events(session, memory, event_ids)
     return [str(memory.id)]
+
+
+STATE_OF_ME_TYPES = ("decision", "goal", "fact", "preference")
+
+
+async def _version_groups_for_period(
+    session: AsyncSession,
+    *,
+    period_start: datetime,
+    period_end: datetime,
+    as_of: datetime | None,
+) -> list[Memory]:
+    """Current and historical versions whose chain changed inside the period."""
+    stmt = select(Memory).where(
+        Memory.memory_type.in_(STATE_OF_ME_TYPES),
+        Memory.valid_from >= period_start,
+        Memory.valid_from < period_end,
+        Memory.redacted.is_(False),
+    )
+    if as_of is not None:
+        stmt = stmt.where(Memory.valid_from <= as_of)
+    in_window = list((await session.execute(stmt)).scalars().all())
+    if not in_window:
+        return []
+    group_ids = {m.version_group for m in in_window}
+    all_versions = list(
+        (
+            await session.execute(
+                select(Memory)
+                .where(
+                    Memory.version_group.in_(group_ids),
+                    Memory.redacted.is_(False),
+                )
+                .order_by(Memory.version_group, Memory.version.asc())
+            )
+        ).scalars().all()
+    )
+    return all_versions
+
+
+async def run_state_of_me(
+    session: AsyncSession,
+    *,
+    period_start: datetime,
+    period_end: datetime,
+    as_of: datetime | None = None,
+) -> list[str]:
+    """Long-horizon 'state of me' rollup, built only from versioned memories.
+
+    The rollup describes how the owner's decisions, goals, facts, and
+    preferences changed across ``[period_start, period_end)`` and what the
+    state was at the end of the window. Everything is derived from versioned
+    memories with provenance; nothing is invented.
+    """
+    versions = await _version_groups_for_period(
+        session,
+        period_start=period_start,
+        period_end=period_end,
+        as_of=as_of,
+    )
+    if not versions:
+        return []
+
+    groups: dict = {}
+    for memory in versions:
+        group = groups.setdefault(
+            str(memory.version_group),
+            {"memory_type": memory.memory_type, "versions": []},
+        )
+        group["versions"].append(memory)
+    group_rows = []
+    for group in sorted(
+        groups.values(),
+        key=lambda g: (
+            g["memory_type"],
+            g["versions"][0].valid_from,
+            g["versions"][-1].text,
+        ),
+    ):
+        rows = group["versions"]
+        group_rows.append(
+            {
+                "thread_key": fingerprint(
+                    {
+                        "memory_type": group["memory_type"],
+                        "first_valid_from": rows[0].valid_from.isoformat(),
+                        "latest_text": rows[-1].text,
+                    }
+                ),
+                "memory_type": group["memory_type"],
+                "version_count": len(rows),
+                "first_valid_from": rows[0].valid_from.isoformat(),
+                "latest_valid_from": rows[-1].valid_from.isoformat(),
+                "latest_text": rows[-1].text,
+                "latest_reason": rows[-1].reason_for_change,
+            }
+        )
+
+    memory_ids = [m.id for m in versions]
+    source_rows = (
+        await session.execute(
+            select(MemoryEvent).where(MemoryEvent.memory_id.in_(memory_ids))
+        )
+    ).scalars().all()
+    event_ids = sorted({str(row.event_id) for row in source_rows})
+
+    executed_at = as_of or utcnow()
+    counts: Counter[str] = Counter(m.memory_type for m in versions)
+    payload = {
+        "kind": "state_of_me",
+        "period_start": period_start.isoformat(),
+        "period_end": period_end.isoformat(),
+        "executed_at": executed_at.isoformat(),
+        "memory_group_count": len(group_rows),
+        "version_count": len(versions),
+        "counts": dict(counts),
+        "groups": group_rows,
+        "evidence": event_ids,
+    }
+    changed = [
+        g["latest_text"]
+        for g in group_rows[:5]
+        if g["version_count"] > 1
+    ]
+    text = (
+        f"State of me ({period_start.date()} to {period_end.date()}): "
+        f"{len(group_rows)} memory threads, {len(versions)} versions "
+        f"({', '.join(f'{k}={v}' for k, v in sorted(counts.items()))})."
+    )
+    if changed:
+        text += " Changed: " + "; ".join(changed[:3]) + "."
+    fp = fingerprint(
+        {
+            "memory_type": "summary",
+            "kind": "state_of_me",
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+        }
+    )
+
+    existing_rows = (
+        await session.execute(
+            select(Memory).where(
+                Memory.memory_type == "summary",
+                Memory.is_current.is_(True),
+                Memory.redacted.is_(False),
+            )
+        )
+    ).scalars().all()
+    existing = next(
+        (
+            m
+            for m in existing_rows
+            if (m.payload or {}).get("kind") == "state_of_me"
+            and (m.payload or {}).get("period_start") == period_start.isoformat()
+            and (m.payload or {}).get("period_end") == period_end.isoformat()
+        ),
+        None,
+    )
+    if existing is not None and (existing.payload or {}).get("version_count", 0) >= len(versions):
+        await _link_events(session, existing, [UUID(e) for e in event_ids])
+        return [str(existing.id)]
+
+    memory = Memory(
+        memory_type="summary",
+        text=text,
+        payload=payload,
+        importance=0.5,
+        confidence=0.85,
+        source_type="derived",
+        privacy_level="normal",
+        event_time=period_end,
+        valid_from=executed_at,
+        version_group=existing.version_group if existing else uuid4(),
+        version=(existing.version + 1) if existing else 1,
+        supersedes_id=existing.id if existing else None,
+        reason_for_change="State of me recomputed" if existing else None,
+        fingerprint=fp,
+    )
+    try:
+        memory.embedding = (await get_embedder().embed([text]))[0]
+    except Exception:
+        memory.embedding = None
+    if existing is not None:
+        existing.is_current = False
+        existing.superseded_by_id = memory.id
+        existing.valid_until = executed_at
+    session.add(memory)
+    await session.flush()
+    await _link_events(session, memory, [UUID(e) for e in event_ids])
+    return [str(memory.id)]

@@ -1,0 +1,314 @@
+{
+  "name": "mnemo-seed-extraction-v1",
+  "synthetic": true,
+  "license": "private-synthetic",
+  "note": "CI-safe synthetic seed. The real 100-capture hand-labeled set is pending the human owner; see docs/MEMORY.md.",
+  "captures": [
+    {
+      "id": "d-001",
+      "text": "I decided to use SQLite for local testing.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": []
+    },
+    {
+      "id": "d-002",
+      "text": "I decided to use Postgres for local testing.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": []
+    },
+    {
+      "id": "d-003",
+      "text": "We decided on Postgres for the new service.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": []
+    },
+    {
+      "id": "d-004",
+      "text": "Last Tuesday I decided to start meditating.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": [],
+      "expected_temporal": true
+    },
+    {
+      "id": "p-001",
+      "text": "I prefer local-first storage over cloud-only solutions.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "p-002",
+      "text": "I hate cold weather.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "p-003",
+      "text": "I love reading before bed.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "p-004",
+      "text": "I don't like crowded places.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "p-005",
+      "text": "I no longer like spicy food.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "g-001",
+      "text": "I want to build EV as a persistent personal AI.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": []
+    },
+    {
+      "id": "g-002",
+      "text": "My goal is to run a marathon.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": []
+    },
+    {
+      "id": "g-003",
+      "text": "In March I want to focus on health.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": [],
+      "expected_temporal": true
+    },
+    {
+      "id": "g-004",
+      "text": "I should start saving more.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": []
+    },
+    {
+      "id": "g-005",
+      "text": "We aim to launch by September.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": [],
+      "expected_temporal": true
+    },
+    {
+      "id": "f-001",
+      "text": "My name is Sahaj.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": []
+    },
+    {
+      "id": "f-002",
+      "text": "My birthday is June 14.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": []
+    },
+    {
+      "id": "f-003",
+      "text": "I live in New York and work at Acme.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": [{"name": "New York", "entity_type": "place"}]
+    },
+    {
+      "id": "f-004",
+      "text": "I am based in Bangalore.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": [{"name": "Bangalore", "entity_type": "place"}]
+    },
+    {
+      "id": "f-005",
+      "text": "My partner Priya is a doctor.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": [{"name": "Priya", "entity_type": "person"}]
+    },
+    {
+      "id": "f-006",
+      "text": "My company is called Northwind.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": []
+    },
+    {
+      "id": "o-001",
+      "text": "Met my friend Maya for coffee.",
+      "expected_memory_types": ["observation"],
+      "expected_entities": [{"name": "Maya", "entity_type": "person"}]
+    },
+    {
+      "id": "o-002",
+      "text": "I have been learning piano for two years running.",
+      "expected_memory_types": ["observation"],
+      "expected_entities": [],
+      "expected_temporal": true
+    },
+    {
+      "id": "o-003",
+      "text": "I feel like mornings are a time I like to focus.",
+      "expected_memory_types": ["observation"],
+      "expected_entities": []
+    },
+    {
+      "id": "o-004",
+      "text": "I decided to move to Berlin in March.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": [{"name": "Berlin", "entity_type": "place"}],
+      "expected_temporal": true
+    },
+    {
+      "id": "h-001",
+      "text": "I've decided to switch banks.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-002",
+      "text": "decided to move to Goa.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": [{"name": "Goa", "entity_type": "place"}]
+    },
+    {
+      "id": "h-003",
+      "text": "I decided to go with Postgres. Also, I prefer morning runs.",
+      "expected_memory_types": ["decision", "preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-004",
+      "text": "I'm planning to learn guitar.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-005",
+      "text": "I'm going to read more.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-006",
+      "text": "I'd rather bike than drive.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-007",
+      "text": "prefer tea over coffee.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-008",
+      "text": "goal: run 10k.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-009",
+      "text": "My favorite city is Berlin.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-010",
+      "text": "I'm 29 years old.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-011",
+      "text": "My sister Anjali moved to Toronto.",
+      "expected_memory_types": ["observation"],
+      "expected_entities": [
+        {"name": "Anjali", "entity_type": "person"},
+        {"name": "Toronto", "entity_type": "place"}
+      ]
+    },
+    {
+      "id": "h-012",
+      "text": "We met last Tuesday and I decided to start therapy.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": [],
+      "expected_temporal": true
+    },
+    {
+      "id": "h-013",
+      "text": "I don't like early meetings.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-014",
+      "text": "My decision is to quit social media.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-015",
+      "text": "I should start journaling.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-016",
+      "text": "My colleague David works at Shopify.",
+      "expected_memory_types": ["observation"],
+      "expected_entities": [{"name": "David", "entity_type": "person"}]
+    },
+    {
+      "id": "h-017",
+      "text": "@sideproject is my priority this quarter.",
+      "expected_memory_types": ["observation"],
+      "expected_entities": [{"name": "sideproject", "entity_type": "topic"}]
+    },
+    {
+      "id": "h-018",
+      "text": "In March I decided to move to Berlin.",
+      "expected_memory_types": ["decision"],
+      "expected_entities": [{"name": "Berlin", "entity_type": "place"}],
+      "expected_temporal": true
+    },
+    {
+      "id": "h-019",
+      "text": "I prefer reading over watching TV.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-020",
+      "text": "I have been running for three years.",
+      "expected_memory_types": ["observation"],
+      "expected_entities": [],
+      "expected_temporal": true
+    },
+    {
+      "id": "h-021",
+      "text": "I moved to Seattle last year.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": [{"name": "Seattle", "entity_type": "place"}],
+      "expected_temporal": true
+    },
+    {
+      "id": "h-022",
+      "text": "My friend Mike is a designer.",
+      "expected_memory_types": ["observation"],
+      "expected_entities": [{"name": "Mike", "entity_type": "person"}]
+    },
+    {
+      "id": "h-023",
+      "text": "I'm hoping to travel to Japan.",
+      "expected_memory_types": ["goal"],
+      "expected_entities": [{"name": "Japan", "entity_type": "place"}]
+    },
+    {
+      "id": "h-024",
+      "text": "I prefer espresso to drip coffee.",
+      "expected_memory_types": ["preference"],
+      "expected_entities": []
+    },
+    {
+      "id": "h-025",
+      "text": "My name's Sahaj.",
+      "expected_memory_types": ["fact"],
+      "expected_entities": []
+    }
+  ]
+}

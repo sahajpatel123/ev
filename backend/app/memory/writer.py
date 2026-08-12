@@ -77,8 +77,7 @@ class MemoryWriter:
 
         memory = await self._create_memory(event, candidate)
         action = "created"
-        if candidate.memory_type == "observation":
-            await self._detect_observation_conflict(memory)
+        await self._detect_conflicts(memory, candidate)
         return WriteResult(str(memory.id), candidate.memory_type, action, candidate.text)
 
     async def _create_memory(
@@ -119,7 +118,12 @@ class MemoryWriter:
         self.session.add(memory)
         await self.session.flush()
         self.session.add(MemoryEvent(memory_id=memory.id, event_id=event.id))
-        await link_entities(self.session, memory.id, candidate.entities)
+        await link_entities(
+            self.session,
+            memory.id,
+            candidate.entities,
+            embeddings=self.embeddings,
+        )
         return memory
 
     async def _add_provenance(self, memory: Memory, event) -> None:
@@ -177,10 +181,39 @@ class MemoryWriter:
             return ("fact", subject, prop) if subject and prop else None
         return None
 
+    async def _detect_conflicts(self, memory: Memory, candidate) -> None:
+        if candidate.memory_type == "observation":
+            await self._detect_observation_conflict(memory)
+        elif candidate.memory_type == "fact":
+            await self._detect_fact_conflicts(memory)
+        elif candidate.memory_type == "preference":
+            await self._detect_preference_conflicts(memory)
+        elif candidate.memory_type == "decision":
+            await self._detect_decision_conflicts(memory)
+
+    async def _add_open_conflict(self, memory: Memory, other: Memory, reason: str) -> None:
+        existing = await self.session.execute(
+            select(Conflict).where(
+                ((Conflict.memory_id_a == memory.id) & (Conflict.memory_id_b == other.id))
+                | ((Conflict.memory_id_a == other.id) & (Conflict.memory_id_b == memory.id)),
+                Conflict.status == "open",
+            )
+        )
+        if existing.scalar_one_or_none() is None:
+            self.session.add(
+                Conflict(
+                    memory_id_a=memory.id,
+                    memory_id_b=other.id,
+                    reason=reason,
+                    status="open",
+                )
+            )
+
     async def _detect_observation_conflict(self, memory: Memory) -> None:
         topic = normalize_text((memory.payload or {}).get("topic") or "")
         if not topic:
             return
+        topic_tokens = set(topic.split())
         result = await self.session.execute(
             select(Memory).where(
                 Memory.memory_type == "observation",
@@ -191,27 +224,124 @@ class MemoryWriter:
         )
         for other in result.scalars().all():
             other_topic = normalize_text((other.payload or {}).get("topic") or "")
-            if other_topic != topic:
+            if not other_topic:
+                continue
+            other_tokens = set(other_topic.split())
+            overlap = len(topic_tokens & other_tokens) / max(
+                1, len(topic_tokens | other_tokens)
+            )
+            if other_topic != topic and overlap < 0.5:
                 continue
             sent_a = self._sentiment(memory.text)
             sent_b = self._sentiment(other.text)
             if sent_a is not None and sent_b is not None and sent_a != sent_b:
-                existing = await self.session.execute(
-                    select(Conflict).where(
-                        ((Conflict.memory_id_a == memory.id) & (Conflict.memory_id_b == other.id))
-                        | ((Conflict.memory_id_a == other.id) & (Conflict.memory_id_b == memory.id)),
-                        Conflict.status == "open",
-                    )
+                await self._add_open_conflict(
+                    memory,
+                    other,
+                    f"Conflicting observations about '{topic}'",
                 )
-                if existing.scalar_one_or_none() is None:
-                    self.session.add(
-                        Conflict(
-                            memory_id_a=memory.id,
-                            memory_id_b=other.id,
-                            reason=f"Conflicting observations about '{topic}'",
-                            status="open",
-                        )
-                    )
+
+    async def _detect_fact_conflicts(self, memory: Memory) -> None:
+        subject = normalize_text((memory.payload or {}).get("subject") or "")
+        prop = normalize_text((memory.payload or {}).get("property") or "")
+        value = normalize_text(str((memory.payload or {}).get("value") or ""))
+        if not subject or not prop or not value:
+            return
+        result = await self.session.execute(
+            select(Memory).where(
+                Memory.memory_type == "fact",
+                Memory.is_current.is_(True),
+                Memory.redacted.is_(False),
+                Memory.id != memory.id,
+            )
+        )
+        for other in result.scalars().all():
+            other_subject = normalize_text((other.payload or {}).get("subject") or "")
+            other_prop = normalize_text((other.payload or {}).get("property") or "")
+            other_value = normalize_text(str((other.payload or {}).get("value") or ""))
+            if (
+                other_subject == subject
+                and other_prop == prop
+                and other_value != value
+                and other_value
+            ):
+                await self._add_open_conflict(
+                    memory,
+                    other,
+                    f"Conflicting facts: {subject} {prop} is both '{other_value}' and '{value}'",
+                )
+
+    async def _detect_preference_conflicts(self, memory: Memory) -> None:
+        subject = normalize_text((memory.payload or {}).get("subject") or "")
+        over = normalize_text((memory.payload or {}).get("over") or "")
+        polarity = self._preference_polarity(memory.payload)
+        if not subject or polarity is None:
+            return
+        result = await self.session.execute(
+            select(Memory).where(
+                Memory.memory_type == "preference",
+                Memory.is_current.is_(True),
+                Memory.redacted.is_(False),
+                Memory.id != memory.id,
+            )
+        )
+        for other in result.scalars().all():
+            other_subject = normalize_text((other.payload or {}).get("subject") or "")
+            other_over = normalize_text((other.payload or {}).get("over") or "")
+            other_polarity = self._preference_polarity(other.payload)
+            same_subject = other_subject == subject
+            reversed_pair = bool(over and other_subject == over and other_over == subject)
+            if other_polarity is None:
+                continue
+            if same_subject and other_polarity != polarity:
+                await self._add_open_conflict(
+                    memory,
+                    other,
+                    f"Conflicting preferences about '{subject}'",
+                )
+            elif reversed_pair:
+                await self._add_open_conflict(
+                    memory,
+                    other,
+                    f"Conflicting preferences: '{subject}' vs '{over}'",
+                )
+
+    @staticmethod
+    def _preference_polarity(payload: dict) -> str | None:
+        value = normalize_text(str(payload.get("value") or ""))
+        if any(token in value for token in NEGATIVE):
+            return "negative"
+        if any(token in value for token in POSITIVE):
+            return "positive"
+        return None
+
+    async def _detect_decision_conflicts(self, memory: Memory) -> None:
+        topic = normalize_text((memory.payload or {}).get("topic") or "")
+        decision = normalize_text(str((memory.payload or {}).get("decision") or ""))
+        if not topic or not decision:
+            return
+        topic_tokens = set(topic.split())
+        result = await self.session.execute(
+            select(Memory).where(
+                Memory.memory_type == "decision",
+                Memory.is_current.is_(True),
+                Memory.redacted.is_(False),
+                Memory.id != memory.id,
+            )
+        )
+        for other in result.scalars().all():
+            other_topic = normalize_text((other.payload or {}).get("topic") or "")
+            other_decision = normalize_text(str((other.payload or {}).get("decision") or ""))
+            if not other_topic or not other_decision or other_decision == decision:
+                continue
+            other_tokens = set(other_topic.split())
+            overlap = len(topic_tokens & other_tokens) / max(1, len(topic_tokens | other_tokens))
+            if overlap >= 0.5:
+                await self._add_open_conflict(
+                    memory,
+                    other,
+                    f"Conflicting decisions about '{topic}'",
+                )
 
     def _sentiment(self, text: str) -> str | None:
         lowered = text.lower()

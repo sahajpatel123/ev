@@ -19,8 +19,9 @@ from app.ev.decisions import recreate_lesson_from_event
 from app.ev.memory_ops import apply_correction, apply_forget, apply_restore
 from app.ev.research import recreate_conclusion_memory
 from app.ev.vision import recognition_memory_candidate
-from app.memory.entities import get_or_create_entity
+from app.memory.entities import apply_entity_merge_event, get_or_create_entity
 from app.memory.extraction import Extractor
+from app.memory.llm_extractor import replay_llm_extraction_event
 from app.memory.patterns import PatternEngine
 from app.memory.writer import MemoryWriter, redact_memories_for_event
 from app.models import (
@@ -36,7 +37,7 @@ from app.models import (
     RecognitionLog,
 )
 from app.services.access_log import log_access
-from app.services.consolidation import run_consolidation
+from app.services.consolidation import run_consolidation, run_state_of_me
 from app.utils.text import utcnow
 
 MEMORY_OPERATION_TYPES = {"memory.correction", "memory.forget", "memory.restore"}
@@ -153,6 +154,9 @@ async def rebuild_derived_state(
         "patterns_created": 0,
         "summaries_created": 0,
         "lessons_created": 0,
+        "llm_extractions_replayed": 0,
+        "rollups_created": 0,
+        "merges_applied": 0,
         "operations_applied": 0,
     }
 
@@ -235,6 +239,27 @@ async def rebuild_derived_state(
             except (KeyError, TypeError, ValueError):
                 continue
             counts["summaries_created"] += len(written)
+            continue
+        if event.event_type == "extraction.llm":
+            counts["llm_extractions_replayed"] += 1
+            counts["memories_created"] += await replay_llm_extraction_event(session, event)
+            continue
+        if event.event_type == "entity.merge":
+            await apply_entity_merge_event(session, event)
+            counts["merges_applied"] += 1
+            continue
+        if event.event_type == "rollup.run":
+            meta = event.metadata_ or {}
+            try:
+                written = await run_state_of_me(
+                    session,
+                    period_start=datetime.fromisoformat(meta["period_start"]),
+                    period_end=datetime.fromisoformat(meta["period_end"]),
+                    as_of=datetime.fromisoformat(meta["executed_at"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            counts["rollups_created"] += len(written)
             continue
         if event.event_type in RESEARCH_RAW_TYPES:
             continue

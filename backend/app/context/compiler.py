@@ -11,6 +11,8 @@ observe the window plan for every request.
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass, field
 
 from app.utils.text import token_estimate
@@ -47,6 +49,7 @@ class ContextPlan:
     used_tokens: int
     budget: int
     sections: list[SectionPlan] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
 
     @property
     def remaining_tokens(self) -> int:
@@ -63,7 +66,24 @@ class ContextPlan:
             "remaining_tokens": self.remaining_tokens,
             "over_budget": self.over_budget,
             "sections": [section.to_dict() for section in self.sections],
+            "metadata": self.metadata,
         }
+
+
+DEEP_DIVE_RE = re.compile(
+    r"\b(why|which|what|how|when|where|who|remember|recall|as of|in march|in april|"
+    r"last (week|month|year|tuesday)|changed|decision|preference|goal|conflict)\b",
+    re.IGNORECASE,
+)
+
+
+def wants_deep_dive(message: str) -> bool:
+    """Deterministic signal that a question may need more than the shallow pass."""
+    if not message or not message.strip():
+        return False
+    if len(message) > 180:
+        return True
+    return bool(DEEP_DIVE_RE.search(message))
 
 
 class ContextCompiler:
@@ -80,6 +100,7 @@ class ContextCompiler:
         history: list[dict] | None = None,
         rollup_summary: str | None = None,
         open_questions: list[str] | None = None,
+        open_conflicts: list[str] | None = None,
     ) -> ContextPlan:
         parts: list[str] = []
         used = 0
@@ -178,6 +199,25 @@ class ContextCompiler:
             memory_section.items_included += 1
         memory_section.truncated = memory_section.items_dropped > 0
 
+        open_conflicts = open_conflicts or []
+        if open_conflicts:
+            header = "OPEN CONFLICTS (ask which version is current instead of picking one):"
+            conflict_section: SectionPlan | None = None
+            if push("open_conflicts", header):
+                conflict_section = sections[-1]
+            for line in open_conflicts:
+                if used + token_estimate(line) > budget:
+                    if conflict_section is not None:
+                        conflict_section.items_dropped += 1
+                    continue
+                parts.append(line)
+                used += token_estimate(line)
+                if conflict_section is not None:
+                    conflict_section.tokens += token_estimate(line)
+                    conflict_section.items_included += 1
+            if conflict_section is not None:
+                conflict_section.truncated = conflict_section.items_dropped > 0
+
         history = history or []
         if history:
             header = "CONVERSATION HISTORY (continuous window, oldest first):"
@@ -224,3 +264,134 @@ class ContextCompiler:
             budget=budget,
             sections=sections,
         )
+
+    def compile_progressive(
+        self,
+        *,
+        memories,
+        user_state,
+        strategy_text: str,
+        budget: int,
+        message: str | None = None,
+        perception_lines: list[str] | None = None,
+        history: list[dict] | None = None,
+        rollup_summary: str | None = None,
+        open_questions: list[str] | None = None,
+        open_conflicts: list[str] | None = None,
+        shallow_k: int = 10,
+        deep_k: int = 40,
+    ) -> ContextPlan:
+        """Start narrow; widen only when the question demands it.
+
+        The shallow pass compiles the first ``shallow_k`` memories. If the
+        message is a deep-dive signal, a second pass widens to ``deep_k`` when
+        the shallow plan still has meaningful budget headroom. The returned
+        plan's metadata records the chosen depth and attempt count so budget
+        adherence can be measured.
+        """
+        shallow_memories = list(memories[:shallow_k])
+        shallow = self.compile(
+            memories=shallow_memories,
+            user_state=user_state,
+            strategy_text=strategy_text,
+            budget=budget,
+            perception_lines=perception_lines,
+            history=history,
+            rollup_summary=rollup_summary,
+            open_questions=open_questions,
+            open_conflicts=open_conflicts,
+        )
+        deep_requested = wants_deep_dive(message or "") and len(memories) > shallow_k
+        headroom = shallow.remaining_tokens >= budget * 0.15
+        if deep_requested and headroom:
+            plan = self.compile(
+                memories=list(memories[:deep_k]),
+                user_state=user_state,
+                strategy_text=strategy_text,
+                budget=budget,
+                perception_lines=perception_lines,
+                history=history,
+                rollup_summary=rollup_summary,
+                open_questions=open_questions,
+                open_conflicts=open_conflicts,
+            )
+            plan.metadata = {
+                "progressive": True,
+                "depth": "deep",
+                "attempts": 2,
+                "shallow_k": shallow_k,
+                "deep_k": deep_k,
+            }
+            return plan
+        shallow.metadata = {
+            "progressive": True,
+            "depth": "shallow",
+            "attempts": 1,
+            "shallow_k": shallow_k,
+            "deep_requested": deep_requested,
+        }
+        return shallow
+
+
+def budget_adherence_report(
+    questions: list[str],
+    *,
+    budget: int,
+    memories=None,
+    user_state=None,
+    strategy_text: str = "STRATEGY: test",
+) -> dict:
+    """Measure per-question utilization; p95 must stay under the budget."""
+    from types import SimpleNamespace
+
+    memories = memories or [
+        SimpleNamespace(
+            memory_type="fact",
+            score=0.8,
+            event_time=None,
+            confidence=0.8,
+            text=f"memory {i}",
+        )
+        for i in range(50)
+    ]
+    user_state = user_state or SimpleNamespace(
+        activity="coding",
+        active_project="EV",
+        active_goal="ship",
+        current_task="context",
+        recent_topics=["memory"],
+        live_context=[],
+        open_decisions=[],
+    )
+    compiler = ContextCompiler()
+    rows: list[dict] = []
+    utilizations: list[float] = []
+    for question in questions:
+        plan = compiler.compile_progressive(
+            memories=memories,
+            user_state=user_state,
+            strategy_text=strategy_text,
+            budget=budget,
+            message=question,
+        )
+        rows.append(
+            {
+                "question": question[:80],
+                "used_tokens": plan.used_tokens,
+                "budget": budget,
+                "depth": plan.metadata.get("depth"),
+                "over_budget": plan.over_budget,
+            }
+        )
+        utilizations.append(plan.used_tokens / budget if budget else 0.0)
+    utilizations.sort()
+    p95_index = min(len(utilizations) - 1, math.ceil(0.95 * len(utilizations)) - 1)
+    p95 = utilizations[p95_index] if utilizations else 0.0
+    return {
+        "questions": len(questions),
+        "budget": budget,
+        "p95_utilization": round(p95, 4),
+        "max_utilization": round(utilizations[-1], 4) if utilizations else 0.0,
+        "over_budget_count": sum(1 for row in rows if row["over_budget"]),
+        "rows": rows,
+    }

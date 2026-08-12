@@ -1,0 +1,16 @@
+#!/bin/sh
+# Repo-local `ev-eval` launcher (Agent 8 / SYNAPSE).
+#
+# The pyproject console script is a DEP REQUEST for Agent 2. Until it lands,
+# this wrapper runs the CLI through the project venv:
+#
+#   backend/eval/retrieval/ev-eval retrieval
+#   backend/eval/retrieval/ev-eval reembed --database-url sqlite+aiosqlite:///./ev.db
+#
+# Real-model runs need the ML extras installed (uv sync --extra ml) plus the
+# tokenizers dependency (Agent 2 request); otherwise providers degrade to the
+# deterministic hash double and reports are marked degraded.
+set -e
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../.."
+exec uv run python -m eval.retrieval.cli "$@"

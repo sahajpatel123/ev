@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
-from app.context.compiler import ContextCompiler
+from app.context.compiler import ContextCompiler, budget_adherence_report
 from app.schemas import UserStateOut
 from app.utils.text import token_estimate
 
@@ -119,3 +119,68 @@ def test_compiler_is_deterministic_and_truncates_history_lines() -> None:
         line for line in first.text.splitlines() if line.startswith("- user:")
     )
     assert history_line == "- user: " + "word " * 200  # capped at 1000 chars
+
+
+def test_progressive_starts_shallow_for_simple_message() -> None:
+    memories = [_memory(f"fact {i}", memory_type="fact") for i in range(20)]
+    plan = ContextCompiler().compile_progressive(
+        memories=memories,
+        user_state=_state(),
+        strategy_text="STRATEGY: casual",
+        budget=10_000,
+        message="hello",
+    )
+    assert plan.metadata["depth"] == "shallow"
+    assert plan.metadata["attempts"] == 1
+    memory_section = next(
+        s for s in plan.sections if s.name == "retrieved_memory"
+    )
+    assert memory_section.items_included <= 10
+
+
+def test_progressive_deepens_for_deep_question() -> None:
+    memories = [_memory(f"fact {i}", memory_type="fact") for i in range(30)]
+    plan = ContextCompiler().compile_progressive(
+        memories=memories,
+        user_state=_state(),
+        strategy_text="STRATEGY: casual",
+        budget=100_000,
+        message="Why did I decide to use Postgres in March?",
+        shallow_k=5,
+        deep_k=20,
+    )
+    assert plan.metadata["depth"] == "deep"
+    assert plan.metadata["attempts"] == 2
+    memory_section = next(
+        s for s in plan.sections if s.name == "retrieved_memory"
+    )
+    assert memory_section.items_included > 5
+    assert plan.over_budget is False
+
+
+def test_budget_adherence_p95_across_50_varied_questions() -> None:
+    questions = [
+        "hello",
+        "continue",
+        "why did I decide to use SQLite?",
+        "what was I thinking in March?",
+        "who did I meet last month?",
+        "do I prefer tea or coffee?",
+        "as of last Tuesday, what were my goals?",
+        "remember my project plan",
+        "which embedding model is best?",
+        "when did I move?",
+        "how has my thinking changed since January?",
+    ]
+    while len(questions) < 50:
+        questions.append(f"follow-up question number {len(questions)} about decisions and preferences?")
+    report = budget_adherence_report(questions, budget=10_000)
+    assert report["questions"] == 50
+    assert report["over_budget_count"] == 0
+    assert report["p95_utilization"] <= 1.0
+    assert report["max_utilization"] <= 1.0
+    print(
+        "\nCONTEXT BUDGET ADHERENCE: "
+        f"n={report['questions']} p95={report['p95_utilization']:.1%} "
+        f"max={report['max_utilization']:.1%} over={report['over_budget_count']}"
+    )
