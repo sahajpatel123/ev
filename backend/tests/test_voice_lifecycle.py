@@ -11,9 +11,14 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models import VoiceSession
 from app.utils.text import utcnow
 from app.voice.anti_spoof import ReplayError, ReplayGuard
+from app.voice.contracts import Transcript
+from app.voice.lifecycle import VoiceRuntime
+from app.voice.speaker import default_speaker_verifier
+from app.voice.tts import MetaSynthesizer
 
 SAMPLE_A = b"owner-voice-sample-" * 40
 SAMPLE_B = b"other-speaker-sample-" * 40
@@ -397,3 +402,197 @@ async def test_silence_lock_ends_idle_session(
     status = resp.json()
     assert status["state"] == "ended"
     assert status["end_reason"] == "silence-lock"
+
+
+class _DegradedTranscriber:
+    name = "parakeet-eou-120m"
+
+    async def transcribe(self, **kwargs) -> Transcript:
+        return Transcript(
+            text="",
+            confidence=0.0,
+            provider=self.name,
+            degraded=True,
+        )
+
+
+async def test_degraded_asr_fails_closed_via_api(
+    client: AsyncClient, monkeypatch
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    wake_out = await wake(client, "mac-degraded")
+    verify_out = await verify(
+        client,
+        session_id=wake_out["session_id"],
+        nonce=wake_out["challenge_nonce"],
+        phrase=wake_out["challenge_phrase"],
+        samples=[b64(SAMPLE_A)],
+    )
+    assert verify_out["verified"] is True
+
+    def make_runtime(session):
+        return VoiceRuntime(
+            session,
+            master_key=settings.master_key,
+            verifier=default_speaker_verifier(),
+            transcriber=_DegradedTranscriber(),
+            synthesizer=MetaSynthesizer(),
+        )
+
+    monkeypatch.setattr("app.api.voice._runtime", make_runtime)
+    resp = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": wake_out["session_id"],
+            "audio_b64": b64(b"real-speech.wav"),
+        },
+    )
+    assert resp.status_code == 503
+    assert resp.headers.get("x-error-code") == "asr_degraded"
+    assert "degraded" in resp.json()["detail"].lower()
+
+
+async def test_barge_in_stops_follow_up_and_reenters_listening(
+    client: AsyncClient,
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    wake_out = await wake(client, "mac-barge")
+    verify_out = await verify(
+        client,
+        session_id=wake_out["session_id"],
+        nonce=wake_out["challenge_nonce"],
+        phrase=wake_out["challenge_phrase"],
+        samples=[b64(SAMPLE_A)],
+    )
+    assert verify_out["verified"] is True
+
+    resp = await client.post(
+        "/v1/voice/utterance",
+        json={"session_id": wake_out["session_id"], "text": "Play some music"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "follow_up"
+
+    resp = await client.post(f"/v1/voice/sessions/{wake_out['session_id']}/barge_in")
+    assert resp.status_code == 200, resp.text
+    status = resp.json()
+    assert status["state"] == "awake"
+    assert status["follow_up_remaining_seconds"] == 0
+
+    resp = await client.post(
+        "/v1/voice/utterance",
+        json={"session_id": wake_out["session_id"], "text": "Actually stop"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["state"] == "follow_up"
+
+
+async def test_streaming_utterance_emits_transcript_and_reply_sse(
+    client: AsyncClient,
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    wake_out = await wake(client, "mac-stream")
+    verify_out = await verify(
+        client,
+        session_id=wake_out["session_id"],
+        nonce=wake_out["challenge_nonce"],
+        phrase=wake_out["challenge_phrase"],
+        samples=[b64(SAMPLE_A)],
+    )
+    assert verify_out["verified"] is True
+
+    resp = await client.post(
+        "/v1/voice/utterance/stream",
+        json={"session_id": wake_out["session_id"], "text": "Remind me to stretch"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "text/event-stream" in resp.headers["content-type"]
+    body = resp.text
+    assert "event: final_transcript" in body
+    assert "event: reply" in body
+    assert "event: done" in body
+    assert "Remind me to stretch" in body
+
+
+async def test_api_first_asr_tts_round_trip_persists_playable_audio(
+    client: AsyncClient,
+    monkeypatch,
+) -> None:
+    """API-first path: audio in -> transcript -> reply -> persisted playable audio."""
+
+    import httpx
+
+    from app.voice.asr import OpenAICompatTranscriber
+    from app.voice.tts import OpenAICompatSynthesizer
+
+    monkeypatch.setenv("EV_ALLOW_REMOTE_TTS", "true")
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    wake_out = await wake(client, "mac-api-first")
+    verify_out = await verify(
+        client,
+        session_id=wake_out["session_id"],
+        nonce=wake_out["challenge_nonce"],
+        phrase=wake_out["challenge_phrase"],
+        samples=[b64(SAMPLE_A)],
+    )
+    assert verify_out["verified"] is True
+
+    tts_bytes = b"RIFF" + b"\x00" * 128
+
+    async def asr_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"text": "Open the garage", "confidence": 0.97},
+        )
+
+    def tts_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=tts_bytes,
+            headers={"content-type": "audio/mpeg"},
+        )
+
+    def make_runtime(session):
+        return VoiceRuntime(
+            session,
+            master_key=settings.master_key,
+            verifier=default_speaker_verifier(),
+            transcriber=OpenAICompatTranscriber(
+                base_url="https://asr.test/v1",
+                client=httpx.AsyncClient(transport=httpx.MockTransport(asr_handler)),
+            ),
+            synthesizer=OpenAICompatSynthesizer(
+                base_url="https://tts.test/v1",
+                fmt="mp3",
+                client=httpx.AsyncClient(transport=httpx.MockTransport(tts_handler)),
+            ),
+        )
+
+    monkeypatch.setattr("app.api.voice._runtime", make_runtime)
+    resp = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": wake_out["session_id"],
+            "audio_b64": b64(b"real-speech.wav"),
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["transcript"] == "Open the garage"
+    assert body["transcript_degraded"] is False
+    assert body["transcript_provider"] == "openai_compat"
+    assert body["reply"]
+    tts = body["tts"]
+    assert tts["provider"] == "openai_compat"
+    assert tts["degraded"] is False
+    assert tts["audio_ref"] and tts["audio_ref"].startswith("ev://voice/tts/")
+
+    key = tts["audio_ref"][len("ev://") :]
+    audio_resp = await client.get(f"/v1/voice/audio/{key}")
+    assert audio_resp.status_code == 200, audio_resp.text
+    assert audio_resp.content == tts_bytes
+    assert audio_resp.headers["content-type"] == "audio/mpeg"

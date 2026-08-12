@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import re
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import (
@@ -27,6 +30,7 @@ from app.schemas import (
     VoiceEnrollmentDetailOut,
     VoiceEnrollResponse,
     VoiceExportOut,
+    VoicePartialOut,
     VoicePrintExportOut,
     VoiceRevokeRequest,
     VoiceRollbackRequest,
@@ -40,12 +44,17 @@ from app.schemas import (
 )
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
+from app.voice.speaker import default_speaker_verifier
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
 
 def _runtime(session: AsyncSession) -> VoiceRuntime:
-    return VoiceRuntime(session, master_key=settings.master_key)
+    return VoiceRuntime(
+        session,
+        master_key=settings.master_key,
+        verifier=default_speaker_verifier(),
+    )
 
 
 def _http(exc: VoiceError) -> HTTPException:
@@ -72,6 +81,54 @@ def _guard_session(row: VoiceSession, ctx: ActorContext) -> None:
             detail="Voice session belongs to another device",
             headers={"X-Error-Code": "session_device_mismatch"},
         )
+
+
+def _sse(name: str, data) -> str:
+    return f"event: {name}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+def _utterance_response(outcome) -> VoiceUtteranceResponse:
+    return VoiceUtteranceResponse(
+        session_id=UUID(outcome.session_id),
+        state=outcome.state,
+        transcript=outcome.transcript.text,
+        transcript_confidence=outcome.transcript.confidence,
+        transcript_degraded=outcome.transcript.degraded,
+        transcript_provider=outcome.transcript.provider,
+        reply=outcome.reply,
+        conversation_id=UUID(outcome.conversation_id) if outcome.conversation_id else None,
+        tts=(
+            TtsOut(
+                provider=outcome.tts.provider,
+                audio_ref=outcome.tts.audio_ref,
+                content_type=outcome.tts.content_type,
+                ssml=outcome.tts.ssml,
+                duration_ms=outcome.tts.duration_ms,
+                degraded=outcome.tts.degraded,
+            )
+            if outcome.tts
+            else None
+        ),
+        style=(
+            SpeechStyleOut(
+                urgency=outcome.style.urgency,
+                warmth=outcome.style.warmth,
+                brevity=outcome.style.brevity,
+                mode=outcome.style.mode,
+                length_target=outcome.style.length_target,
+                directness=outcome.style.directness,
+            )
+            if outcome.style
+            else None
+        ),
+        model=outcome.model,
+        context_tokens=outcome.context_tokens,
+        memory_deltas=[
+            MemoryDelta.model_validate(d)
+            for d in (outcome.memory_deltas or [])
+            if isinstance(d, dict)
+        ],
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -279,44 +336,163 @@ async def utterance(
         await session.commit()
         raise _http(exc) from exc
     await session.commit()
-    return VoiceUtteranceResponse(
-        session_id=UUID(outcome.session_id),
-        state=outcome.state,
-        transcript=outcome.transcript.text,
-        transcript_confidence=outcome.transcript.confidence,
-        reply=outcome.reply,
-        conversation_id=UUID(outcome.conversation_id) if outcome.conversation_id else None,
-        tts=(
-            TtsOut(
-                provider=outcome.tts.provider,
-                audio_ref=outcome.tts.audio_ref,
-                content_type=outcome.tts.content_type,
-                ssml=outcome.tts.ssml,
-                duration_ms=outcome.tts.duration_ms,
-            )
-            if outcome.tts
-            else None
-        ),
-        style=(
-            SpeechStyleOut(
-                urgency=outcome.style.urgency,
-                warmth=outcome.style.warmth,
-                brevity=outcome.style.brevity,
-                mode=outcome.style.mode,
-                length_target=outcome.style.length_target,
-                directness=outcome.style.directness,
-            )
-            if outcome.style
-            else None
-        ),
-        model=outcome.model,
-        context_tokens=outcome.context_tokens,
-        memory_deltas=[
-            MemoryDelta.model_validate(d)
-            for d in (outcome.memory_deltas or [])
-            if isinstance(d, dict)
-        ],
+    return _utterance_response(outcome)
+
+
+@router.post("/utterance/stream")
+async def stream_utterance(
+    data: VoiceUtteranceRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> StreamingResponse:
+    """SSE utterance: partial ASR hypotheses, final transcript, then reply."""
+
+    runtime = _runtime(session)
+    row = await session.get(VoiceSession, data.session_id)
+    if row is not None:
+        _guard_session(row, ctx)
+
+    async def events():
+        async for event, payload in runtime.stream_utterance(
+            session_id=data.session_id,
+            text=data.text,
+            audio_b64=data.audio_b64,
+            audio_ref=data.audio_ref,
+            reverify_token=data.reverify_token,
+            ctx=ctx,
+            language=data.language,
+            conversation_id=data.conversation_id,
+            follow_up=data.follow_up,
+        ):
+            if event == "partial":
+                item = VoicePartialOut(
+                    text=payload.text,
+                    provider=payload.provider,
+                    sequence=payload.sequence,
+                    stable=payload.stable,
+                    confidence=payload.confidence,
+                    degraded=payload.degraded,
+                    timestamp_ms=payload.timestamp_ms,
+                )
+                yield _sse("partial", item.model_dump())
+            elif event == "final_transcript":
+                yield _sse(
+                    "final_transcript",
+                    {
+                        "text": payload.text,
+                        "confidence": payload.confidence,
+                        "provider": payload.provider,
+                        "degraded": payload.degraded,
+                        "audio_ref": payload.audio_ref,
+                    },
+                )
+            elif event == "reply":
+                await session.commit()
+                yield _sse("reply", _utterance_response(payload).model_dump())
+            else:
+                await session.commit()
+                yield _sse("error", {"code": payload.code, "message": payload.message})
+        yield _sse("done", {})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/sessions/{session_id}/barge_in", response_model=VoiceStatusOut)
+async def barge_in(
+    session_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> VoiceStatusOut:
+    """Stop playback immediately and re-enter listening."""
+
+    runtime = _runtime(session)
+    row = await session.get(VoiceSession, session_id)
+    if row is not None:
+        _guard_session(row, ctx)
+    try:
+        status = await runtime.handle_barge_in(session_id)
+    except VoiceError as exc:
+        await session.commit()
+        raise _http(exc) from exc
+    await session.commit()
+    return VoiceStatusOut(
+        session_id=UUID(status.session_id) if status.session_id else None,
+        state=status.state,
+        owner_enrolled=status.owner_enrolled,
+        owner_verified=status.owner_verified,
+        device_id=status.device_id,
+        speaker_confidence=status.speaker_confidence,
+        follow_up_remaining_seconds=status.follow_up_remaining_seconds,
+        expires_at=status.expires_at,
+        ended_at=status.ended_at,
+        end_reason=status.end_reason,
+    )
+
+
+_AUDIO_CONTENT_TYPES = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".ogg": "audio/ogg",
+    ".m4a": "audio/mp4",
+    ".flac": "audio/flac",
+    ".bin": "application/octet-stream",
+}
+
+
+@router.get("/audio/{key:path}")
+async def stream_audio(
+    key: str,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> StreamingResponse:
+    """Stream a persisted audio object (allowlisted to ``voice/**``)."""
+
+    from app.storage.object_store import get_object_store
+
+    if not key.startswith("voice/") or any(part in ("..", "") for part in key.split("/")):
+        raise HTTPException(status_code=404, detail="Audio not found")
+    store = get_object_store()
+    try:
+        data = await store.get(key)
+    except Exception as exc:  # noqa: BLE001 - missing object -> 404
+        raise HTTPException(status_code=404, detail="Audio not found") from exc
+    content_type = _AUDIO_CONTENT_TYPES.get(
+        key[key.rfind(".") :].lower() if "." in key else "", "application/octet-stream"
+    )
+    headers = {
+        "Content-Type": content_type,
+        "Cache-Control": "public, max-age=3600",
+        "X-Content-Type-Options": "nosniff",
+    }
+    range_header = request.headers.get("range")
+    if range_header:
+        match = re.fullmatch(r"bytes=(\d*)-(\d*)", range_header.strip())
+        if match:
+            start = int(match.group(1)) if match.group(1) else 0
+            end = int(match.group(2)) if match.group(2) else len(data) - 1
+            if start < len(data) and end >= start:
+                headers["Content-Range"] = f"bytes {start}-{min(end, len(data) - 1)}/{len(data)}"
+                headers["Accept-Ranges"] = "bytes"
+                chunk = data[start : min(end, len(data) - 1) + 1]
+                return StreamingResponse(
+                    _chunked(chunk),
+                    status_code=206,
+                    headers=headers,
+                )
+    headers["Accept-Ranges"] = "bytes"
+    return StreamingResponse(_chunked(data), headers=headers)
+
+
+async def _chunked(data: bytes):
+    size = 64 * 1024
+    for offset in range(0, len(data), size):
+        yield data[offset : offset + size]
 
 
 @router.get("/sessions/{session_id}", response_model=VoiceStatusOut)

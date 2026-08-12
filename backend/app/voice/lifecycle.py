@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from dataclasses import dataclass
@@ -33,12 +34,15 @@ from app.voice.contracts import (
     SynthesisResult,
     Transcriber,
     Transcript,
+    TranscriptPartial,
+    VoiceError,
     WakeDetection,
     WakeWordEngine,
 )
+from app.voice.pipeline import run_chat_tts_pipeline, transcribe_input
 from app.voice.security import decrypt_payload, encrypt_payload
 from app.voice.sensitive import REVERIFY_PURPOSE, classify_sensitive
-from app.voice.speaker import ProfileSpeakerVerifier
+from app.voice.speaker import default_speaker_verifier
 from app.voice.tts import get_synthesizer
 from app.voice.wake import default_wake_engine
 
@@ -67,16 +71,6 @@ def _aware(value):
     if value is None:
         return None
     return value if value.tzinfo is not None else value.replace(tzinfo=utcnow().tzinfo)
-
-
-class VoiceError(Exception):
-    """Domain error with an HTTP-ish status for the API layer."""
-
-    def __init__(self, message: str, *, status: int = 400, code: str = "voice_error") -> None:
-        super().__init__(message)
-        self.message = message
-        self.status = status
-        self.code = code
 
 
 @dataclass
@@ -152,7 +146,7 @@ class VoiceRuntime:
         self.master_key = master_key
         self.actor = actor
         self.wake_engine = wake_engine or default_wake_engine()
-        self.verifier = verifier or ProfileSpeakerVerifier()
+        self.verifier = verifier or default_speaker_verifier()
         self.transcriber = transcriber or get_transcriber()
         self.synthesizer = synthesizer or get_synthesizer()
         self.liveness = liveness or LivenessGate()
@@ -160,6 +154,7 @@ class VoiceRuntime:
         self.verify_timeout_seconds = verify_timeout_seconds
         self.session_timeout_seconds = session_timeout_seconds
         self.replay_guard = ReplayGuard(session)
+        self._interrupts: dict[str, asyncio.Event] = {}
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -922,21 +917,10 @@ class VoiceRuntime:
     # Utterance / follow-up
     # ------------------------------------------------------------------ #
 
-    async def handle_utterance(
-        self,
-        *,
-        session_id,
-        text: str | None = None,
-        reverify_token: str | None = None,
-        ctx=None,
-        audio_b64: str | None = None,
-        audio_ref: str | None = None,
-        language: str = "en",
-        conversation_id=None,
-        follow_up: bool = False,
-    ) -> UtteranceOutcome:
-        await self._expire_stale()
-        row = await self._get_session(session_id)
+    def _interrupt_event(self, session_id) -> asyncio.Event:
+        return self._interrupts.setdefault(str(session_id), asyncio.Event())
+
+    async def _validate_utterance_row(self, row: VoiceSession, follow_up: bool) -> None:
         if row.ended_at is not None or row.state == VoiceState.ENDED:
             raise VoiceError(
                 "Voice session ended — wake EVIE again",
@@ -972,43 +956,60 @@ class VoiceRuntime:
                 code="invalid_state",
             )
 
-        from app.voice.pipeline import run_chat_tts_pipeline, transcribe_input
-
-        transcript = await transcribe_input(
-            self.transcriber,
-            text=text,
-            audio_b64=audio_b64,
-            audio_ref=audio_ref,
-            language=language,
-        )
+    async def _classify_and_reverify(
+        self,
+        *,
+        transcript: Transcript,
+        reverify_token: str | None,
+        ctx,
+    ) -> tuple[str | None, bool]:
         sensitive_purpose = classify_sensitive(transcript.text)
-        reverified = False
-        if sensitive_purpose is not None:
-            if not reverify_token or ctx is None:
-                raise VoiceError(
-                    "Re-verification required for sensitive voice command "
-                    f"({sensitive_purpose}). Issue a proof via "
-                    "POST /v1/identity/reverification with purpose "
-                    f"{REVERIFY_PURPOSE!r}, then retry with the token.",
-                    status=403,
-                    code="reverification_required",
-                )
-            from app.identity.service import IdentityError, consume_reverification
+        if sensitive_purpose is None:
+            return None, False
+        if not reverify_token or ctx is None:
+            raise VoiceError(
+                "Re-verification required for sensitive voice command "
+                f"({sensitive_purpose}). Issue a proof via "
+                "POST /v1/identity/reverification with purpose "
+                f"{REVERIFY_PURPOSE!r}, then retry with the token.",
+                status=403,
+                code="reverification_required",
+            )
+        from app.identity.service import IdentityError, consume_reverification
 
-            try:
-                await consume_reverification(
-                    self.session,
-                    token=reverify_token,
-                    purpose=REVERIFY_PURPOSE,
-                    ctx=ctx,
-                )
-            except IdentityError as exc:
-                raise VoiceError(
-                    exc.message,
-                    status=exc.status,
-                    code=exc.code,
-                ) from exc
-            reverified = True
+        try:
+            await consume_reverification(
+                self.session,
+                token=reverify_token,
+                purpose=REVERIFY_PURPOSE,
+                ctx=ctx,
+            )
+        except IdentityError as exc:
+            raise VoiceError(
+                exc.message,
+                status=exc.status,
+                code=exc.code,
+            ) from exc
+        return sensitive_purpose, True
+
+    def _degraded_transcript_error(self, transcript: Transcript) -> VoiceError:
+        return VoiceError(
+            "ASR is degraded: the real provider could not run "
+            f"({transcript.provider}); configure weights or a working engine",
+            status=503,
+            code="asr_degraded",
+        )
+
+    async def _run_pipeline_for(
+        self,
+        *,
+        row: VoiceSession,
+        transcript: Transcript,
+        conversation_id,
+        follow_up: bool,
+        sensitive_purpose: str | None,
+        reverified: bool,
+    ):
         row.state = VoiceState.PROCESSING
         outcome = await run_chat_tts_pipeline(
             self.session,
@@ -1019,7 +1020,6 @@ class VoiceRuntime:
             synthesizer=self.synthesizer,
             speaker_confidence=row.speaker_confidence,
         )
-
         now = utcnow()
         row.state = VoiceState.FOLLOW_UP
         row.last_utterance_at = now
@@ -1034,10 +1034,68 @@ class VoiceRuntime:
             reply_chars=len(outcome.reply),
             asr_provider=outcome.transcript.provider,
             tts_provider=outcome.tts.provider,
+            asr_degraded=outcome.transcript.degraded,
+            tts_degraded=outcome.tts.degraded,
             model=outcome.model,
             sensitive_purpose=sensitive_purpose,
             reverified=reverified,
         )
+        return outcome
+
+    async def handle_utterance(
+        self,
+        *,
+        session_id,
+        text: str | None = None,
+        reverify_token: str | None = None,
+        ctx=None,
+        audio_b64: str | None = None,
+        audio_ref: str | None = None,
+        language: str = "en",
+        conversation_id=None,
+        follow_up: bool = False,
+    ) -> UtteranceOutcome:
+        await self._expire_stale()
+        row = await self._get_session(session_id)
+        await self._validate_utterance_row(row, follow_up)
+
+        transcript = await transcribe_input(
+            self.transcriber,
+            text=text,
+            audio_b64=audio_b64,
+            audio_ref=audio_ref,
+            language=language,
+        )
+        if transcript.degraded:
+            await self._log(
+                "asr",
+                "degraded",
+                session_id=row.id,
+                device_id=row.device_id,
+                reason="real ASR provider unavailable",
+                asr_provider=transcript.provider,
+            )
+            raise self._degraded_transcript_error(transcript)
+        sensitive_purpose, reverified = await self._classify_and_reverify(
+            transcript=transcript,
+            reverify_token=reverify_token,
+            ctx=ctx,
+        )
+        outcome = await self._run_pipeline_for(
+            row=row,
+            transcript=transcript,
+            conversation_id=conversation_id,
+            follow_up=follow_up,
+            sensitive_purpose=sensitive_purpose,
+            reverified=reverified,
+        )
+        if self._interrupt_event(str(session_id)).is_set():
+            self._interrupt_event(str(session_id)).clear()
+            raise VoiceError(
+                "Playback interrupted by barge-in; EVIE is listening",
+                status=409,
+                code="barge_in",
+            )
         return UtteranceOutcome(
             session_id=str(row.id),
             state=VoiceState.FOLLOW_UP,
@@ -1050,6 +1108,125 @@ class VoiceRuntime:
             context_tokens=outcome.context_tokens,
             memory_deltas=outcome.memory_deltas,
         )
+
+    async def stream_utterance(
+        self,
+        *,
+        session_id,
+        text: str | None = None,
+        reverify_token: str | None = None,
+        ctx=None,
+        audio_b64: str | None = None,
+        audio_ref: str | None = None,
+        language: str = "en",
+        conversation_id=None,
+        follow_up: bool = False,
+    ):
+        """SSE-friendly utterance: partial hypotheses, final transcript, reply.
+
+        Yields ``(event, payload)`` tuples: ``partial`` / ``final_transcript``
+        / ``reply`` / ``error``. The caller (API layer) serializes them.
+        """
+
+        await self._expire_stale()
+        row = await self._get_session(session_id)
+        await self._validate_utterance_row(row, follow_up)
+        final_transcript: Transcript | None = None
+        try:
+            async for item in self.transcriber.stream(
+                audio_ref=audio_ref,
+                audio_b64=audio_b64,
+                text_hint=text,
+                language=language,
+            ):
+                if isinstance(item, TranscriptPartial):
+                    yield "partial", item
+                else:
+                    final_transcript = item
+                    yield "final_transcript", item
+            if final_transcript is None:
+                raise VoiceError(
+                    "ASR stream ended without a final transcript",
+                    status=502,
+                    code="asr_no_final",
+                )
+            if final_transcript.degraded:
+                await self._log(
+                    "asr",
+                    "degraded",
+                    session_id=row.id,
+                    device_id=row.device_id,
+                    reason="real ASR provider unavailable",
+                    asr_provider=final_transcript.provider,
+                )
+                raise self._degraded_transcript_error(final_transcript)
+            sensitive_purpose, reverified = await self._classify_and_reverify(
+                transcript=final_transcript,
+                reverify_token=reverify_token,
+                ctx=ctx,
+            )
+            outcome = await self._run_pipeline_for(
+                row=row,
+                transcript=final_transcript,
+                conversation_id=conversation_id,
+                follow_up=follow_up,
+                sensitive_purpose=sensitive_purpose,
+                reverified=reverified,
+            )
+            if self._interrupt_event(str(session_id)).is_set():
+                self._interrupt_event(str(session_id)).clear()
+                raise VoiceError(
+                    "Playback interrupted by barge-in; EVIE is listening",
+                    status=409,
+                    code="barge_in",
+                )
+            yield "reply", UtteranceOutcome(
+                session_id=str(row.id),
+                state=VoiceState.FOLLOW_UP,
+                transcript=outcome.transcript,
+                reply=outcome.reply,
+                conversation_id=outcome.conversation_id,
+                tts=outcome.tts,
+                style=outcome.style,
+                model=outcome.model,
+                context_tokens=outcome.context_tokens,
+                memory_deltas=outcome.memory_deltas,
+            )
+        except VoiceError as exc:
+            if row.state == VoiceState.PROCESSING:
+                row.state = VoiceState.AWAKE
+            yield "error", exc
+
+    async def handle_barge_in(self, session_id) -> SessionStatus:
+        """Stop playback immediately and re-enter listening (AWAKE)."""
+
+        await self._expire_stale()
+        row = await self._get_session(session_id)
+        if row.ended_at is not None or row.state == VoiceState.ENDED:
+            raise VoiceError(
+                "Voice session ended — wake EVIE again",
+                status=428,
+                code="session_ended",
+            )
+        if not row.owner_verified:
+            raise VoiceError(
+                "Session not verified — owner verification required",
+                status=403,
+                code="not_verified",
+            )
+        self._interrupt_event(str(session_id)).set()
+        now = utcnow()
+        row.state = VoiceState.AWAKE
+        row.follow_up_until = None
+        row.expires_at = now + timedelta(seconds=self.session_timeout_seconds)
+        await self._log(
+            "barge_in",
+            "accepted",
+            session_id=row.id,
+            device_id=row.device_id,
+            reason="speech detected during playback",
+        )
+        return await self.status(session_id)
 
     # ------------------------------------------------------------------ #
     # Session control

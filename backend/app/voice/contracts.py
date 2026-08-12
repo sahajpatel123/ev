@@ -7,9 +7,61 @@ without touching lifecycle or API code.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
+
+
+class VoiceError(Exception):
+    """Domain error with an HTTP-ish status for the API layer.
+
+    Lives in the contracts module so every provider (ASR, TTS, lifecycle) can
+    raise it without importing the lifecycle orchestrator.
+    """
+
+    def __init__(self, message: str, *, status: int = 400, code: str = "voice_error") -> None:
+        super().__init__(message)
+        self.message = message
+        self.status = status
+        self.code = code
+
+
+class ModelUnavailableError(RuntimeError):
+    """A real engine cannot run because weights/dependencies are missing.
+
+    Providers translate this into a ``degraded=True`` result when that is the
+    safe behavior, or let it propagate as a typed VoiceError when the caller
+    must fail closed.
+    """
+
+
+def _model_arbiter():
+    # Reuse the ears stack's process-wide arbiter so ASR/TTS and wake/VAD share
+    # one resident-memory policy (docs/MODEL_BUDGET.md §2).
+    from app.audio.models import model_arbiter
+
+    return model_arbiter()
+
+
+@contextmanager
+def acquire_model(name: str):
+    """Reserve ``name`` in the process-wide ModelArbiter (on_demand slot)."""
+
+    from app.ml.arbiter import ModelLoadRefused
+    from app.ml.registry import ModelNotFoundError
+
+    try:
+        with _model_arbiter().acquire(name):
+            yield
+    except ModelNotFoundError as exc:
+        raise ModelUnavailableError(
+            f"model {name!r} is not registered with the ModelArbiter; "
+            "Agent 2 (Foundry) must add the registry entry"
+        ) from exc
+    except ModelLoadRefused as exc:
+        raise ModelUnavailableError(str(exc)) from exc
 
 
 @dataclass
@@ -35,12 +87,35 @@ class SpeakerDecision:
 
 @dataclass
 class Transcript:
+    """One final transcript from an ASR engine.
+
+    ``degraded=True`` means the real provider could not run (weights missing,
+    runtime unavailable) and the text must never be treated as a real
+    transcription; confidence is then 0.0 by contract.
+    """
+
     text: str
     confidence: float
     language: str = "en"
     provider: str = "dev"
     duration_ms: int | None = None
     audio_ref: str | None = None
+    degraded: bool = False
+    details: dict = field(default_factory=dict)
+
+
+@dataclass
+class TranscriptPartial:
+    """Incremental hypothesis emitted while the human is still speaking."""
+
+    text: str
+    provider: str
+    sequence: int
+    stable: bool = False
+    confidence: float = 0.0
+    language: str = "en"
+    degraded: bool = False
+    timestamp_ms: int | None = None
 
 
 @dataclass
@@ -65,6 +140,8 @@ class SynthesisResult:
     ssml: str | None = None
     duration_ms: int | None = None
     style: SpeechStyle = field(default_factory=SpeechStyle)
+    degraded: bool = False
+    details: dict = field(default_factory=dict)
 
 
 class WakeWordEngine(Protocol):
@@ -116,6 +193,29 @@ class Transcriber(Protocol):
         text_hint: str | None = None,
         language: str = "en",
     ) -> Transcript: ...
+
+    def stream(
+        self,
+        *,
+        audio_ref: str | None = None,
+        audio_b64: str | None = None,
+        text_hint: str | None = None,
+        language: str = "en",
+    ) -> AsyncIterator[Transcript | TranscriptPartial]:
+        """Incremental hypotheses (partials) followed by the final transcript.
+
+        Engines without streaming support simply yield their final transcript.
+        """
+
+        async def _default() -> AsyncIterator[Transcript | TranscriptPartial]:
+            yield await self.transcribe(
+                audio_ref=audio_ref,
+                audio_b64=audio_b64,
+                text_hint=text_hint,
+                language=language,
+            )
+
+        return _default()
 
 
 class Synthesizer(Protocol):

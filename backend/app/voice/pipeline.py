@@ -6,6 +6,7 @@ single path so voice behavior stays provider-agnostic and identical everywhere.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,6 +31,37 @@ class PipelineOutcome:
     model: str | None
     context_tokens: int
     memory_deltas: list[dict]
+
+
+def _content_extension(content_type: str | None) -> str:
+    return {
+        "audio/wav": "wav",
+        "audio/x-wav": "wav",
+        "audio/mp3": "mp3",
+        "audio/mpeg": "mp3",
+        "audio/ogg": "ogg",
+        "audio/mp4": "m4a",
+        "audio/flac": "flac",
+    }.get((content_type or "").lower().split(";")[0].strip(), "bin")
+
+
+async def persist_tts_audio(result: SynthesisResult) -> SynthesisResult:
+    """Persist synthesized bytes to the object store and populate ``audio_ref``.
+
+    Content-addressed (sha256) so identical replies dedupe on disk. The ref
+    uses the ``ev://`` scheme; the streaming endpoint resolves it.
+    """
+
+    if result.audio is None or result.audio_ref:
+        return result
+    digest = hashlib.sha256(result.audio).hexdigest()
+    extension = _content_extension(result.content_type)
+    key = f"voice/tts/{digest[:2]}/{digest}.{extension}"
+    from app.storage.object_store import get_object_store
+
+    await get_object_store().put(key, result.audio, result.content_type or "audio/wav")
+    result.audio_ref = f"ev://{key}"
+    return result
 
 
 async def transcribe_input(
@@ -87,6 +119,7 @@ async def run_chat_tts_pipeline(
 
     style = speech_style_from_strategy(strategy)
     synthesis = await synthesizer.synthesize(pipeline["result"].text, style=style)
+    synthesis = await persist_tts_audio(synthesis)
     return PipelineOutcome(
         transcript=transcript,
         reply=pipeline["result"].text,
