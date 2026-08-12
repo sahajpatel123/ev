@@ -270,6 +270,7 @@ def derive_channel_signals(channel: LiveChannel, events: list[LiveEvent]) -> lis
     late_night: list[LiveEvent] = []
     health_anomalies: list[tuple[LiveEvent, str]] = []
     audio_in_call: list[LiveEvent] = []
+    audio_ambient: list[LiveEvent] = []
     location_events: list[LiveEvent] = []
 
     for event in events:
@@ -280,6 +281,8 @@ def derive_channel_signals(channel: LiveChannel, events: list[LiveEvent]) -> lis
             derived = derive_audio_context(event.payload or {})
             if derived["in_call"]:
                 audio_in_call.append(event)
+            if derived["music"] or derived["noise"]:
+                audio_ambient.append(event)
         if channel.kind == "location":
             location_events.append(event)
         if channel.kind == "health":
@@ -321,6 +324,18 @@ def derive_channel_signals(channel: LiveChannel, events: list[LiveEvent]) -> lis
                 "count": len(audio_in_call),
                 "latest_at": max(audio_in_call, key=lambda e: _aware(e.occurred_at)).occurred_at.isoformat(),
                 "basis_ids": [str(e.id) for e in audio_in_call[:5]],
+            }
+        )
+    if audio_ambient:
+        latest = max(audio_ambient, key=lambda e: _aware(e.occurred_at))
+        derived = derive_audio_context(latest.payload or {})
+        signals.append(
+            {
+                "kind": "audio_ambient",
+                "count": len(audio_ambient),
+                "scene": "music" if derived["music"] else "noise",
+                "latest_at": _aware(latest.occurred_at).isoformat(),
+                "basis_ids": [str(e.id) for e in audio_ambient[:5]],
             }
         )
     if location_events:
@@ -415,6 +430,7 @@ async def sense_signals(
     late_night: list[LiveEvent] = []
     health_anomalies: list[tuple[LiveEvent, str]] = []
     audio_in_call: list[LiveEvent] = []
+    audio_ambient: list[LiveEvent] = []
     location_events: list[LiveEvent] = []
     for event, channel in rows:
         hour = _aware(event.occurred_at).hour
@@ -424,6 +440,8 @@ async def sense_signals(
             derived = derive_audio_context(event.payload or {})
             if derived["in_call"]:
                 audio_in_call.append(event)
+            if derived["music"] or derived["noise"]:
+                audio_ambient.append(event)
         if channel.kind == "location":
             location_events.append(event)
         if channel.kind == "health":
@@ -500,6 +518,31 @@ async def sense_signals(
                     f"{_aware(latest.occurred_at).isoformat()}."
                 ),
                 "basis_ids": [str(event.id) for event in audio_in_call[:5]],
+            }
+        )
+
+    if audio_ambient:
+        latest = max(audio_ambient, key=lambda e: _aware(e.occurred_at))
+        latest_derived = derive_audio_context(latest.payload or {})
+        scene = "music" if latest_derived["music"] else "noise"
+        confidence = latest_derived["confidence"] or 0.6
+        signals.append(
+            {
+                "kind": "audio_ambient",
+                "text": (
+                    f"Ambient audio scene: {scene} ({len(audio_ambient)} permissioned "
+                    f"audio scene events)."
+                ),
+                "confidence": round(min(0.9, max(0.5, confidence)), 3),
+                "importance": 0.35,
+                "urgency": 0.2,
+                "goal_relevance": 0.4,
+                "benefit": 0.4,
+                "why_now": (
+                    f"Because audio collectors reported a {scene} scene at "
+                    f"{_aware(latest.occurred_at).isoformat()}."
+                ),
+                "basis_ids": [str(event.id) for event in audio_ambient[:5]],
             }
         )
 

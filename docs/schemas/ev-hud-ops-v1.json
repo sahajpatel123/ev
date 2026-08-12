@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sahajpatel123/ev/blob/main/docs/schemas/ev-hud-ops-v1.json",
+  "title": "EV HUD ops card",
+  "description": "ev.hud.ops.v1 — unified ops center rendered as a strict HUD card.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "title",
+    "summary",
+    "focus_locked",
+    "online_devices",
+    "pending_alerts",
+    "open_decisions"
+  ],
+  "properties": {
+    "schema_version": {"const": "ev.hud.ops.v1"},
+    "generated_at": {"type": "string"},
+    "title": {"type": "string"},
+    "summary": {"type": "string"},
+    "focus_locked": {"type": "boolean"},
+    "online_devices": {"type": "integer", "minimum": 0},
+    "pending_alerts": {"type": "integer", "minimum": 0},
+    "open_decisions": {"type": "integer", "minimum": 0},
+    "command_cards": {"type": "array", "items": {"type": "string"}},
+    "meta": {"type": "object"}
+  },
+  "additionalProperties": true
+}

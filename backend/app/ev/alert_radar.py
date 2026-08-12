@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 from dateutil import parser as date_parser
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Alert, Event, Memory, Prediction, WatchlistItem
+from app.models import Alert, Event, LiveChannel, LiveEvent, Memory, Prediction, WatchlistItem
 from app.schemas import WatchlistCreate
 from app.utils.text import fingerprint, normalize_text, utcnow
 
@@ -59,6 +60,66 @@ def _deadline_proximity(watch: WatchlistItem) -> float:
     return 0.2
 
 
+def _live_match_text(event: LiveEvent, channel: LiveChannel | None) -> str:
+    """Derived, coarse text slice of a live event for watchlist matching.
+
+    Only user-facing derived fields are matched: raw audio transcripts, raw
+    screen dumps, and exact coordinates are intentionally not promoted, so the
+    watch radar sees the same minimal representation the rest of EV sees.
+    """
+    payload = event.payload or {}
+    kind = channel.kind if channel is not None else ""
+    parts: list[str] = []
+    if kind == "screen":
+        for key in ("app", "document", "code_file", "meeting", "summary"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    elif kind == "audio":
+        for key in ("scene",):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    elif kind == "location":
+        for key in ("place", "coarse_place", "city", "neighborhood", "presence"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    elif kind == "app":
+        for key in ("app", "summary"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    elif kind == "vision":
+        for key in ("summary", "label"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    elif kind == "health":
+        for key, value in payload.items():
+            if isinstance(key, str):
+                parts.append(key)
+            if isinstance(value, str):
+                parts.append(value)
+    elif event.event_type == "calendar.event.updated":
+        for key in ("summary", "location"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+        for attendee in payload.get("attendees") or []:
+            if not isinstance(attendee, dict):
+                continue
+            name = attendee.get("name") or attendee.get("email")
+            if isinstance(name, str):
+                parts.append(name)
+    else:
+        for key in ("text", "summary"):
+            value = payload.get(key)
+            if isinstance(value, str):
+                parts.append(value)
+    return " ".join(part for part in parts if part)
+
+
 async def upsert_watch_item(session: AsyncSession, data: WatchlistCreate) -> WatchlistItem:
     key = normalize_text(data.value)
     result = await session.execute(
@@ -103,10 +164,16 @@ async def deactivate_watch_item(session: AsyncSession, item_id: UUID) -> Watchli
 
 
 async def scan(session: AsyncSession, *, window_days: int = 7, limit: int = 1000) -> dict:
-    """Scan recent events + current memories for watchlist matches; dedupe alerts."""
+    """Scan events, memories, and live signals for watchlist matches; dedupe alerts."""
     watch_items = await list_watch_items(session)
     if not watch_items:
-        return {"scanned_events": 0, "scanned_memories": 0, "alerts_created": [], "existing_alerts": 0}
+        return {
+            "scanned_events": 0,
+            "scanned_memories": 0,
+            "scanned_live_events": 0,
+            "alerts_created": [],
+            "existing_alerts": 0,
+        }
 
     since = utcnow() - timedelta(days=window_days)
     event_stmt = (
@@ -123,6 +190,15 @@ async def scan(session: AsyncSession, *, window_days: int = 7, limit: int = 1000
         .limit(limit)
     )
     memories = list((await session.execute(memory_stmt)).scalars().all())
+    live_rows = (
+        await session.execute(
+            select(LiveEvent, LiveChannel)
+            .join(LiveChannel, LiveChannel.id == LiveEvent.channel_id)
+            .where(LiveChannel.active.is_(True), LiveEvent.occurred_at >= since)
+            .order_by(LiveEvent.occurred_at.desc())
+            .limit(limit)
+        )
+    ).all()
 
     pattern_topics = {
         normalize_text((m.payload or {}).get("topic") or "")
@@ -138,13 +214,26 @@ async def scan(session: AsyncSession, *, window_days: int = 7, limit: int = 1000
     for watch in watch_items:
         proximity = _deadline_proximity(watch)
         pattern_relevance = 0.8 if normalize_text(watch.value) in pattern_topics else 0.3
-        for source_type, rows in (("event", events), ("memory", memories)):
+        sources: list[tuple[str, list[Any]]] = [
+            ("event", list(events)),
+            ("memory", list(memories)),
+            ("live", list(live_rows)),
+        ]
+        for source_type, rows in sources:
             for row in rows:
-                text = row.content.get("text") if isinstance(row, Event) else row.text
-                text = text or ""
+                if source_type == "live":
+                    live_event: LiveEvent = row[0]
+                    channel: LiveChannel | None = row[1]
+                    text = _live_match_text(live_event, channel)
+                    trigger_id = str(live_event.id)
+                    occurred_at = live_event.occurred_at
+                else:
+                    raw_text = row.content.get("text") if isinstance(row, Event) else row.text
+                    text = str(raw_text or "")
+                    trigger_id = str(row.id)
+                    occurred_at = getattr(row, "occurred_at", None) or getattr(row, "event_time", None) or utcnow()
                 if not text or normalize_text(watch.value) not in normalize_text(text):
                     continue
-                trigger_id = str(row.id)
                 fp = fingerprint({"kind": watch.kind, "value": watch.value, "trigger": trigger_id})
                 if fp in existing or fp in seen_new:
                     continue
@@ -167,13 +256,18 @@ async def scan(session: AsyncSession, *, window_days: int = 7, limit: int = 1000
                     trigger_ids=[trigger_id],
                     rationale=(
                         f"Watch item '{watch.value}' ({watch.kind}) matched a recent {source_type} "
-                        f"on {(getattr(row, 'occurred_at', None) or getattr(row, 'event_time', None) or utcnow()).isoformat()}."
+                        f"on {occurred_at.isoformat()}."
                     ),
                     fingerprint=fp,
                     details={
                         "watchlist_item_id": str(watch.id),
                         "watchlist_kind": watch.kind,
                         "source_type": source_type,
+                        "trigger_kind": (
+                            channel.kind
+                            if source_type == "live" and channel is not None
+                            else None
+                        ),
                     },
                 )
                 session.add(alert)
@@ -184,8 +278,80 @@ async def scan(session: AsyncSession, *, window_days: int = 7, limit: int = 1000
     return {
         "scanned_events": len(events),
         "scanned_memories": len(memories),
+        "scanned_live_events": len(live_rows),
         "alerts_created": created,
         "existing_alerts": len(existing),
+    }
+
+
+async def precision_report(
+    session: AsyncSession,
+    *,
+    window_days: int = 7,
+) -> dict:
+    """Alert precision over a labeled window.
+
+    A labeled alert is one whose ``details["label"]`` is ``correct`` /
+    ``incorrect`` (set by an eval harness or a future review flow) OR whose
+    dismissal reason is a label: ``correct`` / ``useful`` (a true positive) or
+    ``incorrect`` / ``false_positive`` (a false positive). The dismissal path
+    already exists in the API, so the owner can label real alerts without any
+    new endpoint. No labels means precision is honestly reported as
+    unmeasurable rather than fabricated from delivery counts.
+    """
+    since = utcnow() - timedelta(days=window_days)
+    rows = (
+        await session.execute(
+            select(Alert).where(
+                Alert.created_at >= since,
+                Alert.details.is_not(None),
+            )
+        )
+    ).scalars().all()
+    positive_labels = {"correct", "useful"}
+    negative_labels = {"incorrect", "false_positive"}
+
+    def _label(row: Alert) -> str | None:
+        detail = str((row.details or {}).get("label", "")).lower()
+        if detail in positive_labels | negative_labels:
+            return detail
+        reason = str(row.dismissed_reason or "").lower()
+        if reason in positive_labels | negative_labels:
+            return reason
+        return None
+
+    labeled = [(row, _label(row)) for row in rows if _label(row) is not None]
+    correct = sum(1 for _, label in labeled if label in positive_labels)
+    incorrect = len(labeled) - correct
+    return {
+        "generated_at": utcnow().isoformat(),
+        "window_days": window_days,
+        "labeled_alerts": len(labeled),
+        "correct": correct,
+        "incorrect": incorrect,
+        "label_sources": {
+            "details_label": sum(
+                1
+                for row, _ in labeled
+                if str((row.details or {}).get("label", "")).lower() in positive_labels | negative_labels
+            ),
+            "dismissed_reason": sum(
+                1
+                for row, _ in labeled
+                if str(row.dismissed_reason or "").lower() in positive_labels | negative_labels
+            ),
+        },
+        "precision": round(correct / len(labeled), 3) if labeled else None,
+        "note": (
+            "precision measured on labeled alert outcomes"
+            if labeled
+            else (
+                "no labeled alert outcomes in window; label alerts by dismissing "
+                "with reason 'correct'/'useful' (true positive) or "
+                "'incorrect'/'false_positive' (false positive), or by setting "
+                "details.label in an eval harness"
+            )
+        ),
     }
 
 

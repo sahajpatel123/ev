@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sahajpatel123/ev/blob/main/docs/schemas/ev-hud-alert-v1.json",
+  "title": "EV HUD alert",
+  "description": "ev.hud.alert.v1 — one pending alert rendered as a strict HUD card.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "alert_id",
+    "title",
+    "body",
+    "priority",
+    "tier"
+  ],
+  "properties": {
+    "schema_version": {"const": "ev.hud.alert.v1"},
+    "generated_at": {"type": "string"},
+    "alert_id": {"type": "string"},
+    "title": {"type": "string"},
+    "body": {"type": "string"},
+    "priority": {"type": "number", "minimum": 0, "maximum": 1},
+    "tier": {
+      "type": "string",
+      "enum": ["urgent", "useful", "background", "notify", "notify_card", "digest"]
+    },
+    "kind": {"type": ["string", "null"]},
+    "rationale": {"type": ["string", "null"]},
+    "meta": {"type": "object"}
+  },
+  "additionalProperties": true
+}

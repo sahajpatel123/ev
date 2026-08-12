@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sahajpatel123/ev/blob/main/docs/schemas/ev-hud-route-v1.json",
+  "title": "EV route briefing",
+  "description": "ev.hud.route.v1 — route-to-next-event briefing card.",
+  "type": "object",
+  "required": ["schema_version", "generated_at"],
+  "properties": {
+    "schema_version": {"const": "ev.hud.route.v1"},
+    "generated_at": {"type": "string"},
+    "destination": {"type": ["string", "null"]},
+    "leave_by": {"type": ["string", "null"]},
+    "travel_time_minutes": {"type": ["integer", "null"], "minimum": 0},
+    "prep_checklist": {"type": "array", "items": {"type": "string"}},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  },
+  "additionalProperties": true
+}

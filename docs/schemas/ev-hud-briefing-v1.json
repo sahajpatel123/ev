@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sahajpatel123/ev/blob/main/docs/schemas/ev-hud-briefing-v1.json",
+  "title": "EV tactical briefing",
+  "description": "ev.hud.briefing.v1 — pre-event briefing rendered by Watch, Mac dashboard, web, CLI, and voice one-liners.",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "objective", "context"],
+  "properties": {
+    "schema_version": {"const": "ev.hud.briefing.v1"},
+    "generated_at": {"type": "string"},
+    "objective": {"type": "string"},
+    "context": {"type": "string"},
+    "people": {"type": "array"},
+    "risks": {"type": "array"},
+    "options": {"type": "array"},
+    "recommendation": {"type": ["string", "null"]},
+    "decision_history": {"type": "array"},
+    "talking_points": {"type": "array", "items": {"type": "string"}},
+    "provenance": {"type": "array"}
+  },
+  "additionalProperties": true
+}

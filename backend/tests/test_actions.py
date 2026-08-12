@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
+from app.ev.actions import ACTION_SPECS
 from app.models import AccessLog, ApprovedAction
 from app.routines.service import manual_run, rollback_run
 from app.schemas import RoutineCreate
+from app.services.runtime import ACTION_PERMISSIONS
 
 
 async def test_action_specs_declare_execution_boundaries(client) -> None:
@@ -115,6 +117,77 @@ async def test_non_undoable_action_rejects_rollback(client) -> None:
     resp = await client.post(f"/v1/runtime/actions/{action_id}/rollback")
     assert resp.status_code == 409, resp.text
     assert "not undoable" in resp.json()["detail"]
+
+
+async def test_requires_approval_ignores_auto_approve_and_blocks_execution(
+    client,
+) -> None:
+    resp = await client.post(
+        "/v1/runtime/actions",
+        json={
+            "action_type": "execute_command",
+            "title": "list files",
+            "payload": {"command": "echo hello"},
+            "auto_approve": True,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    action = resp.json()
+    assert action["status"] == "pending"
+    assert action["requires_approval"] is True
+
+    resp = await client.post(
+        f"/v1/runtime/actions/{action['id']}/execute",
+        json={"result": {}},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "Only approved actions" in resp.json()["detail"]
+
+    resp = await client.post(f"/v1/runtime/actions/{action['id']}/approve")
+    assert resp.status_code == 200, resp.text
+    resp = await client.post(
+        f"/v1/runtime/actions/{action['id']}/execute",
+        json={"result": {"ok": True}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "executed"
+
+
+async def test_denied_action_cannot_be_executed(client) -> None:
+    resp = await client.post(
+        "/v1/runtime/actions",
+        json={
+            "action_type": "notification",
+            "title": "blocked",
+            "payload": {"text": "never delivered"},
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    action_id = resp.json()["id"]
+
+    resp = await client.post(
+        f"/v1/runtime/actions/{action_id}/deny",
+        json={"reason": "not now"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "denied"
+
+    resp = await client.post(
+        f"/v1/runtime/actions/{action_id}/execute",
+        json={"result": {"delivered": True}},
+    )
+    assert resp.status_code == 409, resp.text
+    assert "Only approved actions" in resp.json()["detail"]
+
+
+def test_action_permission_matrix_matches_formal_registry() -> None:
+    specs = {spec["name"]: spec for spec in ACTION_SPECS}
+    assert set(ACTION_PERMISSIONS) == set(specs)
+    for name, spec in specs.items():
+        assert ACTION_PERMISSIONS[name] == bool(spec["requires_approval"]), name
+        # Any write-side action that skips approval must be undoable so the
+        # user can always reverse it (hud_card is the current example).
+        assert bool(spec["requires_approval"]) or spec["read_only"] or spec["undoable"], name
 
 
 async def test_action_lifecycle_is_written_to_access_log(client, db_session) -> None:

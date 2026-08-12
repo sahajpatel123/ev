@@ -69,6 +69,7 @@ from app.schemas import (
     DeviceCreate,
     DeviceCreateResponse,
     DeviceOut,
+    EntityMergeRequest,
     EntityRefOut,
     EventCreate,
     EventCreateResponse,
@@ -89,6 +90,7 @@ from app.schemas import (
     PrivacyLevel,
     ProvenanceItem,
     RebuildOut,
+    StateOfMeOut,
     TimelineResponse,
     UserStateOut,
     WeekRecallOut,
@@ -880,10 +882,14 @@ async def run_chat_pipeline(
     open_questions = list(
         dict.fromkeys([*(model_rollup.open_questions or []), *(state.pending_questions or [])])
     )[:5]
+    from app.services.conflicts import open_conflict_lines
+
+    open_conflicts = await open_conflict_lines(session, limit=8)
 
     provider = get_chat_provider()
     perception_lines: list[str] = []
     perception_provenance: list[ProvenanceItem] = []
+    chat_media_refs: list[dict] = []
     if data.attachment_id is not None:
         try:
             perception_event = await vision.analyze_attachment(
@@ -931,15 +937,28 @@ async def run_chat_pipeline(
                 raw_sent=bool(perception_payload.get("raw_sent")),
             )
         ]
+        chat_media_refs = [
+            {
+                "kind": "perception",
+                "mime": perception_payload.get("content_type"),
+                "ref": str(perception_event.id),
+                "size_bytes": perception_payload.get("size_bytes"),
+                "attachment_id": str(data.attachment_id),
+                "raw": bool(perception_payload.get("raw_sent")),
+                "derived_text_used": bool(perception_payload.get("derived_text_used")),
+            }
+        ]
 
     context, context_tokens, context_plan = _assemble_context(
         memories,
         user_state=user_state,
         strategy_text=strategy_block(strategy),
         budget=budget,
+        message=data.message,
         perception_lines=perception_lines,
         rollup_summary=model_rollup.summary,
         open_questions=open_questions,
+        open_conflicts=open_conflicts,
         history=[
             {
                 "role": "assistant" if e.event_type == "message.assistant" else "user",
@@ -968,6 +987,7 @@ async def run_chat_pipeline(
             strategy=strategy.model_dump(),
             privacy_level=decision.privacy_level,
             speaker_method="auth_token",
+            media_refs=chat_media_refs,
         )
         envelope = RequestEnvelope(
             request_id=request_id,
@@ -997,7 +1017,9 @@ async def run_chat_pipeline(
                 },
                 "privacy_level": decision.privacy_level,
                 "envelope_hash": envelope_hash,
+                "media_refs": chat_media_refs,
             },
+            media_refs=chat_media_refs,
         )
         system_prompt = (
             f"{identity_block(settings.persona_name, settings.persona_description, to_dict(profile))}\n\n"
@@ -1253,23 +1275,27 @@ def _assemble_context(
     user_state,
     strategy_text: str,
     budget: int,
+    message: str | None = None,
     perception_lines: list[str] | None = None,
     history: list[dict] | None = None,
     rollup_summary: str | None = None,
     open_questions: list[str] | None = None,
+    open_conflicts: list[str] | None = None,
 ) -> tuple[str, int, ContextPlan]:
     """Compile the request window through the ContextCompiler (plan 2.4)."""
     from app.context.compiler import ContextCompiler
 
-    plan = ContextCompiler().compile(
+    plan = ContextCompiler().compile_progressive(
         memories=memories,
         user_state=user_state,
         strategy_text=strategy_text,
         budget=budget,
+        message=message,
         perception_lines=perception_lines,
         history=history,
         rollup_summary=rollup_summary,
         open_questions=open_questions,
+        open_conflicts=open_conflicts,
     )
     return plan.text, plan.used_tokens, plan
 
@@ -1450,7 +1476,12 @@ async def gateway_calls(
     """Audit view of model calls: provider, model, latency, usage, envelope."""
 
     rows = await list_model_calls(session, limit=limit, request_id=request_id)
-    return [ModelCallOut.model_validate(row) for row in rows]
+    result = []
+    for row in rows:
+        out = ModelCallOut.model_validate(row)
+        out.media_refs = (row.envelope or {}).get("media_refs") or []
+        result.append(out)
+    return result
 
 
 @router.get("/gateway/stats")
@@ -1610,3 +1641,362 @@ async def current_user_state(
     actor: str = Depends(require_actor),
 ) -> UserStateOut:
     return await build_user_state(session)
+
+
+# ============================================================================
+# --- AGENT 10 CORTEX ---
+# Real SSE token streaming (additive; see docs/GATEWAY.md)
+# ============================================================================
+
+
+@router.post("/gateway/stream")
+async def gateway_stream(
+    data: GatewayChatRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+):
+    """Stream provider tokens as SSE ``delta`` events, then a ``done`` event.
+
+    This is the real end-to-end streaming surface: chunks arrive from the
+    provider as they are generated (no buffered fake). The request envelope is
+    audited through ``model_calls`` exactly like the buffered gateway, the
+    provider selection reason is recorded on every call, and cancelling the
+    client stream tears down the upstream request.
+    """
+
+    from app.gateway.costs import check_cost_cap
+    from app.gateway.providers import provider_from_selection
+    from app.gateway.routing import select_provider
+
+    actor = ctx.actor
+    sensitive_allowed = data.allow_sensitive_tools
+    if sensitive_allowed and not (
+        ctx.is_master or (ctx.device is not None and ctx.device.trust_level == "owner")
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Sensitive tools require owner-level trust",
+            headers={"X-Error-Code": "owner_trust_required"},
+        )
+    request_id = data.request_id or str(uuid4())
+    memories = [
+        MemoryRef(
+            memory_id=str(m["memory_id"]),
+            memory_type=str(m.get("memory_type", "")),
+            text=str(m.get("text", "")),
+            score=float(m.get("score", 0.0) or 0.0),
+            event_time=str(m["event_time"]) if m.get("event_time") else None,
+        )
+        for m in data.memories
+        if m.get("memory_id")
+    ]
+    envelope = RequestEnvelope(
+        request_id=request_id,
+        strategy=data.strategy or {},
+        memories=memories,
+        conversation_id=str(data.conversation_id) if data.conversation_id else None,
+        device_id=data.device_id,
+        context_tokens=int(data.context.get("context_tokens", 0) or 0),
+        metadata=data.context,
+    )
+    evidence = await model_call_stats(session, window_hours=24)
+    selection = select_provider(
+        configured=settings.chat_provider,
+        evidence=evidence,
+        strategy=data.strategy or {},
+    )
+    provider = provider_from_selection(selection)
+    chat_messages = [
+        ChatMessage(role=m.role, content=m.content, name=m.name) for m in data.messages
+    ]
+
+    async def _cost_guard() -> None:
+        await check_cost_cap(
+            session,
+            provider=provider.name,
+            messages=chat_messages,
+        )
+
+    gateway = ModelGateway(provider, selection=selection, cost_guard=_cost_guard)
+
+    async def _stream_events():
+        async for event in gateway.stream_chat(
+            chat_messages,
+            envelope=envelope,
+            tools=tool_specs_from_dicts(data.tools),
+            model=data.model,
+            temperature=data.temperature,
+            allow_sensitive_tools=sensitive_allowed,
+        ):
+            if event.kind == "delta":
+                yield _sse("delta", {"text": event.text, "final": False})
+            elif event.kind == "error":
+                yield _sse("error", {"message": event.error})
+            elif event.kind == "done" and event.call is not None:
+                call = event.call
+                if settings.model_call_log_enabled:
+                    await log_model_call(session, call=call, actor=actor)
+                await session.commit()
+                yield _sse(
+                    "done",
+                    {
+                        "request_id": call.request_id,
+                        "provider": call.provider,
+                        "model": call.model,
+                        "usage": call.usage(),
+                        "latency_ms": call.latency_ms,
+                        "first_token_ms": call.first_token_ms,
+                        "status": call.status,
+                        "error": call.error,
+                        "tool_validation": call.tool_calls_dict(),
+                        "envelope_hash": call.envelope.metadata.get("envelope_hash"),
+                        "envelope": call.envelope.to_dict(memory_text_limit=160),
+                        "provider_selection": call.selection,
+                    },
+                )
+
+    return StreamingResponse(
+        _stream_events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ============================================================================
+# --- AGENT 9 MNEMO (memory extraction, entity resolution, rollups) ---
+# Additive endpoints only; see docs/FLEET_LAW.md §3.
+# ============================================================================
+
+
+@router.get("/entities", response_model=list[dict])
+async def list_entities(
+    entity_type: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[dict]:
+    """List canonical entities (with aliases) for merge review."""
+    from app.models import Entity
+
+    stmt = select(Entity).order_by(Entity.entity_type, Entity.name)
+    if entity_type:
+        stmt = stmt.where(Entity.entity_type == entity_type)
+    rows = list((await session.execute(stmt)).scalars().all())
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/entities",
+        resource_type="entity",
+        resource_ids=[e.id for e in rows[:50]],
+        details={"count": len(rows)},
+    )
+    await session.commit()
+    return [_entity_dict(e) for e in rows]
+
+
+@router.get("/entities/duplicates")
+async def entity_duplicates(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """Duplicate-entity rate before/after resolution (acceptance metric)."""
+    from app.memory.entities import duplicate_entity_stats
+
+    stats = await duplicate_entity_stats(session)
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/entities/duplicates",
+        resource_type="entity",
+        resource_ids=[],
+        details=stats,
+    )
+    await session.commit()
+    return stats
+
+
+@router.post("/entities/merge", response_model=dict, status_code=201)
+async def merge_entities_endpoint(
+    data: EntityMergeRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """Human-confirmed entity merge; recorded as an event-sourced merge."""
+    from app.services.entity_service import confirm_entity_merge
+
+    try:
+        report = await confirm_entity_merge(
+            session,
+            target_entity_id=data.target_entity_id,
+            absorbed_entity_id=data.absorbed_entity_id,
+            reason=data.reason,
+            actor=actor,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await log_access(
+        session,
+        actor=actor,
+        action="write",
+        endpoint="POST /v1/entities/merge",
+        resource_type="entity",
+        resource_ids=[data.target_entity_id, data.absorbed_entity_id],
+        details={"reason": data.reason},
+    )
+    await session.commit()
+    return report
+
+
+@router.post("/state-of-me", response_model=StateOfMeOut)
+async def state_of_me(
+    period_start: datetime,
+    period_end: datetime | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> StateOfMeOut:
+    """Long-horizon 'state of me' rollup over versioned memory (provenance-only)."""
+    from app.services.consolidation import run_state_of_me
+
+    if period_start.tzinfo is None:
+        period_start = period_start.replace(tzinfo=UTC)
+    if period_end is None:
+        period_end = next_period_start(period_start, "month")
+    elif period_end.tzinfo is None:
+        period_end = period_end.replace(tzinfo=UTC)
+    if period_end <= period_start:
+        raise HTTPException(status_code=422, detail="period_end must be after period_start")
+    executed_at = utcnow()
+    await EventService(session, actor=actor).create(
+        EventCreate(
+            source="system",
+            event_type="rollup.run",
+            text=f"State of me: {period_start.isoformat()} to {period_end.isoformat()}",
+            metadata={
+                "period_start": period_start.isoformat(),
+                "period_end": period_end.isoformat(),
+                "executed_at": executed_at.isoformat(),
+            },
+        )
+    )
+    written = await run_state_of_me(
+        session,
+        period_start=period_start,
+        period_end=period_end,
+        as_of=executed_at,
+    )
+    await session.commit()
+    return StateOfMeOut(
+        period_start=period_start,
+        period_end=period_end,
+        executed_at=executed_at,
+        written=[UUID(w) for w in written],
+    )
+
+
+@router.get("/temporal/memories", response_model=MemoryListResponse)
+async def temporal_memories(
+    period_start: datetime,
+    period_end: datetime,
+    memory_type: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> MemoryListResponse:
+    """As-of temporal search: memories whose resolved temporal range or event
+    time overlaps ``[period_start, period_end)`` (e.g. 'what was I thinking in
+    March?')."""
+    from app.memory.temporal import memory_temporal_bounds, temporal_overlap
+
+    if period_start.tzinfo is None:
+        period_start = period_start.replace(tzinfo=UTC)
+    if period_end.tzinfo is None:
+        period_end = period_end.replace(tzinfo=UTC)
+    if period_end <= period_start:
+        raise HTTPException(status_code=422, detail="period_end must be after period_start")
+
+    stmt = select(Memory).where(
+        Memory.is_current.is_(True),
+        Memory.redacted.is_(False),
+    )
+    if memory_type:
+        stmt = stmt.where(Memory.memory_type == memory_type)
+    rows = list((await session.execute(stmt)).scalars().all())
+
+    matches: list[Memory] = []
+    for memory in rows:
+        start, end = memory_temporal_bounds(memory)
+        event_time = memory.event_time
+        if event_time is not None and event_time.tzinfo is None:
+            event_time = event_time.replace(tzinfo=UTC)
+        in_event_period = (
+            event_time is not None
+            and period_start <= event_time < period_end
+        )
+        in_temporal_range = temporal_overlap(start, end, period_start, period_end)
+        if in_event_period or in_temporal_range:
+            matches.append(memory)
+
+    matches.sort(key=lambda m: m.event_time or m.valid_from, reverse=True)
+    matches = matches[:limit]
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/temporal/memories",
+        resource_type="memory",
+        resource_ids=[m.id for m in matches],
+        details={
+            "period_start": period_start.isoformat(),
+            "period_end": period_end.isoformat(),
+            "total": len(matches),
+        },
+    )
+    await session.commit()
+    return MemoryListResponse(
+        memories=[await _memory_out(session, m) for m in matches],
+        total=len(matches),
+    )
+
+
+@router.get("/enrichment/usage")
+async def enrichment_usage_endpoint(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """Enrichment cost surface: usage, caps, and paused state (Agent 10 meter)."""
+    from app.memory.llm_extractor import (
+        llm_extraction_daily_call_cap,
+        llm_extraction_daily_token_cap,
+        llm_extraction_enabled,
+        llm_extraction_monthly_call_cap,
+        llm_extraction_monthly_token_cap,
+    )
+    from app.services.llm_extraction import budget_available, enrichment_usage
+
+    usage = await enrichment_usage(session)
+    budget = await budget_available(session)
+    result = {
+        "enabled": llm_extraction_enabled(),
+        "usage": usage,
+        "caps": {
+            "daily_calls": llm_extraction_daily_call_cap(),
+            "daily_tokens": llm_extraction_daily_token_cap(),
+            "monthly_calls": llm_extraction_monthly_call_cap(),
+            "monthly_tokens": llm_extraction_monthly_token_cap(),
+        },
+        "paused": not budget["ok"],
+    }
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/enrichment/usage",
+        resource_type="model_call",
+        resource_ids=[],
+        details={"paused": result["paused"], "usage": usage},
+    )
+    await session.commit()
+    return result

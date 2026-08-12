@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import pytest
 from httpx import AsyncClient
@@ -10,12 +11,19 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ev import conversation
+from app.ev import alert_radar, conversation
+from app.ev import calendar as calendar_feed
+from app.ev import research as research_mod
 from app.ev.live import query_live_events
 from app.ev.rollup import build_rollup, model_safe_rollup
-from app.models import ConversationThread
+from app.models import (
+    Alert,
+    ConversationThread,
+    ResearchNote,
+)
 from app.schemas import EventCreate
 from app.services.event_service import EventService
+from app.utils.text import utcnow
 
 
 async def post_event(client: AsyncClient, text: str) -> dict:
@@ -262,6 +270,7 @@ async def test_model_safe_rollup_excludes_never_send_content(db_session: AsyncSe
         )
     )
     await db_session.flush()
+    await db_session.commit()
 
     rollup = await build_rollup(db_session, thread.id)
     assert "Qubit-9" in rollup.summary
@@ -512,3 +521,191 @@ async def test_ops_center_and_digital_twin(client: AsyncClient) -> None:
     assert twin["goals"]
     assert twin["preferences"]
     assert twin["confidence"] > 0
+
+
+async def test_calendar_signals_feed_hud_route_tactical_and_sense(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    integration_resp = await client.post(
+        "/v1/integrations",
+        json={
+            "adapter": "calendar",
+            "name": "Work calendar",
+            "scopes": ["calendar:read"],
+        },
+    )
+    assert integration_resp.status_code == 201, integration_resp.text
+    channel_id = integration_resp.json()["live_channel_id"]
+
+    from datetime import timedelta
+
+    start = (utcnow() + timedelta(hours=1)).isoformat()
+    resp = await client.post(
+        f"/v1/live/channels/{channel_id}/events",
+        json=[
+            {
+                "event_type": "calendar.event.updated",
+                "payload": {
+                    "summary": "Standup with Maya",
+                    "start": start,
+                    "end": (utcnow() + timedelta(hours=2)).isoformat(),
+                    "location": "Office",
+                    "attendees": [
+                        {"name": "Maya", "email": "maya@example.com", "status": "accepted"}
+                    ],
+                    "source": "calendar",
+                },
+            }
+        ],
+    )
+    assert resp.status_code == 201, resp.text
+
+    cal = await calendar_feed.calendar_signals(db_session)
+    assert cal["next_event"]["summary"] == "Standup with Maya"
+    assert cal["source"]["event_ids"]
+
+    card = (await client.get("/v1/hud/card")).json()
+    assert "Standup with Maya" in card["body"]
+    assert card["meta"]["next_event"]["summary"] == "Standup with Maya"
+
+    route = (await client.get("/v1/hud/route")).json()
+    assert route["destination"] == "Office"
+    assert route["leave_by"] is not None
+    assert any("Standup with Maya" in note for note in route["notes"])
+
+    brief = (
+        await client.post("/v1/tactical/brief", json={"topic": "Standup"})
+    ).json()
+    assert any(
+        person.get("source") == "calendar-live-event" and person.get("name") == "Maya"
+        for person in brief["people"]
+    )
+    assert any(item.get("kind") == "calendar" for item in brief["provenance"])
+    assert "live calendar event" in brief["context"]
+
+    sense = (
+        await client.post("/v1/sense/predict", json={"window_days": 30})
+    ).json()
+    assert any(p["kind"] == "calendar_deadline" for p in sense["predictions"])
+
+
+async def test_alert_radar_scans_live_signals_and_measures_precision(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    await client.post(
+        "/v1/alerts/watchlist",
+        json={"kind": "topic", "value": "sqlite", "priority": 0.8},
+    )
+    channel = (
+        await client.post(
+            "/v1/live/channels",
+            json={"name": "screen-eval", "kind": "screen"},
+        )
+    ).json()
+    resp = await client.post(
+        f"/v1/live/channels/{channel['id']}/events",
+        json=[
+            {
+                "event_type": "focus_change",
+                "payload": {"app": "Xcode", "code_file": "sqlite.py"},
+            }
+        ],
+    )
+    assert resp.status_code == 201, resp.text
+
+    result = await alert_radar.scan(db_session, window_days=7)
+    assert result["scanned_live_events"] >= 1
+    assert result["alerts_created"]
+    assert result["alerts_created"][0].source == "live:topic"
+
+    created = result["alerts_created"][0]
+    created.details = {**created.details, "label": "correct"}
+    second = Alert(
+        kind="watch_match",
+        title="noise",
+        body="noise",
+        priority=0.1,
+        tier="background",
+        source="live:topic",
+        trigger_ids=["00000000-0000-0000-0000-000000000001"],
+        rationale="noise",
+        fingerprint="noise-label",
+        details={},
+        status="dismissed",
+        dismissed_reason="false_positive",
+    )
+    db_session.add(second)
+    await db_session.flush()
+
+    report = await alert_radar.precision_report(db_session, window_days=7)
+    assert report["labeled_alerts"] == 2
+    assert report["precision"] == 0.5
+    assert report["label_sources"] == {"details_label": 1, "dismissed_reason": 1}
+    assert "measured" in report["note"]
+
+
+async def test_research_remember_finding_has_real_citation_provenance(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    session_resp = await client.post(
+        "/v1/research/sessions",
+        json={"question": "Is SQLite appropriate for EV?"},
+    )
+    assert session_resp.status_code == 201, session_resp.text
+    session_id = session_resp.json()["id"]
+    note_resp = await client.post(
+        f"/v1/research/sessions/{session_id}/notes",
+        json={
+            "note": "SQLite handles this workload without a server.",
+            "source_url": "https://sqlite.org/whentouse.html",
+            "source_title": "Appropriate Uses of SQLite",
+        },
+    )
+    assert note_resp.status_code == 201, note_resp.text
+    note_id = note_resp.json()["id"]
+
+    service = research_mod.ResearchService(db_session, actor="test")
+    memory = await service.remember(
+        UUID(session_id),
+        UUID(note_id),
+        actor="test",
+    )
+    assert memory.memory_type == "fact"
+    assert memory.payload["source_url"] == "https://sqlite.org/whentouse.html"
+    assert memory.payload["source_title"] == "Appropriate Uses of SQLite"
+
+    note_rows = (
+        await db_session.execute(
+            select(ResearchNote).where(ResearchNote.session_id == UUID(session_id))
+        )
+    ).scalars().all()
+    assert len(note_rows) == 1
+    assert note_rows[0].source_url == "https://sqlite.org/whentouse.html"
+
+
+async def test_research_web_search_citations_come_only_from_provider(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    from app.config import settings
+
+    old = settings.search_provider
+    settings.search_provider = "mock"
+    try:
+        session_resp = await client.post(
+            "/v1/research/sessions",
+            json={"question": "EV search citations"},
+        )
+        session_id = session_resp.json()["id"]
+        service = research_mod.ResearchService(db_session, actor="test")
+        notes = await service.web_search(UUID(session_id), "EV memory", limit=3)
+        assert len(notes) == 3
+        for index, note in enumerate(notes, start=1):
+            assert note.source_url == f"https://example.com/{index}"
+            assert note.source_title == f"Result {index} for 'EV memory'"
+            assert note.note == f"Mock citation {index} about EV memory."
+    finally:
+        settings.search_provider = old

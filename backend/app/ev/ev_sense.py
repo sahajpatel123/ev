@@ -55,41 +55,60 @@ async def apply_attention_policy(
     budget_override: int | None = None,
     confidence_floor: float | None = None,
 ) -> list[SensePrediction]:
-    """Quiet-hours + daily delivery budget; never downgrade notify_card."""
+    """Ask Agent 14's attention policy before anything becomes deliverable.
+
+    EV Sense does not invent its own attention budget: each candidate is
+    submitted to ``app.notify.policy.decide`` (quiet hours, dedup, daily cap,
+    max attempts) and only survives when that policy allows it. An explicit
+    ``budget_override`` remains available for tests/calibration but is not the
+    production path. ``notify_card`` candidates are emergencies under Agent
+    14's policy and are never downgraded there; the confidence floor is an EV
+    Sense signal-quality gate and still applies.
+    """
     now = utcnow()
-    quiet = quiet_hours_active(now)
-    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    delivered_rows = (
-        await session.execute(
-            select(Prediction).where(
-                Prediction.created_at >= start_of_day,
-                Prediction.intervention_score >= 0.35,
-            )
-        )
-    ).scalars().all()
-    delivered_today = len(delivered_rows)
     daily_budget = budget_override if budget_override is not None else settings.daily_alert_budget
-    remaining = max(0, daily_budget - delivered_today)
+    remaining = max(0, daily_budget)
     updated: list[SensePrediction] = []
     for prediction in predictions:
         tier = prediction.tier
         deliver = prediction.deliver
-        if deliver and quiet and tier != "notify_card":
-            tier, deliver = "mention_later", False
         if (
             deliver
             and confidence_floor is not None
             and prediction.confidence < confidence_floor
         ):
             tier, deliver = "mention_later", False
-        if deliver and remaining <= 0:
-            tier, deliver = "mention_later", False
+        if deliver:
+            # Agent 14 owns the attention budget. The override below (when
+            # supplied by tests or calibration) is only an additional cap;
+            # it never replaces Agent 14's quiet-hours/dedup/daily-cap verdict.
+            from app.notify import policy as notify_policy
+
+            decision = await notify_policy.decide(
+                session,
+                fingerprint=fingerprint({"kind": "ev_sense", "text": prediction.text}),
+                exclude_id=None,
+                priority=prediction.intervention_score,
+                tier=tier,
+                emergency=tier == "notify_card",
+                allow_during_quiet_hours=False,
+                bypass_policy=False,
+                now=now,
+            )
+            if not decision.allowed:
+                tier, deliver = "mention_later", False
+                prediction.why_now = (
+                    f"{prediction.why_now} [attention policy: {decision.reason}]"
+                )
+        if deliver and budget_override is not None:
+            if remaining <= 0:
+                tier, deliver = "mention_later", False
+            else:
+                remaining -= 1
         data = prediction.model_dump()
         data["tier"] = tier
         data["deliver"] = deliver
         updated.append(SensePrediction(**data))
-        if deliver:
-            remaining -= 1
     return updated
 
 
@@ -215,6 +234,44 @@ async def generate_predictions(
                 intervention_score=score,
                 why_now=f"Because '{watch.value}' is on your watchlist with deadline metadata {watch.metadata_}.",
                 basis_ids=[str(watch.id)],
+                tier=tier,
+                deliver=deliver,
+            )
+        )
+
+    # 3b. Real calendar deadline: the next commitment from Agent 12's stored
+    # calendar live events. Only emitted when an event actually exists, and the
+    # basis ids are the live-event rows, never a synthetic date.
+    from app.ev import calendar as calendar_feed
+
+    cal = await calendar_feed.calendar_signals(session)
+    next_event = cal.get("next_event")
+    cal_event_ids = (cal.get("source") or {}).get("event_ids") or []
+    if next_event and cal_event_ids:
+        proximity = float(cal.get("deadline_proximity") or 0.0)
+        score = _score(
+            importance=0.85,
+            urgency=round(max(0.5, proximity), 3),
+            confidence=0.9,
+            goal_relevance=0.75,
+            benefit=0.8,
+        )
+        tier, deliver = intervention_tier(score)
+        predictions.append(
+            SensePrediction(
+                kind="calendar_deadline",
+                text=(
+                    f"Next commitment: {next_event.get('summary')} at "
+                    f"{next_event.get('start')}."
+                ),
+                confidence=0.9,
+                intervention_score=score,
+                why_now=(
+                    f"Because the calendar integration stored {len(cal_event_ids)} live "
+                    f"event(s); the next one starts at {next_event.get('start')} "
+                    f"(proximity {proximity:.2f})."
+                ),
+                basis_ids=cal_event_ids[:5],
                 tier=tier,
                 deliver=deliver,
             )

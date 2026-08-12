@@ -569,10 +569,21 @@ async def annotate_recognition(
 @router.get("/vision/log", response_model=list[RecognitionOut])
 async def recognition_log(
     limit: int = Query(default=50, ge=1, le=200),
+    source: str | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> list[RecognitionOut]:
-    rows = await edith.list_recognition(session, limit=limit)
+    rows = await edith.list_recognition(session, limit=limit, source=source)
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/vision/log",
+        resource_type="recognition",
+        resource_ids=[r.id for r in rows],
+        details={"count": len(rows), "source": source},
+    )
+    await session.commit()
     return [RecognitionOut.model_validate(row) for row in rows]
 
 
@@ -588,6 +599,12 @@ def _perception_out(row: LiveEvent) -> VisionPerceptionOut:
         provider=payload.get("provider") or "",
         raw_sent=bool(payload.get("raw_sent")),
         permission_granted_by=payload.get("permission_granted_by"),
+        content_type=payload.get("content_type"),
+        size_bytes=payload.get("size_bytes"),
+        ocr_text=payload.get("ocr_text"),
+        ocr_provider=payload.get("ocr_provider"),
+        derived_text_used=bool(payload.get("derived_text_used")),
+        request_id=payload.get("request_id"),
         created_at=row.occurred_at,
     )
 
@@ -640,11 +657,44 @@ async def confirm_vision_recognition(
 @router.get("/vision/perceptions", response_model=list[VisionPerceptionOut])
 async def list_vision_perceptions(
     limit: int = Query(default=50, ge=1, le=200),
+    attachment_id: UUID | None = Query(default=None),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> list[VisionPerceptionOut]:
-    rows = await vision.list_perceptions(session, limit=limit)
+    rows = await vision.list_perceptions(session, limit=limit, attachment_id=attachment_id)
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/vision/perceptions",
+        resource_type="perception",
+        resource_ids=[row.id for row in rows],
+        details={"count": len(rows), "attachment_id": str(attachment_id) if attachment_id else None},
+    )
+    await session.commit()
     return [_perception_out(row) for row in rows]
+
+
+@router.get("/vision/perceptions/{perception_id}", response_model=VisionPerceptionOut)
+async def get_vision_perception(
+    perception_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> VisionPerceptionOut:
+    try:
+        row = await vision.get_perception(session, perception_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Perception not found") from None
+    await log_access(
+        session,
+        actor=actor,
+        action="read",
+        endpoint="GET /v1/vision/perceptions/{id}",
+        resource_type="perception",
+        resource_ids=[row.id],
+    )
+    await session.commit()
+    return _perception_out(row)
 
 
 @router.get("/commands", response_model=list[CommandOut])

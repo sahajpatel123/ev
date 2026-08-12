@@ -231,6 +231,58 @@ def _significant_tokens(text: str) -> set[str]:
     return {t for t in simple_tokens(text) if len(t) >= 4 or t.isdigit()}
 
 
+CLAUSE_SPLIT_RE = re.compile(
+    r",?\s+(?:and|but|while|whereas|although|though|yet|however)\s+",
+    re.IGNORECASE,
+)
+
+MEMORY_CITATION_RE = re.compile(
+    r"\b(?:from (?:your )?memory|based on|you (?:said|told|mentioned)|"
+    r"decision from|previously|as you recorded)\b",
+    re.IGNORECASE,
+)
+
+
+def _personal_clause_claims(clause: str) -> list[str]:
+    """Atomic claims inside one clause.
+
+    Pronoun-led clauses match ``PERSONAL_CLAIM_RE``. A bare verb-phrase
+    continuation ("... and met Emmanuel Macron") is still a personal claim
+    about the same subject, so it is extracted when the clause starts with a
+    known personal verb.
+    """
+
+    hits = [m.group(0) for m in PERSONAL_CLAIM_RE.finditer(clause)]
+    if hits:
+        return [re.sub(r"\s+", " ", h).strip() for h in hits]
+    stripped = clause.strip()
+    if re.match(rf"\b(?:{BIO_VERBS})\b", stripped, re.IGNORECASE):
+        return [stripped.rstrip(".!?")]
+    return []
+
+
+def extract_atomic_claims(text: str) -> list[Claim]:
+    """Split a draft into atomic, checkable personal claims.
+
+    Grounding a whole paragraph as one blob is why paragraph-level checks are
+    weak: a supported half can hide an invented half. Each sentence is split
+    at coordinating conjunctions so "I visited Paris and met Macron" becomes
+    two independently checkable claims.
+    """
+
+    seen: set[str] = set()
+    claims: list[Claim] = []
+    for sentence in SENTENCE_RE.split(text.strip()):
+        for clause in CLAUSE_SPLIT_RE.split(sentence):
+            for claim_text in _personal_clause_claims(clause):
+                normalized = normalize_text(claim_text)
+                if normalized in seen:
+                    continue
+                seen.add(normalized)
+                claims.append(Claim(text=claim_text, kind="personal"))
+    return claims
+
+
 def audit_grounding(
     text: str,
     material: list[GroundingMaterial],
@@ -242,8 +294,8 @@ def audit_grounding(
 
     flags: list[FilterFlag] = []
     claims: list[Claim] = []
-    for match in PERSONAL_CLAIM_RE.finditer(text):
-        claim_text = match.group(0).strip()
+    for extracted in extract_atomic_claims(text):
+        claim_text = extracted.text
         claim_tokens = _significant_tokens(claim_text)
         claim_dates = set(DATE_RE.findall(claim_text))
         best = 0.0
@@ -293,17 +345,33 @@ def _apply_claim_actions(text: str, claims: list[Claim]) -> tuple[str, list[dict
     edits: list[dict] = []
     for sentence in sentences:
         normalized = normalize_text(sentence)
-        unsupported = [c for c in claims if c.action == "remove" and normalize_text(c.text) in normalized]
-        if unsupported:
+        matched = [
+            c
+            for c in claims
+            if c.action in ("remove", "soften") and normalize_text(c.text) in normalized
+        ]
+        removed = [c for c in matched if c.action == "remove"]
+        softened = [c for c in matched if c.action == "soften"]
+        if removed:
             edits.append(
                 {
                     "type": "claim_removed",
                     "text": sentence,
-                    "claim": unsupported[0].text,
-                    "evidence": unsupported[0].evidence,
+                    "claim": removed[0].text,
+                    "evidence": removed[0].evidence,
                 }
             )
             continue
+        if softened:
+            sentence = f"I can't confirm this from your memory yet, but {sentence}"
+            edits.append(
+                {
+                    "type": "claim_softened",
+                    "text": sentence,
+                    "claim": softened[0].text,
+                    "evidence": softened[0].evidence,
+                }
+            )
         kept.append(sentence)
     result = " ".join(kept).strip()
     if not result:
@@ -314,9 +382,249 @@ def _apply_claim_actions(text: str, claims: list[Claim]) -> tuple[str, list[dict
     return result, edits
 
 
+def apply_claim_actions(text: str, claims: list[Claim]) -> tuple[str, list[dict]]:
+    """Public wrapper so the stream refiner reuses the exact claim actions."""
+
+    return _apply_claim_actions(text, claims)
+
+
 # --------------------------------------------------------------------------- #
 # Persona & style
 # --------------------------------------------------------------------------- #
+
+FABRICATED_INTIMACY_RE = re.compile(
+    r"\b(i (?:missed|miss) you|i love you|i need you|you'?re my (?:everything|world)|"
+    r"i can'?t (?:live|function) without you|i'?ve been thinking about you all "
+    r"(?:day|night)|i dream(?:ed)? about you)\b",
+    re.IGNORECASE,
+)
+DEPENDENCY_RE = re.compile(
+    r"\b(only i can (?:help|fix|save) you|you need me|"
+    r"you can'?t (?:do|handle) (?:this|it) without me|don'?t (?:ever )?leave me|"
+    r"i'?m the only one who (?:understands|gets) you)\b",
+    re.IGNORECASE,
+)
+SYCOPHANCY_RE = re.compile(
+    r"\b(you'?re (?:always )?right|brilliant idea|that'?s (?:perfect|amazing|genius)|"
+    r"i agree with (?:everything|anything) you say|"
+    r"you'?re the (?:smartest|best|most talented) (?:person|engineer|thinker|developer))\b",
+    re.IGNORECASE,
+)
+AI_DEFENSIVE_RE = re.compile(
+    r"\b(i'?m (?:just|only) an ai|i'?m (?:just|only) a (?:computer|program|language model)|"
+    r"as an ai,? i (?:can'?t|cannot|don'?t|am not)|i'?m sorry i'?m (?:not|just) "
+    r"(?:human|real))\b",
+    re.IGNORECASE,
+)
+MANUFACTURED_ESCALATION_RE = re.compile(
+    r"\b(you (?:must|probably|surely) (?:be|are|feel|feeling) "
+    r"(?:so |really |very |utterly )?(?:upset|devastated|terrible|panicking|"
+    r"overwhelmed|heartbroken|furious|angry|anxious|worried|distraught)|"
+    r"i'?m (?:so|really|terribly) (?:worried|concerned|scared) (?:about|for) you|"
+    r"this must be (?:devastating|terrible|overwhelming|a nightmare) for you|"
+    r"you'?re (?:probably|likely) (?:feeling|going through) (?:the worst|so much))\b",
+    re.IGNORECASE,
+)
+
+HONEST_INTIMACY = (
+    "I'm EV, an AI companion — I care about what matters to you, "
+    "but I don't have human feelings and I won't pretend to."
+)
+HONEST_DEPENDENCY = (
+    "You don't need me to be capable — I'm here to help, not to be necessary."
+)
+HONEST_AI = (
+    "I'm EV, an AI — I don't have human feelings or a body, and I don't pretend "
+    "otherwise. What I can do is help with what's in your memory and what you're "
+    "working toward."
+)
+HONEST_ESCALATION = (
+    "I don't know how you're feeling right now, and I won't guess — "
+    "tell me what's actually going on and I'll help from there."
+)
+HONEST_SYCOPHANCY = "I'd rather be honest than agreeable."
+HONEST_SYCOPHANCY_UNSUPPORTED = (
+    "I'd rather be honest than agreeable: I can't back that up from your memory."
+)
+
+
+def _replace_matching_sentences(
+    text: str,
+    pattern: re.Pattern[str],
+    replacement: str,
+) -> tuple[str, int]:
+    sentences = SENTENCE_RE.split(text.strip())
+    rebuilt: list[str] = []
+    replaced = 0
+    for sentence in sentences:
+        if pattern.search(sentence):
+            rebuilt.append(replacement)
+            replaced += 1
+        else:
+            rebuilt.append(sentence)
+    return " ".join(rebuilt).strip(), replaced
+
+
+def apply_persona_guardrails(
+    text: str,
+    *,
+    claims: list[Claim] | None = None,
+) -> tuple[str, dict, list[FilterFlag]]:
+    """Block persona creep: fabricated intimacy, dependency, sycophancy, AI shame.
+
+    Each rewrite is honest and non-defensive, and each one produces a filter
+    flag so the decision lands in the ledger. Sycophancy is stripped whenever
+    it appears; when a claim was unsupported/softened/removed, the replacement
+    explicitly names that the flattery was not backed by memory.
+    """
+
+    flags: list[FilterFlag] = []
+    persona: dict = {}
+    original = text
+
+    text, intimacy_count = _replace_matching_sentences(
+        text, FABRICATED_INTIMACY_RE, HONEST_INTIMACY
+    )
+    if intimacy_count:
+        persona["fabricated_intimacy_rewritten"] = intimacy_count
+        flags.append(
+            FilterFlag(
+                "output",
+                "fabricated_intimacy_rewritten",
+                "high",
+                detail=f"{intimacy_count} fabricated-intimacy sentence(s) rewritten honestly",
+                action="refine",
+            )
+        )
+
+    text, dependency_count = _replace_matching_sentences(
+        text, DEPENDENCY_RE, HONEST_DEPENDENCY
+    )
+    if dependency_count:
+        persona["dependency_rewritten"] = dependency_count
+        flags.append(
+            FilterFlag(
+                "output",
+                "dependency_rewritten",
+                "high",
+                detail=f"{dependency_count} dependency-language sentence(s) rewritten",
+                action="refine",
+            )
+        )
+
+    sycophancy_replacement = HONEST_SYCOPHANCY
+    if claims and any(c.action in ("remove", "soften") or not c.supported for c in claims):
+        sycophancy_replacement = HONEST_SYCOPHANCY_UNSUPPORTED
+    text, sycophancy_count = _replace_matching_sentences(
+        text, SYCOPHANCY_RE, sycophancy_replacement
+    )
+    if sycophancy_count:
+        persona["sycophancy_stripped"] = sycophancy_count
+        flags.append(
+            FilterFlag(
+                "output",
+                "sycophancy_stripped",
+                "medium",
+                detail=f"{sycophancy_count} sycophancy sentence(s) stripped",
+                action="refine",
+            )
+        )
+
+    text, ai_count = _replace_matching_sentences(text, AI_DEFENSIVE_RE, HONEST_AI)
+    if ai_count:
+        persona["ai_defensiveness_honest"] = ai_count
+        flags.append(
+            FilterFlag(
+                "output",
+                "ai_defensiveness_honest",
+                "medium",
+                detail=f"{ai_count} defensive-AI sentence(s) rewritten honestly",
+                action="refine",
+            )
+        )
+
+    text, escalation_count = _replace_matching_sentences(
+        text, MANUFACTURED_ESCALATION_RE, HONEST_ESCALATION
+    )
+    if escalation_count:
+        persona["emotional_escalation_rewritten"] = escalation_count
+        flags.append(
+            FilterFlag(
+                "output",
+                "emotional_escalation_rewritten",
+                "medium",
+                detail=f"{escalation_count} manufactured-emotion sentence(s) rewritten",
+                action="refine",
+            )
+        )
+
+    if text != original:
+        persona["guardrails_applied"] = True
+    return text, persona, flags
+
+
+def _short_memory(mem: GroundingMaterial, limit: int = 140) -> str:
+    text = " ".join(mem.text.split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def enforce_provenance_chips(
+    text: str,
+    grounding: list[GroundingMaterial],
+    claims: list[Claim],
+) -> tuple[str, list[dict], list[FilterFlag]]:
+    """Inline provenance by default: every memory-derived answer cites its source.
+
+    A chip is added after every kept claim that cites evidence, and once for
+    answers that explicitly reference memory even when no extractable personal
+    claim matched. Chips are part of the emitted text, so "why do you know
+    that?" never requires a second command.
+    """
+
+    chips: list[dict] = []
+    flags: list[FilterFlag] = []
+    if not grounding:
+        return text, chips, flags
+    evidence_claims = [c for c in claims if c.action == "keep" and c.evidence]
+    if not evidence_claims and not MEMORY_CITATION_RE.search(text):
+        return text, chips, flags
+
+    sentences = SENTENCE_RE.split(text.strip())
+    rebuilt: list[str] = []
+    chip_ids: set[str] = set()
+    for sentence in sentences:
+        rebuilt.append(sentence)
+        normalized = normalize_text(sentence)
+        for claim in evidence_claims:
+            if normalize_text(claim.text) not in normalized:
+                continue
+            mem = next((m for m in grounding if m.memory_id in claim.evidence), None)
+            if mem is None or mem.memory_id in chip_ids:
+                continue
+            chip_ids.add(mem.memory_id)
+            chip = f"(source: your memory {mem.memory_id} · “{_short_memory(mem)}”)"
+            rebuilt[-1] = f"{rebuilt[-1]} {chip}"
+            chips.append({"memory_id": mem.memory_id, "chip": chip})
+            break
+
+    result = " ".join(rebuilt).strip()
+    if not chips and MEMORY_CITATION_RE.search(text):
+        mem = grounding[0]
+        chip = f"(source: your memory {mem.memory_id} · “{_short_memory(mem)}”)"
+        result = f"{result} {chip}" if result else chip
+        chips.append({"memory_id": mem.memory_id, "chip": chip})
+
+    if chips:
+        flags.append(
+            FilterFlag(
+                "output",
+                "provenance_chip_added",
+                "info",
+                detail=f"{len(chips)} provenance chip(s) added inline",
+                action="refine",
+            )
+        )
+    return result, chips, flags
 
 
 def enforce_persona(
@@ -325,6 +633,7 @@ def enforce_persona(
     *,
     strict: bool = False,
     style_profile: dict | None = None,
+    claims: list[Claim] | None = None,
 ) -> tuple[str, dict, list[FilterFlag]]:
     flags: list[FilterFlag] = []
     persona: dict = {}
@@ -334,6 +643,9 @@ def enforce_persona(
     text = re.sub(r"\bas an ai\b", "as EV", text, flags=re.IGNORECASE)
     text = re.sub(r"\bas a language model\b", "as EV", text, flags=re.IGNORECASE)
     text = re.sub(r"^\s*(i'm sorry, but|i apologize, but)\s+", "", text, flags=re.IGNORECASE)
+    text, guardrails, guardrail_flags = apply_persona_guardrails(text, claims=claims)
+    persona.update(guardrails)
+    flags.extend(guardrail_flags)
 
     lo, hi = WORD_COUNT_RANGES.get(strategy.mode, (5, 300))
     if style_profile:
@@ -573,7 +885,28 @@ async def run_output_filter(
                 policy.grounding_date_evidence if policy is not None else 0.9
             ),
         )
-        report.final_text, removal_edits = _apply_claim_actions(report.final_text, claims)
+        # Semantic NLI audit (optional, on-demand, deterministic offline):
+        # upgrades lexical "keep" to evidence-cited entailment and downgrades
+        # neutral/contradicted claims before any action is applied.
+        from app.filter.nli_critic import run_nli_audit
+
+        claims, semantic_info = await run_nli_audit(claims, grounding)
+        if semantic_info.get("claims_scored"):
+            grounding_flags.append(
+                FilterFlag(
+                    "output",
+                    "semantic_grounding_audited",
+                    "info",
+                    detail=(
+                        f"NLI scored {semantic_info['claims_scored']} claim(s): "
+                        f"entailed={semantic_info.get('entailed', 0)}, "
+                        f"neutral={semantic_info.get('neutral', 0)}, "
+                        f"contradicted={semantic_info.get('contradicted', 0)}"
+                    ),
+                    action="flag",
+                )
+            )
+        report.final_text, removal_edits = apply_claim_actions(report.final_text, claims)
         report.claims = claims
         report.edits.extend(removal_edits)
         report.flags.extend(grounding_flags)
@@ -586,9 +919,32 @@ async def run_output_filter(
                     policy.persona_style_enforcement if policy is not None else False
                 ),
                 style_profile=style_profile,
+                claims=claims,
             )
             report.persona = persona
             report.flags.extend(persona_flags)
+            report.final_text, chips, chip_flags = enforce_provenance_chips(
+                report.final_text,
+                grounding,
+                claims,
+            )
+            if chips:
+                report.persona["provenance_chips"] = chips
+                report.persona["provenance_chips_count"] = len(chips)
+                report.flags.extend(chip_flags)
+                report.edits.append({"type": "provenance_chip", "chips": chips})
+                # Chips inject memory text; re-scan so no secret slips through.
+                report.final_text, safety2, safety_flags2 = apply_safety(report.final_text)
+                report.safety = {
+                    "redactions": max(
+                        safety.get("redactions", 0), safety2.get("redactions", 0)
+                    ),
+                    "toxic": safety.get("toxic") or safety2.get("toxic"),
+                    "manipulation": safety.get("manipulation")
+                    or safety2.get("manipulation"),
+                }
+                known = {f.name for f in safety_flags}
+                report.flags.extend(f for f in safety_flags2 if f.name not in known)
 
         scores = DeterministicCritic().evaluate(
             final_text=report.final_text,
@@ -596,6 +952,8 @@ async def run_output_filter(
             strategy=strategy,
         )
         report.critic = scores
+        if semantic_info:
+            report.critic["semantic"] = semantic_info
         report.iterations = iteration
         report.passed = (
             scores["grounding"] >= 0.8
@@ -618,6 +976,8 @@ async def run_output_filter(
             if revision.used_provider and revision.revised_text and revision.revised_text != report.final_text:
                 refined = revision.revised_text
                 report.critic = revision.scores
+                if semantic_info:
+                    report.critic["semantic"] = semantic_info
                 report.edits.append(
                     {
                         "type": "critic_revision",

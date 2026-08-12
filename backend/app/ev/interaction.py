@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 
 from app.schemas import CommunicationMode, InteractionStrategy
+from app.utils.text import normalize_text
 
 URGENT_TOKENS = {
     "urgent",
@@ -141,14 +142,57 @@ def assertiveness_level(
     evidence_count: int,
     decision_loop_count: int,
     pattern_confidence: float,
+    recent_reevaluations_30d: int | None = None,
+    outcome_citations: int | None = None,
 ) -> int:
-    if pattern_confidence >= 0.7 and decision_loop_count >= 2:
+    """Evidence-gated assertiveness, L0-L4 (docs/BEHAVIOR.md §11).
+
+    L3 (challenge) fires only with real evidence: pattern confidence ≥0.7,
+    ≥3 similar re-evaluations inside the 30-day window, and ≥3 cited prior
+    decisions with outcomes. When either count is unknown (``None``), weak
+    evidence reduces assertiveness automatically rather than guessing.
+    """
+
+    reevaluations = recent_reevaluations_30d if recent_reevaluations_30d is not None else 0
+    outcomes = outcome_citations if outcome_citations is not None else 0
+    if (
+        pattern_confidence >= 0.7
+        and reevaluations >= 3
+        and outcomes >= 3
+    ):
         return 3
     if evidence_count >= 2:
         return 2
     if evidence_count >= 1:
         return 1
     return 0
+
+
+def challenge_evidence_kwargs(
+    *,
+    decision_loops: list[dict],
+    outcomes: list,
+) -> dict:
+    """Real challenge-evidence counts from decision loops and reviewed outcomes.
+
+    ``find_decision_loops`` already groups similar decision memories inside a
+    30-day window; outcome citations are counted per matching
+    ``decision_topic``. Returns honest counts (possibly zero) for
+    ``build_strategy``; nothing is inferred.
+    """
+
+    best = {"recent_reevaluations_30d": 0, "outcome_citations": 0}
+    for loop in decision_loops or []:
+        topic = normalize_text(str(loop.get("topic") or ""))
+        cited = sum(
+            1
+            for outcome in outcomes or []
+            if normalize_text(str(getattr(outcome, "decision_topic", "") or "")) == topic
+        )
+        count = int(loop.get("count") or 0)
+        if count >= best["recent_reevaluations_30d"]:
+            best = {"recent_reevaluations_30d": count, "outcome_citations": cited}
+    return best
 
 
 def build_strategy(
@@ -158,6 +202,8 @@ def build_strategy(
     decision_loop_count: int = 0,
     pattern_confidence: float = 0.0,
     evidence_count: int = 0,
+    recent_reevaluations_30d: int | None = None,
+    outcome_citations: int | None = None,
     profile: dict | None = None,
     pending_alert_priority: float = 0.0,
     pending_alert_tier: str | None = None,
@@ -183,6 +229,8 @@ def build_strategy(
         evidence_count=evidence_count,
         decision_loop_count=decision_loop_count,
         pattern_confidence=pattern_confidence,
+        recent_reevaluations_30d=recent_reevaluations_30d,
+        outcome_citations=outcome_citations,
     )
     alert_challenge = pending_alert_tier == "urgent" and pending_alert_priority >= 0.5
     if alert_challenge:
@@ -221,6 +269,12 @@ def build_strategy(
         rationale_parts.append(f"{decision_loop_count} prior evaluations on this topic")
     if pattern_confidence:
         rationale_parts.append(f"pattern confidence {pattern_confidence:.2f}")
+    if recent_reevaluations_30d is not None:
+        rationale_parts.append(
+            f"{recent_reevaluations_30d} re-evaluations in last 30 days"
+        )
+    if outcome_citations is not None:
+        rationale_parts.append(f"{outcome_citations} cited decision outcomes")
     if pending_alert_priority:
         rationale_parts.append(
             f"pending alert tier={pending_alert_tier or 'none'} priority={pending_alert_priority:.2f}"
@@ -249,7 +303,12 @@ def strategy_block(strategy: InteractionStrategy) -> str:
         f"Intent: {strategy.intent}",
         f"Length: {strategy.length_target}.",
         f"Directness: {strategy.directness}.",
-        f"Assertiveness level: {strategy.assertiveness} (0=neutral, 1=recommend, 2=strong recommend, 3=challenge, 4=critical intervention).",
+        (
+            "Assertiveness level: "
+            f"{strategy.assertiveness} (0=neutral, 1=recommend, 2=strong recommend, "
+            "3=challenge: only with ≥3 similar re-evaluations in 30 days and cited "
+            "outcomes, 4=critical intervention)."
+        ),
     ]
     if strategy.ask_question:
         lines.append("Ask one clarifying question if it would materially change the answer.")

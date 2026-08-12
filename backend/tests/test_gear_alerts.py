@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
+import json
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.ev import gear
+from app.utils.text import utcnow
 
 
 async def snapshot(
@@ -90,3 +100,42 @@ async def test_multiple_metrics_on_one_device(client: AsyncClient) -> None:
     metrics = {a["title"].split("— ")[-1] for a in alerts}
     assert metrics == {"battery", "storage", "cpu", "memory"}
     assert len(alerts) == 4
+
+
+async def test_gear_report_is_honest_about_what_this_mac_can_see(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    await snapshot(
+        client,
+        device_id="macbook-m2",
+        battery=88.0,
+        storage_free_bytes=64 * 1024**3,
+    )
+    backup_dir = Path(settings.storage_root) / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    for existing in backup_dir.glob("*.evbackup"):
+        existing.unlink()
+    (backup_dir / "ev-backup-20260811T120000.evbackup").write_text(
+        json.dumps(
+            {
+                "schema": "ev.backup.v1",
+                "created_at": (utcnow() - timedelta(hours=2)).isoformat(),
+                "plaintext_sha256": "abc",
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = await gear.report(db_session)
+
+    assert report["mac_snapshot"]["device_id"] == "macbook-m2"
+    assert report["mac_snapshot"]["battery_percent"] == 88.0
+    assert report["mac_observed"]["system"] == "Darwin"
+    assert report["mac_observed"]["storage_free_bytes"] > 0
+    assert report["mac_observed"]["machine"]
+    assert report["backup"] is not None
+    assert report["backup"]["age_hours"] == pytest.approx(2.0, abs=0.1)
+    assert "newest encrypted backup found" in report["backup_note"]
+    assert report["provider_health"]["configured"] is True
+    assert "resident_total_mb" in report["model_residency"]
+    assert report["hardware_gaps"]

@@ -14,6 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev import alert_radar
+from app.ev import calendar as calendar_feed
 from app.ev.health_radar import morning_brief
 from app.ev.user_state import build_user_state
 from app.models import WatchlistItem
@@ -59,6 +60,8 @@ async def status_card(session: AsyncSession) -> HudCardOut:
     state = await build_user_state(session)
     brief = await morning_brief(session)
     pending = await alert_radar.list_alerts(session, status="pending", limit=1)
+    cal = await calendar_feed.calendar_signals(session)
+    next_event = cal.get("next_event")
     deadline_rows = (
         await session.execute(
             select(WatchlistItem).where(
@@ -77,11 +80,20 @@ async def status_card(session: AsyncSession) -> HudCardOut:
         parts.append(f"Task: {state.current_task}")
     if brief.get("readiness") is not None:
         parts.append(f"Readiness {brief['readiness']} ({brief.get('band')})")
-    if deadline_rows:
+    if next_event:
+        parts.append(
+            f"Next commitment: {next_event.get('summary')} at {next_event.get('start')}"
+        )
+    elif deadline_rows:
         parts.append(f"Next deadline: {deadline_rows[0].value}")
     body = " | ".join(parts) if parts else "No active signals. EV is watching."
     priority = pending[0].priority if pending else 0.0
     title = pending[0].title if pending else "EV status"
+    cal_meta = {
+        "next_event": next_event,
+        "calendar_source_event_ids": (cal.get("source") or {}).get("event_ids", [])[:5],
+        "day_density_today": cal.get("today"),
+    }
     return HudCardOut(
         schema_version="ev.hud.card.v1",
         generated_at=utcnow(),
@@ -95,6 +107,7 @@ async def status_card(session: AsyncSession) -> HudCardOut:
             "active_project": state.active_project,
             "active_goal": state.active_goal,
             "open_decisions": len(state.open_decisions),
+            **cal_meta,
         },
     )
 

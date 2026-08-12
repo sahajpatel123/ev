@@ -76,6 +76,89 @@ class ResearchService:
         await self.session.flush()
         return note
 
+    async def remember(
+        self,
+        session_id: UUID,
+        note_id: UUID,
+        *,
+        actor: str = "api",
+    ) -> Memory:
+        """Persist a finding as a durable memory with real citation provenance.
+
+        ``source_url`` / ``source_title`` are carried from the research note
+        (which itself only ever comes from a search provider's results), so a
+        remembered finding always has a traceable source. The memory is linked
+        to the note's raw event and every event in the session.
+        """
+        note = (
+            await self.session.execute(
+                select(ResearchNote).where(
+                    ResearchNote.session_id == session_id,
+                    ResearchNote.id == note_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if note is None:
+            raise KeyError(f"Research note {note_id} not found in session {session_id}")
+        research = await self.session.get(ResearchSession, session_id)
+        if research is None:
+            raise KeyError(f"Research session {session_id} not found")
+
+        event = await EventService(self.session, actor=actor).create(
+            EventCreate(
+                source="research",
+                event_type="research.remember",
+                text=f"Remembered finding: {note.note}",
+                metadata={
+                    "research_session_id": str(session_id),
+                    "research_note_id": str(note.id),
+                    "source_url": note.source_url,
+                    "source_title": note.source_title,
+                },
+            )
+        )
+        memory = Memory(
+            memory_type="fact",
+            text=f"Research finding: {note.note}",
+            payload={
+                "kind": "research_finding",
+                "question": research.question,
+                "research_session_id": str(session_id),
+                "research_note_id": str(note.id),
+                "source_url": note.source_url,
+                "source_title": note.source_title,
+            },
+            importance=0.7,
+            confidence=1.0,  # user explicitly asked EV to remember this finding
+            source_type="explicit",
+            privacy_level="normal",
+            event_time=event.occurred_at,
+            valid_from=event.occurred_at,
+            version_group=uuid4(),
+            version=1,
+            fingerprint=fingerprint(
+                {
+                    "memory_type": "fact",
+                    "research_note_id": str(note.id),
+                    "text": normalize_text(note.note),
+                }
+            ),
+        )
+        try:
+            memory.embedding = (await get_embedder().embed([memory.text]))[0]
+        except Exception:
+            memory.embedding = None
+        self.session.add(memory)
+        await self.session.flush()
+
+        event_ids = await self._session_event_ids(session_id)
+        event_ids.add(note.event_id)
+        event_ids.add(event.id)
+        for event_id in event_ids:
+            self.session.add(MemoryEvent(memory_id=memory.id, event_id=event_id))
+        await self.session.flush()
+        return memory
+
     async def web_search(
         self,
         session_id: UUID,

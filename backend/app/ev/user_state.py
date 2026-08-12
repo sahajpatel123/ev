@@ -165,6 +165,16 @@ async def build_user_state(
             select(LiveChannel).where(LiveChannel.id.in_(channel_ids))
         )
         channel_map = {channel.id: channel for channel in channel_rows.scalars().all()}
+    if current_task is None:
+        for row in live_rows:
+            channel = channel_map.get(row.channel_id)
+            if channel is not None and channel.kind == "screen":
+                payload = row.payload or {}
+                app = payload.get("app")
+                detail = payload.get("code_file") or payload.get("document")
+                if app or detail:
+                    current_task = f"{app or 'screen'}: {detail or 'active'}"[:200]
+                    break
     live_context = [
         live.live_context_line(channel_map.get(row.channel_id), row, access=access)
         for row in live_rows

@@ -15,6 +15,7 @@ def compute_envelope_hash(
     strategy: dict,
     privacy_level: str,
     speaker_method: str,
+    media_refs: list[dict] | None = None,
 ) -> str:
     """Stable fingerprint of everything that crossed the input boundary."""
 
@@ -24,6 +25,7 @@ def compute_envelope_hash(
         "strategy": strategy,
         "privacy_level": privacy_level,
         "speaker_method": speaker_method,
+        "media_refs": media_refs or [],
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

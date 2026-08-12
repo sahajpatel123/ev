@@ -621,10 +621,16 @@ async def annotate(
     return row
 
 
-async def list_recognition(session: AsyncSession, *, limit: int = 50) -> list[RecognitionLog]:
-    result = await session.execute(
-        select(RecognitionLog).order_by(RecognitionLog.created_at.desc()).limit(min(limit, 200))
-    )
+async def list_recognition(
+    session: AsyncSession,
+    *,
+    limit: int = 50,
+    source: str | None = None,
+) -> list[RecognitionLog]:
+    stmt = select(RecognitionLog).order_by(RecognitionLog.created_at.desc()).limit(min(limit, 200))
+    if source:
+        stmt = stmt.where(RecognitionLog.source == source)
+    result = await session.execute(stmt)
     return list(result.scalars().all())
 
 

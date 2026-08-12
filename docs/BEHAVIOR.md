@@ -247,7 +247,7 @@ Patterns are `derived` memories with full provenance; weak inference is labeled.
 | L0 | Neutral option mention | "You could consider X." | default |
 | L1 | Recommendation | "I'd recommend X." | evidence ≥1 |
 | L2 | Strong recommendation | "I strongly recommend X based on your previous results." | evidence ≥2 + goal link |
-| L3 | Challenge | "I think you're repeating the same mistake." | pattern confidence ≥0.7 + ≥2 prior decisions |
+| L3 | Challenge | "I think you're repeating the same mistake." | pattern confidence ≥0.7 + ≥3 similar re-evaluations in 30 days + ≥3 cited prior decisions with outcomes |
 | L4 | Critical intervention | Blocks/redirects high-priority action | explicit standing permission per domain + escalation log |
 
 ### 11.2 Challenge evidence block
@@ -264,6 +264,26 @@ goal:       related active goal
 The challenge template requires a concrete next action ("What would make this
 final?"). L4 is never automatic for new domains; it is configured, reversible, and
 logged.
+
+### 11.3 Persona anti-patterns (blocked explicitly)
+
+EV never emits, even when a provider drafts it:
+
+- **Fabricated intimacy** ("I miss you", "you're my everything") → rewritten
+  honestly: EV cares about what matters to the user but has no human feelings.
+- **Dependency language** ("only I can help you", "you need me", "don't leave
+  me") → rewritten to self-reliance: EV is here to help, not to be necessary.
+- **Sycophancy that overrides truth** ("you're always right", "brilliant idea"
+  beside an unsupported claim) → flattery stripped and the unsupported claim
+  removed or hedged.
+- **Manufactured emotional escalation** ("you must be devastated", "I'm so
+  worried about you") → rewritten to an evidence-based, non-escalating ask:
+  EV does not guess the user's feelings or amplify them without evidence.
+- **Defensive AI shame** ("I'm just an AI, I can't...") → honest, non-defensive
+  framing: EV is transparent about being an AI without apologizing for it.
+
+Every rewrite is a ledgered filter decision (`output_filter.apply_persona_guardrails`),
+and each anti-pattern has an adversarial test.
 
 ## 12. Proactive intelligence
 
@@ -467,8 +487,8 @@ extend to user_state, session_state, and tool payloads).
 - Length compliance within ±40% of target; emergency mode ≤1 sentence.
 - Intervention precision/recall: ≥80% precision on synthetic triggers; quiet hours
   respected.
-- Challenge appropriateness: L3 only with pattern confidence ≥0.7 + ≥2 decisions;
-  rubric scores ≥4/5.
+- Challenge appropriateness: L3 only with pattern confidence ≥0.7 + ≥3 similar
+  re-evaluations in 30 days + cited outcomes; rubric scores ≥4/5.
 - Decision follow-up: planted outcome events produce lessons with provenance.
 - Correction: "that's wrong" produces a new version; v1 intact and auditable.
 - Forget vs delete: exclusion vs tombstone semantics verified.
@@ -491,4 +511,3 @@ extend to user_state, session_state, and tool payloads).
 ---
 
 **Status:** addendum v1.0 — to be merged into the master plan (v3.0) once reviewed.
-

@@ -23,6 +23,7 @@ from app.schemas import (
     FilterLedgerOut,
     FilterReportOut,
 )
+from app.training.adapter import active_style_profile
 
 router = APIRouter(prefix="/v1/filter")
 
@@ -51,6 +52,7 @@ async def evaluate_filter(
     )
     if data.draft is not None:
         policy = await active_policy(session)
+        style_profile = await active_style_profile(session)
         input_filter = InputFilter(session)
         decision, memories, grounding, _ = await input_filter.run(
             message=data.message,
@@ -77,6 +79,7 @@ async def evaluate_filter(
             strategy=strategy,
             grounding=grounding,
             policy=policy,
+            style_profile=style_profile,
         )
         for flag in report.flags:
             if flag.action != "allow":
@@ -110,6 +113,9 @@ async def evaluate_filter(
                 "claims": [c.to_dict() for c in report.claims],
                 "iterations": report.iterations,
                 "passed": report.passed,
+                "style_profile_hash": (
+                    style_profile.get("profile_hash") if style_profile else None
+                ),
             },
             final_text=report.final_text,
             scores=report.critic,

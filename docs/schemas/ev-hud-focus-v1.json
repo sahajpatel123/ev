@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sahajpatel123/ev/blob/main/docs/schemas/ev-hud-focus-v1.json",
+  "title": "EV focus card",
+  "description": "ev.hud.focus.v1 — current focus designation card.",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "locked", "context"],
+  "properties": {
+    "schema_version": {"const": "ev.hud.focus.v1"},
+    "generated_at": {"type": "string"},
+    "focus": {"type": ["object", "null"]},
+    "locked": {"type": "boolean"},
+    "context": {"type": "string"},
+    "next_action": {"type": ["string", "null"]},
+    "meta": {"type": "object"}
+  },
+  "additionalProperties": true
+}

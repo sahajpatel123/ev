@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.embeddings import get_embedder
+from app.ev import calendar as calendar_feed
 from app.ev.decisions import find_decision_loops
 from app.memory.retrieval import Retriever
 from app.models import DecisionOutcome, Entity, MemoryEntity, TacticalCard
@@ -36,6 +37,8 @@ async def build_briefing(session: AsyncSession, request: TacticalBriefRequest) -
     decisions = [m for m in memories if m.memory_type == "decision"]
     goals = [m for m in memories if m.memory_type == "goal"]
     patterns = [m for m in memories if m.memory_type == "pattern"]
+    cal = await calendar_feed.calendar_signals(session)
+    next_event = cal.get("next_event")
 
     # People connected to the relevant memories.
     people: list[dict] = []
@@ -62,6 +65,22 @@ async def build_briefing(session: AsyncSession, request: TacticalBriefRequest) -
                 }
             )
 
+    # People in the next calendar commitment (real linked attendees, not guesses).
+    for participant in (next_event or {}).get("participants") or []:
+        name = participant.get("name") or participant.get("email")
+        if not name:
+            continue
+        if any(str(p.get("name", "")).lower() == str(name).lower() for p in people):
+            continue
+        people.append(
+            {
+                "name": name,
+                "role": "calendar-attendee",
+                "source": "calendar-live-event",
+                "email": participant.get("email"),
+            }
+        )
+
     # Risks from reviewed decision outcomes.
     outcome_rows = (
         await session.execute(select(DecisionOutcome).where(DecisionOutcome.status == "reviewed"))
@@ -81,7 +100,10 @@ async def build_briefing(session: AsyncSession, request: TacticalBriefRequest) -
                 description=outcome.lesson,
                 likelihood=0.6,
                 impact=0.7,
-                mitigation="Re-check the prior outcome before committing to the same choice.",
+                mitigation=(
+                    "Re-check the prior outcome before committing to the same choice. "
+                    "Likelihood/impact are EV estimates (not measured probabilities)."
+                ),
             )
         )
     risk_count = len(risks)
@@ -122,6 +144,13 @@ async def build_briefing(session: AsyncSession, request: TacticalBriefRequest) -
             (recommendation or "Evaluate the options")
             + " — but your outcome history flags a risk, so confirm the assumption that made it fail last time."
         )
+    if recommendation:
+        recommendation += " (Rule-based estimate grounded in the memories above.)"
+    elif request.context:
+        recommendation = (
+            "No prior decision found; weigh the options against the supplied context. "
+            "(Rule-based estimate — no outcome history on this topic.)"
+        )
 
     # Talking points.
     talking_points = []
@@ -131,6 +160,14 @@ async def build_briefing(session: AsyncSession, request: TacticalBriefRequest) -
         talking_points.append(f"Pattern in play: {patterns[0].text}")
     if people:
         talking_points.append(f"People involved: {', '.join(p['name'] for p in people)}")
+    if next_event:
+        talking_points.append(
+            f"Next live commitment: {next_event.get('summary')} at {next_event.get('start')}."
+        )
+    else:
+        talking_points.append(
+            "No live calendar event is connected — timing claims in this brief are not grounded in a calendar source."
+        )
     talking_points.append("One decision at a time: state the choice, the reason, and when you'll review the outcome.")
 
     provenance = [
@@ -143,6 +180,19 @@ async def build_briefing(session: AsyncSession, request: TacticalBriefRequest) -
         )
         for item in memories[:8]
     ]
+    for event_id in (cal.get("source") or {}).get("event_ids", [])[:5]:
+        provenance.append(
+            ProvenanceSchema(
+                text=(
+                    f"Calendar: {next_event.get('summary')} at {next_event.get('start')}"
+                    if next_event
+                    else "Calendar: stored calendar live event"
+                ),
+                memory_type="calendar",
+                kind="calendar",
+                source_event_id=UUID(event_id),
+            )
+        )
     loops = await find_decision_loops(session, min_count=2)
     decision_history = [
         {
@@ -163,7 +213,12 @@ async def build_briefing(session: AsyncSession, request: TacticalBriefRequest) -
         objective=request.topic,
         context=request.context or (
             f"EV assembled this brief from {len(memories)} relevant memories "
-            f"({len(decisions)} decisions, {len(goals)} goals, {len(patterns)} patterns)."
+            f"({len(decisions)} decisions, {len(goals)} goals, {len(patterns)} patterns)"
+            + (
+                f" and {len(cal.get('source', {}).get('event_ids', []))} live calendar event(s)."
+                if cal.get("source", {}).get("event_ids")
+                else " and no live calendar event."
+            )
         ),
         people=people,
         risks=risks,

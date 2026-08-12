@@ -70,24 +70,44 @@ async def run_full_filter_pipeline(
         policy=policy,
     )
 
+    ledger_ids: list[UUID] = []
+    input_row = await record_decision(
+        session,
+        request_id=request_id,
+        conversation_id=conversation_id,
+        stage="input",
+        action="block" if decision.blocked else "run",
+        name="input_filter",
+        severity="high" if decision.blocked else "info",
+        detail={
+            "flags": [f.to_dict() for f in decision.flags],
+            "privacy_level": decision.privacy_level,
+        },
+        draft=message,
+        final_text=decision.provider_message,
+    )
+    ledger_ids.append(input_row.id)
+    for flag in decision.flags:
+        if flag.action != "allow":
+            flag_row = await record_decision(
+                session,
+                request_id=request_id,
+                conversation_id=conversation_id,
+                stage="input",
+                action=flag.action,
+                name=flag.name,
+                severity=flag.severity,
+                detail={"flag": flag.detail},
+                draft=message,
+                final_text=decision.provider_message,
+            )
+            ledger_ids.append(flag_row.id)
+
     if decision.blocked:
         fallback = (
             "I can't process that request — it was blocked by EV's input filter "
             "before anything reached the model."
         )
-        ledger_id = (
-            await record_decision(
-                session,
-                request_id=request_id,
-                conversation_id=conversation_id,
-                stage="input",
-                action="block",
-                name="input_filter",
-                severity="high",
-                detail={"flags": [f.to_dict() for f in decision.flags], "block_reason": decision.block_reason},
-                final_text=fallback,
-            )
-        ).id
         await session.commit()
         return FilterRunResult(
             final_text=fallback,
@@ -97,7 +117,7 @@ async def run_full_filter_pipeline(
             memories=memories,
             grounding=grounding,
             input_decision=decision,
-            ledger_ids=[ledger_id],
+            ledger_ids=ledger_ids,
             blocked=True,
             block_reason=decision.block_reason,
             policy=policy.to_dict(),
@@ -170,7 +190,6 @@ async def run_full_filter_pipeline(
         policy=policy,
         style_profile=style_profile,
     )
-    ledger_ids: list[UUID] = []
     for flag in report.flags:
         if flag.action != "allow":
             ledger_ids.append(

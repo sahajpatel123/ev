@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from httpx import AsyncClient
 
 from app.ev.ev_sense import quiet_hours_active
+from app.ev.interaction import assertiveness_level, challenge_evidence_kwargs
 
 
 async def post_event(client: AsyncClient, text: str, *, event_type: str = "note") -> dict:
@@ -399,3 +401,90 @@ async def test_chat_sse_stream(client: AsyncClient) -> None:
     assert "event: provenance" in body
     assert "event: delta" in body
     assert "event: done" in body
+
+
+# --------------------------------------------------------------------------- #
+# Evidence-based challenge (L3 requires real evidence, never inferred)
+# --------------------------------------------------------------------------- #
+
+
+def test_l3_challenge_requires_three_reevaluations_in_30_days() -> None:
+    assert (
+        assertiveness_level(
+            evidence_count=5,
+            decision_loop_count=3,
+            pattern_confidence=0.8,
+            recent_reevaluations_30d=3,
+            outcome_citations=3,
+        )
+        == 3
+    )
+    # Only two re-evaluations in the window: weak evidence, no challenge.
+    assert (
+        assertiveness_level(
+            evidence_count=5,
+            decision_loop_count=3,
+            pattern_confidence=0.8,
+            recent_reevaluations_30d=2,
+            outcome_citations=3,
+        )
+        <= 2
+    )
+
+
+def test_l3_challenge_requires_cited_outcomes() -> None:
+    assert (
+        assertiveness_level(
+            evidence_count=5,
+            decision_loop_count=3,
+            pattern_confidence=0.8,
+            recent_reevaluations_30d=3,
+            outcome_citations=2,
+        )
+        <= 2
+    )
+
+
+def test_l3_challenge_requires_pattern_confidence() -> None:
+    assert (
+        assertiveness_level(
+            evidence_count=5,
+            decision_loop_count=3,
+            pattern_confidence=0.6,
+            recent_reevaluations_30d=3,
+            outcome_citations=3,
+        )
+        <= 2
+    )
+
+
+def test_unknown_evidence_counts_reduce_assertiveness() -> None:
+    # Callers that cannot prove the 30-day window or outcomes get no L3.
+    assert (
+        assertiveness_level(
+            evidence_count=5,
+            decision_loop_count=3,
+            pattern_confidence=0.8,
+        )
+        <= 2
+    )
+
+
+def test_challenge_evidence_kwargs_uses_real_counts() -> None:
+    loops = [
+        {"topic": "SQLite", "count": 4, "confidence": 0.9},
+        {"topic": "Docker", "count": 2, "confidence": 0.7},
+    ]
+    outcomes = [
+        SimpleNamespace(decision_topic="SQLite"),
+        SimpleNamespace(decision_topic="SQLite"),
+        SimpleNamespace(decision_topic="SQLite"),
+        SimpleNamespace(decision_topic="Docker"),
+    ]
+    kwargs = challenge_evidence_kwargs(decision_loops=loops, outcomes=outcomes)
+    assert kwargs == {"recent_reevaluations_30d": 4, "outcome_citations": 3}
+
+
+def test_challenge_evidence_kwargs_returns_zero_when_absent() -> None:
+    kwargs = challenge_evidence_kwargs(decision_loops=[], outcomes=[])
+    assert kwargs == {"recent_reevaluations_30d": 0, "outcome_citations": 0}
