@@ -8,11 +8,18 @@ the anchor of ``live_derived_state``), and events still referenced as
 provenance by recognition logs or routine runs are protected.  The derived
 per-channel rollups are recomputed from the retained stream so they remain
 deterministic and rebuildable.  ``dry_run=True`` (the API default) only plans.
+
+Retention windows are per-channel, not global: sensitive channels
+(screen/audio, default 30 days) are deliberately short-lived, private coarse
+location defaults to 90 days, and other channels inherit the global default
+``EV_LIVE_EVENT_RETENTION_DAYS`` (90).  A channel may override via
+``metadata.retention_days``.  An explicit ``days`` API override applies to
+every channel.
 """
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +36,45 @@ from app.models import (
 from app.services.access_log import log_access
 from app.utils.text import utcnow
 
+SENSITIVE_KINDS = frozenset({"screen", "audio"})
+PRIVATE_KINDS = frozenset({"location"})
+SENSITIVE_RETENTION_DAYS = 30
+PRIVATE_RETENTION_DAYS = 90
+
+
+def _channel_retention_days(
+    channel: LiveChannel,
+    *,
+    requested: int | None,
+    default: int,
+) -> int:
+    if requested is not None:
+        return requested
+    metadata_days = (channel.metadata_ or {}).get("retention_days")
+    if isinstance(metadata_days, int) and metadata_days > 0:
+        return metadata_days
+    if channel.kind in SENSITIVE_KINDS:
+        return SENSITIVE_RETENTION_DAYS
+    if channel.kind in PRIVATE_KINDS:
+        return PRIVATE_RETENTION_DAYS
+    return default
+
+
+def _retention_map(
+    channels: list[LiveChannel],
+    *,
+    requested: int | None,
+    default: int,
+) -> dict:
+    return {
+        channel.id: _channel_retention_days(channel, requested=requested, default=default)
+        for channel in channels
+    }
+
+
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=utcnow().tzinfo)
+
 
 async def apply_live_retention(
     session: AsyncSession,
@@ -40,13 +86,20 @@ async def apply_live_retention(
 ) -> dict:
     """Apply the live-event retention window; returns a plan or executes it."""
     window_days = days or settings.live_event_retention_days
-    cutoff = utcnow() - timedelta(days=window_days)
+    channels = list((await session.execute(select(LiveChannel))).scalars().all())
+    retention_by_channel = _retention_map(
+        channels,
+        requested=days,
+        default=window_days,
+    )
+    scan_days = min(retention_by_channel.values()) if retention_by_channel else window_days
+    scan_cutoff = utcnow() - timedelta(days=scan_days)
 
     candidates = list(
         (
             await session.execute(
                 select(LiveEvent).where(
-                    LiveEvent.occurred_at < cutoff,
+                    LiveEvent.occurred_at < scan_cutoff,
                     LiveEvent.consumed.is_(True),
                 )
             )
@@ -56,7 +109,7 @@ async def apply_live_retention(
         return {
             "completed_at": utcnow(),
             "days": window_days,
-            "cutoff": cutoff,
+            "cutoff": scan_cutoff,
             "dry_run": dry_run,
             "events_scanned": 0,
             "events_deleted": 0,
@@ -65,7 +118,14 @@ async def apply_live_retention(
             "channels_updated": 0,
         }
 
-    candidate_ids = {event.id for event in candidates}
+    now = utcnow()
+    eligible = [
+        event
+        for event in candidates
+        if _aware(event.occurred_at)
+        < now - timedelta(days=retention_by_channel.get(event.channel_id, window_days))
+    ]
+    candidate_ids = {event.id for event in eligible}
     protected_ids: set = set()
 
     # Latest event per channel anchors derived state; keep it.
@@ -96,18 +156,11 @@ async def apply_live_retention(
     ).scalars().all()
     protected_ids.update(rid for rid in routine_ids if rid is not None)
 
-    to_delete = [event for event in candidates if event.id not in protected_ids]
+    to_delete = [event for event in eligible if event.id not in protected_ids]
     deleted_ids = {event.id for event in to_delete}
     affected_channels = {event.channel_id for event in to_delete}
 
     if not dry_run and to_delete:
-        channels = list(
-            (
-                await session.execute(
-                    select(LiveChannel).where(LiveChannel.id.in_(affected_channels))
-                )
-            ).scalars().all()
-        )
         channel_map = {channel.id: channel for channel in channels}
         derived_rows = {
             row.channel_id: row
@@ -162,8 +215,14 @@ async def apply_live_retention(
         request_id=request_id,
         details={
             "days": window_days,
-            "cutoff": cutoff.isoformat(),
+            "scan_days": scan_days,
+            "scan_cutoff": scan_cutoff.isoformat(),
+            "per_channel_days": {
+                str(channel.id): retention_by_channel[channel.id] for channel in channels
+            },
             "dry_run": dry_run,
+            "events_scanned": len(candidates),
+            "events_eligible": len(eligible),
             "events_deleted": len(to_delete),
             "events_protected": len(candidates) - len(to_delete),
         },
@@ -172,7 +231,7 @@ async def apply_live_retention(
     return {
         "completed_at": utcnow(),
         "days": window_days,
-        "cutoff": cutoff,
+        "cutoff": scan_cutoff,
         "dry_run": dry_run,
         "events_scanned": len(candidates),
         "events_deleted": len(to_delete),

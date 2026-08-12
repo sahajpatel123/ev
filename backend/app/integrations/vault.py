@@ -1,10 +1,11 @@
 """Encrypted credential vault for integrations.
 
-Uses Fernet (via :mod:`cryptography`) with a key from ``EV_VAULT_KEY``, or a
-deterministic derivation from the master key when no separate vault key is
-configured. Plaintext tokens exist only in memory for the duration of an
-action/webhook call and are never written to logs, prompts, memory rows, or
-model context.
+Uses Fernet (via :mod:`cryptography`) with the required ``EV_VAULT_KEY``.
+The key is never derived from ``EV_MASTER_KEY``: the vault has its own trust
+domain so a leaked server key cannot decrypt integration credentials, and a
+leaked vault key cannot authenticate as the owner. Plaintext tokens exist only
+in memory for the duration of an action/webhook call and are never written to
+logs, prompts, memory rows, or model context.
 """
 
 from __future__ import annotations
@@ -25,7 +26,12 @@ def _derive_key(raw: str) -> bytes:
 
 
 def _key() -> bytes:
-    return _derive_key(settings.vault_key or settings.master_key)
+    if not settings.vault_key:
+        raise RuntimeError(
+            "EV_VAULT_KEY is required; refusing to derive the vault key from "
+            "the master key."
+        )
+    return _derive_key(settings.vault_key)
 
 
 def _fernet_instance() -> Fernet:

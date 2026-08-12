@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import LiveDerivedState, LiveEvent
+from app.workers.scheduler import LiveMaintenance
 
 
 async def _ingest(
@@ -127,3 +129,63 @@ async def test_live_retention_plans_then_deletes_conservatively(
     assert resp.json()["events_protected"] == 3
     rows = (await db_session.execute(select(LiveEvent))).scalars().all()
     assert any(str(row.id) == unconsumed["id"] for row in rows)
+
+
+async def test_sensitive_channels_retain_shorter_than_private(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    now = datetime.now(UTC)
+    old = now - timedelta(days=60)
+    recent = now - timedelta(days=10)
+
+    # Screen (sensitive) defaults to 30 days; location (private) to 90 days.
+    await _ingest(client, "screen-activity", "screen", "focus_change", {"app": "Xcode"}, old)
+    await _ingest(client, "screen-activity", "screen", "focus_change", {"app": "Notes"}, recent)
+    await _ingest(client, "location-coarse", "location", "location_change", {"place": "Home"}, old)
+    await _ingest(client, "location-coarse", "location", "location_change", {"place": "Office"}, recent)
+
+    resp = await client.post("/v1/live/rebuild")
+    assert resp.status_code == 200
+
+    resp = await client.post("/v1/live/retention?dry_run=false")
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    assert result["events_scanned"] == 2  # only the 60-day-old consumed events
+    assert result["events_deleted"] == 1  # screen is past 30d; location stays until 90d
+    assert result["events_protected"] == 1  # the 60-day-old location event
+
+    remaining = (await db_session.execute(select(LiveEvent))).scalars().all()
+    assert len(remaining) == 3
+    payloads = [row.payload for row in remaining]
+    assert {"app": "Xcode"} not in payloads
+    assert {"place": "Home"} in payloads
+
+
+def test_scheduler_runs_live_retention_on_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs: list[str] = []
+    monkeypatch.setattr(
+        "app.workers.scheduler.run_live_retention",
+        lambda: runs.append("retention") or {"ok": True},
+    )
+    monkeypatch.setattr(
+        "app.workers.scheduler.run_live_rebuild",
+        lambda: runs.append("rebuild") or {"ok": True},
+    )
+
+    maintenance = LiveMaintenance(
+        retention_interval_seconds=10,
+        rebuild_interval_seconds=1_000,
+    )
+    startup = maintenance.run_due(now=0.0)
+    assert startup == {"retention": {"ok": True}, "rebuild": {"ok": True}}
+    assert runs == ["retention", "rebuild"]
+
+    assert maintenance.run_due(now=5.0) == {}
+    assert runs == ["retention", "rebuild"]
+
+    second = maintenance.run_due(now=11.0)
+    assert second == {"retention": {"ok": True}}
+    assert runs == ["retention", "rebuild", "retention"]

@@ -10,12 +10,18 @@ registry/config change, not a rewrite of EV's core systems.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
+from app.config import settings
 from app.gateway.validation import validate_arguments
+from app.integrations import oauth
+from app.integrations.calendar_signals import derive_calendar_signals, parse_event_time
 from app.schemas import LiveEventCreate
+from app.utils.text import utcnow
 
 
 def _text(value: Any, limit: int) -> str:
@@ -28,7 +34,7 @@ def _text(value: Any, limit: int) -> str:
 
 def _make_client(timeout: float = 10.0) -> httpx.AsyncClient:
     """Create the provider HTTP client; a seam for tests to inject a mock provider."""
-    return httpx.AsyncClient(timeout=timeout)
+    return oauth.make_http_client(timeout=timeout)
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,14 @@ class AdapterAction:
     scope: str
     description: str
     parameters: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AdapterSyncResult:
+    """Provider pull outcome: normalized live events plus derived signals."""
+
+    events: list[LiveEventCreate] = field(default_factory=list)
+    signals: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -104,6 +118,23 @@ class Adapter:
                 return response.json()
         return {"ok": True, "mode": "local", "action": action}
 
+    async def sync(
+        self,
+        *,
+        token: str,
+        scopes: list[str],
+        config: dict,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> AdapterSyncResult:
+        """Pull provider data into normalized live events and derived signals.
+
+        The base implementation is the deterministic offline double: no
+        network, no events, and an explicit ``local`` signal. Real providers
+        override this method.
+        """
+        return AdapterSyncResult(signals={"mode": "local"})
+
     async def refresh_token(
         self,
         *,
@@ -168,6 +199,188 @@ class Adapter:
 
 @dataclass(frozen=True)
 class CalendarAdapter(Adapter):
+    GOOGLE_READ_SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        if action == "calendar.list_upcoming" and config.get("provider") == "google":
+            events = await self._fetch_google_events(token, config)
+            return {
+                "ok": True,
+                "mode": "google",
+                "action": action,
+                "events": events,
+                "signals": derive_calendar_signals(events),
+            }
+        return await super().act(
+            action=action,
+            args=args,
+            token=token,
+            scopes=scopes,
+            config=config,
+        )
+
+    async def sync(
+        self,
+        *,
+        token: str,
+        scopes: list[str],
+        config: dict,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> AdapterSyncResult:
+        if config.get("provider") != "google":
+            return AdapterSyncResult(signals={"mode": "local"})
+        events = await self._fetch_google_events(token, config, since=since, until=until)
+        return AdapterSyncResult(
+            events=[self._to_live_event(event) for event in events],
+            signals=derive_calendar_signals(events),
+        )
+
+    async def refresh_token(
+        self,
+        *,
+        token: str,
+        refresh_token: str,
+        config: dict,
+    ) -> dict:
+        if config.get("provider") == "google":
+            provider = oauth.provider_for("calendar")
+            if provider is None:  # pragma: no cover - calendar always maps
+                raise oauth.OAuthProviderError("calendar OAuth provider unavailable")
+            return await provider.refresh(refresh_token)
+        return await super().refresh_token(
+            token=token,
+            refresh_token=refresh_token,
+            config=config,
+        )
+
+    async def revoke_remote(
+        self,
+        *,
+        token: str,
+        config: dict,
+    ) -> dict:
+        if config.get("provider") == "google":
+            provider = oauth.provider_for("calendar")
+            if provider is None:  # pragma: no cover - calendar always maps
+                raise oauth.OAuthProviderError("calendar OAuth provider unavailable")
+            return await provider.revoke(token)
+        return await super().revoke_remote(token=token, config=config)
+
+    async def _fetch_google_events(
+        self,
+        token: str,
+        config: dict,
+        *,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[dict]:
+        provider = oauth.provider_for("calendar")
+        if provider is None:  # pragma: no cover - calendar always maps
+            raise oauth.OAuthProviderError("calendar OAuth provider unavailable")
+        calendar_id = str(config.get("calendar_id") or "primary")
+        now = utcnow()
+        params = {
+            "timeMin": (since or (now - timedelta(hours=1))).isoformat(),
+            "timeMax": (
+                until
+                or (now + timedelta(days=settings.calendar_sync_days))
+            ).isoformat(),
+            "singleEvents": "true",
+            "orderBy": "startTime",
+            "maxResults": str(settings.calendar_sync_max_events),
+            "showDeleted": "false",
+        }
+        url = f"{provider.api_base}/calendars/{quote(calendar_id, safe='')}/events"
+        async with _make_client() as client:
+            response = await client.get(
+                url,
+                params=params,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        if response.status_code in (401, 403):
+            raise oauth.OAuthAuthError("calendar provider rejected the access token")
+        if response.status_code >= 400:
+            raise oauth.OAuthProviderError(
+                f"calendar provider request failed (status {response.status_code})"
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise oauth.OAuthProviderError(
+                "calendar provider returned a non-JSON response"
+            ) from exc
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            raise oauth.OAuthProviderError(
+                "calendar provider returned a malformed events response"
+            )
+        return [
+            self._normalize_google_event(calendar_id, item)
+            for item in items
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def _normalize_google_event(calendar_id: str, item: dict) -> dict:
+        raw_start = item.get("start")
+        raw_end = item.get("end")
+        start_info: dict[str, Any] = raw_start if isinstance(raw_start, dict) else {}
+        end_info: dict[str, Any] = raw_end if isinstance(raw_end, dict) else {}
+        start = start_info.get("dateTime") or start_info.get("date")
+        end = end_info.get("dateTime") or end_info.get("date")
+        attendees: list[dict] = []
+        for attendee in item.get("attendees") or []:
+            if not isinstance(attendee, dict):
+                continue
+            attendees.append(
+                {
+                    "name": _text(attendee.get("displayName"), 128),
+                    "email": _text(attendee.get("email"), 256) or None,
+                    "status": _text(attendee.get("responseStatus"), 32),
+                }
+            )
+        organizer = item.get("organizer")
+        organizer_out = None
+        if isinstance(organizer, dict) and organizer:
+            organizer_out = {
+                "name": _text(organizer.get("displayName"), 128),
+                "email": _text(organizer.get("email"), 256) or None,
+            }
+        return {
+            "provider": "google",
+            "calendar_id": calendar_id,
+            "event_id": _text(item.get("id"), 256),
+            "summary": _text(item.get("summary"), 256) or "Untitled event",
+            "start": start,
+            "end": end,
+            "all_day": "date" in start_info,
+            "location": _text(item.get("location"), 512) or None,
+            "busy": item.get("transparency") != "transparent",
+            "status": _text(item.get("status"), 32),
+            "organizer": organizer_out,
+            "attendees": attendees,
+            "hangout_link": _text(item.get("hangoutLink"), 512) or None,
+            "html_link": _text(item.get("htmlLink"), 512) or None,
+            "source": "calendar",
+        }
+
+    @staticmethod
+    def _to_live_event(payload: dict) -> LiveEventCreate:
+        return LiveEventCreate(
+            event_type="calendar.event.updated",
+            payload=payload,
+            occurred_at=parse_event_time(payload.get("start")),
+        )
+
     async def translate_webhook(
         self,
         payload: dict,
@@ -197,10 +410,38 @@ class HealthAdapter(Adapter):
         payload: dict,
         headers: dict | None = None,
     ) -> list[LiveEventCreate]:
+        allowed = {"heart_rate", "hrv", "sleep_hours", "steps", "readiness"}
+        events: list[LiveEventCreate] = []
+        raw_metrics: object = payload.get("metrics")
+        if isinstance(raw_metrics, dict):
+            raw_units = payload.get("units")
+            units = raw_units if isinstance(raw_units, dict) else {}
+            for metric, value in raw_metrics.items():
+                if (
+                    metric not in allowed
+                    or not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                ):
+                    continue
+                events.append(
+                    LiveEventCreate(
+                        event_type="health.metric.updated",
+                        payload={
+                            "metric": metric,
+                            "value": value,
+                            "unit": _text(units.get(metric), 16),
+                            "source": "health",
+                        },
+                    )
+                )
+            return events
         metric = _text(payload.get("metric"), 64)
         value = payload.get("value")
-        allowed = {"heart_rate", "hrv", "sleep_hours", "steps", "readiness"}
-        if metric not in allowed or not isinstance(value, (int, float)) or isinstance(value, bool):
+        if (
+            metric not in allowed
+            or not isinstance(value, (int, float))
+            or isinstance(value, bool)
+        ):
             return []
         return [
             LiveEventCreate(
@@ -217,6 +458,191 @@ class HealthAdapter(Adapter):
 
 @dataclass(frozen=True)
 class GitHubAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        if config.get("provider") != "github":
+            return await super().act(
+                action=action,
+                args=args,
+                token=token,
+                scopes=scopes,
+                config=config,
+            )
+        if action == "github.list_issues":
+            return await self._list_issues(token, args)
+        if action == "github.comment_pr":
+            return await self._comment_pr(token, args)
+        return await super().act(
+            action=action,
+            args=args,
+            token=token,
+            scopes=scopes,
+            config=config,
+        )
+
+    async def refresh_token(
+        self,
+        *,
+        token: str,
+        refresh_token: str,
+        config: dict,
+    ) -> dict:
+        if config.get("provider") == "github":
+            provider = oauth.provider_for("github")
+            if provider is None:  # pragma: no cover - github always maps
+                raise oauth.OAuthProviderError("github OAuth provider unavailable")
+            return await provider.refresh(refresh_token)
+        return await super().refresh_token(
+            token=token,
+            refresh_token=refresh_token,
+            config=config,
+        )
+
+    async def revoke_remote(
+        self,
+        *,
+        token: str,
+        config: dict,
+    ) -> dict:
+        if config.get("provider") == "github":
+            provider = oauth.provider_for("github")
+            if provider is None:  # pragma: no cover - github always maps
+                raise oauth.OAuthProviderError("github OAuth provider unavailable")
+            return await provider.revoke(token)
+        return await super().revoke_remote(token=token, config=config)
+
+    @staticmethod
+    def _repo_args(args: dict) -> tuple[str, str]:
+        repo = str(args.get("repo") or "").strip().strip("/")
+        parts = repo.split("/")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError("repo must be 'owner/name'")
+        return parts[0], parts[1]
+
+    @staticmethod
+    def _github_request_headers(token: str) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+
+    async def _list_issues(self, token: str, args: dict) -> dict:
+        owner, repo = self._repo_args(args)
+        provider = oauth.provider_for("github")
+        if provider is None:  # pragma: no cover - github always maps
+            raise oauth.OAuthProviderError("github OAuth provider unavailable")
+        limit = args.get("limit")
+        per_page = min(max(int(limit) if isinstance(limit, int) else 20, 1), 100)
+        params = {
+            "state": "open",
+            "per_page": str(per_page),
+            "sort": "updated",
+            "direction": "desc",
+        }
+        url = f"{provider.api_base}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/issues"
+        async with _make_client() as client:
+            response = await client.get(
+                url,
+                params=params,
+                headers=self._github_request_headers(token),
+            )
+        if response.status_code in (401, 403):
+            raise oauth.OAuthAuthError("github provider rejected the access token")
+        if response.status_code == 404:
+            raise oauth.OAuthProviderError(
+                "repository not found or not visible to the granted token"
+            )
+        if response.status_code >= 400:
+            raise oauth.OAuthProviderError(
+                f"github provider request failed (status {response.status_code})"
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise oauth.OAuthProviderError(
+                "github provider returned a non-JSON response"
+            ) from exc
+        if not isinstance(data, list):
+            raise oauth.OAuthProviderError(
+                "github provider returned a malformed issues response"
+            )
+        issues = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            raw_user = item.get("user")
+            user: dict[str, Any] = raw_user if isinstance(raw_user, dict) else {}
+            issues.append(
+                {
+                    "number": item.get("number"),
+                    "title": _text(item.get("title"), 256),
+                    "state": _text(item.get("state"), 32),
+                    "html_url": _text(item.get("html_url"), 512) or None,
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "author": _text(user.get("login"), 128) or None,
+                    "pull_request": item.get("pull_request") is not None,
+                    "comments": item.get("comments"),
+                }
+            )
+        return {"ok": True, "mode": "github", "action": "github.list_issues", "issues": issues}
+
+    async def _comment_pr(self, token: str, args: dict) -> dict:
+        owner, repo = self._repo_args(args)
+        number = args.get("number")
+        if not isinstance(number, int) or number <= 0:
+            raise ValueError("number must be a positive pull-request number")
+        body = str(args.get("body") or "").strip()
+        if not body:
+            raise ValueError("body must be a non-empty comment")
+        provider = oauth.provider_for("github")
+        if provider is None:  # pragma: no cover - github always maps
+            raise oauth.OAuthProviderError("github OAuth provider unavailable")
+        url = (
+            f"{provider.api_base}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
+            f"/issues/{number}/comments"
+        )
+        async with _make_client() as client:
+            response = await client.post(
+                url,
+                json={"body": body},
+                headers=self._github_request_headers(token),
+            )
+        if response.status_code in (401, 403):
+            raise oauth.OAuthAuthError("github provider rejected the access token")
+        if response.status_code >= 400:
+            raise oauth.OAuthProviderError(
+                f"github provider request failed (status {response.status_code})"
+            )
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise oauth.OAuthProviderError(
+                "github provider returned a non-JSON response"
+            ) from exc
+        if not isinstance(data, dict):
+            raise oauth.OAuthProviderError(
+                "github provider returned a malformed comment response"
+            )
+        return {
+            "ok": True,
+            "mode": "github",
+            "action": "github.comment_pr",
+            "comment": {
+                "id": data.get("id"),
+                "html_url": _text(data.get("html_url"), 512) or None,
+                "created_at": data.get("created_at"),
+            },
+        }
+
     async def translate_webhook(
         self,
         payload: dict,
@@ -456,8 +882,33 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
         privacy_kind="app",
         event_types=("github.ci.failure", "github.issue.updated", "github.pr.updated"),
         actions=(
-            AdapterAction("github.list_issues", "github:read", "List open issues for a repository"),
-            AdapterAction("github.comment_pr", "github:act", "Comment on a pull request"),
+            AdapterAction(
+                "github.list_issues",
+                "github:read",
+                "List open issues for a repository",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    "required": ["repo"],
+                },
+            ),
+            AdapterAction(
+                "github.comment_pr",
+                "github:act",
+                "Comment on a pull request",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "repo": {"type": "string", "pattern": r"^[^/\s]+/[^/\s]+$"},
+                        "number": {"type": "integer", "minimum": 1},
+                        "body": {"type": "string", "minLength": 1, "maxLength": 65536},
+                    },
+                    "required": ["repo", "number", "body"],
+                },
+            ),
         ),
     ),
     SmartHomeAdapter(

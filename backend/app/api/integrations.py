@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import ActorContext, require_actor, require_master, require_reverification
 from app.config import settings
 from app.db import get_session
+from app.integrations import oauth, webhooks
 from app.integrations import plugins as plugin_service
 from app.integrations import service as integrations
-from app.integrations import webhooks
 from app.models import Integration
 from app.schemas import (
     IntegrationActionOut,
@@ -23,7 +23,10 @@ from app.schemas import (
     IntegrationCredentialOut,
     IntegrationOut,
     IntegrationScopeUpdate,
+    IntegrationSyncOut,
     LiveEventOut,
+    OAuthAuthorizeOut,
+    OAuthStatusOut,
     PluginCommandOut,
     PluginCommandRequest,
     PluginManifest,
@@ -47,6 +50,12 @@ def _integration_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=410, detail=str(exc))
     if isinstance(exc, ValueError):
         return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, oauth.OAuthReauthRequiredError):
+        return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, oauth.OAuthAuthError):
+        return HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, oauth.OAuthProviderError):
+        return HTTPException(status_code=502, detail=str(exc))
     raise exc
 
 
@@ -212,6 +221,90 @@ async def refresh_oauth_credential(
     return result
 
 
+@router.get(
+    "/integrations/oauth/authorize",
+    response_model=OAuthAuthorizeOut,
+)
+async def oauth_authorize(
+    integration_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> OAuthAuthorizeOut:
+    """Start an authorization-code + PKCE flow for a provider-backed adapter."""
+    try:
+        result = await integrations.begin_oauth_flow(session, integration_id, actor=actor)
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+    await session.commit()
+    return result
+
+
+@router.get(
+    "/integrations/oauth/callback",
+    response_model=IntegrationCredentialOut,
+)
+async def oauth_callback(
+    code: str,
+    state: str,
+    session: AsyncSession = Depends(get_session),
+) -> IntegrationCredentialOut:
+    """Provider redirect target: exchange the code, store tokens in the vault.
+
+    The CSRF ``state`` value is the only credential; the callback is public so
+    provider browsers can redirect here without a bearer token.
+    """
+    try:
+        result = await integrations.complete_oauth_flow(
+            session,
+            state=state,
+            code=code,
+            actor="oauth_callback",
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+    await session.commit()
+    return result
+
+
+@router.post(
+    "/integrations/oauth/callback",
+    response_model=IntegrationCredentialOut,
+)
+async def oauth_callback_post(
+    code: str,
+    state: str,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> IntegrationCredentialOut:
+    """Headless/CLI alternative to the browser redirect callback."""
+    try:
+        result = await integrations.complete_oauth_flow(
+            session,
+            state=state,
+            code=code,
+            actor=actor,
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+    await session.commit()
+    return result
+
+
+@router.get(
+    "/integrations/{integration_id}/oauth/status",
+    response_model=OAuthStatusOut,
+)
+async def oauth_status(
+    integration_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> OAuthStatusOut:
+    try:
+        return await integrations.oauth_status(session, integration_id)
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+
+
 @router.post(
     "/integrations/{integration_id}/webhook-secret",
     response_model=WebhookSecretOut,
@@ -258,6 +351,48 @@ async def run_integration_action(
         raise _integration_error(exc) from exc
     await session.commit()
     return result
+
+
+@router.post(
+    "/integrations/{integration_id}/sync",
+    response_model=IntegrationSyncOut,
+)
+async def sync_integration(
+    integration_id: UUID,
+    days: int | None = None,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_reverification("integration.action")),
+) -> IntegrationSyncOut:
+    """Pull real provider data (e.g. 7 days of calendar events) into live events."""
+    actor = ctx.actor
+    effective_days = min(max(days, 1), 90) if days is not None else None
+    try:
+        result = await integrations.sync_integration(
+            session,
+            integration_id,
+            actor=actor,
+            days=effective_days,
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+    await session.commit()
+    return result
+
+
+@router.get(
+    "/integrations/{integration_id}/calendar/signals",
+    response_model=dict,
+)
+async def calendar_signals(
+    integration_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """Derived calendar signals (next event, leave-by, density, quiet hours)."""
+    try:
+        return await integrations.calendar_signals(session, integration_id)
+    except Exception as exc:
+        raise _integration_error(exc) from exc
 
 
 @router.get("/integrations/{integration_id}/events", response_model=list[LiveEventOut])

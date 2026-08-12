@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import LiveDerivedState, LiveEvent
+from app.workers.scheduler import LiveMaintenance
 
 
 async def _ingest_signals(client: AsyncClient) -> None:
@@ -110,3 +112,32 @@ async def test_live_rebuild_replays_stream_deterministically(
     assert len(derived_rows) == 4
     assert all(row.consumed_count == row.event_count for row in derived_rows)
     assert all(row.signals for row in derived_rows)
+
+
+def test_scheduler_runs_live_rebuild_on_cadence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runs: list[str] = []
+    monkeypatch.setattr(
+        "app.workers.scheduler.run_live_retention",
+        lambda: runs.append("retention") or {},
+    )
+    monkeypatch.setattr(
+        "app.workers.scheduler.run_live_rebuild",
+        lambda: runs.append("rebuild") or {"events_replayed": 0},
+    )
+
+    maintenance = LiveMaintenance(
+        retention_interval_seconds=1_000,
+        rebuild_interval_seconds=10,
+    )
+    startup = maintenance.run_due(now=0.0)
+    assert startup == {"retention": {}, "rebuild": {"events_replayed": 0}}
+    assert runs == ["retention", "rebuild"]
+
+    assert maintenance.run_due(now=5.0) == {}
+    assert runs == ["retention", "rebuild"]
+
+    second = maintenance.run_due(now=11.0)
+    assert second == {"rebuild": {"events_replayed": 0}}
+    assert runs == ["retention", "rebuild", "rebuild"]

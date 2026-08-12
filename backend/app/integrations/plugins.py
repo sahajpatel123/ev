@@ -431,6 +431,11 @@ async def run_command(
     context = await _plugin_context(session, row.permissions or [])
     wrapper = _wrap_handler(handler)
     try:
+        # Process-level isolation only: `python -I -S` plus AST validation
+        # rejects imports/dunders, but the subprocess still runs as the EV
+        # server user with host network access. Plugins are master-approved
+        # before any run; before plugin execution is exposed to untrusted or
+        # external code, containerize it (see docs/SECURITY.md §13).
         proc = subprocess.run(
             [sys.executable, "-I", "-S", "-c", wrapper],
             input=json.dumps({"args": args or {}, "context": context}).encode("utf-8"),

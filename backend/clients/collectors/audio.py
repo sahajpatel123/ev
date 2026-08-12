@@ -12,12 +12,22 @@ import os
 from contextlib import suppress
 from pathlib import Path
 
+from app.audio.scene import classify_wav
+
 
 def _local_hint_file() -> Path:
     return Path(os.environ.get("EV_AUDIO_SCENE_FILE", str(Path.home() / ".ev" / "audio-scene.json")))
 
 
 def audio_scene() -> dict | None:
+    sample_file = os.environ.get("EV_AUDIO_SAMPLE_FILE")
+    if sample_file:
+        try:
+            data = Path(sample_file).read_bytes()
+        except OSError:
+            return None
+        return classify_wav(data)
+
     scene = os.environ.get("EV_AUDIO_SCENE")
     in_call = os.environ.get("EV_IN_CALL")
     confidence = os.environ.get("EV_AUDIO_CONFIDENCE")

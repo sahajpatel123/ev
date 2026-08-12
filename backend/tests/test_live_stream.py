@@ -12,6 +12,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app
 from app.services.live_stream import stream_live_events
+from clients.collectors.agent import collect_once, sync_queue
+from clients.collectors.queue import CollectorQueue
+
+
+def _runner(app: str = "Xcode", window: str = "retrieval.py — EV") -> object:
+    def runner(command: str) -> str:
+        if "get name of first application process" in command:
+            return app
+        if "get name of first window" in command:
+            return window
+        return ""
+
+    return runner
 
 
 async def _ingest(
@@ -147,3 +160,79 @@ async def test_live_stream_endpoint_sse_frames_events() -> None:
     finally:
         await stream_client.aclose()
         await ingest_client.aclose()
+
+
+async def test_live_stream_collector_to_subscriber(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A collector posting through the live API reaches a stream subscriber."""
+    monkeypatch.setenv("EV_AUDIO_SCENE_FILE", "/tmp/ev-none-audio.json")
+    monkeypatch.setenv("EV_LOCATION_FILE", "/tmp/ev-none-location.json")
+    for name in (
+        "EV_AUDIO_SCENE",
+        "EV_IN_CALL",
+        "EV_AUDIO_CONFIDENCE",
+        "EV_LOCATION_PLACE",
+        "EV_LOCATION_PRESENCE",
+        "EV_LIVE_PRIVACY",
+        "EV_DEVICE_ID",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    since = datetime.now(UTC)
+    agen = stream_live_events(
+        db_session, access="user", poll_interval=0.05, since=since
+    )
+    try:
+        counts = await collect_once(client, screen_runner=_runner())  # type: ignore[arg-type]
+        assert counts == {"screen-activity": 1}
+
+        item = await asyncio.wait_for(anext(agen), timeout=5)
+        assert item["channel_name"] == "screen-activity"
+        assert item["kind"] == "screen"
+        assert item["privacy_level"] == "sensitive"
+        assert item["payload"]["app"] == "Xcode"
+        assert item["payload"]["code_file"] == "retrieval.py"
+        assert "raw" not in str(item["payload"])
+    finally:
+        await agen.aclose()
+
+
+async def test_offline_queue_replay_reaches_subscriber(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    tmp_path,
+) -> None:
+    """An event queued during an outage reaches a live subscriber after replay."""
+    queue = CollectorQueue(queue_dir=tmp_path / "queue")
+    queue.enqueue(
+        channel="screen-activity",
+        kind="screen",
+        events=[
+            {
+                "event_type": "focus_change",
+                "payload": {"app": "Xcode", "code_file": "retrieval.py"},
+            }
+        ],
+        channel_id=None,
+        privacy_level="sensitive",
+    )
+
+    since = datetime.now(UTC)
+    agen = stream_live_events(
+        db_session, access="user", poll_interval=0.05, since=since
+    )
+    try:
+        summary = await sync_queue(client, queue)
+        assert summary["synced"] == 1
+        assert summary["remaining"] == 0
+
+        item = await asyncio.wait_for(anext(agen), timeout=5)
+        assert item["channel_name"] == "screen-activity"
+        assert item["privacy_level"] == "sensitive"
+        assert item["payload"]["app"] == "Xcode"
+        assert "raw" not in str(item["payload"])
+    finally:
+        await agen.aclose()

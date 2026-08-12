@@ -16,7 +16,8 @@ Security invariants enforced here:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+import secrets
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 from uuid import UUID
 
@@ -25,8 +26,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.ev.live import create_channel, ingest_events, list_events
-from app.integrations import vault, webhooks
+from app.integrations import oauth, vault, webhooks
 from app.integrations.adapters import registry
+from app.integrations.calendar_signals import derive_calendar_signals
 from app.models import (
     Integration,
     IntegrationCredential,
@@ -42,7 +44,10 @@ from app.schemas import (
     IntegrationCredentialOut,
     IntegrationOut,
     IntegrationScopeUpdate,
+    IntegrationSyncOut,
     LiveChannelCreate,
+    OAuthAuthorizeOut,
+    OAuthStatusOut,
     WebhookIngestOut,
     WebhookSecretOut,
 )
@@ -327,6 +332,7 @@ async def list_credentials(
     return [
         _credential_out(credential)
         for credential in await _credentials_for(session, integration_id)
+        if credential.kind != "oauth_state"  # transient PKCE flow state, never exposed
     ]
 
 
@@ -418,6 +424,8 @@ async def _webhook_secret(
 def _parse_expires(value: object) -> datetime | None:
     if value is None:
         return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     if isinstance(value, (int, float)):
         return datetime.fromtimestamp(float(value), tz=UTC)
     if isinstance(value, str):
@@ -427,6 +435,13 @@ def _parse_expires(value: object) -> datetime | None:
             return None
         return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
     return None
+
+
+def _as_aware(value: datetime | None) -> datetime | None:
+    """SQLite returns naive datetimes; normalize for comparisons."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 async def refresh_oauth(
@@ -458,6 +473,15 @@ async def refresh_oauth(
             )
         except NotImplementedError as exc:
             raise ValueError(str(exc)) from exc
+        except oauth.OAuthReauthRequiredError:
+            credential.metadata_ = {
+                **(credential.metadata_ or {}),
+                "reauth_required": True,
+            }
+            # Persist the re-auth flag even though the caller aborts: the next
+            # status check must report that the grant is dead.
+            await session.commit()
+            raise
     finally:
         del token, refresh
     access_token = outcome.get("access_token")
@@ -486,6 +510,289 @@ async def refresh_oauth(
         details={"adapter": integration.adapter, "rotated": True},
     )
     return _credential_out(credential)
+
+
+async def begin_oauth_flow(
+    session: AsyncSession,
+    integration_id: UUID,
+    actor: str,
+) -> OAuthAuthorizeOut:
+    """Start an authorization-code + PKCE flow and store the verifier in the vault."""
+    integration = await _active_integration(session, integration_id)
+    provider = oauth.provider_for(integration.adapter)
+    if provider is None:
+        raise ValueError(f"adapter '{integration.adapter}' has no OAuth provider")
+    missing = provider.missing_credentials()
+    if missing:
+        raise ValueError(
+            "OAuth provider is not configured: missing "
+            + ", ".join(missing)
+            + " (see docs/INTEGRATIONS.md)"
+        )
+    state = secrets.token_urlsafe(32)
+    verifier, _ = oauth.new_pkce_pair()
+    expires_at = utcnow() + timedelta(seconds=settings.oauth_state_ttl_seconds)
+    row = await _credential(session, integration.id, "oauth_state")
+    if row is None:
+        row = IntegrationCredential(integration_id=integration.id, kind="oauth_state")
+        session.add(row)
+    # The code verifier and CSRF state are vault-encrypted; only an expiry is
+    # plaintext, and the row is deleted as soon as the callback completes.
+    row.encrypted_access = vault.encrypt(verifier)
+    row.encrypted_refresh = vault.encrypt(state)
+    row.token_fingerprint = vault.fingerprint(state)
+    row.scopes = []
+    row.token_type = None
+    row.revoked_at = None
+    row.metadata_ = {"expires_at": expires_at.isoformat()}
+    await session.flush()
+    await log_access(
+        session,
+        actor=actor,
+        action="integration.oauth_authorize",
+        endpoint="GET /v1/integrations/oauth/authorize",
+        resource_type="integration",
+        resource_ids=[integration.id],
+        details={
+            "adapter": integration.adapter,
+            "provider": provider.slug,
+            "expires_at": expires_at.isoformat(),
+        },
+    )
+    return OAuthAuthorizeOut(
+        authorize_url=provider.build_authorize_url(state=state, code_verifier=verifier),
+        state=state,
+        expires_at=expires_at,
+    )
+
+
+async def complete_oauth_flow(
+    session: AsyncSession,
+    *,
+    state: str,
+    code: str,
+    actor: str,
+) -> IntegrationCredentialOut:
+    """Exchange an authorization code (PKCE) and store the tokens in the vault."""
+    if not state or not code:
+        raise ValueError("OAuth callback requires state and code")
+    rows = (
+        await session.execute(
+            select(IntegrationCredential).where(
+                IntegrationCredential.kind == "oauth_state"
+            )
+        )
+    ).scalars().all()
+    state_row = None
+    for row in rows:
+        if row.encrypted_refresh and vault.decrypt(row.encrypted_refresh) == state:
+            state_row = row
+            break
+    if state_row is None:
+        raise ValueError("OAuth state is unknown or already used")
+    expires_at = _parse_expires((state_row.metadata_ or {}).get("expires_at"))
+    if expires_at is None or expires_at < utcnow():
+        raise ValueError("OAuth authorization expired; start a new one")
+    if not state_row.encrypted_access:
+        raise ValueError("OAuth state is incomplete; start a new authorization")
+    verifier = vault.decrypt(state_row.encrypted_access)
+    integration = await session.get(Integration, state_row.integration_id)
+    if integration is None or integration.status != "active":
+        raise LookupError("integration is revoked")
+    adapter = registry.get(integration.adapter)
+    provider = oauth.provider_for(integration.adapter)
+    if adapter is None or provider is None:
+        raise LookupError(f"adapter '{integration.adapter}' is unavailable")
+    outcome = await provider.exchange_code(code, verifier)
+    account_email = oauth.id_token_email(outcome)
+    oauth_row = await _credential(session, integration.id, "oauth")
+    if oauth_row is None:
+        oauth_row = IntegrationCredential(integration_id=integration.id, kind="oauth")
+        session.add(oauth_row)
+    oauth_row.provider_account_id = account_email
+    oauth_row.scopes = sorted(set(integration.scopes or []))
+    oauth_row.encrypted_access = vault.encrypt(outcome["access_token"])
+    refresh_token = outcome.get("refresh_token")
+    if isinstance(refresh_token, str):
+        oauth_row.encrypted_refresh = vault.encrypt(refresh_token)
+    elif not oauth_row.encrypted_refresh:
+        oauth_row.encrypted_refresh = None
+    oauth_row.token_type = outcome.get("token_type") or "Bearer"
+    oauth_row.token_fingerprint = vault.fingerprint(outcome["access_token"])
+    oauth_row.expires_at = outcome.get("expires_at")
+    oauth_row.revoked_at = None
+    oauth_row.metadata_ = {
+        "provider": provider.slug,
+        "auth_method": "authorization_code_pkce",
+    }
+    await session.delete(state_row)
+    await session.flush()
+    await log_access(
+        session,
+        actor=actor,
+        action="integration.oauth_callback",
+        endpoint="GET /v1/integrations/oauth/callback",
+        resource_type="integration",
+        resource_ids=[integration.id],
+        details={
+            "adapter": integration.adapter,
+            "provider": provider.slug,
+            "auth_method": "authorization_code_pkce",
+            "provider_account_id": account_email,
+        },
+    )
+    return _credential_out(oauth_row)
+
+
+async def oauth_status(
+    session: AsyncSession,
+    integration_id: UUID,
+) -> OAuthStatusOut:
+    integration = await session.get(Integration, integration_id)
+    if integration is None:
+        raise KeyError(integration_id)
+    provider = oauth.provider_for(integration.adapter)
+    credential = await _credential(session, integration_id, "oauth")
+    configured = (
+        credential is not None
+        and credential.revoked_at is None
+        and bool(credential.encrypted_access)
+    )
+    expires_at = _as_aware(credential.expires_at) if credential is not None else None
+    expired = expires_at is not None and expires_at <= utcnow()
+    has_refresh = credential is not None and bool(credential.encrypted_refresh)
+    reauth_required = (
+        not configured
+        or (expired and not has_refresh)
+        or bool((credential.metadata_ if credential is not None else {}).get("reauth_required"))
+    )
+    return OAuthStatusOut(
+        provider=provider.slug if provider is not None else None,
+        authorized=configured and not reauth_required,
+        configured=configured,
+        expires_at=expires_at,
+        expired=expired,
+        reauth_required=reauth_required,
+        provider_account_id=credential.provider_account_id if credential else None,
+        scopes=list(integration.scopes or []),
+    )
+
+
+async def sync_integration(
+    session: AsyncSession,
+    integration_id: UUID,
+    actor: str,
+    *,
+    days: int | None = None,
+) -> IntegrationSyncOut:
+    """Pull provider data into the integration's live channel (idempotent)."""
+    integration = await _active_integration(session, integration_id)
+    adapter = registry.get(integration.adapter)
+    if adapter is None:
+        raise LookupError(f"adapter '{integration.adapter}' is unavailable")
+    if integration.live_channel_id is None:
+        raise LookupError("integration has no live channel")
+    credential = await _credential(session, integration_id, "oauth")
+    if (
+        credential is None
+        or credential.revoked_at is not None
+        or not credential.encrypted_access
+    ):
+        raise LookupError("integration is not authorized with OAuth credentials")
+    now = utcnow()
+    since = now - timedelta(hours=1)
+    until = now + timedelta(days=days or settings.calendar_sync_days)
+    token = vault.decrypt(credential.encrypted_access)
+    try:
+        try:
+            result = await adapter.sync(
+                token=token,
+                scopes=list(integration.scopes or []),
+                config=integration.config or {},
+                since=since,
+                until=until,
+            )
+        except oauth.OAuthAuthError:
+            await refresh_oauth(session, integration_id, actor)
+            credential = await _credential(session, integration_id, "oauth")
+            if credential is None or not credential.encrypted_access:
+                raise oauth.OAuthReauthRequiredError(
+                    "integration requires re-authorization after a failed refresh"
+                ) from None
+            token = vault.decrypt(credential.encrypted_access)
+            result = await adapter.sync(
+                token=token,
+                scopes=list(integration.scopes or []),
+                config=integration.config or {},
+                since=since,
+                until=until,
+            )
+    finally:
+        del token
+    channel = await session.get(LiveChannel, integration.live_channel_id)
+    if channel is None or not channel.active:
+        raise LookupError("integration live channel is inactive")
+    existing_ids: set[str] = set()
+    for row in await list_events(session, channel.id, limit=500):
+        event_id = (row.payload or {}).get("event_id")
+        if isinstance(event_id, str) and event_id:
+            existing_ids.add(event_id)
+    fresh = [
+        event
+        for event in result.events
+        if not (
+            isinstance(event.payload.get("event_id"), str)
+            and event.payload["event_id"] in existing_ids
+        )
+    ]
+    stored = await ingest_events(session, channel, fresh)
+    integration.last_used_at = utcnow()
+    await log_access(
+        session,
+        actor=actor,
+        action="integration.sync",
+        endpoint="POST /v1/integrations/{id}/sync",
+        resource_type="live_event",
+        resource_ids=[event.id for event in stored],
+        details={
+            "adapter": integration.adapter,
+            "provider": (integration.config or {}).get("provider", "local"),
+            "requested": len(result.events),
+            "accepted": len(stored),
+            "deduplicated": len(result.events) - len(stored),
+            "signal_keys": sorted(result.signals.keys()),
+        },
+    )
+    return IntegrationSyncOut(
+        integration_id=integration.id,
+        adapter=integration.adapter,
+        synced_at=utcnow(),
+        accepted=len(stored),
+        deduplicated=len(result.events) - len(stored),
+        event_count=len(result.events),
+        signals=result.signals,
+    )
+
+
+async def calendar_signals(
+    session: AsyncSession,
+    integration_id: UUID,
+) -> dict:
+    """Derive calendar signals from stored live events (no provider round trip)."""
+    integration = await session.get(Integration, integration_id)
+    if integration is None:
+        raise KeyError(integration_id)
+    if integration.adapter != "calendar":
+        raise ValueError("integration is not a calendar adapter")
+    if integration.live_channel_id is None:
+        return derive_calendar_signals([])
+    rows = await list_events(session, integration.live_channel_id, limit=500)
+    payloads = [
+        row.payload
+        for row in rows
+        if row.event_type == "calendar.event.updated" and isinstance(row.payload, dict)
+    ]
+    return derive_calendar_signals(payloads)
 
 
 async def update_scopes(
@@ -660,15 +967,51 @@ async def execute_action(
         or not credential.encrypted_access
     ):
         raise LookupError("integration is not authorized with OAuth credentials")
+    expires_at = _as_aware(credential.expires_at)
+    if expires_at is not None and expires_at <= utcnow():
+        if not credential.encrypted_refresh:
+            raise oauth.OAuthReauthRequiredError(
+                "integration credential has expired and has no refresh token; "
+                "re-authorize to continue"
+            )
+        await refresh_oauth(session, integration_id, actor)
+        credential = await _credential(session, integration_id, "oauth")
+        if credential is None or not credential.encrypted_access:
+            raise oauth.OAuthReauthRequiredError(
+                "integration requires re-authorization after a failed refresh"
+            ) from None
+    if credential is None or not credential.encrypted_access:
+        raise LookupError("integration is not authorized with OAuth credentials")
     token = vault.decrypt(credential.encrypted_access)
     try:
-        result = await adapter.act(
-            action=action,
-            args=args or {},
-            token=token,
-            scopes=list(integration.scopes or []),
-            config=integration.config or {},
-        )
+        try:
+            result = await adapter.act(
+                action=action,
+                args=args or {},
+                token=token,
+                scopes=list(integration.scopes or []),
+                config=integration.config or {},
+            )
+        except oauth.OAuthAuthError:
+            if not credential.encrypted_refresh:
+                raise oauth.OAuthReauthRequiredError(
+                    "integration credential was rejected and has no refresh "
+                    "token; re-authorize to continue"
+                ) from None
+            await refresh_oauth(session, integration_id, actor)
+            credential = await _credential(session, integration_id, "oauth")
+            if credential is None or not credential.encrypted_access:
+                raise oauth.OAuthReauthRequiredError(
+                    "integration requires re-authorization after a failed refresh"
+                ) from None
+            token = vault.decrypt(credential.encrypted_access)
+            result = await adapter.act(
+                action=action,
+                args=args or {},
+                token=token,
+                scopes=list(integration.scopes or []),
+                config=integration.config or {},
+            )
     finally:
         del token  # minimize plaintext lifetime
     integration.last_used_at = utcnow()

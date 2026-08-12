@@ -522,6 +522,66 @@ async def test_webhook_delivery_id_is_idempotent(client: AsyncClient) -> None:
     assert resp.json()["accepted"] == 1
 
 
+async def test_webhook_ingress_fails_closed_without_secret_or_signature(
+    client: AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    calendar = await install(client, "calendar")
+    calendar_id = calendar["id"]
+    payload = {"summary": "must not land", "start": "2026-08-10T11:00:00Z"}
+
+    # No webhook secret configured -> fail closed before signature checks.
+    resp = await client.post(
+        f"/v1/integrations/webhook/{calendar_id}",
+        content=json.dumps(payload),
+        headers=signed_headers(payload, "some-secret"),
+    )
+    assert resp.status_code == 410
+
+    resp = await client.post(f"/v1/integrations/{calendar_id}/webhook-secret")
+    assert resp.status_code == 201, resp.text
+    secret = resp.json()["secret"]
+
+    # Missing signature, missing timestamp, and wrong algorithm are rejected.
+    resp = await client.post(
+        f"/v1/integrations/webhook/{calendar_id}",
+        content=json.dumps(payload),
+        headers={"X-EV-Timestamp": str(int(time.time()))},
+    )
+    assert resp.status_code == 401
+
+    resp = await client.post(
+        f"/v1/integrations/webhook/{calendar_id}",
+        content=json.dumps(payload),
+        headers={"X-EV-Signature": "sha256=" + "0" * 64},
+    )
+    assert resp.status_code == 401
+
+    resp = await client.post(
+        f"/v1/integrations/webhook/{calendar_id}",
+        content=json.dumps(payload),
+        headers={
+            "X-EV-Signature": "md5=deadbeef",
+            "X-EV-Timestamp": str(int(time.time())),
+        },
+    )
+    assert resp.status_code == 401
+
+    # No rejected delivery ever reached the live channel.
+    events = (
+        await db_session.execute(
+            select(LiveEvent).where(
+                LiveEvent.channel_id == UUID(calendar["live_channel_id"])
+            )
+        )
+    ).scalars().all()
+    assert events == []
+
+    # A correct signature still works after all the negative cases.
+    result = await webhook(client, calendar_id, payload, secret)
+    assert result["accepted"] == 1
+
+
 async def test_webhook_body_size_is_capped(client: AsyncClient) -> None:
     calendar = await install(client, "calendar")
     calendar_id = calendar["id"]
@@ -800,6 +860,18 @@ async def test_vault_key_rotation_reencrypts_credentials(
             json={"new_key": "short"},
         )
         assert resp.status_code == 422  # schema-level minimum enforced at the boundary
+    finally:
+        vault.reset()
+
+
+def test_vault_refuses_to_derive_key_from_master_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "vault_key", "")
+    vault.reset()
+    try:
+        with pytest.raises(RuntimeError, match="EV_VAULT_KEY is required"):
+            vault.encrypt("super-secret-token-123456")
     finally:
         vault.reset()
 
