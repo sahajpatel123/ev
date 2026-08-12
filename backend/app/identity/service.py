@@ -22,6 +22,8 @@ from app.auth import ActorContext
 from app.models import (
     Device,
     OwnerIdentity,
+    PasskeyAuthMaterial,
+    PasskeyChallenge,
     PasskeyCredential,
     RecoveryCode,
     ReVerificationProof,
@@ -54,6 +56,13 @@ OWNER_ACTIONS = {
     "device.manage",
     "identity.manage",
     "recovery.rotate",
+    "face.enroll",
+    "face.revoke",
+    "face.delete",
+    "person.delete",
+    "adapter.activate",
+    "adapter.delete",
+    "fleet.write",
 }
 
 # Sensitive actions that require a fresh, purpose-bound re-verification proof
@@ -61,11 +70,21 @@ OWNER_ACTIONS = {
 REVERIFY_ACTIONS = {
     "integration.action",
     "memory.delete",
+    "memory.export",
     "runtime.action",
     "voice.revoke",
     "voice.delete",
-    "recovery.rotate",
     "voice.sensitive_action",
+    "face.revoke",
+    "face.delete",
+    "recovery.rotate",
+    "vault.rotate",
+    "backup.restore",
+    "compliance.erasure",
+    "adapter.activate",
+    "adapter.delete",
+    "person.delete",
+    "fleet.write",
 }
 
 RECOVERY_CODE_COUNT = 8
@@ -495,3 +514,255 @@ async def revoke_passkey(
         details={"owner_id": str(owner_id), "reason": reason},
     )
     return row
+
+
+# --------------------------------------------------------------------------- #
+# WebAuthn ceremony: server-issued challenges, attestation, authentication
+# --------------------------------------------------------------------------- #
+
+
+async def issue_webauthn_challenge(
+    session: AsyncSession,
+    *,
+    purpose: str,
+    owner: OwnerIdentity | None = None,
+    ctx: ActorContext | None = None,
+    device: Device | None = None,
+) -> tuple[PasskeyChallenge, str]:
+    """Issue a fresh, single-use WebAuthn challenge.
+
+    Only the SHA-256 digest of the challenge is stored; the raw base64url
+    challenge is returned to the client once. Registration challenges bind to
+    the owner; authentication challenges are issued to anonymous callers
+    because they are the proof of ownership itself.
+    """
+    if purpose not in ("register", "authenticate"):
+        raise IdentityError(
+            f"Unsupported WebAuthn purpose {purpose!r}",
+            status=422,
+            code="webauthn_purpose",
+        )
+    from app.config import settings
+    from app.identity import webauthn
+
+    raw = secrets.token_bytes(32)
+    now = utcnow()
+    row = PasskeyChallenge(
+        purpose=purpose,
+        owner_id=owner.id if owner is not None else None,
+        device_id=device.id if device is not None else None,
+        challenge_hash=webauthn.sha256_hex_bytes(raw),
+        rp_id=settings.webauthn_rp_id,
+        expires_at=now + timedelta(seconds=settings.webauthn_challenge_ttl_seconds),
+    )
+    session.add(row)
+    await session.flush()
+    return row, webauthn.b64url_encode(raw)
+
+
+async def _consume_webauthn_challenge(
+    session: AsyncSession,
+    challenge_id: UUID,
+    purpose: str,
+) -> PasskeyChallenge:
+    row = await session.get(PasskeyChallenge, challenge_id)
+    now = utcnow()
+    expires = as_utc(row.expires_at) if row is not None else None
+    if (
+        row is None
+        or row.purpose != purpose
+        or row.consumed_at is not None
+        or expires is None
+        or expires < now
+    ):
+        raise IdentityError(
+            "WebAuthn challenge is invalid, expired, or already used",
+            status=403,
+            code="webauthn_challenge_invalid",
+        )
+    row.consumed_at = now
+    return row
+
+
+async def verify_webauthn_registration(
+    session: AsyncSession,
+    *,
+    challenge_id: UUID,
+    credential_id: str,
+    client_data_json: str,
+    attestation_object: str,
+    name: str,
+    ctx: ActorContext,
+    device_id: UUID | None = None,
+) -> PasskeyCredential:
+    """Verify a registration attestation and bind the credential to the owner."""
+    from app.config import settings
+    from app.identity import webauthn
+
+    owner = await require_owner(session)
+    challenge_row = await _consume_webauthn_challenge(session, challenge_id, "register")
+    if challenge_row.owner_id is not None and challenge_row.owner_id != owner.id:
+        raise IdentityError(
+            "WebAuthn challenge was issued to a different owner",
+            status=403,
+            code="webauthn_challenge_invalid",
+        )
+    result = webauthn.verify_attestation(
+        webauthn.b64url_decode(attestation_object),
+        client_data_raw=webauthn.b64url_decode(client_data_json),
+        expected_challenge_hash=challenge_row.challenge_hash,
+        rp_id=challenge_row.rp_id,
+        allowed_origins=list(settings.webauthn_origins),
+        require_attestation=settings.webauthn_require_attestation,
+        trust_roots=list(settings.webauthn_attestation_trust_roots_pem),
+    )
+    if not secrets.compare_digest(result.credential_id_b64url, credential_id):
+        raise IdentityError(
+            "credential_id does not match the attested credential",
+            status=422,
+            code="webauthn_credential_mismatch",
+        )
+    credential_hash = sha256_hex(result.credential_id_b64url)
+    existing = (
+        await session.execute(
+            select(PasskeyCredential).where(
+                PasskeyCredential.credential_id_hash == credential_hash,
+                PasskeyCredential.revoked_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise IdentityError(
+            "Passkey already registered",
+            status=409,
+            code="passkey_exists",
+        )
+    if device_id is not None:
+        device = await session.get(Device, device_id)
+        if device is None or device.owner_id != owner.id:
+            raise IdentityError(
+                "Device does not belong to the owner",
+                status=422,
+                code="passkey_device_mismatch",
+            )
+    row = PasskeyCredential(
+        owner_id=owner.id,
+        device_id=device_id,
+        credential_id_hash=credential_hash,
+        name=name.strip() or "passkey",
+    )
+    session.add(row)
+    await session.flush()
+    material = PasskeyAuthMaterial(
+        passkey_id=row.id,
+        public_key_cose=webauthn.cose_key_to_json(result.cose_public_key),
+        sign_count=result.sign_count,
+        aaguid=result.aaguid,
+        transports=[],
+        attestation_format=result.attestation_format,
+        attestation_verified=result.verification_level in ("self", "basic"),
+        attestation_level=result.verification_level,
+        rp_id=challenge_row.rp_id,
+    )
+    session.add(material)
+    await session.flush()
+    await log_access(
+        session,
+        actor="master" if ctx.is_master else "device",
+        action="passkey_register_webauthn",
+        endpoint="POST /v1/identity/webauthn/register/verify",
+        resource_type="passkey",
+        resource_ids=[row.id],
+        details={
+            "owner_id": str(owner.id),
+            "device_id": str(device_id) if device_id else None,
+            "attestation_format": result.attestation_format,
+            "attestation_level": result.verification_level,
+            "sign_count": result.sign_count,
+        },
+    )
+    return row
+
+
+async def verify_webauthn_authentication(
+    session: AsyncSession,
+    *,
+    challenge_id: UUID,
+    credential_id: str,
+    client_data_json: str,
+    authenticator_data: str,
+    signature: str,
+    device_name: str,
+    capabilities: list[str] | None = None,
+) -> tuple[Device, str, OwnerIdentity]:
+    """Verify a passkey authentication and issue a fresh owner device token."""
+    from app.config import settings
+    from app.identity import webauthn
+
+    owner = await require_owner(session)
+    challenge_row = await _consume_webauthn_challenge(session, challenge_id, "authenticate")
+    credential_hash = sha256_hex(credential_id)
+    row = (
+        await session.execute(
+            select(PasskeyCredential).where(
+                PasskeyCredential.credential_id_hash == credential_hash,
+                PasskeyCredential.owner_id == owner.id,
+                PasskeyCredential.revoked_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise IdentityError(
+            "Passkey not registered or revoked",
+            status=401,
+            code="passkey_not_found",
+        )
+    material = (
+        await session.execute(
+            select(PasskeyAuthMaterial).where(
+                PasskeyAuthMaterial.passkey_id == row.id
+            )
+        )
+    ).scalar_one_or_none()
+    if material is None:
+        raise IdentityError(
+            "Passkey has no WebAuthn material",
+            status=401,
+            code="passkey_material_missing",
+        )
+    new_sign_count = webauthn.verify_authentication(
+        client_data_raw=webauthn.b64url_decode(client_data_json),
+        authenticator_data_raw=webauthn.b64url_decode(authenticator_data),
+        signature=webauthn.b64url_decode(signature),
+        expected_challenge_hash=challenge_row.challenge_hash,
+        rp_id=challenge_row.rp_id,
+        allowed_origins=list(settings.webauthn_origins),
+        stored_public_key_cose=material.public_key_cose,
+        stored_sign_count=material.sign_count,
+    )
+    material.sign_count = new_sign_count
+    material.last_used_at = utcnow()
+    token = secrets.token_urlsafe(32)
+    device = Device(
+        name=device_name.strip() or "Passkey device",
+        token_hash=sha256_hex(token),
+        capabilities=capabilities or [],
+        owner_id=owner.id,
+        trust_level=TRUST_OWNER,
+    )
+    session.add(device)
+    await session.flush()
+    await log_access(
+        session,
+        actor="passkey",
+        action="passkey_authenticate",
+        endpoint="POST /v1/identity/webauthn/auth/verify",
+        resource_type="device",
+        resource_ids=[device.id],
+        details={
+            "owner_id": str(owner.id),
+            "passkey_id": str(row.id),
+            "sign_count": new_sign_count,
+        },
+    )
+    return device, token, owner

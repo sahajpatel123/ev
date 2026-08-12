@@ -9,8 +9,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ActorContext, require_actor_context, require_master, require_owner_trust
+from app.config import settings
 from app.db import get_session
 from app.identity import service as identity
+from app.identity import webauthn
 from app.models import Device, PasskeyCredential, RecoveryCode
 from app.schemas import (
     DeviceOut,
@@ -29,6 +31,11 @@ from app.schemas import (
     ReverificationRequest,
     ReverificationResponse,
     TrustMatrixOut,
+    WebauthnAuthOptionsOut,
+    WebauthnAuthResponse,
+    WebauthnAuthVerifyRequest,
+    WebauthnRegisterOptionsOut,
+    WebauthnRegisterVerifyRequest,
 )
 from app.utils.text import utcnow
 
@@ -280,4 +287,134 @@ async def trust_matrix(
         owner_required_actions=sorted(identity.OWNER_ACTIONS),
         reverify_required_actions=sorted(identity.REVERIFY_ACTIONS),
         levels=dict(identity.TRUST_RANK),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# WebAuthn ceremony
+# --------------------------------------------------------------------------- #
+
+
+@router.post("/webauthn/register/options", response_model=WebauthnRegisterOptionsOut)
+async def webauthn_register_options(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_owner_trust),
+) -> WebauthnRegisterOptionsOut:
+    owner = await identity.require_owner(session)
+    challenge, raw = await identity.issue_webauthn_challenge(
+        session,
+        purpose="register",
+        owner=owner,
+        ctx=ctx,
+        device=ctx.device,
+    )
+    await session.commit()
+    return WebauthnRegisterOptionsOut(
+        challenge_id=challenge.id,
+        challenge=raw,
+        rp={"id": settings.webauthn_rp_id, "name": settings.webauthn_rp_name},
+        user={
+            "id": webauthn.b64url_encode(owner.id.bytes),
+            "name": owner.display_name,
+            "displayName": owner.display_name,
+        },
+        pub_key_cred_params=[
+            {"type": "public-key", "alg": -7},
+            {"type": "public-key", "alg": -257},
+            {"type": "public-key", "alg": -8},
+        ],
+        timeout=60000,
+        attestation="direct" if settings.webauthn_require_attestation else "none",
+        authenticator_selection={
+            "residentKey": "preferred",
+            "userVerification": "preferred",
+        },
+    )
+
+
+@router.post(
+    "/webauthn/register/verify",
+    response_model=PasskeyRegisterResponse,
+    status_code=201,
+)
+async def webauthn_register_verify(
+    data: WebauthnRegisterVerifyRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_owner_trust),
+) -> PasskeyRegisterResponse:
+    try:
+        row = await identity.verify_webauthn_registration(
+            session,
+            challenge_id=data.challenge_id,
+            credential_id=data.credential_id,
+            client_data_json=data.client_data_json,
+            attestation_object=data.attestation_object,
+            name=data.name,
+            ctx=ctx,
+            device_id=data.device_id,
+        )
+    except identity.IdentityError as exc:
+        raise _http(exc) from exc
+    except webauthn.WebauthnError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.message,
+            headers={"X-Error-Code": exc.code},
+        ) from exc
+    await session.commit()
+    return PasskeyRegisterResponse(passkey=PasskeyOut.model_validate(row))
+
+
+@router.post("/webauthn/auth/options", response_model=WebauthnAuthOptionsOut)
+async def webauthn_auth_options(
+    session: AsyncSession = Depends(get_session),
+) -> WebauthnAuthOptionsOut:
+    """Deliberately unauthenticated: the challenge is the proof of possession."""
+    owner = await identity.get_owner(session)
+    challenge, raw = await identity.issue_webauthn_challenge(
+        session,
+        purpose="authenticate",
+        owner=owner,
+    )
+    await session.commit()
+    return WebauthnAuthOptionsOut(
+        challenge_id=challenge.id,
+        challenge=raw,
+        rp_id=settings.webauthn_rp_id,
+        timeout=60000,
+        user_verification="preferred",
+    )
+
+
+@router.post("/webauthn/auth/verify", response_model=WebauthnAuthResponse)
+async def webauthn_auth_verify(
+    data: WebauthnAuthVerifyRequest,
+    session: AsyncSession = Depends(get_session),
+) -> WebauthnAuthResponse:
+    try:
+        device, token, owner = await identity.verify_webauthn_authentication(
+            session,
+            challenge_id=data.challenge_id,
+            credential_id=data.credential_id,
+            client_data_json=data.client_data_json,
+            authenticator_data=data.authenticator_data,
+            signature=data.signature,
+            device_name=data.device_name,
+            capabilities=data.capabilities,
+        )
+    except identity.IdentityError as exc:
+        raise _http(exc) from exc
+    except webauthn.WebauthnError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail=exc.message,
+            headers={"X-Error-Code": exc.code},
+        ) from exc
+    await session.commit()
+    return WebauthnAuthResponse(
+        verified=True,
+        token=token,
+        device=DeviceOut.model_validate(device),
+        owner_id=owner.id,
+        trust_level=identity.device_trust(device),
     )

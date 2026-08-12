@@ -21,8 +21,9 @@ from app.compliance.schemas import (
     RetentionSweepOut,
     RetentionSweepRequest,
     TransparencyOut,
+    TransparencySummaryOut,
 )
-from app.compliance.transparency import transparency_report
+from app.compliance.transparency import transparency_report, transparency_summary
 from app.db import get_session
 from app.models import AccessLog
 from app.services.access_log import log_access
@@ -45,6 +46,18 @@ async def transparency(
     actor: str = Depends(require_actor),
 ) -> TransparencyOut:
     return TransparencyOut(**await transparency_report(session))
+
+
+@router.get("/transparency/summary", response_model=TransparencySummaryOut)
+async def transparency_summary_endpoint(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> TransparencySummaryOut:
+    """Plain-language egress report a human can read in ~30 seconds."""
+    return TransparencySummaryOut(
+        generated_at=utcnow().isoformat(),
+        summary=await transparency_summary(session),
+    )
 
 
 @router.post("/erasure", response_model=ErasureOut)
@@ -70,6 +83,8 @@ async def retention_sweep_endpoint(
         ran_at=utcnow(),
         voiceprints_deleted=result["voiceprints_deleted"],
         enrollment_ids=result["enrollment_ids"],
+        faceprints_deleted=result.get("faceprints_deleted", 0),
+        face_enrollment_ids=result.get("face_enrollment_ids", []),
         corpus_snapshots_redacted=result["corpus_snapshots_redacted"],
         access_logs_deleted=result["access_logs_deleted"],
         policy_retention_days=result["policy_retention_days"],

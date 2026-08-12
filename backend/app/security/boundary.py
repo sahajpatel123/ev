@@ -17,6 +17,7 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
+from app.config import settings
 from app.contracts import ChatMessage, MediaPart, RequestEnvelope
 
 MODEL_FORBIDDEN_MARKERS: tuple[str, ...] = (
@@ -42,6 +43,9 @@ SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 SECRET_REDACTION = "[credential redacted]"
+
+# Any single media part larger than this is refused at the boundary.
+DEFAULT_MAX_MEDIA_BYTES = 10 * 1024 * 1024
 
 
 class ModelBoundaryViolation(Exception):
@@ -79,6 +83,8 @@ def _envelope_strings(envelope: RequestEnvelope) -> list[tuple[str, str]]:
     items: list[tuple[str, str]] = []
     _walk_strings(envelope.strategy, "strategy", items)
     _walk_strings(envelope.metadata, "metadata", items)
+    for index, ref in enumerate(envelope.media_refs):
+        _walk_strings(ref, f"media_refs[{index}]", items)
     for index, memory in enumerate(envelope.memories):
         _walk_strings(memory.to_dict(), f"memories[{index}]", items)
     return items
@@ -124,8 +130,20 @@ def guard_model_payload(
                     f"Blocked provider payload: message role={message.role!r} media "
                     f"part kind={part.kind!r} data_url contains forbidden content"
                 )
+            max_bytes = int(getattr(settings, "max_media_bytes", DEFAULT_MAX_MEDIA_BYTES))
+            if part.size_bytes is not None and part.size_bytes > max_bytes:
+                raise ModelBoundaryViolation(
+                    f"Blocked provider payload: message role={message.role!r} media "
+                    f"part kind={part.kind!r} exceeds {max_bytes} bytes"
+                )
 
     if envelope is not None:
+        for index, ref in enumerate(envelope.media_refs):
+            if str(ref.get("privacy_level", "")).lower() == "never_send_to_model":
+                raise ModelBoundaryViolation(
+                    f"Blocked provider payload: envelope media_refs[{index}] carries "
+                    "never_send_to_model media"
+                )
         for path, value in _envelope_strings(envelope):
             if _contains_forbidden(value):
                 raise ModelBoundaryViolation(
@@ -148,6 +166,7 @@ def guard_model_payload(
                         text=redact_secrets(part.text) if part.text else None,
                         ref=part.ref,
                         sha256=part.sha256,
+                        size_bytes=part.size_bytes,
                     )
                     for part in message.media
                 ],

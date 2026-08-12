@@ -12,7 +12,7 @@ deletion, backup, and the model boundary contract.
                 │ TLS (Tailscale / LAN / Caddy)
 ┌───────────────▼──────────────────────┐
 │ EV home stack (Mac, Docker)          │  (trusted host)
-│  API · Postgres · Redis · MinIO      │
+│  API · Postgres · Redis · local FS   │
 └───────────────┬──────────────────────┘
                 │ HTTPS, only permitted context
 ┌───────────────▼──────────────────────┐
@@ -36,8 +36,16 @@ context leaves the machine; raw memory never does.
 
 ## 3. Authentication & devices
 
-- Single-user master key (`EV_MASTER_KEY`): required on every API call
-  (`Authorization: Bearer …`), constant-time comparison.
+- Single-user master key (`EV_MASTER_KEY`): required on API calls
+  (`Authorization: Bearer …`, constant-time comparison) except the
+  deliberately unauthenticated recovery-redemption and WebAuthn
+  authentication-options/verify paths, which are the proof of ownership.
+- WebAuthn passkeys: full challenge-response ceremony
+  (`/v1/identity/webauthn/register/*` and `/v1/identity/webauthn/auth/*`) —
+  server-issued single-use challenges, attestation verification for
+  `none`/`packed`/`fido-u2f` (including optional X.509 trust-root validation),
+  origin and RP-ID checks, and a signature-counter replay guard. A passkey
+  proves possession with a real signature, never a client-supplied claim.
 - Device registration: first pairing exchanges the master key for a device token
   (stored hashed in `devices.token_hash`); revocation is immediate.
 - Every request logs `actor`, endpoint, resource, and request id in `access_log`.
@@ -46,9 +54,9 @@ context leaves the machine; raw memory never does.
 
 - **In transit:** TLS (Caddy/nginx termination) or Tailscale encrypted mesh; no
   plaintext API traffic outside localhost.
-- **At rest:** PostgreSQL + MinIO volumes on encrypted disk (macOS FileVault on the
-  host); application-level encryption for backups and sensitive JSONB fields where
-  feasible.
+- **At rest:** PostgreSQL + filesystem object store on encrypted disk (macOS
+  FileVault on the host); application-level encryption for backups, voice/face
+  templates, and sensitive JSONB fields where feasible.
 - **Keys:** master key in host keychain/env; backup encryption key user-held;
   key rotation procedure documented.
 
@@ -132,6 +140,72 @@ an encrypted snapshot with the same passphrase rules for cron scheduling.
   full data bundle. Those surfaces require the master key (`require_master`).
 - Biometric voice deletion/export follow the same master-key ownership rule.
 
+## 8b. Biometric & legal compliance (Domain 17)
+
+- **Consent lifecycle:** per-track `consent_records` (voice enrollment, training
+  corpus, live data, adapters, filter self-improvement) with grant/revoke
+  timestamps, reasons, versions, idempotency, and access logging; revoking
+  `voice_enrollment` consent cascades to enrollments.
+  Face enrollment additionally requires an active `face_enrollment` consent
+  record before any template is written, and the compliance layer exposes
+  BIPA/GDPR disclosure text (`face_enrollment_disclosure()`).
+- **Erasure:** `POST /v1/compliance/erasure` (master-only) revokes biometric
+  consent, redacts voiceprints (`voice_enrollments` + `voice_prints`) and
+  face templates (`face_enrollments`), deletes per-sample face templates and
+  recognition sightings, clears the public-figure biodata cache, redacts
+  training corpus snapshots, destroys adapter eval metrics, personalization
+  calibrations, and filter recalibration policies, tombstones voice events,
+  redacts derived memories, deletes audio blobs, redacts filter-ledger drafts
+  and model-call envelopes, and writes an auditable erasure manifest that
+  enumerates every covered table (`covered_tables`).
+- **Retention sweep:** `POST /v1/compliance/retention/sweep` and
+  `python -m app.scripts.compliance_sweep` delete expired voiceprints and face
+  templates, stale access-log rows, and redact expired corpus snapshots per
+  regional policy.
+- **Regional compliance:** `EV_REGION`, `EV_RETENTION_*`, `EV_RESIDENCY_MODE`,
+  and `EV_ALLOW_REMOTE_*` drive residency, remote-processing gates, and
+  retention windows at the processing boundary and in the sweep.
+- **Transparency center:** `GET /v1/compliance/transparency` reports what is
+  stored, trained, processed, and transmitted, with retention and deletion
+  paths; `GET /v1/compliance/transparency/summary` returns a plain-language
+  "what leaves this machine, to whom, under which flag" report. Chat egress
+  has its own consent track (`chat_egress`) and the
+  `EV_ALLOW_REMOTE_CHAT` gate is declared and reported with its consent state;
+  enforcing that gate at the chat call site is an open dependency note for
+  the gateway owner (the report never claims enforcement that does not exist).
+
+## 8c. Threat model pass — real topology
+
+The deployed topology is: native services on localhost (FastAPI, Postgres,
+Redis), Tailscale for remote device access, TLS termination at a reverse proxy
+(Caddy/nginx) where configured, launchd-owned processes, and a filesystem
+object store under `EV_STORAGE_ROOT` instead of MinIO. Against that topology:
+
+- **Localhost API:** device tokens and the master key are the only
+  authentication. Any process running as the same macOS user can read
+  environment variables/config and therefore tokens or keys; that is an
+  *accepted* risk for a single-user host whose processes are all owned by the
+  same user. The API is never bound to a public interface.
+- **Tailscale:** remote access relies on Tailscale node identity and ACLs.
+  A compromised Tailscale identity exposes the localhost services; TLS is not
+  independently terminated unless the reverse proxy is configured to do so.
+  Accepted because Tailscale is the user's chosen trust fabric.
+- **TLS termination:** proxy-to-API traffic is plaintext on loopback. Accepted
+  on a single-user host; if the loopback is considered hostile, configure
+  client certificates or a unix socket with filesystem permissions.
+- **launchd ownership:** services restart automatically and inherit
+  environment secrets. Accepted; secrets are managed in the user's keychain
+  and `.env` is user-owned and git-ignored.
+- **Filesystem object store:** attachments are files under `EV_STORAGE_ROOT`
+  on FileVault-encrypted disk. There is no object-store ACL layer beyond the
+  OS; access control is the API plus host file permissions. Backup copies made
+  by the user are outside EV's deletion reach — the erasure manifest flags
+  `backup_purge_required` so the user can purge them.
+
+Residual risks accepted: same-user process compromise, Tailscale identity
+compromise, proxy-loopback plaintext, and external backup copies. These are
+documented rather than silently assumed away.
+
 ## 9. App security
 
 - iOS: tokens in Keychain, biometric-gated unlock option, no plaintext cache of
@@ -167,7 +241,7 @@ an encrypted snapshot with the same passphrase rules for cron scheduling.
 | Alerts | Alert radar | Postgres `alerts` | 12 months | Immediate on delete |
 | Research sources | Research assistant | Postgres + blobs | Indefinite | Tombstone + blob schedule |
 | Projects/BOM/prints | Maker flows | Postgres | Indefinite | User delete |
-| Blobs (attachments) | Uploads | MinIO/S3 | Indefinite | 30-day audit window after tombstone |
+| Blobs (attachments) | Uploads | Local filesystem/S3 | Indefinite | 30-day audit window after tombstone |
 | Access log | Every action | Postgres `access_log` | 12 months | User-triggered wipe |
 | Backups | Nightly job | User storage (encrypted) | 7 daily / 4 weekly / 12 monthly | Rotation |
 
@@ -181,11 +255,15 @@ retention job.
   trail. Scopes must be a non-empty subset of the adapter's declared
   capabilities; unknown or admin scopes are rejected at install.
 - **Credential vault:** OAuth access/refresh tokens and webhook secrets are
-  Fernet-encrypted at rest (`EV_VAULT_KEY`, or derived from the master key when
-  unset). Only a SHA-256 fingerprint is stored for verification. Plaintext
+  Fernet-encrypted at rest with the **required** `EV_VAULT_KEY` (min 16 chars;
+  generate a random value with `openssl rand -base64 48`). EV never derives
+  this key from `EV_MASTER_KEY`, so a leaked master key cannot decrypt
+  integration credentials and a leaked vault key cannot authenticate as the
+  owner. Only a SHA-256 fingerprint is stored for verification. Plaintext
   exists only in memory during an action/webhook call; integration config
   rejects secret-looking keys so credentials cannot be smuggled into non-secret
-  fields, logs, prompts, or model context.
+  fields, logs, prompts, or model context. The app fails closed at startup if
+  `EV_VAULT_KEY` is missing.
 - **Immediate revocation:** `DELETE /v1/integrations/{id}` flips status to
   revoked, wipes credential ciphertext and fingerprints, and deactivates the
   bound live channel. Every gate (actions, webhooks, credentials) fails closed
@@ -213,6 +291,17 @@ retention job.
   imports, dunders, filesystem/network builtins, and dangerous calls. Plugins
   see only the context their approved permissions allow (`memory:read`,
   `live:read`, `live:emit`), and every run is access-logged.
+- **Local command sandbox (boundary):** `POST /v1/tools/execute`,
+  `/v1/tools/files/*`, and plugin command execution are *process-level* jails:
+  no shell, bounded output/timeouts, path-traversal rejection inside
+  `EV_SANDBOX_ROOT`, and owner-trust authentication. They are **not** OS or
+  container isolation. The subprocesses run with the EV server user's
+  privileges and host network access, so this is acceptable only for a
+  single-user local host whose callers are already trusted. Before any of
+  these surfaces can accept untrusted or external code, each invocation must
+  be containerized (no network, read-only root, CPU/memory limits, per-call
+  ephemeral filesystem) or moved to a dedicated VM. `EV_SANDBOX_ROOT` is a
+  convenience jail, not a security boundary.
 - **Auditability:** installs, credential storage, scope changes, revocation,
   webhook ingestion, and plugin runs are all recorded in `access_log` with
   resource ids and metadata — never with token material.

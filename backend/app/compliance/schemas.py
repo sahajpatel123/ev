@@ -28,6 +28,11 @@ class TransparencyOut(BaseModel):
     transmitted: list[dict]
 
 
+class TransparencySummaryOut(BaseModel):
+    generated_at: str
+    summary: str
+
+
 class ErasureRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=512)
 
@@ -46,6 +51,8 @@ class RetentionSweepOut(BaseModel):
     ran_at: datetime
     voiceprints_deleted: int
     enrollment_ids: list[str]
+    faceprints_deleted: int = 0
+    face_enrollment_ids: list[str] = Field(default_factory=list)
     corpus_snapshots_redacted: int = 0
     access_logs_deleted: int = 0
     policy_retention_days: int

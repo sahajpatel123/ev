@@ -8,10 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import (
     AccessLog,
+    AdapterRegistration,
     Attachment,
     ConsentRecord,
     Event,
+    FaceEnrollment,
+    FaceSample,
+    FilterRecalibration,
     Memory,
+    PersonalizationCalibration,
+    PublicFigureCache,
+    RecognitionLog,
     VoiceEnrollment,
     VoicePrint,
 )
@@ -20,12 +27,14 @@ from app.utils.text import utcnow
 from .policy import (
     ACCESS_LOG,
     EVENT,
+    FACEPRINT,
     INTEGRATION_CACHE,
     LIVE_AUDIO,
     TRAINING_SNAPSHOT,
     VOICEPRINT,
     local_residency_required,
     region,
+    remote_processing_allowed,
     residency_mode,
     retention_days,
 )
@@ -82,6 +91,62 @@ async def transparency_report(session: AsyncSession) -> dict:
             "deletion_path": "same as voice_enrollments; ciphertext nulled on delete",
         },
         {
+            "name": "face_enrollments",
+            "purpose": "consent-gated biometric identity record (face templates)",
+            "count": await _count(session, FaceEnrollment),
+            "encrypted_at_rest": True,
+            "retention_days": retention_days(FACEPRINT),
+            "deletion_path": "POST /v1/compliance/erasure (ciphertext nulled)",
+        },
+        {
+            "name": "face_samples",
+            "purpose": "encrypted per-sample face templates kept for quality control",
+            "count": await _count(session, FaceSample),
+            "encrypted_at_rest": True,
+            "retention_days": retention_days(FACEPRINT),
+            "deletion_path": "POST /v1/compliance/erasure (rows deleted)",
+        },
+        {
+            "name": "recognition_log",
+            "purpose": "user-confirmed recognition sightings over owner media",
+            "count": await _count(session, RecognitionLog),
+            "encrypted_at_rest": False,
+            "retention_days": retention_days(EVENT),
+            "deletion_path": "POST /v1/compliance/erasure (sightings deleted)",
+        },
+        {
+            "name": "public_figure_cache",
+            "purpose": "licensed public-figure biodata cache (rebuildable)",
+            "count": await _count(session, PublicFigureCache),
+            "encrypted_at_rest": False,
+            "retention_days": retention_days(INTEGRATION_CACHE),
+            "deletion_path": "POST /v1/compliance/erasure (cache deleted)",
+        },
+        {
+            "name": "personalization_calibrations",
+            "purpose": "derived retrieval calibration snapshots",
+            "count": await _count(session, PersonalizationCalibration),
+            "encrypted_at_rest": False,
+            "retention_days": retention_days(TRAINING_SNAPSHOT),
+            "deletion_path": "POST /v1/compliance/erasure (evidence cleared)",
+        },
+        {
+            "name": "filter_recalibrations",
+            "purpose": "derived filter threshold reports and applied policies",
+            "count": await _count(session, FilterRecalibration),
+            "encrypted_at_rest": False,
+            "retention_days": retention_days(TRAINING_SNAPSHOT),
+            "deletion_path": "POST /v1/compliance/erasure (policy cleared)",
+        },
+        {
+            "name": "adapter_registrations",
+            "purpose": "versioned EVIE adapter registry with eval metrics",
+            "count": await _count(session, AdapterRegistration),
+            "encrypted_at_rest": False,
+            "retention_days": retention_days(TRAINING_SNAPSHOT),
+            "deletion_path": "POST /v1/compliance/erasure (eval metrics cleared)",
+        },
+        {
             "name": "attachments",
             "purpose": "files and audio blobs referenced by events",
             "count": await _count(session, Attachment),
@@ -115,10 +180,12 @@ async def transparency_report(session: AsyncSession) -> dict:
         }
         for track in (
             "voice_enrollment",
+            "face_enrollment",
             "training_corpus",
             "life_data_personalization",
             "adapter_fine_tuning",
             "filter_self_improvement",
+            "chat_egress",
         )
     ]
     processed = [
@@ -163,7 +230,9 @@ async def transparency_report(session: AsyncSession) -> dict:
             "provider": settings.chat_provider,
             "remote": settings.chat_provider not in ("echo", "mock"),
             "destination": settings.deepseek_base_url,
-            "consent_track": None,
+            "consent_track": "chat_egress",
+            "consent_active": "chat_egress" in active_tracks,
+            "remote_gate_allowed": remote_processing_allowed("chat_egress"),
         },
         {
             "kind": "object_store",
@@ -183,3 +252,37 @@ async def transparency_report(session: AsyncSession) -> dict:
         "processed": processed,
         "transmitted": transmitted,
     }
+
+
+async def transparency_summary(session: AsyncSession) -> str:
+    """Plain-language 'what leaves this machine' report readable in 30 seconds."""
+    report = await transparency_report(session)
+    lines = [
+        "EV data-egress summary",
+        f"Generated: {report['generated_at']}",
+        f"Region: {report['region']} · residency mode: {report['residency_mode']}",
+        "",
+        "What leaves this machine:",
+    ]
+    for item in report["transmitted"]:
+        destination = item.get("destination") or "local"
+        remote = "REMOTE" if item.get("remote") else "local only"
+        consent_track = item.get("consent_track")
+        if consent_track:
+            active = item.get("consent_active")
+            gate = item.get("remote_gate_allowed")
+            consent_state = "active consent" if active else "NO ACTIVE CONSENT"
+            gate_state = "remote gate open" if gate else "remote gate closed"
+            flag = f"{consent_state} · {gate_state}"
+        else:
+            flag = "no consent track (local backend)"
+        lines.append(
+            f"- {item.get('kind', '?')} -> {destination} [{remote}] ({flag})"
+        )
+    lines.append("")
+    lines.append(
+        "Stored biometric data is encrypted at rest and destroyed by "
+        "POST /v1/compliance/erasure; retention windows are listed in "
+        "GET /v1/compliance/transparency."
+    )
+    return "\n".join(lines)

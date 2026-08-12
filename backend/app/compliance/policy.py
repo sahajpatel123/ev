@@ -16,20 +16,33 @@ from app.utils.text import utcnow
 
 # Data categories with distinct legal treatment.
 VOICEPRINT = "voiceprint"
+FACEPRINT = "faceprint"  # AGENT 7 ROSTER / AGENT 19 VAULT — face templates
 TRAINING_SNAPSHOT = "training_snapshot"
 LIVE_AUDIO = "live_audio"
 ACCESS_LOG = "access_log"
 EVENT = "event"
 INTEGRATION_CACHE = "integration_cache"
 
-CATEGORIES = (VOICEPRINT, TRAINING_SNAPSHOT, LIVE_AUDIO, ACCESS_LOG, EVENT, INTEGRATION_CACHE)
+CATEGORIES = (
+    VOICEPRINT,
+    FACEPRINT,
+    TRAINING_SNAPSHOT,
+    LIVE_AUDIO,
+    ACCESS_LOG,
+    EVENT,
+    INTEGRATION_CACHE,
+)
 
 TRACKS = (
     "voice_enrollment",
+    "voice_asr",
+    "voice_tts",  # AGENT 4 VOICE — hosted TTS egress consent track
+    "face_enrollment",  # AGENT 7 ROSTER — consented face templates
     "training_corpus",
     "life_data_personalization",
     "adapter_fine_tuning",
     "filter_self_improvement",
+    "chat_egress",  # AGENT 19 VAULT — remote chat egress consent track
 )
 
 REGIONS = ("eu", "uk", "us", "us-il", "in", "global")
@@ -39,6 +52,7 @@ REGIONS = ("eu", "uk", "us", "us-il", "in", "global")
 _DEFAULT_RETENTION_DAYS: dict[str, dict[str, int]] = {
     "global": {
         VOICEPRINT: -1,
+        FACEPRINT: -1,
         TRAINING_SNAPSHOT: -1,
         LIVE_AUDIO: 0,
         ACCESS_LOG: 730,
@@ -47,6 +61,7 @@ _DEFAULT_RETENTION_DAYS: dict[str, dict[str, int]] = {
     },
     "eu": {
         VOICEPRINT: 0,
+        FACEPRINT: 0,
         TRAINING_SNAPSHOT: 0,
         LIVE_AUDIO: 0,
         ACCESS_LOG: 365,
@@ -55,6 +70,7 @@ _DEFAULT_RETENTION_DAYS: dict[str, dict[str, int]] = {
     },
     "uk": {
         VOICEPRINT: 0,
+        FACEPRINT: 0,
         TRAINING_SNAPSHOT: 0,
         LIVE_AUDIO: 0,
         ACCESS_LOG: 365,
@@ -63,6 +79,7 @@ _DEFAULT_RETENTION_DAYS: dict[str, dict[str, int]] = {
     },
     "us": {
         VOICEPRINT: 0,
+        FACEPRINT: 0,
         TRAINING_SNAPSHOT: 0,
         LIVE_AUDIO: 0,
         ACCESS_LOG: 730,
@@ -71,6 +88,7 @@ _DEFAULT_RETENTION_DAYS: dict[str, dict[str, int]] = {
     },
     "us-il": {
         VOICEPRINT: 0,
+        FACEPRINT: 0,
         TRAINING_SNAPSHOT: 0,
         LIVE_AUDIO: 0,
         ACCESS_LOG: 730,
@@ -79,6 +97,7 @@ _DEFAULT_RETENTION_DAYS: dict[str, dict[str, int]] = {
     },
     "in": {
         VOICEPRINT: 0,
+        FACEPRINT: 0,
         TRAINING_SNAPSHOT: 0,
         LIVE_AUDIO: 0,
         ACCESS_LOG: 365,
@@ -89,6 +108,7 @@ _DEFAULT_RETENTION_DAYS: dict[str, dict[str, int]] = {
 
 _ENV_RETENTION = {
     VOICEPRINT: "EV_RETENTION_VOICEPRINT_DAYS",
+    FACEPRINT: "EV_RETENTION_FACEPRINT_DAYS",
     TRAINING_SNAPSHOT: "EV_RETENTION_TRAINING_SNAPSHOT_DAYS",
     LIVE_AUDIO: "EV_RETENTION_LIVE_AUDIO_DAYS",
     ACCESS_LOG: "EV_RETENTION_ACCESS_LOG_DAYS",
@@ -98,10 +118,14 @@ _ENV_RETENTION = {
 
 _REMOTE_PROCESSING_ENV = {
     "voice_enrollment": "EV_ALLOW_REMOTE_VOICEPRINT_PROCESSING",
+    "voice_asr": "EV_ALLOW_REMOTE_ASR",
+    "voice_tts": "EV_ALLOW_REMOTE_TTS",  # AGENT 4 VOICE
+    "face_enrollment": "EV_ALLOW_REMOTE_FACE_PROCESSING",
     "training_corpus": "EV_ALLOW_REMOTE_TRAINING",
     "life_data_personalization": "EV_ALLOW_REMOTE_LIFE_DATA",
     "adapter_fine_tuning": "EV_ALLOW_REMOTE_TRAINING",
     "filter_self_improvement": "EV_ALLOW_REMOTE_FILTER_TRAINING",
+    "chat_egress": "EV_ALLOW_REMOTE_CHAT",
 }
 
 _DISCLOSURES = {
@@ -187,6 +211,23 @@ def local_residency_required() -> bool:
 
 def disclosures() -> list[str]:
     return list(_DISCLOSURES.get(region(), _DISCLOSURES["global"]))
+
+
+FACE_ENROLLMENT_DISCLOSURES = [
+    "Face enrollment stores an encrypted biometric template (never raw photos) "
+    "and requires an active, revocable consent record.",
+    "Illinois BIPA (740 ILCS 14/15): written consent is required before "
+    "collecting a face template; the template is destroyed on revocation, "
+    "erasure, or when the enrollment purpose ends.",
+    "GDPR Art. 9: face templates are special-category biometric data; "
+    "processing requires explicit consent with purpose limitation and the "
+    "right to erasure.",
+]
+
+
+def face_enrollment_disclosure() -> list[str]:
+    """BIPA/GDPR-grade disclosure shown for the face_enrollment track."""
+    return list(FACE_ENROLLMENT_DISCLOSURES)
 
 
 def policy_summary() -> dict:

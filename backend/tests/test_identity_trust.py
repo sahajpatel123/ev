@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -11,7 +12,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.main import app
-from app.models import Device, PasskeyCredential, VoiceEnrollment, VoiceSession
+from app.models import (
+    Device,
+    Event,
+    FilterLedger,
+    ModelCallLog,
+    PasskeyCredential,
+    VoiceEnrollment,
+    VoiceSession,
+)
+
+SAMPLE_A = b"owner-voice-sample-" * 40
+SAMPLE_B = b"other-speaker-sample-" * 40
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("ascii")
 
 
 def _client(headers: dict | None = None) -> httpx.AsyncClient:
@@ -647,3 +663,320 @@ async def test_voice_pipeline_forwards_voiceprint_identity_to_filter(
     assert speaker.confidence == 0.83
     assert captured["source"] == "voice"
     assert outcome.reply == "ok"
+
+
+async def test_erasure_redacts_filter_ledger_and_model_call_content(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    from app.utils.text import utcnow
+
+    thread_id = uuid4()
+    now = utcnow()
+    db_session.add(
+        Event(
+            source="voice",
+            event_type="voice.transcript",
+            content={"text": "owner said something private"},
+            conversation_id=thread_id,
+            sha256="a" * 64,
+            occurred_at=now,
+        )
+    )
+    db_session.add(
+        FilterLedger(
+            request_id="req-erasure-1",
+            conversation_id=thread_id,
+            stage="input",
+            action="run",
+            name="input_filter",
+            severity="info",
+            detail={"flags": []},
+            draft="owner said something private",
+            final_text="ok",
+        )
+    )
+    db_session.add(
+        ModelCallLog(
+            request_id="req-erasure-1",
+            actor="voice",
+            provider="mock",
+            model="mock",
+            status="ok",
+            envelope={"memories": [{"text": "owner said something private"}]},
+            envelope_hash="b" * 64,
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.post(
+        "/v1/compliance/erasure",
+        json={"reason": "data subject request"},
+    )
+    assert resp.status_code == 200, resp.text
+    manifest = resp.json()["manifest"]
+    assert manifest["filter_ledger_redacted"] == 1
+    assert manifest["model_call_envelopes_redacted"] == 1
+
+    ledger = (
+        await db_session.execute(select(FilterLedger).where(FilterLedger.request_id == "req-erasure-1"))
+    ).scalar_one()
+    assert ledger.draft is None
+    assert ledger.final_text is None
+    assert ledger.detail.get("redacted") is True
+
+    call = (
+        await db_session.execute(select(ModelCallLog).where(ModelCallLog.request_id == "req-erasure-1"))
+    ).scalar_one()
+    assert call.envelope.get("redacted") is True
+
+
+async def test_recovery_drill_is_repeatable(
+    client: httpx.AsyncClient,
+) -> None:
+    """Automated recovery drill: lose device -> redeem code -> re-enroll voice
+    -> old token dead -> new token works -> repeat with the next code."""
+    owner = await create_owner(client)
+    consent = await client.post("/v1/training/consent", json={"track": "voice_enrollment"})
+    assert consent.status_code == 201, consent.text
+
+    enrolled = await client.post(
+        "/v1/voice/enroll",
+        json={
+            "samples": [
+                {"audio_b64": b64(SAMPLE_A), "liveness_proof": "live"}
+                for _ in range(5)
+            ],
+            "reason": "recovery drill enrollment",
+        },
+    )
+    assert enrolled.status_code == 201, enrolled.text
+
+    lost_device = await create_device(client, "lost-phone", trust_level="owner")
+    lost_token = lost_device["token"]
+    assert (
+        await _client({"Authorization": f"Bearer {lost_token}"}).get(
+            "/v1/identity/status"
+        )
+    ).status_code == 200
+
+    anon = _client()
+    first = await anon.post(
+        "/v1/identity/recovery/redeem",
+        json={"code": owner["recovery_codes"][0]["code"], "device_name": "new-phone-1"},
+    )
+    assert first.status_code == 201, first.text
+    new_token_1 = first.json()["token"]
+
+    # The lost device token is provably dead after redemption.
+    old_status = await _client({"Authorization": f"Bearer {lost_token}"}).get(
+        "/v1/identity/status"
+    )
+    assert old_status.status_code == 401
+
+    # Re-enroll the voiceprint through the fresh fleet.
+    re_enrolled = await client.post(
+        "/v1/voice/enroll",
+        json={
+            "samples": [
+                {"audio_b64": b64(SAMPLE_B), "liveness_proof": "live"}
+                for _ in range(5)
+            ],
+            "reason": "recovery drill re-enrollment",
+        },
+    )
+    assert re_enrolled.status_code == 201, re_enrolled.text
+
+    # The new owner device works end to end, including voice verification.
+    new_client = _client({"Authorization": f"Bearer {new_token_1}"})
+    status = await new_client.get("/v1/identity/status")
+    assert status.status_code == 200
+    assert status.json()["trust_level"] == "owner"
+
+    woke = await new_client.post(
+        "/v1/voice/wake",
+        json={"device_id": "ignored-client-value", "text_hint": "hey evie"},
+    )
+    assert woke.status_code == 201, woke.text
+    wake_body = woke.json()
+    verified = await new_client.post(
+        "/v1/voice/verify",
+        json={
+            "session_id": wake_body["session_id"],
+            "nonce": wake_body["challenge_nonce"],
+            "phrase": wake_body["challenge_phrase"],
+            "samples": [b64(SAMPLE_B)],
+            "liveness_proof": "live",
+        },
+    )
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["verified"] is True
+
+    # The drill is repeatable with the next recovery code: the previous
+    # post-recovery token is revoked in turn.
+    second = await anon.post(
+        "/v1/identity/recovery/redeem",
+        json={"code": owner["recovery_codes"][1]["code"], "device_name": "new-phone-2"},
+    )
+    assert second.status_code == 201, second.text
+    new_token_2 = second.json()["token"]
+    assert (
+        await _client({"Authorization": f"Bearer {new_token_1}"}).get(
+            "/v1/identity/status"
+        )
+    ).status_code == 401
+    assert (
+        await _client({"Authorization": f"Bearer {new_token_2}"}).get(
+            "/v1/identity/status"
+        )
+    ).status_code == 200
+
+
+async def test_trust_escalation_matrix_covers_all_sensitive_actions(
+    client: httpx.AsyncClient,
+) -> None:
+    resp = await client.get("/v1/identity/trust")
+    assert resp.status_code == 200
+    body = resp.json()
+    expected_reverify = {
+        "integration.action",
+        "memory.delete",
+        "memory.export",
+        "runtime.action",
+        "voice.revoke",
+        "voice.delete",
+        "voice.sensitive_action",
+        "face.revoke",
+        "face.delete",
+        "recovery.rotate",
+        "vault.rotate",
+        "backup.restore",
+        "compliance.erasure",
+        "adapter.activate",
+        "adapter.delete",
+        "person.delete",
+        "fleet.write",
+    }
+    assert expected_reverify <= set(body["reverify_required_actions"])
+    assert {
+        "voice.enroll",
+        "face.enroll",
+        "face.revoke",
+        "face.delete",
+        "person.delete",
+        "adapter.activate",
+        "fleet.write",
+        "memory.export",
+    } <= set(body["owner_required_actions"])
+
+
+async def test_master_only_sensitive_actions_reject_device_without_fresh_proof(
+    client: httpx.AsyncClient,
+) -> None:
+    """Memory export, vault rotation, backup restore, and compliance erasure
+    are fresh-verification actions: a device token alone (even owner-trusted,
+    inside an active session) cannot invoke them without the master key."""
+    await create_owner(client)
+    owner_device = await create_device(client, "owner-phone", trust_level="owner")
+    dev_client = _client({"Authorization": f"Bearer {owner_device['token']}"})
+
+    checks = [
+        ("POST", "/v1/export", {}),
+        ("POST", "/v1/integrations/vault/rotate", {"new_key": "x" * 32}),
+        (
+            "POST",
+            "/v1/backup/restore",
+            {"path": "/tmp/nope", "passphrase": "x" * 8, "mode": "merge"},
+        ),
+        ("POST", "/v1/compliance/erasure", {"reason": "device test"}),
+    ]
+    for method, path, payload in checks:
+        resp = await dev_client.request(method, path, json=payload)
+        assert resp.status_code == 403, (path, resp.status_code, resp.text)
+
+
+async def test_reverification_issuance_supports_new_matrix_purposes(
+    client: httpx.AsyncClient,
+) -> None:
+    """Every declared matrix purpose is issuable end to end by an owner device."""
+    await create_owner(client)
+    device = await create_device(client, "owner-phone", trust_level="owner")
+    dev_client = _client({"Authorization": f"Bearer {device['token']}"})
+    for purpose in (
+        "memory.export",
+        "vault.rotate",
+        "backup.restore",
+        "compliance.erasure",
+        "adapter.activate",
+        "adapter.delete",
+        "face.revoke",
+        "face.delete",
+        "person.delete",
+        "fleet.write",
+    ):
+        resp = await dev_client.post(
+            "/v1/identity/reverification", json={"purpose": purpose}
+        )
+        assert resp.status_code == 200, (purpose, resp.text)
+
+
+async def test_single_owner_invariant_unknown_voice_cannot_start_privileged_session(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """An unenrolled/unknown speaker can never open a privileged session."""
+    await create_owner(client)
+    assert (
+        await client.post(
+            "/v1/training/consent", json={"track": "voice_enrollment"}
+        )
+    ).status_code == 201
+    assert (
+        await client.post(
+            "/v1/voice/enroll",
+            json={
+                "samples": [
+                    {"audio_b64": b64(SAMPLE_A), "liveness_proof": "live"}
+                    for _ in range(5)
+                ],
+                "reason": "single-owner test",
+            },
+        )
+    ).status_code == 201
+
+    device = await create_device(client, "eavesdrop-pad", trust_level="owner")
+    dev_client = _client({"Authorization": f"Bearer {device['token']}"})
+    woke = await dev_client.post(
+        "/v1/voice/wake",
+        json={"device_id": "ignored-client-value", "text_hint": "hey evie"},
+    )
+    assert woke.status_code == 201, woke.text
+    wake_body = woke.json()
+    session_id = UUID(wake_body["session_id"])
+
+    verified = await dev_client.post(
+        "/v1/voice/verify",
+        json={
+            "session_id": str(session_id),
+            "nonce": wake_body["challenge_nonce"],
+            "phrase": wake_body["challenge_phrase"],
+            "samples": [b64(SAMPLE_B)],
+            "liveness_proof": "live",
+        },
+    )
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["verified"] is False
+    assert verified.json()["state"] == "ended"
+
+    row = await db_session.get(VoiceSession, session_id)
+    assert row is not None
+    assert row.owner_verified is False
+    assert row.state == "ended"
+
+    # A refused session cannot be used for privileged operations.
+    denied = await dev_client.post(
+        "/v1/voice/utterance",
+        json={"session_id": str(session_id), "text": "erase my memory"},
+    )
+    assert denied.status_code == 428
+    assert denied.headers.get("X-Error-Code") == "session_ended"
