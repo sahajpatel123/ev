@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-08-09T14:35:19.342286+00:00",
+  "locked_at": "2026-08-12T03:07:49.700359+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -68,6 +68,9 @@
     "/v1/compliance/transparency": [
       "get"
     ],
+    "/v1/compliance/transparency/summary": [
+      "get"
+    ],
     "/v1/conflicts": [
       "get"
     ],
@@ -100,6 +103,18 @@
       "delete"
     ],
     "/v1/diagnostics/calibrate": [
+      "post"
+    ],
+    "/v1/enrichment/usage": [
+      "get"
+    ],
+    "/v1/entities": [
+      "get"
+    ],
+    "/v1/entities/duplicates": [
+      "get"
+    ],
+    "/v1/entities/merge": [
       "post"
     ],
     "/v1/evaluations": [
@@ -177,10 +192,13 @@
     "/v1/gateway/models": [
       "get"
     ],
+    "/v1/gateway/select-tool": [
+      "post"
+    ],
     "/v1/gateway/stats": [
       "get"
     ],
-    "/v1/gateway/select-tool": [
+    "/v1/gateway/stream": [
       "post"
     ],
     "/v1/gateway/tools": [
@@ -253,6 +271,18 @@
     "/v1/identity/trust": [
       "get"
     ],
+    "/v1/identity/webauthn/auth/options": [
+      "post"
+    ],
+    "/v1/identity/webauthn/auth/verify": [
+      "post"
+    ],
+    "/v1/identity/webauthn/register/options": [
+      "post"
+    ],
+    "/v1/identity/webauthn/register/verify": [
+      "post"
+    ],
     "/v1/import": [
       "post"
     ],
@@ -262,6 +292,16 @@
     ],
     "/v1/integrations/catalog": [
       "get"
+    ],
+    "/v1/integrations/oauth/authorize": [
+      "get"
+    ],
+    "/v1/integrations/oauth/callback": [
+      "get",
+      "post"
+    ],
+    "/v1/integrations/vault/rotate": [
+      "post"
     ],
     "/v1/integrations/webhook/{integration_id}": [
       "post"
@@ -273,6 +313,9 @@
     "/v1/integrations/{integration_id}/actions": [
       "post"
     ],
+    "/v1/integrations/{integration_id}/calendar/signals": [
+      "get"
+    ],
     "/v1/integrations/{integration_id}/credentials": [
       "get",
       "post"
@@ -283,13 +326,16 @@
     "/v1/integrations/{integration_id}/events": [
       "get"
     ],
+    "/v1/integrations/{integration_id}/oauth/status": [
+      "get"
+    ],
     "/v1/integrations/{integration_id}/scopes": [
       "patch"
     ],
-    "/v1/integrations/{integration_id}/webhook-secret": [
+    "/v1/integrations/{integration_id}/sync": [
       "post"
     ],
-    "/v1/integrations/vault/rotate": [
+    "/v1/integrations/{integration_id}/webhook-secret": [
       "post"
     ],
     "/v1/interaction/mode": [
@@ -359,6 +405,34 @@
     ],
     "/v1/people": [
       "get"
+    ],
+    "/v1/people/calibrate": [
+      "post"
+    ],
+    "/v1/people/enrollments": [
+      "get",
+      "post"
+    ],
+    "/v1/people/enrollments/{enrollment_id}/delete": [
+      "post"
+    ],
+    "/v1/people/enrollments/{enrollment_id}/revoke": [
+      "post"
+    ],
+    "/v1/people/recognitions/{recognition_id}/confirm": [
+      "post"
+    ],
+    "/v1/people/recognize": [
+      "post"
+    ],
+    "/v1/people/{entity_id}": [
+      "delete"
+    ],
+    "/v1/people/{name}/biodata": [
+      "get"
+    ],
+    "/v1/people/{name}/biodata/link": [
+      "post"
     ],
     "/v1/people/{name}/whereabouts": [
       "get"
@@ -528,6 +602,15 @@
     "/v1/runtime/heartbeat": [
       "post"
     ],
+    "/v1/runtime/notifications": [
+      "get"
+    ],
+    "/v1/runtime/notify": [
+      "post"
+    ],
+    "/v1/runtime/notify/status": [
+      "get"
+    ],
     "/v1/runtime/status": [
       "get"
     ],
@@ -558,6 +641,9 @@
     "/v1/state": [
       "get"
     ],
+    "/v1/state-of-me": [
+      "post"
+    ],
     "/v1/tactical/brief": [
       "post"
     ],
@@ -565,6 +651,9 @@
       "post"
     ],
     "/v1/tactical/quick": [
+      "get"
+    ],
+    "/v1/temporal/memories": [
       "get"
     ],
     "/v1/timeline": [
@@ -591,10 +680,16 @@
     "/v1/training/adapter/delete": [
       "post"
     ],
+    "/v1/training/adapter/dry-run": [
+      "post"
+    ],
     "/v1/training/adapter/register": [
       "post"
     ],
     "/v1/training/adapter/rollback": [
+      "post"
+    ],
+    "/v1/training/adapter/train": [
       "post"
     ],
     "/v1/training/adapter/{adapter_id}": [
@@ -621,6 +716,9 @@
     ],
     "/v1/training/corpus/rollback": [
       "post"
+    ],
+    "/v1/training/corpus/{version}/dataset": [
+      "get"
     ],
     "/v1/training/corpus/{version}/export": [
       "get"
@@ -694,8 +792,14 @@
     "/v1/vision/perceptions": [
       "get"
     ],
+    "/v1/vision/perceptions/{perception_id}": [
+      "get"
+    ],
     "/v1/vision/recognitions/{recognition_id}/confirm": [
       "post"
+    ],
+    "/v1/voice/audio/{key}": [
+      "get"
     ],
     "/v1/voice/enroll": [
       "post"
@@ -718,10 +822,16 @@
     "/v1/voice/sessions/{session_id}": [
       "get"
     ],
+    "/v1/voice/sessions/{session_id}/barge_in": [
+      "post"
+    ],
     "/v1/voice/sessions/{session_id}/end": [
       "post"
     ],
     "/v1/voice/utterance": [
+      "post"
+    ],
+    "/v1/voice/utterance/stream": [
       "post"
     ],
     "/v1/voice/verify": [
@@ -729,9 +839,6 @@
     ],
     "/v1/voice/wake": [
       "post"
-    ],
-    "/v1/compliance/access-log": [
-      "get"
     ]
   },
   "schema_version": "ev.contract.v1",

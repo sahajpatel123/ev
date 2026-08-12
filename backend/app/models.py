@@ -94,6 +94,14 @@ class Memory(Base):
     redacted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     fingerprint: Mapped[str] = mapped_column(String(64), index=True)
     embedding: Mapped[list | None] = mapped_column(EmbeddingType)
+    # --- AGENT 8 SYNAPSE (embeddings) ---
+    # Records which embedding model produced this vector. NULL = legacy
+    # hash-era vectors (hash was the default before model-version tracking).
+    # Mixed versions are detectable and never compared semantically.
+    embedding_model_version: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
+    # --- END AGENT 8 SYNAPSE ---
     extra: Mapped[dict] = mapped_column(JSONType, default=dict)
 
     source_events: Mapped[list[Event]] = relationship(secondary="memory_events")
@@ -770,6 +778,91 @@ class RecognitionLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+# --------------------------------------------------------------------------- #
+# AGENT 7 ROSTER — consented face enrollment, recognition, public-figure cache
+# --------------------------------------------------------------------------- #
+
+FACE_EMBEDDING_DIM = 512
+
+
+class FaceEnrollment(Base):
+    """One consented person's face template set (mean template + per-sample QC).
+
+    Mirrors ``VoiceEnrollment``: the mean embedding is Fernet-encrypted at
+    rest (``ciphertext`` + ``salt``), versioned, revocable, and deletable on
+    demand. A face that matches no enrolled template resolves to ``unknown``;
+    there is no code path that attempts to identify a non-enrolled person.
+    """
+
+    __tablename__ = "face_enrollments"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    entity_id: Mapped[UUID] = mapped_column(ForeignKey("entities.id"), index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, index=True)
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    algorithm: Mapped[str] = mapped_column(String(32), default="sface-onnx", index=True)
+    embedding_dim: Mapped[int] = mapped_column(Integer, default=FACE_EMBEDDING_DIM)
+    threshold: Mapped[float] = mapped_column(Float, default=0.55)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)  # active|revoked|deleted
+    consent_id: Mapped[UUID | None] = mapped_column(ForeignKey("consent_records.id"))
+    ciphertext: Mapped[str | None] = mapped_column(Text)  # Fernet token
+    salt: Mapped[str | None] = mapped_column(String(64))
+    privacy_level: Mapped[str] = mapped_column(String(32), default="sensitive")
+    redacted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    supersedes_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("face_enrollments.id"), index=True
+    )
+    superseded_by_id: Mapped[UUID | None] = mapped_column(ForeignKey("face_enrollments.id"))
+    reason_for_change: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class FaceSample(Base):
+    """One encrypted per-sample template kept for enrollment quality control."""
+
+    __tablename__ = "face_samples"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    enrollment_id: Mapped[UUID] = mapped_column(
+        ForeignKey("face_enrollments.id", ondelete="CASCADE"), index=True
+    )
+    entity_id: Mapped[UUID] = mapped_column(ForeignKey("entities.id"), index=True)
+    sample_index: Mapped[int] = mapped_column(Integer, default=0)
+    ciphertext: Mapped[str] = mapped_column(Text)  # Fernet token
+    salt: Mapped[str | None] = mapped_column(String(64))
+    quality: Mapped[float] = mapped_column(Float, default=0.0)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    source: Mapped[str] = mapped_column(String(32), default="photo")
+    attachment_id: Mapped[UUID | None] = mapped_column(ForeignKey("attachments.id"), index=True)
+    live_event_id: Mapped[UUID | None] = mapped_column(ForeignKey("live_events.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PublicFigureCache(Base):
+    """Licensed, attributed public-figure biodata (Wikidata CC0 + Wikipedia CC BY-SA)."""
+
+    __tablename__ = "public_figure_cache"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(256), index=True)
+    canonical_key: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    entity_id: Mapped[UUID | None] = mapped_column(ForeignKey("entities.id"), index=True)
+    data: Mapped[dict] = mapped_column(JSONType, default=dict)
+    source_url: Mapped[str | None] = mapped_column(String(1024))
+    license: Mapped[str] = mapped_column(String(128), default="CC0 / CC BY-SA 4.0")
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class CommandLedger(Base):
     """Append-only E.D.I.T.H. command ledger.
 
@@ -1433,3 +1526,123 @@ class WebhookDelivery(Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
     )
+
+
+# ============================================================================
+# SHARED APPEND-ONLY SECTION — docs/FLEET_LAW.md §3
+# Additive only. Append inside YOUR block; never modify, reorder, reformat, or
+# delete another agent's lines, table columns, or models.
+#
+# --- AGENT 1 CONDUCTOR ---
+# Reserved by Agent 1 (Conductor): fleet governance, integration, contract.
+#
+# --- AGENT 2 FOUNDRY ---
+# --- AGENT 3 EARS ---
+# --- AGENT 4 VOICE ---
+# --- AGENT 5 SENTRY ---
+# --- AGENT 6 EYES ---
+# --- AGENT 7 ROSTER ---
+# --- AGENT 8 SYNAPSE ---
+# --- AGENT 9 MNEMO ---
+# --- AGENT 10 CORTEX ---
+# --- AGENT 11 FORGE ---
+# --- AGENT 12 CONDUIT ---
+# --- AGENT 13 AMBIENT ---
+# --- AGENT 14 PULSE ----------------------------------------------------------
+
+
+class Notification(Base):
+    """Delivery ledger: every attempted EV notification with its receipt.
+
+    Status is one of ``attempted``, ``delivered``, ``failed``, or
+    ``suppressed``. ``delivered`` is only ever set from backend evidence; a
+    caller-supplied result is never treated as delivery proof (FLEET_LAW §8).
+    ``suppressed`` always carries a human-answerable ``reason`` (quiet_hours,
+    daily_cap, duplicate, max_attempts).
+    """
+
+    __tablename__ = "notifications"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(256))
+    body: Mapped[str] = mapped_column(Text)
+    priority: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    tier: Mapped[str] = mapped_column(String(16), default="background", index=True)
+    source: Mapped[str | None] = mapped_column(String(64))
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="attempted", index=True)
+    reason: Mapped[str | None] = mapped_column(String(128))
+    backend: Mapped[str | None] = mapped_column(String(32))
+    backend_ref: Mapped[str | None] = mapped_column(String(256))
+    alert_id: Mapped[UUID | None] = mapped_column(ForeignKey("alerts.id"), index=True)
+    action_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("approved_actions.id"), index=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, default=1)
+    queued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    details: Mapped[dict] = mapped_column(JSONType, default=dict)
+
+
+# --- AGENT 15 ORACLE ---
+# --- AGENT 16 CONSCIENCE ---
+# --- AGENT 17 WORKBENCH ---
+# --- AGENT 18 SUIT ---
+# --- AGENT 19 VAULT --------------------------------------------------------
+
+
+class PasskeyChallenge(Base):
+    """Server-issued, single-use challenge for a WebAuthn ceremony.
+
+    Only the SHA-256 digest is stored at rest; the raw challenge is returned
+    once in the options response and must be echoed inside ``clientDataJSON``.
+    A challenge is purpose-bound (register vs authenticate), expires, and is
+    consumed on first use so a captured response cannot be replayed.
+    """
+
+    __tablename__ = "identity_passkey_challenges"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    purpose: Mapped[str] = mapped_column(String(16), index=True)  # register | authenticate
+    owner_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("owner_identities.id"), index=True
+    )
+    device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"), index=True)
+    challenge_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    rp_id: Mapped[str] = mapped_column(String(256))
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PasskeyAuthMaterial(Base):
+    """Cryptographic WebAuthn material for one registered passkey.
+
+    Kept as a separate additive table so the existing ``identity_passkeys``
+    binding rows and their API/CLI surface are untouched. The stored COSE
+    public key, sign counter, and attestation result are what let a passkey
+    actually prove possession during a challenge-response ceremony.
+    """
+
+    __tablename__ = "identity_passkey_materials"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    passkey_id: Mapped[UUID] = mapped_column(
+        ForeignKey("identity_passkeys.id"), index=True, unique=True
+    )
+    public_key_cose: Mapped[dict] = mapped_column(JSONType, default=dict)
+    sign_count: Mapped[int] = mapped_column(Integer, default=0)
+    aaguid: Mapped[str | None] = mapped_column(String(32))
+    transports: Mapped[list] = mapped_column(JSONType, default=list)
+    attestation_format: Mapped[str | None] = mapped_column(String(32))
+    attestation_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    attestation_level: Mapped[str | None] = mapped_column(String(32))
+    rp_id: Mapped[str] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+# --- AGENT 20 LAUNCH ---
+# ============================================================================

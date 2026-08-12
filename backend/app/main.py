@@ -20,6 +20,7 @@ from app.api import (
     integrations,
     maintenance,
     ops,
+    people,
     routines,
     runtime,
     tools,
@@ -61,6 +62,7 @@ app.include_router(routines.router)
 app.include_router(runtime.router)
 app.include_router(training.router)
 app.include_router(voice.router)
+app.include_router(people.router)  # AGENT 7 ROSTER
 app.include_router(filter.router)
 app.include_router(integrations.router)
 app.include_router(maintenance.router)

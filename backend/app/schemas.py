@@ -548,6 +548,7 @@ class ModelCallOut(BaseModel):
     envelope: dict
     envelope_hash: str | None
     error: str | None
+    media_refs: list[dict] = Field(default_factory=list)
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -936,6 +937,19 @@ class TtsOut(BaseModel):
     content_type: str | None = None
     ssml: str | None = None
     duration_ms: int | None = None
+    degraded: bool = False
+
+
+class VoicePartialOut(BaseModel):
+    """One incremental ASR hypothesis for the streaming voice surface."""
+
+    text: str
+    provider: str
+    sequence: int
+    stable: bool = False
+    confidence: float = 0.0
+    degraded: bool = False
+    timestamp_ms: int | None = None
 
 
 class VoiceUtteranceRequest(BaseModel):
@@ -954,6 +968,8 @@ class VoiceUtteranceResponse(BaseModel):
     state: str
     transcript: str
     transcript_confidence: float = 0.0
+    transcript_degraded: bool = False
+    transcript_provider: str | None = None
     reply: str
     conversation_id: UUID | None = None
     tts: TtsOut | None = None
@@ -1106,6 +1122,12 @@ class VisionPerceptionOut(BaseModel):
     provider: str
     raw_sent: bool = False
     permission_granted_by: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+    ocr_text: str | None = None
+    ocr_provider: str | None = None
+    derived_text_used: bool = False
+    request_id: str | None = None
     created_at: datetime
 
 
@@ -1243,11 +1265,21 @@ class ReverificationRequest(BaseModel):
     purpose: Literal[
         "integration.action",
         "memory.delete",
+        "memory.export",
         "runtime.action",
         "voice.revoke",
         "voice.delete",
-        "recovery.rotate",
         "voice.sensitive_action",
+        "face.revoke",
+        "face.delete",
+        "recovery.rotate",
+        "vault.rotate",
+        "backup.restore",
+        "compliance.erasure",
+        "adapter.activate",
+        "adapter.delete",
+        "person.delete",
+        "fleet.write",
     ]
     voice_session_id: UUID | None = None
 
@@ -1263,11 +1295,21 @@ class ReverificationConsumeRequest(BaseModel):
     purpose: Literal[
         "integration.action",
         "memory.delete",
+        "memory.export",
         "runtime.action",
         "voice.revoke",
         "voice.delete",
-        "recovery.rotate",
         "voice.sensitive_action",
+        "face.revoke",
+        "face.delete",
+        "recovery.rotate",
+        "vault.rotate",
+        "backup.restore",
+        "compliance.erasure",
+        "adapter.activate",
+        "adapter.delete",
+        "person.delete",
+        "fleet.write",
     ]
 
 
@@ -1490,8 +1532,159 @@ class PersonWhereaboutsOut(BaseModel):
     relationship: str | None = None
     last_seen: dict | None = None
     recent_mentions: list[dict] = Field(default_factory=list)
+    sightings: list[dict] = Field(default_factory=list)
     related_memories: list[dict] = Field(default_factory=list)
     total_events: int = 0
+    # AGENT 7 ROSTER fusion: enrolled identity, face/voice sightings, biodata.
+    enrolled: dict | None = None
+    face_sightings: list[dict] = Field(default_factory=list)
+    voice_sightings: list[dict] = Field(default_factory=list)
+    public_biodata: dict | None = None
+    biodata_merged: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# AGENT 7 ROSTER — consented face enrollment, recognition, public-figure biodata
+# --------------------------------------------------------------------------- #
+
+
+class FacePhotoIn(BaseModel):
+    """One aligned face crop from Agent 6's YuNet detector (never raw stranger scans)."""
+
+    image_b64: str = Field(min_length=1)
+    quality: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    source: str = Field(default="photo", max_length=32)
+    attachment_id: UUID | None = None
+    live_event_id: UUID | None = None
+
+
+class FaceEnrollmentCreate(BaseModel):
+    person_name: str = Field(min_length=1, max_length=256)
+    photos: list[FacePhotoIn] = Field(min_length=5, max_length=40)
+    reason: str | None = Field(default=None, max_length=512)
+
+
+class FaceEnrollmentDetailOut(BaseModel):
+    id: UUID
+    entity_id: UUID
+    person_name: str
+    version: int
+    is_current: bool
+    algorithm: str
+    embedding_dim: int
+    threshold: float
+    sample_count: int
+    status: str
+    privacy_level: str
+    consent_id: UUID | None = None
+    supersedes_id: UUID | None = None
+    superseded_by_id: UUID | None = None
+    reason_for_change: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class FaceEnrollResponse(BaseModel):
+    enrollment: FaceEnrollmentDetailOut
+    sample_count: int
+    raw_photos_stored: bool = False
+    provider: str
+    degraded: bool
+
+
+class FaceRecognitionRequest(BaseModel):
+    """A single aligned crop to match ONLY against enrolled templates."""
+
+    image_b64: str = Field(min_length=1)
+    quality: float | None = Field(default=None, ge=0.0, le=1.0)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    source: str = Field(default="live_frame", max_length=32)
+    attachment_id: UUID | None = None
+    live_event_id: UUID | None = None
+    write_log: bool = True
+
+
+class FaceRecognitionResponse(BaseModel):
+    resolved: bool
+    unknown: bool
+    label: str | None = None
+    entity_id: UUID | None = None
+    confidence: float = 0.0
+    threshold: float = 0.0
+    provider: str
+    degraded: bool
+    candidates: list[dict] = Field(default_factory=list)
+    recognition_id: UUID | None = None
+
+
+class FaceRecognitionConfirmRequest(BaseModel):
+    correct_label: str | None = Field(default=None, max_length=256)
+    correct_entity_id: UUID | None = None
+    reason: str | None = Field(default=None, max_length=512)
+
+
+class FaceRecognitionConfirmOut(BaseModel):
+    recognition_id: UUID
+    label: str
+    entity_id: UUID | None = None
+    confidence: float
+    source: str
+    confirmed: bool = True
+    created_at: datetime
+
+
+class FaceCalibrationTrial(BaseModel):
+    """One person's aligned crops; same-person pairs are genuine trials."""
+
+    person: str = Field(min_length=1, max_length=256)
+    images: list[str] = Field(min_length=2)
+
+
+class FaceCalibrationRequest(BaseModel):
+    trials: list[FaceCalibrationTrial] = Field(min_length=2)
+    target_far: float = Field(default=1e-3, ge=1e-6, le=0.5)
+    apply: bool = False
+
+
+class FaceCalibrationReport(BaseModel):
+    provider: str
+    degraded: bool
+    threshold: float
+    tar_at_target_far: float
+    target_far: float
+    genuine_pairs: int
+    impostor_pairs: int
+    roc: list[dict] = Field(default_factory=list)
+    calibrated_at: datetime
+
+
+class AttributedFieldOut(BaseModel):
+    value: str
+    source_url: str
+    license: str
+
+
+class PublicFigureBiodataOut(BaseModel):
+    name: str
+    occupations: list[AttributedFieldOut] = Field(default_factory=list)
+    notable_works: list[AttributedFieldOut] = Field(default_factory=list)
+    dates: AttributedFieldOut | None = None
+    summary: AttributedFieldOut | None = None
+    source_url: str
+    license: str
+    fetched_at: datetime
+    cached: bool = False
+    provider: str = "wikidata"
+    degraded: bool = False
+    merged: bool = False
+
+
+class PublicFigureLinkRequest(BaseModel):
+    entity_id: UUID
+    reason: str | None = Field(default=None, max_length=512)
 
 
 class UserStateOut(BaseModel):
@@ -1913,6 +2106,12 @@ class WakeIntent(BaseModel):
     proximity_score: float | None = Field(default=None, ge=0, le=1)
     priority: float = Field(default=0.5, ge=0, le=1)
     payload: dict = Field(default_factory=dict)
+    # Real wake evidence (Agent 3/5 path). The runtime arbitrates from the
+    # engine's detection, not from client-supplied signal floats.
+    text_hint: str | None = Field(default=None, max_length=256)
+    audio_ref: str | None = Field(default=None, max_length=4096)
+    frames_b64: str | None = Field(default=None, max_length=8 * 1024 * 1024)
+    sample_rate: int = Field(default=16000, ge=8000, le=48000)
 
 
 class WakeCandidateOut(BaseModel):
@@ -2247,10 +2446,12 @@ class RoutineOverviewOut(BaseModel):
 
 TrainingTrack = Literal[
     "voice_enrollment",
+    "face_enrollment",  # AGENT 7 ROSTER — consented face templates
     "training_corpus",
     "life_data_personalization",
     "adapter_fine_tuning",
     "filter_self_improvement",
+    "chat_egress",  # AGENT 19 VAULT — consent track for remote chat egress
 ]
 
 
@@ -2695,6 +2896,30 @@ class AdapterRegisterRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=512)
 
 
+class AdapterDryRunRequest(BaseModel):
+    corpus_version: int = Field(ge=1)
+    provider: str = Field(default="local-lora", min_length=1, max_length=64)
+    base_model: str | None = Field(default=None, max_length=128)
+    adapter_ref: str | None = Field(default=None, max_length=512)
+
+
+class AdapterTrainRequest(AdapterDryRunRequest):
+    adapter_id: UUID | None = None
+    cost_approved: bool = False
+    reason: str | None = Field(default=None, max_length=512)
+
+
+class AdapterRunOut(BaseModel):
+    mode: Literal["dry_run", "train"]
+    provider: str
+    corpus_version: int
+    passed: bool
+    gates: dict = Field(default_factory=dict)
+    dataset: dict = Field(default_factory=dict)
+    plan: dict | None = None
+    result: dict | None = None
+
+
 class AdapterOut(BaseModel):
     id: UUID
     name: str
@@ -2728,3 +2953,192 @@ class AdapterRollbackRequest(BaseModel):
 class AdapterDeleteResponse(BaseModel):
     deleted: int
     redacted: bool = True
+
+
+# ============================================================================
+# SHARED APPEND-ONLY SECTION — docs/FLEET_LAW.md §3
+# Additive only. Append inside YOUR block; never modify, reorder, reformat, or
+# delete another agent's lines, schemas, or endpoint contracts.
+#
+# --- AGENT 1 CONDUCTOR ---
+# Reserved by Agent 1 (Conductor): fleet governance, integration, contract.
+#
+# --- AGENT 2 FOUNDRY ---
+# --- AGENT 3 EARS ---
+# Ears-to-runtime audio delivery contract (docs/AUDIO.md). The ears process
+# posts VAD-segmented, wake-passing utterances here; Agent 4 wires the
+# /v1/ears/wake endpoint (dependency note in the Agent 3 report).
+class EarsWakeRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=128)
+    sample_rate: int = Field(default=16000, ge=8000, le=48000)
+    frames_b64: str | None = Field(default=None, max_length=8 * 1024 * 1024)
+    audio_ref: str | None = None
+    text_hint: str | None = Field(default=None, max_length=256)
+    wake_confidence: float = Field(default=0.0, ge=0, le=1)
+    scene: str | None = Field(default=None, max_length=32)
+    scene_confidence: float | None = Field(default=None, ge=0, le=1)
+    consent: bool = False
+
+
+class EarsWakeResponse(BaseModel):
+    accepted: bool
+    message: str | None = None
+
+
+# --- AGENT 4 VOICE ---
+# --- AGENT 5 SENTRY ---
+# --- AGENT 6 EYES ---
+# --- AGENT 7 ROSTER ---
+# --- AGENT 8 SYNAPSE ---
+# --- AGENT 9 MNEMO ---
+# --- AGENT 10 CORTEX ---
+# --- AGENT 11 FORGE ---
+# --- AGENT 12 CONDUIT ---
+class OAuthAuthorizeOut(BaseModel):
+    authorize_url: str
+    state: str
+    expires_at: datetime
+
+
+class OAuthStatusOut(BaseModel):
+    provider: str | None = None
+    authorized: bool = False
+    configured: bool = False
+    expires_at: datetime | None = None
+    expired: bool = False
+    reauth_required: bool = True
+    provider_account_id: str | None = None
+    scopes: list = Field(default_factory=list)
+
+
+class IntegrationSyncOut(BaseModel):
+    integration_id: UUID
+    adapter: str
+    synced_at: datetime
+    accepted: int = 0
+    deduplicated: int = 0
+    event_count: int = 0
+    signals: dict = Field(default_factory=dict)
+
+
+# --- AGENT 13 AMBIENT ---
+# --- AGENT 14 PULSE ----------------------------------------------------------
+
+
+class NotificationCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=256)
+    body: str = Field(min_length=1, max_length=4000)
+    priority: float = Field(default=0.5, ge=0.0, le=1.0)
+    tier: Literal["urgent", "useful", "background", "notify", "notify_card"] = "useful"
+    kind: str = Field(default="manual", min_length=1, max_length=32)
+    source: str | None = Field(default=None, max_length=64)
+    emergency: bool = False
+
+
+class NotificationOut(BaseModel):
+    id: UUID
+    kind: str
+    title: str
+    body: str
+    priority: float
+    tier: str
+    source: str | None
+    fingerprint: str
+    status: str
+    reason: str | None
+    backend: str | None
+    backend_ref: str | None
+    alert_id: UUID | None
+    action_id: UUID | None
+    attempt_count: int
+    queued_at: datetime
+    last_attempt_at: datetime | None
+    delivered_at: datetime | None
+    details: dict
+
+    model_config = {"from_attributes": True}
+
+
+class NotifyStatusOut(BaseModel):
+    backend: str
+    available: bool
+    reason: str | None = None
+    permission: str | None = None
+    delivered_today: int = 0
+    suppressed_today: int = 0
+    failed_today: int = 0
+
+
+# --- AGENT 15 ORACLE ---
+# --- AGENT 16 CONSCIENCE ---
+# --- AGENT 17 WORKBENCH ---
+# --- AGENT 18 SUIT ---
+# --- AGENT 19 VAULT ----------------------------------------------------------
+
+
+class WebauthnRegisterOptionsOut(BaseModel):
+    challenge_id: UUID
+    challenge: str  # base64url, no padding
+    rp: dict
+    user: dict
+    pub_key_cred_params: list[dict]
+    timeout: int
+    attestation: str
+    authenticator_selection: dict
+
+
+class WebauthnRegisterVerifyRequest(BaseModel):
+    challenge_id: UUID
+    credential_id: str = Field(min_length=1, max_length=1024)  # base64url
+    client_data_json: str = Field(min_length=1, max_length=16384)  # base64url
+    attestation_object: str = Field(min_length=1, max_length=65536)  # base64url
+    name: str = Field(min_length=1, max_length=128)
+    device_id: UUID | None = None
+
+
+class WebauthnAuthOptionsOut(BaseModel):
+    challenge_id: UUID
+    challenge: str  # base64url, no padding
+    rp_id: str
+    timeout: int
+    user_verification: str
+
+
+class WebauthnAuthVerifyRequest(BaseModel):
+    challenge_id: UUID
+    credential_id: str = Field(min_length=1, max_length=1024)  # base64url
+    client_data_json: str = Field(min_length=1, max_length=16384)  # base64url
+    authenticator_data: str = Field(min_length=1, max_length=16384)  # base64url
+    signature: str = Field(min_length=1, max_length=16384)  # base64url
+    device_name: str = Field(min_length=1, max_length=128)
+    capabilities: list[str] = Field(default_factory=list)
+
+
+class WebauthnAuthResponse(BaseModel):
+    verified: bool = True
+    token: str
+    device: DeviceOut
+    owner_id: UUID
+    trust_level: str
+
+
+# --- AGENT 20 LAUNCH ---
+# ============================================================================
+
+
+# --------------------------------------------------------------------------- #
+# --- AGENT 9 MNEMO (memory extraction, entities, rollups) ---
+# --------------------------------------------------------------------------- #
+
+
+class EntityMergeRequest(BaseModel):
+    target_entity_id: UUID
+    absorbed_entity_id: UUID
+    reason: str = Field(default="user confirmed merge", min_length=1, max_length=512)
+
+
+class StateOfMeOut(BaseModel):
+    period_start: datetime
+    period_end: datetime
+    executed_at: datetime
+    written: list[UUID]

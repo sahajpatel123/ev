@@ -72,6 +72,7 @@ class MediaPart:
     text: str | None = None
     ref: str | None = None
     sha256: str | None = None
+    size_bytes: int | None = None
 
 
 @dataclass
