@@ -41,6 +41,7 @@ this log.
 | DC-11 | Every model call is audited in `model_calls` with its full envelope | Request id, strategy, memories, metadata, tool-validation outcome, and errors are traceable per call |
 | DC-12 | Tool invocations are pre-validated by the gateway before execution | Unknown/malformed calls rejected; defaults rectified; sensitive tools require explicit permission |
 | DC-13 | EV identity is configuration, not provider | `EV_PERSONA_NAME`/description compiled into the prompt; swapping models never changes who EV is |
+| DC-14 | Inference topology: reasoning via hosted DeepSeek API; local models only for wake word, OCR (Apple Vision), speaker verification, and face embedding | 2026-08-12 — the M2 8 GB machine cannot host local LLM inference; API-first keeps required paths runnable. Small local models stay preferred only where an API is impossible or clearly worse, and every remote path must pass a `remote_processing_allowed()` gate (FLEET_LAW §13). |
 
 ## 3. Decision process
 
