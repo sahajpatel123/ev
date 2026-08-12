@@ -1,0 +1,5 @@
+# ML eval artifacts contain personal audio/photo statistics; never commit them.
+*
+!.gitignore
+!README.md
+!*.py

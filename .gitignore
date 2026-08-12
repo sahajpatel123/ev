@@ -17,4 +17,7 @@ build/
 htmlcov/
 node_modules/
 .build/
+/backend/storage/
+backend/data/
 backend/eval/last-run.json
+backend/eval/previous-run.json

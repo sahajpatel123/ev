@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ev.backup</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd /Users/sahajpatel/Code/ev/backend &amp;&amp; set -a &amp;&amp; source ../.env 2&gt;/dev/null; set +a; exec uv run python -m app.scripts.backup_snapshot --destination "${EV_BACKUP_DIR:-$HOME/.ev/backups}"</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/sahajpatel/Code/ev/backend</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/Users/sahajpatel/Library/Logs/ev/backup.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sahajpatel/Library/Logs/ev/backup.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/sahajpatel/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

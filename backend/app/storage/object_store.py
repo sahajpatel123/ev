@@ -33,6 +33,7 @@ class S3ObjectStore:
         secret_key: str | None = None,
     ) -> None:
         import boto3  # optional dependency
+        from botocore.exceptions import ClientError
 
         self.client = boto3.client(
             "s3",
@@ -41,6 +42,14 @@ class S3ObjectStore:
             aws_secret_access_key=secret_key,
         )
         self.bucket = bucket
+        # MinIO/S3 do not create buckets implicitly; ensure it exists so the
+        # first attachment upload does not fail with NoSuchBucket.
+        try:
+            self.client.create_bucket(Bucket=bucket)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code", "")
+            if code not in ("BucketAlreadyOwnedByYou", "BucketAlreadyExists"):
+                raise
 
     async def put(self, key: str, data: bytes, content_type: str | None = None) -> None:
         self.client.put_object(Bucket=self.bucket, Key=key, Body=data, ContentType=content_type or "application/octet-stream")
@@ -66,4 +75,3 @@ def get_object_store():
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-

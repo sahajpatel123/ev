@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: ev
+      MINIO_ROOT_USER: evadmin
       MINIO_ROOT_PASSWORD: ev-secret
     volumes:
       - miniodata:/data
@@ -45,8 +45,8 @@ services:
       EV_REDIS_URL: redis://redis:6379/0
       EV_OBJECT_STORE_BACKEND: s3
       EV_S3_ENDPOINT_URL: http://minio:9000
-      EV_S3_BUCKET: ev
-      EV_S3_ACCESS_KEY: ev
+      EV_S3_BUCKET: ev-data
+      EV_S3_ACCESS_KEY: evadmin
       EV_S3_SECRET_KEY: ev-secret
       EV_PROCESSING_MODE: queue
     ports:
@@ -70,8 +70,8 @@ services:
       EV_REDIS_URL: redis://redis:6379/0
       EV_OBJECT_STORE_BACKEND: s3
       EV_S3_ENDPOINT_URL: http://minio:9000
-      EV_S3_BUCKET: ev
-      EV_S3_ACCESS_KEY: ev
+      EV_S3_BUCKET: ev-data
+      EV_S3_ACCESS_KEY: evadmin
       EV_S3_SECRET_KEY: ev-secret
       EV_PROCESSING_MODE: queue
     depends_on:
@@ -91,31 +91,43 @@ services:
       EV_REDIS_URL: redis://redis:6379/0
       EV_OBJECT_STORE_BACKEND: s3
       EV_S3_ENDPOINT_URL: http://minio:9000
-      EV_S3_BUCKET: ev
-      EV_S3_ACCESS_KEY: ev
+      EV_S3_BUCKET: ev-data
+      EV_S3_ACCESS_KEY: evadmin
       EV_S3_SECRET_KEY: ev-secret
       EV_PROCESSING_MODE: queue
+      # --- AGENT 14 PULSE (append-only) ---
+      EV_NOTIFY_BACKEND: console
+      EV_NOTIFY_DIGEST_ENABLED: "true"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_started
 
-  runtime_daemon:
+  runtime:
     build:
       context: ./backend
     restart: unless-stopped
     command: ["python", "-m", "app.workers.runtime_daemon"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.workers.runtime_healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     env_file: .env
     environment:
       EV_DATABASE_URL: postgresql+psycopg://ev:ev@db:5432/ev
       EV_REDIS_URL: redis://redis:6379/0
       EV_OBJECT_STORE_BACKEND: s3
       EV_S3_ENDPOINT_URL: http://minio:9000
-      EV_S3_BUCKET: ev
-      EV_S3_ACCESS_KEY: ev
+      EV_S3_BUCKET: ev-data
+      EV_S3_ACCESS_KEY: evadmin
       EV_S3_SECRET_KEY: ev-secret
       EV_PROCESSING_MODE: queue
+      # --- AGENT 14 PULSE (append-only) ---
+      EV_NOTIFY_BACKEND: console
+      EV_NOTIFY_DIGEST_ENABLED: "true"
     depends_on:
       db:
         condition: service_healthy

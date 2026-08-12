@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from app.models import ModelCallLog
-from app.ops.metrics import estimate_cost_usd
+from app.ops.metrics import estimate_cost_usd, record_restore_drill
 
 
 def test_estimate_cost_usd_uses_provider_pricing() -> None:
@@ -126,3 +126,69 @@ async def test_ops_center_includes_budget_metrics(client, db_session) -> None:
     meta = hud.json().get("meta", {})
     assert meta.get("latency_p95_ms") == 150.0
     assert meta.get("cost_within_budget") is True
+
+
+async def test_ops_metrics_reports_per_model_latency(client, db_session) -> None:
+    for model, latency in (("deepseek-v4-flash-0731", 100.0), ("deepseek-v4-flash-0731", 300.0), ("mock", 1000.0)):
+        db_session.add(
+            ModelCallLog(
+                request_id=str(uuid4()),
+                actor="master",
+                provider=model.split("-")[0],
+                model=model,
+                status="ok",
+                latency_ms=latency,
+                prompt_tokens=10,
+                completion_tokens=10,
+                tool_calls=[],
+                envelope={},
+            )
+        )
+    await db_session.commit()
+
+    body = (await client.get("/v1/ops/metrics")).json()
+    by_model = body["calls"]["latency_by_model"]
+    assert by_model["deepseek-v4-flash-0731"]["p95_ms"] == 300.0
+    assert by_model["deepseek-v4-flash-0731"]["count"] == 2
+    assert by_model["mock"]["p95_ms"] == 1000.0
+
+
+async def test_ops_metrics_reports_system_and_arbiter(client) -> None:
+    body = (await client.get("/v1/ops/metrics")).json()
+    system = body["system"]
+    assert "free_ram_mb" in system
+    assert isinstance(system["free_disk_gb"], float)
+    assert "swap" in system
+    arbiter = body["arbiter"]
+    assert arbiter["available"] is True
+    assert isinstance(arbiter["resident_mb"], dict)
+    assert isinstance(arbiter["evictions_observed"], int)
+    assert isinstance(arbiter["refusals_last_50"], list)
+
+
+async def test_restore_drill_age_alert_past_35_days(client) -> None:
+    from datetime import timedelta
+    from pathlib import Path
+
+    from app.config import settings
+    from app.utils.text import utcnow
+
+    marker = Path(settings.storage_root) / "ops" / "restore-drill.json"
+    old = (utcnow() - timedelta(days=40)).isoformat(timespec="seconds")
+    marker.write_text(f'{{"last_success_at": "{old}"}}', encoding="utf-8")
+
+    body = (await client.get("/v1/ops/metrics")).json()
+    assert body["restore_drill"]["stale"] is True
+    assert body["restore_drill"]["alert"]
+
+    record_restore_drill()
+    body = (await client.get("/v1/ops/metrics")).json()
+    assert body["restore_drill"]["stale"] is False
+    assert body["restore_drill"]["age_days"] == 0.0
+    assert not any("restore drill" in warning.lower() for warning in body["warnings"])
+
+    marker.write_text(f'{{"last_success_at": "{old}"}}', encoding="utf-8")
+    body = (await client.get("/v1/ops/metrics")).json()
+    assert body["restore_drill"]["stale"] is True
+    assert body["restore_drill"]["age_days"] > 35
+    assert any("restore drill" in warning.lower() for warning in body["warnings"])

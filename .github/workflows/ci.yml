@@ -41,3 +41,27 @@ jobs:
           name: eval-report
           path: backend/eval/last-run.json
           if-no-files-found: error
+
+  postgres-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync --extra s3 --extra dev
+
+      - name: Create local .env for compose
+        run: printf 'EV_MASTER_KEY=e2e-key\nEV_VAULT_KEY=e2e-vault-key-0123456789abcdef\n' > .env
+
+      - name: Postgres e2e (compose up -> migrate -> seed -> e2e CLI)
+        env:
+          E2E_RESET_DB: "1"
+          EV_E2E_BASE_URL: http://127.0.0.1:8000
+          EV_E2E_MASTER_KEY: e2e-key
+          EV_VAULT_KEY: e2e-vault-key-0123456789abcdef
+        run: make postgres-e2e

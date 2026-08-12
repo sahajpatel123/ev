@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_master
 from app.db import get_session
+from app.ops.metrics import record_restore_drill
 from app.schemas import (
     BackupCreateRequest,
     BackupOut,
@@ -121,6 +122,8 @@ async def restore_backup_endpoint(
             "events_restored": result["events_restored"],
         },
     )
+    if data.mode == "wipe":
+        record_restore_drill()
     await session.commit()
     return BackupRestoreOut(
         mode=result["mode"],

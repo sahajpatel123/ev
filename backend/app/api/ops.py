@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_master
 from app.db import get_session
-from app.ops.metrics import collect_metrics
+from app.ops.metrics import collect_metrics_with_warnings
 
 router = APIRouter(prefix="/v1/ops", tags=["ops"])
 
@@ -19,4 +19,4 @@ async def ops_metrics(
 ) -> dict:
     """Aggregate model-call latency/error/cost metrics against budgets."""
 
-    return await collect_metrics(session)
+    return await collect_metrics_with_warnings(session)

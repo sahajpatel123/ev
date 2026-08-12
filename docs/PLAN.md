@@ -32,6 +32,9 @@ approved.**
 | `docs/CONTINUITY_LIVE.md` | Single continuous conversation + live data recording architecture |
 | `docs/INTELLIGENCE_FILTER.md` | Full-duplex intelligence filter architecture v2: voice ID, wake engine, input/output filters, training tracks, 24/7 runtime, 1M-window strategy |
 | `docs/WORK_BREAKDOWN.md` | Complete factor catalog: every feature/factor with 3-4 line plans, directions, and status |
+| `docs/NEXT_STEPS.md` | Post-breadth productization: dogfood protocol, depth tracks A–E, anti-goals |
+| `docs/AGENT_FLEET.md` | Multi-agent SSOT: A0–A9 ownership, merge protocol, bans, done-when gates |
+| `docs/AGENT_BRIEFS.md` | Copy-paste work orders (A0–A9) for real presence; Domain 1–19 appendix verification-only |
 
 ---
 
@@ -181,13 +184,15 @@ Response: answer / advice / action / reminder / challenge / briefing
 
 ## 6. Data & memory model
 
+**Status: Built** — implemented and verified (2026-08-10); tracked per-factor in
+[`docs/WORK_BREAKDOWN.md`](WORK_BREAKDOWN.md) §1.
+
 ### 6.1 Stores
 
 | Store | Purpose | Rebuildable from events? |
 | --- | --- | --- |
 | `events` | Raw immutable input (text, voice, image, file, note, share, conversation) | — (source of truth) |
-| `memories` | Typed derived memory: episodic, semantic, fact, decision, goal, preference, observation, pattern, summary | Yes |
-| `memory_versions` | Version chain (version group, supersedes, valid range, reason) | Yes |
+| `memories` | Typed derived memory: episodic, semantic, fact, decision, goal, preference, observation, pattern, summary; version chain stored in-row (`version_group`, `version`, `supersedes`, `valid_from`/`valid_until`, reason) | Yes |
 | `entities` | People, places, projects, topics, organizations | Yes |
 | `entity_relationships` | Typed, weighted, time-valid edges | Yes |
 | `conflicts` | Contradiction records (open/resolved) | Yes |
@@ -265,7 +270,7 @@ FinalScore = 0.35·Semantic + 0.20·Keyword + 0.15·Recency
 
 ## 8. Feature modules (specifications)
 
-### 8.1 Capture & memory (M0–M2)
+### 8.1 Capture & memory (M0–M2) — **Built**
 
 - Capture: text, voice, image, file, share-sheet, notes, conversations.
 - Every capture → immutable event → extraction → typed memories → embeddings →
@@ -464,7 +469,7 @@ interfaces validate against HUD-ready JSON schema.
 
 ## 13. Verification & testing
 
-### Memory invariants
+### Memory invariants — **Built (verified)**
 - No code path updates or deletes raw events (tombstone only).
 - Dropping all derived data (embeddings/summaries/patterns) and regenerating from
   events yields equivalent state.
@@ -567,9 +572,12 @@ without being promised:
 Each stretch direction reuses the same memory engine, gateway, and HUD schema, so none
 require architecture rework — only new modules.
 
-## 18. Current workspace state (for context only — no implementation this phase)
+## 18. Current workspace state (historical context — implementation has moved past this)
 
-The repository already contains a non-code foundation from earlier work:
+The repository already contained a non-code foundation before implementation; that
+scaffold has since been built out into the M0–M5 breadth tracked in
+[`docs/WORK_BREAKDOWN.md`](WORK_BREAKDOWN.md) (statuses per factor). The bullets below
+are historical:
 
 - Git repo initialized; `.env.example`, `compose.yaml`, `Makefile`.
 - `backend/pyproject.toml`; package skeleton (`app/`, `tests/`, `clients/`).
@@ -579,8 +587,8 @@ The repository already contains a non-code foundation from earlier work:
   engine, orchestrator scaffolding), gateway providers (echo/mock/DeepSeek),
   embeddings (hash/http), auth, event service, object storage, processor.
 
-That scaffold can seed M0 once this plan is approved; it is **not** a reason to skip
-the plan review.
+That scaffold seeded M0; per-factor implementation status now lives in
+`docs/WORK_BREAKDOWN.md`.
 
 ## 19. Behavior & interaction upgrade (addendum summary)
 
@@ -619,6 +627,6 @@ P1–P8 map into M3/M5 (see `ROADMAP.md`); P9 is post-M5. Requirements are
 
 ---
 
-**Plan status:** v3.1 — awaiting approval. Next step: confirm or override the
-recommended defaults in `docs/DECISIONS.md` §1, then begin M0 implementation with this
-document suite as the source of truth.
+**Plan status:** v3.1 — implementation status is tracked per factor in
+`docs/WORK_BREAKDOWN.md`; the memory & data foundation (Domain 1) is verified
+**Built** (2026-08-10). Next step: continue per `docs/NEXT_STEPS.md`.

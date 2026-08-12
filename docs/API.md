@@ -35,6 +35,11 @@
 | POST | `/v1/export` | Full export bundle | FR-SEC-04 |
 | POST | `/v1/attachments` | Blob capture (multipart) | FR-DEV-01 |
 | GET | `/v1/attachments/{id}` | Blob download (auth) | FR-DEV-01 |
+| POST | `/v1/vision/analyze` | Permissioned attachment analysis (local OCR → labels → provenance) | FR-D15 |
+| GET | `/v1/vision/perceptions` · `/v1/vision/perceptions/{id}` | Perception audit (list/detail, `?attachment_id=` filter) | FR-D15 |
+| GET | `/v1/vision/log?source=model\|user` | Recognition log: pending vs user-confirmed labels | FR-D15 |
+| POST | `/v1/vision/recognitions/{id}/confirm` | Promote a model-suggested label (idempotent) | FR-D15 |
+| POST/GET | `/v1/live/channels` · POST `/v1/live/events` · GET `/v1/live/status` | Permissioned live data channels (screen/audio/location/vision) | FR-D15 |
 | GET | `/v1/health` | System + provider health | FR-DIAG-01 |
 | POST | `/v1/devices` · GET `/v1/devices` · DELETE `/v1/devices/{id}` | Device pairing/lifecycle | FR-SEC-01 |
 | GET | `/v1/gear` | Gear telemetry (M5) | FR-GEAR-01..03 |
@@ -219,6 +224,58 @@ status, and result. Master sees all commands; device tokens see only the
 commands they issued. `GET /v1/commands` and `GET /v1/commands/{id}` expose the
 ledger; `GET /v1/ops/center` includes the five most recent commands.
 
+## 11.5 Perception & vision (Domain 15)
+
+Perception is a permissioned observation layer: analysis only runs with
+explicit user permission, respects the source event's privacy level, prefers
+on-device derived text (OCR) over raw media, and records provenance for every
+conclusion.
+
+```http
+POST /v1/vision/analyze
+Authorization: Bearer <master-key>
+Content-Type: application/json
+
+{
+  "attachment_id": "<uuid>",
+  "permission": true,
+  "allow_raw": false
+}
+```
+
+Returns a `VisionPerceptionOut` with `summary`, `labels`, `raw_sent`,
+`ocr_text`/`ocr_provider`, and provenance ids (`attachment_id`,
+`source_event_id`, `perception_event_id` via `GET /v1/vision/perceptions/{id}`).
+`permission` must be `true`; raw media is only transmitted when `allow_raw` is
+set, the provider advertises vision capability, and the source event is normal
+privacy. Sensitive/private/`never_send_to_model` sources are fail-closed.
+
+Suggested labels are recorded with `source="model"` and remain pending until
+the user confirms them:
+
+```http
+POST /v1/vision/recognitions/{id}/confirm
+{"entity_type": "person"}
+```
+
+Confirmed labels create a provenance-linked observation memory and appear in
+`GET /v1/people/{name}/whereabouts` as sightings.
+
+Live perception channels:
+
+```http
+POST /v1/live/events
+{
+  "channel": "screen-activity",
+  "kind": "screen",
+  "privacy_level": "sensitive",
+  "events": [{"event_type": "focus_change", "payload": {"app": "Xcode", "code_file": "retrieval.py"}}]
+}
+```
+
+Chat accepts `attachment_id` (and optional `allow_raw_media`) so "what does
+this show?" is answered from the recorded perception with provenance.
+
 ## 12. Gateway (internal)
 
 - `POST /v1/gateway/chat` — messages + optional tools + request envelope
@@ -230,7 +287,11 @@ ledger; `GET /v1/ops/center` includes the five most recent commands.
   invocation (ok/denied/rejected/error) to the access log.
 - `GET /v1/gateway/models` — provider + available models.
 - `GET /v1/gateway/calls?limit=&request_id=` — audit view of model calls
-  (provider, model, latency, usage, envelope, tool validation, errors).
+  (provider, model, latency, usage, envelope with typed `media_refs`, tool
+  validation, errors).
+- `GET /v1/gateway/stats?window_hours=` — aggregate latency/error/token
+  evidence per provider/model, including `media_refs`, `raw_media_sent`, and
+  `derived_media_only` counts for perception audit.
 
 Clients never call the gateway directly; `/v1/chat` is the only model-facing entry
 point from the product surface. Every model call through either entry point is

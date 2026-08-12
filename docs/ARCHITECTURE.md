@@ -331,22 +331,16 @@ conflicts, attachments metadata, access log.
 
 ## 12. Configuration (env)
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `EV_DATABASE_URL` | sqlite dev / postgres prod | DB |
-| `EV_REDIS_URL` | localhost:6379 | queue |
-| `EV_MASTER_KEY` | dev-only | auth |
-| `EV_PROCESSING_MODE` | sync | sync vs queue |
-| `EV_EMBEDDING_PROVIDER` | hash | hash vs http |
-| `EV_EMBEDDING_BASE_URL/KEY/MODEL/DIM` | — | embedding API |
-| `EV_CHAT_PROVIDER` | echo | echo/mock/deepseek |
-| `EV_DEEPSEEK_BASE_URL/API_KEY/MODEL` | — | chat API |
-| `EV_CONTEXT_BUDGET_TOKENS` | 20000 | context cap |
-| `EV_MAX_RETRIEVAL_MEMORIES` | 50 | candidate cap |
-| `EV_OBJECT_STORE_BACKEND` | local | local vs s3 |
-| `EV_STORAGE_ROOT` | ./storage | local blob root |
-| `EV_S3_*` | — | MinIO/S3 |
-| `EV_ACCESS_LOG_ENABLED` | true | audit |
+All configuration is `EV_*` environment variables. Server settings are declared
+in `backend/app/config.py` (pydantic-settings, `EV_` prefix, `.env` file);
+compliance policy, the sandbox root, and the runtime-daemon sweep cadence read
+directly via `os.getenv`. The complete reference — every key, default, allowed
+value, and purpose, including client-side keys — is
+[`docs/ENVIRONMENT.md`](ENVIRONMENT.md); `.env.example` holds the quickstart
+subset (69 entries). Key areas: database/queue URLs, processing mode, model
+providers (chat/embeddings/ASR/TTS/voiceprint), retrieval and context budgets,
+compliance retention/residency/remote-processing gates, object storage,
+integrations/webhooks/plugins, and runtime/scheduler tuning.
 
 ## 13. Scale & performance notes
 

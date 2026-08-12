@@ -133,7 +133,12 @@ Load tests use a generated 50k-event corpus to prove single-user headroom.
 
 - CI runs unit + integration suites on every change.
 - Eval harness runs nightly and publishes deltas (Recall@5, MRR, latency p95).
-- Any regression >2 points in Recall@5 or >10% latency p95 blocks merge.
+- Any regression >2 points in Recall@5 or >10% latency p95 blocks merge
+  (latency additionally requires >25 ms absolute growth to absorb full-stack
+  load jitter on an 8 GB Mac; changed from the 10 ms floor on 2026-08-12).
+- The `regression` gate also blocks on ML metric degradation: WER/EER/FAR up,
+  nDCG@10/TAR/recall down (tolerances in `app/scripts/eval_gates.py`,
+  `ML_REGRESSION_RULES`).
 
 ## 11. Behavior & interaction eval (FR-BHV)
 
@@ -150,3 +155,34 @@ From `BEHAVIOR.md` §24:
 | Permission matrix | Denied access/store/send/act paths logged; boundary tests pass |
 | Prediction tracking | Outcomes recorded; "why now?" present on every prediction |
 | Self-evaluation | Response logs written; calibration deltas user-visible |
+
+## 12. ML quality gates (LAUNCH, 6 new gates)
+
+`make eval` runs **18 gates**. The six ML gates below read measured JSON
+artifacts from `backend/eval/ml/` written by the owning agents. They **SKIP
+loudly** when the artifact is absent or the run was degraded (weights absent /
+deterministic double), and **FAIL** when a measured artifact misses its
+threshold. A test double is never reported as a quality number.
+
+| Gate | Artifact | Thresholds |
+| --- | --- | --- |
+| `asr_quality` | `asr_quality.json` (`ev.asr.eval.v1`) | WER ≤ 8% clean subset / ≤ 12% owner speech |
+| `speaker_security` | `speaker_security.json` | EER ≤ 3% and 0 false accepts at the shipped threshold |
+| `retrieval_quality` | `retrieval_quality.json` (`ev.retrieval.eval.v1`) | nDCG@10 ≥ 0.80, top-5 hit ≥ 90% |
+| `face_recognition` | `face_recognition.json` | TAR ≥ 95% @ FAR 1e-3, 100% stranger rejection |
+| `wake_reliability` | `wake_reliability.json` | ≤ 1 false accept per 12 h, recall ≥ 90% |
+| `grounding` | measured in-process (Agent 16 corpus) | ≥ 95% ungrounded flagged, ≤ 5% false removal |
+
+Each artifact path can be overridden with `EV_<GATE>_EVAL_REPORT`
+(`EV_ASR_EVAL_REPORT`, `EV_SPEAKER_EVAL_REPORT`, `EV_RETRIEVAL_EVAL_REPORT`,
+`EV_FACE_EVAL_REPORT`, `EV_WAKE_EVAL_REPORT`, `EV_GROUNDING_EVAL_REPORT`).
+
+Producers:
+
+```text
+ASR:    uv run python -m app.voice.asr eval ...        # Agent 4
+Speaker: uv run python -m app.voice.speaker eval ...   # Agent 5
+Retrieval: uv run python -m eval.retrieval.cli retrieval --out eval/ml/retrieval_quality.json  # Agent 8
+Face:   uv run python -m app.people.eval ... --report eval/ml/face_recognition.json           # Agent 7
+Wake:   Agent 3 wake eval over trained openWakeWord head
+```

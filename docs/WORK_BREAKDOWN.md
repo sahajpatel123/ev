@@ -6,6 +6,17 @@ direction we'll take. Status: **Built** (implemented + tested), **Partial**
 (core exists, gaps remain), **Design** (architecture written, not built),
 **Future** (roadmap only).
 
+**Phase note (2026-08):** factor breadth across domains 1–19 is effectively
+complete (only §16.4 multi-user remains explicitly Future; §13.2/13.4/13.5 are
+Partial pending app targets, approval gates, and hardware renderers). Do not
+invent Domain 20. Multi-agent depth uses fleet A0–A9
+([`AGENT_FLEET.md`](AGENT_FLEET.md), [`AGENT_BRIEFS.md`](AGENT_BRIEFS.md)) — not
+19 equal agents; focus is real presence work, not process waves. Post-breadth strategy — stabilize the tree, dogfood on a
+personal stack, then deepen voice / phone / calendar — lives in
+[`docs/NEXT_STEPS.md`](NEXT_STEPS.md). The 80+ "Direction:" lines below are a
+refinement backlog ranked by *personal friction*, not a build queue to clear
+in order.
+
 ---
 
 ## 1. Memory & data foundation
@@ -26,7 +37,10 @@ Every input (text, voice, image, file, live event) is an append-only event with
 `occurred_at`, `ingested_at`, source, type, content, privacy level, and a
 content hash. Direction: keep it the single source of truth; all derived data
 must remain rebuildable from it. No code path may ever update or physically
-delete a raw event.
+delete a raw event in normal operation. The one deliberate exception is backup
+restore `wipe` mode (`backend/app/services/backup.py`), which clears the
+personal-data layer only with `confirm_wipe=true` and then re-imports the
+verified backup.
 
 ### 1.2 Derived memory system — **Built**
 Facts, decisions, goals, preferences, observations, patterns, summaries, and
@@ -71,10 +85,14 @@ the retention sweep (`EV_RETENTION_ACCESS_LOG_DAYS`). `GET
 export/backup bursts, and repeated failed actions; direction: adaptive
 thresholds and ML baselines.
 
-### 1.9 Export, import, deletion — **Built (partial)**
+### 1.9 Export, import, deletion — **Built**
 Full export bundles events, memories, entities, relationships, conflicts;
-tombstone delete redacts derived rows. Direction: implement import/restore round-
-trip and scheduled encrypted backups (see §13).
+tombstone delete redacts derived rows. Import is event-sourced by design:
+`POST /v1/import` (merge/replace) inserts only raw events — deduplicated by
+content hash — then replays the log through `rebuild_derived_state`, so a
+restore regenerates every derived table without ever overwriting history.
+Encrypted backups/restore drills are built (§12.5). Direction: batch
+corrections and a "what did I forget?" review surface.
 
 ### 1.10 Long-horizon consolidation — **Built**
 Daily/weekly/monthly period summaries are derived memories
@@ -125,12 +143,13 @@ included/dropped items, remaining budget). The chat assembler delegates to it
 and depth profiles scale the budget. Chat responses and SSE streams expose
 the plan as `context_plan`. Direction: add progressive tool-loaded deep dives.
 
-### 2.5 Whole-life recall — **Partial**
+### 2.5 Whole-life recall — **Built**
 "Remember my whole life" = memory store + hierarchical retrieval, not a lifetime
 in context. `GET /v1/recall/week` reconstructs any past week: raw events,
 end-of-week versioned memory state (validity-window time travel), weekly
-period-summary consolidation, and decisions/goals with provenance. Direction:
-month-over-month "how has my thinking changed" comparisons and a recall UI.
+period-summary consolidation, and decisions/goals with provenance — covered by
+`tests/test_recall.py`. Direction: month-over-month "how has my thinking
+changed" comparisons and a recall UI.
 
 ---
 
@@ -154,7 +173,9 @@ the provider. Implemented in `app/filter/input_filter.py` and wired into the
 chat pipeline: unverified speakers block, injection attempts block/flag,
 credentials are redacted from the provider-bound message with
 `never_send_to_model` privacy, and every decision is ledgered. Voice-enrollment
-identity remains future work (see §5).
+identity is now forwarded end to end: a verified voiceprint's speaker identity
+and confidence enter the filter envelope (`app/filter/envelope.py`) and shape
+the provider-bound identity block.
 
 ### 3.2 Output filter — **Built**
 Structural validation → grounding audit → persona/style → safety → critic loop →
@@ -201,10 +222,12 @@ records everything to the ledger, and is covered by
 `tests/test_intelligence_filter.py`. Snapshot replay of historical drafts is a
 future addition.
 
-### 3.9 Streaming refinement — **Design**
-Buffered-final first: stream raw text, then emit a `refined` event; chunk-filter
-later. Direction: define client protocol (replace vs. append) and latency
-budgets.
+### 3.9 Streaming refinement — **Built**
+Buffered-final refinement is implemented: the provider draft streams as SSE
+events, then the final filtered text is emitted as a `refined` event with
+`replaces: true` so clients replace the buffered text (protocol defined, not
+chunk-filtered). Covered by `tests/test_streaming_refinement.py`. Direction:
+chunk-level refinement with latency budgets.
 
 ---
 
@@ -264,15 +287,20 @@ experience that is private: wake, verify, listen, understand, act, reply, and a
 wake word never fires for strangers, replay attacks fail, and voice feels as
 natural as talking to a person who knows you.
 
-### 5.1 Wake word engine ("EVIE") — **Built (dev)**
-Deterministic wake engines in `app/voice/wake.py` with multi-stage
-low_power/burst semantics; production Sensory/AON1100-class model is a
-provider swap behind the same contract.
+### 5.1 Wake word engine ("EVIE") — **Built**
+Deterministic multi-stage engines in `app/voice/wake.py` keep dev/test
+lifecycle green, and production engines sit behind the same contract:
+Picovoice Porcupine with a custom "EVIE" `.ppn` model (sensitivity config) plus
+an optional Silero VAD speech gate. `default_wake_engine()` returns the
+test-safe phrase engine whenever no access key/model is configured.
 
 ### 5.2 Speaker verification (owner-only) — **Built**
 Enroll voice samples → encrypted, versioned voiceprints; every wake/verify
 path checks the owner; unknown voices get a polite refusal and the session
-ends. Remote encoders require explicit regional-policy approval.
+ends. Production encoder: SpeechBrain ECAPA-TDNN (`spkrec-ecapa-voxceleb`)
+with >=5-sample enrollment and cosine-similarity thresholding; the profile
+verifier remains the offline test fallback. Remote encoders require explicit
+regional-policy approval.
 
 ### 5.3 Anti-spoofing / liveness — **Built**
 `app/voice/anti_spoof.py` implements single-use challenge nonces, audio
@@ -280,12 +308,17 @@ fingerprint replay rejection, and a liveness gate; failed liveness ends the
 session.
 
 ### 5.4 Speech-to-text (ASR) — **Built**
-`app/voice/asr.py` supports the deterministic dev transcriber and an
-OpenAI-compatible provider; transcripts are recorded as sensitive events.
+`app/voice/asr.py` supports the deterministic dev transcriber, a local
+faster-whisper provider (language config, `audio_b64`/`audio_ref`), and an
+OpenAI-compatible provider. Remote ASR is gated by
+`compliance.policy.remote_processing_allowed("voice_asr")` /
+`EV_ALLOW_REMOTE_ASR`; transcripts are recorded as sensitive events.
 
 ### 5.5 Text-to-speech (TTS) — **Built**
 `app/voice/tts.py` synthesizes with urgency/warmth/brevity styles via the dev
-or OpenAI-compatible provider; audio refs are returned to clients.
+provider, a local Piper (ONNX voice) synthesizer, or an OpenAI-compatible
+provider; style maps to speed/prosody instructions and audio refs are returned
+to clients.
 
 ### 5.6 Voice session lifecycle — **Built**
 Wake → verify → listen → process → respond → 30s follow-up → idle is
@@ -318,10 +351,11 @@ timeouts and quiet hours, is implemented as a centralized runtime with
 `runtime_sessions`, a legal-transition engine, `POST /v1/runtime/wake`,
 `POST /v1/runtime/verify`, `POST /v1/runtime/transition`, and
 `GET /v1/runtime/status`. The always-on daemon (`workers/runtime_daemon.py`,
-`runtime_daemon` compose service) expires stale sessions, re-enqueues retrying
-dead letters, builds the quiet-hours digest, and runs health checks; per-device
-listener agents (Python `clients/device_listener.py`, Swift `RuntimeListener`)
-drive these endpoints. Direction: notification delivery for digests.
+`runtime` compose service with a tick-healthcheck) expires stale sessions,
+re-enqueues retrying dead letters, builds the quiet-hours digest, and runs
+health checks; per-device listener agents (Python `clients/device_listener.py`,
+Swift `RuntimeListener`) drive these endpoints. Direction: notification
+delivery for digests.
 
 ### 6.2 Device fleet as "ears" — **Built**
 Fleet status, gear telemetry, task dispatch, and wake arbitration exist:
@@ -337,7 +371,7 @@ Retrying letters re-enqueue onto their RQ queue when the payload carries an
 entrypoint, and successful jobs resolve their letters. Direction: add filter
 jobs and consolidation jobs.
 
-### 6.4 Heartbeat & health monitoring — **Built (partial)**
+### 6.4 Heartbeat & health monitoring — **Built**
 `/v1/health`, calibration diagnostics, device heartbeats
 (`POST /v1/runtime/heartbeat`, `runtime_heartbeats`), and a runtime status
 summary exist. `GET /v1/runtime/health` reports DB, state machine, listener,
@@ -345,29 +379,34 @@ queue, ASR/TTS, and dead-letter health, and `workers/runtime_daemon.py` ticks
 continuously to expire stale sessions, re-enqueue retrying dead letters, and
 keep the runtime observable. Direction: provider latency budgets with alerts.
 
-### 6.5 Action router — **Built (partial)**
+### 6.5 Action router — **Built**
 Commands become approved actions: searches, fleet tasks, HUD cards,
 notifications — each with a permission check and ledger entry. The E.D.I.T.H.
 command ledger now records focus, fleet, and recognition commands with actor,
 target, payload, status, and result; fleet tasks are device-scoped and
 capability-checked through a full lifecycle. The runtime action router
 (`approved_actions`) adds a per-action approval matrix with approve/deny/
-execute endpoints. Direction: extend the ledger to notifications and future
-web/file/code actions.
+execute/rollback endpoints. Direction: extend to notification delivery and
+future web/file/code adapters behind the same registry.
 
-### 6.6 Notifications & attention budget — **Built (partial)**
+### 6.6 Notifications & attention budget — **Built**
 Quiet hours, daily alert budget, intervention tiers, focus-mode wake gating
 ("only interrupt if urgent during focus"), and quiet-hours digest batching
 (manual + daemon-scheduled, surfaced through `/v1/runtime/sync`) exist.
 Direction: APNs/local notification delivery for digests and voice
 interruptions.
 
-### 6.7 Offline capture & sync — **Built (partial)**
+### 6.7 Offline capture & sync — **Built**
 Clients queue voice/text/live events offline and sync when back: web workbench,
 CLI (`ev queue`/`ev sync`), and iOS `OfflineCaptureQueue` share one idempotent
 contract (201 synced, 409 duplicate, 422 quarantined); runtime state converges
-through `/v1/runtime/sync`. Direction: background-fetch/watch sync and device
-presence-aware queue routing.
+through `/v1/runtime/sync`. The Python device listener runs a real always-on
+loop: heartbeat every N seconds, wake-arbitration polling via `/v1/runtime/sync`,
+offline-tolerant retry with a capped backoff, and delivery of captures to
+`/v1/events` or `/v1/live/events` from a local queue with idempotency keys
+(rejected captures quarantine). Attachments queue with the same lifecycle
+(files missing at sync time are quarantined). Direction: background-fetch/watch
+sync and device presence-aware queue routing.
 
 ---
 
@@ -398,22 +437,27 @@ Importance scoring, patterns, preferences, and self-evaluation already
 personalize retrieval. Direction: add recommendation-follow/ignore learning and
 per-domain calibration. Implemented: consent-gated, evidence-backed importance
 calibration — per-memory-type multipliers derived from logged corrections,
-usefulness, and recommendation-follow signals, versioned for rollback, applied
-transparently by hybrid retrieval, and fully redactable on request
-(`/v1/training/personalization/*`).
+usefulness, and recommendation follow/ignore signals (an explicit
+`followed_recommendation=False` lowers that domain's importance), versioned for
+rollback, applied transparently by hybrid retrieval, and fully redactable on
+request (`/v1/training/personalization/*`).
 
-### 7.3 Adapter fine-tuning (LoRA) — **Built (deterministic style adapter)**
+### 7.3 Adapter fine-tuning (LoRA) — **Built (provider contract + style adapter)**
 Train an EVIE adapter on filtered responses + user corrections to encode voice,
 style, and working style. Direction: versioned adapters, eval gates, rollback;
 requires corpus from the filter ledger. Implemented: consent-gated versioned
 adapter registry bound to corpus snapshots, deterministic eval gates
-(non-empty corpus, corrections present, no leaked secrets), activate/rollback
-and erasure (`/v1/training/adapter/*`), plus a deterministic style-profile
-adapter that learns from rated responses and corrected replies — word-count
-targets per mode, citation/bullet/directness preferences — stored with the
-adapter, applied by the output filter only while consent is active, and fully
-erasable. Actual weight training remains provider-dependent and optional
-(local LoRA or hosted fine-tune).
+(non-empty corpus, corrections present with correction rate, style-profile
+coverage, no leaked secrets), activate/rollback and erasure
+(`/v1/training/adapter/*`), plus a deterministic style-profile adapter that
+learns from rated responses and corrected replies — word-count targets per
+mode, citation/bullet/directness preferences — stored with the adapter, applied
+by the output filter only while consent is active, and fully erasable. Actual
+weight training now runs behind an explicit provider contract: `dry-run`
+validates dataset + gates with no external call, `train` hands the exported
+JSONL to a named provider (`local-lora` command or OpenAI fine-tune API), with
+remote-processing and cost approval required before any provider call. See
+[`docs/TRAINING.md`](TRAINING.md) for the runbook.
 
 ### 7.4 Training corpus harvesting — **Built**
 Derive versioned snapshots from events, response logs, and ledger with user
@@ -422,8 +466,9 @@ pipeline before any fine-tuning. Implemented: consent-gated, versioned corpus
 snapshots from rated response logs, filter-ledger final texts, and normal
 events — `never_send_to_model`/sensitive content is never included,
 credentials are redacted, snapshots are deterministic (content hash),
-rollback-able, exportable, and erased by data-subject erasure and retention
-sweeps (`/v1/training/corpus/*`).
+rollback-able, exported as canonical fine-tune NDJSON (`input`/`output`/
+`signals` per line, response pairs and draft→final pairs included), and erased
+by data-subject erasure and retention sweeps (`/v1/training/corpus/*`).
 
 ### 7.5 Filter self-improvement — **Built**
 Ledger aggregates (defect precision/recall, over-refinement, correction rate)
@@ -466,15 +511,26 @@ from the recorded stream.
 `live_channels` + immutable `live_events` with batch ingestion, status, and
 privacy levels. `GET /v1/live/stream` provides SSE tailing of newly ingested
 events with `access=user|model` privacy slices and replay-on-connect via
-`since=`. Direction: WebSocket variant for two-way collector control.
+`since=`, verified end-to-end in `tests/test_live_stream.py` (a collector
+posts events through the API and a subscriber receives them). Direction:
+WebSocket variant for two-way collector control.
 
 ### 8.2 Live context in state — **Built**
 `GET /v1/state` includes recent live snippets. Direction: weight live context by
 recency and privacy and feed it into the ContextCompiler.
 
-### 8.3 Sensor integrations — **Future**
-Screen activity, audio transcripts, HealthKit, location (permissioned). Direction:
-implement collectors on each OS; user manages collection.
+### 8.3 Sensor integrations — **Built**
+The `clients/collectors` agent ships a macOS collector that samples derived
+screen awareness (active app/window/code file — never raw pixels), audio-scene
+hints (speech/music/noise, in-call), and coarse location/presence into live
+channels with fail-closed per-channel privacy defaults (screen/audio
+`sensitive`, location `private`) and posts through both authenticated
+ingestion endpoints (`/v1/live/events` batch and
+`/v1/live/channels/{id}/events` when channel ids are configured)
+(`tests/test_collectors.py`). Collector setup and human-grantable permissions
+are documented in [`docs/LIVE_DATA.md`](LIVE_DATA.md). Direction: HealthKit
+and CoreLocation on-device integrations with permission UIs; user manages
+collection.
 
 ### 8.4 Live-data rebuildability — **Built**
 Live events are immutable with consumed flags; `POST /v1/live/rebuild`
@@ -482,8 +538,22 @@ deterministically drops and replays the per-channel derived layer
 (`live_derived_state`) from the recorded stream, marking every folded event
 consumed. `POST /v1/live/retention` enforces the configured window (dry-run
 first; only consumed events past the window, latest and provenance-linked
-events always kept). Direction: scheduled rebuild/retention jobs and
-real-time streaming (WebSocket/SSE).
+events always kept), with a worker entrypoint (`run_live_retention`) for
+scheduled runs. `workers/scheduler.py` now runs both jobs on configured
+cadences (rebuild hourly, retention daily by default;
+`EV_LIVE_REBUILD_INTERVAL_SECONDS` / `EV_LIVE_RETENTION_INTERVAL_SECONDS`) via
+`LiveMaintenance`, and the cadence logic is covered in
+`tests/test_live_retention.py` / `tests/test_live_rebuild.py`. Direction: add
+a WebSocket variant for two-way collector control.
+
+### 8.5 iOS collector hooks — **Built (v1)**
+`ios/EVClient` ships the client-side live-data model + upload path:
+`LiveActivitySample`, `LiveEventCreate`, `LiveBatchRequest`, `LiveEventOut`,
+`LiveChannelOut`, the `LiveActivityCollecting` hook (DeviceActivity /
+screen-time style), and `LiveCollector`, which posts `app-activity`
+(`sensitive`, text-only) events through both live ingestion endpoints.
+Verified by `swift run EVClientCheck`. Direction: wire DeviceActivity
+authorization + scheduling into the app UI (Domain 13).
 
 ---
 
@@ -509,13 +579,23 @@ connector, sleep/stress correlations, and readiness-informed scheduling.
 ### 9.2 Alert radar — **Built**
 Watchlist, scan, priority scoring, dedup, dismiss lifecycle, quiet-hours digest
 (`ev.runtime.digest.v1`). Direction: permissioned external sources (calendar,
-GitHub, RSS) and digest scheduling/notification routing.
+GitHub, RSS) and digest scheduling/notification routing. **Live now:** scans
+real live events (screen/audio/location/calendar/health derived fields) from
+Agent 13/12 channels, and `precision_report` measures precision on labeled
+alert outcomes. Labels come from the existing dismiss API
+(`correct`/`useful` = true positive, `incorrect`/`false_positive` = false
+positive); no real labeled week exists yet, so no real precision number is
+claimed.
 
 ### 9.3 EV Sense predictive layer — **Built**
 Decision loops, patterns, deadlines, health anomalies, guardrails, reorders;
 intervention scoring with why-now and outcome tracking; reviewed outcomes
 calibrate future confidence; deliverable predictions promote to alert-radar
-alerts. Direction: add next-action cards.
+alerts. **Live now:** consumes real calendar deadlines from Agent 12 live
+events (`calendar_deadline` predictions with live-event provenance), and
+delivery defers to Agent 14's `notify.policy.decide` (quiet hours, dedup,
+daily cap) instead of a second EV-invented budget. Direction: add next-action
+cards.
 
 ### 9.4 Behavioral pattern engine — **Built**
 Research loops, tool churn, repeated questions, goal drift, and project
@@ -598,22 +678,31 @@ twin this month?").
 ### 10.6 HUD schemas — **Built**
 `ev.hud.card.v1`, `briefing.v1`, `focus.v1`, `route.v1`, `alert.v1`, enforced by
 a central `HUD_SCHEMAS` registry (`validate_hud`) that every surface output
-passes through. `GET /v1/hud/alerts` renders pending alerts as strict HUD cards.
-Direction: render on Watch/widget/AR.
+passes through. `GET /v1/hud/alerts` renders pending alerts as strict HUD cards;
+`GET /v1/hud/card` and `GET /v1/hud/route` consume real calendar signals when
+present and say so when absent. Canonical JSON-Schema files now exist in
+`docs/schemas/` for every registered surface, including `ev.hud.alert.v1` and
+`ev.hud.ops.v1`, and the contract tests validate the live endpoints against
+them. Direction: render on Watch/widget/AR.
 
 ### 10.7 Tactical mode — **Built**
 Pre-event briefings with risks, options, decision history, plus cached
 `ev.hud.quickcard.v1` cards (`POST /v1/tactical/prepare`, `GET
 /v1/tactical/quick`) so in-the-moment HUD reads hit the cache path
-(FR-TACTICAL-03 < 800 ms). Direction: trigger from calendar/live context.
+(FR-TACTICAL-03 < 800 ms). **Live now:** briefings link calendar attendees,
+cite live calendar events in provenance, mark rule-based estimates explicitly,
+and state when no calendar event is connected. Direction: trigger from
+calendar/live context (calendar trigger is wired; surface scheduling remains).
 
 ### 10.8 Person finder — **Built**
 Last seen, mentions, relationships over user-owned memory. Direction: sightings
 from recognition log and live data.
 
 ### 10.9 Research assistant — **Built**
-Sessions, notes, sources, conclusions with provenance. Direction: web-search
-integration with citations and research reviews.
+Sessions, notes, sources, conclusions with provenance. **Live now:** web-search
+results are persisted only from the provider (zero invented citations, proven
+by test), and `remember` turns a finding into a durable memory with
+source_url/source_title and full event provenance. Direction: research reviews.
 
 ### 10.10 Maker companion — **Built**
 Projects, BOM, print queue, reorder signals. Direction: OctoPrint adapter and
@@ -623,10 +712,16 @@ learned build sequences.
 Device snapshots and calibration checks, plus `POST /v1/gear/scan` turning the
 latest per-device snapshot into ranked, fingerprint-deduped alerts (battery,
 storage, CPU, memory) with quiet-hours suppression for non-urgent tiers.
-Direction: backup alerts and scheduled "EV checkup" runs.
+**Live now:** `gear.report` is honest about what this Mac can see (latest
+snapshots, newest encrypted backup, provider health from audit rows, model
+residency from the arbiter) and lists hardware EV does not have. Direction:
+backup alerts and scheduled "EV checkup" runs.
 
 ### 10.12 Navigation & route briefings — **Built**
-Next-commitment leave-by cards. Direction: real maps integration later.
+Next-commitment leave-by cards from the real next calendar event (with
+participants and live-event provenance), falling back to explicit deadline
+watch items only when no calendar is connected. Direction: real maps
+integration later.
 
 ---
 
@@ -673,9 +768,12 @@ sanitized, http(s)-only, numbered citations). Direction: per-call approval UI.
 `/v1/tools/execute` + `/v1/tools/files/read|write` run inside a sandbox root
 (`EV_SANDBOX_ROOT`, default `storage/sandbox`): no shell, minimal environment,
 hard timeouts, bounded output, traversal rejection, size caps, owner-trust
-gate, and full access-log audit per call. The `execute_command` action spec is
-backed by the same executor. Direction: versioned drafts and per-call approval
-UI.
+gate, and full access-log audit per call. This is a process-level jail (not an
+OS/container boundary); see `docs/SECURITY.md` §13 before exposing it to
+untrusted or external code. The `execute_command` action spec is declared in
+the formal registry for the future approval-gated executor; the current
+execution surface is the direct owner-trust endpoint above. Direction:
+versioned drafts and per-call approval UI.
 
 ### 11.5 Action dispatcher & rollback — **Built**
 Write-side actions are formally declared capabilities with payload schemas,
@@ -747,24 +845,56 @@ same relationship — with offline capture that syncs when the network returns.
 Success means a capture on the iPhone appears on the Mac within seconds, and the
 user never feels like they opened a different product.
 
-### 13.1 Web/CLI client — **Partial**
-CLI package skeleton exists. Direction: full CLI (voice via local ASR, capture,
-memory browser) and web dashboard.
+### 13.1 Web/CLI client — **Built**
+The `ev` CLI covers capture/attach, ask, timeline, memories, audit, correct,
+forget/restore, HUD card + quickcard, doctor/checkup, export/import,
+onboarding, offline queue/sync, and the identity lifecycle
+(`ev identity status|owner|passkey|recovery|verify`). The web workbench
+(`/app`) ships a self-contained page: connection, HUD card, capture,
+chat with provenance chips, memory browser with audit drill-down, timeline,
+transparency center, voice enrollment, and a Getting Started panel — no
+third-party scripts. Direction: voice capture via local ASR on the CLI and an
+optional native desktop wrapper.
 
-### 13.2 iOS/Watch app — **Future**
-Voice capture, wake listener, HUD cards, share sheet, offline queue. Direction:
-build after backend/voice contracts stabilize.
+### 13.2 iOS/Watch app — **Partial**
+The shared `EVClient` Swift package (iOS/watchOS targets) provides
+`EVAPIClient` (capture, attachments, ask, timeline, memories, audit, HUD),
+`HUDCard` schema validation/rendering, `OfflineCaptureQueue` (including
+attachment captures with quarantine), shared SwiftUI views (`EVUI`), and
+`RuntimeListener` for fleet ears. `AppShellView` wires the product tabs —
+Today/HUD, one continuous conversation (default thread), capture, memory
+browser, voice wake (`/v1/voice/wake`), and an offline-queue indicator.
+Headless assertion harnesses (`EVClientCheck`, `EVUIValidate`) compile/run
+with Command Line Tools alone. Gaps: iPhone/Watch app targets (need Xcode),
+mic/camera/share-sheet permissions, APNs, and background capture.
+Direction: finish the app targets, then permissions and delivery.
 
-### 13.3 Memory browser UI — **Future**
-Timeline, audit view, corrections, time travel. Direction: web first, then app.
+### 13.3 Memory browser UI — **Built**
+The web memory browser shows memories with audit drill-down and in-place
+correct/forget/restore, matching the CLI's versioned editing; iOS
+`MemoryBrowserView` provides the same on-device surface. Direction: add a
+time-travel browser ("what did I think in March?").
 
-### 13.4 Onboarding & enrollment UX — **Design**
-Voice enrollment, initial memory import, trust/privacy setup. Direction:
-scripted flow after voice core.
+### 13.4 Onboarding & enrollment UX — **Partial**
+The web workbench has a Getting Started panel (first memories + first audit,
+matching CLI `ev onboarding`) and a voice enrollment panel (consent grant,
+5-sample capture with liveness proof, progress, status, revoke/delete); the
+CLI `ev onboarding` runs the full flow — owner establishment + one-time
+recovery codes, training-track consents, voice enrollment, then first memory
+import + audit. Web settings cover personality, consents, quiet hours,
+recovery codes, and vault rotation; a web Setup wizard walks master-key check
+→ consent → recovery codes → first memories. Gaps: real mic capture (needs
+permission/App Store review) and a voice-enrollment approval gate.
 
-### 13.5 HUD rendering targets — **Future**
-Watch complications, widgets, future AR glasses. Direction: schema-driven
-renderers.
+### 13.5 HUD rendering targets — **Partial**
+`ev.hud.card.v1`, `ev.hud.quickcard.v1`, `ev.hud.briefing.v1`,
+`ev.hud.focus.v1`, and `ev.hud.route.v1` have canonical JSON schemas in
+`docs/schemas` and render in the web workbench and the Swift `EVUI`
+(`HUDCard`, `HUDQuickCard`, `HUDBriefing`, `HUDFocus`, `HUDRoute` with
+validate + compact `renderText()`). Hardware targets — Watch complications,
+widgets, future AR glasses — remain **Future** (a `WatchComplicationStub`
+already renders card/quick-card payloads as complication layouts for the
+future WatchKit target). Direction: ship the Watch complication target, then AR.
 
 ---
 
@@ -781,32 +911,46 @@ from a script, measure honestly, upgrade without fear, and run 24/7 for a decade
 Success means every important change ships with evidence, and the system degrades
 gracefully when something fails.
 
-### 14.1 Deployment — **Partial**
-Docker Compose (Postgres/pgvector, Redis, MinIO), Tailscale plan, and an
-Alembic migration chain (`alembic upgrade head` creates the full schema from
-the ORM metadata; `make migrate` runs it). Direction: finish Dockerfile/compose
-wiring, TLS, and future schema-evolution migrations.
+### 14.1 Deployment — **Built**
+Dockerfile + Docker Compose (Postgres/pgvector, Redis, MinIO, API, RQ worker,
+routines scheduler, runtime daemon) with `restart: unless-stopped`, an Alembic
+migration chain (`alembic upgrade head` creates the full schema from the ORM
+metadata; `make migrate` runs it), and a deployment-reproducibility eval gate
+that verifies compose wiring. Direction: TLS/Caddy automation, external S3,
+and schema-evolution ops.
 
-### 14.2 Evaluation suite — **Partial**
-30+ API tests; retrieval/filter/voice evals planned. Direction: add seeded corpus
-evals, filter gates, voice EER tests.
+### 14.2 Evaluation suite — **Built**
+59 test modules plus `app/scripts/eval_gates.py` covering contract, retrieval,
+filter, voice, latency, restore drill, routing evidence, and roadmap wiring;
+CI runs lint + mypy + pytest + gates on every push/PR, with a nightly eval
+report. Direction: seeded corpus evals, voice EER curves, and regression
+dashboards.
 
-### 14.3 Observability — **Partial**
-Health + calibration exist. Direction: structured logs, latency budgets, filter
-ledger dashboards.
+### 14.3 Observability — **Built (v1)**
+Health + calibration, runtime health (`GET /v1/runtime/health`), aggregate
+latency/error/cost metrics with budgets (`GET /v1/ops/metrics`), gateway
+statistics, and the HUD ops card exist. Direction: structured logs,
+filter-ledger dashboards, and alert routing.
 
 ### 14.4 API contract & versioning — **Built**
-85 OpenAPI paths, versioned v1. Direction: deprecation policy, idempotency,
+240 locked OpenAPI paths (261 methods), versioned v1, enforced by the
+additive-only manifest gate. Direction: deprecation policy, idempotency,
 SSE event schema versioning.
 
-### 14.5 Cost/latency budgets — **Design**
-Provider + filter overhead budgets with degradation. Direction: implement meters
-and alerts.
+### 14.5 Cost/latency budgets — **Built**
+`GET /v1/ops/metrics` aggregates latency/error/cost with budgets and surfaces
+them in the ops center and HUD ops card; the eval suite enforces latency
+budgets (chat first token, tactical quick card, memory browse) and gateway
+health before routing may be enabled. Direction: alert routing and per-device
+power budgets.
 
-### 14.6 Roadmap sequencing — **Design**
-Phase 1: deterministic input/output filter + voice enrollment; Phase 2: wake/ASR/
-TTS + runtime; Phase 3: critic + training corpus; Phase 4: adapters, clients, AR.
-Direction: gate each phase on its evaluation gates.
+### 14.6 Roadmap sequencing — **Built**
+`docs/ROADMAP.md` sequences M0–M5 with dependency graph, milestones, and
+testing gates; `docs/WORK_BREAKDOWN.md` tracks factor-level status; the eval
+suite gates each phase (contract, retrieval, filter, voice, latency, restore
+drill, roadmap wiring) in CI. Phase 1–3 work and most of Phase 4 are
+implemented. Direction: keep milestone exit gates current as remaining Phase 4
+surfaces (HUD hardware, AR) land.
 
 ---
 
@@ -833,24 +977,34 @@ every perception with provenance (attachment + source event + provider +
 pending (`source="model"`) until the user confirms them. `POST /v1/chat`
 accepts `attachment_id` (with `allow_raw_media`) and answers "what does this
 photo show?" from the recorded perception, surfacing it in the context window
-and chat provenance with the perception event id. Direction: add on-device OCR
-adapters and face-free identity hints.
+and chat provenance with the perception event id. A local vision-provider seam
+(`app/vision/providers.py`) runs OCR on-device — deterministic provider by
+default, tesseract when installed — and only derived text ever reaches a
+reasoning provider. User-confirmed recognition sightings (face-free identity
+hints) are surfaced per person in `GET /v1/people/{name}/whereabouts` with
+perception-event provenance, and `GET /v1/vision/perceptions/{id}` exposes the
+full derived record (OCR text/provider, request id, raw flag) for audit.
+Direction: Apple Vision on iOS.
 
 ### 15.2 Screen awareness — **Built**
 The live screen channel yields derived context (active app, document/code summary)
 into user state and the ContextCompiler; the model slice never receives raw
 screen content. The `clients/collectors` agent ships a macOS collector that
 emits text-level events (active app, window title, code file) via System Events
-— no screen capture. Direction: add per-app document extraction and
-permission UI on iOS/macOS.
+— no screen capture. Screen `focus_change` events feed user state live context
+and fire `channel_kind=screen` routine triggers with payload conditions.
+Direction: add per-app document extraction and permission UI on iOS/macOS.
 
-### 15.3 Audio scene understanding — **Built**
+### 15.3 Audio scene understanding — **Partial**
 Audio live events derive a minimal scene representation (speech/music/noise,
-in-call/meeting) with confidence, surfaced as `audio_in_call` EV Sense signals
-with live-event provenance. The collector agent relays derived scene hints from
-a local classifier (`~/.ev/audio-scene.json` or env) and never ships raw audio
-or transcripts. Direction: add on-device scene classification behind the
-existing channel contract.
+in-call/meeting) with confidence, surfaced as `audio_in_call` and
+`audio_ambient` (music/noise) EV Sense signals with live-event provenance. A
+local VAD/feature classifier
+(`app/audio/scene.py`) classifies WAV samples on-device (energy VAD,
+zero-crossing, tonality) and the collector emits only the derived scene —
+never raw audio without separate explicit consent. Direction: replace the
+heuristic classifier with a small trained model and consent-gated raw audio
+paths.
 
 ### 15.4 Location & presence — **Built**
 Location live events derive coarse place + presence context (never exact
@@ -860,12 +1014,20 @@ place/presence from a user-managed file (`~/.ev/location.json`) or env; exact
 GPS fixes must be rounded to a coarse label before ingestion. Direction: add
 opt-in CoreLocation integration that only ever sends coarse labels.
 
-### 15.5 Multimodal provider input — **Built**
+### 15.5 Multimodal provider input — **Partial**
 The provider contract carries typed media parts (`ChatMessage.media` with
 `MediaPart`), the OpenAI-compatible provider renders image/audio/text content
 arrays, and providers advertise `supports_media` so raw transmission is never
-attempted on a text-only provider. Same permission and privacy rules apply.
-Direction: extend the filter envelope to audit media references on every call.
+attempted on a text-only provider. Request envelopes carry typed media
+references (id, mime, size bytes) and the boundary guard blocks
+`never_send_to_model` media and oversized parts before any provider call. Same
+permission and privacy rules apply. The filter envelope hash now includes media
+references when an attachment is part of a chat turn, and perception provider
+calls write their typed media refs into the model-call audit trail.
+`/v1/gateway/stats` reports media-ref counts (raw vs derived) per provider and
+overall, and `/v1/gateway/calls` returns typed `media_refs` per call.
+Direction: none blocking server-side — render media refs in client audit/HUD
+cards.
 
 ---
 
@@ -882,21 +1044,24 @@ session. The vision is "EVIE is yours alone, and can prove it" — with recovery
 that feels like a safety net, not a hurdle. Success means the wrong voice can
 never act, and the right user can always get back in.
 
-### 16.1 Owner identity model — **Design**
-EVIE needs one authoritative "this is my owner" record: enrolled voiceprint,
-trusted devices, passkey, and recovery material — the anchor for all access
-decisions. Direction: design an identity table + enrollment ceremony before voice
-goes live.
+### 16.1 Owner identity model — **Built**
+`app/identity/` owns the authoritative "this is my owner" record: owner binding,
+trusted devices, passkeys, and recovery material, with `/v1/identity/status`,
+owner creation, passkey management, recovery codes, and re-verification
+(`ev identity ...` in the CLI). Direction: bind face/voice biometrics into the
+same record; keep tables additive for a second identity later.
 
-### 16.2 Trust escalation — **Design**
-Not every action needs the same trust: casual chat = verified voice; sensitive
-actions (deleting memory, spending, external writes) = re-verification via voice
-challenge or passkey. Direction: implement a graded permission matrix with
-escalation and logging.
+### 16.2 Trust escalation — **Built**
+Trust is graded (owner / verified / device) and sensitive runtime actions —
+action approve/execute/rollback — require re-verification via voice challenge
+or recovery material (`app/identity/service.py` defines `OWNER_ACTIONS` /
+`REVERIFY_ACTIONS`; `/v1/identity/reverification`, `ev identity verify`).
+Direction: biometric unlock and per-device scopes.
 
-### 16.3 Recovery & fallback — **Design**
-Lost device, changed voice, or forgotten passkey must not lock the user out of a
-lifetime of memory. Direction: recovery codes, re-enrollment flow, and encrypted
+### 16.3 Recovery & fallback — **Built**
+One-time recovery codes are issued at owner creation, redeemable without an API
+key (`/v1/identity/recovery/redeem`, `ev identity recovery`), with failed-attempt
+lockout and status surfaced in `/v1/identity/status`. Direction: encrypted
 identity backup with a restore drill.
 
 ### 16.4 Multi-user boundary — **Future**
@@ -904,10 +1069,11 @@ Single-user first: unknown voices are refused. Optional guest/second-user mode c
 come later with per-person voiceprints and isolation. Direction: keep the
 single-user invariant, design tables so a second identity is additive later.
 
-### 16.5 Session security — **Design**
-Voice sessions need timeouts, silence-lock, and explicit end-of-session so a
-roommate can't continue the owner's session. Direction: runtime policy on session
-TTL and re-verification.
+### 16.5 Session security — **Built**
+Runtime sessions enforce per-state timeouts, quiet-hours wake gating,
+silence-lock, durable error-state commits, and re-verification gates; voice
+lifecycle applies the same rules to wake/verify sessions. Direction: biometric
+unlock and a user-visible session policy surface.
 
 ---
 

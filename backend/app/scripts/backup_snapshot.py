@@ -14,11 +14,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from pathlib import Path
 
 from app.config import settings
 from app.db import SessionLocal
 from app.services.backup import create_backup
 from app.services.maintenance import prune_backups
+from app.utils.text import utcnow
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -36,16 +38,26 @@ async def _run(args: argparse.Namespace) -> None:
             "EV_BACKUP_PASSPHRASE (or --passphrase) is required; refusing to "
             "derive the backup key from the master key."
         )
+    destination = args.destination
+    backup_dir: Path | None = None
+    if destination:
+        path = Path(destination)
+        if path.is_dir() or str(destination).endswith("/"):
+            path.mkdir(parents=True, exist_ok=True)
+            backup_dir = path
+            stamp = utcnow().strftime("%Y%m%dT%H%M%S")
+            destination = str(path / f"ev-backup-{stamp}.evbackup")
+        else:
+            backup_dir = path.parent
+    else:
+        backup_dir = Path(settings.storage_root) / "backups"
     async with SessionLocal() as session:
         result = await create_backup(
             session,
             passphrase=passphrase,
-            destination=args.destination,
+            destination=destination,
         )
-    pruned = prune_backups(
-        directory=args.destination if args.destination else None,
-        keep=args.keep,
-    )
+    pruned = prune_backups(directory=str(backup_dir), keep=args.keep)
     print(
         json.dumps(
             {"backup": result, "pruned": pruned},

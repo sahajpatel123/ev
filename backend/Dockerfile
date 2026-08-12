@@ -7,10 +7,12 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir uv
 COPY pyproject.toml ./
-RUN uv sync --no-dev
-
 COPY app ./app
+COPY clients ./clients
 COPY alembic ./alembic
+RUN uv sync --no-dev --extra s3
+
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
