@@ -13,6 +13,7 @@ import os
 import time
 
 from app.config import settings
+from app.db import init_db
 from app.services.runtime import record_dead_letter_sync
 
 _COMPLIANCE_LAST_RUN = 0.0
@@ -55,6 +56,8 @@ async def tick_once() -> dict:
 
 
 def main() -> None:
+    # Ensure the schema exists before the first tick (idempotent, Postgres-safe).
+    asyncio.run(init_db())
     interval = max(1, settings.runtime_daemon_tick_seconds)
     while True:
         try:

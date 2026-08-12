@@ -12,6 +12,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models import RuntimeSession
+from app.services import runtime as runtime_service
 from app.services.runtime import daemon_tick, mark_verified
 from app.utils.text import utcnow
 
@@ -102,6 +103,7 @@ async def test_wake_arbitration_picks_best_device(client: AsyncClient) -> None:
                 "battery_percent": 80.0,
                 "proximity_score": 1.0,
                 "priority": 0.6,
+                "text_hint": "evie",
             },
             {
                 "device_id": str(far["id"]),
@@ -109,6 +111,7 @@ async def test_wake_arbitration_picks_best_device(client: AsyncClient) -> None:
                 "battery_percent": 20.0,
                 "proximity_score": 0.1,
                 "priority": 0.6,
+                "text_hint": "evie",
             },
         ],
     )
@@ -135,8 +138,8 @@ async def test_wake_requires_online_wake_capable_device(client: AsyncClient) -> 
     resp = await client.post(
         "/v1/runtime/wake",
         json=[
-            {"device_id": str(offline["id"]), "signal_score": 0.9},
-            {"device_id": str(no_wake["id"]), "signal_score": 0.9},
+            {"device_id": str(offline["id"]), "signal_score": 0.9, "text_hint": "evie"},
+            {"device_id": str(no_wake["id"]), "signal_score": 0.9, "text_hint": "evie"},
         ],
     )
     assert resp.status_code == 200
@@ -145,6 +148,37 @@ async def test_wake_requires_online_wake_capable_device(client: AsyncClient) -> 
     assert outcome["block_reason"] == "no_eligible_device"
     reasons = {c["reason"] for c in outcome["candidates"]}
     assert reasons == {"offline", "no_wake_capability"}
+
+
+async def test_wake_requires_real_engine_evidence(client: AsyncClient) -> None:
+    """Client-supplied floats are never wake proof (FLEET_LAW §8)."""
+    device = await register_device(client, "score-only-echo")
+    await heartbeat(client, str(device["id"]))
+
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[{"device_id": str(device["id"]), "signal_score": 0.99}],
+    )
+    assert resp.status_code == 200
+    outcome = resp.json()
+    assert outcome["blocked"] is True
+    assert outcome["block_reason"] == "no_eligible_device"
+    assert outcome["candidates"][0]["reason"] == "missing_wake_evidence"
+
+    resp = await client.post(
+        "/v1/runtime/wake",
+        json=[
+            {
+                "device_id": str(device["id"]),
+                "signal_score": 0.99,
+                "text_hint": "not the wake word",
+            }
+        ],
+    )
+    assert resp.status_code == 200
+    outcome = resp.json()
+    assert outcome["blocked"] is True
+    assert outcome["candidates"][0]["reason"] == "wake_not_detected"
 
 
 async def test_quiet_hours_block_wake_unless_urgent(
@@ -157,7 +191,14 @@ async def test_quiet_hours_block_wake_unless_urgent(
 
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.8, "priority": 0.5}],
+        json=[
+            {
+                "device_id": str(device["id"]),
+                "signal_score": 0.8,
+                "priority": 0.5,
+                "text_hint": "evie",
+            }
+        ],
     )
     assert resp.status_code == 200
     outcome = resp.json()
@@ -166,7 +207,14 @@ async def test_quiet_hours_block_wake_unless_urgent(
 
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.8, "priority": 0.9}],
+        json=[
+            {
+                "device_id": str(device["id"]),
+                "signal_score": 0.8,
+                "priority": 0.9,
+                "text_hint": "evie",
+            }
+        ],
     )
     assert resp.status_code == 200
     outcome = resp.json()
@@ -185,7 +233,14 @@ async def test_focus_mode_blocks_wake_unless_urgent(client: AsyncClient) -> None
 
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.8, "priority": 0.5}],
+        json=[
+            {
+                "device_id": str(device["id"]),
+                "signal_score": 0.8,
+                "priority": 0.5,
+                "text_hint": "evie",
+            }
+        ],
     )
     assert resp.status_code == 200
     outcome = resp.json()
@@ -194,7 +249,14 @@ async def test_focus_mode_blocks_wake_unless_urgent(client: AsyncClient) -> None
 
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.8, "priority": 0.95}],
+        json=[
+            {
+                "device_id": str(device["id"]),
+                "signal_score": 0.8,
+                "priority": 0.95,
+                "text_hint": "evie",
+            }
+        ],
     )
     assert resp.status_code == 200
     outcome = resp.json()
@@ -211,7 +273,7 @@ async def test_runtime_state_machine_lifecycle_and_invalid_transition(
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7, "text_hint": "evie"}],
     )
     assert resp.status_code == 200
     outcome = resp.json()
@@ -250,7 +312,7 @@ async def test_transition_to_awake_requires_owner_verification(
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7, "text_hint": "evie"}],
     )
     outcome = resp.json()
 
@@ -283,7 +345,7 @@ async def test_runtime_verify_rejects_nonce_replay(client: AsyncClient) -> None:
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7, "text_hint": "evie"}],
     )
     outcome = resp.json()
     payload = {
@@ -307,7 +369,7 @@ async def _verified_runtime_session(client: AsyncClient, device_id: str) -> dict
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7, "text_hint": "evie"}],
     )
     outcome = resp.json()
     resp = await client.post(
@@ -366,7 +428,7 @@ async def test_runtime_utterance_requires_owner_verification(
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7, "text_hint": "evie"}],
     )
     outcome = resp.json()
     resp = await client.post(
@@ -449,7 +511,7 @@ async def test_stale_session_times_out(client: AsyncClient, db_session) -> None:
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7, "text_hint": "evie"}],
     )
     session_id = UUID(resp.json()["session_id"])
 
@@ -470,7 +532,7 @@ async def test_action_routing_approval_and_execution(client: AsyncClient) -> Non
     await heartbeat(client, str(device["id"]))
     await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7, "text_hint": "evie"}],
     )
 
     resp = await client.post(
@@ -636,7 +698,7 @@ async def test_daemon_tick_expires_stale_session_and_reports(
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7, "text_hint": "evie"}],
     )
     session_id = UUID(resp.json()["session_id"])
 
@@ -654,6 +716,97 @@ async def test_daemon_tick_expires_stale_session_and_reports(
     assert "re_enqueued" in report
 
 
+async def test_daemon_tick_re_enqueues_retrying_dead_letters(
+    client: AsyncClient, db_session, monkeypatch
+) -> None:
+    """Integration: the daemon tick recovers retrying DLQ letters and records
+    the recovery in the RuntimeEvent feed (kind=daemon)."""
+    resp = await client.post(
+        "/v1/runtime/dead-letters",
+        json={
+            "queue": "ingestion",
+            "job_id": "daemon-dlq-recovery",
+            "payload": {
+                "event_id": "daemon-dlq-recovery",
+                "entrypoint": "app.workers.jobs.process_event",
+                "args": ["daemon-dlq-recovery"],
+            },
+            "error": "boom",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    letter = resp.json()
+
+    resp = await client.post(f"/v1/runtime/dead-letters/{letter['id']}/retry")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "retrying"
+
+    calls: list[str] = []
+
+    def fake_re_enqueue(letter_row) -> bool:
+        calls.append(str(letter_row.id))
+        return True
+
+    monkeypatch.setattr(runtime_service, "_re_enqueue_dead_letter", fake_re_enqueue)
+
+    report = await daemon_tick(db_session)
+    await db_session.commit()
+    assert report["re_enqueued"] == 1
+    assert calls == [letter["id"]]
+
+    sync = (await client.get("/v1/runtime/sync")).json()
+    daemon_events = [event for event in sync["events"] if event["kind"] == "daemon"]
+    assert daemon_events
+    assert daemon_events[0]["payload"]["re_enqueued"] == 1
+    assert "overall" in daemon_events[0]["payload"]
+
+
+async def test_soak_audit_detects_missed_daemon_ticks(
+    db_session, monkeypatch
+) -> None:
+    """The 72 h launchd acceptance audit fails on any large tick gap."""
+    from datetime import timedelta
+
+    from app.models import RuntimeEvent
+    from app.workers.runtime_healthcheck import _soak_report
+
+    monkeypatch.setattr(settings, "runtime_daemon_tick_seconds", 30)
+    now = utcnow()
+    tick = now - timedelta(hours=2)
+    while tick < now - timedelta(minutes=10):
+        db_session.add(RuntimeEvent(kind="daemon", occurred_at=tick))
+        tick += timedelta(seconds=30)
+    tick += timedelta(minutes=10)
+    while tick < now:
+        db_session.add(RuntimeEvent(kind="daemon", occurred_at=tick))
+        tick += timedelta(seconds=30)
+    await db_session.commit()
+
+    report = await _soak_report(window_hours=2, tolerance_gaps=1)
+    assert report["healthy"] is False
+    assert report["ticks"] > 0
+    assert report["max_gap_seconds"] > 500
+
+
+async def test_soak_audit_passes_regular_ticks(db_session, monkeypatch) -> None:
+    from datetime import timedelta
+
+    from app.models import RuntimeEvent
+    from app.workers.runtime_healthcheck import _soak_report
+
+    monkeypatch.setattr(settings, "runtime_daemon_tick_seconds", 30)
+    now = utcnow()
+    tick = now - timedelta(hours=1)
+    while tick < now:
+        db_session.add(RuntimeEvent(kind="daemon", occurred_at=tick))
+        tick += timedelta(seconds=30)
+    await db_session.commit()
+
+    report = await _soak_report(window_hours=1, tolerance_gaps=1)
+    assert report["healthy"] is True
+    assert report["ticks"] >= 100
+
+
 async def test_runtime_events_log_lifecycle_pulses(client: AsyncClient) -> None:
     await grant_voice_consent(client)
     await enroll_owner(client)
@@ -661,7 +814,7 @@ async def test_runtime_events_log_lifecycle_pulses(client: AsyncClient) -> None:
     await heartbeat(client, str(device["id"]))
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(device["id"]), "signal_score": 0.7}],
+        json=[{"device_id": str(device["id"]), "signal_score": 0.7, "text_hint": "evie"}],
     )
     assert resp.status_code == 200
     outcome = resp.json()
@@ -707,7 +860,7 @@ async def test_runtime_sync_returns_convergent_snapshot(client: AsyncClient) -> 
     await heartbeat(client, str(watch["id"]))
     resp = await client.post(
         "/v1/runtime/wake",
-        json=[{"device_id": str(phone["id"]), "signal_score": 0.8}],
+        json=[{"device_id": str(phone["id"]), "signal_score": 0.8, "text_hint": "evie"}],
     )
     assert resp.status_code == 200
     session_id = resp.json()["session_id"]
@@ -817,6 +970,7 @@ async def test_full_runtime_lifecycle_e2e(client: AsyncClient, db_session) -> No
                 "battery_percent": 80.0,
                 "proximity_score": 1.0,
                 "priority": 0.6,
+                "text_hint": "evie",
             },
             {
                 "device_id": str(watch["id"]),
@@ -824,6 +978,7 @@ async def test_full_runtime_lifecycle_e2e(client: AsyncClient, db_session) -> No
                 "battery_percent": 30.0,
                 "proximity_score": 0.2,
                 "priority": 0.6,
+                "text_hint": "evie",
             },
         ],
     )

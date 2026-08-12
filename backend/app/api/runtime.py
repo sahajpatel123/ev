@@ -28,6 +28,9 @@ from app.schemas import (
     DeadLetterCreate,
     DeadLetterOut,
     MemoryDelta,
+    NotificationCreate,
+    NotificationOut,
+    NotifyStatusOut,
     RuntimeHeartbeatCreate,
     RuntimeHeartbeatOut,
     RuntimeStatusOut,
@@ -279,20 +282,94 @@ async def runtime_digest(
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> dict:
-    """Batch pending non-urgent alerts into one quiet-hours-friendly digest."""
-    from app.ev import alert_radar
+    """Batch pending non-urgent alerts into one delivered digest.
 
-    result = await alert_radar.build_digest(session)
+    Alerts are marked delivered only after the digest notification receipt
+    proves backend delivery (never from a dashboard flip).
+    """
+    from app.notify.service import build_and_deliver_digest
+
+    result = await build_and_deliver_digest(session)
+    if result is None:
+        return {
+            "schema_version": "ev.runtime.digest.v1",
+            "digest_id": None,
+            "generated_at": datetime.now().astimezone().isoformat(),
+            "delivered": 0,
+            "suppressed": 0,
+            "failed": 0,
+            "alerts": [],
+        }
     await runtime_service.record_runtime_event(
         session,
         kind="digest",
         payload={
             "digest_id": result["digest_id"],
             "delivered": result["delivered"],
+            "suppressed": result["suppressed"],
+            "failed": result["failed"],
         },
     )
     await session.commit()
     return result
+
+
+@router.post("/notify", response_model=NotificationOut, status_code=201)
+async def send_notification(
+    data: NotificationCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> NotificationOut:
+    """Manually dispatch one notification through the configured backend."""
+    from app.notify.service import dispatch_notification
+
+    row = await dispatch_notification(
+        session,
+        title=data.title,
+        body=data.body,
+        priority=data.priority,
+        tier=data.tier,
+        kind=data.kind,
+        source=data.source,
+        emergency=data.emergency,
+    )
+    await session.commit()
+    return NotificationOut.model_validate(row)
+
+
+@router.get("/notifications", response_model=list[NotificationOut])
+async def list_notifications(
+    status_filter: Literal[
+        "attempted", "delivered", "failed", "suppressed"
+    ] | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[NotificationOut]:
+    """Delivery receipts: every attempted/suppressed/failed notification."""
+    from app.models import Notification
+
+    stmt = (
+        select(Notification)
+        .order_by(Notification.queued_at.desc())
+        .limit(limit)
+    )
+    if status_filter:
+        stmt = stmt.where(Notification.status == status_filter)
+    rows = (await session.execute(stmt)).scalars().all()
+    return [NotificationOut.model_validate(row) for row in rows]
+
+
+@router.get("/notify/status", response_model=NotifyStatusOut)
+async def notify_status(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> NotifyStatusOut:
+    """Backend availability, macOS permission, and today's receipt counts."""
+    from app.notify.service import notify_status as service_status
+
+    report = await service_status(session)
+    return NotifyStatusOut.model_validate(report)
 
 
 @router.post("/actions", response_model=ApprovedActionOut, status_code=201)

@@ -50,6 +50,27 @@ def run_live_retention(days: int | None = None) -> dict:
     return asyncio.run(_run())
 
 
+def run_live_rebuild(reason: str = "scheduled rebuild") -> dict:
+    """Scheduled/CLI entrypoint for the live-derived-state rebuild."""
+    import asyncio
+
+    from app.services.live_rebuild import rebuild_live_derived_state
+
+    async def _run() -> dict:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as session:
+            result = await rebuild_live_derived_state(
+                session,
+                actor="scheduler",
+                reason=reason,
+            )
+            await session.commit()
+            return result
+
+    return asyncio.run(_run())
+
+
 def run_compliance_retention(reason: str = "retention policy") -> dict:
     """Scheduled/CLI entrypoint for the biometric retention sweep.
 

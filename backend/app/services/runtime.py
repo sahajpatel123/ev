@@ -127,6 +127,10 @@ def runtime_policy() -> dict:
         "quiet_hours_start": settings.quiet_hours_start,
         "quiet_hours_end": settings.quiet_hours_end,
         "daily_alert_budget": settings.daily_alert_budget,
+        "notify_backend": settings.notify_backend,
+        "notify_emergency_priority_threshold": settings.notify_emergency_priority_threshold,
+        "notify_dedup_window_seconds": settings.notify_dedup_window_seconds,
+        "notify_max_attempts": settings.notify_max_attempts,
         "urgent_priority_threshold": settings.runtime_urgent_priority_threshold,
         "focus_urgent_threshold": settings.runtime_focus_urgent_threshold,
         "verify_timeout_seconds": settings.runtime_verify_timeout_seconds,
@@ -614,12 +618,21 @@ async def arbitrate_wake(
     intents: list[WakeIntent],
     now: datetime | None = None,
 ) -> WakeArbitrationOut:
-    """Pick the closest/most capable online device as the wake winner."""
+    """Pick the online wake-capable device with real wake-engine evidence.
+
+    Client-supplied signal/proximity floats are never trusted as wake proof
+    (FLEET_LAW §8): the configured wake engine (Agent 3's) must detect EVIE
+    from frames/audio/text evidence before a device can win arbitration.
+    """
+    from app.voice.wake import configured_wake_engine
+
     now = now or utcnow()
     devices = await _device_map(session, [intent.device_id for intent in intents])
     grace = timedelta(seconds=settings.runtime_heartbeat_grace_seconds)
     candidates: list[WakeCandidateOut] = []
     best: tuple[float, WakeIntent, Device] | None = None
+    engine = configured_wake_engine()
+    wake_evidence: dict[str, dict] = {}
 
     for intent in intents:
         device = devices.get(intent.device_id)
@@ -653,13 +666,57 @@ async def arbitrate_wake(
             )
             continue
 
+        frames: bytes | None = None
+        if intent.frames_b64:
+            import base64
+
+            try:
+                frames = base64.b64decode(intent.frames_b64)
+            except Exception:  # noqa: BLE001 - invalid evidence is a rejection
+                candidates.append(
+                    WakeCandidateOut(
+                        device_id=device.id,
+                        name=device.name,
+                        reason="invalid_wake_evidence",
+                    )
+                )
+                continue
+        if frames is None and intent.audio_ref is None and intent.text_hint is None:
+            candidates.append(
+                WakeCandidateOut(
+                    device_id=device.id,
+                    name=device.name,
+                    reason="missing_wake_evidence",
+                )
+            )
+            continue
+        detection = await engine.detect(
+            frames=frames,
+            audio_ref=intent.audio_ref,
+            text_hint=intent.text_hint,
+            sample_rate=intent.sample_rate,
+            device_id=str(device.id),
+        )
+        if not detection.triggered:
+            candidates.append(
+                WakeCandidateOut(
+                    device_id=device.id,
+                    name=device.name,
+                    reason="wake_not_detected",
+                )
+            )
+            continue
+        signal_evidence = detection.confidence
+        wake_evidence[str(device.id)] = {
+            "engine": detection.details.get("engine") or engine.name,
+            "confidence": signal_evidence,
+        }
+
         recency = 1.0 if now - last_seen <= timedelta(seconds=60) else 0.5
         battery = (intent.battery_percent or 0) / 100 if intent.battery_percent is not None else 0.5
-        proximity = intent.proximity_score if intent.proximity_score is not None else 0.5
         score = round(
-            0.45 * intent.signal_score
-            + 0.25 * battery
-            + 0.2 * proximity
+            0.7 * signal_evidence
+            + 0.2 * battery
             + 0.1 * recency,
             4,
         )
@@ -668,7 +725,7 @@ async def arbitrate_wake(
                 device_id=device.id,
                 name=device.name,
                 score=score,
-                reason="candidate",
+                reason=f"candidate:{wake_evidence[str(device.id)]['engine']}",
             )
         )
         if best is None or score > best[0]:
@@ -754,7 +811,7 @@ async def arbitrate_wake(
     runtime_session = RuntimeSession(
         state="verifying",
         device_id=device.id,
-        wake_signal=intent.signal_score,
+        wake_signal=wake_evidence.get(str(device.id), {}).get("confidence", 0.0),
         priority=intent.priority,
         payload=intent.payload,
         started_at=now,
@@ -790,6 +847,8 @@ async def arbitrate_wake(
             "winner_score": score,
             "candidate_count": len(intents),
             "blocked": False,
+            "wake_engine": wake_evidence.get(str(device.id), {}).get("engine"),
+            "wake_confidence": wake_evidence.get(str(device.id), {}).get("confidence"),
         },
         device_id=device.id,
         session_id=runtime_session.id,
@@ -972,6 +1031,46 @@ async def execute_action(
     action.result = result or {}
     action.updated_at = utcnow()
     await session.flush()
+    # Real dispatch for deliverable actions; the receipt lives in the
+    # notifications ledger (never derived from the caller-supplied result).
+    if action.action_type in ("notification", "send_message"):
+        from app.notify.service import dispatch_action
+
+        try:
+            await dispatch_action(session, action)
+        except Exception as exc:  # noqa: BLE001 - action boundary: record, never crash
+            from app.models import Notification
+
+            failed = Notification(
+                kind=f"action:{action.action_type}",
+                title=action.title or "EV action",
+                body=str(exc),
+                priority=0.5,
+                tier="useful",
+                source=f"action:{action.action_type}",
+                fingerprint=f"action:{action.id}",
+                status="failed",
+                reason=f"{type(exc).__name__}: {exc}",
+                backend="error",
+                action_id=action.id,
+                attempt_count=1,
+                queued_at=utcnow(),
+                last_attempt_at=utcnow(),
+                details={"error": True},
+            )
+            session.add(failed)
+            await session.flush()
+            await record_runtime_event(
+                session,
+                kind="notification",
+                payload={
+                    "notification_id": str(failed.id),
+                    "kind": failed.kind,
+                    "status": "failed",
+                    "reason": failed.reason,
+                },
+                action_id=action.id,
+            )
     await record_runtime_event(
         session,
         kind="action",
@@ -1365,6 +1464,31 @@ async def runtime_health(session: AsyncSession) -> dict:
     )
     checks.extend(await _asr_tts_checks())
 
+    try:
+        from app.notify.service import notify_status
+
+        notify_report = await notify_status(session, now=now)
+        checks.append(
+            {
+                "name": "notifications",
+                "status": "ok" if notify_report["available"] else "degraded",
+                "backend": notify_report["backend"],
+                "permission": notify_report["permission"],
+                "delivered_today": notify_report["delivered_today"],
+                "suppressed_today": notify_report["suppressed_today"],
+                "failed_today": notify_report["failed_today"],
+                **({"reason": notify_report["reason"]} if notify_report["reason"] else {}),
+            }
+        )
+    except Exception as exc:  # noqa: BLE001 - health boundary
+        checks.append(
+            {
+                "name": "notifications",
+                "status": "failed",
+                "detail": f"{type(exc).__name__}: {exc}",
+            }
+        )
+
     statuses = [check["status"] for check in checks]
     if "failed" in statuses:
         overall = "failed"
@@ -1386,6 +1510,8 @@ async def runtime_health(session: AsyncSession) -> dict:
 
 async def daemon_tick(session: AsyncSession) -> dict:
     """One 24/7 runtime daemon tick: expire stale sessions, retry DLQs, report health."""
+    from app.notify.service import deliver_dlq_escalations, deliver_pending_alerts
+
     before = await active_session(session)
     await expire_stale(session)
     after = await active_session(session)
@@ -1402,6 +1528,8 @@ async def daemon_tick(session: AsyncSession) -> dict:
     health = await runtime_health(session)
     digest = await maybe_build_digest(session)
     recalibration = await maybe_recalibrate_filter(session)
+    notifications = await deliver_pending_alerts(session)
+    dlq_escalations = await deliver_dlq_escalations(session)
     await record_runtime_event(
         session,
         kind="daemon",
@@ -1410,6 +1538,10 @@ async def daemon_tick(session: AsyncSession) -> dict:
             "re_enqueued": re_enqueued,
             "digest_delivered": bool(digest),
             "filter_recalibration": bool(recalibration),
+            "notifications_delivered": notifications.get("delivered", 0),
+            "notifications_suppressed": notifications.get("suppressed", 0),
+            "notifications_failed": notifications.get("failed", 0),
+            "dlq_escalations": len(dlq_escalations),
             "overall": health["overall"],
         },
     )
@@ -1419,6 +1551,8 @@ async def daemon_tick(session: AsyncSession) -> dict:
         "re_enqueued": re_enqueued,
         "digest": digest,
         "filter_recalibration": recalibration,
+        "notifications": notifications,
+        "dlq_escalations": len(dlq_escalations),
         "health": health,
     }
 
@@ -1428,11 +1562,14 @@ async def maybe_build_digest(session: AsyncSession) -> dict | None:
 
     Runs only during quiet hours and only when no digest has already been
     delivered today (deduped through the append-only runtime event log), so the
-    daemon never spams or double-delivers.
+    daemon never spams or double-delivers. Alerts are marked delivered only
+    after the digest notification receipt proves backend delivery.
     """
-    from app.ev import alert_radar
+    from app.notify.service import build_and_deliver_digest
 
     if not quiet_hours_active():
+        return None
+    if not settings.notify_digest_enabled:
         return None
     start_of_day = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
     delivered_today = int(
@@ -1447,13 +1584,17 @@ async def maybe_build_digest(session: AsyncSession) -> dict | None:
     )
     if delivered_today > 0:
         return None
-    result = await alert_radar.build_digest(session)
+    result = await build_and_deliver_digest(session)
+    if result is None:
+        return None
     await record_runtime_event(
         session,
         kind="digest",
         payload={
             "digest_id": result["digest_id"],
             "delivered": result["delivered"],
+            "suppressed": result["suppressed"],
+            "failed": result["failed"],
             "source": "runtime_daemon",
         },
     )
