@@ -11,6 +11,7 @@ let package = Package(
     ],
     products: [
         .library(name: "EVClient", targets: ["EVClient"]),
+        .library(name: "EVUI", targets: ["EVUI"]),
         .executable(name: "EVClientCheck", targets: ["EVClientCheck"]),
         .executable(name: "EVUIValidate", targets: ["EVUIValidate"]),
     ],

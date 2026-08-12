@@ -215,3 +215,27 @@ func syncBody() -> String {
     }
     """
 }
+
+func liveEventsBody(eventID: String = "live-1", channelID: String = "ch-1") -> String {
+    """
+    [
+      {
+        "id": "\(eventID)",
+        "channel_id": "\(channelID)",
+        "occurred_at": "2026-08-09T12:00:00Z",
+        "ingested_at": "2026-08-09T12:00:00Z",
+        "event_type": "focus_change",
+        "payload": {
+          "app": "Xcode",
+          "document": "retrieval.py — EV",
+          "duration_seconds": 42
+        },
+        "device_id": "dev-ios",
+        "collector": "app-activity",
+        "privacy_level": "sensitive",
+        "sha256": "abc123",
+        "consumed": false
+      }
+    ]
+    """
+}

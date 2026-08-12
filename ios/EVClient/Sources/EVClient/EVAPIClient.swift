@@ -30,6 +30,36 @@ public struct CaptureResult: Sendable, Equatable {
 private struct ChatRequestBody: Encodable {
     let message: String
     let stream: Bool
+    let conversationId: String?
+    let deviceId: String?
+    let model: String?
+    let contextDepth: String?
+}
+
+private struct BriefingRequestBody: Encodable {
+    let topic: String
+    let stakes: String?
+    let context: String?
+}
+
+private struct VoiceVerifyRequestBody: Encodable {
+    let sessionId: String
+    let nonce: String?
+    let phrase: String?
+    let samples: [String]
+    let livenessProof: String?
+    let liveScore: Double?
+}
+
+private struct VoiceUtteranceRequestBody: Encodable {
+    let sessionId: String
+    let text: String?
+    let followUp: Bool
+    let audioB64: String?
+    let audioRef: String?
+    let reverifyToken: String?
+    let language: String
+    let conversationId: String?
 }
 
 public struct EVAPIClient: Sendable {
@@ -217,7 +247,16 @@ public struct EVAPIClient: Sendable {
         _ question: String,
         stream: Bool = false
     ) async throws -> ChatResponse {
-        let body = try encode(ChatRequestBody(message: question, stream: stream))
+        let body = try encode(
+            ChatRequestBody(
+                message: question,
+                stream: stream,
+                conversationId: nil,
+                deviceId: nil,
+                model: nil,
+                contextDepth: nil
+            )
+        )
         let (_, data) = try await send(
             "/v1/chat",
             method: "POST",
@@ -288,5 +327,133 @@ public struct EVAPIClient: Sendable {
     public func health() async throws -> HealthResponse {
         let (_, data) = try await send("/v1/health")
         return try decode(HealthResponse.self, from: data)
+    }
+
+    public func conversation(limit: Int = 50) async throws -> ConversationDetail {
+        let (_, data) = try await send(
+            "/v1/conversation",
+            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+        )
+        return try decode(ConversationDetail.self, from: data)
+    }
+
+    public func wakeVoice(
+        deviceId: String,
+        wakeWord: String = "evie"
+    ) async throws -> VoiceWakeResponse {
+        let body = try encode(["device_id": deviceId, "wake_word": wakeWord])
+        let (_, data) = try await send(
+            "/v1/voice/wake",
+            method: "POST",
+            body: body,
+            allowedStatuses: [200, 201]
+        )
+        return try decode(VoiceWakeResponse.self, from: data)
+    }
+
+    public func verifyVoice(
+        sessionId: String,
+        nonce: String? = nil,
+        phrase: String? = nil,
+        samples: [String] = [],
+        livenessProof: String? = nil,
+        liveScore: Double? = nil
+    ) async throws -> VoiceSessionVerifyResponse {
+        let body = try encode(
+            VoiceVerifyRequestBody(
+                sessionId: sessionId,
+                nonce: nonce,
+                phrase: phrase,
+                samples: samples,
+                livenessProof: livenessProof,
+                liveScore: liveScore
+            )
+        )
+        let (_, data) = try await send("/v1/voice/verify", method: "POST", body: body)
+        return try decode(VoiceSessionVerifyResponse.self, from: data)
+    }
+
+    public func utterance(
+        sessionId: String,
+        text: String? = nil,
+        followUp: Bool = false,
+        audioB64: String? = nil,
+        audioRef: String? = nil,
+        reverifyToken: String? = nil,
+        language: String = "en",
+        conversationId: String? = nil
+    ) async throws -> VoiceUtteranceResponse {
+        let body = try encode(
+            VoiceUtteranceRequestBody(
+                sessionId: sessionId,
+                text: text,
+                followUp: followUp,
+                audioB64: audioB64,
+                audioRef: audioRef,
+                reverifyToken: reverifyToken,
+                language: language,
+                conversationId: conversationId
+            )
+        )
+        let (_, data) = try await send("/v1/voice/utterance", method: "POST", body: body)
+        return try decode(VoiceUtteranceResponse.self, from: data)
+    }
+
+    // MARK: - Live data / sensors
+
+    /// Upload a live-event batch (`POST /v1/live/events`).
+    public func postLiveBatch(_ batch: LiveBatchRequest) async throws -> [LiveEventOut] {
+        let body = try encode(batch)
+        let (_, data) = try await send(
+            "/v1/live/events",
+            method: "POST",
+            body: body,
+            allowedStatuses: [201]
+        )
+        return try decode([LiveEventOut].self, from: data)
+    }
+
+    /// Append events to an existing live channel
+    /// (`POST /v1/live/channels/{id}/events`).
+    public func postLiveEvents(
+        _ events: [LiveEventCreate],
+        toChannel channelID: String
+    ) async throws -> [LiveEventOut] {
+        let body = try encode(events)
+        let (_, data) = try await send(
+            "/v1/live/channels/\(channelID)/events",
+            method: "POST",
+            body: body,
+            allowedStatuses: [201]
+        )
+        return try decode([LiveEventOut].self, from: data)
+    }
+
+    public func tacticalBrief(
+        topic: String,
+        stakes: String? = nil,
+        context: String? = nil
+    ) async throws -> HUDBriefing {
+        let body = try encode(
+            BriefingRequestBody(topic: topic, stakes: stakes, context: context)
+        )
+        let (_, data) = try await send("/v1/tactical/brief", method: "POST", body: body)
+        let briefing = try decode(HUDBriefing.self, from: data)
+        try briefing.validate()
+        return briefing
+    }
+
+    public func focusHud() async throws -> HUDFocus {
+        let (_, data) = try await send("/v1/hud/focus")
+        let focus = try decode(HUDFocus.self, from: data)
+        try focus.validate()
+        return focus
+    }
+
+    public func routeHud() async throws -> HUDRoute {
+        let (_, data) = try await send("/v1/hud/route")
+        let route = try decode(HUDRoute.self, from: data)
+        try route.validate()
+        return route
     }
 }

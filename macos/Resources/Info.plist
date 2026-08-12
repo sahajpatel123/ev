@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>EV</string>
+    <key>CFBundleExecutable</key>
+    <string>EV</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ev.suit</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>EV</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 EV — personal memory companion</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>EV captures your voice only when you press the hotkey or Talk button, to wake, verify, and understand your requests.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>EV uses the camera only when you explicitly capture a photo or video note.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>EV uses screen content only when you enable ambient context collectors, and never sends raw pixels to any model.</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.ev.suit.notify</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>ev</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

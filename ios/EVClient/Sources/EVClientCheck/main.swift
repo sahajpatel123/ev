@@ -140,6 +140,68 @@ do {
     print("FAIL: attachment: \(error)")
 }
 
+// 8b. HUD briefing / focus / route: decode, validate, render.
+do {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+
+    let briefingJSON = """
+    {
+      "schema_version": "ev.hud.briefing.v1",
+      "generated_at": "2026-08-10T12:00:00Z",
+      "objective": "Renegotiation with X",
+      "context": "2 prior fixed-term wins",
+      "recommendation": "fixed + milestones",
+      "talking_points": ["cap scope", "offer terms"]
+    }
+    """
+    let briefing = try decoder.decode(HUDBriefing.self, from: Data(briefingJSON.utf8))
+    try briefing.validate()
+    expect(
+        briefing.renderText().hasPrefix("[ev.hud.briefing.v1] Renegotiation with X"),
+        "briefing render includes schema + objective"
+    )
+
+    let focusJSON = """
+    {
+      "schema_version": "ev.hud.focus.v1",
+      "generated_at": "2026-08-10T12:00:00Z",
+      "focus": null,
+      "locked": false,
+      "context": "Ship EV",
+      "next_action": "Pick the first milestone",
+      "meta": {}
+    }
+    """
+    let focus = try decoder.decode(HUDFocus.self, from: Data(focusJSON.utf8))
+    try focus.validate()
+    expect(
+        focus.renderText().contains("[ev.hud.focus.v1] focus open"),
+        "focus render includes schema"
+    )
+
+    let routeJSON = """
+    {
+      "schema_version": "ev.hud.route.v1",
+      "generated_at": "2026-08-10T12:00:00Z",
+      "destination": "Studio",
+      "leave_by": "10:45",
+      "travel_time_minutes": 25,
+      "prep_checklist": ["laptop", "brief"]
+    }
+    """
+    let route = try decoder.decode(HUDRoute.self, from: Data(routeJSON.utf8))
+    try route.validate()
+    expect(
+        route.renderText().hasPrefix("[ev.hud.route.v1] Studio"),
+        "route render includes schema + destination"
+    )
+    print("ok: HUD briefing/focus/route decode/validate/render")
+} catch {
+    failures.append("HUD briefing/focus/route: \(error)")
+    print("FAIL: HUD briefing/focus/route: \(error)")
+}
+
 // 9. Attachment offline queue: enqueue -> sync uploads multipart; missing file quarantines.
 do {
     let directory = FileManager.default.temporaryDirectory
@@ -176,6 +238,85 @@ do {
 } catch {
     failures.append("attachment queue: \(error)")
     print("FAIL: attachment queue: \(error)")
+}
+
+// 10. Voice session: verify + utterance decode; utterance posts text.
+do {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let verifyJSON = """
+    {
+      "session_id": "vs-1",
+      "state": "awake",
+      "verified": true,
+      "confidence": 0.97,
+      "reason": "voiceprint match"
+    }
+    """
+    let verify = try decoder.decode(VoiceSessionVerifyResponse.self, from: Data(verifyJSON.utf8))
+    expect(verify.verified, "voice verify decodes verified flag")
+    expect(verify.sessionId == "vs-1", "voice verify decodes session id")
+
+    MockURLProtocol.handler = { request in
+        expect(request.url?.path == "/v1/voice/utterance", "utterance endpoint path")
+        let body = String(data: request.bodyData(), encoding: .utf8) ?? ""
+        expect(body.contains("\"session_id\":\"vs-1\""), "utterance body has session id")
+        expect(body.contains("\"text\":\"hello EV\""), "utterance body has text")
+        let response = """
+        {
+          "session_id": "vs-1",
+          "state": "responding",
+          "transcript": "hello EV",
+          "transcript_confidence": 0.9,
+          "reply": "Hi! What do you need?",
+          "conversation_id": null,
+          "tts": null,
+          "style": null,
+          "model": "mock",
+          "context_tokens": 120,
+          "memory_deltas": []
+        }
+        """
+        let responseData = Data(response.utf8)
+        return (httpResponse(200, contentLength: responseData.count), responseData)
+    }
+    let utterance = try await client.utterance(sessionId: "vs-1", text: "hello EV")
+    expect(utterance.reply == "Hi! What do you need?", "utterance reply decoded")
+    expect(utterance.state == "responding", "utterance state decoded")
+    print("ok: voice session verify + utterance")
+} catch {
+    failures.append("voice session: \(error)")
+    print("FAIL: voice session: \(error)")
+}
+
+// 11. Watch complication stub: HUD card/quickcard -> title + <=2 lines.
+do {
+    let card = HUDCard(
+        schemaVersion: "ev.hud.card.v1",
+        generatedAt: "2026-08-10T12:00:00Z",
+        title: "EV status",
+        body: "Goal: ship EV | Readiness 68 | 2 alerts",
+        priority: 0.4
+    )
+    let layout = WatchComplicationStub.render(card)
+    expect(layout.title == "EV status", "complication title from HUD card")
+    expect(layout.lines.count <= 2, "complication keeps at most two lines")
+    expect(layout.lines.first == "Goal: ship EV", "complication first line")
+
+    let quick = HUDQuickCard(
+        schemaVersion: "ev.hud.quickcard.v1",
+        generatedAt: "2026-08-10T12:00:00Z",
+        objective: "Renegotiation",
+        summary: "2 prior fixed-term wins",
+        nextAction: "Send draft cap"
+    )
+    let quickLayout = WatchComplicationStub.renderQuickCard(quick)
+    expect(quickLayout.title == "Renegotiation", "complication title from quick card")
+    expect(quickLayout.lines.count == 2, "complication quick-card lines")
+    print("ok: watch complication stub")
+} catch {
+    failures.append("watch complication stub: \(error)")
+    print("FAIL: watch complication stub: \(error)")
 }
 
 // 2. Capture sends Idempotency-Key and returns the event.
@@ -339,6 +480,229 @@ do {
 } catch {
     failures.append("runtime listener: \(error)")
     print("FAIL: runtime listener: \(error)")
+}
+
+// 11. Live collector: app-activity / screen-time data model + upload path.
+do {
+    var receivedPath: String?
+    var receivedBody = ""
+    MockURLProtocol.handler = { request in
+        receivedPath = request.url?.path
+        receivedBody = String(data: request.bodyData(), encoding: .utf8) ?? ""
+        return (httpResponse(201), Data(liveEventsBody().utf8))
+    }
+
+    let collector = LiveCollector(client: client, deviceID: "dev-ios")
+    let sample = LiveActivitySample(
+        appName: "Xcode",
+        documentName: "retrieval.py — EV",
+        category: "development",
+        startedAt: "2026-08-09T12:00:00Z",
+        durationSeconds: 42
+    )
+    let batchEvents = try await collector.upload(sample: sample)
+    expect(receivedPath == "/v1/live/events", "live batch upload path")
+    expect(receivedBody.contains("\"channel\":\"app-activity\""), "live batch channel")
+    expect(receivedBody.contains("\"kind\":\"app\""), "live batch kind")
+    expect(receivedBody.contains("\"privacy_level\":\"sensitive\""), "live batch privacy")
+    expect(receivedBody.contains("\"event_type\":\"focus_change\""), "live batch event type")
+    expect(receivedBody.contains("Xcode"), "live batch carries app name")
+    expect(receivedBody.contains("retrieval.py"), "live batch carries document name")
+    expect(receivedBody.contains("dev-ios"), "live batch carries device id")
+    expect(batchEvents.first?.id == "live-1", "live batch response decodes")
+    expect(batchEvents.first?.privacyLevel == "sensitive", "live batch response privacy")
+
+    MockURLProtocol.handler = { request in
+        receivedPath = request.url?.path
+        receivedBody = String(data: request.bodyData(), encoding: .utf8) ?? ""
+        return (httpResponse(201), Data(liveEventsBody(channelID: "ch-ios-screen").utf8))
+    }
+    let channelEvents = try await collector.upload(sample: sample, channelID: "ch-ios-screen")
+    expect(
+        receivedPath == "/v1/live/channels/ch-ios-screen/events",
+        "live channel upload path"
+    )
+    expect(receivedBody.contains("\"event_type\":\"focus_change\""), "channel body carries events")
+    expect(receivedBody.contains("dev-ios"), "channel body carries device id")
+    expect(channelEvents.first?.channelId == "ch-ios-screen", "live channel response decodes")
+    print("ok: live collector data model + upload path")
+} catch {
+    failures.append("live collector: \(error)")
+    print("FAIL: live collector: \(error)")
+}
+
+// 12. Voice utterance accepts audio_b64 and decodes typed TTS/style.
+do {
+    MockURLProtocol.handler = { request in
+        expect(request.url?.path == "/v1/voice/utterance", "audio utterance endpoint path")
+        let body = String(data: request.bodyData(), encoding: .utf8) ?? ""
+        expect(body.contains("\"audio_b64\":\"UENG\""), "utterance body has audio_b64")
+        expect(body.contains("\"language\":\"en\""), "utterance body has language")
+        let response = """
+        {
+          "session_id": "vs-2",
+          "state": "responding",
+          "transcript": "hello EV",
+          "transcript_confidence": 0.91,
+          "transcript_degraded": false,
+          "transcript_provider": "mock",
+          "reply": "Hi!",
+          "conversation_id": null,
+          "tts": {
+            "provider": "piper",
+            "audio_ref": "voice/abc.wav",
+            "content_type": "audio/wav",
+            "ssml": null,
+            "duration_ms": 1400,
+            "degraded": false
+          },
+          "style": {
+            "urgency": 0.1,
+            "warmth": 0.7,
+            "brevity": 0.5,
+            "mode": "casual",
+            "length_target": "one to two sentences",
+            "directness": "low to medium"
+          },
+          "model": "mock",
+          "context_tokens": 120,
+          "memory_deltas": []
+        }
+        """
+        return (httpResponse(200), Data(response.utf8))
+    }
+    let result = try await client.utterance(
+        sessionId: "vs-2",
+        audioB64: "UENG",
+        language: "en"
+    )
+    expect(result.tts?.provider == "piper", "typed tts provider decoded")
+    expect(result.tts?.audioRef == "voice/abc.wav", "typed tts audio_ref decoded")
+    expect(result.tts?.durationMs == 1400, "typed tts duration decoded")
+    expect(result.style?.warmth == 0.7, "typed style decoded")
+    expect(result.transcriptProvider == "mock", "transcript provider decoded")
+    print("ok: voice utterance audio_b64 + typed tts/style")
+} catch {
+    failures.append("audio utterance: \(error)")
+    print("FAIL: audio utterance: \(error)")
+}
+
+// 13. Chat SSE stream: delta, refined, done, error surfaces.
+do {
+    let stream = """
+    event: memory-delta
+    data: {"action":"created","memory_type":"observation","id":"m1","text":"streamed"}
+
+    event: provenance
+    data: {"memory_id":"m1","text":"streamed","memory_type":"observation","score":0.8}
+
+    event: delta
+    data: {"text":"Hel","final":false}
+
+    event: delta
+    data: {"text":"lo","final":true}
+
+    event: refined
+    data: {"text":"Hello","replaces":true}
+
+    event: done
+    data: {"conversation_id":"c1","context_tokens":12,"context_depth":"standard","request_id":"r1","model":"mock"}
+    """
+    MockURLProtocol.handler = { request in
+        expect(request.url?.path == "/v1/chat", "chat stream path")
+        expect(request.value(forHTTPHeaderField: "Accept") == "text/event-stream", "chat stream accept header")
+        return (httpResponse(200), Data(stream.utf8))
+    }
+    var events: [ChatStreamEvent] = []
+    for try await event in client.askStream("hi") {
+        events.append(event)
+    }
+    expect(events.count == 6, "chat stream parsed 6 events")
+    guard case .memoryDelta(let delta)? = events.first else {
+        failures.append("chat stream first event is memory delta")
+        print("FAIL: chat stream first event is memory delta")
+        throw NSError(domain: "test", code: 1)
+    }
+    expect(delta.id == "m1", "chat stream memory delta id")
+    expect(events.contains { if case .refined("Hello") = $0 { return true }; return false }, "chat stream refined event")
+    guard case .done(let done)? = events.last else {
+        failures.append("chat stream last event is done")
+        print("FAIL: chat stream last event is done")
+        throw NSError(domain: "test", code: 2)
+    }
+    expect(done.conversationId == "c1", "chat stream done conversation id")
+    expect(done.model == "mock", "chat stream done model")
+    print("ok: chat SSE stream")
+} catch {
+    failures.append("chat stream: \(error)")
+    print("FAIL: chat stream: \(error)")
+}
+
+// 14. Voice SSE stream: partial, final transcript, reply, done.
+do {
+    let stream = """
+    event: partial
+    data: {"text":"hel","provider":"mock","sequence":1,"stable":false,"confidence":0.8,"degraded":false,"timestamp_ms":10}
+
+    event: final_transcript
+    data: {"text":"hello","confidence":0.92,"provider":"mock","degraded":false,"audio_ref":"voice/in.wav"}
+
+    event: reply
+    data: {"session_id":"vs-3","state":"responding","transcript":"hello","transcript_confidence":0.92,"reply":"Hi!","conversation_id":null,"tts":{"provider":"piper","audio_ref":"voice/out.wav","content_type":"audio/wav","ssml":null,"duration_ms":900,"degraded":false},"style":null,"model":"mock","context_tokens":10,"memory_deltas":[]}
+
+    event: done
+    data: {}
+    """
+    MockURLProtocol.handler = { request in
+        expect(request.url?.path == "/v1/voice/utterance/stream", "voice stream path")
+        return (httpResponse(200), Data(stream.utf8))
+    }
+    var events: [VoiceStreamEvent] = []
+    for try await event in client.streamUtterance(sessionId: "vs-3", audioB64: "UENG") {
+        events.append(event)
+    }
+    expect(events.count == 4, "voice stream parsed 4 events")
+    guard case .partial(let partial)? = events.first else {
+        failures.append("voice stream first event is partial")
+        print("FAIL: voice stream first event is partial")
+        throw NSError(domain: "test", code: 3)
+    }
+    expect(partial.text == "hel", "voice stream partial text")
+    guard case .transcript(let transcript)? = events.dropFirst().first else {
+        failures.append("voice stream second event is transcript")
+        print("FAIL: voice stream second event is transcript")
+        throw NSError(domain: "test", code: 4)
+    }
+    expect(transcript.text == "hello", "voice stream transcript text")
+    guard case .reply(let reply)? = events.dropFirst(2).first else {
+        failures.append("voice stream third event is reply")
+        print("FAIL: voice stream third event is reply")
+        throw NSError(domain: "test", code: 5)
+    }
+    expect(reply.tts?.audioRef == "voice/out.wav", "voice stream reply tts audio_ref")
+    guard case .done = events.last else {
+        failures.append("voice stream last event is done")
+        print("FAIL: voice stream last event is done")
+        throw NSError(domain: "test", code: 6)
+    }
+    print("ok: voice SSE stream")
+} catch {
+    failures.append("voice stream: \(error)")
+    print("FAIL: voice stream: \(error)")
+}
+
+// 15. Keychain token store (skip silently when an unsigned CLT binary is
+// denied keychain access; that is an environment limitation, not a client bug).
+do {
+    let store = KeychainTokenStore(service: "ev.clientcheck.\(UUID().uuidString)")
+    try store.save(token: "sekret-token", account: "test")
+    let loaded = try store.load(account: "test")
+    expect(loaded == "sekret-token", "keychain token round-trip")
+    try store.delete(account: "test")
+    expect((try? store.load(account: "test")) == nil, "keychain token deleted")
+    print("ok: keychain token store")
+} catch {
+    print("skip: keychain unavailable to unsigned CLT binary (\(error))")
 }
 
 if failures.isEmpty {

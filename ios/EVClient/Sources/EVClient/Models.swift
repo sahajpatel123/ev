@@ -177,3 +177,83 @@ public struct HealthResponse: Codable, Sendable, Equatable {
     public let capabilities: [String]
     public let providers: [String: AnyCodable]?
 }
+
+public struct ConversationOut: Codable, Sendable, Equatable {
+    public let id: String
+    public let title: String?
+    public let createdAt: String?
+}
+
+public struct ConversationMessage: Codable, Sendable, Equatable {
+    public let id: String
+    public let role: String
+    public let text: String
+    public let occurredAt: String?
+}
+
+public struct ConversationState: Codable, Sendable, Equatable {
+    public let focus: String?
+    public let pendingQuestions: [String]?
+}
+
+public struct ConversationDetail: Codable, Sendable, Equatable {
+    public let conversation: ConversationOut
+    public let messages: [ConversationMessage]
+    public let state: ConversationState?
+    public let nextActions: [String]?
+}
+
+public struct VoiceWakeResponse: Codable, Sendable, Equatable {
+    public let sessionId: String?
+    public let state: String
+    public let ownerEnrolled: Bool
+    public let challengeNonce: String?
+    public let challengePhrase: String?
+    public let message: String?
+}
+
+public struct VoiceSessionVerifyResponse: Codable, Sendable, Equatable {
+    public let sessionId: String?
+    public let state: String
+    public let verified: Bool
+    public let confidence: Double
+    public let reason: String
+}
+
+/// TTS synthesis metadata returned with a voice reply
+/// (mirrors ``backend/app/schemas.py::TtsOut``).
+public struct TtsOut: Codable, Sendable, Equatable {
+    public let provider: String
+    public let audioRef: String?
+    public let contentType: String?
+    public let ssml: String?
+    public let durationMs: Int?
+    public let degraded: Bool
+}
+
+/// Voice style metadata returned with a voice reply
+/// (mirrors ``backend/app/schemas.py::SpeechStyleOut``).
+public struct SpeechStyleOut: Codable, Sendable, Equatable {
+    public let urgency: Double
+    public let warmth: Double
+    public let brevity: Double
+    public let mode: String
+    public let lengthTarget: String
+    public let directness: String
+}
+
+public struct VoiceUtteranceResponse: Codable, Sendable, Equatable {
+    public let sessionId: String
+    public let state: String
+    public let transcript: String
+    public let transcriptConfidence: Double
+    public let transcriptDegraded: Bool?
+    public let transcriptProvider: String?
+    public let reply: String
+    public let conversationId: String?
+    public let tts: TtsOut?
+    public let style: SpeechStyleOut?
+    public let model: String?
+    public let contextTokens: Int
+    public let memoryDeltas: [MemoryDelta]
+}

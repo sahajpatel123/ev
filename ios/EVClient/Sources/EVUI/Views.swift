@@ -167,3 +167,175 @@ public struct MemoryBrowserView: View {
         selected = try? await client.audit(memoryId: memoryId)
     }
 }
+
+public struct ConversationView: View {
+    @State private var messages: [ConversationMessage] = []
+    @State private var conversationId: String?
+    @State private var draft = ""
+    @State private var status = ""
+    public let client: EVAPIClient
+
+    public init(client: EVAPIClient) {
+        self.client = client
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Conversation").font(.headline)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(messages, id: \.id) { message in
+                        Text("\(message.role): \(message.text)")
+                            .font(.body)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                TextField("Continue…", text: $draft)
+                    .textFieldStyle(.roundedBorder)
+                Button("Send") {
+                    Task { await send() }
+                }
+            }
+            Text(status).font(.caption).foregroundStyle(.secondary)
+        }
+        .padding()
+        .task { await load() }
+    }
+
+    private func load() async {
+        do {
+            let detail = try await client.conversation(limit: 50)
+            conversationId = detail.conversation.id
+            messages = detail.messages
+            status = detail.nextActions?.first ?? ""
+        } catch {
+            status = "conversation load failed: \(error)"
+        }
+    }
+
+    private func send() async {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        draft = ""
+        do {
+            let response = try await client.ask(text)
+            conversationId = response.conversationId ?? conversationId
+            status = response.reply
+            await load()
+        } catch {
+            status = "send failed: \(error)"
+        }
+    }
+}
+
+public struct VoiceCaptureView: View {
+    @State private var outcome = ""
+    @State private var listening = false
+    @State private var sessionId: String?
+    @State private var utteranceText = ""
+    public let client: EVAPIClient
+    public let deviceId: String
+
+    public init(client: EVAPIClient, deviceId: String) {
+        self.client = client
+        self.deviceId = deviceId
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Voice").font(.headline)
+            Button(listening ? "Listening…" : "Wake EV") {
+                Task { await wake() }
+            }
+            .disabled(listening)
+            Text(outcome).font(.caption).foregroundStyle(.secondary)
+            if sessionId != nil {
+                HStack {
+                    TextField("Speak (text fallback)…", text: $utteranceText)
+                        .textFieldStyle(.roundedBorder)
+                    Button("Send") {
+                        Task { await speak() }
+                    }
+                }
+            }
+            Text("Mic capture needs the iOS app target and a permission grant.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .padding()
+    }
+
+    private func wake() async {
+        listening = true
+        defer { listening = false }
+        do {
+            let result = try await client.wakeVoice(deviceId: deviceId)
+            sessionId = result.sessionId
+            outcome = "state: \(result.state) · owner enrolled: \(result.ownerEnrolled)"
+            if let message = result.message {
+                outcome += " · \(message)"
+            }
+            if result.sessionId == nil {
+                outcome += " · no session (enroll your voiceprint first)"
+            }
+        } catch {
+            outcome = "wake failed: \(error)"
+        }
+    }
+
+    private func speak() async {
+        guard let sessionId else { return }
+        let text = utteranceText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        utteranceText = ""
+        do {
+            let result = try await client.utterance(sessionId: sessionId, text: text)
+            outcome = "EV: \(result.reply)"
+        } catch {
+            outcome = "utterance failed: \(error)"
+        }
+    }
+}
+
+public struct QueueIndicatorView: View {
+    public let queue: OfflineCaptureQueue
+
+    public init(queue: OfflineCaptureQueue) {
+        self.queue = queue
+    }
+
+    public var body: some View {
+        let count = (try? queue.pending().count) ?? 0
+        Text(count == 0 ? "queue clear" : "\(count) offline captures pending")
+            .font(.caption)
+            .foregroundStyle(count == 0 ? Color.secondary : Color.orange)
+    }
+}
+
+public struct AppShellView: View {
+    public let client: EVAPIClient
+    public let queue: OfflineCaptureQueue
+
+    public init(client: EVAPIClient, queue: OfflineCaptureQueue) {
+        self.client = client
+        self.queue = queue
+    }
+
+    public var body: some View {
+        TabView {
+            TodayView(client: client)
+                .tabItem { Label("Today", systemImage: "sun.max") }
+            ConversationView(client: client)
+                .tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right") }
+            CaptureView(client: client, queue: queue)
+                .tabItem { Label("Capture", systemImage: "plus.circle") }
+            MemoryBrowserView(client: client)
+                .tabItem { Label("Memory", systemImage: "brain") }
+            VoiceCaptureView(client: client, deviceId: "mac-shell")
+                .tabItem { Label("Voice", systemImage: "mic") }
+        }
+    }
+}
