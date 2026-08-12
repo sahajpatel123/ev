@@ -6,8 +6,12 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.contracts import ChatResult
 from app.ev.interaction import InteractionStrategy
+from app.filter.envelope import SpeakerIdentity
 from app.filter.output_filter import enforce_persona
+from app.filter.pipeline import run_full_filter_pipeline
+from app.gateway.providers import MockProvider
 from app.models import AdapterRegistration, ResponseLog
 from app.training.adapter import active_style_profile
 from app.training.style_adapter import build_style_profile
@@ -26,6 +30,60 @@ def _strategy() -> InteractionStrategy:
         challenge=False,
         rationale="test",
     )
+
+
+class _HedgedProvider(MockProvider):
+    """Returns a long hedged draft so the style profile has something to fix."""
+
+    async def chat(self, messages, *, model=None, temperature=0.7) -> ChatResult:
+        return ChatResult(
+            text=(
+                "Maybe the plan could work if we try later, and there is "
+                "absolutely no citation here at all."
+            ),
+            usage={"prompt_tokens": 1, "completion_tokens": 1},
+            model=model or self.model,
+        )
+
+
+async def _seed_style_adapter(client: AsyncClient, db_session: AsyncSession) -> dict:
+    """Seed a correction+useful corpus and return the registered adapter."""
+
+    await client.post("/v1/training/consent", json={"track": "training_corpus"})
+    db_session.add(
+        ResponseLog(
+            request_text="Shorten it and stop hedging.",
+            reply_text="I think maybe we should consider the plan.",
+            mode="casual",
+            strategy={},
+            provenance_ids=[],
+            context_tokens=10,
+            was_correction=True,
+        )
+    )
+    db_session.add(
+        ResponseLog(
+            request_text="Give me the steps.",
+            reply_text="Review the checklist, then approve.",
+            mode="casual",
+            strategy={},
+            provenance_ids=[],
+            context_tokens=10,
+            was_useful=True,
+        )
+    )
+    await db_session.commit()
+    resp = await client.post("/v1/training/corpus/build")
+    assert resp.status_code == 201, resp.text
+    version = resp.json()["snapshot"]["version"]
+
+    await client.post("/v1/training/consent", json={"track": "adapter_fine_tuning"})
+    registered = await client.post(
+        "/v1/training/adapter/register",
+        json={"name": "evie-style-draft", "corpus_version": version},
+    )
+    assert registered.status_code == 201, registered.text
+    return registered.json()
 
 
 def test_style_profile_is_deterministic_and_evidence_derived() -> None:
@@ -166,3 +224,107 @@ def test_enforce_persona_applies_style_profile() -> None:
     # Without a profile the existing behavior is unchanged.
     _, default_persona, _ = enforce_persona(text, _strategy())
     assert default_persona.get("style_profile_applied") is None
+
+
+async def test_pipeline_pre_post_adapter_responses(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The same draft differs before vs after an adapter is activated."""
+
+    await client.post("/v1/training/consent", json={"track": "training_corpus"})
+    db_session.add(
+        ResponseLog(
+            request_text="Shorten it and stop hedging.",
+            reply_text="I think maybe we should consider the plan.",
+            mode="casual",
+            strategy={},
+            provenance_ids=[],
+            context_tokens=10,
+            was_correction=True,
+        )
+    )
+    db_session.add(
+        ResponseLog(
+            request_text="Give me the steps.",
+            reply_text="Review the checklist, then approve.",
+            mode="casual",
+            strategy={},
+            provenance_ids=[],
+            context_tokens=10,
+            was_useful=True,
+        )
+    )
+    await db_session.commit()
+    resp = await client.post("/v1/training/corpus/build")
+    assert resp.status_code == 201, resp.text
+    version = resp.json()["snapshot"]["version"]
+
+    await client.post("/v1/training/consent", json={"track": "adapter_fine_tuning"})
+    registered = await client.post(
+        "/v1/training/adapter/register",
+        json={"name": "evie-style-pipeline", "corpus_version": version},
+    )
+    assert registered.status_code == 201, registered.text
+
+    provider = _HedgedProvider()
+    speaker = SpeakerIdentity(actor_id="master", verified=True)
+    pre = await run_full_filter_pipeline(
+        db_session,
+        message="Hello!",
+        provider=provider,
+        speaker=speaker,
+    )
+    assert pre.style_profile is None
+    assert len(pre.final_text.split()) > 10
+
+    activated = await client.post(
+        "/v1/training/adapter/activate",
+        json={"adapter_id": registered.json()["id"], "reason": "apply learned style"},
+    )
+    assert activated.status_code == 200, activated.text
+
+    post = await run_full_filter_pipeline(
+        db_session,
+        message="Hello!",
+        provider=provider,
+        speaker=speaker,
+    )
+    assert post.style_profile is not None
+    assert post.final_text != pre.final_text
+    assert len(post.final_text.split()) <= 10
+
+
+async def test_filter_evaluate_draft_replay_applies_style_profile(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The draft-replay surface applies the active profile before activation
+    is not applied; after activation the same draft is styled differently."""
+
+    draft = (
+        "Maybe the plan could work if we try later, and there is "
+        "absolutely no citation here at all."
+    )
+    registered = await _seed_style_adapter(client, db_session)
+
+    before = await client.post(
+        "/v1/filter/evaluate",
+        json={"message": "Hello!", "draft": draft},
+    )
+    assert before.status_code == 200, before.text
+    assert (before.json()["output"]["persona"] or {}).get("style_profile_applied") is None
+
+    activated = await client.post(
+        "/v1/training/adapter/activate",
+        json={"adapter_id": registered["id"], "reason": "apply learned style"},
+    )
+    assert activated.status_code == 200, activated.text
+
+    after = await client.post(
+        "/v1/filter/evaluate",
+        json={"message": "Hello!", "draft": draft},
+    )
+    assert after.status_code == 200, after.text
+    persona = after.json()["output"]["persona"]
+    assert persona["style_profile_applied"] is True
+    assert persona.get("length_trimmed") is True
+    assert after.json()["output"]["final_text"] != draft

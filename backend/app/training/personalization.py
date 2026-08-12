@@ -1,10 +1,11 @@
 """Life-data personalization: evidence-backed importance/retrieval learning.
 
-Derives per-memory-type importance multipliers from logged user signals
-(corrections, usefulness, recommendation follow-through) instead of assuming
-more training is better. Calibrations are versioned, consent-gated, reversible,
-and applied transparently by the retriever (the locked scoring formula is
-unchanged — learning adjusts the importance *signal*).
+Derives per-domain (memory-type) importance multipliers from logged user
+signals (corrections, usefulness, recommendation follow-through AND explicit
+ignores) instead of assuming more training is better. Calibrations are
+versioned, consent-gated, reversible, and applied transparently by the
+retriever (the locked scoring formula is unchanged — learning adjusts the
+importance *signal*).
 """
 
 from __future__ import annotations
@@ -59,7 +60,7 @@ async def gather_evidence(session: AsyncSession) -> dict:
                 continue
             bucket = evidence.setdefault(
                 memory_type,
-                {"rated": 0, "corrected": 0, "useful": 0, "followed": 0},
+                {"rated": 0, "corrected": 0, "useful": 0, "followed": 0, "ignored": 0},
             )
             if any(
                 value is not None
@@ -76,6 +77,8 @@ async def gather_evidence(session: AsyncSession) -> dict:
                 bucket["useful"] += 1
             if log.followed_recommendation is True:
                 bucket["followed"] += 1
+            if log.followed_recommendation is False:
+                bucket["ignored"] += 1
 
     predictions = list(
         (
@@ -122,6 +125,8 @@ def derive_calibrations(evidence: dict) -> dict[str, float]:
         correction_rate = bucket.get("corrected", 0) / rated
         if correction_rate >= 0.3:
             multiplier -= min(0.2, correction_rate * 0.5)
+        if bucket.get("ignored", 0) / rated >= 0.3:
+            multiplier -= 0.05
         if bucket.get("useful", 0) / rated >= 0.7:
             multiplier += 0.05
         if bucket.get("followed", 0) / rated >= 0.7:

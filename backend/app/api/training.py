@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_actor
@@ -17,9 +17,12 @@ from app.db import get_session
 from app.schemas import (
     AdapterActivateRequest,
     AdapterDeleteResponse,
+    AdapterDryRunRequest,
     AdapterOut,
     AdapterRegisterRequest,
     AdapterRollbackRequest,
+    AdapterRunOut,
+    AdapterTrainRequest,
     ConsentGrant,
     ConsentOut,
     ConsentRevoke,
@@ -60,12 +63,17 @@ from app.training import personalization as personalization_service
 from app.training.consent import ConsentRequiredError
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
+from app.voice.speaker import default_speaker_verifier
 
 router = APIRouter(prefix="/v1/training")
 
 
 def _runtime(session: AsyncSession) -> VoiceRuntime:
-    return VoiceRuntime(session, master_key=settings.master_key)
+    return VoiceRuntime(
+        session,
+        master_key=settings.master_key,
+        verifier=default_speaker_verifier(),
+    )
 
 
 def _voice_http(exc: VoiceError) -> HTTPException:
@@ -445,6 +453,48 @@ async def corpus_export(
     )
 
 
+@router.get("/corpus/{version}/dataset")
+async def corpus_dataset(
+    version: int,
+    format: str = Query(
+        default="canonical",
+        pattern="^(canonical|sft|preference|tool)$",
+        description="Export format: canonical | sft | preference | tool",
+    ),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> Response:
+    """Export the corpus snapshot as fine-tune NDJSON in a chosen format."""
+
+    try:
+        row, records, jsonl = await corpus_service.export_dataset(
+            session, version, fmt=format
+        )
+    except KeyError as exc:
+        raise _training_http(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    await log_access(
+        session,
+        actor=actor,
+        action="corpus_dataset_export",
+        endpoint=f"GET /v1/training/corpus/{version}/dataset",
+        resource_type="training_corpus",
+        resource_ids=[row.id],
+        details={"version": version, "record_count": len(records)},
+    )
+    await session.commit()
+    return Response(
+        content=jsonl,
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="corpus-v{version}-{format}.jsonl"'
+            )
+        },
+    )
+
+
 @router.post("/corpus/rollback", response_model=TrainingCorpusSnapshotOut)
 async def corpus_rollback(
     data: TrainingCorpusRollbackRequest,
@@ -608,6 +658,79 @@ async def adapter_register(
         raise HTTPException(status_code=422, detail=str(exc)) from None
     await session.commit()
     return AdapterOut.model_validate(row)
+
+
+@router.post("/adapter/dry-run", response_model=AdapterRunOut)
+async def adapter_dry_run(
+    data: AdapterDryRunRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> AdapterRunOut:
+    """Validate dataset + gates for a provider without any external call."""
+
+    try:
+        plan = await adapter_service.dry_run(
+            session,
+            corpus_version=data.corpus_version,
+            provider=data.provider,
+            base_model=data.base_model,
+            adapter_ref=data.adapter_ref,
+            actor=actor,
+        )
+    except ConsentRequiredError as exc:
+        raise _training_http(exc, track="adapter_fine_tuning") from exc
+    except KeyError as exc:
+        raise _training_http(exc) from exc
+    except adapter_service.TrainingRunError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    await session.commit()
+    return AdapterRunOut(
+        mode="dry_run",
+        provider=plan["provider"],
+        corpus_version=plan["corpus_version"],
+        passed=plan["passed"],
+        gates=plan["gates"],
+        dataset=plan["dataset"],
+        plan=plan,
+    )
+
+
+@router.post("/adapter/train", response_model=AdapterRunOut)
+async def adapter_train(
+    data: AdapterTrainRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> AdapterRunOut:
+    """Run real weight training behind an explicit adapter provider."""
+
+    try:
+        outcome = await adapter_service.run_training(
+            session,
+            corpus_version=data.corpus_version,
+            provider=data.provider,
+            base_model=data.base_model,
+            adapter_ref=data.adapter_ref,
+            adapter_id=data.adapter_id,
+            cost_approved=data.cost_approved,
+            actor=actor,
+            reason=data.reason,
+        )
+    except ConsentRequiredError as exc:
+        raise _training_http(exc, track="adapter_fine_tuning") from exc
+    except KeyError as exc:
+        raise _training_http(exc) from exc
+    except (adapter_service.TrainingRunError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    await session.commit()
+    return AdapterRunOut(
+        mode="train",
+        provider=outcome["provider"],
+        corpus_version=outcome["corpus_version"],
+        passed=outcome["passed"],
+        gates=outcome["gates"],
+        dataset=outcome["dataset"],
+        result=outcome["result"],
+    )
 
 
 @router.get("/adapter", response_model=list[AdapterOut])

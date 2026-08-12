@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 from httpx import AsyncClient
@@ -164,6 +165,11 @@ async def test_corpus_delete_and_retention_redact(
     assert export["snapshot"]["content_hash"] is None
     assert export["entries"] == []
 
+    # A redacted snapshot cannot be exported as a training dataset.
+    resp = await client.get("/v1/training/corpus/1/dataset")
+    assert resp.status_code == 422
+    assert "redacted" in resp.json()["detail"]
+
     # Retention sweep (EU default: 0 days) redacts due snapshots.
     os.environ["EV_REGION"] = "eu"
     try:
@@ -181,3 +187,55 @@ async def test_corpus_delete_and_retention_redact(
     finally:
         os.environ.pop("EV_REGION", None)
     assert count == 1
+
+
+def _parse_ndjson(payload: str) -> list[dict]:
+    return [json.loads(line) for line in payload.splitlines() if line.strip()]
+
+
+async def test_corpus_dataset_jsonl_export(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Snapshot export produces canonical input/output/signals NDJSON."""
+
+    await post_event(client, "I prefer concise answers.")
+    await post_event(
+        client,
+        "Secret plan never leaves the machine.",
+        privacy_level="never_send_to_model",
+    )
+    await seed_rated_response(db_session)
+    await seed_filter_ledger(db_session)
+    await grant_corpus_consent(client)
+
+    resp = await client.post("/v1/training/corpus/build")
+    assert resp.status_code == 201, resp.text
+    version = resp.json()["snapshot"]["version"]
+
+    resp = await client.get(f"/v1/training/corpus/{version}/dataset")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+    records = _parse_ndjson(resp.text)
+    assert records
+    for record in records:
+        assert "input" in record
+        assert "output" in record
+        assert "signals" in record
+        assert record["hash"]
+
+    texts = " ".join(f"{r['input']} {r['output']}" for r in records)
+    assert "Secret plan never leaves the machine" not in texts
+    assert "sk-1234567890abcdefghijklmnop" not in texts
+
+    response_pair = next(r for r in records if r["kind"] == "response")
+    assert response_pair["input"] == "What should I build next?"
+    assert response_pair["output"] == "Focus on the memory browser."
+    assert response_pair["signals"]["was_useful"] is True
+
+    filter_pair = next(r for r in records if r["kind"] == "filter")
+    assert filter_pair["input"] == "That happened for sure."
+    assert filter_pair["output"] == "That may have happened."
+
+    event_record = next(r for r in records if r["kind"] == "event")
+    assert event_record["input"] == "I prefer concise answers."
+    assert event_record["output"] == ""

@@ -36,6 +36,7 @@ async def seed_response_logs(
     corrected: int = 0,
     useful: int = 0,
     followed: int = 0,
+    ignored: int = 0,
     neutral: int = 0,
 ) -> None:
     rows: list[ResponseLog] = []
@@ -77,6 +78,18 @@ async def seed_response_logs(
                 followed_recommendation=True,
             )
         )
+    for _ in range(ignored):
+        rows.append(
+            ResponseLog(
+                request_text="test",
+                reply_text="test",
+                mode="casual",
+                strategy={},
+                provenance_ids=[str(memory_id)],
+                context_tokens=10,
+                followed_recommendation=False,
+            )
+        )
     for _ in range(neutral):
         rows.append(
             ResponseLog(
@@ -90,6 +103,14 @@ async def seed_response_logs(
         )
     db_session.add_all(rows)
     await db_session.commit()
+
+
+async def preference_memory_id(client: AsyncClient, db_session: AsyncSession) -> UUID:
+    await post_event(client, "I prefer Python for work.")
+    resp = await client.get("/v1/memories?memory_type=preference&q=Python")
+    assert resp.status_code == 200, resp.text
+    memory = resp.json()["memories"][0]
+    return UUID(memory["id"])
 
 
 async def decision_memory_id(client: AsyncClient, db_session: AsyncSession) -> UUID:
@@ -229,3 +250,26 @@ async def test_personalization_delete_redacts_all_snapshots(
     assert resp.status_code == 201
     components = await search_components(db_session)
     assert components["personalization"] == 1.0
+
+
+async def test_personalization_follow_ignore_learning_is_per_domain(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Recommendation follow-through raises one domain while ignores lower another."""
+
+    decision_id = await decision_memory_id(client, db_session)
+    preference_id = await preference_memory_id(client, db_session)
+
+    # Decision domain: users follow recommendations -> importance boost.
+    await seed_response_logs(db_session, decision_id, followed=4, neutral=1)
+    # Preference domain: recommendations are ignored -> importance penalty.
+    await seed_response_logs(db_session, preference_id, followed=1, ignored=4)
+    await grant_personalization_consent(client)
+
+    resp = await client.post("/v1/training/personalization/calibrate")
+    assert resp.status_code == 201, resp.text
+    payload = resp.json()
+    assert payload["calibration"]["calibrations"]["decision"] == 1.05
+    assert payload["calibration"]["calibrations"]["preference"] == 0.95
+    assert payload["evidence"]["decision"]["followed"] == 4
+    assert payload["evidence"]["preference"]["ignored"] == 4
