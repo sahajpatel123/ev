@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from httpx import AsyncClient
 
-from clients.cli import ask, capture, memories, timeline
+from clients.cli import ask, ask_stream, capture, memories, timeline
 
 
 async def test_cross_surface_captures_share_one_memory(client: AsyncClient) -> None:
@@ -54,3 +54,28 @@ async def test_conversation_continues_across_surfaces(client: AsyncClient) -> No
     )
     assert second["reply"]
     assert second["conversation_id"] == first["conversation_id"]
+
+
+async def test_streaming_ask_uses_same_memory_and_conversation(
+    client: AsyncClient,
+) -> None:
+    await capture(
+        "The EVIE build prefers fixed-term contracts for client work.",
+        source="cli",
+        client=client,
+    )
+    deltas: list[str] = []
+    provenances: list[dict] = []
+    done = await ask_stream(
+        "What do I prefer for client work?",
+        client=client,
+        on_delta=deltas.append,
+        on_provenance=provenances.append,
+    )
+    assert deltas
+    assert provenances
+    assert done.get("conversation_id")
+
+    buffered = await ask("What do I prefer for client work?", client=client)
+    assert buffered["conversation_id"] == done["conversation_id"]
+    assert buffered["reply"]

@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from httpx import AsyncClient
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCHEMA_DIR = REPO_ROOT / "docs" / "schemas"
 
 
 async def test_web_app_served_with_strict_csp(client: AsyncClient) -> None:
@@ -78,6 +84,8 @@ async def test_web_has_onboarding_panel(client: AsyncClient) -> None:
     assert 'id="ev-onboarding"' in html
     assert 'id="onboarding-text"' in html
     assert 'id="onboarding-finish"' in html
+    assert 'id="onboarding-check"' in html
+    assert 'id="onboarding-readiness"' in html
 
     js = (await client.get("/app/app.js")).text
     assert "ev.onboarding" in js
@@ -88,6 +96,40 @@ async def test_web_has_onboarding_panel(client: AsyncClient) -> None:
     assert 'source: "web"' in js
     assert "Idempotency-Key" in js
     assert "/v1/audit/" in js
+    assert "onboardingReadiness" in js
+    for endpoint in (
+        "/v1/health",
+        "/v1/training/consent",
+        "/v1/identity/status",
+        "/v1/voice/enrollments",
+    ):
+        assert endpoint in js
+
+
+async def test_web_setup_wizard(client: AsyncClient) -> None:
+    html = (await client.get("/app")).text
+    assert 'id="ev-wizard"' in html
+    assert 'id="wizard-next"' in html
+    assert 'id="wizard-back"' in html
+    assert 'id="wizard-steps"' in html
+    js = (await client.get("/app/app.js")).text
+    assert "WIZARD_STEPS" in js
+    assert "wizardNext" in js
+    assert "wizardBack" in js
+    for track in ("voice_enrollment", "training_corpus", "life_data_personalization"):
+        assert track in js
+    assert "/v1/identity/recovery/codes" in js
+
+
+async def test_web_voice_enrollment_sends_liveness_proof(client: AsyncClient) -> None:
+    html = (await client.get("/app")).text
+    assert 'id="voice-liveness"' in html
+    assert 'id="voice-live-score"' in html
+    js = (await client.get("/app/app.js")).text
+    assert "liveness_proof" in js
+    assert "live_score" in js
+    assert 'audio_b64: sample' in js
+    assert "/v1/voice/enroll" in js
 
 
 async def test_web_memory_browser_supports_editing(client: AsyncClient) -> None:
@@ -100,3 +142,187 @@ async def test_web_memory_browser_supports_editing(client: AsyncClient) -> None:
     assert "/v1/memories/${id}/forget" in js
     assert "/v1/memories/${id}/restore" in js
     assert 'id="memory-result"' in (await client.get("/app")).text
+
+
+async def test_web_conversation_view(client: AsyncClient) -> None:
+    html = (await client.get("/app")).text
+    assert 'id="ev-conversation"' in html
+    assert 'id="conversation-form"' in html
+    assert 'id="conversation-messages"' in html
+    js = (await client.get("/app/app.js")).text
+    assert "/v1/conversation?limit=50" in js
+    assert "conversation_id" in js
+    assert "sendConversation" in js
+
+
+async def test_web_settings_panel(client: AsyncClient) -> None:
+    html = (await client.get("/app")).text
+    assert 'id="ev-settings"' in html
+    assert 'id="personality-save"' in html
+    assert 'id="recovery-codes"' in html
+    assert 'id="vault-rotate"' in html
+    js = (await client.get("/app/app.js")).text
+    for endpoint in (
+        "/v1/personality",
+        "/v1/training/consent",
+        "/v1/runtime/status",
+        "/v1/identity/recovery/codes",
+        "/v1/integrations/vault/rotate",
+    ):
+        assert endpoint in js
+
+
+async def test_web_hud_briefings_panel(client: AsyncClient) -> None:
+    html = (await client.get("/app")).text
+    assert 'id="ev-hud-more"' in html
+    assert 'id="hud-topic"' in html
+    assert 'id="hud-briefing"' in html
+    assert 'id="hud-focus"' in html
+    assert 'id="hud-route"' in html
+    js = (await client.get("/app/app.js")).text
+    for endpoint in (
+        "/v1/tactical/quick?topic=",
+        "/v1/tactical/brief",
+        "/v1/hud/focus",
+        "/v1/hud/route",
+    ):
+        assert endpoint in js
+
+
+async def test_web_console_surface(client: AsyncClient) -> None:
+    html = (await client.get("/app")).text
+    js = (await client.get("/app/app.js")).text
+    for marker in (
+        'id="ev-console"',
+        'id="ticker-bar"',
+        'id="health-tiles"',
+        'id="focus-tile"',
+        'id="gear-tiles"',
+        'id="model-tiles"',
+        'id="notification-list"',
+        'id="ev-voice-session"',
+        'id="ev-people"',
+        'id="ev-integrations"',
+        'id="ev-routines"',
+    ):
+        assert marker in html
+    for endpoint in (
+        "/v1/live/status",
+        "/v1/health/summary",
+        "/v1/gear",
+        "/v1/gateway/models",
+        "/v1/gateway/stats",
+        "/v1/ops/metrics",
+        "/v1/runtime/notify/status",
+        "/v1/runtime/notifications",
+        "/v1/people/enrollments",
+        "/v1/integrations/catalog",
+        "/v1/routines/overview",
+    ):
+        assert endpoint in js
+
+
+async def test_web_streaming_cancellation_and_provenance(client: AsyncClient) -> None:
+    html = (await client.get("/app")).text
+    js = (await client.get("/app/app.js")).text
+    assert 'id="ask-cancel"' in html
+    assert 'id="conversation-cancel"' in html
+    assert 'id="ask-retry"' in html
+    assert 'id="conversation-retry"' in html
+    assert "AbortController" in js
+    assert "stream: true" in js
+    assert "postSse" in js
+    assert "askRetry" in js
+    assert "conversationRetry" in js
+    assert "audit-chip" in js
+    assert "showAudit" in js
+    assert 'id="ask-provenance"' in html
+
+
+async def test_web_voice_roundtrip_path(client: AsyncClient) -> None:
+    js = (await client.get("/app/app.js")).text
+    html = (await client.get("/app")).text
+    assert 'id="voice-wake"' in html
+    assert 'id="voice-verify"' in html
+    assert 'id="voice-talk"' in html
+    assert 'id="voice-end"' in html
+    assert 'id="voice-retry"' in html
+    assert 'id="voice-session-refresh"' in html
+    assert 'id="voice-audio-test"' in html
+    for marker in (
+        "/v1/voice/wake",
+        "/v1/voice/verify",
+        "/v1/voice/utterance/stream",
+        "/v1/voice/audio/",
+        "navigator.mediaDevices.getUserMedia",
+        "MediaRecorder",
+        "AudioContext",
+        "playAudioBuffer",
+        "test tone",
+        "liveness_proof",
+        "captureClip",
+    ):
+        assert marker in js
+
+
+async def test_web_people_integrations_routines_markers(client: AsyncClient) -> None:
+    js = (await client.get("/app/app.js")).text
+    html = (await client.get("/app")).text
+    assert 'id="people-photos"' in html
+    assert 'id="people-correct"' in html
+    assert 'id="integration-adapter"' in html
+    assert 'id="routine-create"' in html
+    assert 'id="people-recognition-id"' in html
+    for marker in (
+        "/v1/people/recognitions/",
+        "/v1/integrations/",
+        "/v1/integrations/oauth/authorize",
+        "/sync?days=7",
+        "/v1/routines/",
+        "/v1/routines/templates",
+        "person-delete",
+    ):
+        assert marker in js
+
+
+async def test_web_schema_faithful_renderer(client: AsyncClient) -> None:
+    js = (await client.get("/app/app.js")).text
+    assert "HUD_SCHEMAS" in js
+    assert "renderSchemaCard" in js
+    assert '"ev.hud.card.v1"' in js
+    assert '"ev.hud.briefing.v1"' in js
+    assert '"ev.hud.focus.v1"' in js
+    assert '"ev.hud.route.v1"' in js
+    assert '"ev.hud.quickcard.v1"' in js
+    assert "schema_version" in js
+
+
+async def test_web_accessibility_landmarks(client: AsyncClient) -> None:
+    html = (await client.get("/app")).text
+    assert 'class="skip-link"' in html
+    assert '<main id="main" role="main">' in html
+
+
+def test_web_embedded_schemas_match_docs() -> None:
+    """The console renderer embeds the exact docs/schemas definitions."""
+    js_source = (REPO_ROOT / "backend" / "clients" / "web" / "app.js").read_text(
+        encoding="utf-8"
+    )
+    for schema_path in SCHEMA_DIR.glob("ev-hud-*.json"):
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        version = schema["properties"]["schema_version"]["const"]
+        assert f'"{version}"' in js_source
+        for required in schema.get("required", []):
+            assert required in js_source
+
+
+async def test_web_csp_posture_unchanged(client: AsyncClient) -> None:
+    resp = await client.get("/app")
+    csp = resp.headers["content-security-policy"]
+    assert "media-src" not in csp
+    assert "blob:" not in csp
+    assert "connect-src 'self'" in csp
+    html = resp.text
+    js = (await client.get("/app/app.js")).text
+    assert "https://" not in html.replace("https://github.com/sahajpatel123/ev", "")
+    assert "src=\"https" not in js and "src='https" not in js

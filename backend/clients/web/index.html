@@ -7,12 +7,54 @@
   <link rel="stylesheet" href="/app/style.css">
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to console</a>
   <header class="topbar">
     <h1>EV — Workbench</h1>
+    <span id="ev-clock" class="muted" aria-live="off"></span>
     <span id="ev-status" class="status disconnected">disconnected</span>
   </header>
 
-  <main>
+  <main id="main" role="main">
+    <section id="ev-console" class="panel console" aria-label="EV console">
+      <div id="ticker-bar" class="ticker" aria-live="polite">
+        <span id="ticker-live" class="ticker-item">live: —</span>
+        <span id="ticker-alerts" class="ticker-item">alerts: —</span>
+        <span id="ticker-focus" class="ticker-item">focus: —</span>
+      </div>
+      <div class="console-grid">
+        <div class="console-tile today-tile">
+          <h2>Today <span id="hud-schema" class="schema"></span></h2>
+          <div id="hud-body" class="hud-body"></div>
+        </div>
+        <div class="console-tile">
+          <h2>Health</h2>
+          <div id="health-tiles" class="tile-body"></div>
+        </div>
+        <div class="console-tile">
+          <h2>Focus</h2>
+          <div id="focus-tile" class="tile-body"></div>
+        </div>
+        <div class="console-tile">
+          <h2>Alerts</h2>
+          <div id="alert-tiles" class="tile-body"></div>
+        </div>
+        <div class="console-tile">
+          <h2>Gear</h2>
+          <div id="gear-tiles" class="tile-body"></div>
+        </div>
+        <div class="console-tile">
+          <h2>Models</h2>
+          <div id="model-tiles" class="tile-body"></div>
+        </div>
+        <div class="console-tile">
+          <h2>Notifications</h2>
+          <div id="notification-tiles" class="tile-body"></div>
+          <button id="notifications-refresh" type="button">Refresh</button>
+          <ul id="notification-list" class="list"></ul>
+        </div>
+      </div>
+    </section>
+
     <section id="connection" class="panel">
       <h2>Connection</h2>
       <form id="connection-form">
@@ -36,11 +78,43 @@
       </div>
       <ul id="onboarding-list" class="list"></ul>
       <p id="onboarding-result" class="result"></p>
+      <div class="row">
+        <button id="onboarding-check" type="button">Check setup</button>
+      </div>
+      <ul id="onboarding-readiness" class="list"></ul>
+    </section>
+
+    <section id="ev-wizard" class="panel">
+      <h2>Setup wizard</h2>
+      <ol id="wizard-steps" class="muted">
+        <li id="wiz-step-1">1. Master key check</li>
+        <li id="wiz-step-2">2. Training consent</li>
+        <li id="wiz-step-3">3. Recovery codes</li>
+        <li id="wiz-step-4">4. First memories</li>
+      </ol>
+      <div id="wizard-body" class="list"></div>
+      <div class="row">
+        <button id="wizard-back" type="button">Back</button>
+        <button id="wizard-next" type="button">Next</button>
+      </div>
+      <p id="wizard-result" class="result"></p>
     </section>
 
     <section id="ev-hud-card" class="panel">
-      <h2>HUD card <span id="hud-schema" class="schema"></span></h2>
-      <div id="hud-body" class="hud-body"></div>
+      <h2>HUD card</h2>
+      <div id="hud-card-body" class="hud-body"></div>
+    </section>
+
+    <section id="ev-hud-more" class="panel">
+      <h2>HUD briefings</h2>
+      <div class="row">
+        <input id="hud-topic" type="text" autocomplete="off" placeholder="topic">
+        <button id="hud-quick" type="button">Quick card</button>
+        <button id="hud-briefing" type="button">Briefing</button>
+        <button id="hud-focus" type="button">Focus</button>
+        <button id="hud-route" type="button">Route</button>
+      </div>
+      <div id="hud-more-body" class="hud-body"></div>
     </section>
 
     <section id="capture" class="panel">
@@ -63,9 +137,87 @@
         <input id="ask-question" type="text" autocomplete="off"
                placeholder="What did I decide about X?">
         <button type="submit">Ask</button>
+        <button id="ask-cancel" type="button" hidden>Stop</button>
+        <button id="ask-retry" type="button" hidden>Retry</button>
       </form>
-      <p id="ask-reply" class="reply"></p>
+      <p id="ask-reply" class="reply" aria-live="polite"></p>
+      <p id="ask-error" class="result" role="alert"></p>
       <div id="ask-provenance"></div>
+    </section>
+
+    <section id="ev-conversation" class="panel">
+      <h2>Conversation <span id="conversation-id" class="schema"></span></h2>
+      <div id="conversation-messages" class="conversation"></div>
+      <form id="conversation-form">
+        <input id="conversation-text" type="text" autocomplete="off"
+               placeholder="Continue the conversation…">
+        <button type="submit">Send</button>
+        <button id="conversation-cancel" type="button" hidden>Stop</button>
+        <button id="conversation-retry" type="button" hidden>Retry</button>
+      </form>
+      <p id="conversation-result" class="result" aria-live="polite"></p>
+    </section>
+
+    <section id="ev-voice-session" class="panel">
+      <h2>Voice session</h2>
+      <div id="voice-session-status" class="voice-status"></div>
+      <div class="row">
+        <button id="voice-wake" type="button">Wake</button>
+        <button id="voice-verify" type="button" disabled>Verify owner</button>
+        <button id="voice-talk" type="button" disabled>Hold to talk</button>
+        <button id="voice-end" type="button" disabled>End session</button>
+        <button id="voice-session-refresh" type="button" disabled>Refresh status</button>
+        <button id="voice-retry" type="button" hidden>Retry last utterance</button>
+        <button id="voice-audio-test" type="button">Test audio output</button>
+      </div>
+      <div id="voice-stream" class="voice-stream" aria-live="polite"></div>
+      <p id="voice-session-result" class="result" role="alert"></p>
+      <div id="voice-session-audit" class="list"></div>
+    </section>
+
+    <section id="ev-people" class="panel">
+      <h2>People</h2>
+      <div class="row">
+        <input id="people-name" type="text" autocomplete="off" placeholder="Person name">
+        <input id="people-photos" type="file" accept="image/*" multiple>
+        <button id="people-enroll" type="button">Enroll (5+ photos)</button>
+        <button id="people-refresh" type="button">Refresh</button>
+      </div>
+      <div class="row">
+        <input id="people-recognition-id" type="text" autocomplete="off"
+               placeholder="Recognition id (correction)">
+        <input id="people-correct-label" type="text" autocomplete="off"
+               placeholder="Correct label">
+        <button id="people-correct" type="button">Correct recognition</button>
+      </div>
+      <p id="people-result" class="result" role="alert"></p>
+      <div id="people-list" class="list"></div>
+    </section>
+
+    <section id="ev-integrations" class="panel">
+      <h2>Integrations</h2>
+      <div class="row">
+        <select id="integration-adapter"></select>
+        <button id="integration-connect" type="button">Connect</button>
+        <button id="integration-refresh" type="button">Refresh</button>
+      </div>
+      <p id="integration-result" class="result" role="alert"></p>
+      <div id="integration-list" class="list"></div>
+    </section>
+
+    <section id="ev-routines" class="panel">
+      <h2>Routines</h2>
+      <div class="row">
+        <input id="routine-name" type="text" autocomplete="off" placeholder="Routine name">
+        <input id="routine-action" type="text" autocomplete="off" placeholder="action_type">
+        <input id="routine-schedule" type="text" autocomplete="off" placeholder="schedule (optional)">
+        <button id="routine-create" type="button">Create</button>
+        <button id="routine-templates" type="button">Templates</button>
+        <button id="routine-refresh" type="button">Refresh</button>
+      </div>
+      <p id="routine-result" class="result" role="alert"></p>
+      <div id="routine-list" class="list"></div>
+      <div id="routine-template-list" class="list"></div>
     </section>
 
     <section id="ev-memory-browser" class="panel">
@@ -114,10 +266,56 @@
         <span id="voice-samples" class="muted">0/5 samples</span>
       </div>
       <div class="row">
+        <label>Liveness
+          <select id="voice-liveness">
+            <option value="live">live</option>
+            <option value="replay">replay</option>
+            <option value="synthetic">synthetic</option>
+            <option value="converted">converted</option>
+          </select>
+        </label>
+        <label>Score
+          <input id="voice-live-score" type="number" min="0" max="1" step="0.05" value="0.9">
+        </label>
+      </div>
+      <div class="row">
         <button id="voice-enroll" type="button" disabled>Enroll voiceprint (5 samples)</button>
       </div>
       <p id="voice-result" class="result"></p>
       <ul id="voice-enrollments" class="list"></ul>
+    </section>
+
+    <section id="ev-settings" class="panel">
+      <h2>Settings</h2>
+      <h3>Personality</h3>
+      <div class="row">
+        <label>Directness <input id="p-directness" type="number" min="1" max="5"></label>
+        <label>Humor <input id="p-humor" type="number" min="0" max="5"></label>
+        <label>Formality <input id="p-formality" type="number" min="1" max="5"></label>
+        <label>Technicality <input id="p-technicality" type="number" min="1" max="5"></label>
+        <label>Assertiveness <input id="p-assertiveness" type="number" min="1" max="5"></label>
+        <label>Verbosity <input id="p-verbosity" type="number" min="1" max="5"></label>
+        <label>Proactivity <input id="p-proactivity" type="number" min="1" max="5"></label>
+        <label>Challenge <input id="p-challenge" type="number" min="1" max="5"></label>
+        <select id="p-emotional">
+          <option value="calm">calm</option>
+          <option value="warm">warm</option>
+          <option value="brisk">brisk</option>
+          <option value="neutral">neutral</option>
+        </select>
+        <button id="personality-save" type="button">Save</button>
+      </div>
+      <p id="personality-result" class="result"></p>
+      <h3>Consents</h3>
+      <div id="consent-list" class="list"></div>
+      <h3>Quiet hours</h3>
+      <p id="quiet-hours-status" class="muted"></p>
+      <h3>Recovery codes</h3>
+      <button id="recovery-codes" type="button">Show one-time recovery codes</button>
+      <div id="recovery-codes-body" class="list"></div>
+      <h3>Credential vault</h3>
+      <button id="vault-rotate" type="button">Rotate vault key</button>
+      <div id="vault-status" class="result"></div>
     </section>
   </main>
 

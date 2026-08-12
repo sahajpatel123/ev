@@ -13,14 +13,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Attachment
 from clients.cli import (
     QUEUE_FILENAME,
+    _iter_sse,
+    ask_stream,
     attach,
     audit,
+    build_parser,
     capture,
     card,
+    consent_grant,
+    consent_list,
+    consent_revoke,
     correct,
     enqueue_attachment,
     enqueue_capture,
+    eval_asr,
     export_bundle,
+    filter_report,
     forget,
     identity_owner_create,
     identity_passkey_add,
@@ -31,11 +39,29 @@ from clients.cli import (
     identity_status,
     import_bundle_file,
     list_queue,
+    list_routine_templates,
+    list_routines,
     memories,
+    model_list,
+    notify_history,
+    notify_send,
     onboarding,
+    ops_center,
+    people_enroll,
+    people_forget,
+    people_list,
     restore,
+    routines_overview,
     sync_captures,
     timeline,
+    train_dry_run,
+    train_status,
+    voice_enroll,
+    voice_listen,
+    voice_session_verify,
+    voice_verify,
+    voice_wake,
+    word_error_rate,
 )
 
 
@@ -237,6 +263,21 @@ async def test_cli_onboarding_creates_first_memories_and_audit(
     assert first["versions"]
 
 
+async def test_cli_onboarding_full_flow(client: AsyncClient) -> None:
+    result = await onboarding(
+        ["Goal: ship EV this month."],
+        owner_name="E2E Owner",
+        consent_tracks=["voice_enrollment", "training_corpus"],
+        client=client,
+    )
+    assert result["identity"]
+    assert result["identity"]["recovery_codes"]
+    tracks = {row["track"] for row in result["consents"]}
+    assert {"voice_enrollment", "training_corpus"} <= tracks
+    assert result["events"]
+    assert result["audits"]
+
+
 async def test_cli_attach_file_capture_roundtrip(
     client: AsyncClient, tmp_path: Path
 ) -> None:
@@ -323,6 +364,70 @@ async def test_sync_quarantines_attachment_with_missing_file(
     assert "file missing" in entries[0]["reason"]
 
 
+async def test_cli_consent_lifecycle(client: AsyncClient) -> None:
+    granted = await consent_grant("voice_enrollment", client=client)
+    assert granted["track"] == "voice_enrollment"
+    assert granted["revoked_at"] is None
+
+    rows = await consent_list(client=client)
+    assert any(row["track"] == "voice_enrollment" and row["revoked_at"] is None for row in rows)
+
+    revoked = await consent_revoke("voice_enrollment", reason="cli test", client=client)
+    assert revoked["revoked_at"] is not None
+
+
+async def test_cli_voice_enroll_with_liveness(client: AsyncClient, tmp_path: Path) -> None:
+    await consent_grant("voice_enrollment", client=client)
+    samples: list[str | Path] = []
+    for index in range(5):
+        path = tmp_path / f"sample-{index}.wav"
+        path.write_bytes(b"voice-sample-" + str(index).encode() * 20)
+        samples.append(path)
+
+    result = await voice_enroll(
+        samples,
+        liveness="live",
+        reason="cli test enrollment",
+        client=client,
+    )
+    enrollment = result["enrollment"]
+    assert result["sample_count"] == 5
+    assert enrollment["status"] == "active"
+    assert enrollment["version"] == 1
+
+
+async def test_cli_voice_enroll_then_verify(client: AsyncClient, tmp_path: Path) -> None:
+    await consent_grant("voice_enrollment", client=client)
+    samples: list[str | Path] = []
+    sample_bytes = b"voice-sample-" + b"x" * 512
+    for index in range(5):
+        path = tmp_path / f"verify-{index}.wav"
+        path.write_bytes(sample_bytes)
+        samples.append(path)
+
+    enrolled = await voice_enroll(samples, liveness="live", client=client)
+    assert enrolled["sample_count"] == 5
+
+    verified = await voice_verify(samples, client=client)
+    assert verified["accepted"] is True
+    assert verified["score"] >= verified["threshold"]
+
+
+async def test_cli_routines_ops_filter_report(client: AsyncClient) -> None:
+    overview = await routines_overview(client=client)
+    assert "routines_total" in overview
+    assert "routines_enabled" in overview
+    assert isinstance(await list_routines(client=client), list)
+    assert isinstance(await list_routine_templates(client=client), list)
+
+    report = await ops_center(client=client)
+    assert "next_actions" in report
+
+    filter_data = await filter_report(client=client)
+    assert "aggregate" in filter_data
+    assert "recent" in filter_data
+
+
 async def test_cli_identity_owner_passkey_lifecycle(client: AsyncClient) -> None:
     status = await identity_status(client=client)
     assert status["owner_established"] is False
@@ -360,3 +465,333 @@ async def test_cli_identity_verify_and_recovery_redeem(client: AsyncClient) -> N
     redeemed = await identity_recovery_redeem(code, "new-phone", client=client)
     assert redeemed["device"]["trust_level"] == "owner"
     assert redeemed["token"]
+
+
+async def test_cli_ask_stream_renders_tokens_and_provenance(
+    client: AsyncClient,
+) -> None:
+    deltas: list[str] = []
+    refined: list[str] = []
+    provenances: list[dict] = []
+    done = await ask_stream(
+        "What do I prefer for client work?",
+        client=client,
+        on_delta=deltas.append,
+        on_refined=refined.append,
+        on_provenance=provenances.append,
+    )
+    assert deltas or refined
+    assert done.get("conversation_id")
+    assert provenances
+
+
+async def test_cli_sse_parser_handles_partial_asr_events() -> None:
+    lines = [
+        "event: partial",
+        'data: {"text": "Remind", "provider": "parakeet-eou-120m", "sequence": 1, "stable": false}',
+        "",
+        "event: partial",
+        'data: {"text": "Remind me", "provider": "parakeet-eou-120m", "sequence": 2, "stable": true}',
+        "",
+        "event: done",
+        'data: {"session_id": "s1"}',
+        "",
+    ]
+
+    class FakeResponse:
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+    events = [(name, data) async for name, data in _iter_sse(FakeResponse())]
+    assert events[0][0] == "partial"
+    assert events[0][1]["text"] == "Remind"
+    assert events[1][1]["stable"] is True
+    assert events[2] == ("done", {"session_id": "s1"})
+
+
+def _sse_bytes(events: list[tuple[str, dict]]) -> bytes:
+    return "".join(
+        f"event: {name}\ndata: {json.dumps(payload)}\n\n"
+        for name, payload in events
+    ).encode()
+
+
+async def test_cli_ask_stream_dispatches_events_via_mock_transport() -> None:
+    body = _sse_bytes(
+        [
+            ("delta", {"text": "Hel", "final": False}),
+            ("delta", {"text": "lo", "final": False}),
+            ("provenance", {"memory_id": "m1", "text": "source", "memory_type": "fact"}),
+            ("refined", {"text": "Hello", "replaces": True}),
+            ("done", {"conversation_id": "c1", "model": "mock"}),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat"
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"content-type": "text/event-stream"},
+        )
+
+    deltas: list[str] = []
+    refined: list[str] = []
+    provenances: list[dict] = []
+    async with AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://mock",
+    ) as client:
+        done = await ask_stream(
+            "hello",
+            client=client,
+            on_delta=deltas.append,
+            on_refined=refined.append,
+            on_provenance=provenances.append,
+        )
+    assert "".join(deltas) == "Hello"
+    assert refined == ["Hello"]
+    assert provenances[0]["memory_type"] == "fact"
+    assert done == {"conversation_id": "c1", "model": "mock"}
+
+
+async def test_cli_voice_listen_dispatches_partial_events_via_mock_transport() -> None:
+    body = _sse_bytes(
+        [
+            (
+                "partial",
+                {
+                    "text": "Remind",
+                    "provider": "parakeet-eou-120m",
+                    "sequence": 1,
+                    "stable": False,
+                },
+            ),
+            (
+                "partial",
+                {
+                    "text": "Remind me",
+                    "provider": "parakeet-eou-120m",
+                    "sequence": 2,
+                    "stable": True,
+                },
+            ),
+            (
+                "final_transcript",
+                {
+                    "text": "Remind me to call mom.",
+                    "provider": "parakeet-eou-120m",
+                    "confidence": 0.94,
+                },
+            ),
+            (
+                "reply",
+                {
+                    "session_id": "s1",
+                    "state": "follow_up",
+                    "transcript": "Remind me to call mom.",
+                    "reply": "Done — added to your memory.",
+                    "conversation_id": "c1",
+                },
+            ),
+            ("done", {}),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/voice/utterance/stream"
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"content-type": "text/event-stream"},
+        )
+
+    partials: list[dict] = []
+    finals: list[dict] = []
+    async with AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="http://mock",
+    ) as client:
+        result = await voice_listen(
+            "s1",
+            text="Remind me to call mom.",
+            client=client,
+            on_partial=partials.append,
+            on_final=finals.append,
+        )
+    assert [item["text"] for item in partials] == ["Remind", "Remind me"]
+    assert partials[1]["stable"] is True
+    assert finals[0]["text"] == "Remind me to call mom."
+    assert result["reply"] == "Done — added to your memory."
+
+
+async def test_cli_voice_session_streaming_roundtrip(
+    client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    await consent_grant("voice_enrollment", client=client)
+    samples: list[str | Path] = []
+    sample_bytes = b"owner-voice-session-" + b"y" * 256
+    for index in range(5):
+        path = tmp_path / f"session-{index}.wav"
+        path.write_bytes(sample_bytes)
+        samples.append(path)
+    await voice_enroll(samples, liveness="live", client=client)
+
+    wake = await voice_wake(text_hint="evie", device_id="cli-session-test", client=client)
+    assert wake["session_id"]
+    session_id = str(wake["session_id"])
+
+    verified = await voice_session_verify(
+        session_id,
+        samples[:3],
+        nonce=wake["challenge_nonce"] or "cli-verify",
+        liveness="live",
+        client=client,
+    )
+    assert verified["verified"] is True
+
+    partials: list[dict] = []
+    finals: list[dict] = []
+    result = await voice_listen(
+        session_id,
+        text="Remind me to call mom.",
+        client=client,
+        on_partial=partials.append,
+        on_final=finals.append,
+    )
+    assert result["reply"]
+    assert result["transcript"] == "Remind me to call mom."
+    assert finals
+
+
+async def test_cli_notify_test_history_status(client: AsyncClient) -> None:
+    row = await notify_send(
+        "CLI test notification",
+        "Delivery receipt probe from the workbench.",
+        tier="useful",
+        source="cli-test",
+        client=client,
+    )
+    assert row["id"]
+    assert row["status"] in {"attempted", "delivered", "failed", "suppressed"}
+
+    rows = await notify_history(client=client, limit=10)
+    assert any(item["id"] == row["id"] for item in rows)
+
+
+async def test_cli_model_list_reads_gateway(client: AsyncClient) -> None:
+    result = await model_list(client=client)
+    assert result["provider"]
+    assert isinstance(result["models"], list)
+
+
+async def test_cli_people_enroll_list_forget(client: AsyncClient, tmp_path: Path) -> None:
+    await consent_grant("face_enrollment", client=client)
+    photos: list[str | Path] = []
+    photo_bytes = b"face-photo-" + b"z" * 512
+    for index in range(5):
+        path = tmp_path / f"photo-{index}.jpg"
+        path.write_bytes(photo_bytes)
+        photos.append(path)
+
+    enrolled = await people_enroll(
+        "Sam",
+        photos,
+        quality=0.99,
+        confidence=0.99,
+        client=client,
+    )
+    entity_id = enrolled["enrollment"]["entity_id"]
+    assert enrolled["sample_count"] == 5
+
+    rows = await people_list(client=client)
+    assert any(row["entity_id"] == entity_id for row in rows)
+
+    manifest = await people_forget(entity_id, reason="cli test", client=client)
+    assert manifest["face_enrollments_processed"] >= 1
+    assert manifest["face_samples_deleted"] >= 1
+
+
+async def test_cli_train_dry_run_and_status(client: AsyncClient) -> None:
+    await consent_grant("adapter_fine_tuning", client=client)
+    await consent_grant("training_corpus", client=client)
+    build = await client.post("/v1/training/corpus/build")
+    assert build.status_code == 201, build.text
+    version = build.json()["snapshot"]["version"]
+
+    dry = await train_dry_run(version, client=client)
+    assert dry["mode"] == "dry_run"
+    assert "passed" in dry
+
+    rows = await train_status(client=client)
+    assert isinstance(rows, list)
+
+
+async def test_cli_eval_asr_dev_double_is_honest() -> None:
+    report = await eval_asr()
+    assert report["provider"] == "echo"
+    assert report["transcript"] == "EVIE evaluation phrase: remember local AI tools."
+    assert report["confidence"] == 0.0
+    assert report["degraded"] is False
+    assert "dev double" in report["note"]
+
+
+def test_cli_word_error_rate() -> None:
+    assert word_error_rate("a b c", "a b c") == 0.0
+    assert abs(word_error_rate("a b c", "a c") - 1 / 3) < 1e-4
+    assert word_error_rate("a b c", "") == 1.0
+    assert word_error_rate("", "") == 0.0
+
+
+async def test_cli_eval_asr_reports_wer_when_expected() -> None:
+    report = await eval_asr(expected="EVIE evaluation phrase: remember local AI tools.")
+    assert report["exact_match"] is True
+    assert report["wer"] == 0.0
+
+
+def test_cli_model_stats_parser() -> None:
+    args = build_parser().parse_args(["model", "stats"])
+    assert args.model_command == "stats"
+
+
+async def test_cli_day1_script_ten_actions_or_fewer(
+    client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    """Automate docs/CLIENTS.md §4.1.3: master key -> capture -> ask -> audit."""
+    owner = await identity_owner_create("Sahaj", client=client)
+    assert len(owner["recovery_codes"]) == 8
+
+    for track in ("voice_enrollment", "training_corpus", "life_data_personalization"):
+        granted = await consent_grant(track, client=client)
+        assert granted["track"] == track
+
+    samples: list[str | Path] = []
+    sample_bytes = b"day1-owner-voice-" + b"w" * 256
+    for index in range(5):
+        path = tmp_path / f"day1-{index}.wav"
+        path.write_bytes(sample_bytes)
+        samples.append(path)
+    enrolled = await voice_enroll(samples, liveness="live", client=client)
+    assert enrolled["sample_count"] == 5
+
+    captured = await capture(
+        "I prefer fixed-term contracts for client work.",
+        client=client,
+    )
+    assert captured["event"]["id"]
+
+    answered = await ask_stream(
+        "What do I prefer for client work?",
+        client=client,
+    )
+    assert answered.get("conversation_id")
+
+    found = await memories(client=client, q="fixed-term contracts", limit=10)
+    assert found["total"] >= 1
+    memory = found["memories"][0]
+    trail = await audit(memory["id"], client=client)
+    assert trail["memory"]["id"] == memory["id"]
+    assert trail["source_events"]

@@ -50,6 +50,21 @@ body {
   border: 1px solid var(--bad);
 }
 
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--accent);
+  color: #000;
+  padding: 8px 14px;
+  border-radius: 0 0 8px 0;
+  z-index: 100;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
 main {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
@@ -164,6 +179,38 @@ button:hover {
   padding: 2px 8px;
 }
 
+.conversation {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
+.message {
+  margin: 4px 0;
+  word-break: break-word;
+}
+
+.message.assistant {
+  color: var(--accent);
+}
+
+#ev-settings h3 {
+  margin: 14px 0 6px;
+  font-size: 13px;
+}
+
+#wizard-steps li.active {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+#wizard-steps li.done {
+  color: var(--ok);
+}
+
 #audit-panel {
   margin-top: 12px;
   border-top: 1px dashed var(--border);
@@ -197,4 +244,233 @@ button:hover {
 
 .voice-status p {
   margin: 4px 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* HUD console (full-screen glanceable surface)                       */
+/* ------------------------------------------------------------------ */
+
+.console {
+  grid-column: 1 / -1;
+}
+
+.ticker {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0b0e13;
+  padding: 8px 12px;
+  margin-bottom: 14px;
+  font-size: 13px;
+}
+
+.ticker-item {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40vw;
+}
+
+.console-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.console-tile {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #10151d;
+  min-height: 120px;
+}
+
+.console-tile h2 {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.today-tile {
+  border-color: var(--accent);
+}
+
+.tile-body {
+  font-size: 13px;
+}
+
+.tile-body > div {
+  margin: 2px 0;
+}
+
+.alert-row {
+  border-left: 3px solid var(--border);
+  padding-left: 6px;
+  margin: 4px 0;
+}
+
+.tier {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.tier.urgent {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.tier.useful {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.receipt {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.receipt.delivered {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.receipt.failed {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.receipt.suppressed {
+  color: var(--muted);
+}
+
+.schema-badge {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 1px 8px;
+  margin-bottom: 6px;
+}
+
+.schema-field {
+  margin: 4px 0;
+  word-break: break-word;
+}
+
+.schema-list {
+  margin: 2px 0 8px 18px;
+  padding: 0;
+}
+
+.hud-header {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.hud-body-text {
+  white-space: pre-wrap;
+}
+
+/* streaming / voice / people / integrations */
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+button.chip {
+  color: var(--text);
+  cursor: pointer;
+}
+
+button.chip:hover,
+button.chip:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.voice-stream {
+  min-height: 72px;
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  margin: 10px 0;
+  font-size: 13px;
+}
+
+.voice-partial {
+  color: var(--muted);
+}
+
+.voice-partial.stable {
+  color: var(--text);
+}
+
+.voice-final {
+  color: var(--ok);
+  margin-top: 4px;
+}
+
+.voice-reply {
+  color: var(--accent);
+  margin-top: 6px;
+  white-space: pre-wrap;
+}
+
+.person-card,
+.integration-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  font-size: 13px;
+}
+
+.person-card button,
+.integration-card button {
+  font-size: 12px;
+  padding: 2px 8px;
+  margin: 2px 4px 0 0;
+}
+
+.integration-detail {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+/* Accessibility: visible keyboard focus everywhere */
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.conversation:focus-visible,
+.voice-stream:focus-visible {
+  outline-offset: 0;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
 }
