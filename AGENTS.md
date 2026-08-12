@@ -159,7 +159,7 @@ extras CI installs. Details and one-line fixes are in
 | --- | --- | --- |
 | `ruff` | clean | |
 | `mypy` | **1 error in 264 files** | `app/ops/metrics.py:125` — `total` may be `None` on the Linux `/proc/meminfo` branch. Docs claim 0. Owner: Agent 20. |
-| `pytest` | **1,018 passed, 6 failed, 23 skipped** | 4 × `test_vision_corpus` hard-fail without pillow instead of skipping (breaks FLEET_LAW §7); `test_gear_alerts` asserts `system == "Darwin"`; 1 sandbox test relies on the macOS RSS watchdog. |
+| `pytest` | **1,025 passed, 6 failed, 23 skipped** | 4 × `test_vision_corpus` hard-fail without pillow instead of skipping (breaks FLEET_LAW §7); `test_gear_alerts` asserts `system == "Darwin"`; 1 sandbox test relies on the macOS RSS watchdog. |
 | `eval_gates` | **18/18 gates, 110/110 checks, 5 skipped, exit 0** | The 5 skips are absent ML artifacts (gitignored), which is the designed behaviour. |
 | GitHub Actions | **never executed** | Every run since 2026-08-09 was blocked before starting: *"job was not started because recent account payments have failed or your spending limit needs to be increased."* |
 
