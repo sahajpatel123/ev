@@ -19,6 +19,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal, init_db
+from app.gateway.routing import routing_candidates
 from app.services.model_call import model_call_stats
 
 
@@ -48,7 +49,12 @@ async def run_routing_gate(
     max_error_rate: float = 0.25,
     max_p95_ms: float = 60_000.0,
 ) -> RoutingGateResult:
-    """Gate routing on measured evidence; fail closed when evidence is missing."""
+    """Gate routing on measured evidence; fail closed when evidence is missing.
+
+    With a single configured provider, routing is a no-op: the gate states
+    that plainly (``routing_is_noop`` fails closed) instead of reporting a
+    meaningless pass.
+    """
 
     started = time.perf_counter()
     if session is not None:
@@ -62,7 +68,14 @@ async def run_routing_gate(
     calls = totals["calls"]
     bad = totals["errors"] + totals["blocked"]
     bad_rate = bad / calls if calls else 0.0
+    candidates = routing_candidates()
     checks = [
+        Check(
+            "routing_is_noop",
+            len(candidates) >= 2,
+            f"routing candidates {candidates}: need >= 2 providers for "
+            "meaningful routing; single-provider routing is a no-op",
+        ),
         Check(
             "evidence_volume",
             calls >= min_calls,

@@ -17,9 +17,12 @@ from app.contracts import (
 )
 from app.gateway.providers import (
     PROVIDER_REGISTRY,
+    UnknownProviderError,
     get_chat_provider,
+    provider_from_selection,
     register_provider,
 )
+from app.gateway.routing import ProviderSelection, select_provider
 from app.gateway.service import ModelGateway, tool_specs_from_dicts
 from app.gateway.validation import validate_tool_calls
 
@@ -208,6 +211,105 @@ async def test_provider_swap_is_registry_config_change() -> None:
         assert isinstance(provider, RecordingProvider)
         assert provider.name == "recording"
         assert "recording" in PROVIDER_REGISTRY
+    finally:
+        settings.chat_provider = original
+        PROVIDER_REGISTRY.pop("recording", None)
+
+
+def _healthy_evidence() -> dict:
+    return {
+        "totals": {
+            "calls": 10,
+            "errors": 0,
+            "blocked": 0,
+            "p95_latency_ms": 500.0,
+        },
+        "by_provider_model": [],
+    }
+
+
+def test_routing_fails_closed_without_evidence() -> None:
+    selection = select_provider(configured="mock", evidence=None)
+    assert selection.provider == "mock"
+    assert selection.reason == "single_provider_routing_noop"
+
+
+def test_routing_fails_closed_on_empty_database() -> None:
+    empty = {
+        "totals": {"calls": 0, "errors": 0, "blocked": 0, "p95_latency_ms": 0.0},
+        "by_provider_model": [],
+    }
+    selection = select_provider(configured="mock", evidence=empty)
+    assert selection.provider == "mock"
+    assert selection.reason == "single_provider_routing_noop"
+
+
+def test_routing_multi_provider_fails_closed_without_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
+    monkeypatch.setattr(settings, "local_model_base_url", "http://localhost:11434/v1")
+    selection = select_provider(evidence=None)
+    assert selection.provider == "deepseek"
+    assert selection.reason == "configured_fail_closed_no_evidence"
+
+
+def test_routing_prefers_local_for_cheap_privacy_sensitive_work(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
+    monkeypatch.setattr(settings, "local_model_base_url", "http://localhost:11434/v1")
+    selection = select_provider(
+        configured="deepseek",
+        evidence=_healthy_evidence(),
+        strategy={"mode": "classification"},
+    )
+    assert selection.provider == "local"
+    assert selection.reason == "cheap_privacy_sensitive_routed_local"
+
+
+def test_routing_prefers_deepseek_for_hard_reasoning(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "local")
+    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
+    monkeypatch.setattr(settings, "local_model_base_url", "http://localhost:11434/v1")
+    selection = select_provider(
+        configured="local",
+        evidence=_healthy_evidence(),
+        strategy={"mode": "reasoning"},
+    )
+    assert selection.provider == "deepseek"
+    assert selection.reason == "hard_reasoning_routed_deepseek"
+
+
+@pytest.mark.asyncio
+async def test_gateway_records_explainable_selection_on_envelope() -> None:
+    gateway = ModelGateway(RecordingProvider())
+    call = await gateway.chat(
+        [ChatMessage(role="user", content="hi")],
+        envelope=RequestEnvelope(request_id="sel-1", strategy={}),
+    )
+    assert call.selection == {
+        "provider": "recording",
+        "reason": "configured_provider",
+        "evidence": {},
+    }
+    assert call.envelope.metadata["provider_selection"] == call.selection
+
+
+def test_provider_from_selection_and_unknown_provider_is_loud(monkeypatch) -> None:
+    original = settings.chat_provider
+    try:
+        register_provider("recording", RecordingProvider)
+        provider = provider_from_selection(
+            ProviderSelection(provider="recording", reason="test")
+        )
+        assert provider.name == "recording"
+
+        settings.chat_provider = "no-such-provider"
+        with pytest.raises(UnknownProviderError, match="unknown chat provider"):
+            get_chat_provider()
+        with pytest.raises(UnknownProviderError, match="unknown provider"):
+            provider_from_selection(
+                ProviderSelection(provider="no-such-provider", reason="test")
+            )
     finally:
         settings.chat_provider = original
         PROVIDER_REGISTRY.pop("recording", None)

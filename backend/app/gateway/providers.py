@@ -1,15 +1,47 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 
 import httpx
 
 from app.config import settings
 from app.contracts import ChatMessage, ChatProvider, ChatResult, ToolCall, ToolSpec
+from app.gateway.reliability import (
+    CIRCUIT_BREAKERS,
+    CircuitOpenError,
+    ProviderStreamError,
+    http_timeout,
+    is_transient,
+    max_attempts,
+    wait_for_retry,
+)
+from app.gateway.routing import ProviderSelection
+from app.gateway.streaming import ChatStreamChunk, StreamingChatProvider
+
+logger = logging.getLogger("ev.gateway.providers")
 
 
-class EchoProvider:
+class UnknownProviderError(ValueError):
+    """The configured chat provider is not registered.
+
+    Raised instead of silently falling back to ``echo``: a system that
+    misconfigures its brain must say so loudly rather than lie about itself.
+    """
+
+
+def _stream_text_chunks(text: str, *, size: int = 24, model: str | None) -> list[ChatStreamChunk]:
+    """Deterministic offline stream used by echo/mock providers."""
+
+    return [
+        ChatStreamChunk(text=text[i : i + size], model=model)
+        for i in range(0, len(text), size)
+    ] or [ChatStreamChunk(text="", model=model)]
+
+
+class EchoProvider(StreamingChatProvider):
     """Offline echo provider for zero-config local runs."""
 
     name = "echo"
@@ -42,11 +74,31 @@ class EchoProvider:
     ) -> ChatResult:
         return await self.chat(messages, model=model, temperature=temperature)
 
+    async def stream_chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[ChatStreamChunk]:
+        user_text = next((m.content for m in reversed(messages) if m.role == "user"), "")
+        text = f"EV: I heard you. (echo provider — '{user_text[:120]}')"
+        for chunk in _stream_text_chunks(text, model=model or self.model):
+            yield chunk
+        yield ChatStreamChunk(
+            usage={
+                "prompt_tokens": sum(len(m.content) // 4 for m in messages),
+                "completion_tokens": 8,
+            },
+            model=model or self.model,
+            done=True,
+        )
+
     async def list_models(self) -> list[str]:
         return [self.model]
 
 
-class MockProvider:
+class MockProvider(StreamingChatProvider):
     """Deterministic provider for tests."""
 
     name = "mock"
@@ -79,11 +131,28 @@ class MockProvider:
     ) -> ChatResult:
         return await self.chat(messages, model=model, temperature=temperature)
 
+    async def stream_chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[ChatStreamChunk]:
+        user_text = next((m.content for m in reversed(messages) if m.role == "user"), "")
+        text = f"EV: Mock reply. Last user message: {user_text[:100]}"
+        for chunk in _stream_text_chunks(text, model=model or self.model):
+            yield chunk
+        yield ChatStreamChunk(
+            usage={"prompt_tokens": 10, "completion_tokens": 5},
+            model=model or self.model,
+            done=True,
+        )
+
     async def list_models(self) -> list[str]:
         return [self.model]
 
 
-class DeepSeekProvider:
+class DeepSeekProvider(StreamingChatProvider):
     """DeepSeek via the OpenAI-compatible chat completions API."""
 
     name = "deepseek"
@@ -145,6 +214,9 @@ class DeepSeekProvider:
         temperature: float,
         tools: Sequence[ToolSpec] | None = None,
     ) -> ChatResult:
+        breaker = CIRCUIT_BREAKERS.get(self.name)
+        if not breaker.allow_request():
+            raise CircuitOpenError(self.name, breaker.retry_after_seconds())
         payload: dict = {
             "model": model or self.default_model,
             "messages": [self._message_payload(m) for m in messages],
@@ -162,13 +234,29 @@ class DeepSeekProvider:
                 }
                 for t in tools
             ]
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(
-                f"{self.base_url}/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
+        attempts = max_attempts()
+        for attempt in range(attempts):
+            try:
+                async with httpx.AsyncClient(timeout=http_timeout()) as client:
+                    resp = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers=self._headers(),
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+                breaker.record_success()
+                break
+            except (httpx.TransportError, httpx.HTTPStatusError) as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                transient = is_transient(exc, status_code)
+                if transient:
+                    breaker.record_failure()
+                    if attempt + 1 < attempts:
+                        await wait_for_retry(attempt)
+                        continue
+                raise
+        else:
+            raise RuntimeError(f"{self.name} request failed after {attempts} attempts")
         data = resp.json()
         choice = data["choices"][0]["message"]
         tool_calls = []
@@ -207,6 +295,136 @@ class DeepSeekProvider:
     ) -> ChatResult:
         return await self._complete(messages, model=model, temperature=temperature, tools=tools)
 
+    async def stream_chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[ChatStreamChunk]:
+        """Stream one OpenAI-compatible completion, delta by delta.
+
+        The upstream ``httpx`` stream is closed in ``finally`` (and by the
+        ``async with`` exit), so cancelling this generator — including a client
+        disconnect — tears down the upstream connection instead of leaking it.
+        Connection failures retry with jittered backoff until the first byte;
+        a mid-stream upstream failure is raised as a typed
+        :class:`ProviderStreamError` instead of truncating success.
+        """
+
+        breaker = CIRCUIT_BREAKERS.get(self.name)
+        if not breaker.allow_request():
+            raise CircuitOpenError(self.name, breaker.retry_after_seconds())
+        resolved_model = model or self.default_model
+        payload: dict = {
+            "model": resolved_model,
+            "messages": [self._message_payload(m) for m in messages],
+            "temperature": temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        tool_buffers: dict[int, dict[str, str]] = {}
+        final_usage: dict = {}
+        finish_reason: str | None = None
+        attempts = max_attempts()
+        attempt = 0
+        started_stream = False
+        while True:
+            try:
+                async with (
+                    httpx.AsyncClient(timeout=http_timeout()) as client,
+                    client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        headers=self._headers(),
+                        json=payload,
+                    ) as resp,
+                ):
+                    try:
+                        resp.raise_for_status()
+                    except httpx.HTTPStatusError as exc:
+                        status_code = getattr(exc.response, "status_code", None)
+                        transient = is_transient(exc, status_code)
+                        if transient:
+                            breaker.record_failure()
+                            if attempt + 1 < attempts:
+                                attempt += 1
+                                await wait_for_retry(attempt - 1)
+                                continue
+                        raise
+                    try:
+                        async for line in resp.aiter_lines():
+                            started_stream = True
+                            if not line.startswith("data:"):
+                                continue
+                            data = line[5:].strip()
+                            if not data or data == "[DONE]":
+                                break
+                            try:
+                                event = json.loads(data)
+                            except json.JSONDecodeError:
+                                continue
+                            choice = (event.get("choices") or [{}])[0]
+                            delta = choice.get("delta") or {}
+                            chunk_model = event.get("model") or resolved_model
+                            text = delta.get("content")
+                            if text:
+                                yield ChatStreamChunk(text=text, model=chunk_model)
+                            for tool_delta in delta.get("tool_calls") or []:
+                                index = int(tool_delta.get("index", 0))
+                                buf = tool_buffers.setdefault(
+                                    index, {"id": "", "name": "", "arguments": ""}
+                                )
+                                if tool_delta.get("id"):
+                                    buf["id"] = tool_delta["id"]
+                                fn = tool_delta.get("function") or {}
+                                if fn.get("name"):
+                                    buf["name"] = fn["name"]
+                                buf["arguments"] += fn.get("arguments") or ""
+                            if event.get("usage"):
+                                final_usage = event["usage"]
+                            if choice.get("finish_reason"):
+                                finish_reason = choice["finish_reason"]
+                    finally:
+                        await resp.aclose()
+                breaker.record_success()
+                break
+            except Exception as exc:  # noqa: BLE001 - typed mid-stream boundary
+                if started_stream:
+                    breaker.record_failure()
+                    raise ProviderStreamError(
+                        f"upstream stream failed after partial output: {exc}"
+                    ) from exc
+                if isinstance(exc, (httpx.TransportError, httpx.RemoteProtocolError)):
+                    breaker.record_failure()
+                    if attempt + 1 < attempts:
+                        attempt += 1
+                        await wait_for_retry(attempt - 1)
+                        continue
+                raise
+        tool_calls: list[ToolCall] = []
+        for index, buf in tool_buffers.items():
+            arguments: dict = {}
+            if buf["arguments"]:
+                try:
+                    arguments = json.loads(buf["arguments"])
+                except json.JSONDecodeError:
+                    arguments = {"raw": buf["arguments"]}
+            tool_calls.append(
+                ToolCall(
+                    id=buf["id"] or f"call-{index}",
+                    name=buf["name"],
+                    arguments=arguments,
+                )
+            )
+        yield ChatStreamChunk(
+            usage=final_usage,
+            model=resolved_model,
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            done=True,
+        )
+
     async def list_models(self) -> list[str]:
         return [self.default_model]
 
@@ -237,7 +455,10 @@ class LocalModelProvider(DeepSeekProvider):
             default_model
             or os.getenv("EV_LOCAL_MODEL_NAME")
             or settings.local_model_name
-            or "llama3"
+            # CORTEX local brain: Qwen3-1.7B Q4 via Ollama. The env var is the
+            # supported override today; the settings default stays untouched
+            # (shared config) pending the Agent 2 registry/default change.
+            or "qwen3:1.7b"
         )
         super().__init__(
             base_url=resolved_base,
@@ -277,5 +498,31 @@ def get_chat_provider() -> ChatProvider:
     name = settings.chat_provider
     factory = PROVIDER_REGISTRY.get(name)
     if factory is None:
-        return PROVIDER_REGISTRY["echo"]()
+        known = ", ".join(sorted(PROVIDER_REGISTRY))
+        logger.error(
+            "EV_CHAT_PROVIDER=%r is not a registered provider (known: %s); "
+            "refusing to run instead of silently degrading to echo",
+            name,
+            known,
+        )
+        raise UnknownProviderError(
+            f"unknown chat provider {name!r}; set EV_CHAT_PROVIDER to one of: {known}"
+        )
+    return factory()
+
+
+def provider_from_selection(selection: ProviderSelection) -> ChatProvider:
+    """Instantiate the provider chosen by the routing policy."""
+
+    factory = PROVIDER_REGISTRY.get(selection.provider)
+    if factory is None:
+        known = ", ".join(sorted(PROVIDER_REGISTRY))
+        logger.error(
+            "routing selected provider %r which is not registered (known: %s)",
+            selection.provider,
+            known,
+        )
+        raise UnknownProviderError(
+            f"routing selected unknown provider {selection.provider!r}; known: {known}"
+        )
     return factory()

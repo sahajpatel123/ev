@@ -82,6 +82,11 @@ async def test_provider_factory_fails_closed(monkeypatch) -> None:
     assert isinstance(get_search_provider(), MockSearchProvider)
 
 
+async def test_unknown_search_provider_fails_closed(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "search_provider", "does-not-exist")
+    assert get_search_provider() is None  # never fabricates a provider or results
+
+
 async def test_search_web_tool_dispatch_with_citations(
     client: AsyncClient, monkeypatch
 ) -> None:

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 from httpx import AsyncClient
 
 from app.config import settings
 from app.contracts import ChatResult, ToolCall
 from app.gateway.providers import register_provider
+from app.gateway.reliability import CIRCUIT_BREAKERS
 from app.models import ModelCallLog
 from app.services.model_call import model_call_stats
 
@@ -168,3 +171,77 @@ async def test_model_call_stats_aggregates_routing_evidence(
     assert endpoint_stats["window_hours"] == 24
     endpoint_providers = {b["provider"] for b in endpoint_stats["by_provider_model"]}
     assert endpoint_providers == {"mock", "deepseek"}
+
+
+async def test_memory_only_endpoints_work_with_provider_unreachable(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """EV stays a usable offline second brain when the reasoning API is down."""
+
+    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
+    monkeypatch.setattr(settings, "deepseek_base_url", "http://127.0.0.1:9")
+    monkeypatch.setattr(settings, "model_max_retries", 0)
+    CIRCUIT_BREAKERS.reset("deepseek")
+
+    resp = await client.post(
+        "/v1/events",
+        json={
+            "event_type": "note",
+            "text": "offline memory still works",
+            "source": "test",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+    timeline = await client.get("/v1/timeline")
+    assert timeline.status_code == 200, timeline.text
+    assert any(
+        event["content"].get("text") == "offline memory still works"
+        for event in timeline.json()["events"]
+    )
+
+    memories = await client.get("/v1/memories")
+    assert memories.status_code == 200, memories.text
+
+    recall = await client.get("/v1/recall/week", params={"week_start": "2026-08-12"})
+    assert recall.status_code == 200, recall.text
+
+    audit = await client.get("/v1/gateway/calls")
+    assert audit.status_code == 200, audit.text
+
+    missing = await client.get(f"/v1/audit/{uuid4()}")
+    assert missing.status_code == 404  # route functional, memory absent
+
+    chat = await client.post("/v1/chat", json={"message": "reason please"})
+    assert chat.status_code == 503, chat.text
+    assert "unavailable" in chat.json()["detail"]
+
+
+async def test_chat_refuses_when_monthly_cost_cap_exceeded(
+    client: AsyncClient, db_session, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
+    monkeypatch.setattr(settings, "deepseek_base_url", "http://127.0.0.1:9")
+    monkeypatch.setattr(settings, "model_max_retries", 0)
+    monkeypatch.setattr(settings, "monthly_cost_cap_usd", 40.0)
+    monkeypatch.setattr(settings, "cost_cap_enabled", True)
+    db_session.add(
+        ModelCallLog(
+            request_id="cost-cap-usage",
+            actor="tester",
+            provider="deepseek",
+            model="deepseek-test",
+            status="ok",
+            latency_ms=10,
+            prompt_tokens=200_000_000,  # ≈ $54 at $0.27/1M input
+            completion_tokens=0,
+            envelope={},
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.post("/v1/chat", json={"message": "expensive thought"})
+    assert resp.status_code == 503, resp.text
+    assert "cost cap" in resp.json()["detail"]

@@ -8,6 +8,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.gateway.costs import actual_cost_usd
 from app.gateway.service import GatewayCall
 from app.models import ModelCallLog
 from app.utils.text import utcnow
@@ -25,6 +26,15 @@ async def log_model_call(
 
     usage = call.result.usage or {}
     envelope_hash = call.envelope.metadata.get("envelope_hash")
+    cost_usd = actual_cost_usd(
+        provider=call.provider,
+        prompt_tokens=int(usage.get("prompt_tokens") or 0),
+        completion_tokens=int(usage.get("completion_tokens") or 0),
+    )
+    envelope_dict = call.envelope.to_dict(memory_text_limit=MEMORY_TEXT_LOG_LIMIT)
+    envelope_dict.setdefault("metadata", {})["cost_usd"] = cost_usd
+    if call.degraded:
+        envelope_dict["metadata"]["degraded"] = True
     row = ModelCallLog(
         request_id=call.request_id,
         actor=actor,
@@ -35,7 +45,7 @@ async def log_model_call(
         prompt_tokens=int(usage.get("prompt_tokens") or 0),
         completion_tokens=int(usage.get("completion_tokens") or 0),
         tool_calls=call.tool_calls_dict(),
-        envelope=call.envelope.to_dict(memory_text_limit=MEMORY_TEXT_LOG_LIMIT),
+        envelope=envelope_dict,
         envelope_hash=envelope_hash,
         error=call.error,
     )
@@ -63,6 +73,11 @@ def _summarize(rows: list[ModelCallLog]) -> dict:
     n = len(rows)
     latencies = sorted(r.latency_ms for r in rows)
     p95 = latencies[min(n - 1, max(0, math.ceil(0.95 * n) - 1))] if n else 0.0
+    media_refs = [
+        ref
+        for row in rows
+        for ref in ((row.envelope or {}).get("media_refs") or [])
+    ]
     return {
         "calls": n,
         "errors": sum(1 for r in rows if r.status == "error"),
@@ -71,6 +86,9 @@ def _summarize(rows: list[ModelCallLog]) -> dict:
         "p95_latency_ms": round(p95, 1) if n else 0.0,
         "prompt_tokens": sum(r.prompt_tokens or 0 for r in rows),
         "completion_tokens": sum(r.completion_tokens or 0 for r in rows),
+        "media_refs": len(media_refs),
+        "raw_media_sent": sum(1 for ref in media_refs if ref.get("raw")),
+        "derived_media_only": sum(1 for ref in media_refs if not ref.get("raw")),
     }
 
 

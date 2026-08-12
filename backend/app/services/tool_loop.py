@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.contracts import ChatMessage, ToolSpec
 from app.ev import tools as ev_tools
+from app.gateway.costs import check_cost_cap
 from app.gateway.service import GatewayCall, ModelGateway
 from app.services.model_call import log_model_call
 
@@ -37,6 +38,15 @@ async def run_tool_loop(
 ) -> GatewayCall:
     """Run the model/tool loop for one turn with a hard round cap."""
     current_messages = list(messages)
+
+    async def _cost_guard() -> None:
+        await check_cost_cap(
+            session,
+            provider=gateway.provider.name,
+            messages=current_messages,
+        )
+
+    gateway.cost_guard = _cost_guard
     call = await gateway.chat(
         current_messages,
         envelope=envelope,
@@ -46,6 +56,12 @@ async def run_tool_loop(
         allow_sensitive_tools=allow_sensitive_tools,
     )
     await log_model_call(session, call=call, actor=actor)
+    if call.status == "degraded":
+        call.result.text = (
+            "EV's reasoning provider is temporarily unavailable or over its "
+            "monthly budget. Memory, timeline, and recall still work offline."
+        )
+        return call
 
     for _ in range(MAX_TOOL_ROUNDS):
         executable = [

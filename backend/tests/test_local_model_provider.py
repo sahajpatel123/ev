@@ -88,3 +88,12 @@ def test_local_provider_registered_and_defaults(monkeypatch) -> None:
     provider = get_chat_provider()
     assert provider.name == "local"
     assert provider.default_model == "llama3"
+
+
+def test_local_provider_uses_qwen_brain_when_configured(monkeypatch) -> None:
+    """CORTEX local brain: Qwen3-1.7B Q4 via the EV_LOCAL_MODEL_NAME override."""
+
+    monkeypatch.setenv("EV_LOCAL_MODEL_NAME", "qwen3:1.7b")
+    provider = LocalModelProvider()
+    assert provider.default_model == "qwen3:1.7b"
+    assert provider.name == "local"
