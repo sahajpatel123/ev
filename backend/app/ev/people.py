@@ -5,7 +5,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Entity, Event, Memory, MemoryEntity
+from app.models import Entity, Event, Memory, MemoryEntity, RecognitionLog
 from app.schemas import PersonWhereaboutsOut
 from app.utils.text import normalize_text
 
@@ -81,6 +81,171 @@ async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
                 }
             )
 
+    # Face-free identity hints: user-confirmed recognition sightings from
+    # user-owned media, each traceable to its perception event + attachment.
+    sightings: list[dict] = []
+    if entity is not None:
+        recognition_rows = (
+            await session.execute(
+                select(RecognitionLog)
+                .where(
+                    RecognitionLog.entity_id == entity.id,
+                    RecognitionLog.source == "user",
+                )
+                .order_by(RecognitionLog.created_at.desc())
+                .limit(10)
+            )
+        ).scalars().all()
+        sightings = [
+            {
+                "recognition_id": str(row.id),
+                "label": row.label,
+                "confidence": row.confidence,
+                "attachment_id": str(row.attachment_id) if row.attachment_id else None,
+                "perception_event_id": str(row.live_event_id) if row.live_event_id else None,
+                "confirmed_at": row.created_at.isoformat(),
+            }
+            for row in recognition_rows
+        ]
+
+    # AGENT 7 ROSTER fusion: enrolled identity, face/voice sightings, biodata.
+    enrolled: dict | None = None
+    face_sightings: list[dict] = []
+    voice_sightings: list[dict] = []
+    public_biodata: dict | None = None
+    biodata_merged = False
+    if entity is not None:
+        from app.models import FaceEnrollment
+
+        enrollment = (
+            await session.execute(
+                select(FaceEnrollment).where(
+                    FaceEnrollment.entity_id == entity.id,
+                    FaceEnrollment.is_current.is_(True),
+                    FaceEnrollment.status == "active",
+                    FaceEnrollment.redacted.is_(False),
+                )
+            )
+        ).scalar_one_or_none()
+        if enrollment is not None:
+            enrolled = {
+                "id": str(enrollment.id),
+                "version": enrollment.version,
+                "algorithm": enrollment.algorithm,
+                "embedding_dim": enrollment.embedding_dim,
+                "threshold": enrollment.threshold,
+                "sample_count": enrollment.sample_count,
+                "status": enrollment.status,
+                "created_at": enrollment.created_at.isoformat(),
+            }
+
+        face_rows = (
+            await session.execute(
+                select(RecognitionLog)
+                .where(
+                    RecognitionLog.entity_id == entity.id,
+                    RecognitionLog.source.in_(("model", "user")),
+                )
+                .order_by(RecognitionLog.created_at.desc())
+                .limit(10)
+            )
+        ).scalars().all()
+        face_sightings = [
+            {
+                "recognition_id": str(row.id),
+                "label": row.label,
+                "confidence": row.confidence,
+                "confirmed": row.source == "user",
+                "source": row.source,
+                "attachment_id": str(row.attachment_id) if row.attachment_id else None,
+                "live_event_id": str(row.live_event_id) if row.live_event_id else None,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in face_rows
+        ]
+
+        voice_rows = (
+            await session.execute(
+                select(RecognitionLog)
+                .where(
+                    RecognitionLog.entity_id == entity.id,
+                    RecognitionLog.source.in_(("voice", "speaker")),
+                )
+                .order_by(RecognitionLog.created_at.desc())
+                .limit(10)
+            )
+        ).scalars().all()
+        voice_items = [
+            {
+                "recognition_id": str(row.id),
+                "label": row.label,
+                "confidence": row.confidence,
+                "source": row.source,
+                "attachment_id": str(row.attachment_id) if row.attachment_id else None,
+                "live_event_id": str(row.live_event_id) if row.live_event_id else None,
+                "occurred_at": row.created_at.isoformat(),
+                "provenance": "recognition_log",
+            }
+            for row in voice_rows
+        ]
+        voice_events = list(
+            (
+                await session.execute(
+                    select(Event)
+                    .where(
+                        Event.source == "voice",
+                        Event.tombstoned_at.is_(None),
+                    )
+                    .order_by(Event.occurred_at.desc())
+                    .limit(500)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for event in voice_events:
+            if normalized not in normalize_text((event.content or {}).get("text") or ""):
+                continue
+            voice_items.append(
+                {
+                    "event_id": str(event.id),
+                    "label": entity.name,
+                    "confidence": None,
+                    "source": event.source,
+                    "occurred_at": event.occurred_at.isoformat(),
+                    "provenance": "event",
+                }
+            )
+        voice_items.sort(key=lambda item: str(item["occurred_at"]), reverse=True)
+        voice_sightings = voice_items[:10]
+
+    # Public-figure biodata is surfaced only for people who are not enrolled,
+    # so a public figure is never silently merged into a private identity.
+    if entity is None or enrolled is None:
+        try:
+            from app.people.biodata import BiodataResolver
+
+            resolver = BiodataResolver(session)
+            biodata_result = await resolver.resolve(name)
+            schema = await resolver.to_schema(biodata_result)
+            public_biodata = schema.model_dump(mode="json")
+            if entity is not None:
+                from app.models import PublicFigureCache
+
+                cache_row = (
+                    await session.execute(
+                        select(PublicFigureCache).where(
+                            PublicFigureCache.entity_id == entity.id,
+                            PublicFigureCache.confirmed.is_(True),
+                        )
+                    )
+                ).scalar_one_or_none()
+                biodata_merged = cache_row is not None
+        except Exception:
+            # Biodata is enrichment only; a provider outage or missing module
+            # must never block the whereabouts answer.
+            public_biodata = None
+
     last_seen = None
     if mentions:
         latest = mentions[0]
@@ -90,6 +255,14 @@ async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
             "source": latest.source,
             "text": ((latest.content or {}).get("text") or "")[:240],
         }
+    elif sightings:
+        latest_sighting = sightings[0]
+        last_seen = {
+            "occurred_at": latest_sighting["confirmed_at"],
+            "event_id": latest_sighting["recognition_id"],
+            "source": "vision",
+            "text": f"Confirmed in a shared attachment ({latest_sighting['label']}).",
+        }
 
     return PersonWhereaboutsOut(
         name=name,
@@ -97,6 +270,12 @@ async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
         relationship=relationship,
         last_seen=last_seen,
         recent_mentions=recent_mentions,
+        sightings=sightings,
         related_memories=related_memories,
         total_events=len(mentions),
+        enrolled=enrolled,
+        face_sightings=face_sightings,
+        voice_sightings=voice_sightings,
+        public_biodata=public_biodata,
+        biodata_merged=biodata_merged,
     )
