@@ -213,48 +213,39 @@ Decision log: [`DECISIONS.md`](DECISIONS.md) DC-14.
 ## 12. Post-fleet baseline (2026-08-12)
 
 Regression reference for the follow-up wave. Numbers below are the measured
-state after the full fleet reported and before this tree was committed.
+state of the committed tree (follow-up refresh after contract regeneration and
+ML eval artifacts landed; at fleet-report time the tree measured 977 collected,
+256 mypy files, 275/298 OpenAPI paths/operations, and 18/18 gates with 5
+skipped).
 
 | Metric | Value | Evidence |
 | --- | --- | --- |
-| Tests collected | 977 | `uv run pytest --collect-only -q` |
-| Test result | 977 collected; suite green (0 failures) | `uv run pytest -q` |
-| mypy | 0 issues in 256 source files | `uv run mypy app clients` |
+| Tests collected | 1028 | `uv run pytest --collect-only -q` |
+| Test result | 1023 passed, 5 skipped, 0 failed | `uv run pytest -q` |
+| mypy | 0 issues in 262 source files | `uv run mypy app clients` |
 | ruff | 0 issues | `uv run ruff check app clients tests` |
-| OpenAPI paths / operations | 275 / 298 | generated from `app.main` OpenAPI |
-| Locked contract paths / operations | 271 / 294 | `backend/eval/contract_v1.json` |
-| Contract gate | PASS — all 294 locked endpoints present; no unlocked /v1 routes | `eval_gates` api_contract gate |
-| Eval gates | 18/18 passed · 106/106 checks · 5 skipped · exit 0 | `uv run python -m app.scripts.eval_gates --report eval/last-run.json` |
+| OpenAPI paths / operations | 276 / 299 | generated from `app.main` OpenAPI |
+| Locked contract paths / operations | 272 / 295 | `backend/eval/contract_v1.json` |
+| Contract gate | PASS — all 295 locked endpoints present; no unlocked /v1 routes | `eval_gates` api_contract gate |
+| Eval gates | 18/18 passed · 124/124 checks · 3 skipped · exit 0 | `uv run python -m app.scripts.eval_gates --report eval/last-run.json` |
 | Alembic head | `c0d0e0f0a7b1` (mergepoint) | `uv run alembic heads` |
 | Migrations | 7 scripts; SQLite `alembic upgrade head` clean; `CREATE EXTENSION vector` PostgreSQL-guarded | `alembic upgrade head` on fresh SQLite |
 
-### 5 skip reasons (verbatim)
+### Skip reasons (verbatim)
 
-1. **asr_quality**
-
-   ```text
-   no eval artifact at /Users/sahajpatel/Code/ev/backend/eval/ml/asr_quality.json; run Agent 4's ASR eval with real weights and write {"schema":"ev.asr.eval.v1","provider":"parakeet-eou-120m","degraded":false,"wer_clean":0.07,"wer_owner_speech":0.10}
-   ```
-
-2. **speaker_security**
+1. **speaker_security**
 
    ```text
-   no eval artifact at /Users/sahajpatel/Code/ev/backend/eval/ml/speaker_security.json; run `python -m app.voice.speaker eval --owner-dir ... --impostor-dir ...` with real CAM++/ECAPA weights and write the JSON to the artifact path
+   SKIPPED: artifact reports provider='profile-v1' degraded (weights absent / deterministic double); a test double is never a measured quality number. Run the owning agent's eval with real weights and rewrite /Users/sahajpatel/Code/ev/backend/eval/ml/speaker_security.json.
    ```
 
-3. **retrieval_quality**
-
-   ```text
-   no eval artifact at /Users/sahajpatel/Code/ev/backend/eval/ml/retrieval_quality.json; run `uv run python -m eval.retrieval.cli retrieval --out eval/ml/retrieval_quality.json` against a real embedding model
-   ```
-
-4. **face_recognition**
+2. **face_recognition**
 
    ```text
    no eval artifact at /Users/sahajpatel/Code/ev/backend/eval/ml/face_recognition.json; run `python -m app.people.eval --people-dir ... --strangers-dir ... --report eval/ml/face_recognition.json` with the SFace model and consented photo sets
    ```
 
-5. **wake_reliability**
+3. **wake_reliability**
 
    ```text
    no eval artifact at /Users/sahajpatel/Code/ev/backend/eval/ml/wake_reliability.json; run Agent 3's wake eval against the trained openWakeWord head ({"provider":"openwakeword","degraded":false,"false_accepts_per_12h":0.0,"recall":0.95,"hours_audio":12})
