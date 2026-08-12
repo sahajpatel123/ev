@@ -108,25 +108,25 @@ clean.
 | # | Codename | Status |
 | --- | --- | --- |
 | 1 | CONDUCTOR | done |
-| 2 | FOUNDRY | in_progress |
-| 3 | EARS | idle |
-| 4 | VOICE | idle |
-| 5 | SENTRY | idle |
-| 6 | EYES | idle |
-| 7 | ROSTER | idle |
-| 8 | SYNAPSE | idle |
-| 9 | MNEMO | idle |
-| 10 | CORTEX | idle |
-| 11 | FORGE | idle |
-| 12 | CONDUIT | idle |
-| 13 | AMBIENT | idle |
-| 14 | PULSE | idle |
-| 15 | ORACLE | idle |
-| 16 | CONSCIENCE | idle |
-| 17 | WORKBENCH | idle |
-| 18 | SUIT | idle |
-| 19 | VAULT | idle |
-| 20 | LAUNCH | idle |
+| 2 | FOUNDRY | done |
+| 3 | EARS | done |
+| 4 | VOICE | done |
+| 5 | SENTRY | done |
+| 6 | EYES | done |
+| 7 | ROSTER | done |
+| 8 | SYNAPSE | done |
+| 9 | MNEMO | done |
+| 10 | CORTEX | done |
+| 11 | FORGE | done |
+| 12 | CONDUIT | done |
+| 13 | AMBIENT | done |
+| 14 | PULSE | done |
+| 15 | ORACLE | done |
+| 16 | CONSCIENCE | done |
+| 17 | WORKBENCH | done |
+| 18 | SUIT | done |
+| 19 | VAULT | done |
+| 20 | LAUNCH | done |
 
 ## 6. Communication and merge order
 
