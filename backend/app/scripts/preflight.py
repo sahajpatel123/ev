@@ -37,8 +37,52 @@ def _flag(status: str) -> str:
     )
 
 
+def _check_opencode() -> tuple[str, str, str]:
+    """--- AGENT OPENCODE --- chat via a local `opencode serve` session API."""
+
+    import httpx
+
+    from app.gateway.opencode import api_key_status
+
+    key_present, key_source = api_key_status()
+    label = f"opencode({settings.opencode_provider_id}/{settings.opencode_model})"
+    start = (
+        "`launchctl kickstart -k gui/$UID/ev.opencode` (plist: "
+        "launchd/ev.opencode.plist) or `opencode serve --hostname 127.0.0.1 --port 4096`"
+    )
+    try:
+        response = httpx.get(f"{settings.opencode_base_url}/global/health", timeout=3.0)
+        healthy = response.status_code == 200 and response.json().get("healthy") is True
+        version = response.json().get("version", "?")
+    except Exception:  # noqa: BLE001 - preflight must not crash
+        healthy, version = False, "?"
+    if not healthy:
+        return (
+            "PARTIAL",
+            label,
+            f"server unreachable at {settings.opencode_base_url}; start it with {start}",
+        )
+    if not key_present:
+        return (
+            "PARTIAL",
+            label,
+            f"server {version} is up but no OPENCODE_API_KEY is visible to EV; put it in "
+            f"{settings.opencode_env_file} (chmod 600) or EV's .env, then restart it with "
+            f"{start}",
+        )
+    return (
+        "REAL",
+        label,
+        f"opencode {version} reachable, key from {key_source}, agent "
+        f"{settings.opencode_agent} (ephemeral sessions: "
+        f"{not settings.opencode_session_reuse})",
+    )
+
+
 def _check_chat() -> tuple[str, str, str]:
     provider = settings.chat_provider
+    if provider == "opencode":
+        return _check_opencode()
     if provider == "deepseek":
         if settings.deepseek_api_key:
             return "REAL", "deepseek", "DeepSeek API key set"

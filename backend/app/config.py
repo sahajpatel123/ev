@@ -392,6 +392,36 @@ class Settings(BaseSettings):
     # before a provider call (actual usage is always measured after the call).
     model_estimated_max_completion_tokens: int = 4096
 
+    # --- AGENT OPENCODE (append-only) ---------------------------------------
+    # `opencode serve` as a chat provider (EV_CHAT_PROVIDER=opencode). The
+    # server is session based, not OpenAI-compatible; see app/gateway/opencode.py.
+    opencode_base_url: str = "http://localhost:4096"
+    opencode_provider_id: str = "opencode-go"
+    opencode_model: str = "deepseek-v4-flash"
+    # EV's own minimal agent (.opencode/agents/ev-minimal.md): no tools and a
+    # one-line prompt, because every built-in opencode agent injects a 6.7k–14.7k
+    # token coding preamble into each request.
+    opencode_agent: str = "ev-minimal"
+    # Sampling lives in the agent definition — the session API has no
+    # temperature field. Keep this in sync with the agent markdown.
+    opencode_agent_temperature: float = 0.7
+    # False = one ephemeral session per request, deleted afterwards, so opencode
+    # holds no conversation memory and cannot inflate cost without bound.
+    opencode_session_reuse: bool = False
+    opencode_session_title: str = "ev"
+    # Optional EV-side copy of the credential; the server needs its own.
+    opencode_api_key: str | None = None
+    # Also sourced by launchd/ev.opencode.plist (launchd never reads ~/.zshrc).
+    opencode_env_file: str = "~/.config/ev/opencode.env"
+    opencode_require_api_key: bool = True
+    opencode_read_timeout_seconds: float = 180.0
+    opencode_stream_timeout_seconds: float = 300.0
+    # Structured-output emulation of tool calling (off by default: the session
+    # API accepts no function definitions).
+    opencode_tool_emulation: bool = False
+    opencode_format_retries: int = 1
+    # --- END AGENT OPENCODE ---
+
 
 @lru_cache
 def get_settings() -> Settings:

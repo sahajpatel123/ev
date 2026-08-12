@@ -150,3 +150,34 @@ prune:
 
 prune-dry-run:
 	$(call backend-run, uv run python -m app.scripts.prune --dry-run)
+
+# --- AGENT OPENCODE (append-only) -------------------------------------------
+# `opencode serve` as EV's chat provider. Kept as separate targets because
+# native-up/native-down and launchd/install.sh belong to Agents 20/14; see the
+# dependency note in docs/OPENCODE.md to fold ev.opencode into their lists.
+.PHONY: opencode-up opencode-down opencode-status opencode-agent-cost
+
+opencode-up:
+	@mkdir -p "$$HOME/Library/Logs/ev"
+	@plutil -lint launchd/ev.opencode.plist >/dev/null
+	@cp launchd/ev.opencode.plist "$$HOME/Library/LaunchAgents/"
+	@launchctl bootout "gui/$$UID/ev.opencode" 2>/dev/null || true
+	@sleep 1
+	@launchctl bootstrap "gui/$$UID" "$$HOME/Library/LaunchAgents/ev.opencode.plist"
+	@launchctl enable "gui/$$UID/ev.opencode"
+	@echo "[ev] ev.opencode loaded; logs: $$HOME/Library/Logs/ev/opencode.*.log"
+
+opencode-down:
+	@launchctl bootout "gui/$$UID/ev.opencode" 2>/dev/null || true
+	@rm -f "$$HOME/Library/LaunchAgents/ev.opencode.plist"
+	@echo "[ev] ev.opencode removed"
+
+opencode-status:
+	@launchctl list | grep 'ev\.opencode' || echo "ev.opencode not loaded"
+	@curl -s -m 3 http://localhost:4096/global/health || echo "opencode server not reachable"
+	@echo
+	@curl -s -m 10 http://localhost:4096/session | head -c 400 || true
+	@echo
+
+opencode-agent-cost:
+	$(call backend-run, uv run python -m app.scripts.opencode_agent_cost)

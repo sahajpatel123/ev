@@ -494,6 +494,20 @@ def register_provider(name: str, factory: Callable[[], ChatProvider]) -> None:
     PROVIDER_REGISTRY[name] = factory
 
 
+# --- AGENT OPENCODE (append-only) -------------------------------------------
+# `opencode serve` speaks a session API, not OpenAI chat completions, so the
+# provider lives in its own module. Imported lazily inside the factory so a
+# broken/absent opencode install can never break importing this registry.
+def _opencode_factory() -> ChatProvider:
+    from app.gateway.opencode import OpenCodeProvider
+
+    return OpenCodeProvider()
+
+
+register_provider("opencode", _opencode_factory)
+# --- END AGENT OPENCODE ---
+
+
 def get_chat_provider() -> ChatProvider:
     name = settings.chat_provider
     factory = PROVIDER_REGISTRY.get(name)

@@ -312,3 +312,33 @@ legacy `EV_VOICE_ASR_MODEL` / `EV_VOICE_TTS_MODEL` values, which remain for
 The quiet-hours window is `EV_QUIET_HOURS_START`/`EV_QUIET_HOURS_END` and the
 per-day cap is `EV_DAILY_ALERT_BUDGET`; both predate Agent 14 and remain the
 single source of truth.
+
+## Agent OPENCODE — chat via the local `opencode` server (additive)
+
+`EV_CHAT_PROVIDER=opencode` routes reasoning through a headless
+`opencode serve` instance, which reaches hosted models with the owner's
+`OPENCODE_API_KEY` (no separate DeepSeek key needed). The server is **session
+based and not OpenAI-compatible**: there are no `/v1` routes. See
+`docs/OPENCODE.md` for the transport, cost measurements and known limits.
+
+| Key | Default | Values | Purpose |
+| --- | --- | --- | --- |
+| `EV_OPENCODE_BASE_URL` | `http://localhost:4096` | URL | Headless `opencode serve` address (localhost only; the server has no auth by default) |
+| `EV_OPENCODE_PROVIDER_ID` | `opencode-go` | string | opencode provider id (`opencode models` lists them) |
+| `EV_OPENCODE_MODEL` | `deepseek-v4-flash` | string | Model id within that provider |
+| `EV_OPENCODE_AGENT` | `ev-minimal` | string | opencode agent to run. EV ships `.opencode/agents/ev-minimal.md` (no tools, one-line prompt): built-in agents add 6.7k–14.7k preamble tokens per call, `ev-minimal` adds ~200 |
+| `EV_OPENCODE_AGENT_TEMPERATURE` | `0.7` | float | Mirror of the temperature declared in the agent markdown — the session API has no temperature field, so EV cannot set it per request |
+| `EV_OPENCODE_SESSION_REUSE` | `false` | boolean | `false` = one ephemeral session per request, deleted afterwards, so opencode keeps no conversation memory. `true` = sticky session that accumulates history and cost |
+| `EV_OPENCODE_SESSION_TITLE` | `ev` | string | Title used for EV's ephemeral sessions (makes leaks visible in `opencode session`) |
+| `EV_OPENCODE_API_KEY` | — | string | Optional EV-side copy of the credential; the **server** process needs its own |
+| `EV_OPENCODE_ENV_FILE` | `~/.config/ev/opencode.env` | path | Operator env file holding `OPENCODE_API_KEY`, also sourced by `launchd/ev.opencode.plist` (launchd never reads `~/.zshrc`) |
+| `EV_OPENCODE_REQUIRE_API_KEY` | `true` | boolean | Fail closed when no credential is visible to EV. Set `false` only when the server holds the key somewhere EV cannot read |
+| `EV_OPENCODE_READ_TIMEOUT_SECONDS` | `180` | seconds | Read timeout floor for the model round trip (the shared `EV_MODEL_*` timeouts still apply to connect/write/pool) |
+| `EV_OPENCODE_STREAM_TIMEOUT_SECONDS` | `300` | seconds | Hard deadline for one streamed turn before a typed `ProviderStreamError` |
+| `EV_OPENCODE_TOOL_EMULATION` | `false` | boolean | `false` = no tools on this provider; `chat_with_tools` answers without them and marks the result degraded. `true` = structured-output emulation, still checked by the gateway's `validate_tool_calls` |
+| `EV_OPENCODE_FORMAT_RETRIES` | `1` | int | opencode-side retries when the model breaks the structured-output schema |
+
+`OPENCODE_API_KEY` itself is not an `EV_`-prefixed setting: it is the opencode
+server's own credential and must be in the environment of the server process
+(`.env`, `~/.config/ev/opencode.env`, or the interactive shell that starts
+`opencode serve`).
