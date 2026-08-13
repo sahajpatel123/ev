@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "clients" / "web"
-_ALLOWED_ASSETS = {"app.js", "style.css"}
+_ALLOWED_ASSETS = {"app.js", "style.css", "pcm-worklet.js"}
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (

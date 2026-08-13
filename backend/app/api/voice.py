@@ -44,17 +44,15 @@ from app.schemas import (
 )
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
-from app.voice.speaker import default_speaker_verifier
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
 
 def _runtime(session: AsyncSession) -> VoiceRuntime:
-    return VoiceRuntime(
-        session,
-        master_key=settings.master_key,
-        verifier=default_speaker_verifier(),
-    )
+    # The verifier resolves lazily inside the runtime: enrollment and
+    # verification still fail closed on a non-production encoder, but a request
+    # that never verifies a voiceprint no longer needs one to exist.
+    return VoiceRuntime(session, master_key=settings.master_key)
 
 
 def _http(exc: VoiceError) -> HTTPException:

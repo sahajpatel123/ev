@@ -158,8 +158,37 @@
       <p id="conversation-result" class="result" aria-live="polite"></p>
     </section>
 
+    <section id="ev-hands-free" class="panel">
+      <h2>Hands-free — just say “EVIE”</h2>
+      <div class="hf-controls">
+        <button id="hf-toggle" type="button" class="hf-toggle">Start listening</button>
+        <div id="hf-orb" class="hf-orb" data-state="off">
+          <span id="hf-orb-label">off</span>
+        </div>
+        <div class="hf-meter" title="microphone level">
+          <div id="hf-level" class="hf-level"></div>
+        </div>
+        <label class="hf-option">
+          <input id="hf-speak" type="checkbox" checked>
+          speak replies
+        </label>
+      </div>
+      <p id="hf-hint" class="muted">
+        Turn this on once and leave it on. EVIE listens for her name, answers,
+        then keeps the mic open for follow-ups — no buttons, no wake word for
+        the next thing you say.
+      </p>
+      <div id="hf-caption" class="hf-caption" aria-live="polite"></div>
+      <div id="hf-log" class="hf-log"></div>
+      <p id="hf-result" class="result" role="alert"></p>
+      <details id="hf-engines">
+        <summary>Engine status</summary>
+        <pre id="hf-engines-body" class="hf-engines-body">not checked yet</pre>
+      </details>
+    </section>
+
     <section id="ev-voice-session" class="panel">
-      <h2>Voice session</h2>
+      <h2>Voice session (manual)</h2>
       <div id="voice-session-status" class="voice-status"></div>
       <div class="row">
         <button id="voice-wake" type="button">Wake</button>

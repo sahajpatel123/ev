@@ -146,7 +146,11 @@ class VoiceRuntime:
         self.master_key = master_key
         self.actor = actor
         self.wake_engine = wake_engine or default_wake_engine()
-        self.verifier = verifier or default_speaker_verifier()
+        # Resolved on first use, not here: `default_speaker_verifier()` refuses
+        # to build the hash test double outside pytest (correctly — it is not a
+        # security control), and a session with nothing to verify must not die
+        # because of a verifier it never calls.
+        self._verifier = verifier
         self.transcriber = transcriber or get_transcriber()
         self.synthesizer = synthesizer or get_synthesizer()
         self.liveness = liveness or LivenessGate()
@@ -155,6 +159,14 @@ class VoiceRuntime:
         self.session_timeout_seconds = session_timeout_seconds
         self.replay_guard = ReplayGuard(session)
         self._interrupts: dict[str, asyncio.Event] = {}
+
+    @property
+    def verifier(self) -> SpeakerVerifier:
+        """The speaker verifier, resolved (and validated) on first real use."""
+
+        if self._verifier is None:
+            self._verifier = default_speaker_verifier()
+        return self._verifier
 
     # ------------------------------------------------------------------ #
     # Internal helpers
