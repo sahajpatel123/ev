@@ -101,6 +101,31 @@ and a launch-at-login toggle. It listens continuously for the wake word
 "EVIE", which is why `NSMicrophoneUsageDescription` describes always-on
 listening rather than press-to-talk.
 
+### Hands-free ("always-on EVIE")
+
+Flip **Hands-free — say “EVIE”** at the top of the menu-bar panel. EV opens a
+WebSocket to `/v1/voice/live`, streams 16 kHz mono PCM16, and answers out loud
+when it hears the wake word — no key press, no Talk button. After a reply the
+mic stays open for a follow-up, so you can keep talking without saying “EVIE”
+again. Talking over EV cuts it off mid-sentence.
+
+The line under the switch is what the server is doing (`listening for “EVIE”`,
+`heard you`, `listening`, `thinking`, `speaking`, `go ahead`). The meter next
+to it is the mic level. The choice is stored in `UserDefaults`
+(`ev.handsFree.enabled`) and the loop restarts itself at launch.
+
+- **Microphone.** EV asks the first time you switch it on. If it was already
+  denied, the panel says so and points at **Permissions…** — nothing fails
+  silently. Use the runbook above so EV actually appears in System Settings.
+- **Server engines.** If `/v1/voice/live` reports `ready: false`, the blockers
+  appear in red and the switch turns itself off. Usually that means
+  `uv run python -m app.voice.models_setup` on the backend.
+- **Reconnects.** If the stream drops while hands-free is on, EV retries with
+  backoff (1–30 s) and says so in the panel.
+- **Local voice.** When the server’s TTS only returns metadata
+  (`speak_locally`), EV speaks the reply with the macOS system voice.
+- Push-to-talk (**Talk** / ⇧⌘E) is unchanged and still works alongside it.
+
 Configuration is read from the environment or `defaults`:
 
 - `EV_API_URL` (default `http://127.0.0.1:8000`)
