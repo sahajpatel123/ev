@@ -493,9 +493,10 @@ class LiveVoiceLoop:
                 self._speech_samples += samples
                 if self._speech_samples >= self.config.samples(self.config.min_speech_ms):
                     # Continued conversation: no wake word needed.
-                    start = self.consumed - self._speech_samples - self.config.samples(200)
+                    spoken = self._speech_samples
+                    start = self.consumed - spoken - self.config.samples(200)
                     self._start_capture(max(0, start))
-                    self._speech_samples = self.config.samples(self.config.min_speech_ms)
+                    self._speech_samples = spoken
                     await self._set_state(LiveState.LISTENING, reason="follow_up")
                 return
             self._speech_samples = 0
@@ -680,7 +681,12 @@ class LiveVoiceLoop:
 
         if self.state != LiveState.SPEAKING:
             return
-        self._speech_samples = 0
+        # Speech already in progress as the reply ends (the human started
+        # talking over the last syllable) carries into the follow-up window, so
+        # the capture backtracks to where they actually started instead of
+        # clipping the first word.
+        self._speech_samples = self._speaking_speech
+        self._speaking_speech = 0
         self._speaking_budget = 0
         await self._set_state(LiveState.FOLLOW_UP, seconds=self.config.follow_up_ms / 1000)
 

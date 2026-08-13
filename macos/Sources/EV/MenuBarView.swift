@@ -14,6 +14,8 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 10) {
             statusHeader
             Divider()
+            HandsFreeSectionView(session: model.handsFree)
+            Divider()
             captureRow
             Divider()
             chatSection
@@ -161,6 +163,63 @@ struct MenuBarView: View {
                 NSApplication.shared.terminate(nil)
             }
             .font(.caption)
+        }
+    }
+}
+
+/// Always-on listening: the switch, what the loop is doing right now, the live
+/// caption, and the last exchange.
+///
+/// Its own view because ``HandsFreeSession`` is a second observable object —
+/// observing ``AppModel`` alone would not redraw when the stream changes.
+struct HandsFreeSectionView: View {
+    @ObservedObject var session: HandsFreeSession
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("Hands-free — say “EVIE”", isOn: $session.isEnabled)
+                .toggleStyle(.switch)
+                .font(.subheadline)
+
+            HStack(spacing: 8) {
+                Text(session.state.label)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ProgressView(value: min(max(session.level, 0), 1))
+                    .progressViewStyle(.linear)
+                    .frame(width: 90)
+                Spacer()
+            }
+
+            if !session.caption.isEmpty {
+                Text(session.caption)
+                    .font(.callout)
+                    .italic()
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !session.lastTranscript.isEmpty {
+                Text("you: \(session.lastTranscript)")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !session.lastReply.isEmpty {
+                Text("EVIE: \(session.lastReply)")
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !session.statusMessage.isEmpty {
+                Text(session.statusMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ForEach(session.blockers, id: \.self) { blocker in
+                Text(blocker)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

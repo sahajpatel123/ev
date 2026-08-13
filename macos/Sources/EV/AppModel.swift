@@ -35,9 +35,13 @@ final class AppModel: ObservableObject {
     let hotkey = GlobalHotkey()
     let mic = MicCapture()
     let player = TTSPlayer()
+    let handsFree = HandsFreeSession()
 
     private var heartbeatTask: Task<Void, Never>?
     private var pendingAssistantID: UUID?
+    /// A push-to-talk turn owns ``status`` until it finishes, so the always-on
+    /// loop cannot relabel the menu bar underneath it.
+    private var pushToTalkActive = false
 
     init() {
         let config = AppConfig()
@@ -48,6 +52,15 @@ final class AppModel: ObservableObject {
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("EV", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         queue = OfflineCaptureQueue(store: FileCaptureQueueStore(directory: support))
+        handsFree.configure(baseURL: config.baseURL, token: config.apiKey)
+        handsFree.onStateChange = { [weak self] state in
+            self?.applyHandsFree(state)
+        }
+        // The panel's `onAppear` only runs when the menu is first opened, so
+        // the always-on loop has to be kicked off at launch instead.
+        Task { @MainActor [handsFree] in
+            handsFree.startIfEnabled()
+        }
     }
 
     var launchAtLogin: Bool {
@@ -69,6 +82,7 @@ final class AppModel: ObservableObject {
         Task {
             await refresh()
         }
+        handsFree.startIfEnabled()
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
@@ -197,6 +211,29 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - Hands-free
+
+    /// Project the always-on loop onto the menu-bar glyph.
+    ///
+    /// Push-to-talk keeps priority: a hands-free `idle` arriving mid-turn must
+    /// not relabel a recording or thinking push-to-talk exchange.
+    private func applyHandsFree(_ state: HandsFreeState) {
+        guard !pushToTalkActive else { return }
+        switch state {
+        case .off, .connecting:
+            // Only give back what hands-free claimed; offline stays offline.
+            if status != .offline {
+                status = .listening
+            }
+        case .idle, .waking, .listening, .followUp:
+            status = .listening
+        case .thinking:
+            status = .thinking
+        case .speaking:
+            status = .speaking
+        }
+    }
+
     // MARK: - Voice
 
     func toggleTalk() {
@@ -211,6 +248,7 @@ final class AppModel: ObservableObject {
         Task {
             let granted = await mic.start()
             isRecording = granted
+            pushToTalkActive = granted
             status = granted ? .listening : status
             if !granted {
                 lastError = "Microphone permission denied — open EV → Permissions for the fix."
@@ -220,6 +258,7 @@ final class AppModel: ObservableObject {
 
     func stopAndSend() {
         Task {
+            defer { pushToTalkActive = false }
             let data = mic.stop()
             isRecording = false
             guard let data, !data.isEmpty else {

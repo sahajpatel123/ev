@@ -29,11 +29,19 @@
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 EV — personal memory companion</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>EV captures your voice only when you press the hotkey or Talk button, to wake, verify, and understand your requests.</string>
+    <string>EV listens continuously through your microphone for the wake word "EVIE", and records what you say next when it hears it or when you press ⇧⌘E. Audio is used for wake detection, speaker verification, and your request, and is sent only to the EV backend you configure (127.0.0.1 by default).</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>EV turns the audio that follows the wake word "EVIE" into text so it can answer you. Recognition runs against the EV backend you configure (127.0.0.1 by default).</string>
     <key>NSCameraUsageDescription</key>
     <string>EV uses the camera only when you explicitly capture a photo or video note.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>EV uses screen content only when you enable ambient context collectors, and never sends raw pixels to any model.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>EV sends Apple events only when an action you asked for has to drive another app, such as opening a note or a calendar entry.</string>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>CFBundleURLTypes</key>

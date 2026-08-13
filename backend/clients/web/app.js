@@ -1778,10 +1778,11 @@ function hfLog(role, text) {
   const line = document.createElement("div");
   line.className = `hf-line hf-${role}`;
   line.innerHTML = `<span class="hf-role">${escapeHtml(role)}</span> ${escapeHtml(text)}`;
-  log.prepend(line);
+  log.append(line);
   while (log.childElementCount > 24) {
-    log.removeChild(log.lastElementChild);
+    log.removeChild(log.firstElementChild);
   }
+  log.scrollTop = log.scrollHeight;
 }
 
 function hfLiveUrl() {
@@ -1920,6 +1921,26 @@ function hfHandleEvent(message) {
   }
 }
 
+function hfMicErrorMessage(error) {
+  // Name the actual failure: "permission denied" is wrong (and unfixable) when
+  // the real problem is a missing device or a busy one.
+  const name = (error && error.name) || "Error";
+  const detail = (error && error.message) || String(error);
+  const hints = {
+    NotAllowedError:
+      "microphone blocked for this site — click the mic icon in the address bar (or Settings > Privacy > Microphone) and allow it",
+    SecurityError:
+      "microphone blocked: this page must be served over HTTPS or from localhost",
+    NotFoundError: "no microphone found — connect an input device and try again",
+    NotReadableError:
+      "the microphone is in use by another app or unreadable — close the other app and try again",
+    OverconstrainedError:
+      "no microphone matched the requested format (16 kHz mono) — try a different input device",
+    AbortError: "microphone capture was aborted by the system",
+  };
+  return `${hints[name] || "microphone unavailable"} [${name}: ${detail}]`;
+}
+
 async function hfStart() {
   const result = $("hf-result");
   result.textContent = "";
@@ -1954,8 +1975,7 @@ async function hfStart() {
     });
   } catch (error) {
     hfSetState("off");
-    result.textContent =
-      "microphone permission denied — allow the mic for this site, then start again";
+    result.textContent = hfMicErrorMessage(error);
     return;
   }
   handsFree.context = new AudioContext({ sampleRate: rate });
