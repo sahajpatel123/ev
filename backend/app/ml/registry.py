@@ -355,4 +355,23 @@ def builtin_models() -> list[ModelSpec]:
             version="opencv_zoo face_recognition_sface_2021dec",
             verified=True,
         ),
+        # HANDS-FREE VOICE — one Kaldi model serves both stages of the always-on
+        # pipeline: a grammar-restricted "EVIE" spotter and the full-vocabulary
+        # command transcriber. Measured resident 145 MB / peak 180 MB with both
+        # recognizers live. Optional: absent until `python -m
+        # app.voice.models_setup` installs it, and the wake path reports why.
+        # Shipped as a zip (a model *directory*), so `ml pull` cannot fetch it.
+        ModelSpec(
+            name="asr-vosk-small-en-us",
+            task="asr",
+            source_url=None,
+            disk_mb=70,
+            resident_mb=145,
+            peak_mb=180,
+            tier=ModelTier.ALWAYS,
+            license="Apache-2.0 (Vosk / alphacephei vosk-model-small-en-us-0.15)",
+            license_url="https://alphacephei.com/vosk/models",
+            version="vosk-model-small-en-us-0.15",
+            optional=True,
+        ),
     ]

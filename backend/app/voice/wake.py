@@ -522,6 +522,18 @@ class SileroVadWakeEngine:
         )
 
 
+def real_wake_engine_available() -> bool:
+    """True when a wake engine that can hear actual speech is installed."""
+
+    from app.voice.vosk_engine import vosk_available
+
+    if vosk_available():
+        return True
+    if settings.voice_wake_openwakeword_model_path:
+        return True
+    return bool(settings.voice_wake_access_key and settings.voice_wake_model_path)
+
+
 def default_wake_engine() -> WakeWordEngine:
     """Config-driven wake engine selection.
 
@@ -530,6 +542,30 @@ def default_wake_engine() -> WakeWordEngine:
     """
     fallback = MultiStageWakeEngine(PhraseWakeEngine(), PhraseWakeEngine())
     provider = settings.voice_wake_provider
+    if provider in ("auto", "vosk"):
+        from app.voice.vosk_engine import VoskWakeEngine, vosk_available
+
+        if vosk_available():
+            return VoskWakeEngine()
+        if provider == "vosk":
+            # Explicitly requested: keep the real engine so callers see the
+            # model-unavailable reason instead of a silent downgrade.
+            return VoskWakeEngine()
+        if settings.voice_wake_openwakeword_model_path:
+            return OpenWakeWordEngine(
+                model_path=settings.voice_wake_openwakeword_model_path,
+                verifier_path=settings.voice_wake_openwakeword_verifier_path,
+                threshold=settings.voice_wake_openwakeword_threshold,
+                verifier_threshold=settings.voice_wake_openwakeword_verifier_threshold,
+            )
+        if settings.voice_wake_access_key and settings.voice_wake_model_path:
+            return PorcupineWakeEngine(
+                access_key=settings.voice_wake_access_key,
+                model_path=settings.voice_wake_model_path,
+                sensitivity=settings.voice_wake_sensitivity,
+                library_path=settings.voice_wake_porcupine_library_path,
+            )
+        return fallback
     if provider == "porcupine":
         if not (settings.voice_wake_access_key and settings.voice_wake_model_path):
             return fallback

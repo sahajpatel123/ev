@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import shutil
 import struct
+import sys
 import tempfile
 import wave
 from pathlib import Path
@@ -572,8 +574,61 @@ def _resolve_tts_voices_path(model_name: str) -> str | None:
     return None
 
 
+DEFAULT_PIPER_VOICE = "en_US-lessac-medium"
+
+
+def piper_voice_path() -> str | None:
+    """Installed Piper voice (.onnx), preferring an explicit configuration."""
+
+    candidates: list[Path] = []
+    configured = settings.voice_tts_model
+    if configured and configured.endswith(".onnx"):
+        base = Path(configured)
+        if settings.voice_tts_model_dir and not base.is_absolute():
+            base = Path(settings.voice_tts_model_dir) / base
+        candidates.append(base)
+    if settings.voice_tts_model_dir:
+        candidates.append(Path(settings.voice_tts_model_dir) / f"{DEFAULT_PIPER_VOICE}.onnx")
+    candidates.append(Path.home() / ".ev" / "models" / f"{DEFAULT_PIPER_VOICE}.onnx")
+    for candidate in candidates:
+        expanded = candidate.expanduser()
+        if expanded.is_file():
+            return str(expanded)
+    return None
+
+
+def piper_binary_path() -> str | None:
+    """Piper CLI on PATH, or the console script inside the active venv.
+
+    launchd and other supervisors start EVIE with a minimal PATH that does not
+    include ``.venv/bin``, so an installed Piper must still be found.
+    """
+
+    found = shutil.which(settings.voice_tts_binary)
+    if found:
+        return found
+    candidate = Path(sys.prefix) / "bin" / settings.voice_tts_binary
+    return str(candidate) if candidate.is_file() else None
+
+
+def real_tts_available() -> bool:
+    """True when EVIE can produce actual reply audio server-side."""
+
+    if settings.voice_tts_provider == "openai_compat":
+        return bool(settings.voice_tts_base_url)
+    return bool(piper_voice_path() and piper_binary_path())
+
+
 def get_synthesizer() -> Synthesizer:
     provider = settings.voice_tts_provider
+    if provider == "auto":
+        voice = piper_voice_path()
+        binary = piper_binary_path()
+        if voice and binary:
+            return PiperSynthesizer(model=voice, binary=binary)
+        if os.path.isfile(_resolve_tts_path(settings.voice_tts_engine) or ""):
+            return KokoroSynthesizer()
+        return MetaSynthesizer()
     if provider == "openai_compat":
         if not settings.voice_tts_base_url:
             raise RuntimeError("EV_VOICE_TTS_BASE_URL is required for openai_compat TTS")
