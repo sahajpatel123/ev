@@ -29,6 +29,7 @@ import tempfile
 import time
 import wave
 from dataclasses import dataclass
+from typing import Any
 
 LOGGER = logging.getLogger("hands_free")
 
@@ -82,7 +83,7 @@ class MicrophoneSource:
 
     def __init__(self, config: ClientConfig) -> None:
         self.config = config
-        self._stream = None
+        self._stream: Any = None
         self._queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -212,9 +213,8 @@ async def play_wav_bytes(audio: bytes) -> None:
             rate = handle.getframerate()
             channels = handle.getnchannels()
         samples = np.frombuffer(frames, dtype=np.int16)
-        if channels > 1:
-            samples = samples.reshape(-1, channels)
-        await asyncio.to_thread(sounddevice.play, samples, rate, blocking=True)
+        playback = samples.reshape(-1, channels) if channels > 1 else samples
+        await asyncio.to_thread(sounddevice.play, playback, rate, blocking=True)
     except Exception as exc:  # noqa: BLE001 - fall back, never crash the loop
         LOGGER.warning("sounddevice playback failed (%s); trying the platform player", exc)
         await _play_with_platform_player(audio)
@@ -348,7 +348,8 @@ class HandsFreeClient:
                 data.get("tts", {}).get("provider"),
             )
         elif kind == "state":
-            LOGGER.info("[%s]", STATE_LABELS.get(data.get("state"), data.get("state")))
+            state = str(data.get("state") or "")
+            LOGGER.info("[%s]", STATE_LABELS.get(state, state))
         elif kind == "wake":
             if data.get("stage") == "confirmed":
                 self.wakes += 1
@@ -409,9 +410,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_devices:
         import sounddevice
 
-        for index, device in enumerate(sounddevice.query_devices()):
-            if device.get("max_input_channels", 0) > 0:
-                print(f"[{index}] {device['name']} ({device['default_samplerate']:.0f} Hz)")
+        for index, info in enumerate(sounddevice.query_devices()):
+            if info.get("max_input_channels", 0) > 0:
+                print(f"[{index}] {info['name']} ({info['default_samplerate']:.0f} Hz)")
         return 0
     if not args.api_key:
         print(
@@ -419,14 +420,14 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    device: str | int | None = args.device
-    if isinstance(device, str) and device.isdigit():
-        device = int(device)
+    selected: str | int | None = args.device
+    if isinstance(selected, str) and selected.isdigit():
+        selected = int(selected)
     config = ClientConfig(
         api_url=args.api_url,
         api_key=args.api_key,
         device_id=args.device_id,
-        device=device,
+        device=selected,
         sample_rate=args.sample_rate,
         frame_ms=args.frame_ms,
         simulate_wav=args.simulate_wav,
