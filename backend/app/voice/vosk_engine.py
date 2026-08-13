@@ -45,7 +45,8 @@ DEFAULT_WAKE_PHRASES: tuple[str, ...] = (
     "hey evie",
     "hi evie",
     "hello evie",
-    "ok evie",
+    # "okay evie" only — "ok evie" is a homophone in the same grammar and
+    # splits the posterior so neither phrase clears the confirmation threshold.
     "okay evie",
     "yo evie",
 )
@@ -195,13 +196,15 @@ class WakeSignal:
         return self.kind == "confirmed"
 
 
-def _wake_phrase_in(text: str) -> str:
+def _wake_phrase_in(
+    text: str, phrases: tuple[str, ...] | list[str] = DEFAULT_WAKE_PHRASES
+) -> str:
     """Return the longest configured phrase contained in ``text``, else ""."""
 
     normalized = normalize(text)
     if not _WAKE_TOKEN.search(normalized):
         return ""
-    for phrase in sorted(DEFAULT_WAKE_PHRASES, key=len, reverse=True):
+    for phrase in sorted(phrases, key=len, reverse=True):
         if phrase in normalized:
             return phrase
     return "evie"
@@ -330,7 +333,7 @@ class VoskWakeSpotter:
             return signals
         if self._pending is None:
             partial = json.loads(recognizer.PartialResult()).get("partial", "")
-            phrase = _wake_phrase_in(partial)
+            phrase = _wake_phrase_in(partial, self.phrases)
             if phrase:
                 self._pending = WakeSignal(
                     kind="pending",
@@ -344,7 +347,7 @@ class VoskWakeSpotter:
 
     def _close_segment(self, payload: dict) -> list[WakeSignal]:
         text = normalize(payload.get("text", ""))
-        phrase = _wake_phrase_in(text)
+        phrase = _wake_phrase_in(text, self.phrases)
         if phrase:
             confidence = self._phrase_confidence(payload, phrase)
             if confidence >= self.threshold:

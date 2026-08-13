@@ -286,3 +286,17 @@ Client ◄── {events, next_cursor}
 | Tactical card | ✓ | ✓ | ✓ | — |
 | Health read (M5) | ✓ | ✓ | — | — |
 | Maker flows (M5) | ✓ | — | ✓ | ✓ |
+
+## 9. Hands-free "EVIE"
+
+The always-on loop is server-side (`WS /v1/voice/live`). Clients only stream
+microphone audio and play replies.
+
+* **Web** — `/app` Hands-free panel (AudioWorklet, 16 kHz PCM16).
+* **macOS menu bar** — toggle **Hands-free — say “EVIE”**. Grant microphone
+  permission from **Permissions… → Grant permissions** (`macos/README.md`);
+  reading TCC status never registers the app in System Settings.
+* **Python** — `uv run python -m clients.hands_free` (mic extra). `--simulate-wav`
+  paces a file at real time when there is no hardware.
+* **Older ears process** — `python -m clients.ears` still does on-device VAD +
+  wake and POSTs to `/v1/ears/wake` when `EV_EARS_CONSENT=true`.

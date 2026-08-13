@@ -181,3 +181,27 @@ opencode-status:
 
 opencode-agent-cost:
 	$(call backend-run, uv run python -m app.scripts.opencode_agent_cost)
+
+# --- HANDS-FREE VOICE (append-only) -----------------------------------------
+.PHONY: voice-models hands-free hands-free-up hands-free-down
+
+voice-models:
+	cd backend && uv sync --extra voice --extra dev && uv run python -m app.voice.models_setup
+
+hands-free:
+	$(call backend-run, uv run python -m clients.hands_free --api-url "$${EV_API_URL:-http://127.0.0.1:8000}" --api-key "$${EV_API_KEY:-$${EV_MASTER_KEY}}")
+
+hands-free-up:
+	@mkdir -p "$$HOME/Library/Logs/ev"
+	@plutil -lint launchd/ev.hands_free.plist >/dev/null
+	@cp launchd/ev.hands_free.plist "$$HOME/Library/LaunchAgents/"
+	@launchctl bootout "gui/$$UID/ev.hands_free" 2>/dev/null || true
+	@sleep 1
+	@launchctl bootstrap "gui/$$UID" "$$HOME/Library/LaunchAgents/ev.hands_free.plist"
+	@launchctl enable "gui/$$UID/ev.hands_free"
+	@echo "[ev] ev.hands_free loaded; logs: $$HOME/Library/Logs/ev/hands_free.*.log"
+
+hands-free-down:
+	@launchctl bootout "gui/$$UID/ev.hands_free" 2>/dev/null || true
+	@rm -f "$$HOME/Library/LaunchAgents/ev.hands_free.plist"
+	@echo "[ev] ev.hands_free removed"

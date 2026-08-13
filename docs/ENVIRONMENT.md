@@ -342,3 +342,26 @@ based and not OpenAI-compatible**: there are no `/v1` routes. See
 server's own credential and must be in the environment of the server process
 (`.env`, `~/.config/ev/opencode.env`, or the interactive shell that starts
 `opencode serve`).
+
+## Hands-free voice (additive)
+
+`auto` is the default for `EV_VOICE_WAKE_PROVIDER`, `EV_VOICE_ASR_PROVIDER`, and
+`EV_VOICE_TTS_PROVIDER`. It resolves to Vosk (wake + ASR) and Piper (TTS) when
+those artifacts are installed, else the offline doubles. See `docs/VOICE.md` §13.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `EV_VOICE_VOSK_MODEL_PATH` | `~/.ev/models/vosk-model-small-en-us-0.15` | Vosk model directory |
+| `EV_VOICE_WAKE_PHRASES` | built-in EVIE set | Grammar for the always-on spotter |
+| `EV_VOICE_WAKE_VOSK_THRESHOLD` | `0.55` | Min word confidence to confirm a wake |
+| `EV_LIVE_FRAME_MS` | `20` | Expected client PCM frame size |
+| `EV_LIVE_ENDPOINT_SILENCE_MS` | `900` | Trailing silence that closes a command |
+| `EV_LIVE_MIN_SPEECH_MS` | `240` | Ignore shorter blips |
+| `EV_LIVE_MAX_UTTERANCE_MS` | `20000` | Hard cap on one command |
+| `EV_LIVE_WAKE_GRACE_MS` | `7000` | Wait after a bare "EVIE" for the command |
+| `EV_LIVE_FOLLOW_UP_MS` | `12000` | Open-mic window after a reply (no wake word) |
+| `EV_LIVE_BARGE_IN_MS` | `400` | Sustained speech during playback interrupts EVIE |
+| `EV_LIVE_SPEECH_THRESHOLD` | `0.5` | VAD probability treated as speech |
+| `EV_LIVE_RING_SECONDS` | `30` | Rolling capture buffer per connection |
+| `EV_LIVE_ALLOW_UNENROLLED` | `true` | Unverified session when no voiceprint exists |
+| `EV_LIVE_VERIFY_SPEAKER` | `true` | Passive voiceprint check on wake audio |

@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-08-12T03:07:49.700359+00:00",
+  "locked_at": "2026-08-13T09:02:39.193153+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -103,6 +103,9 @@
       "delete"
     ],
     "/v1/diagnostics/calibrate": [
+      "post"
+    ],
+    "/v1/ears/wake": [
       "post"
     ],
     "/v1/enrichment/usage": [
@@ -818,6 +821,12 @@
     ],
     "/v1/voice/enrollments/{enrollment_id}/rollback": [
       "post"
+    ],
+    "/v1/voice/live/diagnostics": [
+      "get"
+    ],
+    "/v1/voice/live/status": [
+      "get"
     ],
     "/v1/voice/sessions/{session_id}": [
       "get"

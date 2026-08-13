@@ -26,13 +26,19 @@ from app.voice.vosk_engine import (
     vosk_status,
 )
 
-pytestmark = pytest.mark.skipif(
-    not vosk_available(),
-    reason="the Vosk runtime and the en-US model are not installed",
-)
-
 FIXTURES = Path(__file__).parent / "fixtures" / "voice"
 BLOCK_BYTES = 3200  # 100 ms of 16 kHz mono PCM16
+
+pytestmark = [
+    pytest.mark.skipif(
+        not vosk_available(),
+        reason="the Vosk runtime and the en-US model are not installed",
+    ),
+    pytest.mark.skipif(
+        not (Path(__file__).parent / "fixtures" / "voice" / "wake_hey.wav").is_file(),
+        reason="voice fixtures are not present",
+    ),
+]
 
 
 @pytest.fixture(autouse=True)
@@ -98,29 +104,13 @@ def test_wake_spotter_confirms_the_wake_phrase(clip: str, phrase: str) -> None:
     assert [signal.kind for signal in signals][0] == "pending"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DEFAULT_WAKE_PHRASES lists both 'ok evie' and 'okay evie'; the two are "
-        "homophones in one grammar so the decoder splits the posterior and the "
-        "carrier word scores 0.5, below the 0.55 confirmation threshold"
-    ),
-)
 def test_okay_evie_confirms_the_wake_phrase() -> None:
-    assert [signal.kind for signal in spot("wake_ok")][-1] == "confirmed"
-
-
-def test_okay_evie_is_rejected_only_because_the_grammar_repeats_a_homophone() -> None:
-    """Diagnosis for the xfail above: 'evie' itself is heard perfectly."""
+    """The grammar lists 'okay evie' once so the posterior is not split."""
 
     verdict = spot("wake_ok")[-1]
-    assert verdict.kind == "rejected"
+    assert verdict.kind == "confirmed"
     assert verdict.phrase == "okay evie"
-    assert verdict.confidence == pytest.approx(0.5)
-
-    deduplicated = spot("wake_ok", phrases=("evie", "hey evie", "okay evie"))[-1]
-    assert deduplicated.kind == "confirmed"
-    assert deduplicated.confidence == pytest.approx(1.0)
+    assert verdict.confidence >= settings.voice_wake_vosk_threshold
 
 
 @pytest.mark.parametrize("clip", ["no_wake", "follow_up"])

@@ -163,7 +163,7 @@ class Spotter(Protocol):
 class Vad(Protocol):
     name: str
 
-    async def block_probability(self, samples, sample_rate: int) -> float: ...
+    async def block_probability(self, samples, sample_rate: int) -> float | None: ...
 
 
 @dataclass
@@ -264,6 +264,9 @@ class LiveVoiceLoop:
         self._level_at = 0
         self._level_peak = 0.0
         self._speaking_budget = 0
+        # Streaming VADs (Silero) return None while a longer analysis frame is
+        # still filling. Hold the last decision so endpointing does not flicker.
+        self._last_speech_prob = 0.0
 
     # -- helpers --------------------------------------------------------- #
 
@@ -346,6 +349,10 @@ class LiveVoiceLoop:
         except Exception as exc:  # a VAD failure must not deafen the loop
             LOGGER.warning("VAD error, treating block as silence: %s", exc)
             probability = 0.0
+        if probability is None:
+            probability = self._last_speech_prob
+        else:
+            self._last_speech_prob = float(probability)
         speech = probability >= self.config.speech_threshold
         await self._report_level(samples, speech=speech)
 

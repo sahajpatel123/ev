@@ -63,6 +63,7 @@ app.include_router(routines.router)
 app.include_router(runtime.router)
 app.include_router(training.router)
 app.include_router(voice.router)
+app.include_router(voice.ears_router)  # always-on ears delivery (/v1/ears/wake)
 app.include_router(voice_live.router)  # hands-free "EVIE" stream
 app.include_router(people.router)  # AGENT 7 ROSTER
 app.include_router(filter.router)

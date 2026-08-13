@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 
 import pytest
 
+from app.audio.vad import SileroVadOnnx
 from app.voice.live import (
     LiveConfig,
     LiveEvent,
@@ -224,6 +225,7 @@ def harness(
     on_flush=(),
     texts=("what did i decide about the project",),
     responder: RecordingResponder | None = None,
+    vad=None,
     **config_overrides,
 ) -> Harness:
     events: list[LiveEvent] = []
@@ -239,7 +241,7 @@ def harness(
         emit=emit,
         spotter=spotter,
         recognizer_factory=recognizers,
-        vad=FakeVad(),
+        vad=vad or FakeVad(),
         config=live_config(**config_overrides),
         device_id="test-mic",
     )
@@ -539,6 +541,42 @@ async def test_responder_failure_surfaces_an_error_and_keeps_the_stream_alive() 
     ]
     assert live.of("reply")[0]["text"] == "Sure."
     assert live.loop.state == LiveState.SPEAKING
+
+
+async def test_a_streaming_vad_that_defers_its_decision_keeps_the_loop_alive() -> None:
+    """Silero returns None until it has 512 samples; 20 ms frames are 320."""
+
+    live = harness(script=(), vad=SileroVadOnnx(session_factory=lambda: object()))
+
+    await live.loop.feed(speech(FRAME_MS))
+
+    assert live.loop.state == LiveState.IDLE
+
+
+class HoldingVad:
+    """Returns None on odd calls, then a real probability — like Silero."""
+
+    name = "holding"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def block_probability(self, samples, sample_rate: int) -> float | None:
+        self.calls += 1
+        if self.calls % 2 == 1:
+            return None
+        return 1.0 if any(samples) else 0.0
+
+
+async def test_deferred_vad_holds_the_last_speech_decision() -> None:
+    vad = HoldingVad()
+    live = harness(script=(), vad=vad, level_interval_ms=20)
+
+    await live.loop.feed(speech(FRAME_MS))
+    await live.loop.feed(speech(FRAME_MS))
+    await live.loop.feed(speech(FRAME_MS))
+
+    assert [data["speech"] for data in live.of("level")] == [False, True, True]
 
 
 async def test_level_events_prove_the_microphone_is_live() -> None:

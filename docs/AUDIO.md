@@ -195,3 +195,25 @@ The acceptance metrics cannot be proven without owner-consented data:
 
 Until Agent 2 lands them, every import is lazy and the stack degrades to the
 deterministic doubles; offline CI stays green.
+
+## 8. Hands-free wake (Vosk) and `/v1/ears/wake`
+
+The production always-on path is **not** the ears process posting blobs. It is
+`WS /v1/voice/live`: the server runs a grammar-restricted Vosk spotter on the
+continuous mic stream (see `docs/VOICE.md` §13). The ears process remains the
+on-device VAD/scene pipeline and still POSTs wake-passing segments to
+`POST /v1/ears/wake` when `EV_EARS_CONSENT=true`.
+
+That route is now wired. Agent 4 opens a hands-free session (no spoken
+challenge) and runs the utterance. When the Vosk model is on disk
+(`~/.ev/models/vosk-model-small-en-us-0.15`) the ears process uses
+`VoskWakeEngine` instead of the ASCII `PhraseFallbackWake` double — real
+speech never contains the bytes `b"evie"`.
+
+Preferred clients for talking to EVIE:
+
+* Web workbench `/app` (Hands-free panel)
+* macOS menu bar (Hands-free toggle)
+* `python -m clients.hands_free`
+
+Install models with `uv run python -m app.voice.models_setup`.

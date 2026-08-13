@@ -214,8 +214,25 @@ def _configure_engine(cfg: EarConfig):
         set_scene_classifier(default_scene_classifier())
 
 
+def _vosk_model_on_disk() -> bool:
+    """True when the Vosk model directory is present — no voice-stack import.
+
+    Importing ``app.voice`` pulls in the lifecycle and blows the ears process
+    RSS budget, so the default path checks the filesystem first and only loads
+    the real engine when the model is actually there.
+    """
+
+    configured = settings.voice_vosk_model_path
+    path = (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / ".ev" / "models" / "vosk-model-small-en-us-0.15"
+    )
+    return (path / "conf" / "model.conf").is_file()
+
+
 def default_ears_wake(cfg: EarConfig):
-    """Real wake engine when configured; otherwise the light offline double."""
+    """Real wake engine when a model is on disk; otherwise the light offline double."""
 
     if cfg.wake_model_path:
         from app.voice.wake import OpenWakeWordEngine, configured_wake_engine
@@ -228,6 +245,14 @@ def default_ears_wake(cfg: EarConfig):
             verifier_path=cfg.wake_verifier_path,
             threshold=cfg.wake_threshold,
         )
+    if _vosk_model_on_disk():
+        try:
+            import vosk  # noqa: F401
+        except ImportError:
+            return PhraseFallbackWake()
+        from app.voice.vosk_engine import VoskWakeEngine
+
+        return VoskWakeEngine(threshold=cfg.wake_threshold)
     return PhraseFallbackWake()
 
 
