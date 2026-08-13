@@ -8,7 +8,6 @@ import SwiftUI
 struct MenuBarView: View {
     @EnvironmentObject private var model: AppModel
     @State private var chatDraft = ""
-    @State private var showPermissions = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -28,9 +27,6 @@ struct MenuBarView: View {
             footerRow
         }
         .padding(12)
-        .sheet(isPresented: $showPermissions) {
-            PermissionsPanelView()
-        }
         .onAppear {
             model.start()
             model.hotkey.start(
@@ -137,7 +133,7 @@ struct MenuBarView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Permissions…") {
-                    showPermissions.toggle()
+                    PermissionsWindow.show()
                 }
                 .font(.caption)
             }

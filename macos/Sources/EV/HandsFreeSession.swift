@@ -431,7 +431,9 @@ final class HandsFreeSession: ObservableObject {
         case .authorized:
             return true
         case .notDetermined:
-            let granted = await AVCaptureDevice.requestAccess(for: .audio)
+            let granted = await AppForeground.withActivation {
+                await AVCaptureDevice.requestAccess(for: .audio)
+            }
             if !granted {
                 statusMessage = "Microphone access was declined — hands-free needs it to hear “EVIE”."
             }

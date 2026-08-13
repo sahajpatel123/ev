@@ -54,5 +54,9 @@ codesign --verify --strict --verbose=2 "$DEST" 2>&1 | sed 's/^/  /'
 
 echo
 echo "Next: open \"$DEST\", then use the menu-bar item > Permissions… >"
-echo "\"Grant permissions\". That request is what adds EV to System Settings >"
-echo "Privacy & Security. Run ./scripts/doctor.sh if anything looks wrong."
+echo "\"Grant permissions\" and answer every dialog. That is what adds EV to"
+echo "each Privacy pane (Microphone, Speech Recognition, Camera, Screen"
+echo "Recording, Automation, Contacts, Calendars, Reminders, Notifications,"
+echo "Bluetooth, Input Monitoring). Opening those panes first shows an empty"
+echo "list. Full Disk Access has no prompt: Reveal EV.app and add it with +."
+echo "Run ./scripts/doctor.sh if anything looks wrong."

@@ -365,7 +365,7 @@ curl -H "Authorization: Bearer $EV_MASTER_KEY" http://127.0.0.1:8000/v1/voice/li
 | Client | How to run |
 | --- | --- |
 | Web workbench | http://localhost:8000/app — panel **Hands-free — say EVIE** |
-| macOS menu bar | Toggle **Hands-free — say “EVIE”**. Permissions: see `macos/README.md` (Grant permissions is what puts EV in System Settings). |
+| macOS menu bar | Toggle **Hands-free — say “EVIE”**. Permissions: see `macos/README.md` (Grant permissions, while EV is in the foreground, is what puts EV in each Privacy pane). |
 | Python | `uv run python -m clients.hands_free --api-url http://127.0.0.1:8000 --api-key "$EV_MASTER_KEY"` |
 
 Launchd (optional, not installed by `./launchd/install.sh`): copy

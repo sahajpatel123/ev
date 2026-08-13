@@ -38,6 +38,24 @@
     <string>EV uses screen content only when you enable ambient context collectors, and never sends raw pixels to any model.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>EV sends Apple events only when an action you asked for has to drive another app, such as opening a note or a calendar entry.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>EV looks up people in Contacts only when you ask it to remember, find, or message someone.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>EV reads and creates calendar events only when you ask it to check or add something to your schedule.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>EV reads and creates calendar events only when you ask it to check or add something to your schedule.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>EV reads and creates reminders only when you ask it to remember a task or check what is due.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>EV reads and creates reminders only when you ask it to remember a task or check what is due.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>EV uses Bluetooth only to reach accessories you have chosen to connect, such as a headset or speaker.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>EV uses Bluetooth only to reach accessories you have chosen to connect, such as a headset or speaker.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>EV uses your location only for place context you have enabled, such as "what happened near me".</string>
+    <key>NSLocationUsageDescription</key>
+    <string>EV uses your location only for place context you have enabled, such as "what happened near me".</string>
     <key>NSSupportsAutomaticTermination</key>
     <false/>
     <key>NSSupportsSuddenTermination</key>

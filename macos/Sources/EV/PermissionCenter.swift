@@ -1,44 +1,119 @@
 import AppKit
 import ApplicationServices
 import AVFoundation
+import Contacts
+import CoreBluetooth
 import CoreGraphics
+import CoreLocation
 import Darwin
+import EventKit
 import Foundation
 import Security
-import SwiftUI
+import Speech
 import UserNotifications
 
 enum PermissionKind: String, CaseIterable, Identifiable {
     case microphone
+    case speechRecognition
     case camera
     case screenRecording
+    case automation
+    case contacts
+    case calendars
+    case reminders
     case notifications
+    case bluetooth
+    case inputMonitoring
     case accessibility
+    case location
+    case fullDiskAccess
 
     var id: String { rawValue }
 
-    /// `tccutil` service name for this permission. Notifications are stored by
-    /// usernoted, not TCC, so there is nothing tccutil can reset for them.
-    var tccService: String? {
+    /// Title matching the System Settings Privacy pane the user is looking at.
+    var title: String {
         switch self {
         case .microphone: return "Microphone"
+        case .speechRecognition: return "Speech Recognition"
         case .camera: return "Camera"
-        case .screenRecording: return "ScreenCapture"
-        case .notifications: return nil
+        case .screenRecording: return "Screen Recording"
+        case .automation: return "Automation"
+        case .contacts: return "Contacts"
+        case .calendars: return "Calendars"
+        case .reminders: return "Reminders"
+        case .notifications: return "Notifications"
+        case .bluetooth: return "Bluetooth"
+        case .inputMonitoring: return "Input Monitoring"
         case .accessibility: return "Accessibility"
+        case .location: return "Location"
+        case .fullDiskAccess: return "Full Disk Access"
         }
     }
 
-    /// Info.plist key macOS requires before it will show a prompt. Without the
+    /// `tccutil` service name. Notifications are stored by usernoted, not TCC.
+    var tccService: String? {
+        switch self {
+        case .microphone: return "Microphone"
+        case .speechRecognition: return "SpeechRecognition"
+        case .camera: return "Camera"
+        case .screenRecording: return "ScreenCapture"
+        case .automation: return "AppleEvents"
+        case .contacts: return "AddressBook"
+        case .calendars: return "Calendar"
+        case .reminders: return "Reminders"
+        case .notifications: return nil
+        case .bluetooth: return "BluetoothAlways"
+        case .inputMonitoring: return "ListenEvent"
+        case .accessibility: return "Accessibility"
+        case .location: return "Location"
+        case .fullDiskAccess: return "SystemPolicyAllFiles"
+        }
+    }
+
+    /// Info.plist keys macOS requires before it will show a prompt. Without the
     /// string the process is killed instead of prompted, so the app never
     /// reaches the Privacy pane at all.
-    var usageDescriptionKey: String? {
+    var usageDescriptionKeys: [String] {
         switch self {
-        case .microphone: return "NSMicrophoneUsageDescription"
-        case .camera: return "NSCameraUsageDescription"
-        case .screenRecording: return "NSScreenCaptureUsageDescription"
-        case .notifications, .accessibility: return nil
+        case .microphone: return ["NSMicrophoneUsageDescription"]
+        case .speechRecognition: return ["NSSpeechRecognitionUsageDescription"]
+        case .camera: return ["NSCameraUsageDescription"]
+        case .screenRecording: return ["NSScreenCaptureUsageDescription"]
+        case .automation: return ["NSAppleEventsUsageDescription"]
+        case .contacts: return ["NSContactsUsageDescription"]
+        case .calendars: return ["NSCalendarsUsageDescription", "NSCalendarsFullAccessUsageDescription"]
+        case .reminders: return ["NSRemindersUsageDescription", "NSRemindersFullAccessUsageDescription"]
+        case .bluetooth: return ["NSBluetoothAlwaysUsageDescription"]
+        case .location: return ["NSLocationWhenInUseUsageDescription"]
+        case .notifications, .inputMonitoring, .accessibility, .fullDiskAccess:
+            return []
         }
+    }
+
+    /// Anchor on the Privacy & Security settings extension. Notifications use
+    /// a different extension and are handled in ``PermissionCenter.settingsURL``.
+    var privacyAnchor: String? {
+        switch self {
+        case .microphone: return "Privacy_Microphone"
+        case .speechRecognition: return "Privacy_SpeechRecognition"
+        case .camera: return "Privacy_Camera"
+        case .screenRecording: return "Privacy_ScreenCapture"
+        case .automation: return "Privacy_Automation"
+        case .contacts: return "Privacy_Contacts"
+        case .calendars: return "Privacy_Calendars"
+        case .reminders: return "Privacy_Reminders"
+        case .notifications: return nil
+        case .bluetooth: return "Privacy_Bluetooth"
+        case .inputMonitoring: return "Privacy_ListenEvent"
+        case .accessibility: return "Privacy_Accessibility"
+        case .location: return "Privacy_LocationServices"
+        case .fullDiskAccess: return "Privacy_AllFiles"
+        }
+    }
+
+    /// Full Disk Access has no request API — the user must add EV.app with +.
+    var canRequestProgrammatically: Bool {
+        self != .fullDiskAccess
     }
 }
 
@@ -78,69 +153,78 @@ struct PermissionFact: Identifiable {
 /// and deep-links to the exact System Settings pane. No silent failures.
 ///
 /// Detection alone is not enough: macOS only lists an app in a Privacy pane
-/// after that app has triggered a TCC request (or been granted). Reading
+/// after that app has triggered a TCC request (or been added with +). Reading
 /// `authorizationStatus` registers nothing, which is why an app that only ever
 /// checks its state is invisible in System Settings. The `request*` functions
 /// below are the ones that make EV appear.
+///
+/// EV is an `LSUIElement` accessory app. Permission sheets for accessory apps
+/// are frequently created and then discarded because EV is not the active
+/// application, and a discarded sheet writes **no** TCC row. Every request
+/// therefore runs inside ``AppForeground.withActivation``.
+@MainActor
 enum PermissionCenter {
     static var bundleIdentifier: String {
         Bundle.main.bundleIdentifier ?? "com.ev.suit"
     }
 
     static func statuses() async -> [PermissionStatus] {
-        var result: [PermissionStatus] = []
-        result.append(microphoneStatus())
-        result.append(cameraStatus())
-        result.append(screenRecordingStatus())
-        result.append(await notificationStatus())
-        result.append(accessibilityStatus())
-        return result
+        PermissionBrokers.shared.notificationSnapshot = await notificationState()
+        return PermissionKind.allCases.map { kind in
+            PermissionStatus(
+                kind: kind,
+                state: currentState(for: kind),
+                whatBreaks: whatBreaks(for: kind),
+                settingsURL: settingsURL(for: kind)
+            )
+        }
     }
 
     // MARK: - Requests
 
     /// Trigger every TCC request in one pass so a single click registers EV in
-    /// every Privacy pane. Microphone runs first (it is the permission EV
-    /// actually needs to work) and accessibility last, because its prompt is a
-    /// modal alert that steals focus.
-    ///
-    /// Already-denied permissions cannot be re-prompted; the first one opens
-    /// System Settings so the user lands on a pane where EV is listed with its
-    /// switch off. Only one pane is opened — five settings windows would be
-    /// worse than none.
+    /// every Privacy pane the user listed. Requests run one at a time — parallel
+    /// prompts cancel each other — and Settings is **not** opened here. Opening
+    /// a pane before the matching request has landed is how the list looks empty.
     @discardableResult
     static func requestAll() async -> [PermissionStatus] {
-        var deniedKind: PermissionKind?
-
-        if await requestMicrophone() == .denied { deniedKind = deniedKind ?? .microphone }
-        if await requestCamera() == .denied { deniedKind = deniedKind ?? .camera }
-        if requestScreenRecording() == .denied { deniedKind = deniedKind ?? .screenRecording }
-        if await requestNotifications() == .denied { deniedKind = deniedKind ?? .notifications }
-        if requestAccessibility() == .denied { deniedKind = deniedKind ?? .accessibility }
-
-        if let deniedKind {
-            openSettings(for: deniedKind)
+        await AppForeground.withActivation {
+            for kind in PermissionKind.allCases where kind.canRequestProgrammatically {
+                _ = await requestWithoutOpeningSettings(kind)
+                try? await Task.sleep(nanoseconds: 280_000_000)
+            }
+            // Screen Recording and Bluetooth sheets are asynchronous; give them
+            // a moment to attach before we drop back to accessory.
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            return await statuses()
         }
-        return await statuses()
     }
 
-    /// Request one permission, and open its pane when the user already refused
-    /// it (no prompt will ever appear again for a denied service).
+    /// Request one permission. Already-denied services cannot be re-prompted,
+    /// so their pane is opened after the request so the user can flip the switch.
+    /// Full Disk Access has no prompt: Finder is revealed so the user can drag
+    /// EV.app onto the + button.
     @discardableResult
     static func request(_ kind: PermissionKind) async -> PermissionState {
-        let state: PermissionState
-        switch kind {
-        case .microphone: state = await requestMicrophone()
-        case .camera: state = await requestCamera()
-        case .screenRecording: state = requestScreenRecording()
-        case .notifications: state = await requestNotifications()
-        case .accessibility: state = requestAccessibility()
+        await AppForeground.withActivation {
+            if kind == .fullDiskAccess {
+                revealAppInFinder()
+                openSettings(for: .fullDiskAccess)
+                return currentState(for: .fullDiskAccess)
+            }
+            let state = await requestWithoutOpeningSettings(kind)
+            if state == .denied || state == .restricted {
+                openSettings(for: kind)
+            }
+            return state
         }
-        if state == .denied || state == .restricted {
-            openSettings(for: kind)
-        }
-        return state
     }
+
+    static func revealAppInFinder() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    }
+
+    // MARK: - Per-service requests
 
     /// Real TCC request. This — not `authorizationStatus` — is what puts EV
     /// into System Settings > Privacy & Security > Microphone.
@@ -149,7 +233,19 @@ enum PermissionCenter {
         if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             _ = await AVCaptureDevice.requestAccess(for: .audio)
         }
-        return state(for: AVCaptureDevice.authorizationStatus(for: .audio))
+        return currentState(for: .microphone)
+    }
+
+    @discardableResult
+    static func requestSpeechRecognition() async -> PermissionState {
+        if SFSpeechRecognizer.authorizationStatus() == .notDetermined {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                SFSpeechRecognizer.requestAuthorization { _ in
+                    continuation.resume()
+                }
+            }
+        }
+        return currentState(for: .speechRecognition)
     }
 
     @discardableResult
@@ -157,32 +253,111 @@ enum PermissionCenter {
         if AVCaptureDevice.authorizationStatus(for: .video) == .notDetermined {
             _ = await AVCaptureDevice.requestAccess(for: .video)
         }
-        return state(for: AVCaptureDevice.authorizationStatus(for: .video))
+        return currentState(for: .camera)
     }
 
-    /// `CGRequestScreenCaptureAccess` prompts and adds EV to the Screen & System
-    /// Audio Recording list. It returns the current grant, not the answer to the
-    /// prompt: the prompt is asynchronous and only shown once per app session.
+    /// `CGRequestScreenCaptureAccess` is the call that adds EV to Screen &
+    /// System Audio Recording. Preflight returning false means either "never
+    /// asked" or "denied" — both need this call or the pane stays empty.
+    /// The function returns the grant *before* the user answers the async
+    /// prompt, so a false return is not treated as a final denial.
     @discardableResult
-    static func requestScreenRecording() -> PermissionState {
-        if CGPreflightScreenCaptureAccess() { return .granted }
-        return CGRequestScreenCaptureAccess() ? .granted : .denied
+    static func requestScreenRecording() async -> PermissionState {
+        if CGPreflightScreenCaptureAccess() {
+            return .granted
+        }
+        PermissionBrokers.shared.didAskScreenRecording = true
+        _ = CGRequestScreenCaptureAccess()
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        return currentState(for: .screenRecording)
+    }
+
+    @discardableResult
+    static func requestAutomation() async -> PermissionState {
+        PermissionBrokers.shared.didAskAutomation = true
+        await ensureSystemEventsRunning()
+        _ = appleEventsPermission(bundleIdentifier: "com.apple.finder", prompt: true)
+        _ = appleEventsPermission(bundleIdentifier: "com.apple.systemevents", prompt: true)
+        return currentState(for: .automation)
+    }
+
+    @discardableResult
+    static func requestContacts() async -> PermissionState {
+        if CNContactStore.authorizationStatus(for: .contacts) == .notDetermined {
+            _ = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                CNContactStore().requestAccess(for: .contacts) { granted, _ in
+                    continuation.resume(returning: granted)
+                }
+            }
+        }
+        return currentState(for: .contacts)
+    }
+
+    @discardableResult
+    static func requestCalendars() async -> PermissionState {
+        let store = EKEventStore()
+        if calendarState(from: EKEventStore.authorizationStatus(for: .event)) == .notDetermined {
+            _ = try? await store.requestFullAccessToEvents()
+        }
+        return currentState(for: .calendars)
+    }
+
+    @discardableResult
+    static func requestReminders() async -> PermissionState {
+        let store = EKEventStore()
+        if calendarState(from: EKEventStore.authorizationStatus(for: .reminder)) == .notDetermined {
+            _ = try? await store.requestFullAccessToReminders()
+        }
+        return currentState(for: .reminders)
     }
 
     @discardableResult
     static func requestNotifications() async -> PermissionState {
         let center = UNUserNotificationCenter.current()
         _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
-        return await notificationStatus().state
+        let state = await notificationState()
+        PermissionBrokers.shared.notificationSnapshot = state
+        return state
+    }
+
+    /// Creating a `CBCentralManager` is the Bluetooth TCC request. The manager
+    /// has to stay alive: releasing it before the user answers cancels the
+    /// prompt and writes no row.
+    @discardableResult
+    static func requestBluetooth() async -> PermissionState {
+        await PermissionBrokers.shared.ensureBluetoothManager()
+        return currentState(for: .bluetooth)
+    }
+
+    @discardableResult
+    static func requestInputMonitoring() async -> PermissionState {
+        if IOHIDTCC.check() == IOHIDTCC.granted {
+            return .granted
+        }
+        PermissionBrokers.shared.didAskInputMonitoring = true
+        _ = IOHIDTCC.request()
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        return currentState(for: .inputMonitoring)
     }
 
     /// The prompt option is what registers EV in the Accessibility list; the
     /// return value is the trust state before the user answers.
     @discardableResult
-    static func requestAccessibility() -> PermissionState {
+    static func requestAccessibility() async -> PermissionState {
+        if AXIsProcessTrusted() {
+            return .granted
+        }
+        PermissionBrokers.shared.didAskAccessibility = true
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        let trusted = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
-        return trusted ? .granted : .denied
+        _ = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        return currentState(for: .accessibility)
+    }
+
+    @discardableResult
+    static func requestLocation() async -> PermissionState {
+        await PermissionBrokers.shared.requestWhenInUseLocation()
+        return currentState(for: .location)
     }
 
     // MARK: - System Settings deep links
@@ -199,37 +374,17 @@ enum PermissionCenter {
     /// used below 13. The URL *scheme* stays `x-apple.systempreferences` on
     /// every version — `x-apple.systemsettings` has no handler.
     static func settingsURL(for kind: PermissionKind) -> URL? {
-        let string: String
-        if usesSettingsExtensionScheme {
-            switch kind {
-            case .microphone:
-                string = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone"
-            case .camera:
-                string = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Camera"
-            case .screenRecording:
-                // Renamed "Screen & System Audio Recording" in macOS 15; the
-                // ScreenCapture anchor still targets it.
-                string = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ScreenCapture"
-            case .notifications:
-                string = "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(bundleIdentifier)"
-            case .accessibility:
-                string = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility"
+        if kind == .notifications {
+            if usesSettingsExtensionScheme {
+                return URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(bundleIdentifier)")
             }
-        } else {
-            switch kind {
-            case .microphone:
-                string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-            case .camera:
-                string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"
-            case .screenRecording:
-                string = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-            case .notifications:
-                string = "x-apple.systempreferences:com.apple.preference.notifications"
-            case .accessibility:
-                string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-            }
+            return URL(string: "x-apple.systempreferences:com.apple.preference.notifications")
         }
-        return URL(string: string)
+        guard let anchor = kind.privacyAnchor else { return nil }
+        if usesSettingsExtensionScheme {
+            return URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?\(anchor)")
+        }
+        return URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")
     }
 
     private static var usesSettingsExtensionScheme: Bool {
@@ -251,6 +406,7 @@ enum PermissionCenter {
         facts.append(quarantineFact(bundlePath: bundlePath))
         facts.append(signatureFact())
         facts.append(bundleIdentifierFact())
+        facts.append(activationPolicyFact())
         facts.append(contentsOf: usageDescriptionFacts())
         return facts
     }
@@ -336,10 +492,25 @@ enum PermissionCenter {
         )
     }
 
+    private static func activationPolicyFact() -> PermissionFact {
+        let accessory = NSApp.activationPolicy() == .accessory
+        return PermissionFact(
+            title: "Activation policy",
+            detail: accessory ? "accessory (menu bar)" : "regular (foreground)",
+            ok: true,
+            fix: "EV is a menu-bar app. Grant permissions temporarily brings it to the foreground so macOS will show each privacy dialog and write a TCC row. Opening a Privacy pane before that request lands shows an empty list."
+        )
+    }
+
     private static func usageDescriptionFacts() -> [PermissionFact] {
-        var required = PermissionKind.allCases.compactMap { $0.usageDescriptionKey }
-        required.append("NSSpeechRecognitionUsageDescription")
-        return required.map { key in
+        var seen = Set<String>()
+        var keys: [String] = []
+        for kind in PermissionKind.allCases {
+            for key in kind.usageDescriptionKeys where seen.insert(key).inserted {
+                keys.append(key)
+            }
+        }
+        return keys.map { key in
             let value = Bundle.main.object(forInfoDictionaryKey: key) as? String
             let present = !(value ?? "").isEmpty
             return PermissionFact(
@@ -395,7 +566,66 @@ enum PermissionCenter {
 
     // MARK: - Detection
 
-    private static func state(for status: AVAuthorizationStatus) -> PermissionState {
+    private static func requestWithoutOpeningSettings(_ kind: PermissionKind) async -> PermissionState {
+        switch kind {
+        case .microphone: return await requestMicrophone()
+        case .speechRecognition: return await requestSpeechRecognition()
+        case .camera: return await requestCamera()
+        case .screenRecording: return await requestScreenRecording()
+        case .automation: return await requestAutomation()
+        case .contacts: return await requestContacts()
+        case .calendars: return await requestCalendars()
+        case .reminders: return await requestReminders()
+        case .notifications: return await requestNotifications()
+        case .bluetooth: return await requestBluetooth()
+        case .inputMonitoring: return await requestInputMonitoring()
+        case .accessibility: return await requestAccessibility()
+        case .location: return await requestLocation()
+        case .fullDiskAccess: return currentState(for: .fullDiskAccess)
+        }
+    }
+
+    private static func currentState(for kind: PermissionKind) -> PermissionState {
+        switch kind {
+        case .microphone:
+            return avState(AVCaptureDevice.authorizationStatus(for: .audio))
+        case .speechRecognition:
+            return speechState(SFSpeechRecognizer.authorizationStatus())
+        case .camera:
+            return avState(AVCaptureDevice.authorizationStatus(for: .video))
+        case .screenRecording:
+            if CGPreflightScreenCaptureAccess() { return .granted }
+            return PermissionBrokers.shared.didAskScreenRecording ? .denied : .notDetermined
+        case .automation:
+            return automationState()
+        case .contacts:
+            return contactsState(CNContactStore.authorizationStatus(for: .contacts))
+        case .calendars:
+            return calendarState(from: EKEventStore.authorizationStatus(for: .event))
+        case .reminders:
+            return calendarState(from: EKEventStore.authorizationStatus(for: .reminder))
+        case .notifications:
+            return PermissionBrokers.shared.notificationSnapshot
+        case .bluetooth:
+            return bluetoothState(CBCentralManager.authorization)
+        case .inputMonitoring:
+            switch IOHIDTCC.check() {
+            case IOHIDTCC.granted: return .granted
+            case IOHIDTCC.denied: return .denied
+            default:
+                return PermissionBrokers.shared.didAskInputMonitoring ? .denied : .notDetermined
+            }
+        case .accessibility:
+            if AXIsProcessTrusted() { return .granted }
+            return PermissionBrokers.shared.didAskAccessibility ? .denied : .notDetermined
+        case .location:
+            return locationState(PermissionBrokers.shared.locationAuthorization)
+        case .fullDiskAccess:
+            return hasFullDiskAccess() ? .granted : .notDetermined
+        }
+    }
+
+    private static func avState(_ status: AVAuthorizationStatus) -> PermissionState {
         switch status {
         case .authorized: return .granted
         case .denied: return .denied
@@ -405,251 +635,280 @@ enum PermissionCenter {
         }
     }
 
-    private static func microphoneStatus() -> PermissionStatus {
-        PermissionStatus(
-            kind: .microphone,
-            state: state(for: AVCaptureDevice.authorizationStatus(for: .audio)),
-            whatBreaks: "EV cannot hear the wake word \"EVIE\", and the hotkey and Talk button cannot record; wake/verify/utterance voice flows stay text-only.",
-            settingsURL: settingsURL(for: .microphone)
-        )
+    private static func speechState(_ status: SFSpeechRecognizerAuthorizationStatus) -> PermissionState {
+        switch status {
+        case .authorized: return .granted
+        case .denied: return .denied
+        case .notDetermined: return .notDetermined
+        case .restricted: return .restricted
+        @unknown default: return .notDetermined
+        }
     }
 
-    private static func cameraStatus() -> PermissionStatus {
-        PermissionStatus(
-            kind: .camera,
-            state: state(for: AVCaptureDevice.authorizationStatus(for: .video)),
-            whatBreaks: "Camera capture (share sheet / photo events) cannot run. Text and file capture still work.",
-            settingsURL: settingsURL(for: .camera)
-        )
+    private static func contactsState(_ status: CNAuthorizationStatus) -> PermissionState {
+        switch status {
+        case .authorized: return .granted
+        case .denied: return .denied
+        case .notDetermined: return .notDetermined
+        case .restricted: return .restricted
+        @unknown default: return .notDetermined
+        }
     }
 
-    private static func screenRecordingStatus() -> PermissionStatus {
-        let state: PermissionState = CGPreflightScreenCaptureAccess() ? .granted : .denied
-        return PermissionStatus(
-            kind: .screenRecording,
-            state: state,
-            whatBreaks: "ScreenCaptureKit-based ambient context (Agent 13's macOS collectors) cannot see the screen.",
-            settingsURL: settingsURL(for: .screenRecording)
-        )
+    private static func calendarState(from status: EKAuthorizationStatus) -> PermissionState {
+        switch status {
+        case .denied:
+            return .denied
+        case .notDetermined:
+            return .notDetermined
+        case .restricted:
+            return .restricted
+        default:
+            // `.fullAccess`, `.writeOnly`, and the deprecated `.authorized` alias
+            // share this path so a duplicate-case compile error cannot happen
+            // when two names have the same raw value.
+            return .granted
+        }
     }
 
-    private static func notificationStatus() async -> PermissionStatus {
+    private static func bluetoothState(_ status: CBManagerAuthorization) -> PermissionState {
+        switch status {
+        case .allowedAlways: return .granted
+        case .denied: return .denied
+        case .restricted: return .restricted
+        case .notDetermined: return .notDetermined
+        @unknown default: return .notDetermined
+        }
+    }
+
+    private static func locationState(_ status: CLAuthorizationStatus) -> PermissionState {
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse:
+            return .granted
+        case .denied:
+            return .denied
+        case .notDetermined:
+            return .notDetermined
+        case .restricted:
+            return .restricted
+        @unknown default:
+            return .notDetermined
+        }
+    }
+
+    private static func notificationState() async -> PermissionState {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
-        let state: PermissionState
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:
-            state = .granted
+            return .granted
         case .denied:
-            state = .denied
+            return .denied
         case .notDetermined:
-            state = .notDetermined
+            return .notDetermined
         @unknown default:
-            state = .notDetermined
-        }
-        return PermissionStatus(
-            kind: .notifications,
-            state: state,
-            whatBreaks: "EV cannot surface alerts/digests delivered through Agent 14's notifier path.",
-            settingsURL: settingsURL(for: .notifications)
-        )
-    }
-
-    private static func accessibilityStatus() -> PermissionStatus {
-        let state: PermissionState = AXIsProcessTrusted() ? .granted : .denied
-        return PermissionStatus(
-            kind: .accessibility,
-            state: state,
-            whatBreaks: "The global hotkey cannot see key presses from other apps, so ⇧⌘E will not open the mic from anywhere.",
-            settingsURL: settingsURL(for: .accessibility)
-        )
-    }
-}
-
-struct PermissionRowView: View {
-    let status: PermissionStatus
-    let onRequest: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Circle()
-                .fill(stateColor)
-                .frame(width: 8, height: 8)
-                .padding(.top, 4)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text(status.kind.rawValue)
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                    Text(stateLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                Text(status.whatBreaks)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                actionRow
-                if let reset = status.resetCommand {
-                    resetHint(command: reset)
-                }
-            }
-            Spacer()
+            return .notDetermined
         }
     }
 
-    @ViewBuilder
-    private var actionRow: some View {
-        HStack(spacing: 6) {
-            switch status.state {
-            case .notDetermined:
-                Button("Request", action: onRequest)
-                    .font(.caption2)
-            case .denied, .restricted:
-                Button("Open Settings") {
-                    PermissionCenter.openSettings(for: status.kind)
-                }
-                .font(.caption2)
-            case .granted:
-                EmptyView()
-            }
+    private static func automationState() -> PermissionState {
+        let finder = appleEventsPermission(bundleIdentifier: "com.apple.finder", prompt: false)
+        let events = appleEventsPermission(bundleIdentifier: "com.apple.systemevents", prompt: false)
+        if finder == noErr || events == noErr {
+            return .granted
+        }
+        if finder == AppleEventTCC.notPermitted || events == AppleEventTCC.notPermitted {
+            return .denied
+        }
+        if finder == AppleEventTCC.wouldRequireConsent || events == AppleEventTCC.wouldRequireConsent {
+            return .notDetermined
+        }
+        return PermissionBrokers.shared.didAskAutomation ? .denied : .notDetermined
+    }
+
+    /// Opening the user TCC database is the usual Full Disk Access probe: the
+    /// file exists for everyone, but only FDA lets another app read it.
+    private static func hasFullDiskAccess() -> Bool {
+        let path = (NSHomeDirectory() as NSString)
+            .appendingPathComponent("Library/Application Support/com.apple.TCC/TCC.db")
+        let fd = open(path, O_RDONLY)
+        if fd >= 0 {
+            close(fd)
+            return true
+        }
+        return false
+    }
+
+    private static func appleEventsPermission(bundleIdentifier: String, prompt: Bool) -> OSStatus {
+        let target = NSAppleEventDescriptor(bundleIdentifier: bundleIdentifier)
+        var address = target.aeDesc
+        return withUnsafePointer(to: &address) { pointer in
+            AEDeterminePermissionToAutomateTarget(
+                pointer,
+                AEEventClass(typeWildCard),
+                AEEventID(typeWildCard),
+                prompt
+            )
         }
     }
 
-    private func resetHint(command: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text("EV is already in this list with its switch off. Flip it, or re-arm the prompt with:")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 6) {
-                Text(command)
-                    .font(.system(.caption2, design: .monospaced))
-                    .textSelection(.enabled)
-                Button("Copy") {
-                    NSPasteboard.general.clearContents()
-                    _ = NSPasteboard.general.setString(command, forType: .string)
-                }
-                .font(.caption2)
-            }
+    private static func ensureSystemEventsRunning() async {
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.systemevents")
+        guard running.isEmpty else { return }
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.systemevents") else {
+            return
         }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = false
+        configuration.addsToRecentItems = false
+        _ = try? await NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+        try? await Task.sleep(nanoseconds: 500_000_000)
     }
 
-    private var stateLabel: String {
-        switch status.state {
-        case .granted: return "granted"
-        case .denied: return "denied"
-        case .notDetermined: return "not asked"
-        case .restricted: return "restricted"
-        }
-    }
-
-    private var stateColor: Color {
-        switch status.state {
-        case .granted: return .green
-        case .denied: return .red
-        case .notDetermined: return .orange
-        case .restricted: return .red
+    private static func whatBreaks(for kind: PermissionKind) -> String {
+        switch kind {
+        case .microphone:
+            return "EV cannot hear the wake word “EVIE”, and the hotkey and Talk button cannot record."
+        case .speechRecognition:
+            return "On-device speech recognition prompts cannot complete, so dictation-style fallbacks stay unavailable."
+        case .camera:
+            return "Camera capture (share sheet / photo events) cannot run. Text and file capture still work."
+        case .screenRecording:
+            return "ScreenCaptureKit-based ambient context cannot see the screen."
+        case .automation:
+            return "EV cannot drive Finder or System Events when an action you asked for has to click another app."
+        case .contacts:
+            return "EV cannot look up people in Contacts when you ask it to remember or find someone."
+        case .calendars:
+            return "EV cannot read or add calendar events when you ask about your schedule."
+        case .reminders:
+            return "EV cannot read or add reminders when you ask it to track a task."
+        case .notifications:
+            return "EV cannot surface alerts and digests through the notifier path."
+        case .bluetooth:
+            return "EV cannot reach Bluetooth accessories such as a headset or speaker."
+        case .inputMonitoring:
+            return "HID-level input monitoring stays off. The ⇧⌘E hotkey still uses Accessibility."
+        case .accessibility:
+            return "The global hotkey cannot see key presses from other apps, so ⇧⌘E will not open the mic from anywhere."
+        case .location:
+            return "Place context (“what happened near me”) cannot run."
+        case .fullDiskAccess:
+            return "Collectors that read other apps’ files cannot run. There is no prompt: add EV.app with + in this pane."
         }
     }
 }
 
-struct PermissionsPanelView: View {
-    @State private var statuses: [PermissionStatus] = []
-    @State private var facts: [PermissionFact] = []
-    @State private var isRequesting = false
-    @State private var showDiagnostics = false
+// MARK: - IOHID (Input Monitoring) and Apple Events TCC codes
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            if statuses.isEmpty {
-                ProgressView()
+/// `errAEEventNotPermitted` / `errAEEventWouldRequireUserConsent` from
+/// `AE/AppleEvents.h`. Named locally so a missing Swift overlay cannot
+/// break the build.
+private enum AppleEventTCC {
+    static let notPermitted: OSStatus = -1743
+    static let wouldRequireConsent: OSStatus = -1744
+}
+
+/// Input Monitoring has no Swift overlay. These are the IOKit entry points
+/// `IOHIDCheckAccess` / `IOHIDRequestAccess` for `kIOHIDRequestTypeListenEvent`.
+enum IOHIDTCC {
+    static let listenEvent: UInt32 = 1
+    static let granted: UInt32 = 0
+    static let denied: UInt32 = 1
+    static let unknown: UInt32 = 2
+
+    static func check() -> UInt32 {
+        IOHIDCheckAccess(listenEvent)
+    }
+
+    static func request() -> Bool {
+        IOHIDRequestAccess(listenEvent)
+    }
+}
+
+@_silgen_name("IOHIDCheckAccess")
+private func IOHIDCheckAccess(_ requestType: UInt32) -> UInt32
+
+@_silgen_name("IOHIDRequestAccess")
+private func IOHIDRequestAccess(_ requestType: UInt32) -> Bool
+
+// MARK: - Long-lived TCC brokers
+
+/// Bluetooth and Location prompts are cancelled if their manager is released
+/// before the user answers. Keep both for the life of the process after the
+/// first request so the TCC row actually lands.
+final class PermissionBrokers: NSObject, CBCentralManagerDelegate, CLLocationManagerDelegate {
+    static let shared = PermissionBrokers()
+
+    var didAskScreenRecording = false
+    var didAskAccessibility = false
+    var didAskInputMonitoring = false
+    var didAskAutomation = false
+    var notificationSnapshot: PermissionState = .notDetermined
+
+    private var bluetoothManager: CBCentralManager?
+    private var bluetoothWaiters: [CheckedContinuation<Void, Never>] = []
+    private var locationManager: CLLocationManager?
+    private var locationWaiters: [CheckedContinuation<Void, Never>] = []
+
+    var locationAuthorization: CLAuthorizationStatus {
+        if let locationManager {
+            return locationManager.authorizationStatus
+        }
+        return CLLocationManager().authorizationStatus
+    }
+
+    func ensureBluetoothManager() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            bluetoothWaiters.append(continuation)
+            if bluetoothManager == nil {
+                bluetoothManager = CBCentralManager(
+                    delegate: self,
+                    queue: .main,
+                    options: [CBCentralManagerOptionShowPowerAlertKey: false]
+                )
             } else {
-                ForEach(statuses, id: \.kind) { status in
-                    PermissionRowView(status: status) {
-                        request(status.kind)
-                    }
-                }
+                finishBluetoothWait()
             }
-            Divider()
-            diagnosticsSection
-        }
-        .padding()
-        .frame(width: 380)
-        .task {
-            await refresh()
-        }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Permissions")
-                .font(.headline)
-            Text("macOS only lists EV under Privacy & Security after EV has asked. Grant permissions asks for all of them, which is what puts EV in the list.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                Button("Grant permissions") {
-                    isRequesting = true
-                    Task {
-                        statuses = await PermissionCenter.requestAll()
-                        facts = PermissionCenter.diagnostics()
-                        isRequesting = false
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(isRequesting)
-                Button("Refresh") {
-                    Task { await refresh() }
-                }
-                .font(.caption)
-                if isRequesting {
-                    ProgressView()
-                        .controlSize(.small)
-                }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                self?.finishBluetoothWait()
             }
         }
     }
 
-    private var diagnosticsSection: some View {
-        DisclosureGroup("Diagnostics", isExpanded: $showDiagnostics) {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(facts) { fact in
-                    VStack(alignment: .leading, spacing: 1) {
-                        HStack(alignment: .top, spacing: 4) {
-                            Text(fact.ok ? "✅" : "⚠️")
-                                .font(.caption2)
-                            Text("\(fact.title): \(fact.detail)")
-                                .font(.caption2)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        if let fix = fact.fix {
-                            Text(fix)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .padding(.leading, 16)
-                        }
-                    }
-                }
+    func requestWhenInUseLocation() async {
+        if locationManager == nil {
+            let manager = CLLocationManager()
+            manager.delegate = self
+            locationManager = manager
+        }
+        let status = locationManager?.authorizationStatus ?? .notDetermined
+        guard status == .notDetermined else { return }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            locationWaiters.append(continuation)
+            locationManager?.requestWhenInUseAuthorization()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                self?.finishLocationWait()
             }
-            .padding(.top, 4)
-        }
-        .font(.caption)
-    }
-
-    private func request(_ kind: PermissionKind) {
-        isRequesting = true
-        Task {
-            await PermissionCenter.request(kind)
-            await refresh()
-            isRequesting = false
         }
     }
 
-    private func refresh() async {
-        statuses = await PermissionCenter.statuses()
-        facts = PermissionCenter.diagnostics()
+    func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        finishBluetoothWait()
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        finishLocationWait()
+    }
+
+    private func finishBluetoothWait() {
+        let waiters = bluetoothWaiters
+        bluetoothWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    private func finishLocationWait() {
+        let waiters = locationWaiters
+        locationWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 }

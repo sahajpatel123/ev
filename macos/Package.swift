@@ -21,7 +21,19 @@ let package = Package(
                 .product(name: "EVClient", package: "EVClient"),
                 .product(name: "EVUI", package: "EVClient"),
             ],
-            path: "Sources/EV"
+            path: "Sources/EV",
+            linkerSettings: [
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("ApplicationServices"),
+                .linkedFramework("Contacts"),
+                .linkedFramework("CoreBluetooth"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("CoreLocation"),
+                .linkedFramework("EventKit"),
+                .linkedFramework("IOKit"),
+                .linkedFramework("Speech"),
+                .linkedFramework("UserNotifications"),
+            ]
         ),
         .executableTarget(
             name: "EVNotificationHelper",

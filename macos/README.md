@@ -30,11 +30,23 @@ Builds with Command Line Tools only — no Xcode required.
    open /Applications/EV.app
    ```
 
-4. **Click "Grant permissions".** Menu-bar icon → `Permissions…` →
-   **Grant permissions**. This is the step that makes EV appear in System
-   Settings: macOS adds an app to a Privacy pane only after that app *requests*
-   the permission. Reading its authorization status — which is all a status
-   panel does — registers nothing, so an app that never asks is never listed.
+4. **Click "Grant permissions" before opening System Settings.** Menu-bar
+   icon → `Permissions…` → **Grant permissions**. Answer every dialog that
+   appears (Allow / Don't Allow both register EV; Don't Allow leaves the
+   switch off).
+
+   macOS adds an app to a Privacy pane only after that app *requests* the
+   permission. EV is a menu-bar (`LSUIElement`) app, so those dialogs are
+   discarded unless EV comes to the foreground first — which Grant
+   permissions now does. Opening Microphone, Speech Recognition, Camera,
+   Screen Recording, Automation, Contacts, Calendars, Reminders,
+   Notifications, Bluetooth, or Input Monitoring *before* that request
+   shows an empty list even though EV is installed. Accessibility, Full
+   Disk Access, and Location can appear without this step because they use
+   a different prompt (or a + button); the others cannot.
+
+   Full Disk Access has no request API. Use **Reveal EV.app** in the
+   Permissions window and add the bundle with + in that pane.
 
 5. **If an item shows "denied".** macOS never prompts twice. EV *is* in the
    pane, with its switch off — flip it, or re-arm the prompt:
@@ -45,6 +57,9 @@ Builds with Command Line Tools only — no Xcode required.
    open /Applications/EV.app
    ```
 
+   Other services: `SpeechRecognition`, `Camera`, `ScreenCapture`,
+   `AppleEvents`, `AddressBook`, `Calendar`, `Reminders`, `BluetoothAlways`,
+   `ListenEvent`, `Accessibility`, `Location`, `SystemPolicyAllFiles`.
    Notifications are not TCC-backed; change them in System Settings →
    Notifications → EV.
 
@@ -87,10 +102,12 @@ EV_CODESIGN_IDENTITY="Developer ID Application: You (TEAMID)" ./scripts/package.
 With a real identity `package.sh` also signs with `--options runtime`
 (hardened runtime) and a secure timestamp. The hardened runtime is why
 `Resources/EV.entitlements` declares `com.apple.security.device.audio-input`,
-`com.apple.security.device.camera`, and
-`com.apple.security.automation.apple-events`: without them a hardened build is
-refused the microphone regardless of what the user allows. The build is
-unsandboxed (`com.apple.security.app-sandbox` is false).
+`com.apple.security.device.camera`, `com.apple.security.device.bluetooth`,
+`com.apple.security.automation.apple-events`, and the
+`com.apple.security.personal-information.*` keys for Contacts, Calendars, and
+Location: without them a hardened build is refused those resources
+regardless of what the user allows. The build is unsandboxed
+(`com.apple.security.app-sandbox` is false).
 
 ## What the app is
 
@@ -114,7 +131,8 @@ The line under the switch is what the server is doing (`listening for “EVIE”
 to it is the mic level. The choice is stored in `UserDefaults`
 (`ev.handsFree.enabled`) and the loop restarts itself at launch.
 
-- **Microphone.** EV asks the first time you switch it on. If it was already
+- **Microphone.** EV asks the first time you switch it on, after bringing
+  itself to the foreground so the dialog is not swallowed. If it was already
   denied, the panel says so and points at **Permissions…** — nothing fails
   silently. Use the runbook above so EV actually appears in System Settings.
 - **Server engines.** If `/v1/voice/live` reports `ready: false`, the blockers

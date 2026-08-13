@@ -19,7 +19,9 @@ final class MicCapture: NSObject {
         case .authorized:
             return true
         case .notDetermined:
-            return await AVCaptureDevice.requestAccess(for: .audio)
+            return await AppForeground.withActivation {
+                await AVCaptureDevice.requestAccess(for: .audio)
+            }
         default:
             return false
         }

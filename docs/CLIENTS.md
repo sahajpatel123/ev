@@ -294,8 +294,10 @@ microphone audio and play replies.
 
 * **Web** — `/app` Hands-free panel (AudioWorklet, 16 kHz PCM16).
 * **macOS menu bar** — toggle **Hands-free — say “EVIE”**. Grant microphone
-  permission from **Permissions… → Grant permissions** (`macos/README.md`);
-  reading TCC status never registers the app in System Settings.
+  (and the rest) from **Permissions… → Grant permissions** *before* opening
+  System Settings (`macos/README.md`). Menu-bar apps swallow TCC dialogs
+  unless they come to the foreground; reading TCC status never registers
+  the app in a Privacy pane.
 * **Python** — `uv run python -m clients.hands_free` (mic extra). `--simulate-wav`
   paces a file at real time when there is no hardware.
 * **Older ears process** — `python -m clients.ears` still does on-device VAD +

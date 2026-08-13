@@ -105,7 +105,20 @@ fi
 
 section "usage strings"
 if [ -n "$INSTALLED" ]; then
-    for key in NSMicrophoneUsageDescription NSSpeechRecognitionUsageDescription NSCameraUsageDescription NSScreenCaptureUsageDescription; do
+    for key in \
+        NSMicrophoneUsageDescription \
+        NSSpeechRecognitionUsageDescription \
+        NSCameraUsageDescription \
+        NSScreenCaptureUsageDescription \
+        NSAppleEventsUsageDescription \
+        NSContactsUsageDescription \
+        NSCalendarsUsageDescription \
+        NSCalendarsFullAccessUsageDescription \
+        NSRemindersUsageDescription \
+        NSRemindersFullAccessUsageDescription \
+        NSBluetoothAlwaysUsageDescription \
+        NSLocationWhenInUseUsageDescription
+    do
         if /usr/libexec/PlistBuddy -c "Print :$key" "$INSTALLED/Contents/Info.plist" >/dev/null 2>&1; then
             ok "$key present"
         else
@@ -137,10 +150,21 @@ section "re-arming prompts"
 print -r -- "A denied permission never prompts again; EV stays in the list with its"
 print -r -- "switch off. Flip the switch, or reset the decision and ask again:"
 print -r -- "  tccutil reset Microphone $BUNDLE_ID"
+print -r -- "  tccutil reset SpeechRecognition $BUNDLE_ID"
 print -r -- "  tccutil reset Camera $BUNDLE_ID"
 print -r -- "  tccutil reset ScreenCapture $BUNDLE_ID"
+print -r -- "  tccutil reset AppleEvents $BUNDLE_ID"
+print -r -- "  tccutil reset AddressBook $BUNDLE_ID"
+print -r -- "  tccutil reset Calendar $BUNDLE_ID"
+print -r -- "  tccutil reset Reminders $BUNDLE_ID"
+print -r -- "  tccutil reset BluetoothAlways $BUNDLE_ID"
+print -r -- "  tccutil reset ListenEvent $BUNDLE_ID"
 print -r -- "  tccutil reset Accessibility $BUNDLE_ID"
+print -r -- "  tccutil reset Location $BUNDLE_ID"
+print -r -- "  tccutil reset SystemPolicyAllFiles $BUNDLE_ID"
 print -r -- "  tccutil reset All $BUNDLE_ID"
 print -r -- "Quit EV before resetting, then relaunch and click \"Grant permissions\"."
+print -r -- "Do not open a Privacy pane until after Grant permissions — an empty"
+print -r -- "list means EV has not requested that service yet, not that it is hidden."
 print -r -- "Notifications are not TCC-backed: change them in System Settings >"
-print -r -- "Notifications > EV."
+print -r -- "Notifications > EV. Full Disk Access has no prompt: add EV.app with +."
