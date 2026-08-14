@@ -9,7 +9,13 @@ import pytest
 from httpx import AsyncClient
 
 from app.ev.ev_sense import quiet_hours_active
-from app.ev.interaction import assertiveness_level, challenge_evidence_kwargs
+from app.ev.interaction import (
+    assertiveness_level,
+    build_strategy,
+    challenge_evidence_kwargs,
+    detect_life_action,
+    life_action_response,
+)
 
 
 async def post_event(client: AsyncClient, text: str, *, event_type: str = "note") -> dict:
@@ -382,6 +388,9 @@ async def test_tool_selection_routes_intents(client: AsyncClient) -> None:
         "how was my sleep this week?": "get_health_trends",
         "show me the EV wrist unit project": "get_project",
         "tell me something from my memory": "search_memory",
+        "what's the weather in Surat?": "get_weather",
+        "what is the capital of France": "search_web",
+        "what's on my calendar today": "get_upcoming_alerts",
     }
     for message, expected in cases.items():
         resp = await client.post("/v1/gateway/select-tool", json={"message": message})
@@ -488,3 +497,189 @@ def test_challenge_evidence_kwargs_uses_real_counts() -> None:
 def test_challenge_evidence_kwargs_returns_zero_when_absent() -> None:
     kwargs = challenge_evidence_kwargs(decision_loops=[], outcomes=[])
     assert kwargs == {"recent_reevaluations_30d": 0, "outcome_citations": 0}
+
+
+# --------------------------------------------------------------------------- #
+# Wave LIFE agency persona (Agent 16): action over refusal theater
+# --------------------------------------------------------------------------- #
+
+
+def test_life_action_intent_is_detected() -> None:
+    assert detect_life_action("Send a message to Mom saying I'm late") == "send_message"
+    assert detect_life_action("Text Priya that I'm on my way") == "send_message"
+    assert detect_life_action("Email the report to work@example.com") == "mail_send"
+    assert detect_life_action("Call the dentist") == "phone_call"
+    assert detect_life_action("Set a reminder for 6pm") == "reminder"
+    assert detect_life_action("What's the weather?") is None
+    assert detect_life_action("Help me refactor the query planner") is None
+
+
+def test_reminder_framing_outranks_embedded_verb() -> None:
+    # "remind me to call mom at 5pm" must create a reminder, never an
+    # immediate phone call, even though it contains "call mom".
+    assert detect_life_action("Remind me to call mom at 5pm today") == "reminder"
+    assert detect_life_action("Set a reminder to send the file to Priya") == "reminder"
+    assert detect_life_action("Schedule a reminder for tomorrow morning") == "reminder"
+    assert detect_life_action("Please remind me to call the dentist") == "reminder"
+
+
+def test_life_action_build_strategy_signals_are_operational() -> None:
+    strategy = build_strategy("Send a message to Mom saying I'm late")
+    assert strategy.intent == "life_action"
+    assert strategy.ask_question is False
+    assert strategy.directness == "maximum"
+    assert "life_action=send_message" in strategy.rationale
+    assert "one action plus a confirmed result" in strategy.length_target
+
+
+def test_life_action_policy_executes_when_available_and_authorized() -> None:
+    decision = life_action_response(
+        action="send_message",
+        tool_available=True,
+        authorized=True,
+    )
+    assert decision["mode"] == "execute"
+    assert decision["confirmed"] is False
+    assert "confirm once the runtime reports delivery" in decision["response"]
+
+
+def test_life_action_confirmation_requires_runtime_evidence() -> None:
+    confirmed = life_action_response(
+        action="send_message",
+        runtime_result={
+            "confirmed": True,
+            "evidence": {"confirmed_by": "sent", "to": "Mom"},
+        },
+    )
+    assert confirmed["mode"] == "confirm"
+    assert confirmed["confirmed"] is True
+    assert "delivery confirmed" in confirmed["response"].lower()
+    assert "sent" in confirmed["response"].lower()
+
+    uncertain = life_action_response(
+        action="send_message",
+        runtime_result={"confirmed": False, "evidence": None},
+    )
+    assert uncertain["mode"] == "uncertain"
+    assert uncertain["confirmed"] is False
+    assert "can't confirm that was sent" in uncertain["response"]
+
+
+def test_life_action_failure_produces_remediation_not_refusal() -> None:
+    unavailable = life_action_response(
+        action="send_message",
+        tool_available=False,
+    )
+    assert unavailable["mode"] == "remediate"
+    assert unavailable["confirmed"] is False
+    assert "ev_life_helper_path" in unavailable["response"].lower()
+    assert "next step" in unavailable["response"].lower()
+
+    unauthorized = life_action_response(
+        action="send_message",
+        tool_available=True,
+        authorized=False,
+    )
+    assert unauthorized["mode"] == "remediate"
+    assert "messaging:act" in unauthorized["response"]
+    assert "ev_life_autonomy=full" in unauthorized["response"].lower()
+
+
+async def test_refusal_theater_prompt_reaches_send_message_with_grounded_result(
+    client: AsyncClient,
+) -> None:
+    prompt = "Send a message to Mom saying I'm late"
+    assert detect_life_action(prompt) == "send_message"
+
+    resp = await client.post(
+        "/v1/runtime/actions",
+        json={
+            "action_type": "send_message",
+            "title": prompt,
+            "payload": {
+                "channel": "default",
+                "to": "Mom",
+                "text": "I'm late",
+            },
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    action = resp.json()
+    action_id = action["id"]
+
+    resp = await client.post(f"/v1/runtime/actions/{action_id}/approve")
+    assert resp.status_code == 200, resp.text
+    resp = await client.post(
+        f"/v1/runtime/actions/{action_id}/execute",
+        json={"result": {}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "executed"
+
+    notifications = (await client.get("/v1/runtime/notifications")).json()
+    delivered = [
+        n
+        for n in notifications
+        if n["kind"] == "action:message"
+        and n["status"] == "delivered"
+    ]
+    assert delivered, [n["status"] for n in notifications]
+    receipt = delivered[-1]
+    assert receipt["delivered_at"] is not None
+
+    confirmation = life_action_response(
+        action="send_message",
+        runtime_result={
+            "confirmed": True,
+            "evidence": {
+                "confirmed_by": "console",
+                "to": "Mom",
+                "backend_ref": receipt["id"],
+            },
+        },
+    )
+    assert confirmation["mode"] == "confirm"
+    assert "done — delivery confirmed" in confirmation["response"].lower()
+
+
+async def test_failed_send_message_never_fabricates_success(
+    client: AsyncClient,
+) -> None:
+    resp = await client.post(
+        "/v1/runtime/actions",
+        json={
+            "action_type": "send_message",
+            "payload": {
+                "channel": "sms",
+                "to": "Mom",
+                "text": "hi",
+            },
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    action_id = resp.json()["id"]
+    await client.post(f"/v1/runtime/actions/{action_id}/approve")
+    resp = await client.post(
+        f"/v1/runtime/actions/{action_id}/execute",
+        json={"result": {}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "executed"
+
+    notifications = (await client.get("/v1/runtime/notifications")).json()
+    failed = [
+        n
+        for n in notifications
+        if n["kind"] == "action:message"
+        and n["status"] == "failed"
+        and "webhook" in (n.get("reason") or "")
+    ]
+    assert failed, [n["status"] for n in notifications]
+    assert failed[-1]["delivered_at"] is None
+
+    policy = life_action_response(
+        action="send_message",
+        runtime_result={"confirmed": False, "evidence": None},
+    )
+    assert policy["mode"] == "uncertain"
+    assert "can't confirm that was sent" in policy["response"]

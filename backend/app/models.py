@@ -282,6 +282,23 @@ class Device(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_reason: Mapped[str | None] = mapped_column(String(256))
     capabilities: Mapped[list] = mapped_column(JSONType, default=list)
+    # --- AGENT 14 PULSE (WAVE LIFE, additive) ---
+    device_type: Mapped[str | None] = mapped_column(String(32), index=True)
+    platform: Mapped[str | None] = mapped_column(String(32))
+    paired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    push_token: Mapped[str | None] = mapped_column(Text)
+    push_token_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    push_bundle_id: Mapped[str | None] = mapped_column(String(256))
+
+    @property
+    def push_platform(self) -> str | None:
+        return "apns" if self.push_token else None
+
+    @property
+    def push_registered(self) -> bool:
+        return bool(self.push_token)
 
 
 class Attachment(Base):
@@ -1030,6 +1047,11 @@ class VoiceSession(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     end_reason: Mapped[str | None] = mapped_column(String(128))
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_threads.id"), index=True
+    )
+    greeted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    malfunction_spoken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -1579,6 +1601,13 @@ class Notification(Base):
     action_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("approved_actions.id"), index=True
     )
+    # --- AGENT 14 PULSE (WAVE LIFE, additive) ---
+    device_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("devices.id"), index=True
+    )
+    attention_kind: Mapped[str] = mapped_column(
+        String(24), default="incoming", index=True
+    )
     attempt_count: Mapped[int] = mapped_column(Integer, default=1)
     queued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
@@ -1644,5 +1673,137 @@ class PasskeyAuthMaterial(Base):
     rp_id: Mapped[str] = mapped_column(String(256))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# --------------------------------------------------------------------------- #
+# AGENT 12 CONDUIT (WAVE LIFE) — Apple life bridges (additive)
+# --------------------------------------------------------------------------- #
+
+
+class LifeOutboundAction(Base):
+    """One queued outbound life action for a registered device actuator.
+
+    The device_proxy adapter queues messages/calls here; a registered iPhone
+    (SUIT app) polls the outbox and posts authenticated delivery results.
+    ``delivered`` is only set when the device returns provider evidence
+    (message_id/call_id + timestamp); nothing is ever marked delivered
+    without evidence.
+    """
+
+    __tablename__ = "life_outbound_actions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    integration_id: Mapped[UUID] = mapped_column(
+        ForeignKey("integrations.id"), index=True
+    )
+    device_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("devices.id"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    args: Mapped[dict] = mapped_column(JSONType, default=dict)
+    # queued | delivered | failed | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    result: Mapped[dict | None] = mapped_column(JSONType)
+    evidence: Mapped[dict | None] = mapped_column(JSONType)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # --- AGENT 14 PULSE (WAVE LIFE, additive) ---
+    # Lifecycle mirrors the brief's queued → dispatched → acknowledged →
+    # executed / failed contract while Agent 12's ``status`` column keeps the
+    # device-proxy outbox semantics (queued → delivered/failed).
+    lifecycle: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 # --- AGENT 20 LAUNCH ---
 # ============================================================================
+
+
+# --------------------------------------------------------------------------- #
+# Day-long companion: owner profile, calibration cache, callouts, gates
+# --------------------------------------------------------------------------- #
+
+
+class AssistantProfile(Base):
+    """Singleton owner-scoped spoken identity and companion stamps."""
+
+    __tablename__ = "assistant_profiles"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("owner_identities.id"), index=True
+    )
+    nickname: Mapped[str] = mapped_column(String(64), default="EVIE")
+    owner_preferred_name: Mapped[str | None] = mapped_column(String(128))
+    greeting_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dedication_text: Mapped[str | None] = mapped_column(String(500))
+    dedication_blob_id: Mapped[str | None] = mapped_column(String(256))
+    dedication_played_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    live_conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_threads.id"), index=True
+    )
+    training_wheels_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    training_wheels_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    social_turn_count: Mapped[int] = mapped_column(Integer, default=0)
+    social_nudge_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    isolation_scan_ran_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    isolation_detected: Mapped[bool] = mapped_column(Boolean, default=False)
+    quiet_hours_start: Mapped[str | None] = mapped_column(String(16))
+    quiet_hours_end: Mapped[str | None] = mapped_column(String(16))
+    quiet_digest_spoken_on: Mapped[str | None] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class CalibrationReportRow(Base):
+    """Cached last self-calibration report (item 26 hook)."""
+
+    __tablename__ = "calibration_reports"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    overall: Mapped[str] = mapped_column(String(16), index=True)
+    report: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Callout(Base):
+    """Persisted status narration; spoken only when policy allows."""
+
+    __tablename__ = "callouts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    text: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    source_item: Mapped[str | None] = mapped_column(String(128), index=True)
+    hud: Mapped[dict] = mapped_column(JSONType, default=dict)
+    spoken: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    emergency: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class FeatureGate(Base):
+    """Minimal feature-gate / training-wheels flags for the protocol sheet."""
+
+    __tablename__ = "feature_gates"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="locked", index=True)
+    reason: Mapped[str | None] = mapped_column(Text)
+    setup_hint: Mapped[str | None] = mapped_column(String(256))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )

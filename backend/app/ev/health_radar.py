@@ -16,8 +16,81 @@ def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
+# Amazfit Helio Strap → Zepp → Apple Health writes these (DC Rainmaker / firmware notes).
+HELIO_ALIASES = {
+    "hrv": "hrv_ms",
+    "hrv_rmssd": "hrv_ms",
+    "heart_rate_variability": "hrv_ms",
+    "resting_heart_rate": "resting_hr",
+    "hr": "heart_rate",
+    "spo2_pct": "spo2",
+    "blood_oxygen": "spo2",
+    "oxygen_saturation": "spo2",
+    "respiratory_rate": "resp_rate",
+    "breathing_rate": "resp_rate",
+    "vo2max": "vo2_max",
+    "active_energy": "active_kcal",
+    "calories": "active_kcal",
+    "skin_temperature": "skin_temp_c",
+    "biocharge": "readiness_raw",
+    "pai": "pai",
+    "stress_score": "stress",
+}
+
+
+def normalize_metrics(metrics: dict) -> dict[str, float]:
+    """Map Helio / HealthKit names onto the radar's canonical keys."""
+
+    out: dict[str, float] = {}
+    for key, value in (metrics or {}).items():
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        name = HELIO_ALIASES.get(str(key).strip().lower(), str(key).strip().lower())
+        out[name] = float(value)
+    if "resting_hr" not in out and "heart_rate" in out:
+        out["resting_hr"] = out["heart_rate"]
+    return out
+
+
+# Absolute bands (not z-scores). Used when a single live sample is dangerous
+# even if we do not yet have a 14-day baseline — Karen-style body scan.
+CLINICAL_RULES: list[tuple[str, str, float, str]] = [
+    ("heart_rate", "high", 140.0, "Heart rate is very high at rest."),
+    ("heart_rate", "low", 40.0, "Heart rate is unusually low."),
+    ("resting_hr", "high", 110.0, "Resting heart rate is elevated."),
+    ("resting_hr", "low", 38.0, "Resting heart rate is unusually low."),
+    ("spo2", "low", 92.0, "Blood oxygen is below a safe band."),
+    ("hrv_ms", "low", 15.0, "HRV has crashed — recovery looks poor."),
+    ("stress", "high", 85.0, "Stress reading is in the top band."),
+]
+
+
+def clinical_flags(metrics: dict) -> list[dict]:
+    flags: list[dict] = []
+    data = normalize_metrics(metrics)
+    for metric, side, bound, text in CLINICAL_RULES:
+        value = data.get(metric)
+        if value is None:
+            continue
+        hit = value >= bound if side == "high" else value <= bound
+        if hit:
+            flags.append(
+                {
+                    "metric": metric,
+                    "value": float(value),
+                    "side": side,
+                    "bound": bound,
+                    "rationale": text,
+                    "clinical": True,
+                    "emergency": metric in {"heart_rate", "resting_hr", "spo2"},
+                }
+            )
+    return flags
+
+
 def readiness_score(metrics: dict) -> tuple[float, str]:
     """0-100 readiness from sleep, HRV ratio, resting HR, activity, mood."""
+    metrics = normalize_metrics(metrics)
     sleep_hours = metrics.get("sleep_hours")
     hrv_ms = metrics.get("hrv_ms")
     resting_hr = metrics.get("resting_hr")
@@ -130,6 +203,7 @@ async def create_snapshot(
     occurred_at=None,
 ) -> HealthSnapshot:
     occurred_at = occurred_at or utcnow()
+    metrics = normalize_metrics(metrics)
     readiness, band = readiness_score(metrics)
     snapshot = HealthSnapshot(
         occurred_at=occurred_at,
@@ -142,7 +216,8 @@ async def create_snapshot(
     )
     session.add(snapshot)
     await session.flush()
-    snapshot.anomalies = await detect_anomalies(session, snapshot)
+    z_flags = await detect_anomalies(session, snapshot)
+    snapshot.anomalies = [*clinical_flags(metrics), *z_flags]
     return snapshot
 
 
@@ -216,14 +291,39 @@ async def morning_brief(session: AsyncSession) -> dict:
             "anomalies": [],
         }
     recommendation, question = morning_recommendation(latest.readiness, latest.metrics, latest.anomalies or [])
+    metrics = normalize_metrics(latest.metrics or {})
     return {
         "generated_at": utcnow(),
         "readiness": latest.readiness,
         "band": latest.band,
-        "sleep_hours": latest.metrics.get("sleep_hours"),
-        "hrv_ms": latest.metrics.get("hrv_ms"),
-        "resting_hr": latest.metrics.get("resting_hr"),
+        "sleep_hours": metrics.get("sleep_hours"),
+        "hrv_ms": metrics.get("hrv_ms"),
+        "resting_hr": metrics.get("resting_hr"),
+        "heart_rate": metrics.get("heart_rate"),
+        "spo2": metrics.get("spo2"),
+        "stress": metrics.get("stress"),
+        "source": latest.source,
         "recommendation": recommendation,
         "open_question": question,
         "anomalies": latest.anomalies or [],
+        "emergency": any(flag.get("emergency") for flag in (latest.anomalies or [])),
+    }
+
+
+async def latest_clinical(session: AsyncSession) -> dict:
+    """Latest snapshot's clinical/emergency state, or empty if none."""
+
+    result = await session.execute(select(HealthSnapshot).order_by(HealthSnapshot.occurred_at.desc()).limit(1))
+    latest = result.scalars().first()
+    if latest is None:
+        return {"emergency": False, "flags": [], "readiness": None}
+    flags = [row for row in (latest.anomalies or []) if row.get("clinical") or row.get("emergency")]
+    return {
+        "emergency": any(row.get("emergency") for row in flags) or (
+            latest.readiness is not None and latest.readiness < 35
+        ),
+        "flags": flags,
+        "readiness": latest.readiness,
+        "source": latest.source,
+        "metrics": normalize_metrics(latest.metrics or {}),
     }

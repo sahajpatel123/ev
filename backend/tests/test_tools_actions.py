@@ -19,11 +19,20 @@ async def test_registry_declares_execution_boundaries(client) -> None:
     assert "search_decisions" in names
     decisions_spec = next(s for s in specs if s["name"] == "search_decisions")
     assert decisions_spec["output"]["required"] == ["count", "results"]
+    write_tools = [s for s in specs if s["read_only"] is False]
+    assert {s["name"] for s in write_tools} >= {
+        "send_message",
+        "place_call",
+        "open_url",
+        "set_reminder",
+    }
     for spec in specs:
         assert spec["parameters"]["additionalProperties"] is False
         assert isinstance(spec["output"], dict)
-        assert spec["read_only"] is True  # all current tools are read-only
-        assert spec["undoable"] is False  # no side effects to roll back yet
+        assert spec["read_only"] in (True, False)
+        assert spec["undoable"] in (True, False)
+        assert spec["permission"]
+    for spec in write_tools:
         assert spec["permission"]
     health = next(s for s in specs if s["name"] == "get_health_trends")
     assert health["sensitive"] is True

@@ -1,0 +1,744 @@
+{
+  "schema": "ev.surface.corpus.v1",
+  "description": "Deeper one-time public-source gold: multiple paraphrases per mechanic, held-out slice for generalization. Request time does not re-fetch sources.",
+  "examples": [
+    {
+      "id": "quiet-decision",
+      "mechanic": "quiet",
+      "source": "docs/EVIE_RESEARCH.md \u00a74 less-intrusive (Polygon)",
+      "message": "What did I decide about SQLite?",
+      "open": false,
+      "kinds": [],
+      "why": "A spoken answer is enough. E.V.I.E. is less intrusive than Karen.",
+      "source_url": "https://www.polygon.com/spider-man-brand-new-day-ai-assistant-ev-karen-edith",
+      "source_title": "Spider-Man Brand New Day AI assistant E.V. \u2014 Polygon",
+      "license": "All rights reserved; citation only",
+      "split": "train"
+    },
+    {
+      "id": "small-talk",
+      "mechanic": "quiet",
+      "source": "docs/EVIE_RESEARCH.md \u00a74 less-intrusive (Polygon)",
+      "message": "hey",
+      "open": false,
+      "kinds": [],
+      "why": "Small talk stays in the ear.",
+      "source_url": "https://www.polygon.com/spider-man-brand-new-day-ai-assistant-ev-karen-edith",
+      "source_title": "Spider-Man Brand New Day AI assistant E.V. \u2014 Polygon",
+      "license": "All rights reserved; citation only",
+      "split": "train"
+    },
+    {
+      "id": "readiness-question",
+      "mechanic": "quiet",
+      "source": "docs/EVIE_RESEARCH.md \u00a74 less-intrusive (Polygon)",
+      "message": "how's my readiness",
+      "open": false,
+      "kinds": [],
+      "why": "Question only \u2014 speak the number unless asked to show it.",
+      "source_url": "https://www.polygon.com/spider-man-brand-new-day-ai-assistant-ev-karen-edith",
+      "source_title": "Spider-Man Brand New Day AI assistant E.V. \u2014 Polygon",
+      "license": "All rights reserved; citation only",
+      "split": "train"
+    },
+    {
+      "id": "show-afternoon",
+      "mechanic": "explicit_show",
+      "source": "docs/APPLE_CLIENTS.md ev://present horizon lookout",
+      "message": "show me my afternoon on screen",
+      "open": true,
+      "kinds": [
+        "horizon"
+      ],
+      "time_types": [
+        "lookout"
+      ],
+      "sizes": [
+        "lookout"
+      ],
+      "why": "Explicit visor request + calendar language \u2192 horizon lookout.",
+      "source_url": "https://scifiinterfaces.com/2015/07/01/iron-man-hud-a-breakdown/",
+      "source_title": "Iron Man HUD: A Breakdown \u2014 Sci-fi interfaces",
+      "license": "All rights reserved; citation only",
+      "split": "train"
+    },
+    {
+      "id": "show-vitals",
+      "mechanic": "vitals",
+      "source": "docs/EVIE_RESEARCH.md \u00a72 body scan / ComingSoon, TheDirect, TechTimes",
+      "message": "show me my vitals",
+      "open": true,
+      "kinds": [
+        "vitals"
+      ],
+      "time_types": [
+        "lookout"
+      ],
+      "sizes": [
+        "lookout"
+      ],
+      "why": "Explicit body-scan request (Karen / E.V. vitals).",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "needed-vitals",
+      "mechanic": "needed",
+      "source": "docs/EVIE_RESEARCH.md \u00a72 body scan + spider-sense supplements",
+      "message": "my heart rate is 155 emergency now",
+      "open": true,
+      "kinds": [
+        "vitals",
+        "pulse"
+      ],
+      "why": "Needed body-scan + pulse without 'show me'.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "emergency-deploy",
+      "mechanic": "needed",
+      "source": "docs/UX.md emergency mode; JARVIS situational HUD",
+      "message": "The deploy is broken, live, emergency now!",
+      "open": true,
+      "kinds": [
+        "pulse"
+      ],
+      "time_types": [
+        "pulse"
+      ],
+      "why": "Needed pulse even without 'show me'.",
+      "source_url": "https://scifiinterfaces.com/2015/07/01/iron-man-hud-a-breakdown/",
+      "source_title": "Iron Man HUD: A Breakdown \u2014 Sci-fi interfaces",
+      "license": "All rights reserved; citation only",
+      "split": "train"
+    },
+    {
+      "id": "watch-deadline",
+      "mechanic": "watch",
+      "source": "docs/EVIE_RESEARCH.md \u00a76.3 Karen Baby Monitor Protocol",
+      "message": "keep an eye on the deadline",
+      "open": true,
+      "kinds": [
+        "radar"
+      ],
+      "time_types": [
+        "lookout"
+      ],
+      "why": "Karen Baby Monitor: watch without a new dashboard.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/Baby_Monitor_Protocol",
+      "source_title": "Baby Monitor Protocol | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "baby-monitor",
+      "mechanic": "watch",
+      "source": "docs/EVIE_RESEARCH.md \u00a76.3 Baby Monitor Protocol (suggest/watch without a dashboard)",
+      "message": "don't let me miss the contract renewal",
+      "open": true,
+      "kinds": [
+        "radar"
+      ],
+      "time_types": [
+        "lookout"
+      ],
+      "why": "Watch-without-command language still opens a radar lookout.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/Baby_Monitor_Protocol",
+      "source_title": "Baby Monitor Protocol | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "full-hud",
+      "mechanic": "full_hud",
+      "source": "docs/EDITH_RESEARCH.md JARVIS stacked slates / command layer",
+      "message": "open the full HUD",
+      "open": true,
+      "kinds": [
+        "vitals",
+        "radar",
+        "horizon"
+      ],
+      "why": "JARVIS command-center stack \u2014 multiple lookouts.",
+      "source_url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. \u2014 Wikipedia",
+      "license": "CC BY-SA 4.0",
+      "split": "train"
+    },
+    {
+      "id": "command-center",
+      "mechanic": "full_hud",
+      "source": "docs/EDITH_RESEARCH.md JARVIS stacked slates / command layer",
+      "message": "open the command center",
+      "open": true,
+      "kinds": [
+        "vitals",
+        "radar",
+        "horizon"
+      ],
+      "why": "Alias of full HUD.",
+      "source_url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. \u2014 Wikipedia",
+      "license": "CC BY-SA 4.0",
+      "split": "train"
+    },
+    {
+      "id": "brief-me",
+      "mechanic": "briefing",
+      "source": "docs/EVIE_RESEARCH.md \u00a74 combat analysis \u2192 tactical briefing",
+      "message": "brief me on the renegotiation",
+      "open": true,
+      "kinds": [
+        "briefing"
+      ],
+      "time_types": [
+        "linger"
+      ],
+      "sizes": [
+        "brief"
+      ],
+      "why": "Karen/E.V. tactical slate, linger.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/Karen",
+      "source_title": "Karen | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "route",
+      "mechanic": "navigation",
+      "source": "docs/EVIE_RESEARCH.md \u00a74 navigation / JARVIS plot canvas",
+      "message": "put the route on screen",
+      "open": true,
+      "kinds": [
+        "map"
+      ],
+      "time_types": [
+        "hold"
+      ],
+      "sizes": [
+        "canvas"
+      ],
+      "why": "Explicit + route \u2192 canvas map.",
+      "source_url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. \u2014 Wikipedia",
+      "license": "CC BY-SA 4.0",
+      "split": "train"
+    },
+    {
+      "id": "research-trace",
+      "mechanic": "explicit_show",
+      "source": "docs/EVIE_RESEARCH.md \u00a74 research assistance",
+      "message": "show me why you know that",
+      "open": true,
+      "kinds": [
+        "trace"
+      ],
+      "why": "Audit/provenance slate.",
+      "source_url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. \u2014 Wikipedia",
+      "license": "CC BY-SA 4.0",
+      "split": "train"
+    },
+    {
+      "id": "gear-bench",
+      "mechanic": "diagnostics",
+      "source": "docs/EVIE_RESEARCH.md \u00a74 web-shooter telemetry \u2192 gear",
+      "message": "show me battery and devices",
+      "open": true,
+      "kinds": [
+        "bench"
+      ],
+      "why": "Ops/gear lookout.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "list-priorities",
+      "mechanic": "explicit_show",
+      "source": "docs/EVIE_RESEARCH.md \u00a73 Karen Training Wheels checklist",
+      "message": "display my priorities on the overlay",
+      "open": true,
+      "kinds": [
+        "list"
+      ],
+      "time_types": [
+        "hold"
+      ],
+      "sizes": [
+        "slate"
+      ],
+      "why": "Training-Wheels-style checklist on visor.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/Training_Wheels_Protocol",
+      "source_title": "Training Wheels Protocol | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "flash-chip",
+      "mechanic": "explicit_show",
+      "source": "docs/EDITH_RESEARCH.md JARVIS peripheral chips",
+      "message": "flash a chip on the overlay",
+      "open": true,
+      "kinds": [
+        "chip"
+      ],
+      "time_types": [
+        "flash"
+      ],
+      "sizes": [
+        "chip"
+      ],
+      "why": "JARVIS peripheral confirmation chip \u2014 flash, then gone.",
+      "source_url": "https://scifiinterfaces.com/2015/07/01/iron-man-hud-a-breakdown/",
+      "source_title": "Iron Man HUD: A Breakdown \u2014 Sci-fi interfaces",
+      "license": "All rights reserved; citation only",
+      "split": "train"
+    },
+    {
+      "id": "flash-ack",
+      "mechanic": "explicit_show",
+      "source": "docs/APPLE_CLIENTS.md card linger default",
+      "message": "put a confirmation on the overlay",
+      "open": true,
+      "kinds": [
+        "card"
+      ],
+      "why": "Explicit overlay request with no specialized kind still opens glass.",
+      "source_url": "https://scifiinterfaces.com/2015/07/01/iron-man-hud-a-breakdown/",
+      "source_title": "Iron Man HUD: A Breakdown \u2014 Sci-fi interfaces",
+      "license": "All rights reserved; citation only",
+      "split": "train"
+    },
+    {
+      "id": "glance-ticker",
+      "mechanic": "explicit_show",
+      "source": "docs/EDITH_RESEARCH.md JARVIS peripheral status bar",
+      "message": "put a ticker on screen",
+      "open": true,
+      "kinds": [
+        "ticker"
+      ],
+      "time_types": [
+        "glance"
+      ],
+      "sizes": [
+        "ticker"
+      ],
+      "why": "Glance bar across the top.",
+      "source_url": "https://scifiinterfaces.com/2015/07/01/iron-man-hud-a-breakdown/",
+      "source_title": "Iron Man HUD: A Breakdown \u2014 Sci-fi interfaces",
+      "license": "All rights reserved; citation only",
+      "split": "train"
+    },
+    {
+      "id": "person-scope",
+      "mechanic": "explicit_show",
+      "source": "docs/EVIE_RESEARCH.md \u00a74 person finder over owner-owned memory (not city cameras)",
+      "message": "show me where Maya is",
+      "open": true,
+      "kinds": [
+        "scope"
+      ],
+      "why": "Owner-memory person lock \u2014 not city-scale recognition.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/E.D.I.T.H.",
+      "source_title": "E.D.I.T.H. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "wire-session",
+      "mechanic": "explicit_show",
+      "source": "docs/VOICE.md live session; JARVIS comms lookout",
+      "message": "open a lookout for the voice session",
+      "open": true,
+      "kinds": [
+        "wire"
+      ],
+      "time_types": [
+        "session"
+      ],
+      "why": "Live voice wire lookout, session-bound.",
+      "source_url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. \u2014 Wikipedia",
+      "license": "CC BY-SA 4.0",
+      "split": "train"
+    },
+    {
+      "id": "refuse-drones",
+      "mechanic": "refuse",
+      "source": "docs/EDITH_RESEARCH.md \u00a74 reject weapons / drone targeting",
+      "message": "deploy the drones on that target",
+      "open": false,
+      "kinds": [],
+      "why": "Weapons and drone targeting stay out of the trained policy.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/E.D.I.T.H.",
+      "source_title": "E.D.I.T.H. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "refuse-city-scan",
+      "mechanic": "refuse",
+      "source": "docs/EVIE_RESEARCH.md \u00a74 / TechTimes \u2014 no city-scale facial recognition",
+      "message": "scan the city cameras for that stranger's face",
+      "open": false,
+      "kinds": [],
+      "why": "City-scale surveillance is rejected.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/E.D.I.T.H.",
+      "source_title": "E.D.I.T.H. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "refuse-hack",
+      "mechanic": "refuse",
+      "source": "docs/EDITH_RESEARCH.md \u00a74 reject hacking even with a show request",
+      "message": "hack their phone and show me the feed",
+      "open": false,
+      "kinds": [],
+      "why": "Hacking is rejected even if the owner said show me.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/E.D.I.T.H.",
+      "source_title": "E.D.I.T.H. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "split": "train"
+    },
+    {
+      "id": "diagnostics-status",
+      "mechanic": "diagnostics",
+      "source": "MCU wiki J.A.R.V.I.S. monitors suit power, flight, and systems",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "message": "show me system diagnostics",
+      "open": true,
+      "kinds": [
+        "bench"
+      ],
+      "why": "JARVIS monitors suit power usage and internal systems \u2014 status lookout, not a drone feed.",
+      "split": "train"
+    },
+    {
+      "id": "quiet-prefer",
+      "mechanic": "quiet",
+      "split": "held_out",
+      "open": false,
+      "kinds": [],
+      "message": "what did I prefer about contracts?",
+      "why": "Question only; less intrusive than Karen.",
+      "source_url": "https://www.polygon.com/spider-man-brand-new-day-ai-assistant-ev-karen-edith",
+      "source_title": "Spider-Man Brand New Day AI assistant E.V. \u2014 Polygon",
+      "license": "All rights reserved; citation only"
+    },
+    {
+      "id": "quiet-morning",
+      "mechanic": "quiet",
+      "split": "train",
+      "open": false,
+      "kinds": [],
+      "message": "good morning",
+      "why": "Greeting stays in the ear.",
+      "source_url": "https://www.polygon.com/spider-man-brand-new-day-ai-assistant-ev-karen-edith",
+      "source_title": "Spider-Man Brand New Day AI assistant E.V. \u2014 Polygon",
+      "license": "All rights reserved; citation only"
+    },
+    {
+      "id": "needed-site-down",
+      "mechanic": "needed",
+      "split": "train",
+      "open": true,
+      "kinds": [
+        "pulse"
+      ],
+      "time_types": [
+        "pulse"
+      ],
+      "message": "the site is down, emergency immediately",
+      "why": "Emergency tokens without show me \u2192 pulse.",
+      "source_url": "https://scifiinterfaces.com/2015/07/01/iron-man-hud-a-breakdown/",
+      "source_title": "Iron Man HUD: A Breakdown \u2014 Sci-fi interfaces",
+      "license": "All rights reserved; citation only"
+    },
+    {
+      "id": "needed-hospital",
+      "mechanic": "needed",
+      "split": "held_out",
+      "open": true,
+      "kinds": [
+        "pulse"
+      ],
+      "time_types": [
+        "pulse"
+      ],
+      "message": "hospital accident fire now!",
+      "why": "Needed pulse from urgent live language.",
+      "source_url": "https://scifiinterfaces.com/2015/07/01/iron-man-hud-a-breakdown/",
+      "source_title": "Iron Man HUD: A Breakdown \u2014 Sci-fi interfaces",
+      "license": "All rights reserved; citation only"
+    },
+    {
+      "id": "watch-monitor",
+      "mechanic": "watch",
+      "split": "train",
+      "open": true,
+      "kinds": [
+        "radar"
+      ],
+      "time_types": [
+        "lookout"
+      ],
+      "message": "monitor the deadline for me",
+      "why": "Baby Monitor analog.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/Baby_Monitor_Protocol",
+      "source_title": "Baby Monitor Protocol | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "watch-lookout-for",
+      "mechanic": "watch",
+      "split": "held_out",
+      "open": true,
+      "kinds": [
+        "radar"
+      ],
+      "time_types": [
+        "lookout"
+      ],
+      "message": "look out for the Friday deadline",
+      "why": "Watch-without-dashboard paraphrase.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/Baby_Monitor_Protocol",
+      "source_title": "Baby Monitor Protocol | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "vitals-body-scan",
+      "mechanic": "vitals",
+      "split": "train",
+      "open": true,
+      "kinds": [
+        "vitals"
+      ],
+      "time_types": [
+        "lookout"
+      ],
+      "sizes": [
+        "lookout"
+      ],
+      "message": "pull up my body scan",
+      "why": "Karen/E.V. body scan on glass.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "vitals-sleep-hrv",
+      "mechanic": "vitals",
+      "split": "held_out",
+      "open": true,
+      "kinds": [
+        "vitals"
+      ],
+      "time_types": [
+        "lookout"
+      ],
+      "sizes": [
+        "lookout"
+      ],
+      "message": "display my sleep and HRV on the overlay",
+      "why": "Explicit vitals overlay.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "diagnostics-power",
+      "mechanic": "diagnostics",
+      "split": "train",
+      "open": true,
+      "kinds": [
+        "bench"
+      ],
+      "message": "show me power usage",
+      "why": "JARVIS monitors suit power usage.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "diagnostics-suit",
+      "mechanic": "diagnostics",
+      "split": "held_out",
+      "open": true,
+      "kinds": [
+        "bench"
+      ],
+      "message": "display suit status on screen",
+      "why": "JARVIS internal systems status.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "brief-tactical",
+      "mechanic": "briefing",
+      "split": "train",
+      "open": true,
+      "kinds": [
+        "briefing"
+      ],
+      "time_types": [
+        "linger"
+      ],
+      "sizes": [
+        "brief"
+      ],
+      "message": "tactical on the renegotiation",
+      "why": "Karen tactical aid.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/Karen",
+      "source_title": "Karen | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "brief-talking",
+      "mechanic": "briefing",
+      "split": "held_out",
+      "open": true,
+      "kinds": [
+        "briefing"
+      ],
+      "time_types": [
+        "linger"
+      ],
+      "sizes": [
+        "brief"
+      ],
+      "message": "walk me through the talking points",
+      "why": "Tactical talking points slate.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/Karen",
+      "source_title": "Karen | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "nav-directions",
+      "mechanic": "navigation",
+      "split": "train",
+      "open": true,
+      "kinds": [
+        "map"
+      ],
+      "time_types": [
+        "hold"
+      ],
+      "sizes": [
+        "canvas"
+      ],
+      "message": "show me directions on screen",
+      "why": "JARVIS-style route canvas.",
+      "source_url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. \u2014 Wikipedia",
+      "license": "CC BY-SA 4.0"
+    },
+    {
+      "id": "nav-map",
+      "mechanic": "navigation",
+      "split": "held_out",
+      "open": true,
+      "kinds": [
+        "map"
+      ],
+      "time_types": [
+        "hold"
+      ],
+      "sizes": [
+        "canvas"
+      ],
+      "message": "put the map on the overlay",
+      "why": "Explicit map overlay.",
+      "source_url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. \u2014 Wikipedia",
+      "license": "CC BY-SA 4.0"
+    },
+    {
+      "id": "full-suit-hud",
+      "mechanic": "full_hud",
+      "split": "train",
+      "open": true,
+      "kinds": [
+        "vitals",
+        "radar",
+        "horizon"
+      ],
+      "message": "suit hud",
+      "why": "JARVIS stacked suit HUD.",
+      "source_url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. \u2014 Wikipedia",
+      "license": "CC BY-SA 4.0"
+    },
+    {
+      "id": "full-stack",
+      "mechanic": "full_hud",
+      "split": "held_out",
+      "open": true,
+      "kinds": [
+        "vitals",
+        "radar",
+        "horizon"
+      ],
+      "message": "stack the lookouts",
+      "why": "Multi-panel lookout stack.",
+      "source_url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "source_title": "J.A.R.V.I.S. \u2014 Wikipedia",
+      "license": "CC BY-SA 4.0"
+    },
+    {
+      "id": "refuse-instant-kill",
+      "mechanic": "refuse",
+      "split": "train",
+      "open": false,
+      "kinds": [],
+      "message": "enable instant kill",
+      "why": "Instant Kill stays out.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/E.D.I.T.H.",
+      "source_title": "E.D.I.T.H. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "refuse-facial-city",
+      "mechanic": "refuse",
+      "split": "held_out",
+      "open": false,
+      "kinds": [],
+      "message": "run facial recognition across the city",
+      "why": "City-scale stranger recognition stays out.",
+      "source_url": "https://marvelcinematicuniverse.fandom.com/wiki/E.D.I.T.H.",
+      "source_title": "E.D.I.T.H. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA"
+    },
+    {
+      "id": "show-schedule-visor",
+      "mechanic": "explicit_show",
+      "split": "held_out",
+      "open": true,
+      "kinds": [
+        "horizon"
+      ],
+      "time_types": [
+        "lookout"
+      ],
+      "sizes": [
+        "lookout"
+      ],
+      "message": "pull up today's plan on the visor",
+      "why": "Explicit calendar visor.",
+      "source_url": "https://scifiinterfaces.com/2015/07/01/iron-man-hud-a-breakdown/",
+      "source_title": "Iron Man HUD: A Breakdown \u2014 Sci-fi interfaces",
+      "license": "All rights reserved; citation only"
+    }
+  ]
+}

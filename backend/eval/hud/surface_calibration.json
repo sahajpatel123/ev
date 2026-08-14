@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "urgency_threshold": 0.75,
+  "max_windows": 4,
+  "boost_kinds": {
+    "horizon": 0.4,
+    "vitals": 0.6,
+    "pulse": 0.3,
+    "radar": 0.6,
+    "briefing": 0.2,
+    "map": 0.2,
+    "trace": 0.1,
+    "bench": 0.3,
+    "list": 0.1,
+    "chip": 0.1,
+    "card": 0.1,
+    "ticker": 0.1,
+    "scope": 0.1,
+    "wire": 0.1
+  },
+  "suppress_kinds": {},
+  "prefer_size": {
+    "horizon": "lookout",
+    "vitals": "lookout",
+    "briefing": "brief",
+    "map": "canvas",
+    "list": "slate",
+    "chip": "chip",
+    "ticker": "ticker"
+  },
+  "prefer_time": {
+    "horizon": "lookout",
+    "vitals": "lookout",
+    "pulse": "pulse",
+    "radar": "lookout",
+    "briefing": "linger",
+    "map": "hold",
+    "list": "hold",
+    "chip": "flash",
+    "ticker": "glance",
+    "wire": "session"
+  },
+  "evidence": {
+    "corpus": 34,
+    "held_out": 10,
+    "fitted_from": "eval/hud/surface_corpus.json",
+    "public_sources": "eval/hud/public_sources.json",
+    "harvest": "one-time-depth"
+  },
+  "updated_at": "2026-08-13T00:00:00+00:00"
+}

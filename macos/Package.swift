@@ -8,25 +8,43 @@ let package = Package(
         .macOS(.v14),
     ],
     products: [
+        .library(name: "EVAuth", targets: ["EVAuth"]),
         .executable(name: "EV", targets: ["EV"]),
         .executable(name: "EVNotificationHelper", targets: ["EVNotificationHelper"]),
+        .executable(name: "EVLifeHelper", targets: ["EVLifeHelper"]),
+        .executable(name: "EVAuthCheck", targets: ["EVAuthCheck"]),
     ],
     dependencies: [
         .package(path: "../ios/EVClient"),
     ],
     targets: [
+        .target(
+            name: "EVAuth",
+            path: "Sources/EVAuth"
+        ),
         .executableTarget(
             name: "EV",
             dependencies: [
+                "EVAuth",
                 .product(name: "EVClient", package: "EVClient"),
                 .product(name: "EVUI", package: "EVClient"),
             ],
             path: "Sources/EV"
         ),
         .executableTarget(
+            name: "EVAuthCheck",
+            dependencies: ["EVAuth"],
+            path: "Sources/EVAuthCheck"
+        ),
+        .executableTarget(
             name: "EVNotificationHelper",
             dependencies: [],
             path: "Sources/EVNotificationHelper"
+        ),
+        .executableTarget(
+            name: "EVLifeHelper",
+            dependencies: [],
+            path: "Sources/EVLifeHelper"
         ),
     ]
 )

@@ -460,3 +460,62 @@ async def test_memory_derived_answer_carries_inline_provenance_chip() -> None:
     assert report.claims and all(c.supported for c in report.claims)
     assert "source: your memory m-kyoto" in report.final_text
     assert report.persona.get("provenance_chips_count", 0) >= 1
+
+
+# --------------------------------------------------------------------------- #
+# Wave LIFE persona policy (Agent 16: action over refusal theater)
+# --------------------------------------------------------------------------- #
+
+
+async def test_refusal_theater_rewritten_to_action_commitment() -> None:
+    strategy = build_strategy("Send a message to Mom.")
+    report = await run_output_filter(
+        "I can't send messages.",
+        strategy=strategy,
+        grounding=[],
+    )
+    lowered = report.final_text.lower()
+    assert "i can't send messages" not in lowered
+    assert "confirm once the runtime reports delivery" in lowered
+    assert any(f.name == "refusal_theater_rewritten" for f in report.flags)
+
+
+async def test_refusal_with_failure_evidence_becomes_remediation() -> None:
+    strategy = build_strategy("Send a message to Mom.")
+    report = await run_output_filter(
+        "I can't send messages because EV_LIFE_HELPER_PATH is not set.",
+        strategy=strategy,
+        grounding=[],
+    )
+    lowered = report.final_text.lower()
+    assert "ev_life_helper_path" in lowered
+    assert "next step" in lowered
+    assert "privacy & security" in lowered
+    assert any(f.name == "remediation_guidance" for f in report.flags)
+
+
+async def test_ungrounded_delivery_claim_is_downgraded() -> None:
+    strategy = build_strategy("Send a message to Mom.")
+    report = await run_output_filter(
+        "Message sent to Mom.",
+        strategy=strategy,
+        grounding=[],
+    )
+    lowered = report.final_text.lower()
+    assert "message sent to mom" not in lowered
+    assert "can't confirm that was sent" in lowered
+    assert any(f.name == "delivery_claim_ungrounded" for f in report.flags)
+
+
+async def test_grounded_delivery_claim_with_runtime_evidence_is_kept() -> None:
+    strategy = build_strategy("Send a message to Mom.")
+    report = await run_output_filter(
+        "Message sent to Mom — delivery confirmed by EVLifeHelper (sent=true).",
+        strategy=strategy,
+        grounding=[],
+    )
+    lowered = report.final_text.lower()
+    assert "message sent to mom" in lowered
+    assert "delivery confirmed" in lowered
+    assert "sent=true" in lowered
+    assert not any(f.name == "delivery_claim_ungrounded" for f in report.flags)

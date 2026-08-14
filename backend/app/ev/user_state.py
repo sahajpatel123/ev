@@ -36,7 +36,9 @@ async def build_user_state(
 
     ``access="model"`` restricts the derived slice to data that may be sent to
     the model: never_send_to_model events, memories, and live channels/events
-    are excluded so EVIE only touches the permitted live-data slice.
+    are excluded so EVIE only touches the permitted live-data slice. Verified
+    voice turns may use ``voice_model`` to include sensitive owner context while
+    preserving the never-send boundary.
     """
     since = utcnow() - timedelta(days=window_days)
     stmt = (
@@ -45,8 +47,13 @@ async def build_user_state(
         .order_by(Event.occurred_at.desc())
         .limit(300)
     )
-    if access == "model":
-        stmt = stmt.where(Event.privacy_level.notin_(("never_send_to_model", "sensitive")))
+    if access in {"model", "voice_model"}:
+        excluded = (
+            ("never_send_to_model",)
+            if access == "voice_model"
+            else ("never_send_to_model", "sensitive")
+        )
+        stmt = stmt.where(Event.privacy_level.notin_(excluded))
     result = await session.execute(stmt)
     events = list(result.scalars().all())
 
@@ -61,10 +68,13 @@ async def build_user_state(
         .order_by(Memory.event_time.desc())
         .limit(5)
     )
-    if access == "model":
-        goal_stmt = goal_stmt.where(
-            Memory.privacy_level.notin_(("never_send_to_model", "sensitive"))
+    if access in {"model", "voice_model"}:
+        excluded = (
+            ("never_send_to_model",)
+            if access == "voice_model"
+            else ("never_send_to_model", "sensitive")
         )
+        goal_stmt = goal_stmt.where(Memory.privacy_level.notin_(excluded))
     goal_rows = (await session.execute(goal_stmt)).scalars().all()
     active_goal = None
     for goal in goal_rows:
@@ -120,10 +130,13 @@ async def build_user_state(
             Memory.redacted.is_(False),
         )
     )
-    if access == "model":
-        decision_stmt = decision_stmt.where(
-            Memory.privacy_level.notin_(("never_send_to_model", "sensitive"))
+    if access in {"model", "voice_model"}:
+        excluded = (
+            ("never_send_to_model",)
+            if access == "voice_model"
+            else ("never_send_to_model", "sensitive")
         )
+        decision_stmt = decision_stmt.where(Memory.privacy_level.notin_(excluded))
     open_decision_memories = (await session.execute(decision_stmt)).scalars().all()
     reviewed_decision_ids = {
         row.decision_memory_id

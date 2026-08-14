@@ -103,8 +103,12 @@ def validate_arguments(arguments: dict, parameters: dict) -> tuple[dict, list[st
 
     for name, schema in properties.items():
         if name in effective:
+            if effective[name] is None and name not in required:
+                # Optional JSON null / filled None — omit, do not type-check.
+                del effective[name]
+                continue
             issues.extend(_schema_issues(name, effective[name], schema))
-        elif "default" in schema:
+        elif "default" in schema and schema["default"] is not None:
             effective[name] = schema["default"]
 
     if not allow_extra:

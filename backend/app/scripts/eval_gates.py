@@ -1155,10 +1155,21 @@ def run_deployment_gate() -> GateResult:
     if profile.is_file():
         profile_text = profile.read_text()
         required_profile_keys = {
-            "EV_CHAT_PROVIDER=deepseek": "reasoning is the DeepSeek API (no local LLM on 8 GB)",
+            "EV_CHAT_PROVIDER=opencode": (
+                "reasoning is the local `opencode serve` session API reaching "
+                "the owner's hosted models via OPENCODE_API_KEY (no separate "
+                "DeepSeek key)"
+            ),
             "EV_VOICEPRINT_PROVIDER=campp": "biometric privacy stays local; hash double is refused",
             "EV_VISION_PROVIDER=apple_vision": "Apple Vision is free/on-device OCR",
             "EV_VOICE_WAKE_PROVIDER=openwakeword": "wake word stays local",
+            "EV_VOICE_ASR_PROVIDER=faster_whisper": (
+                "ASR matches what Agent 2 actually shipped (Parakeet weights "
+                "not in the registry yet)"
+            ),
+            "EV_VOICE_TTS_PROVIDER=openai_compat": (
+                "hosted TTS until the Kokoro package + weights land"
+            ),
             "EV_EMBEDDING_PROVIDER=granite": "Agent 8's verified embedding recommendation",
             "EV_OBJECT_STORE_BACKEND=local": "filesystem object store; MinIO out of the daily path",
         }

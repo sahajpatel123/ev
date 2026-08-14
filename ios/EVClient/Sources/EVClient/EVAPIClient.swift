@@ -2,10 +2,25 @@
 
 import Foundation
 
-public enum EVAPIError: Error, Sendable {
+public enum EVAPIError: Error, Sendable, LocalizedError {
     case httpStatus(Int, String)
     case transport(String)
     case decoding(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .httpStatus(let code, let body):
+            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if detail.isEmpty {
+                return "API error \(code)"
+            }
+            return "API error \(code): \(detail.prefix(240))"
+        case .transport(let message):
+            return "Network error: \(message)"
+        case .decoding(let message):
+            return "Bad response: \(message)"
+        }
+    }
 }
 
 public struct CaptureResult: Sendable, Equatable {
@@ -51,6 +66,15 @@ private struct VoiceVerifyRequestBody: Encodable {
     let liveScore: Double?
 }
 
+private struct VoiceWakeRequestBody: Encodable {
+    let deviceId: String
+    let wakeWord: String
+    let audioRef: String?
+    let textHint: String?
+    let audioB64: String?
+    let pushToTalk: Bool
+}
+
 private struct VoiceUtteranceRequestBody: Encodable {
     let sessionId: String
     let text: String?
@@ -60,6 +84,7 @@ private struct VoiceUtteranceRequestBody: Encodable {
     let reverifyToken: String?
     let language: String
     let conversationId: String?
+    let pushToTalk: Bool
 }
 
 public struct EVAPIClient: Sendable {
@@ -67,7 +92,17 @@ public struct EVAPIClient: Sendable {
     public let token: String
     public let session: URLSession
 
-    public init(baseURL: URL, token: String, session: URLSession = .shared) {
+    /// Voice turns (ASR + chat + TTS) can exceed URLSession.shared's 60s default.
+    public static let voiceSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 90
+        config.timeoutIntervalForResource = 180
+        config.waitsForConnectivity = false
+        config.httpMaximumConnectionsPerHost = 8
+        return URLSession(configuration: config)
+    }()
+
+    public init(baseURL: URL, token: String, session: URLSession = EVAPIClient.voiceSession) {
         self.baseURL = baseURL
         self.token = token
         self.session = session
@@ -92,7 +127,8 @@ public struct EVAPIClient: Sendable {
         body: Data? = nil,
         headers: [String: String] = [:],
         queryItems: [URLQueryItem] = [],
-        allowedStatuses: Set<Int> = [200]
+        allowedStatuses: Set<Int> = [200],
+        timeout: TimeInterval? = nil
     ) async throws -> (Int, Data) {
         var request = URLRequest(url: url(for: path, queryItems: queryItems))
         request.httpMethod = method
@@ -102,6 +138,7 @@ public struct EVAPIClient: Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.httpBody = body
+        request.timeoutInterval = timeout ?? 90
         return try await perform(request, allowedStatuses: allowedStatuses)
     }
 
@@ -122,10 +159,22 @@ public struct EVAPIClient: Sendable {
         guard allowedStatuses.contains(http.statusCode) else {
             throw EVAPIError.httpStatus(
                 http.statusCode,
-                String(data: data, encoding: .utf8) ?? ""
+                Self.apiErrorDetail(data)
             )
         }
         return (http.statusCode, data)
+    }
+
+    static func apiErrorDetail(_ data: Data) -> String {
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let detail = object["detail"] as? String {
+                return detail
+            }
+            if let detail = object["detail"] {
+                return String(describing: detail)
+            }
+        }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
@@ -138,7 +187,7 @@ public struct EVAPIClient: Sendable {
         }
     }
 
-    private func encode<T: Encodable>(_ value: T) throws -> Data {
+    func encode<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         return try encoder.encode(value)
@@ -324,29 +373,75 @@ public struct EVAPIClient: Sendable {
         return card
     }
 
+    public func postHealthSnapshot(
+        source: String,
+        deviceId: String? = nil,
+        metrics: [String: Double]
+    ) async throws {
+        struct Body: Encodable {
+            let source: String
+            let deviceId: String?
+            let metrics: [String: Double]
+        }
+        _ = try await send(
+            "/v1/health/snapshot",
+            method: "POST",
+            body: encode(Body(source: source, deviceId: deviceId, metrics: metrics)),
+            allowedStatuses: [201]
+        )
+    }
+
     public func health() async throws -> HealthResponse {
-        let (_, data) = try await send("/v1/health")
+        let (_, data) = try await send("/v1/health", timeout: 8)
         return try decode(HealthResponse.self, from: data)
     }
 
     public func conversation(limit: Int = 50) async throws -> ConversationDetail {
         let (_, data) = try await send(
             "/v1/conversation",
-            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+            queryItems: [URLQueryItem(name: "limit", value: String(limit))],
+            timeout: 15
         )
         return try decode(ConversationDetail.self, from: data)
     }
 
+    /// Fetch persisted TTS bytes. ``ref`` may be ``ev://voice/tts/...`` or a store key.
+    public func voiceAudio(ref: String) async throws -> Data {
+        var key = ref
+        if key.hasPrefix("ev://") {
+            key = String(key.dropFirst(5))
+        }
+        while key.hasPrefix("/") {
+            key = String(key.dropFirst())
+        }
+        let (_, data) = try await send("/v1/voice/audio/\(key)", timeout: 20)
+        return data
+    }
+
     public func wakeVoice(
         deviceId: String,
-        wakeWord: String = "evie"
+        wakeWord: String = "evie",
+        audioRef: String? = nil,
+        textHint: String? = nil,
+        audioB64: String? = nil,
+        pushToTalk: Bool = false
     ) async throws -> VoiceWakeResponse {
-        let body = try encode(["device_id": deviceId, "wake_word": wakeWord])
+        let body = try encode(
+            VoiceWakeRequestBody(
+                deviceId: deviceId,
+                wakeWord: wakeWord,
+                audioRef: audioRef,
+                textHint: textHint,
+                audioB64: audioB64,
+                pushToTalk: pushToTalk
+            )
+        )
         let (_, data) = try await send(
             "/v1/voice/wake",
             method: "POST",
             body: body,
-            allowedStatuses: [200, 201]
+            allowedStatuses: [200, 201],
+            timeout: 20
         )
         return try decode(VoiceWakeResponse.self, from: data)
     }
@@ -381,7 +476,8 @@ public struct EVAPIClient: Sendable {
         audioRef: String? = nil,
         reverifyToken: String? = nil,
         language: String = "en",
-        conversationId: String? = nil
+        conversationId: String? = nil,
+        pushToTalk: Bool = false
     ) async throws -> VoiceUtteranceResponse {
         let body = try encode(
             VoiceUtteranceRequestBody(
@@ -392,10 +488,16 @@ public struct EVAPIClient: Sendable {
                 audioRef: audioRef,
                 reverifyToken: reverifyToken,
                 language: language,
-                conversationId: conversationId
+                conversationId: conversationId,
+                pushToTalk: pushToTalk
             )
         )
-        let (_, data) = try await send("/v1/voice/utterance", method: "POST", body: body)
+        let (_, data) = try await send(
+            "/v1/voice/utterance",
+            method: "POST",
+            body: body,
+            timeout: 90
+        )
         return try decode(VoiceUtteranceResponse.self, from: data)
     }
 

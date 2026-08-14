@@ -63,6 +63,9 @@ class ModelSpec(BaseModel):
     # Optional models are registered and loadable, but are NOT pinned at boot
     # and are never reported as missing/required by `ml doctor`.
     optional: bool = False
+    # Overrides the artifact filename inside the cache (default: name + URL
+    # suffix). Used when an engine resolves a specific cache filename.
+    target_name: str | None = None
 
     @field_validator("sha256")
     @classmethod
@@ -227,14 +230,20 @@ def builtin_models() -> list[ModelSpec]:
         ModelSpec(
             name="speaker-campp",
             task="speaker_embedding",
-            source_url=None,
-            disk_mb=30,
+            source_url=(
+                "https://huggingface.co/welcomyou/campplus-3dspeaker-200k-onnx/resolve/main/"
+                "campplus_cn_en_common_200k.onnx"
+            ),
+            sha256="dd1740aa1e1ffa3895f96aef2166b8af2bb2ad09c00769dd275ee36aef6a2a7f",
+            disk_mb=27,
             resident_mb=28,
             peak_mb=40,
             tier=ModelTier.ALWAYS,
-            license="Apache-2.0 (CAM++ 7.2M)",
+            license="Apache-2.0 (CAM++ 7.2M, 3D-Speaker bilingual 200k)",
             license_url="https://github.com/modelscope/3D-Speaker",
-            version="campp-7.2m",
+            version="campp-7.2m-zh-en-200k",
+            verified=True,
+            target_name="speaker-campp",
         ),
         ModelSpec(
             name="liveness-audio",
@@ -295,6 +304,59 @@ def builtin_models() -> list[ModelSpec]:
             license="MIT (Piper voice)",
             license_url="https://github.com/rhasspy/piper",
             version="en_US-lessac-medium",
+        ),
+        ModelSpec(
+            name="tts-kokoro-82m-int8",
+            task="tts",
+            source_url=(
+                "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
+                "model-files-v1.0/kokoro-v1.0.int8.onnx"
+            ),
+            sha256="6e742170d309016e5891a994e1ce1559c702a2ccd0075e67ef7157974f6406cb",
+            disk_mb=92,
+            resident_mb=100,
+            peak_mb=140,
+            tier=ModelTier.ON_DEMAND,
+            license="Apache-2.0 (Kokoro-82M)",
+            license_url="https://github.com/hexgrad/kokoro",
+            version="kokoro-v1.0-int8",
+            verified=True,
+        ),
+        ModelSpec(
+            name="tts-kokoro-82m-fp16",
+            task="tts",
+            source_url=(
+                "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
+                "model-files-v1.0/kokoro-v1.0.fp16.onnx"
+            ),
+            sha256="c1610a859f3bdea01107e73e50100685af38fff88f5cd8e5c56df109ec880204",
+            disk_mb=177,
+            resident_mb=190,
+            peak_mb=240,
+            tier=ModelTier.ON_DEMAND,
+            license="Apache-2.0 (Kokoro-82M)",
+            license_url="https://github.com/hexgrad/kokoro",
+            version="kokoro-v1.0-fp16",
+            verified=True,
+        ),
+        ModelSpec(
+            name="tts-kokoro-voices-v1.0",
+            task="tts_voices",
+            source_url=(
+                "https://github.com/thewh1teagle/kokoro-onnx/releases/download/"
+                "model-files-v1.0/voices-v1.0.bin"
+            ),
+            sha256="bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d",
+            disk_mb=28,
+            resident_mb=28,
+            peak_mb=28,
+            tier=ModelTier.ON_DEMAND,
+            license="Apache-2.0 (Kokoro-82M)",
+            license_url="https://github.com/hexgrad/kokoro",
+            version="voices-v1.0",
+            verified=True,
+            # Engine-neutral: shared by every Kokoro precision (int8/fp16/fp32).
+            target_name="tts-kokoro.voices",
         ),
         ModelSpec(
             name="llm-mlx-3b",

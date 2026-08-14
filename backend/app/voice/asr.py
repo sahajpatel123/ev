@@ -12,6 +12,7 @@ from __future__ import annotations
 import array
 import asyncio
 import base64
+import contextlib
 import io
 import math
 import os
@@ -37,6 +38,44 @@ from app.voice.contracts import (
 # --------------------------------------------------------------------------- #
 # Audio input: fail closed, allowlisted refs only
 # --------------------------------------------------------------------------- #
+
+
+def clip_wav_to_max_seconds(raw: bytes, max_seconds: float | None = None) -> bytes:
+    """Keep the last ``max_seconds`` of a PCM WAV so ASR cannot run away.
+
+    A mislabeled 48 kHz float capture wrapped as 16 kHz int16 looks like a
+    multi-minute clip. Push-to-talk then sits in Whisper until the client
+    times out. Bounding duration is the server-side backstop; the Mac client
+    also converts to real 16 kHz PCM16 before upload.
+    """
+
+    limit = float(
+        max_seconds if max_seconds is not None else settings.voice_utterance_max_seconds
+    )
+    if limit <= 0 or not raw.startswith(b"RIFF"):
+        return raw
+    try:
+        with wave.open(io.BytesIO(raw), "rb") as src:
+            rate = src.getframerate()
+            channels = src.getnchannels()
+            width = src.getsampwidth()
+            nframes = src.getnframes()
+            if rate <= 0 or nframes <= 0:
+                return raw
+            max_frames = int(rate * limit)
+            if nframes <= max_frames:
+                return raw
+            src.setpos(nframes - max_frames)
+            frames = src.readframes(max_frames)
+    except (wave.Error, EOFError):
+        return raw
+    out = io.BytesIO()
+    with wave.open(out, "wb") as dst:
+        dst.setnchannels(channels)
+        dst.setsampwidth(width)
+        dst.setframerate(rate)
+        dst.writeframes(frames)
+    return out.getvalue()
 
 
 def _object_store_key(ref: str) -> str | None:
@@ -91,7 +130,12 @@ async def _read_audio(audio_b64: str | None, audio_ref: str | None) -> tuple[byt
                 status=422,
                 code="asr_empty_audio",
             )
-        return raw, "voice.wav"
+        from app.voice.speaker import ensure_wav_bytes
+
+        with contextlib.suppress(ValueError):
+            # Tiny or unknown buffers stay as-is; the transcriber fails closed.
+            raw = ensure_wav_bytes(raw)
+        return clip_wav_to_max_seconds(raw), "voice.wav"
     if audio_ref:
         key = _object_store_key(audio_ref)
         if key is not None:
@@ -111,7 +155,7 @@ async def _read_audio(audio_b64: str | None, audio_ref: str | None) -> tuple[byt
                     status=404,
                     code="asr_audio_ref_missing",
                 ) from exc
-            return raw, Path(key).name
+            return clip_wav_to_max_seconds(raw), Path(key).name
         path = _safe_local_path(audio_ref)
         if not path.is_file():
             raise VoiceError(
@@ -119,7 +163,7 @@ async def _read_audio(audio_b64: str | None, audio_ref: str | None) -> tuple[byt
                 status=404,
                 code="asr_audio_ref_missing",
             )
-        return path.read_bytes(), path.name
+        return clip_wav_to_max_seconds(path.read_bytes()), path.name
     raise VoiceError(
         "ASR requires audio_b64 or a readable audio_ref; real engines never "
         "accept a transcript hint in place of audio",
@@ -386,6 +430,10 @@ class OpenAICompatTranscriber:
 # Legacy local Whisper (faster-whisper) — kept as an opt-in provider
 # --------------------------------------------------------------------------- #
 
+# Process-wide CTranslate2 weights. VoiceRuntime is constructed per request;
+# without this, every VAD segment reloads faster-whisper-base (~150 MB).
+_WHISPER_MODELS: dict[tuple, object] = {}
+
 
 class FasterWhisperTranscriber:
     """Local Whisper-class ASR via faster-whisper (CTranslate2).
@@ -410,6 +458,8 @@ class FasterWhisperTranscriber:
         model_factory=None,
     ) -> None:
         self.model_name = model or settings.voice_asr_model
+        if self.model_name in {"whisper-1", "gpt-4o-mini-transcribe", None, ""}:
+            self.model_name = "base"
         self.model_dir = model_dir or settings.voice_asr_model_dir
         self.device = device or settings.voice_asr_device
         self.compute_type = compute_type or settings.voice_asr_compute_type
@@ -417,6 +467,7 @@ class FasterWhisperTranscriber:
         self.vad_filter = (
             settings.voice_asr_vad_filter if vad_filter is None else vad_filter
         )
+        self.wake_no_speech_threshold = settings.voice_asr_wake_no_speech_threshold
         self._model_factory = model_factory
         self._model = None
 
@@ -431,6 +482,11 @@ class FasterWhisperTranscriber:
                 download_root=self.model_dir,
             )
             return self._model
+        key = (self.model_name, self.device, self.compute_type, self.model_dir)
+        cached = _WHISPER_MODELS.get(key)
+        if cached is not None:
+            self._model = cached
+            return cached
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
@@ -443,6 +499,7 @@ class FasterWhisperTranscriber:
             compute_type=self.compute_type,
             download_root=self.model_dir,
         )
+        _WHISPER_MODELS[key] = self._model
         return self._model
 
     async def _resolve_audio(self, audio_b64: str | None, audio_ref: str | None) -> str:
@@ -451,17 +508,84 @@ class FasterWhisperTranscriber:
             handle.write(audio)
             return handle.name
 
-    def _transcribe_sync(self, path: str, language: str) -> Transcript:
+    def _transcribe_sync(self, path: str, language: str, *, wake_mode: bool = False) -> Transcript:
         model = self._load_model()
-        segments, info = model.transcribe(path, language=language, vad_filter=self.vad_filter)
-        text = "".join(segment.text for segment in segments).strip()
+        kwargs: dict = {
+            "language": language,
+            # Talk clips are already user-cut (≤15s). Silero VAD on a short
+            # hold often deletes the whole buffer and the Mac app then shows
+            # a red EVAPIError instead of a reply.
+            "vad_filter": False,
+        }
+        if wake_mode:
+            kwargs.update(
+                condition_on_previous_text=False,
+                # 0.1 suppressed real short wake clips (measured: the owner's
+                # "EVIE" came back empty on 2.5-6 s takes). Whisper's own
+                # default (0.6) keeps real speech; the wake engine gates weak
+                # aliases ("Eve"/"evil") on the per-segment no_speech_prob
+                # below instead of on this suppression threshold.
+                no_speech_threshold=self.wake_no_speech_threshold,
+                beam_size=1,
+                temperature=0.0,
+                initial_prompt="EVIE. Hey EVIE.",
+            )
+        else:
+            # A single beam is enough for already-cut Talk clips and is
+            # what keeps ASR inside a human reply interval.
+            kwargs.update(
+                condition_on_previous_text=False,
+                beam_size=1,
+                temperature=0.0,
+            )
+        try:
+            segments, info = model.transcribe(path, **kwargs)
+        except TypeError:
+            kwargs.pop("condition_on_previous_text", None)
+            kwargs.pop("beam_size", None)
+            kwargs.pop("temperature", None)
+            kwargs.pop("initial_prompt", None)
+            kwargs.pop("no_speech_threshold", None)
+            segments, info = model.transcribe(path, **kwargs)
+        seg_list = list(segments)
+        text = "".join(segment.text for segment in seg_list).strip()
+        # Best speech evidence across segments: min no_speech_prob (Whisper's
+        # own hallucination signal, 0..1, >0.6 ≈ silence). Real "EVIE" clips
+        # score ~0.2-0.4; silence hallucinations score ~0.8+.
+        no_speech_prob: float | None = None
+        avg_logprob = getattr(info, "avg_logprob", None)
+        for segment in seg_list:
+            value = getattr(segment, "no_speech_prob", None)
+            if value is not None:
+                no_speech_prob = (
+                    min(no_speech_prob, float(value))
+                    if no_speech_prob is not None
+                    else float(value)
+                )
+            if avg_logprob is None:
+                segment_avg = getattr(segment, "avg_logprob", None)
+                if segment_avg is not None:
+                    avg_logprob = segment_avg
+        details = {
+            "engine": "faster-whisper",
+            "no_speech_prob": no_speech_prob,
+            "avg_logprob": float(avg_logprob) if avg_logprob is not None else None,
+        }
         if not text:
+            if wake_mode:
+                details["reason"] = "empty"
+                return Transcript(
+                    text="",
+                    confidence=0.0,
+                    language=language,
+                    provider=self.name,
+                    details=details,
+                )
             raise VoiceError(
                 "ASR returned an empty transcript",
                 status=502,
                 code="asr_empty_result",
             )
-        avg_logprob = getattr(info, "avg_logprob", None)
         confidence = (
             math.exp(max(-10.0, float(avg_logprob))) if avg_logprob is not None else 0.0
         )
@@ -472,7 +596,7 @@ class FasterWhisperTranscriber:
             language=language,
             provider=self.name,
             duration_ms=int(duration * 1000) if duration is not None else None,
-            details={"engine": "faster-whisper"},
+            details=details,
         )
 
     async def transcribe(
@@ -482,11 +606,14 @@ class FasterWhisperTranscriber:
         audio_b64: str | None = None,
         text_hint: str | None = None,
         language: str = "en",
+        wake_mode: bool = False,
     ) -> Transcript:
         language = language or self.language or "en"
         path = await self._resolve_audio(audio_b64, audio_ref)
         try:
-            return await asyncio.to_thread(self._transcribe_sync, path, language)
+            return await asyncio.to_thread(
+                self._transcribe_sync, path, language, wake_mode=wake_mode
+            )
         except ModelUnavailableError:
             return Transcript(
                 text="",

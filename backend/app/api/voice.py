@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import contextlib
 import json
 import re
 from uuid import UUID
@@ -83,32 +85,49 @@ def _guard_session(row: VoiceSession, ctx: ActorContext) -> None:
         )
 
 
+def _tts_out(result) -> TtsOut | None:
+    if result is None:
+        return None
+    audio_b64 = None
+    audio = getattr(result, "audio", None)
+    if audio and len(audio) <= 1_500_000:
+        audio_b64 = base64.b64encode(audio).decode("ascii")
+    return TtsOut(
+        provider=result.provider,
+        audio_ref=result.audio_ref,
+        audio_b64=audio_b64,
+        content_type=result.content_type,
+        ssml=result.ssml,
+        duration_ms=result.duration_ms,
+        degraded=result.degraded,
+    )
+
+
 def _sse(name: str, data) -> str:
     return f"event: {name}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
+def _as_uuid(value) -> UUID | None:
+    if value is None:
+        return None
+    try:
+        return value if isinstance(value, UUID) else UUID(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _utterance_response(outcome) -> VoiceUtteranceResponse:
+    state = getattr(outcome.state, "value", outcome.state)
     return VoiceUtteranceResponse(
-        session_id=UUID(outcome.session_id),
-        state=outcome.state,
+        session_id=_as_uuid(outcome.session_id) or UUID(int=0),
+        state=str(state),
         transcript=outcome.transcript.text,
         transcript_confidence=outcome.transcript.confidence,
         transcript_degraded=outcome.transcript.degraded,
         transcript_provider=outcome.transcript.provider,
         reply=outcome.reply,
-        conversation_id=UUID(outcome.conversation_id) if outcome.conversation_id else None,
-        tts=(
-            TtsOut(
-                provider=outcome.tts.provider,
-                audio_ref=outcome.tts.audio_ref,
-                content_type=outcome.tts.content_type,
-                ssml=outcome.tts.ssml,
-                duration_ms=outcome.tts.duration_ms,
-                degraded=outcome.tts.degraded,
-            )
-            if outcome.tts
-            else None
-        ),
+        conversation_id=_as_uuid(outcome.conversation_id),
+        tts=_tts_out(outcome.tts),
         style=(
             SpeechStyleOut(
                 urgency=outcome.style.urgency,
@@ -128,6 +147,7 @@ def _utterance_response(outcome) -> VoiceUtteranceResponse:
             for d in (outcome.memory_deltas or [])
             if isinstance(d, dict)
         ],
+        error=getattr(outcome, "error", None),
     )
 
 
@@ -256,6 +276,9 @@ async def wake(
             audio_ref=data.audio_ref,
             text_hint=data.text_hint,
             wake_word=data.wake_word,
+            audio_b64=data.audio_b64,
+            push_to_talk=data.push_to_talk,
+            min_wake_confidence=data.wake_confidence,
         )
     except VoiceError as exc:
         await session.commit()
@@ -307,6 +330,8 @@ async def verify(
         verified=outcome.verified,
         confidence=outcome.confidence,
         reason=outcome.reason,
+        conversation_id=UUID(outcome.conversation_id) if outcome.conversation_id else None,
+        greeting=outcome.greeting,
     )
 
 
@@ -331,6 +356,7 @@ async def utterance(
             language=data.language,
             conversation_id=data.conversation_id,
             follow_up=data.follow_up,
+            push_to_talk=data.push_to_talk,
         )
     except VoiceError as exc:
         await session.commit()
@@ -354,46 +380,77 @@ async def stream_utterance(
         _guard_session(row, ctx)
 
     async def events():
-        async for event, payload in runtime.stream_utterance(
-            session_id=data.session_id,
-            text=data.text,
-            audio_b64=data.audio_b64,
-            audio_ref=data.audio_ref,
-            reverify_token=data.reverify_token,
-            ctx=ctx,
-            language=data.language,
-            conversation_id=data.conversation_id,
-            follow_up=data.follow_up,
-        ):
-            if event == "partial":
-                item = VoicePartialOut(
-                    text=payload.text,
-                    provider=payload.provider,
-                    sequence=payload.sequence,
-                    stable=payload.stable,
-                    confidence=payload.confidence,
-                    degraded=payload.degraded,
-                    timestamp_ms=payload.timestamp_ms,
-                )
-                yield _sse("partial", item.model_dump())
-            elif event == "final_transcript":
-                yield _sse(
-                    "final_transcript",
-                    {
-                        "text": payload.text,
-                        "confidence": payload.confidence,
-                        "provider": payload.provider,
-                        "degraded": payload.degraded,
-                        "audio_ref": payload.audio_ref,
-                    },
-                )
-            elif event == "reply":
+        try:
+            async for event, payload in runtime.stream_utterance(
+                session_id=data.session_id,
+                text=data.text,
+                audio_b64=data.audio_b64,
+                audio_ref=data.audio_ref,
+                reverify_token=data.reverify_token,
+                ctx=ctx,
+                language=data.language,
+                conversation_id=data.conversation_id,
+                follow_up=data.follow_up,
+                push_to_talk=data.push_to_talk,
+            ):
+                if event == "partial":
+                    item = VoicePartialOut(
+                        text=payload.text,
+                        provider=payload.provider,
+                        sequence=payload.sequence,
+                        stable=payload.stable,
+                        confidence=payload.confidence,
+                        degraded=payload.degraded,
+                        timestamp_ms=payload.timestamp_ms,
+                    )
+                    yield _sse("partial", item.model_dump(mode="json"))
+                elif event == "final_transcript":
+                    yield _sse(
+                        "final_transcript",
+                        {
+                            "text": payload.text,
+                            "confidence": payload.confidence,
+                            "provider": payload.provider,
+                            "degraded": payload.degraded,
+                            "audio_ref": payload.audio_ref,
+                        },
+                    )
+                elif event == "tts_chunk":
+                    tts = _tts_out(payload.tts)
+                    yield _sse(
+                        "tts_chunk",
+                        {
+                            "index": payload.index,
+                            "text": payload.text,
+                            "audio_b64": tts.audio_b64 if tts else None,
+                            "content_type": tts.content_type if tts else None,
+                            "duration_ms": tts.duration_ms if tts else None,
+                            "provider": tts.provider if tts else None,
+                        },
+                    )
+                elif event == "reply":
+                    await session.commit()
+                    yield _sse(
+                        "reply",
+                        _utterance_response(payload).model_dump(mode="json"),
+                    )
+                else:
+                    await session.commit()
+                    code = getattr(payload, "code", "voice_stream")
+                    message = getattr(payload, "message", str(payload))
+                    yield _sse("error", {"code": code, "message": message})
+            yield _sse("done", {})
+        except Exception:  # noqa: BLE001 - never abort the SSE socket
+            with contextlib.suppress(Exception):
                 await session.commit()
-                yield _sse("reply", _utterance_response(payload).model_dump())
-            else:
-                await session.commit()
-                yield _sse("error", {"code": payload.code, "message": payload.message})
-        yield _sse("done", {})
+            yield _sse(
+                "error",
+                {
+                    "code": "voice_stream",
+                    "message": "Voice reply failed — try again.",
+                },
+            )
+            yield _sse("done", {})
 
     return StreamingResponse(
         events(),

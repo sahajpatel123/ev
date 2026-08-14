@@ -36,12 +36,22 @@ def _score(*, importance: float, urgency: float, confidence: float, goal_relevan
 
 
 def quiet_hours_active(now: datetime | None = None) -> bool:
+    """True when proactive speech/push must stay silent.
+
+    Missing or invalid clock timezone fails closed (treat as quiet).
+    Unparseable start/end windows also fail closed.
+    """
+
+    from app.notify.proactive import timezone_available
+
+    if not timezone_available():
+        return True
     now = now or utcnow()
     try:
         start = date_parser.parse(settings.quiet_hours_start).time()
         end = date_parser.parse(settings.quiet_hours_end).time()
     except (ValueError, TypeError, OverflowError):
-        return False
+        return True
     current = now.time()
     if start <= end:
         return start <= current <= end

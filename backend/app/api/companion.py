@@ -385,7 +385,9 @@ async def companionship_scan(
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> IsolationScanOut:
-    return await companionship.scan_isolation(session, window_days=window_days)
+    result = await companionship.scan_isolation(session, window_days=window_days)
+    await session.commit()
+    return result
 
 
 # --------------------------------------------------------------------------- #

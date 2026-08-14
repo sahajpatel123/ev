@@ -292,7 +292,10 @@ def _check_wake() -> tuple[str, str, str]:
 def _check_embeddings() -> tuple[str, str, str]:
     provider = settings.embedding_provider
     if provider == "granite":
-        if _file("granite-embedding-97m-multilingual-r2.onnx") and _pkg("onnxruntime"):
+        present = _file("embed-granite-r2.onnx") or _file(
+            "granite-embedding-97m-multilingual-r2.onnx"
+        )
+        if present and _pkg("onnxruntime"):
             return "REAL", "granite-r2", "weights present"
         return (
             "PARTIAL",

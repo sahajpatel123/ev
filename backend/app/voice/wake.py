@@ -9,8 +9,10 @@ privacy, and security logic is fully testable without hardware.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import wave
+from pathlib import Path
 
 from app.config import settings
 from app.voice.contracts import WakeDetection, WakeWordEngine
@@ -31,8 +33,32 @@ class PhraseWakeEngine:
     name = "phrase"
     power_state = "low_power"
 
-    WAKE_PHRASES = ("evie", "hey evie", "ok evie", "evie wake", "evie wake up", "evi")
-    WAKE_TOKEN = re.compile(r"\bevi(?:e|)?\b", re.IGNORECASE)
+    WAKE_PHRASES = (
+        "evie",
+        "hey evie",
+        "hi evie",
+        "hello evie",
+        "ok evie",
+        "okay evie",
+        "evie wake",
+        "evie wake up",
+        "evie here",
+        "hey evie here",
+        "hi evie here",
+        "hello evie here",
+        "ok evie here",
+        "okay evie here",
+        "evi",
+        "eve",
+        "hey eve",
+        "hi eve",
+        "hello eve",
+        "ok eve",
+        "okay eve",
+        "eve here",
+        "hey eve here",
+    )
+    WAKE_TOKEN = re.compile(r"\b(?:evie+|eevee|evi|eve)\b", re.IGNORECASE)
 
     async def detect(
         self,
@@ -282,6 +308,10 @@ class OpenWakeWordEngine:
         self.model_path = model_path
         self.threshold = threshold
         self.verifier_path = verifier_path
+        if self.model_path:
+            self.model_path = str(Path(self.model_path).expanduser())
+        if self.verifier_path:
+            self.verifier_path = str(Path(self.verifier_path).expanduser())
         self.verifier_threshold = verifier_threshold
         self._model_factory = model_factory
         self.chunk_samples = chunk_samples
@@ -522,6 +552,203 @@ class SileroVadWakeEngine:
         )
 
 
+class WhisperPhraseWakeEngine:
+    """Real ASR wake spotter for "EVIE" when a custom openWakeWord head is absent.
+
+    Transcribes the VAD segment with faster-whisper and matches EVIE / Eevee /
+    "every" (common ASR misspelling). Bare "ivy" / "avi" are too common as
+    silence hallucinations and are not wake tokens. "Eve" / "evil" ARE how
+    faster-whisper base actually hears the owner's spoken "EVIE" (measured on
+    real clips), so they are accepted as **weak aliases** only when the
+    segment carries real speech evidence (``no_speech_prob`` at or below
+    Whisper's own 0.6 hallucination gate). Text hints stay available so
+    offline tests keep working.
+    """
+
+    name = "whisper-phrase"
+    power_state = "burst"
+    WAKE_PHRASES = PhraseWakeEngine.WAKE_PHRASES
+    # Distinctive spellings — safe to match anywhere in the clip.
+    STRONG_TOKEN = re.compile(
+        r"\b(?:evie+|eevee|evy|ee\s*vee)\b",
+        re.IGNORECASE,
+    )
+    # Keep the historical name so tests and lifecycle still import WAKE_TOKEN.
+    WAKE_TOKEN = STRONG_TOKEN
+    # Weak aliases only count at the *start* of a clip. "every" in
+    # "every type of work" is not a wake; "every" / "Eve" / "evil" as the
+    # first name (how faster-whisper hears spoken EVIE) is.
+    HEAD_WAKE = re.compile(
+        r"^(?:hey |ok |okay |hi |hello )?"
+        r"(?:evie+|eevee|evy|evi|eve|evil|every|ee vee)"
+        r"(?: here)?\b",
+        re.IGNORECASE,
+    )
+    WEAK_HEAD = re.compile(
+        r"^(?:hey |ok |okay |hi |hello )?(?:eve|evil|every|evi)(?: here)?\b",
+        re.IGNORECASE,
+    )
+    WEAK_TOKEN = WEAK_HEAD
+    # Whisper's own no-speech gate: a segment with no_speech_prob above this is
+    # a silence hallucination, not the owner saying EVIE.
+    NO_SPEECH_CAP = 0.6
+
+    def __init__(self, *, transcriber=None) -> None:
+        self._transcriber = transcriber
+
+    def _transcriber_or_default(self):
+        if self._transcriber is not None:
+            return self._transcriber
+        from app.voice.asr import FasterWhisperTranscriber, get_transcriber
+
+        try:
+            shared = get_transcriber()
+        except Exception:
+            shared = None
+        if isinstance(shared, FasterWhisperTranscriber):
+            self._transcriber = shared
+            return shared
+        self._transcriber = FasterWhisperTranscriber(
+            model=os.environ.get("EV_VOICE_WAKE_ASR_MODEL")
+            or _wake_asr_model(),
+            vad_filter=False,
+        )
+        return self._transcriber
+
+    async def detect(
+        self,
+        *,
+        audio_ref: str | None = None,
+        sample_rate: int = 16000,
+        device_id: str | None = None,
+        frames: bytes | None = None,
+        text_hint: str | None = None,
+    ) -> WakeDetection:
+        if text_hint is not None and audio_ref is None and frames is None:
+            normalized = normalize(text_hint)
+            strong, weak = self._classify_transcript(normalized)
+            triggered = strong or weak
+            return WakeDetection(
+                triggered=triggered,
+                wake_word="evie",
+                confidence=0.98 if triggered else 0.0,
+                device_id=device_id,
+                stage="burst" if triggered else "low_power",
+                power_state=self.power_state,
+                details={"engine": self.name, "source": "text_hint"},
+            )
+        transcript = ""
+        try:
+            transcriber = self._transcriber_or_default()
+            audio_b64 = None
+            padded = frames
+            if padded is not None:
+                from app.audio.capture import pcm_to_wav_bytes
+
+                padded = _pad_pcm16(padded, sample_rate, min_seconds=1.5)
+                wav = pcm_to_wav_bytes(padded, sample_rate)
+                import base64
+
+                audio_b64 = base64.b64encode(wav).decode("ascii")
+            transcribe = transcriber.transcribe
+            try:
+                result = await transcribe(
+                    audio_b64=audio_b64,
+                    audio_ref=audio_ref,
+                    language="en",
+                    wake_mode=True,
+                )
+            except TypeError:
+                result = await transcribe(
+                    audio_b64=audio_b64,
+                    audio_ref=audio_ref,
+                    language="en",
+                )
+            transcript = getattr(result, "text", "") or ""
+        except Exception as exc:  # noqa: BLE001 - wake must not crash ears/API
+            return WakeDetection(
+                triggered=False,
+                wake_word="evie",
+                confidence=0.0,
+                device_id=device_id,
+                stage="low_power",
+                power_state=self.power_state,
+                details={"engine": self.name, "error": f"{type(exc).__name__}: {exc}"},
+            )
+        normalized = normalize(transcript)
+        strong, weak = self._classify_transcript(normalized)
+        triggered = strong or (weak and self._real_speech(result))
+        return WakeDetection(
+            triggered=triggered,
+            wake_word="evie",
+            confidence=0.9 if triggered else 0.0,
+            device_id=device_id,
+            stage="burst" if triggered else "low_power",
+            power_state=self.power_state,
+            details={
+                "engine": self.name,
+                "transcript": transcript,
+                "no_speech_prob": getattr(result, "details", {}).get("no_speech_prob"),
+                "weak_alias": weak and not strong,
+                "sample_rate": sample_rate,
+            },
+        )
+
+    @classmethod
+    def _classify_transcript(cls, normalized: str) -> tuple[bool, bool]:
+        """Return (strong_hit, weak_head_hit) for a normalized transcript."""
+
+        if not normalized:
+            return False, False
+        if normalized in cls.WAKE_PHRASES or normalized in {
+            "every",
+            "hey every",
+            "ok every",
+            "okay every",
+            "hi every",
+            "hello every",
+            "every here",
+        }:
+            # "eve"/"evil" are remembered spellings for text hints, but on
+            # the ASR path they stay weak (need real-speech evidence).
+            # "every" as the whole clip is a known strong misspelling.
+            if re.fullmatch(
+                r"(?:hey |ok |okay |hi |hello )?(?:eve|evil|evi)(?: here)?",
+                normalized,
+            ):
+                return False, True
+            return True, False
+        if cls.STRONG_TOKEN.search(normalized):
+            return True, False
+        head = " ".join(normalized.split()[:5])
+        if cls.HEAD_WAKE.match(head) or cls.HEAD_WAKE.match(normalized):
+            weak = bool(cls.WEAK_HEAD.match(head) or cls.WEAK_HEAD.match(normalized))
+            return (not weak), weak
+        return False, False
+
+    @staticmethod
+    def _real_speech(result) -> bool:
+        """True when the transcribed clip is real speech, not a silence hallucination.
+
+        Bare weak aliases ("Eve"/"evil") only wake when the model's own
+        no_speech_prob says the clip contained speech. When the transcriber
+        did not report a no_speech_prob, a weak alias stays non-triggering so
+        unknown-source transcripts cannot false-wake the system.
+        """
+
+        no_speech_prob = getattr(result, "details", {}).get("no_speech_prob")
+        if no_speech_prob is None:
+            return False
+        return float(no_speech_prob) <= WhisperPhraseWakeEngine.NO_SPEECH_CAP
+
+
+def _wake_asr_model() -> str:
+    model = (settings.voice_asr_model or "base").strip()
+    if model in {"whisper-1", "gpt-4o-mini-transcribe", ""}:
+        return "base"
+    return model
+
+
 def default_wake_engine() -> WakeWordEngine:
     """Config-driven wake engine selection.
 
@@ -576,9 +803,43 @@ def set_default_wake_engine(engine: WakeWordEngine | None) -> None:
 
 
 _default_override: WakeWordEngine | None = None
+_whisper_phrase_wake: WhisperPhraseWakeEngine | None = None
 
 
 def configured_wake_engine() -> WakeWordEngine:
-    """Return the override if set, else the config-driven default."""
+    """Return the override if set, else the config-driven default.
 
-    return _default_override if _default_override is not None else default_wake_engine()
+    When openWakeWord is selected but the custom EVIE ONNX is not on disk,
+    fall through to the faster-whisper phrase spotter so saying "EVIE"
+    actually works instead of crashing the ears/API loop.
+    """
+
+    global _whisper_phrase_wake
+    if _default_override is not None:
+        return _default_override
+    engine = default_wake_engine()
+    if engine.name == "openwakeword" or (
+        engine.name == "multi-stage"
+        and settings.voice_asr_provider == "faster_whisper"
+        and settings.voice_wake_provider in {"openwakeword", "phrase"}
+    ):
+        path = getattr(engine, "model_path", None)
+        if engine.name != "openwakeword" or not path or not Path(str(path)).expanduser().is_file():
+            if _whisper_phrase_wake is None:
+                _whisper_phrase_wake = WhisperPhraseWakeEngine()
+            return _whisper_phrase_wake
+    return engine
+
+
+def _pad_pcm16(frames: bytes, sample_rate: int, *, min_seconds: float = 1.5) -> bytes:
+    """Pad short VAD clips so faster-whisper does not treat them as no-speech."""
+
+    import array
+
+    samples = array.array("h")
+    even = frames[: len(frames) - (len(frames) % 2)]
+    samples.frombytes(even)
+    need = int(min_seconds * sample_rate)
+    if len(samples) < need:
+        samples.extend([0] * (need - len(samples)))
+    return samples.tobytes()

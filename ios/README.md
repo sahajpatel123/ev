@@ -81,6 +81,16 @@ sources syntax-parse) but has **not** been compiled, signed, or run. See
 - `utterance(..., audioB64:)` — voice requests with captured PCM.
 - `KeychainTokenStore` and `EVClientAppConfig` for shared app/extension/watch
   configuration.
+- LIFE access APIs: `postPermissionReport` (→ `POST
+  /v1/devices/{id}/permissions`), `EVContactResolver`, `EVMessageURLs` /
+  `EVMessageComposer`, `EVCallPlacer`, and `EVNotificationInbox.summary()`.
+
+The iOS app also includes a `GrantAccessView` ("Grant EVIE access" toolbar
+button) that requests and displays live status for contacts, microphone,
+speech, camera, notifications, location, and Bluetooth. Info.plist usage
+strings, entitlements (HealthKit, Siri, APNs), and background modes (`audio`,
+`voip`, `fetch`, `processing`, `remote-notification`) are authored for both
+phones.
 
 `EVClientCheck` verifies all of the above with a mocked transport.
 

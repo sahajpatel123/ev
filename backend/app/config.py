@@ -13,7 +13,9 @@ class Settings(BaseSettings):
     # Identity is configuration, not provider-specific: swapping the model must
     # never change who EV is or how EV behaves.
     persona_name: str = "EV"
-    persona_description: str = "the user's persistent personal AI companion"
+    persona_description: str = (
+        "the owner's personal AI — house, phone, workshop, and visor"
+    )
 
     # Database. Defaults to SQLite for zero-setup dev/tests; compose uses Postgres.
     database_url: str = "sqlite+aiosqlite:///./ev.db"
@@ -58,12 +60,15 @@ class Settings(BaseSettings):
     # --- END AGENT 8 SYNAPSE ---
 
     # Web research (plan 11.3 / D-03): none = memory-only; mock for tests;
-    # brave uses a user-supplied Brave Search API key.
-    search_provider: str = "none"  # none | mock | brave
+    # brave uses a user-supplied Brave Search API key; live uses Open-Meteo
+    # (weather, no key) plus Wikipedia/DuckDuckGo, and Brave when a key exists.
+    search_provider: str = "none"  # none | mock | brave | live
     brave_search_base_url: str = "https://api.search.brave.com/res/v1/web/search"
     brave_search_api_key: str | None = None
     search_timeout_seconds: float = 10.0
     search_result_limit: int = 5
+    location_place: str | None = None
+    location_file: str = "~/.ev/location.json"
 
     # Local vision/OCR (Domain 15): deterministic is the zero-dependency
     # default; tesseract enables real OCR when the binary is installed.
@@ -82,6 +87,9 @@ class Settings(BaseSettings):
     voiceprint_model_dir: str | None = None  # SpeechBrain cache/download dir
     voiceprint_dim: int = 192
     voiceprint_threshold: float = 0.72
+    # Wake clips are often <1s of "EVIE"; far-field CAM++ on that is much
+    # lower than the close-talk enrollment mean (~0.66).
+    voiceprint_wake_threshold: float = 0.45
 
     # Voice wake word. phrase = deterministic text-hint/frame matcher (dev/test);
     # porcupine = Picovoice Porcupine (custom "EVIE" .ppn model or built-in keyword);
@@ -130,13 +138,38 @@ class Settings(BaseSettings):
     # VAD (Silero ONNX when present; energy/ZCR heuristic otherwise).
     ears_vad_model_path: str | None = None
     ears_vad_threshold: float = 0.5
-    ears_vad_pre_roll_s: float = 0.25
-    ears_vad_post_roll_s: float = 0.75
-    ears_vad_min_speech_s: float = 0.2
+    ears_vad_pre_roll_s: float = 0.4
+    ears_vad_post_roll_s: float = 0.6
+    ears_vad_min_speech_s: float = 0.12
     ears_max_segment_s: float = 60.0  # utterance cap → bounded memory
+    # After wake, follow-up commands are short. A 60s listening clip cannot
+    # finish uploading before a 30s HTTP client timeout.
+    ears_listen_max_segment_s: float = 20.0
+    ears_http_timeout_s: float = 45.0
+    # Idle wake spotting: keep a short rolling clip so "Hey EVIE" is not split,
+    # and skip room-tone so Whisper is free when the name is actually spoken.
+    ears_wake_chunk_s: float = 2.5
+    ears_idle_min_rms: float = 140.0
+    ears_idle_min_peak: int = 600
 
     # Wake threshold used by the ears process (tuned against ambient audio).
     ears_wake_threshold: float = 0.5
+
+    # On-device wake fallback when the custom openWakeWord head is not on disk.
+    # ``ears_wake_local_spotter`` runs a small local faster-whisper model
+    # (``ears_wake_asr_model``) in the ears process so the wake word works
+    # without a trained head and without shipping every VAD clip to the API.
+    ears_wake_local_spotter: bool = True
+    ears_wake_asr_model: str = "tiny"  # dedicated fast wake model, not the ASR model
+
+    # Stuck-mic / self-echo loops: drop segments whose content literally
+    # repeats (docs/VOICE.md §0) before they reach ASR or the API.
+    ears_stuck_loop_drop: bool = True
+    ears_stuck_loop_threshold: float = 0.10
+
+    # Stream TTS chunks back over SSE and play each sentence as it arrives,
+    # instead of waiting for the full reply (docs/VOICE.md §6).
+    ears_stream_playback: bool = True
 
     # Audio-scene (YAMNet ONNX when present; VAD-feature fallback otherwise).
     ears_scene_model_path: str | None = None
@@ -174,6 +207,11 @@ class Settings(BaseSettings):
     voice_asr_compute_type: str = "auto"  # auto | int8 | float16 | float32
     voice_asr_language: str | None = None  # default language; per-request overrides
     voice_asr_vad_filter: bool = True
+    # Wake-mode transcription keeps Whisper's default no-speech gate so real
+    # short wake clips are transcribed instead of suppressed (0.1 suppressed
+    # measured "EVIE" takes). Weak wake aliases are gated on the per-segment
+    # no_speech_prob rather than on this suppression threshold.
+    voice_asr_wake_no_speech_threshold: float = 0.6
 
     # Voice TTS (natural speech with urgency/warmth/brevity controls).
     # meta = offline SSML metadata (dev/test); openai_compat = any
@@ -201,10 +239,43 @@ class Settings(BaseSettings):
     voice_asr_onnx_path: str | None = None  # explicit Parakeet .onnx path
     voice_asr_stream_chunk_ms: int = 200  # streaming partial cadence (<=300 ms first partial)
     voice_asr_allowed_roots: list[str] | None = None  # allowlisted audio_ref dirs
-    voice_tts_engine: str = "kokoro-82m-int8"
-    voice_tts_kokoro_voice: str = "af_heart"
+    voice_tts_engine: str = "kokoro-82m-fp16"
+    voice_tts_kokoro_voice: str = "bf_alice"
+    voice_tts_say_voice: str = "Ava"
+    # Edge neural TTS (free, no key, remote). Natural voices; the warm British
+    # female is the closest public match to the movie E.V. profile. Requires
+    # EV_ALLOW_REMOTE_TTS=true. Voice consistency is enforced by NOT falling
+    # back to a different engine: on remote failure the reply is text-only.
+    voice_tts_edge_voice: str = "en-GB-SoniaNeural"
+    voice_tts_retries: int = 2  # transient retries for the remote TTS call
     voice_chatterbox_engine: str = "chatterbox-nano"  # opt-in expressive tier
     voice_chatterbox_voice: str = "default"
+    # --- AGENT 4 VOICE — Wave Life session continuity (additive) ---
+    # One wake opens a verified session; the owner stays in ACTIVE/FOLLOW_UP
+    # until a sleep phrase, explicit end, or long true idle.
+    voice_follow_up_seconds: int = 240  # follow-up window (180-300 recommended)
+    voice_session_timeout_seconds: int = 900  # long-idle lock (must exceed follow-up)
+    voice_verify_timeout_seconds: int = 20  # one-time verify window after wake
+    voice_continuity_conversation_id: str = "CONTINUITY_LIVE"  # one lifelong thread
+    voice_addressivity_enabled: bool = True  # VAD + owner verify per utterance
+    voice_addressivity_vad_threshold: float = 0.5
+    # Push-to-talk / utterance bounds so the menu bar cannot sit on ".thinking."
+    # until URLSession's default 60s timeout. Clip audio, cap ASR, cap chat+TTS.
+    voice_utterance_max_seconds: float = 15.0
+    voice_asr_timeout_seconds: float = 45.0
+    voice_turn_timeout_seconds: float = 90.0
+    voice_tts_timeout_seconds: float = 12.0
+    voice_sleep_phrases: list[str] = Field(
+        default_factory=lambda: [
+            "that's all",
+            "that's it",
+            "go to sleep",
+            "stop listening",
+            "stop evie",
+            "goodbye evie",
+            "never mind",
+        ]
+    )
 
     # Chat gateway
     chat_provider: str = "echo"  # echo | mock | deepseek | local
@@ -256,13 +327,20 @@ class Settings(BaseSettings):
     quiet_hours_start: str = "22:00"
     quiet_hours_end: str = "08:00"
     daily_alert_budget: int = 5
+    # IANA timezone for quiet-hours clock. Empty/invalid fails closed (treat as quiet).
+    timezone: str | None = "UTC"
+    # Companion: social-turn budget before an isolation scan may fire a nudge.
+    social_nudge_after_turns: int = 5
+    # Workshop printer; unset appears as needs_setup on the protocol sheet.
+    octoprint_url: str | None = None
 
     # 24/7 runtime state machine
     runtime_verify_timeout_seconds: int = 15
     runtime_awake_timeout_seconds: int = 120
     runtime_processing_timeout_seconds: int = 90
     runtime_respond_timeout_seconds: int = 60
-    runtime_followup_timeout_seconds: int = 30
+    runtime_followup_timeout_seconds: int = 30  # REST hint only; not a session door
+    runtime_session_timeout_seconds: int = 900  # long-idle lock for listening states
     runtime_heartbeat_grace_seconds: int = 300
     runtime_dlq_max_attempts: int = 3
     runtime_urgent_priority_threshold: float = 0.7
@@ -370,6 +448,8 @@ class Settings(BaseSettings):
     notify_dedup_window_seconds: int = 3600
     notify_emergency_priority_threshold: float = 0.7
     notify_digest_enabled: bool = True
+    notify_boot_beacon: bool = True
+    notify_device_routing: bool = True
 
     # --- AGENT 10 CORTEX (API-only reliability) -----------------------------
     # DeepSeek is the primary reasoning provider. These knobs make outages
@@ -391,6 +471,13 @@ class Settings(BaseSettings):
     # Conservative completion projection used when refusing over-cap requests
     # before a provider call (actual usage is always measured after the call).
     model_estimated_max_completion_tokens: int = 4096
+
+    # --- AGENT 10 CORTEX (life agency) ---------------------------------------
+    # Standing owner authority for life actions (WAVE LIFE).
+    # full            = no per-action approval inside granted standing scopes
+    # confirm_unknown = known contacts act; unknown recipients need confirmation
+    # confirm_all     = every life action requires explicit approval
+    owner_autonomy: str = "full"
 
     # --- AGENT OPENCODE (append-only) ---------------------------------------
     # `opencode serve` as a chat provider (EV_CHAT_PROVIDER=opencode). The
@@ -418,9 +505,23 @@ class Settings(BaseSettings):
     opencode_stream_timeout_seconds: float = 300.0
     # Structured-output emulation of tool calling (off by default: the session
     # API accepts no function definitions).
-    opencode_tool_emulation: bool = False
+    opencode_tool_emulation: bool = True
     opencode_format_retries: int = 1
     # --- END AGENT OPENCODE ---
+
+    # --- AGENT 12 CONDUIT (WAVE LIFE) -----------------------------------------
+    # Real Apple-life bridges (Messages/Contacts/FaceTime/Mail) via Agent 18's
+    # EVLifeHelper, plus the iPhone device-proxy actuator queue. The helper is
+    # not merged yet; empty values keep offline CI green and every life action
+    # fails loudly instead of pretending success.
+    life_helper_path: str = ""
+    messaging_provider: str = "local"  # local | macos_life | device_proxy
+    life_autonomy: str = "default"  # default | full
+    life_contact_allowlist: str = "all"  # all | starred | any
+    life_confirm_unknown: bool = True
+    life_helper_timeout_seconds: float = 20.0
+    life_helper_max_output_bytes: int = 65_536
+    # --- END AGENT 12 CONDUIT (WAVE LIFE) ---
 
 
 @lru_cache

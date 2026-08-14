@@ -170,14 +170,18 @@ class ContextCompiler:
                 live_section.truncated = live_section.items_dropped > 0
 
         if rollup_summary:
-            chunk = rollup_summary
+            chunk = (
+                "ROLLUP SUMMARY (long-run background; may be unrelated to the "
+                "current question):\n"
+                f"{rollup_summary}"
+            )
             if used + token_estimate(chunk) > budget:
                 reserve = max(0, budget - used - 1)
                 if reserve > 0:
                     chunk = chunk[: reserve * 4]
             push("rollup_summary", chunk)
 
-        header = "RETRIEVED MEMORY (newest/highest score first):"
+        header = "RETRIEVED MEMORY (candidate background; use only what the current question needs):"
         parts.append(header)
         used += token_estimate(header)
         memory_section = SectionPlan(
@@ -201,7 +205,7 @@ class ContextCompiler:
 
         open_conflicts = open_conflicts or []
         if open_conflicts:
-            header = "OPEN CONFLICTS (ask which version is current instead of picking one):"
+            header = "OPEN CONFLICTS (mention only if the current question touches one):"
             conflict_section: SectionPlan | None = None
             if push("open_conflicts", header):
                 conflict_section = sections[-1]
@@ -220,7 +224,7 @@ class ContextCompiler:
 
         history = history or []
         if history:
-            header = "CONVERSATION HISTORY (continuous window, oldest first):"
+            header = "PRIOR CONVERSATION (background reference only; do NOT continue these topics unless the current message explicitly refers to them):"
             history_section: SectionPlan | None = None
             if push("conversation_history", header):
                 history_section = sections[-1]
@@ -240,7 +244,7 @@ class ContextCompiler:
 
         open_questions = open_questions or []
         if open_questions:
-            header = "OPEN QUESTIONS (answer these when relevant or when resuming):"
+            header = "OPEN QUESTIONS (address only if the current message explicitly resumes one):"
             question_section: SectionPlan | None = None
             if push("open_questions", header):
                 question_section = sections[-1]

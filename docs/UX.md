@@ -96,6 +96,10 @@ One JSON schema (`ev.hud.card.v1`) renders to:
 - Lock Screen widget (medium: title + 4 lines)
 - Mac dashboard card
 - AR overlay (future, same data, richer layout)
+- Native Mac lookouts (`ev.hud.lookout.v1`) — multiple floating windows
+  with JARVIS sizes (`pip`/`chip`/`card`/`brief`/`slate`/`canvas`/`lookout`/`ticker`)
+  and Karen time-types (`flash`/`glance`/`linger`/`hold`/`lookout`/`pulse`/`session`).
+  Intelligence opens them; the owner does not browse to a website.
 
 Example compact card:
 

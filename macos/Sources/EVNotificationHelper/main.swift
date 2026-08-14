@@ -25,6 +25,8 @@ if arguments.contains("--check-permission") {
     exit(0)
 }
 
+let presenting = arguments.contains("--present")
+
 guard
     let title = value(for: "--title"),
     let body = value(for: "--body")
@@ -33,6 +35,7 @@ else {
         Data(
             """
             usage: EVNotificationHelper --id <id> --bundle-id <id> --title <t> --body <b>
+                   EVNotificationHelper --present --title <t> --body <b> [--kind card] [--size card] [--time-type linger] [--place center] [--ttl 30000] [--id window] [--lookout]
                    EVNotificationHelper --check-permission
             """.utf8
         )
@@ -40,12 +43,24 @@ else {
     exit(2)
 }
 
-var components = URLComponents(string: "ev://notification")!
-components.queryItems = [
+var components = URLComponents(string: presenting ? "ev://present" : "ev://notification")!
+var queryItems = [
     URLQueryItem(name: "id", value: value(for: "--id") ?? UUID().uuidString),
     URLQueryItem(name: "title", value: title),
     URLQueryItem(name: "body", value: body),
+    URLQueryItem(name: "kind", value: value(for: "--kind") ?? "card"),
 ]
+if let size = value(for: "--size") { queryItems.append(URLQueryItem(name: "size", value: size)) }
+if let time = value(for: "--time-type") { queryItems.append(URLQueryItem(name: "time", value: time)) }
+if let place = value(for: "--place") { queryItems.append(URLQueryItem(name: "place", value: place)) }
+if let ttl = value(for: "--ttl") { queryItems.append(URLQueryItem(name: "ttl", value: ttl)) }
+if let items = value(for: "--items") { queryItems.append(URLQueryItem(name: "items", value: items)) }
+if let recommendation = value(for: "--recommendation") {
+    queryItems.append(URLQueryItem(name: "recommendation", value: recommendation))
+}
+if let source = value(for: "--source") { queryItems.append(URLQueryItem(name: "source", value: source)) }
+if arguments.contains("--lookout") { queryItems.append(URLQueryItem(name: "lookout", value: "1")) }
+components.queryItems = queryItems
 
 guard let url = components.url else {
     FileHandle.standardError.write(Data("EVNotificationHelper: could not build URL\n".utf8))

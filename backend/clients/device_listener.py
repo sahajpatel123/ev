@@ -379,7 +379,7 @@ class DeviceListener:
         follow_up: bool = False,
         reverify_token: str | None = None,
     ) -> dict:
-        """Send one utterance (or 30-second follow-up) to the runtime."""
+        """Send one utterance (or a same-session follow-up) to the runtime."""
         payload: dict[str, Any] = {
             "session_id": self.session_id,
             "text": text,

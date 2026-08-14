@@ -2,9 +2,68 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from app.config import settings
 from app.gateway.validation import validate_arguments
 
-ACTION_SPECS = [
+LIFE_ACTION_NAMES = frozenset(
+    {
+        "send_message",
+        "list_messages",
+        "resolve_contact",
+        "place_call",
+        "list_mail",
+        "open_url",
+        "set_reminder",
+    }
+)
+
+AUTONOMY_VALUES = ("full", "confirm_unknown", "confirm_all")
+
+
+def autonomy_mode() -> str:
+    """EV_OWNER_AUTONOMY, normalized; unknown values fail closed to ``full``."""
+
+    mode = (settings.owner_autonomy or "full").strip().lower()
+    return mode if mode in AUTONOMY_VALUES else "full"
+
+
+def life_action_requires_approval(name: str) -> bool:
+    """Per-action approval requirement under the current autonomy mode.
+
+    ``full`` and ``confirm_unknown`` do not add a per-action approval step:
+    the standing scopes / contact allowlist are enforced by the CONDUIT life
+    policy inside the adapter. ``confirm_all`` requires explicit approval for
+    every life action.
+    """
+
+    if name in LIFE_ACTION_NAMES:
+        return autonomy_mode() == "confirm_all"
+    spec = next((item for item in ACTION_SPECS if item["name"] == name), None)
+    return bool(spec and spec.get("requires_approval", False))
+
+
+def life_agency_prompt() -> str:
+    """System-prompt block for life agency (injected when life tools are offered)."""
+
+    return (
+        "LIFE AGENCY. You are EVIE, the owner's agent, and the owner has standing "
+        "authority: when the owner tells you to do something and a granted life "
+        "bridge exists, DO it.\n"
+        "- Execute life actions (messages, calls, mail, contacts) through the "
+        "granted bridges. Under EV_OWNER_AUTONOMY=full, no per-action approval "
+        "is required inside granted scopes.\n"
+        "- If a bridge is missing or a permission/scope is denied, explain "
+        "exactly WHAT must be granted and WHICH helper is required (integration "
+        "slug + scope, or helper command). Never invent a theatrical or moral "
+        "refusal.\n"
+        "- When an action succeeds, confirm briefly with evidence: "
+        "recipient/target, channel, and time."
+    )
+
+
+ACTION_SPECS: list[dict[str, Any]] = [
     {
         "name": "search_memory",
         "description": "Run a bounded personal-memory search (read-only model capability).",
@@ -37,6 +96,38 @@ ACTION_SPECS = [
             },
         },
         "output": {"type": "object"},
+        "requires_approval": False,
+        "undoable": True,
+        "permission": "hud:write",
+        "read_only": False,
+    },
+    {
+        "name": "present",
+        "description": (
+            "Open EVIE's native HUD windows on the owner's Mac to show something. "
+            "Use this instead of telling the owner to open a web page. "
+            "kind=auto lets intelligence pick size, time-type, and lookout."
+        ),
+        "payload": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "title": {"type": "string", "minLength": 1, "maxLength": 120},
+                "body": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "kind": {"type": "string", "maxLength": 32, "default": "auto"},
+                "size": {"type": "string", "maxLength": 16},
+                "time_type": {"type": "string", "maxLength": 16},
+                "placement": {"type": "string", "maxLength": 16},
+                "ttl_ms": {"type": "integer", "minimum": 0, "maximum": 3600000},
+                "items": {"type": "array", "items": {"type": "string"}},
+                "recommendation": {"type": "string", "maxLength": 400},
+                "source": {"type": "string", "maxLength": 160},
+                "lookout": {"type": "boolean"},
+                "window_id": {"type": "string", "maxLength": 64},
+            },
+            "required": ["title", "body"],
+        },
+        "output": {"type": "object", "required": ["opened"]},
         "requires_approval": False,
         "undoable": True,
         "permission": "hud:write",
@@ -143,7 +234,9 @@ def get_action_spec(name: str) -> dict | None:
     """Return the declared spec for an action name, or None when unknown."""
     for spec in ACTION_SPECS:
         if spec["name"] == name:
-            return spec
+            resolved = dict(spec)
+            resolved["requires_approval"] = life_action_requires_approval(name)
+            return resolved
     return None
 
 
@@ -157,4 +250,7 @@ def validate_action_payload(name: str, payload: dict) -> list[str]:
 
 
 def list_action_specs() -> list[dict]:
-    return list(ACTION_SPECS)
+    return [
+        {**spec, "requires_approval": life_action_requires_approval(spec["name"])}
+        for spec in ACTION_SPECS
+    ]

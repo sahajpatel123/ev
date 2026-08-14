@@ -63,6 +63,41 @@ def _is_permission_error(exc: BaseException) -> bool:
     return any(marker in text for marker in markers)
 
 
+def probe_input_rms(
+    device: str | int | None,
+    *,
+    seconds: float = 0.35,
+    sounddevice_module: Any | None = None,
+) -> float:
+    """Record a short clip and return RMS. 0.0 means silent or unusable."""
+
+    try:
+        sd = sounddevice_module or _import_sounddevice()
+    except (MicrophoneUnavailableError, MicrophoneDeniedError):
+        return 0.0
+    try:
+        info = sd.query_devices(device)
+        rate = int(info.get("default_samplerate") or 16000)
+        frames = max(1, int(rate * max(0.15, seconds)))
+        audio = sd.rec(
+            frames,
+            samplerate=rate,
+            channels=1,
+            dtype="int16",
+            device=device,
+        )
+        sd.wait()
+        if audio is None:
+            return 0.0
+        flat = audio.reshape(-1)
+        if getattr(flat, "size", len(flat)) == 0:
+            return 0.0
+        total = sum(int(sample) * int(sample) for sample in flat)
+        return (total / len(flat)) ** 0.5
+    except Exception:
+        return 0.0
+
+
 def list_input_devices(sounddevice_module: Any | None = None) -> list[dict]:
     """List PortAudio input devices as plain dicts (no raw audio)."""
 
@@ -137,6 +172,7 @@ class MicrophoneStream:
         self._stream: Any | None = None
         self._ring = ring
         self._sample_count = 0
+        self._input_sample_rate = sample_rate
 
     @property
     def ring(self):
@@ -151,8 +187,34 @@ class MicrophoneStream:
         if indata.ndim > 1:
             indata = indata[:, 0]
         samples = array.array("h", indata.astype("<i2").reshape(-1).tolist())
+        if self._input_sample_rate != self.sample_rate:
+            samples = self._resample(samples, self._input_sample_rate, self.sample_rate)
         self.ring.write(samples)
         self._sample_count += len(samples)
+
+    @staticmethod
+    def _resample(
+        samples: array.array,
+        source_rate: int,
+        target_rate: int,
+    ) -> array.array:
+        """Linear-resample one short mono block without a heavy audio dependency."""
+
+        if source_rate <= 0 or target_rate <= 0 or source_rate == target_rate:
+            return samples
+        if len(samples) < 2:
+            return array.array("h", samples)
+        target_length = max(1, round(len(samples) * target_rate / source_rate))
+        result = array.array("h")
+        scale = (len(samples) - 1) / max(1, target_length - 1)
+        for index in range(target_length):
+            position = index * scale
+            left = int(position)
+            right = min(left + 1, len(samples) - 1)
+            fraction = position - left
+            value = samples[left] + (samples[right] - samples[left]) * fraction
+            result.append(max(-32768, min(32767, round(value))))
+        return result
 
     def open(self) -> None:
         if self._stream is not None:
@@ -165,12 +227,25 @@ class MicrophoneStream:
             raise MicrophoneUnavailableError(
                 "sounddevice is not installed; install it to use real microphone capture"
             ) from exc
-        blocksize = max(1, int(self.sample_rate * self.block_ms / 1000))
+        device = _resolve_device(sd, self.device)
+        input_rate = self.sample_rate
+        try:
+            info = sd.query_devices(device)
+            if isinstance(info, dict):
+                candidate = int(float(info.get("default_samplerate") or 0))
+                if candidate >= 8000:
+                    input_rate = candidate
+        except Exception:
+            # Some test doubles and PortAudio hosts do not expose a per-device
+            # query. The requested rate remains the safe fallback.
+            pass
+        self._input_sample_rate = input_rate
+        blocksize = max(1, int(input_rate * self.block_ms / 1000))
         try:
             self._stream = sd.InputStream(
-                samplerate=self.sample_rate,
+                samplerate=input_rate,
                 blocksize=blocksize,
-                device=_resolve_device(sd, self.device),
+                device=device,
                 channels=1,
                 dtype="int16",
                 callback=self._callback,

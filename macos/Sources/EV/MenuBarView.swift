@@ -9,8 +9,36 @@ struct MenuBarView: View {
     @EnvironmentObject private var model: AppModel
     @State private var chatDraft = ""
     @State private var showPermissions = false
+    @AppStorage("ev.hasSeenLifeGrant") private var hasSeenLifeGrant = false
 
     var body: some View {
+        Group {
+            if showPermissions {
+                PermissionsPanelView(onBack: { showPermissions = false })
+            } else {
+                homeContent
+            }
+        }
+        .padding(12)
+        .onAppear {
+            model.start()
+            model.hotkey.start(
+                keyCode: 14, // "e"
+                flags: [.command, .shift],
+                handler: { [weak model] in
+                    Task { @MainActor in
+                        model?.toggleTalk()
+                    }
+                }
+            )
+            if !hasSeenLifeGrant {
+                showPermissions = true
+                hasSeenLifeGrant = true
+            }
+        }
+    }
+
+    private var homeContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             statusHeader
             Divider()
@@ -25,22 +53,6 @@ struct MenuBarView: View {
             Divider()
             footerRow
         }
-        .padding(12)
-        .sheet(isPresented: $showPermissions) {
-            PermissionsPanelView()
-        }
-        .onAppear {
-            model.start()
-            model.hotkey.start(
-                keyCode: 14, // "e"
-                flags: [.command, .shift],
-                handler: { [weak model] in
-                    Task { @MainActor in
-                        model?.toggleTalk()
-                    }
-                }
-            )
-        }
     }
 
     private var statusHeader: some View {
@@ -48,14 +60,14 @@ struct MenuBarView: View {
             Circle()
                 .fill(statusColor)
                 .frame(width: 8, height: 8)
-            Text("EV")
+            Text("EVIE")
                 .font(.headline)
             Text(model.status.label)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
             if model.isRecording {
-                Text("REC")
+                Text("REC · \(Int(MicCapture.maxSeconds))s max")
                     .font(.caption2)
                     .foregroundStyle(.red)
             }
@@ -103,7 +115,7 @@ struct MenuBarView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if model.messages.isEmpty {
-                        Text("Ask EV anything — the reply streams here.")
+                        Text("Say “EVIE” — always-on listening is already running in the background.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
@@ -112,7 +124,7 @@ struct MenuBarView: View {
             .frame(maxHeight: 180)
 
             HStack(spacing: 6) {
-                TextField("Ask EV…", text: $chatDraft)
+                TextField("Ask EVIE…", text: $chatDraft)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit {
                         let text = chatDraft
@@ -127,15 +139,9 @@ struct MenuBarView: View {
             }
 
             HStack(spacing: 8) {
-                Button(model.isRecording ? "Stop & send" : "Talk") {
-                    model.toggleTalk()
-                }
-                Text("⇧⌘E")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Spacer()
-                Button("Permissions…") {
-                    showPermissions.toggle()
+                Button(model.isRecording ? "Stop & send" : "Push to talk") {
+                    model.toggleTalk()
                 }
                 .font(.caption)
             }
@@ -150,17 +156,31 @@ struct MenuBarView: View {
 
     private var footerRow: some View {
         HStack {
-            Toggle("Launch at login", isOn: Binding(
-                get: { model.launchAtLogin },
-                set: { model.launchAtLogin = $0 }
-            ))
-            .toggleStyle(.checkbox)
-            .font(.caption)
+            Toggle("Open at login", isOn: launchAtLoginBinding)
+                .font(.caption)
+                .toggleStyle(.checkbox)
             Spacer()
+            if PresenceController.shared.lastContent != nil {
+                Button("Last lookouts") {
+                    PresenceController.shared.showLast()
+                }
+                .font(.caption)
+            }
+            Button("Permissions") {
+                showPermissions = true
+            }
+            .font(.caption)
             Button("Quit") {
-                NSApplication.shared.terminate(nil)
+                AppLifecycle.quit()
             }
             .font(.caption)
         }
+    }
+
+    private var launchAtLoginBinding: Binding<Bool> {
+        Binding(
+            get: { model.launchAtLogin },
+            set: { model.launchAtLogin = $0 }
+        )
     }
 }

@@ -248,6 +248,7 @@ class ChatResponse(BaseModel):
     provenance: list[ProvenanceItem] = Field(default_factory=list)
     filter_report: FilterReportOut | None = None
     context_plan: dict | None = None
+    surfaces: dict | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -461,6 +462,9 @@ class DeviceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     capabilities: list[str] = Field(default_factory=list)
     trust_level: Literal["device", "owner"] = "device"
+    # --- AGENT 14 PULSE (WAVE LIFE, additive) ---
+    device_type: Literal["mac", "phone", "watch", "desktop", "unknown"] = "unknown"
+    platform: Literal["apple", "android", "web", "unknown"] | None = None
 
 
 class DeviceOut(BaseModel):
@@ -472,6 +476,12 @@ class DeviceOut(BaseModel):
     capabilities: list
     trust_level: str = "device"
     owner_id: UUID | None = None
+    # --- AGENT 14 PULSE (WAVE LIFE, additive) ---
+    device_type: str | None = None
+    platform: str | None = None
+    paired_at: datetime | None = None
+    push_platform: str | None = None
+    push_registered: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -566,6 +576,7 @@ CommunicationMode = Literal[
     "coaching",
     "emergency",
     "collaborative",
+    "social",
 ]
 
 
@@ -586,6 +597,7 @@ class InteractionStrategy(BaseModel):
     ask_question: bool = False
     challenge: bool = False
     rationale: str
+    surface_hint: str | None = None
 
 
 class InteractionModeResponse(BaseModel):
@@ -891,6 +903,8 @@ class VoiceWakeRequest(BaseModel):
     priority: float = Field(default=0.5, ge=0, le=1)
     text_hint: str | None = Field(default=None, max_length=256)
     audio_ref: str | None = None
+    audio_b64: str | None = None
+    push_to_talk: bool = False
     wake_confidence: float | None = Field(default=None, ge=0, le=1)
 
 
@@ -920,6 +934,8 @@ class VoiceSessionVerifyResponse(BaseModel):
     verified: bool
     confidence: float = 0.0
     reason: str = ""
+    conversation_id: UUID | None = None
+    greeting: str | None = None
 
 
 class SpeechStyleOut(BaseModel):
@@ -934,6 +950,7 @@ class SpeechStyleOut(BaseModel):
 class TtsOut(BaseModel):
     provider: str
     audio_ref: str | None = None
+    audio_b64: str | None = None
     content_type: str | None = None
     ssml: str | None = None
     duration_ms: int | None = None
@@ -961,6 +978,9 @@ class VoiceUtteranceRequest(BaseModel):
     language: str = "en"
     conversation_id: UUID | None = None
     follow_up: bool = False
+    # Agent 4 Voice — Wave Life: explicit push-to-talk bypasses the
+    # per-utterance VAD + owner-verification addressivity gate.
+    push_to_talk: bool = False
 
 
 class VoiceUtteranceResponse(BaseModel):
@@ -977,6 +997,7 @@ class VoiceUtteranceResponse(BaseModel):
     model: str | None = None
     context_tokens: int = 0
     memory_deltas: list[MemoryDelta] = Field(default_factory=list)
+    error: str | None = None
 
 
 class VoiceStatusOut(BaseModel):
@@ -1348,6 +1369,11 @@ class HealthSummaryOut(BaseModel):
     recommendation: str
     open_question: str | None = None
     anomalies: list[dict] = Field(default_factory=list)
+    heart_rate: float | None = None
+    spo2: float | None = None
+    stress: float | None = None
+    source: str | None = None
+    emergency: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -1687,6 +1713,57 @@ class PublicFigureLinkRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=512)
 
 
+# PEOPLE FROM LIFE — resolution, person context, roster (no People tab)
+
+
+class PersonCandidateOut(BaseModel):
+    entity_id: UUID | None = None
+    name: str
+    relationship: str | None = None
+    provenance: str  # roster | memory | contact
+    face_enrolled: bool = False
+    consent_id: UUID | None = None
+    last_seen: dict | None = None
+    confidence: float | None = None
+    candidate_only: bool = False
+
+
+class PersonResolveOut(BaseModel):
+    query: str
+    candidates: list[PersonCandidateOut] = Field(default_factory=list)
+    contacts_available: bool = False
+
+
+class PersonContextOut(BaseModel):
+    name: str
+    entity_id: UUID | None = None
+    relationship: str | None = None
+    how_known: list[dict] = Field(default_factory=list)
+    last_seen: dict | None = None
+    enrolled: dict | None = None
+    consent: dict | None = None
+    match_state: str = "unknown"
+    provenance: list[dict] = Field(default_factory=list)
+    face_sightings: list[dict] = Field(default_factory=list)
+    voice_sightings: list[dict] = Field(default_factory=list)
+
+
+class PersonRosterEntryOut(BaseModel):
+    entity_id: UUID
+    name: str
+    relationship: str | None = None
+    face_enrolled: bool = False
+    consent_id: UUID | None = None
+    sample_count: int = 0
+    last_seen: dict | None = None
+    provenance: list[dict] = Field(default_factory=list)
+
+
+class PersonRosterOut(BaseModel):
+    people: list[PersonRosterEntryOut] = Field(default_factory=list)
+    total: int = 0
+
+
 class UserStateOut(BaseModel):
     activity: str | None = None
     current_focus: str | None = None
@@ -1870,6 +1947,59 @@ class PersonalityUpdate(BaseModel):
     reason_for_change: str | None = None
 
 
+class AssistantProfileOut(BaseModel):
+    nickname: str
+    owner_preferred_name: str | None = None
+    greeting_enabled: bool = True
+    live_conversation_id: UUID | None = None
+    onboarding_completed_at: datetime | None = None
+    dedication_text: str | None = None
+    dedication_played_at: datetime | None = None
+    training_wheels_started_at: datetime | None = None
+    training_wheels_completed_at: datetime | None = None
+
+
+class AssistantNameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+
+
+class DedicationSetRequest(BaseModel):
+    text: str | None = Field(default=None, max_length=500)
+    blob_id: str | None = Field(default=None, max_length=256)
+
+
+class QuietHoursRequest(BaseModel):
+    until: str | None = None
+    start: str | None = None
+    end: str | None = None
+
+
+class ProtocolOut(BaseModel):
+    key: str
+    title: str
+    status: str
+    detail: str = ""
+
+
+class ProtocolSheetOut(BaseModel):
+    protocols: list[ProtocolOut] = Field(default_factory=list)
+    enabled: list[str] = Field(default_factory=list)
+    hud: dict = Field(default_factory=dict)
+
+
+class CalloutOut(BaseModel):
+    id: UUID
+    text: str
+    source: str
+    source_item: str | None = None
+    spoken: bool
+    emergency: bool = False
+    hud: dict = Field(default_factory=dict)
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class PersonalityOut(BaseModel):
     id: UUID
     version: int
@@ -2000,6 +2130,35 @@ class HudQuickCardOut(BaseModel):
     meta: dict = Field(default_factory=dict)
 
 
+class HudLookoutWindow(BaseModel):
+    id: str
+    kind: str
+    size: str
+    time_type: str
+    placement: str
+    title: str
+    body: str
+    ttl_ms: int | None = None
+    items: list[str] = Field(default_factory=list)
+    recommendation: str | None = None
+    source: str | None = None
+    lookout: bool = False
+    priority: float = 0.4
+
+
+class HudLookoutOut(BaseModel):
+    """Intelligence directive for one or more HUD windows (ev.hud.lookout.v1)."""
+
+    schema_version: Literal["ev.hud.lookout.v1"] = "ev.hud.lookout.v1"
+    generated_at: datetime
+    open: bool
+    windows: list[HudLookoutWindow] = Field(default_factory=list)
+    rationale: str = ""
+    explicit: bool = False
+    needed: bool = False
+    meta: dict = Field(default_factory=dict)
+
+
 class HudOpsCardOut(BaseModel):
     """Unified ops center rendered as a strict HUD card (ev.hud.ops.v1)."""
 
@@ -2078,7 +2237,7 @@ class ModelsResponse(BaseModel):
 
 
 class RuntimeHeartbeatCreate(BaseModel):
-    device_id: UUID
+    device_id: str = Field(min_length=1, max_length=128)
     status: Literal["ok", "degraded", "error"] = "ok"
     listener_state: Literal["listening", "sleep", "off"] = "listening"
     battery_percent: float | None = Field(default=None, ge=0, le=100)
@@ -2978,11 +3137,23 @@ class EarsWakeRequest(BaseModel):
     scene: str | None = Field(default=None, max_length=32)
     scene_confidence: float | None = Field(default=None, ge=0, le=1)
     consent: bool = False
+    # A local spotter may hear both the wake word and a command. In that case
+    # return the listen ack immediately and stream the command separately.
+    defer_command: bool = False
 
 
 class EarsWakeResponse(BaseModel):
     accepted: bool
     message: str | None = None
+    session_id: UUID | None = None
+    state: str | None = None
+    listening: bool = False
+    queued: bool = False
+    transcript: str | None = None
+    reply: str | None = None
+    tts: TtsOut | None = None
+    playback_owner: str = "ears"
+    command_deferred: bool = False
 
 
 # --- AGENT 4 VOICE ---
@@ -3050,11 +3221,44 @@ class NotificationOut(BaseModel):
     backend_ref: str | None
     alert_id: UUID | None
     action_id: UUID | None
+    device_id: UUID | None
+    attention_kind: str
     attempt_count: int
     queued_at: datetime
     last_attempt_at: datetime | None
     delivered_at: datetime | None
     details: dict
+
+    model_config = {"from_attributes": True}
+
+
+class PushTokenRegister(BaseModel):
+    token: str = Field(min_length=1, max_length=4096)
+    platform: Literal["apns", "fcm", "webpush"] = "apns"
+    bundle_id: str | None = Field(default=None, max_length=256)
+
+
+class PushTokenOut(BaseModel):
+    device_id: UUID
+    platform: str | None
+    registered: bool
+    updated_at: datetime | None
+
+
+class LifeJobOut(BaseModel):
+    id: UUID
+    action: str
+    device_id: UUID | None
+    status: str
+    lifecycle: str
+    args: dict
+    result: dict | None
+    evidence: dict | None
+    error: str | None
+    created_at: datetime
+    dispatched_at: datetime | None
+    acknowledged_at: datetime | None
+    delivered_at: datetime | None
 
     model_config = {"from_attributes": True}
 
@@ -3142,3 +3346,115 @@ class StateOfMeOut(BaseModel):
     period_end: datetime
     executed_at: datetime
     written: list[UUID]
+
+
+# --------------------------------------------------------------------------- #
+# --- AGENT 12 CONDUIT (WAVE LIFE) — Apple life bridges (additive) ---
+# --------------------------------------------------------------------------- #
+
+
+class LifePolicyOut(BaseModel):
+    allowed: bool
+    confirmation_required: bool
+    reason: str
+    contact: dict | None = None
+
+
+class LifeDeviceResultIn(BaseModel):
+    queue_id: UUID | None = None
+    action: str | None = Field(default=None, max_length=64)
+    status: Literal["delivered", "failed"]
+    evidence: dict = Field(default_factory=dict)
+    error: str | None = Field(default=None, max_length=512)
+    message: dict | None = None
+
+
+class LifeDeviceResultOut(BaseModel):
+    accepted: bool
+    queue_id: UUID | None = None
+    status: str | None = None
+    delivery: dict = Field(default_factory=dict)
+
+
+class LifeOutboxEntryOut(BaseModel):
+    id: UUID
+    action: str
+    args: dict
+    created_at: datetime
+
+
+class LifeOutboxOut(BaseModel):
+    items: list[LifeOutboxEntryOut] = Field(default_factory=list)
+
+
+# --- PRESENCE (EVIE overlay) ---
+
+
+class PresenceShowIn(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=4000)
+    kind: str = Field(default="card", max_length=32)
+    size: str | None = Field(default=None, max_length=16)
+    time_type: str | None = Field(default=None, max_length=16)
+    placement: str | None = Field(default=None, max_length=16)
+    ttl_ms: int | None = Field(default=None, ge=0, le=3_600_000)
+    items: list[str] = Field(default_factory=list)
+    recommendation: str | None = Field(default=None, max_length=400)
+    source: str | None = Field(default=None, max_length=160)
+    window_id: str | None = Field(default=None, max_length=64)
+    lookout: bool | None = None
+    auto: bool = False
+    message: str | None = Field(default=None, max_length=2000)
+    windows: list[dict] = Field(default_factory=list)
+    lat: float | None = None
+    lon: float | None = None
+    dest_lat: float | None = None
+    dest_lon: float | None = None
+
+
+class PresenceShowOut(BaseModel):
+    ok: bool
+    opened: bool
+    surface: str = "overlay"
+    url: str | None = None
+    via: str | None = None
+    degraded: bool = False
+    reason: str | None = None
+    next_step: str | None = None
+    windows: list[dict] = Field(default_factory=list)
+    plan: dict | None = None
+
+
+class LookoutComposeIn(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
+    title: str | None = Field(default=None, max_length=120)
+    body: str | None = Field(default=None, max_length=4000)
+    open: bool = True
+    explicit: bool = True
+
+
+class LookoutListOut(BaseModel):
+    windows: list[dict] = Field(default_factory=list)
+
+
+class LookoutDismissIn(BaseModel):
+    window_id: str | None = Field(default=None, max_length=64)
+
+
+class SurfaceRateIn(BaseModel):
+    kind: str = Field(min_length=1, max_length=32)
+    useful: bool
+    message: str | None = Field(default=None, max_length=500)
+    preferred_kind: str | None = Field(default=None, max_length=32)
+    window_id: str | None = Field(default=None, max_length=64)
+
+
+class SurfaceCalibrateOut(BaseModel):
+    version: int
+    urgency_threshold: float
+    max_windows: int
+    boost_kinds: dict = Field(default_factory=dict)
+    suppress_kinds: dict = Field(default_factory=dict)
+    evidence: dict = Field(default_factory=dict)
+    smoke: dict | None = None
+    updated_at: str | None = None

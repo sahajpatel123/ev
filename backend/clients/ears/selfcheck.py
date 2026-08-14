@@ -19,7 +19,18 @@ def check_environment() -> dict:
     from app.audio.models import model_arbiter
     from app.config import settings
 
-    wake_data_dir = Path(settings.ears_data_wake_dir or "backend/data/wake")
+    repo_root = Path(__file__).resolve().parents[3]
+    wake_data_dir = Path(settings.ears_data_wake_dir or repo_root / "backend" / "data" / "wake")
+    wake_head_path = (
+        Path(settings.voice_wake_openwakeword_model_path).expanduser()
+        if settings.voice_wake_openwakeword_model_path
+        else None
+    )
+    wake_verifier_path = (
+        Path(settings.voice_wake_openwakeword_verifier_path).expanduser()
+        if settings.voice_wake_openwakeword_verifier_path
+        else None
+    )
     report: dict = {
         "dependencies": {
             "numpy": importlib.util.find_spec("numpy") is not None,
@@ -29,8 +40,11 @@ def check_environment() -> dict:
             "pyannote.audio": importlib.util.find_spec("pyannote") is not None,
         },
         "models": {
-            "wake_head": bool(settings.voice_wake_openwakeword_model_path),
-            "wake_verifier": bool(settings.voice_wake_openwakeword_verifier_path),
+            "wake_head": bool(wake_head_path and wake_head_path.is_file()),
+            "wake_head_configured": bool(wake_head_path),
+            "wake_head_path": str(wake_head_path) if wake_head_path else None,
+            "wake_verifier": bool(wake_verifier_path and wake_verifier_path.is_file()),
+            "wake_verifier_configured": bool(wake_verifier_path),
             "vad": bool(settings.ears_vad_model_path),
             "scene": bool(settings.ears_scene_model_path),
         },
@@ -104,6 +118,18 @@ def main(argv: list[str] | None = None) -> int:
             f"unconfigured models: {', '.join(missing_models) or 'none'}",
             file=sys.stderr,
         )
+        if (
+            report["models"].get("wake_head_configured")
+            and not report["models"].get("wake_head")
+        ):
+            print(
+                "wake head configured at "
+                f"{report['models'].get('wake_head_path')!r} but missing on disk — "
+                "ears will fall back to API-side EVIE spotting (slower). Fix: train/"
+                "export the head with `uv run python -m clients.ears.train.train_head "
+                " --positive-dir ...` and place the .onnx there.",
+                file=sys.stderr,
+            )
         return 1
     if missing_data:
         print(

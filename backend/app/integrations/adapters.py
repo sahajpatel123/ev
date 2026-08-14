@@ -20,6 +20,12 @@ from app.config import settings
 from app.gateway.validation import validate_arguments
 from app.integrations import oauth
 from app.integrations.calendar_signals import derive_calendar_signals, parse_event_time
+from app.integrations.life_helper import (
+    LifeHelperError,
+    LifeHelperUnavailableError,
+    run_life_helper,
+)
+from app.integrations.life_policy import evaluate_life_policy
 from app.schemas import LiveEventCreate
 from app.utils.text import utcnow
 
@@ -733,8 +739,108 @@ class SmartHomeAdapter(Adapter):
         ]
 
 
+def _life_action_common(
+    *,
+    action: str,
+    args: dict,
+    scopes: list[str],
+    config: dict,
+) -> tuple[dict, dict]:
+    """Shared macos_life policy gate + helper args for send/call actions."""
+    decision = evaluate_life_policy(
+        scopes=scopes,
+        action=action,
+        recipient=str(args.get("to") or "") or None,
+        contact=args.get("contact") if isinstance(args.get("contact"), dict) else None,
+        confirm=bool(args.get("confirm")),
+        allowlist=config.get("contact_allowlist"),
+        autonomy=config.get("autonomy"),
+        confirm_unknown=config.get("confirm_unknown"),
+    )
+    if not decision.allowed:
+        raise PermissionError(decision.reason)
+    helper_args = {key: value for key, value in args.items() if key not in ("confirm", "contact")}
+    return helper_args, decision.to_dict()
+
+
+def _life_read_only_action(*, provider: object) -> None:
+    if provider != "macos_life":
+        raise LifeHelperUnavailableError(
+            "no life provider configured for this read action; set "
+            "EV_LIFE_HELPER_PATH and provider=macos_life"
+        )
+
+
 @dataclass(frozen=True)
 class MessagingAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        provider = config.get("provider")
+        if provider == "macos_life":
+            return await self._macos_life_act(action, args, scopes, config)
+        if provider == "device_proxy":
+            raise LifeHelperError(
+                "device_proxy actions are queued by the integrations service",
+                error_code="device_proxy_service_only",
+            )
+        if provider == "http":
+            return await super().act(
+                action=action,
+                args=args,
+                token=token,
+                scopes=scopes,
+                config=config,
+            )
+        # Offline double: reads are honest empties; sends NEVER fake success.
+        if action == "messaging.send":
+            raise LifeHelperUnavailableError(
+                "no life provider configured (set EV_MESSAGING_PROVIDER=macos_life "
+                "and EV_LIFE_HELPER_PATH); refusing to fake a sent message"
+            )
+        return {"ok": True, "mode": "local", "action": action, "messages": []}
+
+    async def _macos_life_act(
+        self,
+        action: str,
+        args: dict,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        command = {
+            "messaging.list_messages": "messages.list",
+            "messaging.send": "messages.send",
+        }[action]
+        if action == "messaging.send":
+            helper_args, policy = _life_action_common(
+                action=action,
+                args=args,
+                scopes=scopes,
+                config=config,
+            )
+        else:
+            helper_args = {key: value for key, value in args.items() if key != "confirm"}
+            policy = {"allowed": True, "confirmation_required": False, "reason": "read"}
+        result = await run_life_helper(
+            command,
+            helper_args,
+            helper_path=config.get("helper_path"),
+        )
+        return {
+            "ok": True,
+            "mode": "macos_life",
+            "action": action,
+            **result.data,
+            "delivery": result.delivery,
+            "policy": policy,
+        }
+
     async def translate_webhook(
         self,
         payload: dict,
@@ -756,6 +862,187 @@ class MessagingAdapter(Adapter):
                 },
             )
         ]
+
+
+@dataclass(frozen=True)
+class ContactsAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        _life_read_only_action(provider=config.get("provider"))
+        command = {
+            "contacts.resolve": "contacts.resolve",
+            "contacts.list": "contacts.list",
+        }[action]
+        result = await run_life_helper(
+            command,
+            args,
+            helper_path=config.get("helper_path"),
+        )
+        return {
+            "ok": True,
+            "mode": "macos_life",
+            "action": action,
+            **result.data,
+            "delivery": result.delivery,
+        }
+
+
+@dataclass(frozen=True)
+class PhoneAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        provider = config.get("provider")
+        if provider == "macos_life":
+            helper_args, policy = _life_action_common(
+                action=action,
+                args=args,
+                scopes=scopes,
+                config=config,
+            )
+            command = "call.place"
+            destination = helper_args.pop("to", None)
+            if not destination:
+                raise ValueError("phone call requires a destination")
+            helper_args["destination"] = destination
+            helper_args["kind"] = "facetime" if action == "facetime.call" else "tel"
+            helper_args.pop("video", None)
+            result = await run_life_helper(
+                command,
+                helper_args,
+                helper_path=config.get("helper_path"),
+            )
+            return {
+                "ok": True,
+                "mode": "macos_life",
+                "action": action,
+                **result.data,
+                "delivery": result.delivery,
+                "policy": policy,
+            }
+        if provider == "device_proxy":
+            raise LifeHelperError(
+                "device_proxy actions are queued by the integrations service",
+                error_code="device_proxy_service_only",
+            )
+        if provider == "http":
+            return await super().act(
+                action=action,
+                args=args,
+                token=token,
+                scopes=scopes,
+                config=config,
+            )
+        raise LifeHelperUnavailableError(
+            "no life provider configured for phone calls; set EV_LIFE_HELPER_PATH "
+            "and provider=macos_life (or device_proxy)"
+        )
+
+
+@dataclass(frozen=True)
+class MailAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        _life_read_only_action(provider=config.get("provider"))
+        command = {
+            "mail.list": "mail.list",
+            "mail.send": "mail.send",
+        }[action]
+        if action == "mail.send":
+            helper_args, policy = _life_action_common(
+                action=action,
+                args=args,
+                scopes=scopes,
+                config=config,
+            )
+        else:
+            helper_args = args
+            policy = {"allowed": True, "confirmation_required": False, "reason": "read"}
+        result = await run_life_helper(
+            command,
+            helper_args,
+            helper_path=config.get("helper_path"),
+        )
+        return {
+            "ok": True,
+            "mode": "macos_life",
+            "action": action,
+            **result.data,
+            "delivery": result.delivery,
+            "policy": policy,
+        }
+
+
+@dataclass(frozen=True)
+class DeviceProxyAdapter(Adapter):
+    """iPhone actuator contract: outbound actions are queued for devices.
+
+    The integrations service persists the queue (``LifeOutboundAction``) and
+    accepts authenticated device result posts; this adapter only validates
+    actions and derives the queue payload so the contract stays testable
+    without the database.
+    """
+
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        raise LifeHelperError(
+            "device_proxy actions must go through the integrations service "
+            "queue (POST /v1/integrations/{id}/actions)",
+            error_code="device_proxy_service_only",
+        )
+
+    async def queue_payload(
+        self,
+        *,
+        action: str,
+        args: dict,
+        scopes: list[str],
+        config: dict,
+        device_id: str | None = None,
+    ) -> dict:
+        helper_args, policy = _life_action_common(
+            action=action,
+            args=args,
+            scopes=scopes,
+            config=config,
+        )
+        return {
+            "ok": True,
+            "mode": "device_proxy",
+            "action": action,
+            "queued": True,
+            "args": helper_args,
+            "target_device": device_id,
+            "delivery": {"confirmed": False, "status": "queued"},
+            "policy": policy,
+        }
 
 
 SEARCH_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
@@ -935,8 +1222,196 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
         privacy_kind="app",
         event_types=("message.received",),
         actions=(
-            AdapterAction("messaging.list_messages", "messaging:read", "List recent messages"),
-            AdapterAction("messaging.send", "messaging:act", "Send a message"),
+            AdapterAction(
+                "messaging.list_messages",
+                "messaging:read",
+                "List recent messages",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                        "conversation_id": {"type": "string", "maxLength": 256},
+                    },
+                },
+            ),
+            AdapterAction(
+                "messaging.send",
+                "messaging:act",
+                "Send a message (provider must return delivery evidence)",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                        "service": {"type": "string", "maxLength": 64},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to", "text"],
+                },
+            ),
+        ),
+    ),
+    ContactsAdapter(
+        slug="contacts",
+        name="Contacts",
+        description="Resolve and list the owner's Apple contacts (read-only).",
+        capabilities=("contacts:read",),
+        default_scopes=("contacts:read",),
+        min_privacy="normal",
+        privacy_kind="app",
+        event_types=(),
+        actions=(
+            AdapterAction(
+                "contacts.resolve",
+                "contacts:read",
+                "Resolve a name/query to contact records",
+                parameters={
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 256}},
+                    "required": ["query"],
+                },
+            ),
+            AdapterAction("contacts.list", "contacts:read", "List all contacts"),
+        ),
+    ),
+    PhoneAdapter(
+        slug="phone",
+        name="Phone",
+        description="Place real phone and FaceTime calls through EVLifeHelper.",
+        capabilities=("phone:act",),
+        default_scopes=("phone:act",),
+        min_privacy="normal",
+        privacy_kind="app",
+        event_types=(),
+        actions=(
+            AdapterAction(
+                "phone.call",
+                "phone:act",
+                "Place a phone call",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to"],
+                },
+            ),
+            AdapterAction(
+                "facetime.call",
+                "phone:act",
+                "Place a FaceTime call",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "video": {"type": "boolean"},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to"],
+                },
+            ),
+        ),
+    ),
+    MailAdapter(
+        slug="mail",
+        name="Mail",
+        description="Read and send mail through the owner's Apple Mail account.",
+        capabilities=("mail:read", "mail:act"),
+        default_scopes=("mail:read",),
+        min_privacy="normal",
+        privacy_kind="app",
+        event_types=(),
+        actions=(
+            AdapterAction(
+                "mail.list",
+                "mail:read",
+                "List recent mail messages",
+                parameters={
+                    "type": "object",
+                    "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}},
+                },
+            ),
+            AdapterAction(
+                "mail.send",
+                "mail:act",
+                "Send mail (provider must return delivery evidence)",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "subject": {"type": "string", "maxLength": 256},
+                        "body": {"type": "string", "maxLength": 4000},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to", "body"],
+                },
+            ),
+        ),
+    ),
+    DeviceProxyAdapter(
+        slug="device_proxy",
+        name="iPhone Device Proxy",
+        description=(
+            "Queue outbound messages/calls for registered iPhones and accept "
+            "authenticated delivery results (SUIT actuator contract)."
+        ),
+        capabilities=("messaging:read", "messaging:act", "phone:act", "contacts:read"),
+        default_scopes=("messaging:act", "phone:act"),
+        min_privacy="normal",
+        privacy_kind="app",
+        event_types=(),
+        actions=(
+            AdapterAction(
+                "messaging.send",
+                "messaging:act",
+                "Queue a message for a registered iPhone",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                        "device_id": {"type": "string"},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to", "text"],
+                },
+            ),
+            AdapterAction(
+                "phone.call",
+                "phone:act",
+                "Queue a phone call for a registered iPhone",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "device_id": {"type": "string"},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to"],
+                },
+            ),
+            AdapterAction(
+                "facetime.call",
+                "phone:act",
+                "Queue a FaceTime call for a registered iPhone",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "video": {"type": "boolean"},
+                        "device_id": {"type": "string"},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to"],
+                },
+            ),
         ),
     ),
     SearchAdapter(

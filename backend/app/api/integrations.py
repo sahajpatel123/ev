@@ -7,12 +7,23 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext, require_actor, require_master, require_reverification
+from app.auth import (
+    ActorContext,
+    require_actor,
+    require_actor_context,
+    require_master,
+    require_reverification,
+)
 from app.config import settings
 from app.db import get_session
 from app.integrations import oauth, webhooks
 from app.integrations import plugins as plugin_service
 from app.integrations import service as integrations
+from app.integrations.life_helper import (
+    LifeHelperError,
+    LifeHelperUnavailableError,
+    LifePermissionDeniedError,
+)
 from app.models import Integration
 from app.schemas import (
     IntegrationActionOut,
@@ -24,6 +35,10 @@ from app.schemas import (
     IntegrationOut,
     IntegrationScopeUpdate,
     IntegrationSyncOut,
+    LifeDeviceResultIn,
+    LifeDeviceResultOut,
+    LifeOutboxOut,
+    LifePolicyOut,
     LiveEventOut,
     OAuthAuthorizeOut,
     OAuthStatusOut,
@@ -55,6 +70,10 @@ def _integration_error(exc: Exception) -> HTTPException:
     if isinstance(exc, oauth.OAuthAuthError):
         return HTTPException(status_code=401, detail=str(exc))
     if isinstance(exc, oauth.OAuthProviderError):
+        return HTTPException(status_code=502, detail=str(exc))
+    if isinstance(exc, LifePermissionDeniedError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, (LifeHelperError, LifeHelperUnavailableError)):
         return HTTPException(status_code=502, detail=str(exc))
     raise exc
 
@@ -393,6 +412,77 @@ async def calendar_signals(
         return await integrations.calendar_signals(session, integration_id)
     except Exception as exc:
         raise _integration_error(exc) from exc
+
+
+@router.get(
+    "/integrations/{integration_id}/life/policy",
+    response_model=LifePolicyOut,
+)
+async def life_policy(
+    integration_id: UUID,
+    action: str,
+    recipient: str | None = None,
+    confirm: bool = False,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> LifePolicyOut:
+    """Standing-authority policy for a life action (never fabricates consent)."""
+    try:
+        return await integrations.life_policy_decision(
+            session,
+            integration_id,
+            action=action,
+            recipient=recipient,
+            confirm=confirm,
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+
+
+@router.get(
+    "/integrations/{integration_id}/life/outbox",
+    response_model=LifeOutboxOut,
+)
+async def life_outbox(
+    integration_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> LifeOutboxOut:
+    """Queued outbound actions for a registered device actuator (poll)."""
+    device_id = ctx.device_id
+    try:
+        return await integrations.list_device_outbox(
+            session,
+            integration_id,
+            device_id=device_id,
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+
+
+@router.post(
+    "/integrations/{integration_id}/life/device-results",
+    response_model=LifeDeviceResultOut,
+)
+async def life_device_results(
+    integration_id: UUID,
+    data: LifeDeviceResultIn,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> LifeDeviceResultOut:
+    """Authenticated device-posted delivery results (evidence required)."""
+    try:
+        result = await integrations.ingest_device_result(
+            session,
+            integration_id,
+            data,
+            actor=ctx.actor,
+            device_id=ctx.device_id,
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+    await session.commit()
+    return result
 
 
 @router.get("/integrations/{integration_id}/events", response_model=list[LiveEventOut])

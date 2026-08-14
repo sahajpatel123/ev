@@ -68,7 +68,9 @@ async def calibrate(
     actor: str = Depends(require_actor),
 ) -> CalibrationReport:
     """E.V.-style self-calibration: database, embeddings, gateway, retrieval, storage."""
-    return await diagnostics.run_calibration(session)
+    report = await diagnostics.run_calibration(session)
+    await session.commit()
+    return report
 
 
 @router.post("/tactical/brief", response_model=TacticalBriefOut)
@@ -201,6 +203,27 @@ async def health_snapshot(
         occurred_at=data.occurred_at,
     )
     await session.commit()
+    if any(flag.get("emergency") for flag in (snapshot.anomalies or [])) or (
+        snapshot.readiness is not None and snapshot.readiness < 35
+    ):
+        try:
+            from app.ev.lookout import compose_and_maybe_open
+
+            await compose_and_maybe_open(
+                session,
+                message="live vitals need a pulse",
+                reply=(
+                    f"Readiness {snapshot.readiness}. "
+                    + "; ".join(
+                        str(flag.get("rationale") or flag.get("metric"))
+                        for flag in (snapshot.anomalies or [])[:3]
+                    )
+                ),
+                title="Vitals",
+                explicit=False,
+            )
+        except Exception:  # noqa: BLE001 - a HUD miss must not drop the snapshot
+            pass
     return HealthSnapshotOut.model_validate(snapshot)
 
 

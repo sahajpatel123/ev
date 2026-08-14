@@ -12,11 +12,13 @@ import argparse
 import asyncio
 import base64
 import json
+import shutil
 import sys
 from pathlib import Path
 from uuid import UUID
 
 from app.config import settings
+from app.people import service as people_service
 from app.people.biodata import BiodataError, BiodataResolver
 from app.people.calibration import apply_threshold, calibrate
 from app.people.enrollment import FaceEnrollmentService
@@ -24,6 +26,7 @@ from app.people.erasure import erase_person
 from app.people.errors import FaceError
 from app.people.face_embed import FaceCrop
 from app.people.resolver import FaceResolver
+from app.utils.text import normalize_text
 
 
 def _b64(data: bytes) -> str:
@@ -39,11 +42,14 @@ def _image_files(directory: Path) -> list[Path]:
     )
 
 
-def _crops_from_dir(directory: Path, quality: float, confidence: float) -> list[FaceCrop]:
-    files = _image_files(directory)
+def _crops_from_files(
+    files: list[Path],
+    quality: float,
+    confidence: float,
+) -> list[FaceCrop]:
     if len(files) < settings.face_min_photos:
         raise SystemExit(
-            f"need >= {settings.face_min_photos} aligned crops, found {len(files)} in {directory}"
+            f"need >= {settings.face_min_photos} aligned crops, found {len(files)}"
         )
     return [
         FaceCrop(
@@ -54,6 +60,14 @@ def _crops_from_dir(directory: Path, quality: float, confidence: float) -> list[
         )
         for path in files
     ]
+
+
+def _crops_from_dir(directory: Path, quality: float, confidence: float) -> list[FaceCrop]:
+    return _crops_from_files(_image_files(directory), quality, confidence)
+
+
+def _capture_dir(name: str) -> Path:
+    return Path.home() / ".ev" / "people-captures" / normalize_text(name)
 
 
 async def _grant_face_consent(reason: str | None) -> None:
@@ -77,7 +91,13 @@ async def cmd_enroll(args: argparse.Namespace) -> None:
     from app.db import SessionLocal
     from app.models import Entity
 
-    crops = _crops_from_dir(Path(args.photos), args.quality, args.confidence)
+    if args.photos:
+        files = [Path(path) for path in args.photos]
+        crops = _crops_from_files(files, args.quality, args.confidence)
+    elif args.photos_dir:
+        crops = _crops_from_dir(Path(args.photos_dir), args.quality, args.confidence)
+    else:
+        raise SystemExit("provide photo files or --photos-dir")
     async with SessionLocal() as session:
         service = FaceEnrollmentService(session, master_key=settings.master_key)
         try:
@@ -108,6 +128,76 @@ async def cmd_enroll(args: argparse.Namespace) -> None:
             "raw_photos_stored": False,
         }
         print(json.dumps(payload, indent=2))
+
+
+async def cmd_capture(args: argparse.Namespace) -> None:
+    """Capture one image + name into the pending roster; enroll later with >=5."""
+    target = _capture_dir(args.name)
+    target.mkdir(parents=True, exist_ok=True)
+    stored: list[str] = []
+    for path in args.photos:
+        source = Path(path)
+        if not source.is_file():
+            raise SystemExit(f"photo not found: {path}")
+        destination = target / source.name
+        shutil.copy2(source, destination)
+        stored.append(str(destination))
+    print(
+        json.dumps(
+            {
+                "name": args.name,
+                "captured": len(stored),
+                "stored": stored,
+                "next": (
+                    f"python -m app.people.cli enroll --name {args.name} "
+                    f"--photos-dir {target} --quality 0.9 --confidence 0.95 "
+                    "--grant-consent"
+                ),
+            },
+            indent=2,
+        )
+    )
+
+
+async def cmd_resolve(args: argparse.Namespace) -> None:
+    from app.db import SessionLocal
+
+    async with SessionLocal() as session:
+        out = await people_service.resolve_person(session, args.name, actor="cli")
+        await session.commit()
+        print(out.model_dump_json(indent=2))
+
+
+async def cmd_context(args: argparse.Namespace) -> None:
+    from app.db import SessionLocal
+
+    async with SessionLocal() as session:
+        out = await people_service.person_context(session, args.name)
+        await session.commit()
+        print(out.model_dump_json(indent=2))
+
+
+async def cmd_roster(_: argparse.Namespace) -> None:
+    from app.db import SessionLocal
+
+    async with SessionLocal() as session:
+        out = await people_service.roster(session)
+        await session.commit()
+        print(out.model_dump_json(indent=2))
+
+
+async def cmd_forget(args: argparse.Namespace) -> None:
+    from app.db import SessionLocal
+
+    async with SessionLocal() as session:
+        manifest = await erase_person(
+            session,
+            entity_id=UUID(args.entity_id),
+            reason=args.reason,
+            actor="cli",
+        )
+        await session.commit()
+        print(json.dumps(manifest, indent=2))
 
 
 async def cmd_list(_: argparse.Namespace) -> None:
@@ -256,14 +346,30 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("enroll", help="enroll one person from aligned crops")
     p.add_argument("--name", required=True)
-    p.add_argument("--photos", required=True, help="directory of aligned crops")
+    p.add_argument("photos", nargs="*", help="one or more aligned crop image files")
+    p.add_argument("--photos-dir", help="directory of aligned crops")
     p.add_argument("--quality", type=float, required=True, help="detector quality 0..1")
     p.add_argument("--confidence", type=float, required=True, help="detector confidence 0..1")
     p.add_argument("--reason")
     p.add_argument("--grant-consent", action="store_true")
     p.set_defaults(func=cmd_enroll)
 
+    p = sub.add_parser("capture", help="capture image(s) + name for later enrollment")
+    p.add_argument("name")
+    p.add_argument("photos", nargs="+", help="one or more photo files")
+    p.set_defaults(func=cmd_capture)
+
     sub.add_parser("list", help="list face enrollments").set_defaults(func=cmd_list)
+
+    p = sub.add_parser("resolve", help="resolve a name through roster/memory/contacts")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_resolve)
+
+    p = sub.add_parser("context", help="person context for overlays")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_context)
+
+    sub.add_parser("roster", help="list people EV knows").set_defaults(func=cmd_roster)
 
     p = sub.add_parser("recognize", help="match one aligned crop against enrolled people")
     p.add_argument("--image", required=True)
@@ -288,6 +394,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--entity-id", required=True)
     p.add_argument("--reason", default="user requested person deletion")
     p.set_defaults(func=cmd_erase_person)
+
+    p = sub.add_parser("forget", help="forget a person (alias of erase-person)")
+    p.add_argument("--entity-id", required=True)
+    p.add_argument("--reason", default="user asked to forget this person")
+    p.set_defaults(func=cmd_forget)
 
     p = sub.add_parser("biodata", help="licensed public-figure biodata by name")
     p.add_argument("--name", required=True)

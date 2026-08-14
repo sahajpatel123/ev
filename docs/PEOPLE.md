@@ -12,6 +12,128 @@ resolves to `unknown`, **by construction**.
 
 ---
 
+## The People tab is not the product.
+
+There is deliberately **no web People panel** in the product. People come from
+life: photos the owner shows EVIE, names in messages, "that's Mom", and
+consented camera captures. The roster, resolution, context, and forget paths
+below are the product.
+
+### Conversational / capture-driven enrollment
+
+Enrollment is explicit and owner-driven. Two equivalent paths exist:
+
+1. **CLI capture** — one image + name at a time, accumulated for later
+   enrollment:
+
+   ```bash
+   cd backend
+   uv run python -m app.people.cli capture Mom ~/photos/mom-1.jpg
+   # repeats accumulate under ~/.ev/people-captures/mom/
+   ```
+
+2. **CLI enrollment** — ≥5 aligned crops in one command:
+
+   ```bash
+   uv run python -m app.people.cli enroll --name Mom \
+     ~/photos/mom-1.jpg ~/photos/mom-2.jpg ~/photos/mom-3.jpg \
+     ~/photos/mom-4.jpg ~/photos/mom-5.jpg \
+     --quality 0.9 --confidence 0.95 --grant-consent
+   ```
+
+   or `--photos-dir ~/photos/mom/` for a whole directory. Both paths write the
+   same canonical `Entity` (`person:<name>`) + encrypted `FaceEnrollment` +
+   per-sample `FaceSample` rows used by runtime resolution. Raw photos are
+   never stored in the database; captures live only in the owner's own
+   `~/.ev/people-captures/<name>/` directory.
+
+### Person record / provenance model
+
+Every person is one canonical `Entity` row. Knowledge provenance is explicit:
+
+- `enrollment` — consented face template (consent id + algorithm + sample
+  count + encrypted template).
+- `relationship` — a `MemoryEntity` role such as `mom`/`colleague`, or an
+  `EntityRelationship` row ("how EVIE knows them").
+- `sighting` — user-confirmed (`source="user"`) or pending (`source="model"`)
+  `RecognitionLog` rows with confidence.
+- `contact` — a CONDUIT contacts candidate only; it never creates a person
+  and never enables face recognition by itself.
+
+`GET /v1/people/roster`, `GET /v1/people/{name}/resolve`, and
+`GET /v1/people/{name}/context` expose this model. `last_seen` is only ever
+populated from a real observation (sighting or event mention); it is never
+fabricated.
+
+### Relationship resolution ("Mom" / "Alex")
+
+`resolve_person` (API `GET /v1/people/{name}/resolve`, CLI
+`python -m app.people.cli resolve NAME`) searches in order:
+
+1. Roster: exact canonical person (`person:mom`).
+2. Memory: relationship roles (`MemoryEntity.role == "mom"`), aliases, and
+   name ILIKE.
+3. Contacts: the CONDUIT contacts adapter is consumed through
+   `app.integrations.service.execute_action(..., "contacts.resolve", ...)` —
+   EVIE does **not** reimplement Messages or Contacts. Contact results are
+   `candidate_only=True`, `face_enrolled=False`, and no `Entity` is created
+   from a contact name alone.
+
+### Unknown stays unknown
+
+- Unknown faces remain `unknown`; no identity is assigned on visual
+  similarity.
+- Only consented, enrolled faces become known people.
+- Low-confidence matches remain unresolved (per-entry calibrated threshold).
+- Recognition writes a pending `source="model"` log only for a resolved
+  enrolled match; the human confirms it to `source="user"`.
+
+### Forget flow
+
+`DELETE /v1/people/{entity_id}` (CLI: `python -m app.people.cli forget
+--entity-id ...`) destroys recognition sightings, encrypted per-sample
+templates, and linked public-figure cache rows, redacts the enrollment
+(ciphertext nulled), and writes a `DataErasureRecord` manifest. The person's
+textual memory may remain; the face identity is invalidated.
+
+### Model-weight requirements
+
+Face recognition is real only with the SFace ONNX weights (`face-sface`,
+37 MB, Apache-2.0, sha256-pinned; `python -m app.ml.cli pull face-sface`).
+Without weights the embedder returns a deterministic double with
+`degraded=true`; tests that need weights `skipif` cleanly offline.
+
+### EVIE overlay integration
+
+The existing `get_person` tool already calls `people.whereabouts`, and
+`whereabouts` now returns `enrolled`, `face_sightings`, `voice_sightings`, and
+`public_biodata`. For richer overlays, `GET /v1/people/{name}/context` returns
+how-known, consent, match state, and provenance in one payload.
+
+> **DEPENDENCY NOTE — Agent 10 (CORTEX/PRESENT):** if the `present`/HUD
+> overlay should render a person card, point it at
+> `GET /v1/people/{name}/context` (or the `get_person` tool output, which now
+> includes the fused whereabouts payload). No runtime hook was modified in
+> `ev/tools.py`; this is additive for the overlay surface.
+
+> **DEPENDENCY NOTE — Surface owner (CLI):** the canonical people CLI is
+> `python -m app.people.cli ...`. If the `ev` binary should expose
+> `ev people enroll NAME photo.jpg`, wire the `people` subcommand in
+> `backend/clients/cli/__init__.py` to this module; that file is outside
+> ROSTER's ownership.
+
+### VERIFY
+
+```bash
+cd backend
+uv run pytest tests/test_people_life.py tests/test_people_recognition.py tests/test_people_biodata.py tests/test_perception.py -q
+uv run pytest tests/test_people_eval.py -q
+uv run ruff check app/people app/api/people.py app/ev/people.py tests/test_people_life.py tests/test_people_recognition.py tests/test_people_biodata.py tests/test_people_eval.py
+uv run mypy app/people app/api/people.py app/ev/people.py
+```
+
+---
+
 ## The line that is architectural, not advisory
 
 1. **Enrollment requires a named person and a recorded consent record.**

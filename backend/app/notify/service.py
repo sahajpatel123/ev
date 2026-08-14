@@ -10,10 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.ev import alert_radar
 from app.ev.ev_sense import quiet_hours_active
-from app.models import Alert, ApprovedAction, DeadLetter, Notification
+from app.models import Alert, ApprovedAction, DeadLetter, Device, Notification
 from app.notify.backends import get_backend
 from app.notify.models import DeliveryReceipt, NotificationRecord, NotifierError
 from app.notify.policy import decide, is_emergency
+from app.notify.routing import device_reachability
 from app.utils.text import sha256_hex, utcnow
 
 
@@ -84,6 +85,8 @@ async def dispatch_notification(
     fingerprint: str | None = None,
     alert_id: UUID | None = None,
     action_id: UUID | None = None,
+    device_id: UUID | None = None,
+    attention_kind: str = "incoming",
     emergency: bool = False,
     allow_during_quiet_hours: bool = False,
     bypass_policy: bool = False,
@@ -109,6 +112,8 @@ async def dispatch_notification(
         status="attempted",
         alert_id=alert_id,
         action_id=action_id,
+        device_id=device_id,
+        attention_kind=attention_kind,
         queued_at=now,
         attempt_count=1,
         details={**(details or {}), "policy": {"bypass_policy": bypass_policy}},
@@ -124,6 +129,7 @@ async def dispatch_notification(
         priority=priority,
         tier=tier,
         emergency=effective_emergency,
+        attention_kind=attention_kind,
         allow_during_quiet_hours=allow_during_quiet_hours,
         bypass_policy=bypass_policy,
         now=now,
@@ -138,7 +144,24 @@ async def dispatch_notification(
         await _update_alert(session, row)
         return row
 
-    backend_name = backend_override or settings.notify_backend
+    backend_name = backend_override
+    if backend_name is None and device_id is not None:
+        from app.notify.routing import backend_for_device
+
+        device = await session.get(Device, device_id)
+        if device is not None:
+            backend_name = backend_for_device(device)
+            row.details = {
+                **row.details,
+                "routing": {
+                    "device_id": str(device.id),
+                    "device_type": device.device_type,
+                    "reachability": device_reachability(device, now),
+                },
+            }
+            if backend_name == "apns" and device.push_token:
+                row.details["device_token"] = device.push_token
+    backend_name = backend_name or settings.notify_backend
     record = NotificationRecord(
         id=row.id,
         kind=row.kind,
@@ -149,7 +172,11 @@ async def dispatch_notification(
         source=row.source,
         fingerprint=row.fingerprint,
         queued_at=now,
-        details={**(details or {}), "policy": row.details.get("policy", {})},
+        details={
+            **(details or {}),
+            "policy": row.details.get("policy", {}),
+            "device_token": row.details.get("device_token"),
+        },
     )
     backend = get_backend(backend_name)
     try:
@@ -191,9 +218,12 @@ async def dispatch_action(session: AsyncSession, action: ApprovedAction) -> Noti
     """
     payload = action.payload or {}
     if action.action_type == "notification":
+        from app.notify.routing import route_notification_target
+
         title = payload.get("title") or action.title or "EV notification"
         body = payload.get("text") or payload.get("body") or ""
         priority = float(payload.get("priority", 0.5))
+        target = await route_notification_target(session)
         return await dispatch_notification(
             session,
             title=title,
@@ -204,8 +234,10 @@ async def dispatch_action(session: AsyncSession, action: ApprovedAction) -> Noti
             source="action:notification",
             fingerprint=f"action:{action.id}",
             action_id=action.id,
+            device_id=target.id if target else None,
             emergency=True,
             bypass_policy=True,
+            attention_kind="evie_initiated",
         )
     if action.action_type == "send_message":
         channel = payload.get("channel", "default")
@@ -228,6 +260,51 @@ async def dispatch_action(session: AsyncSession, action: ApprovedAction) -> Noti
             backend_override=backend_override,
             details={"channel": channel, "to": target},
         )
+    if action.action_type in ("present", "hud_card"):
+        from app.notify.presence import open_presence
+
+        title = str(payload.get("title") or action.title or "EVIE")
+        body = str(
+            payload.get("body")
+            or payload.get("text")
+            or payload.get("item")
+            or action.title
+            or ""
+        )
+        kind = str(payload.get("kind") or payload.get("card") or "auto")
+        outcome = await open_presence(
+            title=title,
+            body=body,
+            kind=kind,
+            size=payload.get("size"),
+            time_type=payload.get("time_type"),
+            placement=payload.get("placement"),
+            ttl_ms=payload.get("ttl_ms"),
+            items=payload.get("items") or [],
+            recommendation=payload.get("recommendation"),
+            source=payload.get("source"),
+            lookout=payload.get("lookout"),
+            window_id=payload.get("window_id") or payload.get("id"),
+            auto=kind.lower() in {"auto", "decide"},
+            message=str(payload.get("message") or title),
+        )
+        action.result = {**(action.result or {}), **outcome}
+        if outcome.get("opened"):
+            return await dispatch_notification(
+                session,
+                title=title,
+                body=body,
+                priority=float(payload.get("priority", 0.6)),
+                tier="useful",
+                kind="action:present",
+                source=f"action:{action.action_type}",
+                fingerprint=f"action:{action.id}",
+                action_id=action.id,
+                emergency=True,
+                bypass_policy=True,
+                attention_kind="evie_initiated",
+            )
+        return None
     return None
 
 
@@ -257,6 +334,9 @@ async def deliver_pending_alerts(
         if quiet and not emergency:
             counts["skipped"] += 1
             continue
+        from app.notify.routing import route_notification_target
+
+        target = await route_notification_target(session, now=now)
         row = await dispatch_notification(
             session,
             title=alert.title,
@@ -267,6 +347,7 @@ async def deliver_pending_alerts(
             source=alert.source,
             fingerprint=f"alert:{alert.fingerprint}",
             alert_id=alert.id,
+            device_id=target.id if target else None,
             emergency=emergency,
         )
         counts[row.status] = counts.get(row.status, 0) + 1
@@ -433,3 +514,57 @@ async def notify_status(session: AsyncSession, *, now=None) -> dict:
         "suppressed_today": counts["suppressed"],
         "failed_today": counts["failed"],
     }
+
+
+async def send_presence_beacon(
+    session: AsyncSession, *, now=None
+) -> Notification | None:
+    """One daily 'EVIE is alive' beacon so boot health needs no terminal."""
+    now = now or utcnow()
+    fingerprint = f"presence:{now.date().isoformat()}"
+    existing = (
+        await session.execute(
+            select(Notification.id).where(
+                Notification.fingerprint == fingerprint,
+                Notification.status.in_(["delivered", "suppressed"]),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return None
+    from app.notify.routing import route_notification_target
+
+    target = await route_notification_target(session, now=now)
+    return await dispatch_notification(
+        session,
+        title="EVIE is alive",
+        body="All runtime surfaces are up after boot.",
+        priority=0.5,
+        tier="useful",
+        kind="presence",
+        source="runtime:presence",
+        fingerprint=fingerprint,
+        device_id=target.id if target else None,
+        attention_kind="evie_initiated",
+    )
+
+
+async def acknowledge_notification(
+    session: AsyncSession,
+    notification_id: UUID,
+    *,
+    device_id: UUID | None = None,
+) -> Notification:
+    """Record an app-side ack for a delivered notification (never fake send)."""
+    row = await session.get(Notification, notification_id)
+    if row is None:
+        raise KeyError(f"notification {notification_id} not found")
+    if row.device_id is not None and device_id is not None and row.device_id != device_id:
+        raise PermissionError("notification was delivered to another device")
+    details = dict(row.details or {})
+    details["acknowledged_at"] = utcnow().isoformat()
+    details["acknowledged_by_device"] = str(device_id) if device_id else None
+    row.details = details
+    row.attention_kind = "acknowledged"
+    await session.flush()
+    return row

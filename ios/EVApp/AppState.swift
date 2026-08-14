@@ -17,4 +17,17 @@ final class AppState: ObservableObject {
         try? FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
         queue = OfflineCaptureQueue(store: FileCaptureQueueStore(directory: documents))
     }
+
+    func startHealthBridge() async {
+        do {
+            try await HealthKitManager.shared.requestReadAccess()
+            await HealthKitManager.shared.enableBackgroundDelivery()
+            await HealthKitManager.shared.publish(
+                using: client,
+                deviceId: AppConfig().deviceID
+            )
+        } catch {
+            // Health is optional — the rest of EV stays up if the owner declines.
+        }
+    }
 }

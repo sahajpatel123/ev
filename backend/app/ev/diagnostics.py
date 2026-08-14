@@ -122,10 +122,29 @@ async def run_calibration(session: AsyncSession) -> CalibrationReport:
         recommendations.append("Object storage failed — attachments will not persist.")
     if not recommendations:
         recommendations.append("All systems calibrated. Continue as planned.")
-    return CalibrationReport(
+    report = CalibrationReport(
         schema_version="ev.calibration.v1",
         generated_at=utcnow(),
         overall=overall,
         checks=checks,
         recommendations=recommendations,
     )
+    from app.ev.assistant import cache_calibration, malfunction_line
+    from app.ev.callouts import emit_callout
+
+    await cache_calibration(session, report)
+    line = malfunction_line(report.model_dump(mode="json")) or (
+        f"Calibration complete: {overall}."
+    )
+    await emit_callout(
+        session,
+        line,
+        source="calibrate",
+        hud={
+            "schema_version": "ev.hud.card.v1",
+            "title": "Diagnostics",
+            "body": line,
+            "generated_at": report.generated_at.isoformat(),
+        },
+    )
+    return report

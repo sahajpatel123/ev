@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sahajpatel123/ev/blob/main/docs/schemas/ev-hud-lookout-v1.json",
+  "title": "EV HUD lookout plan",
+  "description": "ev.hud.lookout.v1 — intelligence directive for one or more HUD windows (size, time-type, placement, lookout). Rendered by the native Mac overlay and the /app/lookout web visor.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "open",
+    "windows",
+    "rationale"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "ev.hud.lookout.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "open": {
+      "type": "boolean"
+    },
+    "explicit": {
+      "type": "boolean"
+    },
+    "needed": {
+      "type": "boolean"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "windows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "size", "time_type", "placement", "title", "body"],
+        "properties": {
+          "id": {"type": "string"},
+          "kind": {"type": "string"},
+          "size": {"type": "string"},
+          "time_type": {"type": "string"},
+          "placement": {"type": "string"},
+          "title": {"type": "string"},
+          "body": {"type": "string"},
+          "ttl_ms": {"type": ["integer", "null"]},
+          "items": {"type": "array", "items": {"type": "string"}},
+          "recommendation": {"type": ["string", "null"]},
+          "source": {"type": ["string", "null"]},
+          "lookout": {"type": "boolean"},
+          "priority": {"type": "number"}
+        }
+      }
+    },
+    "meta": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}

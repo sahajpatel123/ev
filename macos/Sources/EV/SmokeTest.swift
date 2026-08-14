@@ -10,6 +10,39 @@ import UserNotifications
 /// machine-readable evidence for each hop. It does not open a GUI, use the
 /// microphone, or claim to demonstrate the visual menu-bar flow.
 enum EVSmokeTest {
+    /// Request one TCC permission through the OS prompt and report the live
+    /// status afterwards. Times out instead of hanging an automated run.
+    static func runLifeRequest() -> Int32 {
+        let arguments = CommandLine.arguments
+        guard
+            let index = arguments.firstIndex(of: "--permission"),
+            index + 1 < arguments.count,
+            let kind = PermissionKind(rawValue: arguments[index + 1])
+        else {
+            print("life-request: missing or unknown --permission")
+            return 5
+        }
+        let semaphore = DispatchSemaphore(value: 0)
+        var exitCode: Int32 = 1
+        Task {
+            let requested = await PermissionCenter.request(kind)
+            let statuses = await PermissionCenter.statuses()
+            let status = statuses.first { $0.kind == kind }
+            print(
+                "life-request: \(kind.rawValue) requested=\(requested) "
+                    + "state=\(status?.state.rawValue ?? "unknown")"
+            )
+            exitCode = status?.state == .granted ? 0 : (requested ? 2 : 1)
+            semaphore.signal()
+        }
+        let result = semaphore.wait(timeout: .now() + 45)
+        if result == .timedOut {
+            print("life-request: timed out waiting for the TCC prompt")
+            return 1
+        }
+        return exitCode
+    }
+
     /// Record 2 seconds of real microphone audio through AVFoundation and
     /// report the captured PCM bytes. Requires the bundled app identity and
     /// an already-granted Microphone permission.
@@ -27,11 +60,11 @@ enum EVSmokeTest {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             let data = mic.stop()
             if let data, !data.isEmpty {
-                let seconds = Double(data.count) / 2.0 / 16000.0
+                let seconds = MicCapture.durationSeconds(data)
                 print(
                     "mic: captured \(data.count) bytes ≈ "
                         + String(format: "%.2f", seconds)
-                        + "s (16 kHz mono PCM)"
+                        + "s (16 kHz mono PCM WAV)"
                 )
                 exitCode = 0
             } else {
@@ -114,6 +147,51 @@ enum EVSmokeTest {
                 print("  breaks: \(status.whatBreaks)")
                 print("  settings: \(status.settingsURL?.absoluteString ?? "none")")
             }
+            exitCode = 0
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return exitCode
+    }
+
+    /// Request every programmatic TCC permission in sequence and print the
+    /// before/after state for each. This is what makes EV appear in each
+    /// System Settings privacy pane. Accessibility and Full Disk Access have
+    /// no prompt and are reported as manual "+" additions.
+    static func runRequestAll() -> Int32 {
+        let semaphore = DispatchSemaphore(value: 0)
+        var exitCode: Int32 = 1
+        Task {
+            let before = await PermissionCenter.statuses()
+            print("request-all: requesting every programmatic TCC permission…")
+            let after = await PermissionCenter.requestAll()
+            for (b, a) in zip(before, after) {
+                let arrow = b.state == a.state ? "=" : "→"
+                print("\(a.kind.rawValue): \(b.state.rawValue) \(arrow) \(a.state.rawValue)")
+            }
+            print("request-all: accessibility + fullDiskAccess need the '+' button in their panes.")
+            exitCode = 0
+            semaphore.signal()
+        }
+        semaphore.wait()
+        return exitCode
+    }
+
+    /// Idempotent registration sweep: fires requests only for permissions
+    /// macOS still reports as undecided, so re-running fills in any pane EV
+    /// has not appeared in yet without re-prompting about decided ones.
+    static func runRequestPending() -> Int32 {
+        let semaphore = DispatchSemaphore(value: 0)
+        var exitCode: Int32 = 1
+        Task {
+            let before = await PermissionCenter.statuses()
+            print("request-pending: registering EV in every still-undecided pane…")
+            let after = await PermissionCenter.requestPending()
+            for (b, a) in zip(before, after) {
+                let arrow = b.state == a.state ? "=" : "→"
+                print("\(a.kind.rawValue): \(b.state.rawValue) \(arrow) \(a.state.rawValue)")
+            }
+            print("request-pending: open each pane in System Settings and toggle what is still off.")
             exitCode = 0
             semaphore.signal()
         }
@@ -210,7 +288,38 @@ enum EVSmokeTest {
                 }
 
                 // 3. Voice wake (Agent 4 / VOICE)
-                let wake = try await client.wakeVoice(deviceId: config.deviceID, wakeWord: "evie")
+                // The wake engine needs an audio source; write a short silent
+                // WAV to /tmp and pass it as the local audio_ref.
+                let wakeAudioURL = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("ev-smoke-wake.wav")
+                let sampleCount = 1600
+                var wav = Data()
+                func appendUInt32(_ value: UInt32) {
+                    withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) }
+                }
+                func appendUInt16(_ value: UInt16) {
+                    withUnsafeBytes(of: value.littleEndian) { wav.append(contentsOf: $0) }
+                }
+                wav.append(contentsOf: Array("RIFF".utf8))
+                appendUInt32(UInt32(36 + sampleCount * 2))
+                wav.append(contentsOf: Array("WAVEfmt ".utf8))
+                appendUInt32(16)
+                appendUInt16(1)
+                appendUInt16(1)
+                appendUInt32(16000)
+                appendUInt32(32000)
+                appendUInt16(2)
+                appendUInt16(16)
+                wav.append(contentsOf: Array("data".utf8))
+                appendUInt32(UInt32(sampleCount * 2))
+                wav.append(Data(repeating: 0, count: sampleCount * 2))
+                try wav.write(to: wakeAudioURL)
+
+                let wake = try await client.wakeVoice(
+                    deviceId: config.deviceID,
+                    wakeWord: "evie",
+                    audioRef: wakeAudioURL.path
+                )
                 print(
                     "wake: state=\(wake.state) session=\(wake.sessionId ?? "nil") "
                         + "enrolled=\(wake.ownerEnrolled)"

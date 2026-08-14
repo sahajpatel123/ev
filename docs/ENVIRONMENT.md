@@ -75,13 +75,21 @@ the compliance keys in §13.
 | `EV_VOICEPRINT_MODEL_DIR` | — | path | SpeechBrain model cache/download directory |
 | `EV_VOICEPRINT_DIM` | `192` | int | Embedding dimension |
 | `EV_VOICEPRINT_THRESHOLD` | `0.72` | float | Similarity threshold for owner verification |
-| `EV_VOICE_WAKE_PROVIDER` | `phrase` | `phrase` / `porcupine` / `silero_vad` | `phrase` = deterministic text-hint/frame matcher (dev/test); `porcupine` = Picovoice Porcupine; `silero_vad` = Porcupine/phrase keyword engine gated by Silero VAD |
+| `EV_VOICE_WAKE_PROVIDER` | `phrase` | `phrase` / `porcupine` / `silero_vad` / `openwakeword` | `phrase` = deterministic text-hint/frame matcher (dev/test); `porcupine` = Picovoice Porcupine; `silero_vad` = Porcupine/phrase keyword engine gated by Silero VAD; `openwakeword` = custom "EVIE" ONNX head |
 | `EV_VOICE_WAKE_ACCESS_KEY` | — | string | Picovoice access key (required for `porcupine`/`silero_vad` with Porcupine) |
 | `EV_VOICE_WAKE_MODEL_PATH` | — | path | Custom "EVIE" Porcupine `.ppn` model |
 | `EV_VOICE_WAKE_PORCUPINE_LIBRARY_PATH` | — | path | Optional custom Porcupine native library |
 | `EV_VOICE_WAKE_SENSITIVITY` | `0.6` | float | Porcupine sensitivity (higher = more trigger-prone) |
 | `EV_VOICE_WAKE_VAD_MODEL_PATH` | — | path | Silero VAD JIT model path |
 | `EV_VOICE_WAKE_VAD_THRESHOLD` | `0.5` | float | Minimum mean VAD speech probability to accept a wake |
+| `EV_VOICE_WAKE_OPENWAKEWORD_MODEL_PATH` | — | path | Custom "EVIE" openWakeWord `.onnx` head (train via `make wake-train`); when missing the ears process falls back to the local Whisper spotter |
+| `EV_VOICE_WAKE_OPENWAKEWORD_VERIFIER_PATH` | — | path | Logistic-regression verifier weights for the head |
+| `EV_VOICE_WAKE_OPENWAKEWORD_THRESHOLD` | `0.5` | float | openWakeWord activation threshold |
+| `EV_EARS_WAKE_LOCAL_SPOTTER` | `true` | boolean | On-device wake fallback: run a small local faster-whisper model in the ears process to spot "EVIE" when the openWakeWord head is absent, and have the server trust its confidence (no server-side Whisper pass) |
+| `EV_EARS_WAKE_ASR_MODEL` | `tiny` | string | Dedicated fast faster-whisper model for on-device wake spotting |
+| `EV_EARS_STUCK_LOOP_DROP` | `true` | boolean | Drop VAD segments whose content literally repeats (stuck mic / self-echo) before they reach ASR |
+| `EV_EARS_STUCK_LOOP_THRESHOLD` | `0.10` | float | Normalized self-difference below which a segment counts as a loop |
+| `EV_EARS_STREAM_PLAYBACK` | `true` | boolean | Stream TTS chunks over SSE and play each sentence as it arrives, instead of waiting for the full reply |
 
 ## 6. Voice ASR & TTS
 
@@ -154,10 +162,11 @@ the compliance keys in §13.
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
 | `EV_RUNTIME_VERIFY_TIMEOUT_SECONDS` | `15` | int | Max time in the verifying state |
-| `EV_RUNTIME_AWAKE_TIMEOUT_SECONDS` | `120` | int | Max time awake |
+| `EV_RUNTIME_AWAKE_TIMEOUT_SECONDS` | `120` | int | REST hint for time spent awake before first turn |
 | `EV_RUNTIME_PROCESSING_TIMEOUT_SECONDS` | `90` | int | Max processing time |
 | `EV_RUNTIME_RESPOND_TIMEOUT_SECONDS` | `60` | int | Max responding time |
-| `EV_RUNTIME_FOLLOWUP_TIMEOUT_SECONDS` | `30` | int | Follow-up window before returning to idle |
+| `EV_RUNTIME_FOLLOWUP_TIMEOUT_SECONDS` | `30` | int | REST follow-up hint; does not close the session |
+| `EV_RUNTIME_SESSION_TIMEOUT_SECONDS` | `900` | int | Long-idle lock for listening (`awake` / `follow_up`) |
 | `EV_RUNTIME_HEARTBEAT_GRACE_SECONDS` | `300` | int | Device heartbeat grace before considered offline |
 | `EV_RUNTIME_DLQ_MAX_ATTEMPTS` | `3` | int | Max retries before a dead letter is terminal |
 | `EV_RUNTIME_URGENT_PRIORITY_THRESHOLD` | `0.7` | float | Priority needed to interrupt during quiet hours |
@@ -301,13 +310,15 @@ legacy `EV_VOICE_ASR_MODEL` / `EV_VOICE_TTS_MODEL` values, which remain for
 | `EV_NOTIFY_MACOS_ALLOW_OSASCRIPT` | `true` | boolean | Last-resort `display notification` fallback when UNUserNotificationCenter is unavailable (sandboxed helper, unsigned context) |
 | `EV_NOTIFY_WEBHOOK_URL` | — | URL | Signed webhook endpoint for the webhook backend |
 | `EV_NOTIFY_WEBHOOK_SECRET` | — | string | HMAC-SHA256 secret; header `X-EV-Signature: sha256=…` |
-| `EV_NOTIFY_APNS_ENABLED` | `false` | boolean | APNs stays inert until Agent 18 registers a token |
-| `EV_NOTIFY_APNS_KEY_ID` / `TEAM_ID` / `TOPIC` / `KEY_PATH` | — | APNs | Signing identity for the future APNs path |
+| `EV_NOTIFY_APNS_ENABLED` | `false` | boolean | APNs path is wired; enable after SUIT uploads a device token |
+| `EV_NOTIFY_APNS_KEY_ID` / `TEAM_ID` / `TOPIC` / `KEY_PATH` | — | APNs | ES256 signing identity for real APNs delivery |
 | `EV_NOTIFY_MAX_ATTEMPTS` | `3` | int | Failed-delivery limit before `max_attempts` suppression |
 | `EV_NOTIFY_RETRY_INTERVAL_SECONDS` | `300` | seconds | Backoff between alert delivery attempts |
 | `EV_NOTIFY_DEDUP_WINDOW_SECONDS` | `3600` | seconds | Duplicate-suppression window for identical fingerprints |
 | `EV_NOTIFY_EMERGENCY_PRIORITY_THRESHOLD` | `0.7` | float 0–1 | Priority at/above which a notification is an emergency |
 | `EV_NOTIFY_DIGEST_ENABLED` | `true` | boolean | Quiet-hours digest batching |
+| `EV_NOTIFY_BOOT_BEACON` | `true` | boolean | One "EVIE is alive" notification per boot (no terminal needed) |
+| `EV_NOTIFY_DEVICE_ROUTING` | `true` | boolean | Route notifications/life actions to the best reachable trusted device |
 
 The quiet-hours window is `EV_QUIET_HOURS_START`/`EV_QUIET_HOURS_END` and the
 per-day cap is `EV_DAILY_ALERT_BUDGET`; both predate Agent 14 and remain the
@@ -342,3 +353,47 @@ based and not OpenAI-compatible**: there are no `/v1` routes. See
 server's own credential and must be in the environment of the server process
 (`.env`, `~/.config/ev/opencode.env`, or the interactive shell that starts
 `opencode serve`).
+
+# --- AGENT 2 FOUNDRY · VOICE ACTIVATION (append-only) ---
+
+Pragmatic voice defaults for this Mac (Apple M2, 8 GB):
+
+| Key | Recommended | Notes |
+| --- | --- | --- |
+| `EV_VOICE_ASR_PROVIDER` | `faster_whisper` | Proven locally; model downloads on first use. Parakeet is not pinned yet (streaming split export ≠ `ParakeetOnnxSession` contract). |
+| `EV_VOICE_TTS_PROVIDER` | `openai_compat` | Production default per fleet law §13; local fallback `kokoro` after pulling `tts-kokoro-82m-int8` + `tts-kokoro-voices-v1.0`. |
+| `EV_ALLOW_REMOTE_TTS` | `true` | Required for the openai_compat default; fail-closed gate. |
+| `EV_VOICE_WAKE_PROVIDER` | `openwakeword` | Package ships in the `ml` extra; the custom EVIE head is Agent 3's deliverable. |
+| `EV_VOICEPRINT_PROVIDER` | `campp` | Weights need Agent 5's raw-waveform CAM++ ONNX export; fails closed until then. |
+
+One-time commands:
+
+```bash
+cd backend && uv sync --extra ml --extra face --extra dev
+uv run python -m app.ml.cli pull tts-kokoro-82m-int8 tts-kokoro-voices-v1.0
+export EV_VOICE_ASR_PROVIDER=faster_whisper
+export EV_VOICE_TTS_PROVIDER=openai_compat EV_ALLOW_REMOTE_TTS=true
+```
+
+`make voice-deps`, `make model-pull-voice`, and `make voice-preflight` wrap
+the same steps; `make voice-preflight` prints Foundry's per-engine readiness
+and remediation (the existing `make preflight` is Agent 20's report).
+
+# --- AGENT 12 CONDUIT · WAVE LIFE (append-only) -------------------------------
+
+Apple life bridges (Messages / Contacts / Phone / FaceTime / Mail via
+EVLifeHelper, and the iPhone device-proxy queue). Everything fails loudly when
+the helper is missing; local mode never fakes a sent message or placed call.
+
+| Key | Default | Values | Purpose |
+| --- | --- | --- | --- |
+| `EV_LIFE_HELPER_PATH` | — | path | Executable `EVLifeHelper` binary (Agent 18/SUIT). Empty = life actions fail closed. |
+| `EV_MESSAGING_PROVIDER` | `local` | `local` \| `macos_life` \| `device_proxy` | Provider used by runtime/notify when dispatching `send_message`. |
+| `EV_LIFE_AUTONOMY` | `default` | `default` \| `full` | `full` = owner opted out of per-action confirmation inside granted scopes. |
+| `EV_LIFE_CONTACT_ALLOWLIST` | `all` | `all` \| `starred` \| `any` | Which recipients are pre-authorized once the standing scope is granted. |
+| `EV_LIFE_CONFIRM_UNKNOWN` | `true` | boolean | Require `confirm: true` (or approval) for recipients outside the allowlist. |
+| `EV_LIFE_HELPER_TIMEOUT_SECONDS` | `20` | seconds | Helper subprocess hard timeout. |
+| `EV_LIFE_HELPER_MAX_OUTPUT_BYTES` | `65536` | bytes | Helper stdout cap; oversized output is a loud failure. |
+
+Per-integration config overrides (non-secret): `helper_path`, `contact_allowlist`,
+`autonomy`, `confirm_unknown` inside `config` when installing the integration.

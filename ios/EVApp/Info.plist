@@ -24,8 +24,14 @@
     <string>http://127.0.0.1:8000</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>EV uses Bluetooth peripherals you explicitly pair (health belt, accessories) for presence and readiness.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>EV resolves contacts only when you ask it to (address texts/calls by name).</string>
     <key>NSHealthShareUsageDescription</key>
-    <string>EV reads your heart rate, HRV, sleep, steps, and activity so EV Sense and readiness cards can work — read-only, nothing is written.</string>
+    <string>EV reads heart rate, HRV, sleep, SpO2, respiratory rate, and activity from Apple Health (including your Amazfit Helio Strap via Zepp) so the vitals lookout and emergency pulse can work — read-only, nothing is written back.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>EV connects to your Mac's EV API over your local network/Tailscale.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>EV captures your voice only when you press the mic button, to wake, verify, and understand your requests.</string>
     <key>NSCameraUsageDescription</key>
@@ -34,12 +40,17 @@
     <string>EV reads photos you explicitly choose to attach to a memory.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>EV uses your location only while you are actively using a location-aware card.</string>
+    <key>NSSiriUsageDescription</key>
+    <string>EV uses Siri/App Intents only for shortcuts you create (e.g. quick capture).</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>EV uses on-device speech recognition for quick dictation capture when you enable it.</string>
     <key>UIBackgroundModes</key>
     <array>
         <string>audio</string>
         <string>fetch</string>
         <string>processing</string>
         <string>remote-notification</string>
+        <string>voip</string>
     </array>
     <key>UILaunchScreen</key>
     <dict/>

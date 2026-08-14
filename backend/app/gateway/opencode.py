@@ -788,6 +788,11 @@ class OpenCodeProvider:
                     emitted: dict[str, int] = {}
                     pending: dict[str, list[str]] = {}
                     snapshots: dict[str, str] = {}
+                    # messageID -> role, from message.updated events. Used to
+                    # keep the user's own prompt (also a text part) out of the
+                    # assistant output: without this the tail replay echoes the
+                    # prompt back at the end of every answer.
+                    message_roles: dict[str, str] = {}
                     deadline = time.monotonic() + settings.opencode_stream_timeout_seconds
                     while True:
                         remaining = deadline - time.monotonic()
@@ -826,6 +831,13 @@ class OpenCodeProvider:
                             part_id = str(part.get("id") or "")
                             if part.get("type") != "text" or not part_id:
                                 continue
+                            mid = part.get("messageID")
+                            if mid is not None:
+                                role = message_roles.get(str(mid))
+                                if role is not None and role != "assistant":
+                                    # The user's own prompt is also a text part;
+                                    # it must never be replayed as a reply.
+                                    continue
                             snapshots[part_id] = part.get("text") or ""
                             if part_id not in emitted:
                                 emitted[part_id] = 0
@@ -851,7 +863,11 @@ class OpenCodeProvider:
                                 pending.setdefault(part_id, []).append(delta)
                         elif kind == "message.updated":
                             info = props.get("info") or {}
-                            if info.get("role") == "assistant" and (
+                            role = info.get("role")
+                            mid = info.get("id")
+                            if mid is not None and role is not None:
+                                message_roles[str(mid)] = str(role)
+                            if role == "assistant" and (
                                 (info.get("tokens") or {}).get("total")
                             ):
                                 usage = _usage_from_info(info)

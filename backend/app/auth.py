@@ -66,6 +66,9 @@ async def _resolve_actor(
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty bearer token")
+    # DO NOT CHANGE — master key is accepted as a Bearer token. The Mac menu
+    # bar authenticates with EV_MASTER_KEY (not EV_EARS_API_KEY). Removing
+    # this branch makes EV.app 401 as "Invalid or revoked device token".
     if secrets.compare_digest(token, settings.master_key):
         return "master", None
     token_hash = sha256_hex(token)

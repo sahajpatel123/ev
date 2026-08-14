@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import secrets
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Literal, cast
 from uuid import UUID, uuid4
@@ -24,11 +27,13 @@ from app.config import settings
 from app.context.compiler import ContextPlan
 from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
-from app.ev import alert_radar, conversation, tools, vision
+from app.ev import alert_radar, conversation, vision
+from app.ev import assistant as assistant_mod
 from app.ev import rollup as rollup_service
 from app.ev.calibration import proactive_tuning
+from app.ev.continuity import is_continuation
 from app.ev.interaction import build_strategy, strategy_block
-from app.ev.personality import get_current, identity_block, to_dict
+from app.ev.personality import get_current, to_dict
 from app.ev.self_eval import log_response
 from app.ev.user_state import build_user_state
 from app.filter.envelope import (
@@ -89,6 +94,8 @@ from app.schemas import (
     ModelCallOut,
     PrivacyLevel,
     ProvenanceItem,
+    PushTokenOut,
+    PushTokenRegister,
     RebuildOut,
     StateOfMeOut,
     TimelineResponse,
@@ -671,14 +678,14 @@ async def chat(
     actor: str = Depends(require_actor),
 ):
     if data.stream:
-        thread = await conversation.resolve_thread(session, data.conversation_id)
+        thread = await assistant_mod.resolve_live_thread(session, data.conversation_id)
         return StreamingResponse(
             _stream_chat(data, session, actor, thread_id=thread.id),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     try:
-        thread = await conversation.resolve_thread(session, data.conversation_id)
+        thread = await assistant_mod.resolve_live_thread(session, data.conversation_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Conversation not found") from None
     pipeline = await run_chat_pipeline(data, session, actor, thread_id=thread.id)
@@ -693,6 +700,7 @@ async def chat(
         provenance=pipeline["provenance"],
         filter_report=pipeline.get("filter_report"),
         context_plan=pipeline.get("context_plan"),
+        surfaces=pipeline.get("surfaces"),
     )
 
 
@@ -700,13 +708,63 @@ def _sse(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
-def _text_chunks(text: str, size: int = 24) -> list[str]:
-    return [text[i : i + size] for i in range(0, len(text), size)] or [""]
-
-
 async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, thread_id: UUID):
+    """Yield SSE as the pipeline runs — never wait for the last stage first."""
+
+    queue: asyncio.Queue[tuple[str, dict] | BaseException | None] = asyncio.Queue()
+    streamed_chars = 0
+
+    async def progress(stage: str, extra: dict | None = None) -> None:
+        payload = {"stage": stage}
+        if extra:
+            payload.update(extra)
+        await queue.put(("status", payload))
+
+    async def on_delta(text: str) -> None:
+        nonlocal streamed_chars
+        if not text:
+            return
+        streamed_chars += len(text)
+        await queue.put(("delta", {"text": text, "final": False}))
+
+    async def run() -> None:
+        try:
+            pipeline = await run_chat_pipeline(
+                data,
+                session,
+                actor,
+                thread_id=thread_id,
+                progress_callback=progress,
+                text_delta_callback=on_delta,
+            )
+            await queue.put(("__pipeline__", pipeline))
+        except Exception as exc:  # noqa: BLE001 - handed to the SSE consumer
+            await queue.put(exc)
+        finally:
+            await queue.put(None)
+
+    # First client-visible event before filter/retrieve/briefing/model start.
+    yield _sse("status", {"stage": "accepted"})
+    task = asyncio.create_task(run())
+    pipeline: dict | None = None
     try:
-        pipeline = await run_chat_pipeline(data, session, actor, thread_id=thread_id)
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, BaseException):
+                yield _sse("error", {"message": str(item)})
+                yield _sse("done", {})
+                return
+            name, payload = item
+            if name == "__pipeline__":
+                pipeline = payload
+                continue
+            yield _sse(name, payload)
+        if pipeline is None:
+            yield _sse("error", {"message": "chat pipeline produced no result"})
+            yield _sse("done", {})
+            return
         for delta in pipeline["memory_deltas"]:
             yield _sse("memory-delta", delta)
         for item in pipeline["provenance"]:
@@ -715,19 +773,14 @@ async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, 
             yield _sse("filter-report", pipeline["filter_report"].model_dump())
         if pipeline.get("context_plan") is not None:
             yield _sse("context-plan", pipeline["context_plan"])
-        # Streaming refinement protocol (plan 3.9): the provider draft streams as
-        # progressive `delta` events, then the output-filtered final answer is
-        # emitted as `refined` with replace semantics.
         final_text = pipeline["result"].text
         report = pipeline.get("filter_report")
         raw_text = getattr(report, "draft", None) or final_text
-        chunks = _text_chunks(raw_text)
-        for index, chunk in enumerate(chunks):
-            yield _sse(
-                "delta",
-                {"text": chunk, "final": index == len(chunks) - 1 and raw_text == final_text},
-            )
+        if streamed_chars == 0 and raw_text:
+            yield _sse("delta", {"text": raw_text, "final": raw_text == final_text})
         yield _sse("refined", {"text": final_text, "replaces": True})
+        if pipeline.get("surfaces") is not None:
+            yield _sse("surfaces", pipeline["surfaces"])
         yield _sse(
             "done",
             {
@@ -738,9 +791,11 @@ async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, 
                 "model": pipeline["result"].model,
             },
         )
-    except Exception as exc:  # noqa: BLE001 - stream boundary
-        yield _sse("error", {"message": str(exc)})
-        yield _sse("done", {})
+    finally:
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
 
 async def run_chat_pipeline(
@@ -753,10 +808,21 @@ async def run_chat_pipeline(
     user_event_type: str = "message.user",
     event_privacy: PrivacyLevel = "normal",
     speaker: SpeakerIdentity | None = None,
+    text_delta_callback: Callable[[str], Awaitable[None]] | None = None,
+    on_turn_ready: Callable[[object], Awaitable[None]] | None = None,
+    progress_callback: Callable[[str, dict], Awaitable[None]] | None = None,
 ) -> dict:
     retriever = Retriever(session)
     request_id = str(uuid4())
     service = EventService(session, actor=actor)
+
+    async def _progress(stage: str, extra: dict | None = None) -> None:
+        if progress_callback is not None:
+            await progress_callback(stage, extra or {})
+    await assistant_mod.maybe_text_greeting(session, thread_id, actor=actor)
+    from app.ev.callouts import session_malfunction_callout
+
+    await session_malfunction_callout(session, session_key=f"text:{thread_id}")
 
     depth = _resolve_depth(data.context_depth, data.message)
     history_limit, retrieval_k, budget = _depth_profile(depth)
@@ -764,6 +830,7 @@ async def run_chat_pipeline(
     # Input filter: identity gate + privacy guard run before anything is stored
     # or sent. Credentials never cross to the provider; high-severity injection
     # attempts block the turn entirely.
+    await _progress("filter")
     input_filter = InputFilter(session)
     filter_policy = await active_policy(session)
     speaker_identity = speaker or SpeakerIdentity(
@@ -772,6 +839,7 @@ async def run_chat_pipeline(
         confidence=1.0,
         method="auth_token",
     )
+    voice_model_access = source == "voice" and speaker_identity.verified
     input_decision = input_filter.guard(
         message=data.message,
         speaker=speaker_identity,
@@ -797,24 +865,38 @@ async def run_chat_pipeline(
     )
     await session.commit()
     memory_deltas = await ensure_processed(user_event.id)
+    await _progress("retrieve")
 
     history_events = [
         event
         for event in await conversation.history(
-            session, thread_id, limit=history_limit, access="model"
+            session,
+            thread_id,
+            limit=history_limit,
+            access="voice_model" if voice_model_access else "model",
         )
         if event.id != user_event.id
     ]
     memories = await retriever.search(
-        input_decision.provider_message, k=retrieval_k, access="model"
+        input_decision.provider_message,
+        k=retrieval_k,
+        access="model",
+        include_sensitive=voice_model_access,
     )
-    user_state = await build_user_state(session, access="model")
+    user_state = await build_user_state(
+        session, access="voice_model" if voice_model_access else "model"
+    )
     if depth != "standard":
         secondary_query = (
             user_state.current_task or user_state.active_project or input_decision.provider_message
         )
         if secondary_query != input_decision.provider_message:
-            extra = await retriever.search(secondary_query, k=retrieval_k, access="model")
+            extra = await retriever.search(
+                secondary_query,
+                k=retrieval_k,
+                access="model",
+                include_sensitive=voice_model_access,
+            )
             seen = {m.memory_id for m in memories}
             memories = [*memories, *[m for m in extra if m.memory_id not in seen]]
             memories.sort(key=lambda m: m.score, reverse=True)
@@ -877,7 +959,25 @@ async def run_chat_pipeline(
         pending_alert_tier=alert_tier,
         challenge_ceiling=tuning.challenge_ceiling,
     )
-    model_rollup = await rollup_service.model_safe_rollup(session, thread_id)
+    # A fresh, self-contained question ("what's the weather in Gujarat?") must
+    # not inherit old-thread context, or the model mixes topics and answers
+    # with a confused "do you mean X or Y?" clarifier. When the message does
+    # not point back at earlier turns, drop the conversation-derived context
+    # (history, rollup, open questions) and suppress the clarifying-question
+    # directive so the model answers the current message on its own merits.
+    continuation = is_continuation(data.message)
+    if not continuation and getattr(strategy, "ask_question", None):
+        updater = getattr(strategy, "model_copy", None)
+        if callable(updater):
+            strategy = updater(update={"ask_question": False})
+        elif hasattr(strategy, "ask_question"):
+            with contextlib.suppress(Exception):
+                strategy.ask_question = False
+    model_rollup = await rollup_service.model_safe_rollup(
+        session,
+        thread_id,
+        access="voice_model" if voice_model_access else "model",
+    )
     state = await conversation.get_or_create_state(session, thread_id)
     open_questions = list(
         dict.fromkeys([*(model_rollup.open_questions or []), *(state.pending_questions or [])])
@@ -956,17 +1056,26 @@ async def run_chat_pipeline(
         budget=budget,
         message=data.message,
         perception_lines=perception_lines,
-        rollup_summary=model_rollup.summary,
-        open_questions=open_questions,
+        rollup_summary=(model_rollup.summary if continuation else None),
+        open_questions=(open_questions if continuation else []),
+        # Open conflicts are memory facts (e.g. two recorded preferences), not
+        # conversation history — they stay relevant to any question that
+        # touches them, so they are not gated on continuity.
         open_conflicts=open_conflicts,
-        history=[
-            {
-                "role": "assistant" if e.event_type == "message.assistant" else "user",
-                "text": (e.content or {}).get("text") or "",
-            }
-            for e in history_events
-        ],
+        history=(
+            [
+                {
+                    "role": "assistant" if e.event_type == "message.assistant" else "user",
+                    "text": (e.content or {}).get("text") or "",
+                }
+                for e in history_events
+            ]
+            if continuation
+            else []
+        ),
     )
+
+    local = await assistant_mod.handle_local_intent(session, data.message)
 
     if decision.blocked:
         final_draft = (
@@ -979,6 +1088,14 @@ async def run_chat_pipeline(
             flags=decision.flags,
         )
         result = ChatResult(text=final_draft)
+        envelope_hash = None
+    elif local is not None:
+        result = ChatResult(text=str(local["reply"]))
+        report = OutputReport(
+            draft=result.text,
+            final_text=result.text,
+            flags=decision.flags,
+        )
         envelope_hash = None
     else:
         envelope_hash = compute_envelope_hash(
@@ -1021,28 +1138,130 @@ async def run_chat_pipeline(
             },
             media_refs=chat_media_refs,
         )
+        identity = await assistant_mod.compile_identity(session, compact=source == "voice")
         system_prompt = (
-            f"{identity_block(settings.persona_name, settings.persona_description, to_dict(profile))}\n\n"
+            f"{identity}\n\n"
+            "ASSISTANT MODE — you are the owner's hands-on personal assistant, "
+            "not a chatbot:\n"
+            "- DO, DON'T DESCRIBE. For actionable requests (reminder, calendar, "
+            "message, call, mail, weather, lookup, math, research, open a window), "
+            "execute the tool and report the confirmed result. Never reply with an "
+            "essay about what you could do.\n"
+            "- THINK IN AN ACTION LOOP: understand the intent, gather the minimum "
+            "facts, perform the requested reversible or authorized action, verify "
+            "the result, then speak. The user should not have to restate a request "
+            "just because the first turn needed a tool.\n"
+            "- NEVER CLAIM COMPLETION WITHOUT EVIDENCE. If a bridge is unavailable, "
+            "say exactly what failed and give the next useful setup step.\n"
+            "- OFFER THE NEXT STEP. After answering, if a clearly useful next step "
+            "exists, take it when it is read-only or reversible; otherwise offer it "
+            "in one short line.\n"
+            "- PERSONALIZE. Ground your answer in the owner's memory, goals, "
+            "projects, calendar, people, and live context. Use their name naturally "
+            "when it fits.\n"
+            "- BE BRIEF AND HUMAN. Lead with the answer in the first clause. No "
+            "filler, no \"As an AI…\", no \"Great question!\". One or two sentences "
+            "unless they asked for a briefing or a deep comparison.\n\n"
+            "Answer the CURRENT user message directly and completely. It may be a "
+            "brand-new topic with no connection to anything said before. Every prior "
+            "turn, summary, and memory below is OPTIONAL background: use it only when "
+            "the current message explicitly refers to it (\"as I asked before\", "
+            "\"about the markets\", \"that thing\"). Do not treat the current message "
+            "as a continuation of older topics, and never answer with a question like "
+            "\"do you mean X or Y?\" merely because earlier context exists. If the "
+            "current message is clear on its own, answer it directly; only ask for "
+            "clarification when the message itself is genuinely ambiguous.\n\n"
             "You reason over memory that EV's system has retrieved for you; never invent memories. "
             "Be honest about uncertainty, cite dates/sources when you use them, and keep the user's "
             "goals in mind.\n\n"
             f"{context}"
         )
-        gateway = ModelGateway(provider)
-        call = await run_tool_loop(
-            session,
-            gateway,
-            [
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=decision.provider_message),
-            ],
-            envelope=envelope,
-            tool_specs=tool_specs_from_dicts(tools.list_tools()),
-            model=data.model,
-            actor=actor,
-            allow_sensitive_tools=data.allow_sensitive_tools,
-            request_id=request_id,
+        if source == "voice":
+            system_prompt += (
+                "\n\nSPOKEN TURN — you are EVIE, the owner's operator and chief of "
+                "staff, not a chatbot. When the owner tells you to do something "
+                "(send, call, remind, present, search, remember, set up), DO it and "
+                "confirm the result with real evidence — the tools in this turn are "
+                "there for exactly that. When they ask a question, answer it directly "
+                "in one to three short spoken sentences and stop. Never narrate what "
+                "you are about to do (no 'Checking', 'Searching', 'Wait', 'Let me "
+                "look'); do it silently and speak the result. If something is worth "
+                "seeing, call the present tool so it opens on their Mac rather than "
+                "telling them to check a website. If a pending alert or a stored "
+                "follow-up is genuinely relevant to this request, mention it once. "
+                "Do not recite your capabilities, do not ask 'how can I help', and "
+                "do not answer a clear request with a question."
+            )
+        from app.ev.briefing import (
+            WRITE_TOOLS,
+            gather_intelligence_briefing,
+            tools_for_turn,
+            voice_needs_tools,
         )
+        from app.ev.interaction import detect_life_action
+        from app.ev.tool_select import select_tool
+
+        allow_sensitive = data.allow_sensitive_tools or source == "voice"
+        await _progress("briefing")
+        briefing = await gather_intelligence_briefing(
+            session,
+            decision.provider_message,
+            actor=actor,
+            allow_sensitive=allow_sensitive,
+            source=source,
+        )
+        if briefing:
+            system_prompt += "\n\n" + briefing
+        if on_turn_ready is not None:
+            await on_turn_ready(strategy)
+        gateway = ModelGateway(provider)
+        chat_messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=decision.provider_message),
+        ]
+        offer_tools = source != "voice" or voice_needs_tools(decision.provider_message)
+        tool_specs = tool_specs_from_dicts(tools_for_turn(decision.provider_message)) if offer_tools else []
+        write_needed = bool(
+            detect_life_action(decision.provider_message)
+            or select_tool(decision.provider_message).selected in WRITE_TOOLS
+        )
+        stream_tokens = text_delta_callback is not None and not write_needed
+        if stream_tokens and text_delta_callback is not None:
+            await _progress("model", {"streaming": True})
+            call = None
+            parts: list[str] = []
+            async for event in gateway.stream_chat(
+                chat_messages,
+                envelope=envelope,
+                tools=[],
+                model=data.model,
+                allow_sensitive_tools=allow_sensitive,
+            ):
+                if event.kind == "delta" and event.text:
+                    parts.append(event.text)
+                    await text_delta_callback(event.text)
+                elif event.kind == "done":
+                    call = event.call
+            if call is None:
+                raise HTTPException(status_code=503, detail="Model provider returned no completion")
+            await log_model_call(session, call=call, actor=actor)
+            if not (call.result.text or "").strip():
+                call.result.text = "".join(parts)
+        else:
+            await _progress("tools" if offer_tools else "model")
+            call = await run_tool_loop(
+                session,
+                gateway,
+                chat_messages,
+                envelope=envelope,
+                tool_specs=tool_specs,
+                model=data.model,
+                actor=actor,
+                allow_sensitive_tools=allow_sensitive,
+                request_id=request_id,
+            )
+            if text_delta_callback is not None and call.result.text:
+                await text_delta_callback(call.result.text)
         result = call.result
         if call.status == "blocked":
             raise HTTPException(
@@ -1055,8 +1274,13 @@ async def run_chat_pipeline(
                 detail=f"Model provider unavailable: {call.error}",
             )
 
+        await _progress("output_filter")
         critic = None
-        if settings.filter_critic_enabled and strategy.mode in settings.filter_critic_modes:
+        if (
+            source != "voice"
+            and settings.filter_critic_enabled
+            and strategy.mode in settings.filter_critic_modes
+        ):
             from app.filter.critic import GatewayCritic
 
             critic = GatewayCritic(gateway, request_id=request_id, envelope=envelope)
@@ -1119,6 +1343,18 @@ async def run_chat_pipeline(
         )
         await session.commit()
 
+    if strategy.mode == "social":
+        from app.ev import companionship as companionship_mod
+        from app.ev.callouts import emit_callout
+
+        await companionship_mod.note_social_turn(session)
+        nudge = await companionship_mod.maybe_isolation_nudge(session)
+        if nudge:
+            callout = await emit_callout(session, nudge, source="isolation")
+            if callout.spoken:
+                result.text = f"{result.text} {nudge}".strip()
+                report.final_text = result.text
+
     assistant_event = await service.create(
         EventCreate(
             source=source,
@@ -1164,6 +1400,30 @@ async def run_chat_pipeline(
     )
     await session.commit()
 
+    surfaces = None
+    if local is not None and isinstance(local.get("hud"), dict):
+        surfaces = {
+            "schema_version": "ev.hud.card.v1",
+            "open": True,
+            "title": local["hud"].get("title") or "Protocols",
+            "windows": [local["hud"]],
+            **local["hud"],
+        }
+    if surfaces is None and not decision.blocked:
+        try:
+            from app.ev.lookout import compose_and_maybe_open
+
+            surfaces = await compose_and_maybe_open(
+                session,
+                message=data.message,
+                reply=result.text,
+                strategy=strategy,
+                pending_alert_priority=alert_priority,
+                pending_alert_tier=alert_tier,
+            )
+        except Exception:  # noqa: BLE001 - HUD must never fail a chat turn
+            surfaces = None
+
     provenance = [
         *perception_provenance,
         *(
@@ -1192,6 +1452,7 @@ async def run_chat_pipeline(
         "strategy": strategy,
         "filter_report": FilterReportOut.model_validate(report.to_dict()),
         "context_plan": context_plan.to_dict() if context_plan is not None else None,
+        "surfaces": surfaces,
     }
 
 
@@ -1344,6 +1605,9 @@ async def create_device(
         capabilities=data.capabilities,
         trust_level=data.trust_level,
         owner_id=owner.id if owner else None,
+        device_type=data.device_type,
+        platform=data.platform,
+        paired_at=utcnow() if owner else None,
     )
     session.add(device)
     await session.flush()
@@ -1388,6 +1652,129 @@ async def revoke_device(
     )
     await session.commit()
     return DeviceOut.model_validate(device)
+
+
+@router.post(
+    "/devices/{device_id}/push-token",
+    response_model=PushTokenOut,
+    status_code=200,
+)
+async def register_push_token(
+    device_id: UUID,
+    data: PushTokenRegister,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> PushTokenOut:
+    """Register/rotate a push token for one trusted device (APNs today)."""
+    if ctx.is_device and ctx.device_id != device_id:
+        raise HTTPException(status_code=403, detail="Device can only register its own token")
+    device = await session.get(Device, device_id)
+    if device is None or device.revoked_at is not None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    device.push_token = data.token
+    device.push_token_updated_at = utcnow()
+    device.push_bundle_id = data.bundle_id
+    device.platform = "apple" if data.platform == "apns" else device.platform
+    if device.paired_at is None:
+        device.paired_at = utcnow()
+    await log_access(
+        session,
+        actor=ctx.actor,
+        action="device.push_token_register",
+        endpoint="POST /v1/devices/{id}/push-token",
+        resource_type="device",
+        resource_ids=[device.id],
+        details={"platform": data.platform},
+    )
+    await session.commit()
+    return PushTokenOut(
+        device_id=device.id,
+        platform=device.push_platform,
+        registered=True,
+        updated_at=device.push_token_updated_at,
+    )
+
+
+@router.delete("/devices/{device_id}/push-token", response_model=PushTokenOut)
+async def deregister_push_token(
+    device_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> PushTokenOut:
+    """Deregister a push token (device offboarding / rotation cleanup)."""
+    if ctx.is_device and ctx.device_id != device_id:
+        raise HTTPException(status_code=403, detail="Device can only deregister its own token")
+    device = await session.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    device.push_token = None
+    device.push_token_updated_at = utcnow()
+    device.push_bundle_id = None
+    await log_access(
+        session,
+        actor=ctx.actor,
+        action="device.push_token_deregister",
+        endpoint="DELETE /v1/devices/{id}/push-token",
+        resource_type="device",
+        resource_ids=[device.id],
+    )
+    await session.commit()
+    return PushTokenOut(
+        device_id=device.id,
+        platform=None,
+        registered=False,
+        updated_at=device.push_token_updated_at,
+    )
+
+
+@router.get("/devices/{device_id}/status")
+async def device_status(
+    device_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> dict:
+    """Registry source of truth: identity, reachability, push readiness."""
+    from app.notify.routing import device_reachability
+
+    device = await session.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    now = utcnow()
+    return {
+        "schema_version": "ev.device.status.v1",
+        "device": DeviceOut.model_validate(device).model_dump(mode="json"),
+        "presence": device_reachability(device, now),
+        "push_ready": bool(device.push_token),
+        "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
+        "generated_at": now.isoformat(),
+    }
+
+
+@router.post("/notify/{notification_id}/receipt")
+async def notification_receipt(
+    notification_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """App-side ack for a delivered notification (SUIT's single-path receipt)."""
+    from app.notify.service import acknowledge_notification
+
+    try:
+        row = await acknowledge_notification(
+            session,
+            notification_id,
+            device_id=ctx.device_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    await session.commit()
+    return {
+        "acknowledged": True,
+        "notification_id": str(row.id),
+        "attention_kind": row.attention_kind,
+    }
 
 
 @router.get("/gateway/models")

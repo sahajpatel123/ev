@@ -5,6 +5,34 @@ from uuid import UUID
 from app.config import settings
 
 
+def queue_worker_available() -> bool:
+    """True only when Redis is up and an RQ worker is registered on ingestion."""
+
+    try:
+        from redis import Redis
+        from rq import Queue, Worker
+
+        conn = Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=0.4,
+            socket_timeout=0.4,
+        )
+        if not conn.ping():
+            return False
+        queue = Queue("ingestion", connection=conn)
+        try:
+            workers = list(Worker.all(queue=queue))
+        except TypeError:
+            workers = [
+                worker
+                for worker in Worker.all(connection=conn)
+                if "ingestion" in set(worker.queue_names() or [])
+            ]
+        return any(workers)
+    except Exception:  # noqa: BLE001 - missing Redis/RQ is a real "no consumer"
+        return False
+
+
 async def process_event_sync(event_id: UUID) -> list[dict]:
     """Run extraction + memory writing for one event (sync mode)."""
     from sqlalchemy import select
@@ -55,7 +83,7 @@ def maybe_enqueue_llm_extraction(event_id: UUID) -> None:
 
 
 async def ensure_processed(event_id: UUID) -> list[dict]:
-    if settings.processing_mode == "queue":
+    if settings.processing_mode == "queue" and queue_worker_available():
         enqueue_event(event_id)
         maybe_enqueue_llm_extraction(event_id)
         return []

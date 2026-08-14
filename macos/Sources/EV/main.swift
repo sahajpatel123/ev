@@ -15,6 +15,12 @@ if arguments.contains("--smoke-test") {
     exit(EVSmokeTest.runMic())
 } else if arguments.contains("--tts-test") {
     exit(EVSmokeTest.runTTS())
+} else if arguments.contains("--life-request") {
+    exit(EVSmokeTest.runLifeRequest())
+} else if arguments.contains("--request-all") {
+    exit(EVSmokeTest.runRequestAll())
+} else if arguments.contains("--request-pending") {
+    exit(EVSmokeTest.runRequestPending())
 } else {
     EVApp.main()
 }

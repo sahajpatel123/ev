@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-08-12T03:07:49.700359+00:00",
+  "locked_at": "2026-08-14T10:30:00+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -15,6 +15,37 @@
       "delete"
     ],
     "/v1/alerts/{alert_id}/dismiss": [
+      "post"
+    ],
+    "/v1/assistant/callouts": [
+      "get",
+      "post"
+    ],
+    "/v1/assistant/dedication": [
+      "post"
+    ],
+    "/v1/assistant/dedication/play": [
+      "post"
+    ],
+    "/v1/assistant/name": [
+      "post"
+    ],
+    "/v1/assistant/name/reset": [
+      "post"
+    ],
+    "/v1/assistant/profile": [
+      "get"
+    ],
+    "/v1/assistant/protocols": [
+      "get"
+    ],
+    "/v1/assistant/quiet-hours": [
+      "post"
+    ],
+    "/v1/assistant/training-wheels/complete": [
+      "post"
+    ],
+    "/v1/assistant/training-wheels/start": [
       "post"
     ],
     "/v1/attachments": [
@@ -102,7 +133,17 @@
     "/v1/devices/{device_id}": [
       "delete"
     ],
+    "/v1/devices/{device_id}/push-token": [
+      "delete",
+      "post"
+    ],
+    "/v1/devices/{device_id}/status": [
+      "get"
+    ],
     "/v1/diagnostics/calibrate": [
+      "post"
+    ],
+    "/v1/ears/wake": [
       "post"
     ],
     "/v1/enrichment/usage": [
@@ -326,6 +367,15 @@
     "/v1/integrations/{integration_id}/events": [
       "get"
     ],
+    "/v1/integrations/{integration_id}/life/device-results": [
+      "post"
+    ],
+    "/v1/integrations/{integration_id}/life/outbox": [
+      "get"
+    ],
+    "/v1/integrations/{integration_id}/life/policy": [
+      "get"
+    ],
     "/v1/integrations/{integration_id}/oauth/status": [
       "get"
     ],
@@ -391,6 +441,9 @@
     "/v1/memory/rebuild": [
       "post"
     ],
+    "/v1/notify/{notification_id}/receipt": [
+      "post"
+    ],
     "/v1/ops/center": [
       "get"
     ],
@@ -425,6 +478,9 @@
     "/v1/people/recognize": [
       "post"
     ],
+    "/v1/people/roster": [
+      "get"
+    ],
     "/v1/people/{entity_id}": [
       "delete"
     ],
@@ -433,6 +489,12 @@
     ],
     "/v1/people/{name}/biodata/link": [
       "post"
+    ],
+    "/v1/people/{name}/context": [
+      "get"
+    ],
+    "/v1/people/{name}/resolve": [
+      "get"
     ],
     "/v1/people/{name}/whereabouts": [
       "get"
@@ -602,6 +664,19 @@
     "/v1/runtime/heartbeat": [
       "post"
     ],
+    "/v1/runtime/life-jobs": [
+      "get"
+    ],
+    "/v1/runtime/life-jobs/{job_id}/claim": [
+      "post"
+    ],
+    "/v1/runtime/lookouts": [
+      "get",
+      "post"
+    ],
+    "/v1/runtime/lookouts/dismiss": [
+      "post"
+    ],
     "/v1/runtime/notifications": [
       "get"
     ],
@@ -610,6 +685,9 @@
     ],
     "/v1/runtime/notify/status": [
       "get"
+    ],
+    "/v1/runtime/present": [
+      "post"
     ],
     "/v1/runtime/status": [
       "get"
@@ -755,6 +833,18 @@
     ],
     "/v1/training/personalization/rollback": [
       "post"
+    ],
+    "/v1/training/surfaces/calibrate": [
+      "post"
+    ],
+    "/v1/training/surfaces/calibration": [
+      "get"
+    ],
+    "/v1/training/surfaces/rate": [
+      "post"
+    ],
+    "/v1/training/surfaces/smoke": [
+      "get"
     ],
     "/v1/training/voice/delete": [
       "post"

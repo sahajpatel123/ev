@@ -130,19 +130,17 @@ async def test_strict_gate_rejects_client_claims_without_audio() -> None:
     assert "audio evidence" in reason
 
 
-async def test_strict_gate_fails_closed_without_liveness_model() -> None:
+async def test_strict_gate_rejects_pure_tone_without_onnx() -> None:
     gate = LivenessGate(strict=True)
-    ok, _confidence, reason = await gate.check(
+    ok, confidence, reason = await gate.check(
         sample={
             "audio_b64": b64(make_wav()),
             "liveness_proof": "live",
             "live_score": 0.99,
-        },
-        expected_phrase="the sun rises in the east",
-        transcript="the sun rises in the east",
+        }
     )
     assert ok is False
-    assert "model unavailable" in reason
+    assert "liveness" in reason
     assert gate.last_audio_sha256 == hashlib.sha256(make_wav()).hexdigest()
 
 

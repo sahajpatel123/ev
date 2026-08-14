@@ -29,11 +29,25 @@
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 EV — personal memory companion</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>EV captures your voice only when you press the hotkey or Talk button, to wake, verify, and understand your requests.</string>
+    <string>EV records your voice for push-to-talk in the menu bar. Always-on “EVIE” wake listening runs in the background ears process.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>EV controls Messages, Mail, and System Events only when you invoke EVLifeHelper commands (send texts/email, read inboxes, drive apps).</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>EV discovers and uses Bluetooth peripherals you explicitly pair (keyboard, mouse, health belt) for presence and readiness.</string>
     <key>NSCameraUsageDescription</key>
     <string>EV uses the camera only when you explicitly capture a photo or video note.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>EV reads and creates calendar events only for the HUD and routine features you enable.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>EV resolves contacts only when you ask it to (EVLifeHelper contacts.list / contacts.resolve).</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>EV uses your location only while you are actively using a location-aware HUD card.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>EV reads and creates reminders only for routine follow-ups you enable.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>EV uses screen content only when you enable ambient context collectors, and never sends raw pixels to any model.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>EV uses on-device speech recognition for quick dictation capture when you enable it.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>CFBundleURLTypes</key>

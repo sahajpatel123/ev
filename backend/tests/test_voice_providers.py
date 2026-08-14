@@ -227,7 +227,11 @@ async def test_voice_utterance_with_http_asr_and_tts(
 
     resp = await client_post(
         "/v1/voice/utterance",
-        {"session_id": wake["session_id"], "audio_b64": b64(b"real-speech.wav")},
+        {
+            "session_id": wake["session_id"],
+            "audio_b64": b64(b"real-speech.wav"),
+            "push_to_talk": True,
+        },
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
@@ -450,7 +454,81 @@ async def test_faster_whisper_transcriber_with_fake_model() -> None:
     assert transcript.confidence == round(math.exp(-0.05), 4)
     assert transcript.duration_ms == 2500
     assert fake_model.captured["language"] == "en"
-    assert fake_model.captured["vad_filter"] is True
+    assert fake_model.captured["vad_filter"] is False
+
+
+class _FakeWhisperModelWake:
+    def __init__(self) -> None:
+        self.captured = {}
+
+    def transcribe(self, path, language="en", vad_filter=True, **kwargs):
+        self.captured = {
+            "path": path,
+            "language": language,
+            "vad_filter": vad_filter,
+            "wake_kwargs": kwargs,
+        }
+        segment = types.SimpleNamespace(
+            text="Eve",
+            no_speech_prob=0.3,
+            avg_logprob=-0.7,
+        )
+        info = types.SimpleNamespace(language="en")
+        return iter([segment]), info
+
+
+async def test_faster_whisper_wake_mode_keeps_speech_and_plumbs_no_speech_prob() -> None:
+    """Wake mode must not suppress real speech and must report the reliability signal.
+
+    Measured regression: no_speech_threshold=0.1 returned empty transcripts for
+    real 2.5-6 s "EVIE" clips, so weak aliases (Eve/evil) had nothing to match.
+    """
+    fake_model = _FakeWhisperModelWake()
+    transcriber = FasterWhisperTranscriber(
+        model="tiny",
+        model_factory=lambda name, **kwargs: fake_model,
+    )
+    transcript = await transcriber.transcribe(
+        audio_b64=b64(b"fake-wav-bytes"),
+        language="en",
+        wake_mode=True,
+    )
+    assert transcript.text == "Eve"
+    assert fake_model.captured["vad_filter"] is False
+    assert fake_model.captured["wake_kwargs"]["no_speech_threshold"] == pytest.approx(0.6)
+    assert fake_model.captured["wake_kwargs"]["condition_on_previous_text"] is False
+    assert transcript.details["no_speech_prob"] == pytest.approx(0.3)
+    assert transcript.details["avg_logprob"] == pytest.approx(-0.7)
+    assert not transcript.degraded
+
+
+class _FakeWhisperModelWakeEmpty:
+    def __init__(self) -> None:
+        self.captured = {}
+
+    def transcribe(self, path, language="en", vad_filter=True, **kwargs):
+        self.captured = {"wake_kwargs": kwargs}
+        segment = types.SimpleNamespace(
+            text="", no_speech_prob=0.9, avg_logprob=-3.0
+        )
+        info = types.SimpleNamespace(language="en")
+        return iter([segment]), info
+
+
+async def test_faster_whisper_wake_mode_reports_empty_with_no_speech_signal() -> None:
+    fake_model = _FakeWhisperModelWakeEmpty()
+    transcriber = FasterWhisperTranscriber(
+        model="tiny",
+        model_factory=lambda name, **kwargs: fake_model,
+    )
+    transcript = await transcriber.transcribe(
+        audio_b64=b64(b"fake-wav-bytes"),
+        language="en",
+        wake_mode=True,
+    )
+    assert transcript.text == ""
+    assert transcript.details.get("reason") == "empty"
+    assert transcript.details.get("no_speech_prob") == pytest.approx(0.9)
 
 
 async def test_faster_whisper_requires_audio() -> None:

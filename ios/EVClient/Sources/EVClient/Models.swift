@@ -225,6 +225,7 @@ public struct VoiceSessionVerifyResponse: Codable, Sendable, Equatable {
 public struct TtsOut: Codable, Sendable, Equatable {
     public let provider: String
     public let audioRef: String?
+    public let audioB64: String?
     public let contentType: String?
     public let ssml: String?
     public let durationMs: Int?
@@ -256,4 +257,5 @@ public struct VoiceUtteranceResponse: Codable, Sendable, Equatable {
     public let model: String?
     public let contextTokens: Int
     public let memoryDeltas: [MemoryDelta]
+    public let error: String?
 }

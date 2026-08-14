@@ -91,7 +91,58 @@ the winning provider, reason, and evidence in
 Unknown provider names (`EV_CHAT_PROVIDER` not in the registry) raise
 `UnknownProviderError` and log at error level — no silent echo fallback.
 
-## 3. API-only reliability (timeouts, retry, circuit breaker, cost cap)
+## 3. Life agency (WAVE LIFE)
+
+Standing owner authority: when the owner tells EVIE to do something and a
+granted life bridge exists, she does it — no theatrical refusal.
+
+### Life tools (validated schemas in `app/ev/tools.py`)
+
+| Tool | Adapter bridge (CONDUIT) | Permission |
+| --- | --- | --- |
+| `send_message` | `messaging.send` | `message:send` |
+| `list_messages` | `messaging.list_messages` | `message:read` |
+| `resolve_contact` | `contacts.resolve` | `contacts:read` |
+| `place_call` | `phone.call` | `phone:act` |
+| `list_mail` | `mail.list` | `mail:read` |
+| `open_url` | none yet | `life:open_url` |
+| `set_reminder` | none yet | `life:reminder` |
+
+Tools without a bridge never fake success: they return `degraded=true` plus an
+exact `next_step` naming the integration/scope or helper command to grant.
+
+### Autonomy mode
+
+`EV_OWNER_AUTONOMY=full|confirm_unknown|confirm_all` (default `full`):
+
+- `full` — no per-action approval for life actions inside granted standing
+  scopes; the CONDUIT life policy (`app/integrations/life_policy.py`) still
+  enforces scopes and the contact allowlist.
+- `confirm_unknown` — known/pre-authorized contacts act; unknown recipients
+  require explicit confirmation.
+- `confirm_all` — every life action requires explicit approval (tool marked
+  sensitive, approval gate required).
+
+`app/ev/actions.py` exposes `autonomy_mode()`, `life_action_requires_approval()`,
+and `life_agency_prompt()`.
+
+### System prompt
+
+When life tools are offered, the gateway appends the life-agency block to the
+system message (see `life_agency_prompt()`): EVIE is the owner's agent, she
+executes life actions through granted bridges, missing bridges are explained
+with exactly what to grant and which helper is required, refusals are never
+theatrical, and successes confirm with recipient/target, channel, and time.
+This rides the ev-minimal OpenCode path and the DeepSeek path alike.
+
+### Golden path
+
+`tests/test_life_agency.py` proves: voice transcript ("text Mom I'm late") →
+intent (`send_message` + `resolve_contact`) → validated tool calls → mocked
+CONDUIT adapter results → spoken confirmation with evidence. The tool loop
+feeds adapter results back and the final reply is spoken.
+
+## 4. API-only reliability (timeouts, retry, circuit breaker, cost cap)
 
 With no local fallback, an outage must degrade cleanly instead of hanging
 every request. `app/gateway/reliability.py` and `app/gateway/costs.py` own the
@@ -123,7 +174,7 @@ and stay fully functional when the API is unreachable — proven by
 `test_memory_only_endpoints_work_with_provider_unreachable` with a blackholed
 endpoint.
 
-## 4. Optional future local brain (preserved, not required)
+## 5. Optional future local brain (preserved, not required)
 
 The local provider stays registered and functional for a future self-hosted
 model, but nothing requires it: DeepSeek is the default narrative and memory
@@ -147,7 +198,7 @@ without extra glue. The brain is registered in `backend/app/ml/registry.py` as
 on-demand models and taking the arbiter lock; 165 + 1000 = 1165 MB is well
 under the 2400 MB ceiling.
 
-## 5. Tool sandbox isolation
+## 6. Tool sandbox isolation
 
 `app/tools/sandbox.py` selects the strongest available isolation and reports
 it on every result (`isolation`, `network`, `memory_limit_mb`,
@@ -167,7 +218,7 @@ absolute/symlink paths, cwd escapes, host reads/writes, HTTP and socket
 egress, fork bomb, memory bomb, timeout, output cap, shell metacharacter
 injection, environment exfiltration, workspace writes — all blocked.
 
-## 6. Web search with honest citations
+## 7. Web search with honest citations
 
 `EV_SEARCH_PROVIDER=none` (default) means no key, no network, memory-only
 research. `mock` is deterministic for tests. `brave` uses a user-supplied
@@ -175,7 +226,7 @@ Brave key. Unknown provider names fail closed. Results are normalized to
 bounded `http(s)`-only URLs with numbered citations; every citation is a URL
 the provider actually returned — EV never fabricates a source.
 
-## 7. Boundary and tool integrity
+## 8. Boundary and tool integrity
 
 Unchanged and still enforced:
 
@@ -186,7 +237,7 @@ Unchanged and still enforced:
 
 `ACTION_PERMISSIONS` was not touched; no Agent 14 dependency was created.
 
-## 8. Verification
+## 9. Verification
 
 ```bash
 cd backend

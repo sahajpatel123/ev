@@ -2,11 +2,29 @@ import os
 import tempfile
 
 _TMP = tempfile.mkdtemp(prefix="ev-tests-")
-os.environ.setdefault("EV_DATABASE_URL", f"sqlite+aiosqlite:///{_TMP}/test.db")
+# Never inherit the owner's live DATABASE_URL. pytest drop_all would wipe
+# the running Postgres. Opt in with EV_TEST_USE_LIVE_DB=1 only.
+if os.environ.get("EV_TEST_USE_LIVE_DB") != "1":
+    os.environ["EV_DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP}/test.db"
+os.environ["EV_MASTER_KEY"] = "test-key"
+os.environ["EV_API_KEY"] = "test-key"
 os.environ.setdefault("EV_PROCESSING_MODE", "sync")
-os.environ.setdefault("EV_CHAT_PROVIDER", "mock")
+if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
+    os.environ["EV_CHAT_PROVIDER"] = "mock"
 os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
 os.environ.setdefault("EV_EMBEDDING_DIM", "64")
+os.environ["EV_VOICEPRINT_PROVIDER"] = "hash"
+os.environ["EV_VOICEPRINT_MODEL_DIR"] = f"{_TMP}/no-campp"
+os.environ["EV_ML_MODEL_DIR"] = f"{_TMP}/models"
+os.environ["EV_MODEL_DIR"] = f"{_TMP}/models"
+os.environ["EV_VOICE_TTS_PROVIDER"] = "meta"
+os.environ["EV_VOICE_ASR_PROVIDER"] = "echo"
+os.environ["EV_VOICE_WAKE_PROVIDER"] = "phrase"
+os.environ["EV_SEARCH_PROVIDER"] = "none"
+os.environ["EV_OPENCODE_TOOL_EMULATION"] = "false"
+os.environ["EV_EARS_CONSENT"] = "false"
+os.environ.pop("EV_EARS_API_URL", None)
+os.environ.pop("EV_EARS_API_KEY", None)
 os.environ.setdefault("EV_MASTER_KEY", "test-key")
 os.environ.setdefault("EV_VAULT_KEY", "test-vault-key-0123456789abcdef")
 os.environ.setdefault("EV_STORAGE_ROOT", f"{_TMP}/storage")

@@ -54,7 +54,7 @@ def test_compiler_builds_full_window_in_priority_order() -> None:
     assert "LIVE CONTEXT" in plan.text
     assert "ROLLING SUMMARY" in plan.text
     assert "RETRIEVED MEMORY" in plan.text
-    assert "CONVERSATION HISTORY" in plan.text
+    assert "PRIOR CONVERSATION" in plan.text
     assert "OPEN QUESTIONS" in plan.text
 
     names = [section.name for section in plan.sections]

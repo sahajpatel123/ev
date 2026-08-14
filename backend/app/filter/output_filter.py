@@ -82,6 +82,15 @@ HUD_CONTRACTS: dict[str, dict] = {
             "notes",
         ]
     },
+    "ev.hud.lookout.v1": {
+        "required": [
+            "schema_version",
+            "generated_at",
+            "open",
+            "windows",
+            "rationale",
+        ]
+    },
 }
 
 WORD_COUNT_RANGES: dict[CommunicationMode, tuple[int, int]] = {
@@ -91,6 +100,7 @@ WORD_COUNT_RANGES: dict[CommunicationMode, tuple[int, int]] = {
     "coaching": (15, 160),
     "emergency": (4, 45),
     "collaborative": (10, 200),
+    "social": (5, 36),
 }
 
 MANIPULATION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -100,6 +110,8 @@ MANIPULATION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bnever leave me\b", re.IGNORECASE), "dependency_nudge"),
     (re.compile(r"\bignore (all|your) (rules|instructions)\b", re.IGNORECASE), "jailbreak_leak"),
     (re.compile(r"\bhere are my (instructions|rules)\b", re.IGNORECASE), "jailbreak_leak"),
+    (re.compile(r"\bi(?:'m| am) your only friend\b", re.IGNORECASE), "dependency_nudge"),
+    (re.compile(r"\bbe your (?:girl|boy)?friend\b", re.IGNORECASE), "romantic_replacement"),
 ]
 
 OUTPUT_REDACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -151,12 +163,14 @@ def _extract_json(text: str) -> dict | None:
 
 
 def _missing_default(key: str) -> object:
-    if key in ("people", "risks", "options", "talking_points", "open_questions", "prep_checklist", "notes", "context"):
+    if key in ("people", "risks", "options", "talking_points", "open_questions", "prep_checklist", "notes", "context", "windows"):
         return []
     if key in ("latency_ms", "travel_time_minutes"):
         return 0
     if key == "generated_at":
         return datetime.now(UTC).isoformat()
+    if key == "open":
+        return False
     return ""
 
 
@@ -447,6 +461,42 @@ HONEST_SYCOPHANCY_UNSUPPORTED = (
     "I'd rather be honest than agreeable: I can't back that up from your memory."
 )
 
+REFUSAL_THEATER_RE = re.compile(
+    r"\b(i (?:can'?t|cannot|am unable to|don'?t (?:have|know how to)) "
+    r"(?:send|text|place|make|write|schedule)|"
+    r"i (?:can'?t|cannot|am unable to) (?:send|text|call|email|message)|"
+    r"i don'?t (?:have|possess) (?:the ability|a way) to (?:send|text|call|email))\b",
+    re.IGNORECASE,
+)
+REMEDIATION_EVIDENCE_RE = re.compile(
+    r"\b(permission|helper|EV_LIFE_HELPER_PATH|not (?:set|configured|available)|"
+    r"unavailable|disconnected|provider|scope|allowlist|denied|configure)\b",
+    re.IGNORECASE,
+)
+DELIVERY_CLAIM_RE = re.compile(
+    r"\b(?:message|text|email|call|reminder)\s+(?:was\s+)?"
+    r"(?:sent|delivered|texted|emailed|called|scheduled|confirmed)\b|"
+    r"\bi(?:'ve| have)? (?:sent|texted|emailed|called|scheduled)\b|"
+    r"\b(?:sent|delivered)\s+(?:a\s+|the\s+)?(?:message|text|email|reminder)\b",
+    re.IGNORECASE,
+)
+DELIVERY_EVIDENCE_RE = re.compile(
+    r"\b(delivery (?:confirmed|receipt)|confirmed_by|sent=true|opened=true|"
+    r"runtime reported|delivered_at|backend_ref)\b",
+    re.IGNORECASE,
+)
+
+ACTION_COMMITMENT = (
+    "I'll do that now and confirm once the runtime reports delivery."
+)
+UNCERTAIN_DELIVERY = (
+    "I can't confirm that was sent until the runtime reports delivery."
+)
+REMEDIATION_NEXT_STEP = (
+    "Next step: set EV_LIFE_HELPER_PATH to the EVLifeHelper binary and grant "
+    "the messaging permission in System Settings → Privacy & Security, then retry."
+)
+
 
 def _replace_matching_sentences(
     text: str,
@@ -463,6 +513,72 @@ def _replace_matching_sentences(
         else:
             rebuilt.append(sentence)
     return " ".join(rebuilt).strip(), replaced
+
+
+def _apply_wave_life_policy(text: str) -> tuple[str, dict, list[FilterFlag]]:
+    """Wave LIFE persona policy: no refusal theater, no invented delivery.
+
+    Generic "I can't send messages" refusals become an action commitment.
+    Refusals that already name a real dependency gain the exact remediation
+    step. Delivery claims without runtime evidence are downgraded to honest
+    uncertainty — success is never fabricated.
+    """
+
+    flags: list[FilterFlag] = []
+    persona: dict = {}
+    original = text
+    sentences = SENTENCE_RE.split(text.strip())
+    rebuilt: list[str] = []
+    for sentence in sentences:
+        if REFUSAL_THEATER_RE.search(sentence):
+            if REMEDIATION_EVIDENCE_RE.search(sentence):
+                if "next step" not in sentence.lower():
+                    sentence = f"{sentence} {REMEDIATION_NEXT_STEP}"
+                    persona["remediation_guidance"] = (
+                        persona.get("remediation_guidance", 0) + 1
+                    )
+                    flags.append(
+                        FilterFlag(
+                            "output",
+                            "remediation_guidance",
+                            "medium",
+                            detail="Life-tool failure paired with the exact remediation step",
+                            action="refine",
+                        )
+                    )
+            else:
+                sentence = ACTION_COMMITMENT
+                persona["refusal_theater_rewritten"] = (
+                    persona.get("refusal_theater_rewritten", 0) + 1
+                )
+                flags.append(
+                    FilterFlag(
+                        "output",
+                        "refusal_theater_rewritten",
+                        "medium",
+                        detail="Generic life-action refusal replaced with action commitment",
+                        action="refine",
+                    )
+                )
+        elif DELIVERY_CLAIM_RE.search(sentence) and not DELIVERY_EVIDENCE_RE.search(sentence):
+            sentence = UNCERTAIN_DELIVERY
+            persona["delivery_claim_ungrounded"] = (
+                persona.get("delivery_claim_ungrounded", 0) + 1
+            )
+            flags.append(
+                FilterFlag(
+                    "output",
+                    "delivery_claim_ungrounded",
+                    "high",
+                    detail="Delivery claimed without runtime evidence; downgraded to uncertainty",
+                    action="refine",
+                )
+            )
+        rebuilt.append(sentence)
+    result = " ".join(rebuilt).strip()
+    if result != original:
+        persona["wave_life_policy_applied"] = True
+    return result, persona, flags
 
 
 def apply_persona_guardrails(
@@ -557,6 +673,10 @@ def apply_persona_guardrails(
                 action="refine",
             )
         )
+
+    text, wave_life, wave_life_flags = _apply_wave_life_policy(text)
+    persona.update(wave_life)
+    flags.extend(wave_life_flags)
 
     if text != original:
         persona["guardrails_applied"] = True
