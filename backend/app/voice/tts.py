@@ -140,8 +140,14 @@ class MetaSynthesizer:
 
     name = "meta"
 
+    def __init__(self, voice: str | None = None, rate: float | None = None) -> None:
+        self.voice = voice or settings.voice_tts_voice
+        self.rate = rate if rate is not None else float(settings.voice_tts_rate or 1.0)
+
     async def synthesize(self, text: str, *, style: SpeechStyle) -> SynthesisResult:
-        rate = 1.0 + 0.25 * style.urgency - 0.15 * style.warmth
+        self.voice = settings.voice_tts_voice or self.voice
+        self.rate = float(settings.voice_tts_rate or self.rate or 1.0)
+        rate = (1.0 + 0.25 * style.urgency - 0.15 * style.warmth) * float(self.rate)
         pitch = 1.0 + 0.08 * style.warmth
         volume = 0.8 + 0.2 * style.urgency
         ssml = (
@@ -155,7 +161,7 @@ class MetaSynthesizer:
             ssml=ssml,
             duration_ms=None,
             style=style,
-            details={"engine": "dev-double"},
+            details={"engine": "dev-double", "voice": self.voice, "rate": self.rate},
         )
 
 

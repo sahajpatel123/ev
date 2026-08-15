@@ -291,6 +291,16 @@ async def start_training_wheels(session: AsyncSession) -> dict:
 
 async def complete_training_wheels(session: AsyncSession) -> dict:
     from app.ev.assistant import get_profile, play_dedication
+    from app.ev.training_wheels import remaining_steps, unlock_after_training
+
+    remaining = await remaining_steps(session)
+    if remaining:
+        return {
+            "completed": False,
+            "error": "training_wheels_incomplete",
+            "remaining": remaining,
+            "reply": "Finish Training Wheels first: " + ", ".join(remaining) + ".",
+        }
 
     profile = await get_profile(session)
     now = utcnow()
@@ -299,6 +309,7 @@ async def complete_training_wheels(session: AsyncSession) -> dict:
     profile.onboarding_completed_at = profile.onboarding_completed_at or now
     profile.updated_at = now
     await set_gate(session, "training_wheels", "enabled", reason="completed")
+    await unlock_after_training(session)
     await session.flush()
     dedication = await play_dedication(session, auto=True) if first_complete else {
         "played": False,

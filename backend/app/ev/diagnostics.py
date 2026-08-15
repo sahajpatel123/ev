@@ -28,7 +28,57 @@ def _check(name: str, latency_ms: float, ok: bool, details: dict | None = None) 
     return DiagnosticCheck(name=name, status=status, latency_ms=round(latency_ms, 1), details=details or {})
 
 
-async def run_calibration(session: AsyncSession) -> CalibrationReport:
+async def _hardware_checks(session: AsyncSession) -> list[DiagnosticCheck]:
+    """Append-only extension point for printer/radio/telemetry adapters."""
+
+    extra: list[DiagnosticCheck] = []
+    started = time.perf_counter()
+    try:
+        from app.ev.hardware import ping_printer
+
+        ping = await ping_printer(session)
+        if ping.get("configured"):
+            extra.append(
+                _check(
+                    "octoprint.ping",
+                    (time.perf_counter() - started) * 1000,
+                    bool(ping.get("ok")),
+                    {"configured": True, "details": ping},
+                )
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        extra.append(
+            _check("octoprint.ping", (time.perf_counter() - started) * 1000, False, {"error": str(exc)})
+        )
+
+    started = time.perf_counter()
+    try:
+        from app.ev.hardware import last_sample
+
+        sample = await last_sample(session)
+        if sample is not None:
+            rssi = (sample.details or {}).get("rssi")
+            extra.append(
+                _check(
+                    "radio.rssi",
+                    (time.perf_counter() - started) * 1000,
+                    rssi is None or float(rssi) > -90,
+                    {"source": sample.source, "rssi": rssi},
+                )
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        extra.append(
+            _check("radio.rssi", (time.perf_counter() - started) * 1000, False, {"error": str(exc)})
+        )
+    return extra
+
+
+async def run_calibration(
+    session: AsyncSession,
+    *,
+    announce: bool = True,
+    cheap: bool = False,
+) -> CalibrationReport:
     checks: list[DiagnosticCheck] = []
 
     # Database.
@@ -39,56 +89,63 @@ async def run_calibration(session: AsyncSession) -> CalibrationReport:
     except Exception as exc:  # pragma: no cover - defensive
         checks.append(_check("database", (time.perf_counter() - started) * 1000, False, {"error": str(exc)}))
 
-    # Embeddings.
-    started = time.perf_counter()
-    try:
-        embedder = get_embedder()
-        vec = (await embedder.embed(["EV calibration probe"]))[0]
-        checks.append(
-            _check(
-                "embeddings",
-                (time.perf_counter() - started) * 1000,
-                True,
-                {"provider": embedder.name, "dim": len(vec)},
+    if not cheap:
+        # Embeddings.
+        started = time.perf_counter()
+        try:
+            embedder = get_embedder()
+            vec = (await embedder.embed(["EV calibration probe"]))[0]
+            checks.append(
+                _check(
+                    "embeddings",
+                    (time.perf_counter() - started) * 1000,
+                    True,
+                    {"provider": embedder.name, "dim": len(vec)},
+                )
             )
-        )
-    except Exception as exc:
-        checks.append(_check("embeddings", (time.perf_counter() - started) * 1000, False, {"error": str(exc)}))
+        except Exception as exc:
+            checks.append(_check("embeddings", (time.perf_counter() - started) * 1000, False, {"error": str(exc)}))
 
-    # Chat gateway.
-    started = time.perf_counter()
-    try:
-        provider = get_chat_provider()
-        result = await provider.chat(
-            [ChatMessage(role="user", content="EV calibration ping")],
-            model=settings.deepseek_model,
-        )
-        checks.append(
-            _check(
-                "chat_gateway",
-                (time.perf_counter() - started) * 1000,
-                True,
-                {"provider": provider.name, "model": result.model or "unknown"},
+        # Chat gateway.
+        started = time.perf_counter()
+        try:
+            provider = get_chat_provider()
+            result = await provider.chat(
+                [ChatMessage(role="user", content="EV calibration ping")],
+                model=(
+                    settings.xai_model
+                    if provider.name == "xai"
+                    else settings.deepseek_model
+                    if provider.name == "deepseek"
+                    else None
+                ),
             )
-        )
-    except Exception as exc:
-        checks.append(_check("chat_gateway", (time.perf_counter() - started) * 1000, False, {"error": str(exc)}))
+            checks.append(
+                _check(
+                    "chat_gateway",
+                    (time.perf_counter() - started) * 1000,
+                    True,
+                    {"provider": provider.name, "model": result.model or "unknown"},
+                )
+            )
+        except Exception as exc:
+            checks.append(_check("chat_gateway", (time.perf_counter() - started) * 1000, False, {"error": str(exc)}))
 
-    # Retrieval.
-    started = time.perf_counter()
-    try:
-        retriever = Retriever(session, embeddings=get_embedder())
-        hits = await retriever.search("calibration probe", k=5, access="model")
-        checks.append(
-            _check(
-                "retrieval",
-                (time.perf_counter() - started) * 1000,
-                True,
-                {"matched_memories": len(hits)},
+        # Retrieval.
+        started = time.perf_counter()
+        try:
+            retriever = Retriever(session, embeddings=get_embedder())
+            hits = await retriever.search("calibration probe", k=5, access="model")
+            checks.append(
+                _check(
+                    "retrieval",
+                    (time.perf_counter() - started) * 1000,
+                    True,
+                    {"matched_memories": len(hits)},
+                )
             )
-        )
-    except Exception as exc:
-        checks.append(_check("retrieval", (time.perf_counter() - started) * 1000, False, {"error": str(exc)}))
+        except Exception as exc:
+            checks.append(_check("retrieval", (time.perf_counter() - started) * 1000, False, {"error": str(exc)}))
 
     # Object storage.
     started = time.perf_counter()
@@ -108,6 +165,8 @@ async def run_calibration(session: AsyncSession) -> CalibrationReport:
         )
     except Exception as exc:
         checks.append(_check("object_storage", (time.perf_counter() - started) * 1000, False, {"error": str(exc)}))
+
+    checks.extend(await _hardware_checks(session))
 
     failed = [c for c in checks if c.status == "failed"]
     degraded = [c for c in checks if c.status == "degraded"]
@@ -133,18 +192,26 @@ async def run_calibration(session: AsyncSession) -> CalibrationReport:
     from app.ev.callouts import emit_callout
 
     await cache_calibration(session, report)
-    line = malfunction_line(report.model_dump(mode="json")) or (
-        f"Calibration complete: {overall}."
-    )
-    await emit_callout(
+    from app.ev.workbench import cache_hud, calibration_hud
+
+    await cache_hud(
         session,
-        line,
+        calibration_hud(report.model_dump(mode="json")),
         source="calibrate",
-        hud={
-            "schema_version": "ev.hud.card.v1",
-            "title": "Diagnostics",
-            "body": line,
-            "generated_at": report.generated_at.isoformat(),
-        },
     )
+    if announce:
+        line = malfunction_line(report.model_dump(mode="json")) or (
+            f"Calibration complete: {overall}."
+        )
+        await emit_callout(
+            session,
+            line,
+            source="calibrate",
+            hud={
+                "schema_version": "ev.hud.card.v1",
+                "title": "Diagnostics",
+                "body": line,
+                "generated_at": report.generated_at.isoformat(),
+            },
+        )
     return report

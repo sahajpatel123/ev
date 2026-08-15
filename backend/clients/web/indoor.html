@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Indoor map</title>
+  <link rel="stylesheet" href="/app/indoor.css">
+</head>
+<body>
+  <main id="indoor">
+    <h1>Indoor map</h1>
+    <p id="status">Owner-authored rooms. No through-wall sensing.</p>
+    <form id="add-room">
+      <input id="room-name" name="name" placeholder="Room name" required>
+      <button type="submit">Add room</button>
+    </form>
+    <ul id="rooms"></ul>
+    <form id="add-edge">
+      <input id="from-room" placeholder="From" required>
+      <input id="to-room" placeholder="To" required>
+      <input id="instruction" placeholder="Walk instruction">
+      <button type="submit">Connect</button>
+    </form>
+    <form id="route">
+      <input id="to-target" placeholder="Take me to…" required>
+      <button type="submit">Route</button>
+    </form>
+    <p id="route-out"></p>
+  </main>
+  <script src="/app/indoor.js" defer></script>
+</body>
+</html>

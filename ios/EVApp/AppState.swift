@@ -18,6 +18,28 @@ final class AppState: ObservableObject {
         queue = OfflineCaptureQueue(store: FileCaptureQueueStore(directory: documents))
     }
 
+    func bootstrapIfNeeded() async {
+        let defaults = UserDefaults.standard
+        let stored = defaults.string(forKey: "EV_REGISTRY_DEVICE_ID")
+        let registryId: String
+        if let stored, UUID(uuidString: stored) != nil {
+            registryId = stored
+        } else {
+            do {
+                let created = try await client.createDevice(
+                    name: AppConfig().deviceID,
+                    capabilities: ["attention", "voice"],
+                    deviceType: "phone"
+                )
+                defaults.set(created.device.id, forKey: "EV_REGISTRY_DEVICE_ID")
+                registryId = created.device.id
+            } catch {
+                return
+            }
+        }
+        _ = try? await client.bootstrapDevice(id: registryId)
+    }
+
     func startHealthBridge() async {
         do {
             try await HealthKitManager.shared.requestReadAccess()

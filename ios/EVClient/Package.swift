@@ -16,7 +16,18 @@ let package = Package(
         .executable(name: "EVUIValidate", targets: ["EVUIValidate"]),
     ],
     targets: [
-        .target(name: "EVClient"),
+        .target(
+            name: "EVClientObjC",
+            path: "Sources/EVObjCSupport",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("AVFAudio"),
+            ]
+        ),
+        .target(
+            name: "EVClient",
+            dependencies: ["EVClientObjC"]
+        ),
         .executableTarget(name: "EVClientCheck", dependencies: ["EVClient"]),
         .target(name: "EVUI", dependencies: ["EVClient"]),
         .executableTarget(name: "EVUIValidate", dependencies: ["EVUI"]),

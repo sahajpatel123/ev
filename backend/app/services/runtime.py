@@ -554,11 +554,15 @@ async def handle_utterance(
         except Exception:  # noqa: BLE001 - text reply is enough
             tts = None
             style = None
+        from app.ev.fleet import tts_playback_device
+
+        tts_target = await tts_playback_device(session)
         return {
             "transcript": transcript,
             "reply": "Goodnight.",
             "conversation_id": None,
             "tts": tts,
+            "tts_device_id": str(tts_target.id) if tts_target is not None else None,
             "style": style,
             "model": None,
             "context_tokens": 0,
@@ -629,11 +633,15 @@ async def handle_utterance(
         device_id=runtime_session.device_id,
         session_id=runtime_session.id,
     )
+    from app.ev.fleet import tts_playback_device
+
+    tts_target = await tts_playback_device(session)
     return {
         "transcript": outcome.transcript,
         "reply": outcome.reply,
         "conversation_id": outcome.conversation_id,
         "tts": outcome.tts,
+        "tts_device_id": str(tts_target.id) if tts_target is not None else None,
         "style": outcome.style,
         "model": outcome.model,
         "context_tokens": outcome.context_tokens,
@@ -963,12 +971,19 @@ async def record_heartbeat(
     now = now or utcnow()
     device = await resolve_runtime_device(session, str(data.device_id))
     device.last_seen_at = now
+    battery = data.battery_percent if data.battery_percent is not None else data.battery_pct
+    storage = (
+        data.storage_free_bytes
+        if data.storage_free_bytes is not None
+        else data.storage_free_b
+    )
     heartbeat = RuntimeHeartbeat(
         device_id=device.id,
         reported_at=now,
         status=data.status,
         listener_state=data.listener_state,
-        battery_percent=data.battery_percent,
+        battery_percent=battery,
+        storage_free_bytes=storage,
         latency_ms=data.latency_ms,
         details=data.details,
     )
@@ -983,11 +998,20 @@ async def record_heartbeat(
         payload={
             "status": data.status,
             "listener_state": data.listener_state,
-            "battery_percent": data.battery_percent,
+            "battery_percent": battery,
+            "storage_free_bytes": storage,
             "latency_ms": data.latency_ms,
         },
         device_id=device.id,
         session_id=current.id if current is not None else None,
+    )
+    from app.ev.workbench import persist_heartbeat_power
+
+    await persist_heartbeat_power(
+        session,
+        device_id=str(device.name or device.id),
+        battery_percent=battery,
+        storage_free_bytes=storage,
     )
     await session.flush()
     return heartbeat
@@ -1443,10 +1467,16 @@ async def _asr_tts_checks() -> list[dict]:
 
     try:
         synthesizer = get_synthesizer()
-        if synthesizer.name == "meta":
+        if settings.voice_tts_provider == "openai_compat" and not settings.voice_tts_base_url:
+            # get_synthesizer() falls back to the meta double so speech still
+            # works, but the *configured* remote provider is unprovisioned. The
+            # health check must report that rather than "ok" from the fallback.
+            tts_status = "degraded"
+            tts_detail: dict = {"reason": "base_url not configured"}
+        elif synthesizer.name == "meta":
             await synthesizer.synthesize("ev health probe", style=SpeechStyle())
             tts_status = "ok"
-            tts_detail: dict = {"probe": "meta"}
+            tts_detail = {"probe": "meta"}
         elif settings.voice_tts_base_url:
             tts_status = "ok"
             tts_detail = {}
@@ -1643,11 +1673,23 @@ async def daemon_tick(session: AsyncSession) -> dict:
     re_enqueued = sum(1 for letter in retrying_rows if _re_enqueue_dead_letter(letter))
     health = await runtime_health(session)
     digest = await maybe_build_digest(session)
+    from app.ev.hardware import poll_print_jobs
+    from app.ev.workbench import fused_sense_pass, maybe_calibration_tick, poll_public_feeds
+
+    calibration_tick = await maybe_calibration_tick(session)
+    print_poll = await poll_print_jobs(session)
+    feed_poll = await poll_public_feeds(session)
+    sense_pass = await fused_sense_pass(session)
     recalibration = await maybe_recalibrate_filter(session)
     notifications = await deliver_pending_alerts(session)
     dlq_escalations = await deliver_dlq_escalations(session)
     life_routing = await assign_life_actions(session)
     life_reconciled = await reconcile_life_jobs(session)
+    from app.ev.timers import due_scan
+    from app.ev.workshop import scan_empties
+
+    timers = await due_scan(session)
+    empties = await scan_empties(session, emit=True)
     await record_runtime_event(
         session,
         kind="daemon",
@@ -1664,7 +1706,13 @@ async def daemon_tick(session: AsyncSession) -> dict:
             "life_unrouted": life_routing["unrouted"],
             "life_executed": life_reconciled["executed"],
             "life_failed": life_reconciled["failed"],
+            "timers_fired": timers.get("fired", 0),
+            "empties_emitted": empties.get("emitted", 0),
             "overall": health["overall"],
+            "calibration_tick": calibration_tick,
+            "print_poll": print_poll,
+            "feed_poll": feed_poll,
+            "sense_pass": {k: sense_pass.get(k) for k in ("callout", "stored", "candidates")},
         },
     )
 
@@ -1672,11 +1720,17 @@ async def daemon_tick(session: AsyncSession) -> dict:
         "expired_session_id": str(expired_session_id) if expired_session_id else None,
         "re_enqueued": re_enqueued,
         "digest": digest,
+        "calibration_tick": calibration_tick,
+        "print_poll": print_poll,
+        "feed_poll": feed_poll,
+        "sense_pass": sense_pass,
         "filter_recalibration": recalibration,
         "notifications": notifications,
         "dlq_escalations": len(dlq_escalations),
         "life_routing": life_routing,
         "life_reconciled": life_reconciled,
+        "timers": timers,
+        "empties": empties,
         "health": health,
     }
 
@@ -1710,8 +1764,11 @@ async def maybe_quiet_hours_end_digest(session: AsyncSession) -> dict | None:
     await emit_callout(session, str(text), source="quiet_hours_digest")
     profile.quiet_digest_spoken_on = today
     profile.updated_at = utcnow()
+    from app.ev.workbench import maybe_morning_brief_callout
+
+    morning = await maybe_morning_brief_callout(session)
     await session.flush()
-    return {"spoken": True, "text": text}
+    return {"spoken": True, "text": text, "morning_brief": morning}
 
 
 async def maybe_build_digest(session: AsyncSession) -> dict | None:

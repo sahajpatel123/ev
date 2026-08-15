@@ -38,6 +38,19 @@ from app.voice.wake import (
 SAMPLE_A = b"owner-voice-sample-" * 40
 
 
+def _speech_wav() -> bytes:
+    import io
+    import wave
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x10\x00" * 3200)
+    return buffer.getvalue()
+
+
 def b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
@@ -229,7 +242,7 @@ async def test_voice_utterance_with_http_asr_and_tts(
         "/v1/voice/utterance",
         {
             "session_id": wake["session_id"],
-            "audio_b64": b64(b"real-speech.wav"),
+            "audio_b64": b64(_speech_wav()),
             "push_to_talk": True,
         },
     )

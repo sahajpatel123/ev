@@ -1,4 +1,5 @@
 import AVFoundation
+import EVRuntime
 import Foundation
 
 /// Real AVAudioEngine microphone capture.
@@ -14,32 +15,35 @@ final class MicCapture: NSObject {
     static let sampleRate: Double = 16_000
     static let maxSeconds: Double = 12
 
-    private let engine = AVAudioEngine()
+    private var engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private var pcm = Data()
     private let lock = NSLock()
     private var tapInstalled = false
 
     func requestPermission() async -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized:
-            return true
-        case .notDetermined:
-            return await AVCaptureDevice.requestAccess(for: .audio)
-        default:
-            return false
-        }
+        await MicrophoneAuthorization.requestAccess()
     }
 
     func start() async -> Bool {
         guard await requestPermission() else { return false }
         stopEngine()
+        guard AudioInputLease.acquire(.clip) else { return false }
         pcm.removeAll(keepingCapacity: true)
 
+        // Recreate after a just-accepted grant — an engine allocated
+        // before Allow reports 0 Hz / 0 ch and installTap aborts.
+        engine = AVAudioEngine()
+        let hwFormat: AVAudioFormat
+        do {
+            hwFormat = try ObjCException.attachAndPrepare(engine)
+        } catch {
+            AudioInputLease.release(.clip)
+            return false
+        }
         let input = engine.inputNode
-        engine.prepare()
-        let hwFormat = input.inputFormat(forBus: 0)
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+            AudioInputLease.release(.clip)
             return false
         }
         guard let destFormat = AVAudioFormat(
@@ -48,6 +52,7 @@ final class MicCapture: NSObject {
             channels: 1,
             interleaved: false
         ) else {
+            AudioInputLease.release(.clip)
             return false
         }
         converter = AVAudioConverter(from: hwFormat, to: destFormat)
@@ -56,24 +61,32 @@ final class MicCapture: NSObject {
                 && abs(hwFormat.sampleRate - Self.sampleRate) < 0.5
                 && hwFormat.channelCount == 1
             if !alreadyDest {
+                AudioInputLease.release(.clip)
                 return false
             }
         }
-        input.installTap(onBus: 0, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
-            self?.append(buffer)
+        do {
+            try ObjCException.installTap(on: input, bufferSize: 2048, format: hwFormat) { [weak self] buffer, _ in
+                self?.append(buffer)
+            }
+        } catch {
+            AudioInputLease.release(.clip)
+            return false
         }
         tapInstalled = true
         do {
-            try engine.start()
+            try ObjCException.start(engine)
             return true
         } catch {
             stopEngine()
+            AudioInputLease.release(.clip)
             return false
         }
     }
 
     func stop() -> Data? {
         stopEngine()
+        AudioInputLease.release(.clip)
         lock.lock()
         let captured = pcm
         pcm.removeAll(keepingCapacity: true)
@@ -133,13 +146,11 @@ final class MicCapture: NSObject {
     }
 
     private func stopEngine() {
-        if engine.isRunning {
-            engine.stop()
-        }
         if tapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
+            ObjCException.removeTap(on: engine.inputNode)
             tapInstalled = false
         }
+        ObjCException.stop(engine)
         converter = nil
     }
 

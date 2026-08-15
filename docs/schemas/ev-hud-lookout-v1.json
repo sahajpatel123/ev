@@ -48,7 +48,13 @@
           "recommendation": {"type": ["string", "null"]},
           "source": {"type": ["string", "null"]},
           "lookout": {"type": "boolean"},
-          "priority": {"type": "number"}
+          "priority": {"type": "number"},
+          "questions": {"type": "array", "items": {"type": "string"}},
+          "response": {"type": ["string", "null"]},
+          "layout": {"type": "string"},
+          "drift_x": {"type": "integer"},
+          "drift_y": {"type": "integer"},
+          "tilt": {"type": "number"}
         }
       }
     },

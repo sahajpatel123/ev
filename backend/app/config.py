@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     search_result_limit: int = 5
     location_place: str | None = None
     location_file: str = "~/.ev/location.json"
+    home_lat: float | None = None
+    home_lon: float | None = None
+    home_geofence_m: float = 80.0
 
     # Local vision/OCR (Domain 15): deterministic is the zero-dependency
     # default; tesseract enables real OCR when the binary is installed.
@@ -148,7 +151,9 @@ class Settings(BaseSettings):
     ears_http_timeout_s: float = 45.0
     # Idle wake spotting: keep a short rolling clip so "Hey EVIE" is not split,
     # and skip room-tone so Whisper is free when the name is actually spoken.
-    ears_wake_chunk_s: float = 2.5
+    # Idle wake spotting: a short rolling clip so "Evie" is scored quickly
+    # instead of blocking a 2.5–60 s Whisper job that swallows repeats.
+    ears_wake_chunk_s: float = 1.2
     ears_idle_min_rms: float = 140.0
     ears_idle_min_peak: int = 600
 
@@ -170,6 +175,10 @@ class Settings(BaseSettings):
     # Stream TTS chunks back over SSE and play each sentence as it arrives,
     # instead of waiting for the full reply (docs/VOICE.md §6).
     ears_stream_playback: bool = True
+
+    # Prefer the full-duplex WS /v1/voice/live door over per-utterance SSE
+    # once a voice session is awake (docs/LIVE_VOICE.md §2).
+    ears_live_enabled: bool = True
 
     # Audio-scene (YAMNet ONNX when present; VAD-feature fallback otherwise).
     ears_scene_model_path: str | None = None
@@ -222,6 +231,7 @@ class Settings(BaseSettings):
     voice_tts_api_key: str | None = None
     voice_tts_model: str = "gpt-4o-mini-tts"
     voice_tts_voice: str = "alloy"
+    voice_tts_rate: float = 1.0
     voice_tts_format: str = "mp3"
     voice_tts_model_dir: str | None = None  # Piper voice model directory
     voice_tts_binary: str = "piper"
@@ -276,15 +286,48 @@ class Settings(BaseSettings):
             "never mind",
         ]
     )
+    # EV LIVE — full-duplex conversational runtime (docs/LIVE_VOICE.md).
+    # Additive: the HTTP utterance path stays; WS /v1/voice/live is the
+    # continuous loop. Knobs map 1:1 onto TurnTakingConfig / BackchannelPolicy.
+    voice_live_enabled: bool = True
+    voice_live_tick_ms: int = 50
+    voice_live_end_pause_ms: int = 280
+    voice_live_thinking_grace_ms: int = 700
+    voice_live_trailing_grace_ms: int = 1100
+    voice_live_wake_hold_ms: int = 650
+    voice_live_min_speech_ms: int = 160
+    voice_live_quiet_end_pause_ms: int = 1300
+    voice_live_response_cooldown_ms: int = 450
+    voice_live_max_pause_ms: int = 2500
+    voice_live_backchannel: bool = True
+    voice_live_vad_threshold: float = 0.35
+    voice_live_asr_partial_ms: int = 160
 
     # Chat gateway
-    chat_provider: str = "echo"  # echo | mock | deepseek | local
+    chat_provider: str = "echo"  # echo | mock | deepseek | xai | local
     local_model_base_url: str | None = None  # OpenAI-compatible local server (Ollama/llama.cpp)
     local_model_name: str = "llama3"
     model_call_log_enabled: bool = True
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_api_key: str | None = None
-    deepseek_model: str = "deepseek-v4-flash-0731"
+    # Official API id (not the Hugging Face checkpoint name). Serves the current
+    # Flash build. Thinking is off by default so voice replies stay spoken-speed.
+    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_thinking: bool = False
+    # Official xAI / SpaceXAI. Typed chat uses Grok 4.6. Live conversation can
+    # use Grok Voice Think Fast 2.0 (speech-to-speech realtime), which is not
+    # a chat-completions model — see EV_VOICE_LIVE_BRAIN / EV_XAI_VOICE_MODEL.
+    xai_base_url: str = "https://api.x.ai/v1"
+    xai_api_key: str | None = None
+    xai_model: str = "grok-4.6"
+    xai_voice_model: str = "grok-voice-think-fast-2.0"
+    xai_voice_voice: str = "eve"
+    xai_voice_realtime_url: str = "wss://api.x.ai/v1/realtime"
+    xai_voice_vad_threshold: float = 0.45
+    xai_voice_silence_ms: int = 400
+    # auto = live speech uses Grok Voice when EV_XAI_API_KEY is set, even
+    # if typed chat is DeepSeek; xai = force; pipeline = local ASR + chat + TTS.
+    voice_live_brain: str = "auto"
 
     # Intelligence filter: optional provider-backed critic (staged trust).
     filter_critic_enabled: bool = False

@@ -17,11 +17,39 @@ import AppKit
 #if canImport(MessageUI)
 import MessageUI
 #endif
+#if canImport(LocalAuthentication)
+import LocalAuthentication
+#endif
 
 public enum EVLifeError: Error, Sendable, Equatable {
     case permissionDenied(String)
     case unavailable(String)
     case invalidArgument(String)
+    case biometricRequired
+}
+
+public enum EVLifeBiometric {
+    /// Face ID / Touch ID before place_call, lock home_act, or delegate_grant.
+    /// Failure means the client must not send the request.
+    public static func confirmLifeAction(reason: String) async -> Bool {
+        #if canImport(LocalAuthentication)
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
+            return false
+        }
+        return await withCheckedContinuation { continuation in
+            context.evaluatePolicy(
+                .deviceOwnerAuthenticationWithBiometrics,
+                localizedReason: reason
+            ) { success, _ in
+                continuation.resume(returning: success)
+            }
+        }
+        #else
+        return false
+        #endif
+    }
 }
 
 // MARK: - Permission report → backend

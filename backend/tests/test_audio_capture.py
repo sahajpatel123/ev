@@ -712,6 +712,10 @@ async def test_run_ears_releases_mic_when_menu_bar_app_goes_away() -> None:
                 require_menu_bar_app=True,
                 app_check_interval_s=0.01,
                 app_running=lambda: alive["value"],
+                # The watchdog's real on_exit is os._exit(0), which would kill
+                # the whole pytest process. The in-loop check is what releases
+                # the mic here; the watchdog is exercised separately.
+                app_exit=lambda: None,
             )
         finally:
             stop.set()

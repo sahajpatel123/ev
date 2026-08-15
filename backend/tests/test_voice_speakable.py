@@ -90,6 +90,9 @@ def test_owner_facing_speech_strips_tool_chatter() -> None:
     assert owner_facing_speech("Traceback (most recent call last):\n  File") is None
     mixed = 'Calling tool get_weather\nIt is twenty-seven degrees.'
     assert owner_facing_speech(mixed) == "It is twenty-seven degrees."
+    assert owner_facing_speech("DHM") is None
+    assert owner_facing_speech("dhm") is None
+    assert owner_facing_speech("I can hear you.") == "I can hear you."
 
 
 async def test_synthesize_owner_facing_skips_chatter() -> None:

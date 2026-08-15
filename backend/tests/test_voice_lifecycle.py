@@ -914,7 +914,7 @@ async def test_api_first_asr_tts_round_trip_persists_playable_audio(
         "/v1/voice/utterance",
         json={
             "session_id": wake_out["session_id"],
-            "audio_b64": b64(b"real-speech.wav"),
+            "audio_b64": b64(wav_bytes(b"\x10\x00" * 3200)),
             "push_to_talk": True,
         },
     )
@@ -1569,4 +1569,306 @@ async def test_ordinary_text_turns_are_not_timeout_fallback(
         assert "too long to hear" not in body["reply"].lower()
         assert "shorter question" not in body["reply"].lower()
         assert not body.get("error")
+
+
+class _GarbageTranscriber:
+    name = "garbage"
+
+    async def transcribe(self, **kwargs) -> Transcript:
+        return Transcript(text="DHM", confidence=0.1, provider=self.name)
+
+    def stream(self, **kwargs):
+        async def gen():
+            yield await self.transcribe(**kwargs)
+
+        return gen()
+
+
+class _PlayableAckSynth:
+    name = "wav_like"
+    streamable_output = True
+
+    async def synthesize(self, text: str, *, style) -> SynthesisResult:
+        return SynthesisResult(
+            text=text,
+            provider=self.name,
+            style=style,
+            audio=wav_bytes(b"\x00\x01" * 80),
+            content_type="audio/wav",
+        )
+
+
+@pytest.mark.asyncio
+async def test_streaming_evie_hear_check_ack_is_first_and_fast(
+    client: AsyncClient,
+    monkeypatch,
+) -> None:
+    """Evie check-in: first spoken event is a listen-ack, well under 45s."""
+
+    import time
+
+    from app.voice.speech import LISTEN_ACKS, choose_listen_ack
+
+    await grant_voice_consent(client)
+    wake = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-hear-fast", "push_to_talk": True},
+    )
+    assert wake.status_code == 201, wake.text
+
+    def make_runtime(session):
+        return VoiceRuntime(
+            session,
+            master_key=settings.master_key,
+            verifier=default_speaker_verifier(),
+            synthesizer=_PlayableAckSynth(),
+        )
+
+    monkeypatch.setattr("app.api.voice._runtime", make_runtime)
+    spoken = "Evie can you hear me?"
+    started = time.monotonic()
+    resp = await client.post(
+        "/v1/voice/utterance/stream",
+        json={
+            "session_id": wake.json()["session_id"],
+            "text": spoken,
+            "push_to_talk": True,
+        },
+    )
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    assert resp.status_code == 200, resp.text
+    first = _first_tts_text(resp.text)
+    ack = choose_listen_ack(spoken)
+    assert first == ack
+    assert first in LISTEN_ACKS
+    assert elapsed_ms < 15_000
+    reply_event = next(data for name, data in _sse_events(resp.text) if name == "reply")
+    assert reply_event.get("reply")
+    assert reply_event["reply"] != ack
+    assert reply_event["reply"].strip().upper() != "DHM"
+
+
+@pytest.mark.asyncio
+async def test_streaming_evie_hear_check_reply_is_english(
+    client: AsyncClient,
+    monkeypatch,
+) -> None:
+    """Later reply for a hear-check is readable English, not a leftover token."""
+
+    from app.voice.speech import choose_listen_ack, is_unreadable_transcript
+
+    await grant_voice_consent(client)
+    wake = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-hear-reply", "push_to_talk": True},
+    )
+    assert wake.status_code == 201, wake.text
+
+    def make_runtime(session):
+        return VoiceRuntime(
+            session,
+            master_key=settings.master_key,
+            verifier=default_speaker_verifier(),
+            synthesizer=_PlayableAckSynth(),
+        )
+
+    monkeypatch.setattr("app.api.voice._runtime", make_runtime)
+    spoken = "Evie can you hear me?"
+    resp = await client.post(
+        "/v1/voice/utterance/stream",
+        json={
+            "session_id": wake.json()["session_id"],
+            "text": spoken,
+            "push_to_talk": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events = _sse_events(resp.text)
+    chunks = [data for name, data in events if name == "tts_chunk"]
+    reply_event = next(data for name, data in events if name == "reply")
+    reply = (reply_event.get("reply") or "").strip()
+    assert reply
+    ack = choose_listen_ack(spoken)
+    assert reply != ack
+    assert not is_unreadable_transcript(reply)
+    lowered = reply.lower()
+    assert any(
+        token in lowered
+        for token in ("hear", "heard", "listening", "here", "yes", "present")
+    )
+    # Talk only plays tts_chunk audio. After the listen-ack, the answer
+    # itself must arrive as a later playable chunk or the user hears only Mhm.
+    assert len(chunks) >= 2
+    assert chunks[0].get("text") == ack
+    assert chunks[0].get("audio_b64")
+    answer_chunks = [c for c in chunks[1:] if (c.get("text") or "").strip() != ack]
+    assert answer_chunks
+    spoken_answer = " ".join(c.get("text") or "" for c in answer_chunks)
+    assert not is_unreadable_transcript(spoken_answer)
+    assert spoken_answer.strip().upper() != "DHM"
+    assert any(c.get("audio_b64") for c in answer_chunks)
+
+
+@pytest.mark.asyncio
+async def test_streaming_hear_check_answer_chunk_when_tts_not_streamable(
+    client: AsyncClient,
+    monkeypatch,
+) -> None:
+    """Live Talk uses Edge MP3: hear-check must play the answer after Mhm."""
+
+    from app.voice.speech import choose_listen_ack, is_unreadable_transcript
+
+    await grant_voice_consent(client)
+    wake = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-hear-mp3", "push_to_talk": True},
+    )
+    assert wake.status_code == 201, wake.text
+
+    def make_runtime(session):
+        return VoiceRuntime(
+            session,
+            master_key=settings.master_key,
+            verifier=default_speaker_verifier(),
+            synthesizer=_NonStreamableSynth(),
+        )
+
+    monkeypatch.setattr("app.api.voice._runtime", make_runtime)
+    spoken = "Evie can you hear me?"
+    resp = await client.post(
+        "/v1/voice/utterance/stream",
+        json={
+            "session_id": wake.json()["session_id"],
+            "text": spoken,
+            "push_to_talk": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    chunks = [data for name, data in _sse_events(resp.text) if name == "tts_chunk"]
+    ack = choose_listen_ack(spoken)
+    assert chunks
+    assert chunks[0].get("text") == ack
+    assert chunks[0].get("audio_b64")
+    answers = [c for c in chunks[1:] if (c.get("text") or "").strip() != ack]
+    assert answers
+    spoken_answer = " ".join(c.get("text") or "" for c in answers)
+    assert not is_unreadable_transcript(spoken_answer)
+    assert any(c.get("audio_b64") for c in answers)
+
+
+@pytest.mark.asyncio
+async def test_streaming_garbage_transcript_is_not_spoken(
+    client: AsyncClient,
+    monkeypatch,
+) -> None:
+    """ASR leftover 'DHM' must not be spoken as the answer."""
+
+    from app.voice.speech import is_unreadable_transcript
+
+    await grant_voice_consent(client)
+    wake = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-dhm", "push_to_talk": True},
+    )
+    assert wake.status_code == 201, wake.text
+
+    def make_runtime(session):
+        return VoiceRuntime(
+            session,
+            master_key=settings.master_key,
+            verifier=default_speaker_verifier(),
+            transcriber=_GarbageTranscriber(),
+            synthesizer=_PlayableAckSynth(),
+        )
+
+    monkeypatch.setattr("app.api.voice._runtime", make_runtime)
+    resp = await client.post(
+        "/v1/voice/utterance/stream",
+        json={
+            "session_id": wake.json()["session_id"],
+            "audio_b64": b64(wav_bytes(b"\x00\x01" * 1600)),
+            "push_to_talk": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    reply_event = next(data for name, data in _sse_events(body) if name == "reply")
+    reply = (reply_event.get("reply") or "").strip()
+    assert reply
+    assert reply.upper() != "DHM"
+    assert "DHM" not in reply.upper().split()
+    assert not is_unreadable_transcript(reply)
+    spoken_chunks = [
+        str(data.get("text") or "")
+        for name, data in _sse_events(body)
+        if name == "tts_chunk"
+    ]
+    assert spoken_chunks
+    assert all(chunk.strip().upper() != "DHM" for chunk in spoken_chunks)
+
+
+@pytest.mark.asyncio
+async def test_wake_evie_accepted_non_evie_rejected(
+    client: AsyncClient,
+) -> None:
+    """Shipped wake: Evie-bearing input opens a session; non-Evie does not."""
+
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    evie = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-wake-evie", "text_hint": "hey evie"},
+    )
+    assert evie.status_code == 201, evie.text
+    evie_body = evie.json()
+    assert evie_body["session_id"]
+    assert evie_body["state"] in {"verifying", "awake", "follow_up"}
+
+    other = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-wake-other", "text_hint": "what's the weather tomorrow"},
+    )
+    assert other.status_code in {200, 201}, other.text
+    other_body = other.json()
+    assert other_body.get("session_id") in {None, ""}
+    assert other_body.get("state") in {"idle", None, ""}
+    assert "wake word" in (other_body.get("message") or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_ptt_turn_still_completes_after_hear_path(
+    client: AsyncClient,
+    monkeypatch,
+) -> None:
+    """Push-to-talk still finishes a turn (no hard Talk/API error)."""
+
+    await grant_voice_consent(client)
+    wake = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-ptt-complete", "push_to_talk": True},
+    )
+    assert wake.status_code == 201, wake.text
+
+    def make_runtime(session):
+        return VoiceRuntime(
+            session,
+            master_key=settings.master_key,
+            verifier=default_speaker_verifier(),
+            synthesizer=_PlayableAckSynth(),
+        )
+
+    monkeypatch.setattr("app.api.voice._runtime", make_runtime)
+    resp = await client.post(
+        "/v1/voice/utterance/stream",
+        json={
+            "session_id": wake.json()["session_id"],
+            "text": "what's next on my calendar",
+            "push_to_talk": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert "event: error" not in resp.text or "event: reply" in resp.text
+    reply_event = next(data for name, data in _sse_events(resp.text) if name == "reply")
+    assert reply_event.get("reply")
+    assert reply_event.get("state") in {"follow_up", "awake"}
 

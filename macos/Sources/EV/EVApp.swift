@@ -1,4 +1,5 @@
 import AppKit
+import EVRuntime
 import SwiftUI
 
 /// EV — the SUIT menu-bar client.
@@ -26,9 +27,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// EV's status item button, captured when a right-click hits the status
     /// bar so "Show/Hide EV Panel" can programmatically click it.
     private weak var statusButton: NSStatusBarButton?
+    /// Never-shown window so closing the menu panel / TCC dialog is not
+    /// “last window closed” even if SwiftUI skips this delegate.
+    private var keepAliveWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        installKeepAliveWindow()
         // URL scheme delivery for EVNotificationHelper (single notification
         // path: backend → helper → ev:// → EV app → UNUserNotificationCenter).
         NSAppleEventManager.shared().setEventHandler(
@@ -39,60 +44,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         installAppMenu()
         installStatusItemMenu()
-        // The always-on wake listener (ev.ears) is a companion to this app:
-        // the microphone is only ever active while EV is open. Starting it
-        // here ties its lifetime to the menu-bar app.
-        startWakeListening()
+        // In-app live owns the microphone. ev.ears is a wake-word front end
+        // and must not share the same input device while EV.app is open.
+        EarsProcess.stopAndWait()
     }
 
-    /// Quitting must always terminate: no background task, chat stream, or
-    /// consent prompt may hold the process open. The always-on wake listener
-    /// is stopped here — before the app tears down — so the microphone is
-    /// released immediately on quit (the ears process also self-checks as a
-    /// safety net if the app is killed).
+    /// The window-style menu panel is a real `NSWindow`. Closing it (Talk,
+    /// a mic prompt, clicking away) used to look like “last window closed”
+    /// and quit EV mid-conversation. Only an explicit Quit may terminate.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        TerminatePolicy.shouldTerminateAfterLastWindowClosed
+    }
+
+    /// Voice / live errors must not terminate. Explicit Quit sets
+    /// ``TerminatePolicy.explicitQuit`` first.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        stopWakeListening()
-        return .terminateNow
-    }
-
-    // MARK: - Always-on wake listener (ev.ears) lifecycle
-
-    /// Start the ev.ears launchd job so the mic is listening while EV is open.
-    private func startWakeListening() {
-        Task.detached(priority: .utility) {
-            Self.runLaunchctl(["kickstart", "-k", "gui/\(getuid())/ev.ears"])
+        let reply = TerminatePolicy.reply()
+        if reply == .terminateNow {
+            EarsProcess.stopAndWait()
         }
+        return reply
     }
 
-    /// Stop the ev.ears launchd job so the mic is released when EV quits.
-    ///
-    /// A graceful SIGTERM is tried first, then SIGKILL after a beat: the ears
-    /// process can be mid-request and ignore SIGTERM for a full HTTP timeout,
-    /// but SIGKILL releases the microphone instantly (the OS reclaims the
-    /// audio device on process death). `KeepAlive=false` on the job means
-    /// launchd never restarts it.
-    private func stopWakeListening() {
-        let domain = "gui/\(getuid())/ev.ears"
-        Self.runLaunchctl(["kill", "SIGTERM", domain])
-        Thread.sleep(forTimeInterval: 1.0)
-        Self.runLaunchctl(["kill", "SIGKILL", domain])
-    }
-
-    @discardableResult
-    private static func runLaunchctl(_ arguments: [String]) -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
-        process.arguments = arguments
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus
-        } catch {
-            // Best-effort: wake listening follows the app, never blocks it.
-            return -1
-        }
+    private func installKeepAliveWindow() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: true
+        )
+        window.isReleasedWhenClosed = false
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+        window.collectionBehavior = [.transient, .ignoresCycle]
+        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+        window.orderFrontRegardless()
+        keepAliveWindow = window
     }
 
     /// Menu-bar-only apps have no Dock icon or visible menu bar, so ⌘Q is the
@@ -103,11 +90,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let appMenuItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenuItem.submenu = appMenu
-        appMenu.addItem(
+        let quitItem = appMenu.addItem(
             withTitle: "Quit EV",
-            action: #selector(NSApplication.terminate(_:)),
+            action: #selector(quitFromMenu),
             keyEquivalent: "q"
         )
+        quitItem.target = self
         mainMenu.addItem(appMenuItem)
         NSApp.mainMenu = mainMenu
     }
@@ -202,7 +190,7 @@ extension AppModel.Status {
     var label: String {
         switch self {
         case .offline: return "offline"
-        case .listening: return "Listening for EVIE"
+        case .listening: return "listening"
         case .thinking: return "working on your question"
         case .speaking: return "speaking"
         }

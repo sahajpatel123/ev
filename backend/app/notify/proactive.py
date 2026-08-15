@@ -133,6 +133,9 @@ async def persist_quiet_hours(session: AsyncSession) -> None:
     profile.quiet_hours_end = settings.quiet_hours_end
     profile.updated_at = utcnow()
     await session.flush()
+    from app.ev.training_wheels import mark_step_from_event
+
+    await mark_step_from_event(session, "quiet_hours")
 
 
 async def restore_quiet_hours(session: AsyncSession) -> dict | None:

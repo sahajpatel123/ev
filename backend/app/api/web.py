@@ -178,3 +178,18 @@ async def web_lookout_css() -> FileResponse:
 @router.get("/lookout.js", response_class=FileResponse)
 async def web_lookout_js() -> FileResponse:
     return FileResponse(WEB_ROOT / "lookout.js", headers=SECURITY_HEADERS)
+
+
+@router.get("/indoor", response_class=HTMLResponse)
+async def web_indoor() -> HTMLResponse:
+    return _html("indoor.html")
+
+
+@router.get("/indoor.js", response_class=FileResponse)
+async def web_indoor_js() -> FileResponse:
+    return FileResponse(WEB_ROOT / "indoor.js", headers=SECURITY_HEADERS)
+
+
+@router.get("/indoor.css", response_class=FileResponse)
+async def web_indoor_css() -> FileResponse:
+    return FileResponse(WEB_ROOT / "indoor.css", headers=SECURITY_HEADERS)

@@ -9,9 +9,10 @@ open ./build/EV.app
 ```
 
 The packaged app is an `LSUIElement` accessory app: it lives in the menu bar
-with a status glyph (Listening for EVIE / thinking / speaking / offline).
-Always-on wake is `ev.ears` (launchd) — say **EVIE** and the overlay opens.
-Push-to-talk in the panel is a fallback, not the primary way to talk.
+with a status glyph (listening / thinking / speaking / offline). While the
+app is open it streams the microphone on EV LIVE — just talk, no wake word.
+`ev.ears` is stopped so it does not share the mic. Mute/unmute is in the
+panel; push-to-talk remains only if live cannot connect.
 
 Configuration is locked in `Sources/EVAuth/APIAuthKey.swift` (do not invert):
 environment → `EV_MASTER_KEY` on disk → `EV_API_KEY` on disk → `defaults`.
@@ -31,8 +32,9 @@ there is exactly one UNUserNotificationCenter delivery path.
 
 ## EVIE opens a window
 
-EVIE summons floating overlays over any app. Each pane is translucent glass
-(75% window opacity, 30% tint — 70% of the desktop shows through):
+EVIE summons floating overlays over any app. Each pane is a translucent
+folio (75% window opacity, 30% tint — 70% of the desktop shows through),
+not a titled OS window:
 
 ```sh
 open "ev://present?kind=card&title=Status&body=All%20quiet"

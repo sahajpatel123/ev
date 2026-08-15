@@ -11,6 +11,8 @@ os.environ["EV_API_KEY"] = "test-key"
 os.environ.setdefault("EV_PROCESSING_MODE", "sync")
 if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
     os.environ["EV_CHAT_PROVIDER"] = "mock"
+    os.environ["EV_XAI_API_KEY"] = ""
+    os.environ.setdefault("EV_VOICE_LIVE_BRAIN", "pipeline")
 os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
 os.environ.setdefault("EV_EMBEDDING_DIM", "64")
 os.environ["EV_VOICEPRINT_PROVIDER"] = "hash"
@@ -32,7 +34,7 @@ os.environ.setdefault("EV_ACCESS_LOG_ENABLED", "true")
 os.environ.setdefault("EV_QUIET_HOURS_START", "23:59")
 os.environ.setdefault("EV_QUIET_HOURS_END", "00:00")
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -53,6 +55,23 @@ async def fresh_db() -> AsyncIterator[None]:
         await conn.run_sync(Base.metadata.create_all)
     yield
     await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def reset_mutable_settings() -> Iterator[None]:
+    """Restore runtime-mutated ``settings`` between tests.
+
+    ``set_quiet_hours`` (and the quiet-hours API) assign ``settings.quiet_hours_*``
+    directly, so one test that says "quiet until 8" leaves every later voice
+    test in permanent quiet hours. Restore the conftest defaults after each
+    test so the mutation is test-local.
+    """
+
+    yield
+    from app.config import settings
+
+    settings.quiet_hours_start = "23:59"
+    settings.quiet_hours_end = "00:00"
 
 
 @pytest.fixture

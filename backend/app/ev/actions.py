@@ -44,11 +44,14 @@ def life_action_requires_approval(name: str) -> bool:
     return bool(spec and spec.get("requires_approval", False))
 
 
-def life_agency_prompt() -> str:
+def life_agency_prompt(name: str | None = None) -> str:
     """System-prompt block for life agency (injected when life tools are offered)."""
 
+    from app.ev.assistant import spoken_name
+
+    who = spoken_name(name)
     return (
-        "LIFE AGENCY. You are EVIE, the owner's agent, and the owner has standing "
+        f"LIFE AGENCY. You are {who}, the owner's agent, and the owner has standing "
         "authority: when the owner tells you to do something and a granted life "
         "bridge exists, DO it.\n"
         "- Execute life actions (messages, calls, mail, contacts) through the "
@@ -120,6 +123,9 @@ ACTION_SPECS: list[dict[str, Any]] = [
                 "placement": {"type": "string", "maxLength": 16},
                 "ttl_ms": {"type": "integer", "minimum": 0, "maximum": 3600000},
                 "items": {"type": "array", "items": {"type": "string"}},
+                "questions": {"type": "array", "items": {"type": "string"}},
+                "response": {"type": "string", "maxLength": 4000},
+                "layout": {"type": "string", "maxLength": 16},
                 "recommendation": {"type": "string", "maxLength": 400},
                 "source": {"type": "string", "maxLength": 160},
                 "lookout": {"type": "boolean"},

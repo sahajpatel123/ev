@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev import health_radar, maker, people
 from app.ev.actions import LIFE_ACTION_NAMES, autonomy_mode
+from app.ev.fleet_tools import FLEET_TOOL_SPECS, actuate_permission, handle_fleet_tool
 from app.ev.research import list_sessions
 from app.gateway.validation import validate_arguments, validate_output
 from app.integrations import service as integrations
@@ -431,11 +432,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                "to": {"type": "string", "minLength": 1, "maxLength": 256, "default": None},
+                "name": {"type": "string", "minLength": 1, "maxLength": 256, "default": None},
+                "destination": {"type": "string", "minLength": 1, "maxLength": 256, "default": None},
+                "kind": {"type": "string", "enum": ["tel", "facetime"], "default": "tel"},
                 "video": {"type": "boolean", "default": False},
                 "confirm": {"type": "boolean", "default": False},
             },
-            "required": ["to"],
         },
         "output": {"type": "object"},
         "sensitive": None,  # resolved by EV_OWNER_AUTONOMY
@@ -524,6 +527,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "maxItems": 12,
                     "default": None,
                 },
+                "questions": {
+                    "type": "array",
+                    "items": {"type": "string", "maxLength": 240},
+                    "maxItems": 6,
+                    "default": None,
+                },
+                "response": {"type": "string", "maxLength": 4000, "default": None},
+                "layout": {"type": "string", "maxLength": 16, "default": None},
                 "recommendation": {"type": "string", "maxLength": 400, "default": None},
                 "source": {"type": "string", "maxLength": 160, "default": None},
                 "lookout": {"type": "boolean", "default": None},
@@ -644,6 +655,341 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "undoable": False,
     },
     {
+        "name": "calibrate",
+        "description": "Run self-diagnostics (database, embeddings, gateway, retrieval, storage, printer/radio if present).",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object", "required": ["spoken", "hud"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "diagnostics:read",
+        "undoable": False,
+    },
+    {
+        "name": "research",
+        "description": "Open or continue a research session with cited sources.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"question": {"type": "string", "minLength": 1, "maxLength": 2000}},
+            "required": ["question"],
+        },
+        "output": {"type": "object", "required": ["answer", "citations"]},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "research:write",
+        "undoable": False,
+    },
+    {
+        "name": "print_start",
+        "description": "Queue and optionally start a 3D print. Requires confirm and training wheels.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "project": {"type": "string", "maxLength": 200, "default": None},
+                "gcode": {"type": "string", "maxLength": 200, "default": None},
+                "confirm": {"type": "boolean", "default": False},
+            },
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": False,
+        "permission": "printer:act",
+        "undoable": False,
+    },
+    {
+        "name": "estimate_print",
+        "description": "Estimate print time and filament from an uploaded STL/STEP/SVG.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"attachment_id": {"type": "string", "minLength": 1}},
+            "required": ["attachment_id"],
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "printer:read",
+        "undoable": False,
+    },
+    {
+        "name": "gear_power",
+        "description": "Report battery and storage for a device, or last telemetry sample during a test.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"device": {"type": "string", "maxLength": 200, "default": None}},
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "gear:read",
+        "undoable": False,
+    },
+    {
+        "name": "health_how_do_i_look",
+        "description": "Speak readiness and flags from the latest health snapshot. Not a diagnosis.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": True,
+        "permission": "health:read",
+        "undoable": False,
+    },
+    {
+        "name": "head_injury_screen",
+        "description": "Scripted head-injury symptom check with a fixed medical disclaimer. Never diagnoses.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "abort": {"type": "boolean", "default": False},
+                "call_someone": {"type": "boolean", "default": False},
+            },
+        },
+        "output": {"type": "object", "required": ["spoken", "disclaimer"]},
+        "sensitive": True,
+        "read_only": False,
+        "permission": "health:read",
+        "undoable": False,
+    },
+    {
+        "name": "brief_me",
+        "description": "Speak a condensed tactical brief and emit the full HUD briefing card.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"topic": {"type": "string", "maxLength": 500, "default": None}},
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "tactical:read",
+        "undoable": False,
+    },
+    {
+        "name": "brief_share",
+        "description": "Share the current brief with a delegate who has briefing:read.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"delegate": {"type": "string", "minLength": 1, "maxLength": 200}},
+            "required": ["delegate"],
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": False,
+        "permission": "tactical:share",
+        "undoable": False,
+    },
+    {
+        "name": "where_is",
+        "description": "Locate an opted-in teammate, or say memory-only. Never hunt strangers.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 200}},
+            "required": ["name"],
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "people:read",
+        "undoable": False,
+    },
+    {
+        "name": "camera_replay",
+        "description": "Replay an owner-added camera. Never discover cameras on the LAN.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "camera": {"type": "string", "minLength": 1, "maxLength": 128},
+                "at": {"type": "string", "maxLength": 64, "default": None},
+            },
+            "required": ["camera"],
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": True,
+        "permission": "camera:read",
+        "undoable": False,
+    },
+    {
+        "name": "watchlist_add",
+        "description": "Add a topic to the owner alert watchlist.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "value": {"type": "string", "minLength": 1, "maxLength": 256},
+                "kind": {
+                    "type": "string",
+                    "enum": ["topic", "project", "person", "product", "company", "deadline", "date"],
+                    "default": "topic",
+                },
+            },
+            "required": ["value"],
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "alerts:write",
+        "undoable": True,
+    },
+    {
+        "name": "alerts_digest",
+        "description": "List pending watchlist and radar alerts.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "alerts:read",
+        "undoable": False,
+    },
+    {
+        "name": "media_check",
+        "description": "Best-effort media authenticity. Never claims a video is real.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"attachment_id": {"type": "string", "minLength": 1}},
+            "required": ["attachment_id"],
+        },
+        "output": {"type": "object", "required": ["spoken", "label"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "vision:read",
+        "undoable": False,
+    },
+    {
+        "name": "set_voice",
+        "description": "Change TTS voice or rate for accessibility. Not an interrogation mode.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "voice_id": {"type": "string", "maxLength": 64, "default": None},
+            },
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "assistant:profile",
+        "undoable": True,
+    },
+    {
+        "name": "public_lookup",
+        "description": "Look up public records on allowlisted sources (Wikipedia, SEC, gazettes).",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 400},
+                "kind": {"type": "string", "enum": ["org", "law", "filing"], "default": "org"},
+            },
+            "required": ["query"],
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "web:search",
+        "undoable": False,
+    },
+    {
+        "name": "find_gear",
+        "description": "Find an owner-registered beacon or last-seen EV device. Refuses person hunts.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"label": {"type": "string", "minLength": 1, "maxLength": 128}},
+            "required": ["label"],
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "gear:read",
+        "undoable": False,
+    },
+    {
+        "name": "estimate_structure",
+        "description": "Low-confidence size guess from a photo. Not structural analysis.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "attachment_id": {"type": "string", "minLength": 1},
+                "reference_length": {"type": "number", "default": None},
+            },
+            "required": ["attachment_id"],
+        },
+        "output": {"type": "object", "required": ["spoken", "disclaimer"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "vision:read",
+        "undoable": False,
+    },
+    {
+        "name": "why_did_you_ping",
+        "description": "Explain the last fused sense callout and cite source ids.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "alerts:read",
+        "undoable": False,
+    },
+    {
+        "name": "whats_on_my_plate",
+        "description": "Aggregate calendar, mail, GitHub, and watchlist deadlines.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "life:read",
+        "undoable": False,
+    },
+    {
+        "name": "draft_reply",
+        "description": "Draft a mail reply. Sending requires owner confirm and helper sent=true.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "mail_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                "body": {"type": "string", "maxLength": 8000, "default": None},
+                "confirm": {"type": "boolean", "default": False},
+                "send": {"type": "boolean", "default": False},
+            },
+            "required": ["mail_id"],
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": False,
+        "permission": "mail:write",
+        "undoable": True,
+    },
+    {
+        "name": "drone",
+        "description": "Command an owner-paired drone: takeoff, hover, land, rtl. No weapons.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "command": {"type": "string", "minLength": 1, "maxLength": 32},
+                "confirm": {"type": "boolean", "default": False},
+                "lat": {"type": "number", "default": None},
+                "lon": {"type": "number", "default": None},
+            },
+            "required": ["command"],
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": False,
+        "permission": "drone:act",
+        "undoable": False,
+    },
+    {
         "name": "set_quiet_hours",
         "description": "Set quiet hours immediately (until a clock time, or start/end).",
         "parameters": {
@@ -661,6 +1007,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "permission": "assistant:profile",
         "undoable": True,
     },
+    *FLEET_TOOL_SPECS,
 ]
 
 
@@ -715,6 +1062,8 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
 
     payload = result.get("result") if isinstance(result, dict) and "result" in result else result
     payload = payload if isinstance(payload, dict) else {}
+    if payload.get("spoken"):
+        return str(payload["spoken"])
     name = (tool_name or payload.get("_tool") or payload.get("tool") or "").strip()
     degraded = bool(payload.get("degraded") or payload.get("ok") is False)
     next_step = str(
@@ -783,40 +1132,92 @@ async def dispatch(
     actor: str = "master",
     allow_sensitive: bool = False,
     request_id: str | None = None,
+    device_id=None,
+    reverify_token: str | None = None,
 ) -> ToolCallResponse:
     """Validate, authorize, execute, shape-check, and log one tool invocation."""
+
+    from app.ev.delegates import scope_blocked
+    from app.ev.training_wheels import ensure_seed_gates, refuse_if_locked
+    from app.ev.voice_life import WEAPON_RE, consume_life_reverify
 
     started = time.perf_counter()
     spec = get_spec(name)
     status = "ok"
     error: str | None = None
     result: dict | None = None
+    await ensure_seed_gates(session)
+
+    if spec is not None and name == "actuate":
+        spec = dict(spec)
+        spec["permission"] = actuate_permission(str((arguments or {}).get("verb") or ""))
 
     if spec is None:
         status = "error"
         error = f"Unknown tool '{name}'"
+    elif name == "actuate" and WEAPON_RE.search(str((arguments or {}).get("verb") or "")):
+        status = "denied"
+        error = "refused"
+        result = {
+            "ok": False,
+            "error": "refused",
+            "spoken": "I will not run kill or weapon verbs.",
+        }
     elif spec["sensitive"] and not allow_sensitive:
         status = "denied"
         error = f"Permission denied: '{name}' requires explicit permission before execution"
     else:
-        effective, issues = validate_arguments(arguments, spec["parameters"])
-        if issues:
-            status = "rejected"
-            error = "Invalid arguments: " + "; ".join(issues)
+        bio = await consume_life_reverify(
+            session,
+            actor=actor,
+            device_id=device_id,
+            reverify_token=reverify_token,
+            name=name,
+            args=arguments or {},
+        )
+        refuse = await refuse_if_locked(session, spec)
+        scoped = await scope_blocked(
+            session,
+            actor=actor,
+            permission=str(spec["permission"]),
+            name=name,
+            device_id=device_id,
+        )
+        if bio is not None:
+            status = "denied"
+            error = "biometric_required"
+            result = bio
+        elif refuse is not None:
+            status = "denied"
+            error = str(refuse.get("error") or "training_wheels")
+            result = refuse
+        elif scoped is not None:
+            status = "denied"
+            error = str(scoped.get("error") or "delegate_scope")
+            result = scoped
         else:
-            try:
-                result = await _handle(session, name, effective, actor=actor)
-                output_issues = validate_output(result, spec.get("output") or {})
-                if output_issues:
+            effective, issues = validate_arguments(arguments, spec["parameters"])
+            if issues:
+                status = "rejected"
+                error = "Invalid arguments: " + "; ".join(issues)
+            else:
+                try:
+                    result = await _handle(session, name, effective, actor=actor)
+                    if result is not None:
+                        from app.ev.workbench import push_status_hud
+
+                        await push_status_hud(session, name, result)
+                    output_issues = validate_output(result, spec.get("output") or {})
+                    if output_issues:
+                        status = "error"
+                        error = "Output validation failed: " + "; ".join(output_issues)
+                        result = None
+                except KeyError as exc:
                     status = "error"
-                    error = "Output validation failed: " + "; ".join(output_issues)
-                    result = None
-            except KeyError as exc:
-                status = "error"
-                error = str(exc)
-            except Exception as exc:  # noqa: BLE001 - tool boundary
-                status = "error"
-                error = f"{type(exc).__name__}: {exc}"
+                    error = str(exc)
+                except Exception as exc:  # noqa: BLE001 - tool boundary
+                    status = "error"
+                    error = f"{type(exc).__name__}: {exc}"
 
     latency_ms = round((time.perf_counter() - started) * 1000, 1)
     response = ToolCallResponse(
@@ -849,6 +1250,9 @@ async def dispatch(
 
 
 async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -> dict:
+    fleet = await handle_fleet_tool(session, name, args, actor=actor)
+    if fleet is not None:
+        return fleet
     retriever = Retriever(session)
     if name == "search_memory":
         memory_hits = await retriever.search(
@@ -1061,14 +1465,21 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
         if place and "weather" not in query.lower():
             query = f"weather in {place}"
         results = await weather_results(query, limit=3)
+        payload = [
+            {"title": r.title, "url": r.url, "snippet": r.snippet}
+            for r in results
+        ]
+        from app.ev.workbench import weather_hud
+
+        first = payload[0] if payload else {}
+        spoken = str(first.get("snippet") or first.get("title") or "No weather.")
         return {
             "ok": True,
             "count": len(results),
             "place": place or None,
-            "results": [
-                {"title": r.title, "url": r.url, "snippet": r.snippet}
-                for r in results
-            ],
+            "results": payload,
+            "spoken": spoken,
+            "hud": weather_hud(payload),
         }
     if name in _LIFE_BRIDGES:
         return await _dispatch_life_action(session, name, args, actor=actor)
@@ -1082,13 +1493,63 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
             ),
         )
     if name == "set_reminder":
-        return _life_unavailable(
-            "no reminders bridge is installed",
-            next_step=(
-                "grant a reminders bridge (CONDUIT calendar/reminders adapter or "
-                "Agent 14 routines), then wire set_reminder to it"
-            ),
+        from uuid import uuid4
+
+        from app.ev.briefing import extract_reminder_when
+        from app.ev.timers import start_timer
+        from app.models import Alert
+
+        text = str(args.get("text") or "").strip()
+        when = args.get("when") or extract_reminder_when(text)
+        blob = f"{when or ''} {text}"
+        minutes: float | None = None
+        at: str | None = None
+        relative = extract_reminder_when(blob)
+        if relative and relative.lower().startswith("in "):
+            parts = relative.split()
+            try:
+                amount = float(parts[1])
+            except (IndexError, ValueError, TypeError):
+                amount = None
+            unit = parts[2].lower() if len(parts) > 2 else "minutes"
+            if amount is not None:
+                hours = unit.startswith("hour") or unit.startswith("hr")
+                minutes = amount * 60 if hours else amount
+        elif relative:
+            at = relative
+        elif when:
+            at = str(when)
+        if minutes is not None or at:
+            timed = await start_timer(session, minutes=minutes, at=at, text=text)
+            if timed.get("ok"):
+                return {
+                    "ok": True,
+                    "text": text,
+                    "when": timed.get("fire_at"),
+                    "id": timed.get("id"),
+                    "spoken": timed.get("spoken") or f"Reminder set: {text}.",
+                }
+        alert = Alert(
+            kind="reminder",
+            title="Reminder",
+            body=text[:2000],
+            priority=0.6,
+            tier="useful",
+            status="pending",
+            source="set_reminder",
+            fingerprint=uuid4().hex,
+            rationale="Owner asked to be reminded.",
+            details={"text": text, "when": when},
         )
+        session.add(alert)
+        await session.flush()
+        return {
+            "ok": True,
+            "text": text,
+            "id": str(alert.id),
+            "stored": "alert",
+            "spoken": f"Reminder set: {text}.",
+        }
     if name == "set_assistant_name":
         from app.ev.assistant import set_nickname
 
@@ -1164,11 +1625,132 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
         )
         await persist_quiet_hours(session)
         return hours
+    if name == "calibrate":
+        from app.ev.workbench import handle_calibrate
+
+        return await handle_calibrate(session)
+    if name == "research":
+        from app.ev.workbench import handle_research
+
+        return await handle_research(session, str(args["question"]))
+    if name == "print_start":
+        from app.ev.hardware import print_start
+
+        return await print_start(
+            session,
+            project=args.get("project"),
+            gcode=args.get("gcode"),
+            confirm=bool(args.get("confirm")),
+            actor=actor,
+        )
+    if name == "estimate_print":
+        from app.ev.hardware import estimate_print
+
+        return await estimate_print(session, str(args["attachment_id"]))
+    if name == "gear_power":
+        from app.ev.workbench import handle_gear_power
+
+        return await handle_gear_power(session, args.get("device"))
+    if name == "health_how_do_i_look":
+        from app.ev.workbench import handle_how_do_i_look
+
+        return await handle_how_do_i_look(session)
+    if name == "head_injury_screen":
+        from app.ev.workbench import handle_head_injury_screen
+
+        return await handle_head_injury_screen(
+            session,
+            abort=bool(args.get("abort")),
+            call_someone=bool(args.get("call_someone")),
+        )
+    if name == "brief_me":
+        from app.ev.workbench import handle_brief_me
+
+        return await handle_brief_me(session, args.get("topic"))
+    if name == "brief_share":
+        from app.ev.workbench import handle_brief_share
+
+        return await handle_brief_share(session, str(args["delegate"]))
+    if name == "where_is":
+        from app.ev.workbench import handle_where_is
+
+        return await handle_where_is(session, str(args["name"]))
+    if name == "camera_replay":
+        from app.ev.hardware import camera_replay
+
+        return await camera_replay(
+            session, camera=str(args["camera"]), at=args.get("at"), actor=actor
+        )
+    if name == "watchlist_add":
+        from app.ev.workbench import handle_watchlist_add
+
+        return await handle_watchlist_add(
+            session, str(args["value"]), kind=str(args.get("kind") or "topic")
+        )
+    if name == "alerts_digest":
+        from app.ev.workbench import handle_alerts_digest
+
+        return await handle_alerts_digest(session)
+    if name == "media_check":
+        from app.ev.hardware import media_check
+
+        return await media_check(session, str(args["attachment_id"]))
+    if name == "set_voice":
+        from app.ev.workbench import handle_set_voice
+
+        return await handle_set_voice(session, args.get("voice_id"))
+    if name == "public_lookup":
+        from app.ev.workbench import handle_public_lookup
+
+        return await handle_public_lookup(
+            session, str(args["query"]), kind=str(args.get("kind") or "org")
+        )
+    if name == "find_gear":
+        from app.ev.hardware import find_gear
+
+        return await find_gear(session, str(args["label"]))
+    if name == "estimate_structure":
+        from app.ev.hardware import estimate_structure
+
+        return await estimate_structure(
+            session,
+            str(args["attachment_id"]),
+            reference_length=args.get("reference_length"),
+        )
+    if name == "why_did_you_ping":
+        from app.ev.workbench import handle_why_did_you_ping
+
+        return await handle_why_did_you_ping(session)
+    if name == "whats_on_my_plate":
+        from app.ev.workbench import handle_whats_on_my_plate
+
+        return await handle_whats_on_my_plate(session)
+    if name == "draft_reply":
+        from app.ev.workbench import handle_draft_reply
+
+        return await handle_draft_reply(
+            session,
+            str(args["mail_id"]),
+            body=args.get("body"),
+            confirm=bool(args.get("confirm")),
+            send=bool(args.get("send")),
+        )
+    if name == "drone":
+        from app.ev.hardware import drone_command
+
+        return await drone_command(
+            session,
+            str(args["command"]),
+            confirm=bool(args.get("confirm")),
+            lat=args.get("lat"),
+            lon=args.get("lon"),
+            actor=actor,
+        )
     if name == "present":
         from app.notify.presence import open_presence
 
         kind = str(args.get("kind") or "auto")
-        return await open_presence(
+        opened = await open_presence(
             title=str(args["title"]),
             body=str(args["body"]),
             kind=kind,
@@ -1177,6 +1759,9 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
             placement=args.get("placement"),
             ttl_ms=args.get("ttl_ms"),
             items=args.get("items") or [],
+            questions=args.get("questions") or [],
+            response=args.get("response"),
+            layout=args.get("layout"),
             recommendation=args.get("recommendation"),
             source=args.get("source"),
             lookout=args.get("lookout"),
@@ -1184,6 +1769,10 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
             auto=kind.lower() in {"auto", "decide"},
             message=str(args["title"]) + " " + str(args["body"]),
         )
+        from app.ev.training_wheels import mark_step_from_event
+
+        await mark_step_from_event(session, "first_hud")
+        return opened
     raise KeyError(f"Unknown tool '{name}'")
 
 

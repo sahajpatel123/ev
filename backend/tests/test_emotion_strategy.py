@@ -80,6 +80,14 @@ def test_venting_does_not_swallow_a_calendar_ask() -> None:
     assert detect_intent("ugh I'm tired, what's next on my calendar") == "question"
 
 
+def test_presence_check_intent_asks_for_a_hearing_reply() -> None:
+    strategy = build_strategy("Evie can you hear me?")
+    assert strategy.intent == "presence"
+    block = strategy_block(strategy)
+    assert "hear" in block.lower()
+    assert detect_intent("evie can you check the time") != "presence"
+
+
 @pytest.mark.asyncio
 async def test_feeling_plus_command_stream_still_answers_the_task(
     client: AsyncClient,

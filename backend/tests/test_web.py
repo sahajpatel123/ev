@@ -40,13 +40,16 @@ async def test_lookout_glass_is_translucent(client: AsyncClient) -> None:
     css = (await client.get("/app/lookout.css")).text
     assert "--window-opacity: 0.75" in css
     assert "opacity: var(--window-opacity)" in css
-    assert "rgba(10, 16, 24, 0.30)" in css
+    assert "rgba(14, 11, 9, 0.30)" in css
     assert "70%" in css
     assert "backdrop-filter" in css
     assert "background: transparent" in css
     assert "body.visor .hud" in css
+    assert "--cyan" not in css
+    assert "hud-corners" not in css
     html = (await client.get("/app/lookout")).text
-    assert "sheet" in html
+    assert "folio" in html
+    assert "hud-corners" not in html
     overlay = (
         Path(__file__).resolve().parents[2]
         / "macos"
@@ -59,6 +62,9 @@ async def test_lookout_glass_is_translucent(client: AsyncClient) -> None:
     assert "isOpaque = false" in overlay
     assert "alphaValue = EVPalette.windowOpacity" in overlay
     assert ".hudWindow" not in overlay
+    assert ".borderless" in overlay
+    assert ".titled" not in overlay
+    assert "PresenceLayout" in overlay
 
 
 async def test_web_gallery_shows_window_examples(client: AsyncClient) -> None:

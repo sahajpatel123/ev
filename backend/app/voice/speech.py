@@ -36,6 +36,43 @@ _QUESTION = re.compile(
 _SOFT_ASK = re.compile(r"\b(please|could you|can you|would you)\b", re.IGNORECASE)
 
 LISTEN_ACKS = ("Yes?", "Hmm.", "Mhm.", "Yes.")
+# Short tokens that are real speech, not Whisper leftovers.
+_SAFE_SHORT_TOKENS = {
+    "ok",
+    "okay",
+    "yes",
+    "no",
+    "hi",
+    "hey",
+    "yo",
+    "wow",
+    "nah",
+    "yep",
+    "nope",
+    "bye",
+    "sup",
+    "hmm",
+    "mhm",
+    "mm",
+    "huh",
+    "oh",
+    "ah",
+    "ya",
+    "yeah",
+}
+_TIMEOUT_LEFTOVER = re.compile(
+    r"\b(?:asr[_ ]?timeout|timed? out|timeout leftover|gateway timeout|"
+    r"speech recognition took too long)\b",
+    re.IGNORECASE,
+)
+_PRESENCE_CHECK = re.compile(
+    r"\b(?:"
+    r"can you hear me|do you hear me|you hear me|"
+    r"are you (?:there|here|listening)|"
+    r"you (?:there|listening)"
+    r")\b",
+    re.IGNORECASE,
+)
 
 _TOOL_CALLS_KEY = re.compile(r'"tool_calls"\s*:')
 _FN_SHAPE = re.compile(
@@ -83,6 +120,59 @@ _LAST_SPOKEN: dict[str, dict] = {}
 
 def starts_with_evie(text: str) -> bool:
     return bool(_EVIE_PREFIX.search((text or "").strip()))
+
+
+def strip_wake_prefix(text: str) -> str:
+    """Remove a leading Evie / hey-Evie address so the rest is the command.
+
+    Sentence-final punctuation on the command is kept so live turn-taking
+    can still see a finished thought. Trailing punctuation glued to the
+    name is already consumed by ``_EVIE_PREFIX``.
+    """
+
+    raw = (text or "").strip()
+    stripped = _EVIE_PREFIX.sub("", raw, count=1)
+    if stripped == raw:
+        return raw
+    return stripped.strip(" ,-")
+
+
+def is_presence_check(text: str) -> bool:
+    """True when the owner is checking whether EVIE can hear them."""
+
+    return bool(_PRESENCE_CHECK.search((text or "").strip()))
+
+
+def is_unreadable_transcript(text: str) -> bool:
+    """True for empty, timeout dumps, and DHM-class ASR leftovers.
+
+    A 1–3 letter consonant clump ("DHM"), a timeout leftover, or a raw
+    error dump is not owner speech and must not be spoken as the answer.
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return True
+    if any(_TRACE.search(line.strip()) for line in raw.splitlines() if line.strip()):
+        return True
+    if _TIMEOUT_LEFTOVER.search(raw) and len(raw.split()) <= 8:
+        return True
+    letters = re.sub(r"[^A-Za-z]+", "", raw)
+    compact = letters.lower()
+    if not compact:
+        digits = re.sub(r"\s+", "", raw)
+        return not digits.isdigit()
+    if compact in _SAFE_SHORT_TOKENS:
+        return False
+    vowels = set("aeiouy")
+    if len(compact) <= 3 and not any(char in vowels for char in compact):
+        return True
+    tokens = raw.split()
+    return (
+        len(tokens) == 1
+        and len(compact) <= 2
+        and compact not in _SAFE_SHORT_TOKENS
+    )
 
 
 def normalize_spoken(text: str) -> str:
@@ -414,7 +504,7 @@ def should_drop_as_echo(
 def choose_listen_ack(text: str) -> str:
     """Human listen cue after the owner says Evie — varies with the rest."""
 
-    rest = _EVIE_PREFIX.sub("", (text or "").strip(), count=1).strip(" ,.!?")
+    rest = strip_wake_prefix(text)
     if not rest:
         return "Yes?"
     if _SOFT_ASK.search(rest):
@@ -539,6 +629,8 @@ def owner_facing_speech(text: str) -> str | None:
         lines.append(stripped)
     cleaned = " ".join(lines).strip()
     if not cleaned or is_tool_chatter(cleaned):
+        return None
+    if is_unreadable_transcript(cleaned):
         return None
     return cleaned
 

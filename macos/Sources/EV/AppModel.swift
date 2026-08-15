@@ -1,6 +1,7 @@
 import AppKit
 import EVAuth
 import EVClient
+import EVRuntime
 import Foundation
 import ServiceManagement
 
@@ -27,6 +28,8 @@ final class AppModel: ObservableObject {
     @Published var queueCount = 0
     @Published var lastError: String?
     @Published var isRecording = false
+    @Published var isLiveMuted = false
+    @Published var isLiveActive = false
     @Published var sessionId: String?
     @Published var transcript = ""
 
@@ -36,6 +39,7 @@ final class AppModel: ObservableObject {
     let hotkey = GlobalHotkey()
     let mic = MicCapture()
     let player = TTSPlayer()
+    let live = LiveConversation()
 
     private var heartbeatTask: Task<Void, Never>?
     private var conversationTask: Task<Void, Never>?
@@ -43,6 +47,7 @@ final class AppModel: ObservableObject {
     private var pendingAssistantID: String?
     private var started = false
     private var sendingVoice = false
+    private var micAuthObserver: NSObjectProtocol?
 
     init() {
         let config = AppConfig()
@@ -54,6 +59,9 @@ final class AppModel: ObservableObject {
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("EV", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         queue = OfflineCaptureQueue(store: FileCaptureQueueStore(directory: support))
+        Task { @MainActor [weak self] in
+            self?.start()
+        }
     }
 
     var launchAtLogin: Bool {
@@ -97,8 +105,28 @@ final class AppModel: ObservableObject {
         if config.usesPlaceholderKey {
             lastError = "API key is still the placeholder “dev”. EV.app now reads EV_MASTER_KEY from ~/Library/Application Support/EV/api.env, ~/.ev/env, or the repo .env. Rebuild the app after packaging so Talk and chat authenticate."
         }
+        live.attach(self)
+        observeMicrophoneAuthorization()
+        // ⇧⌘E must be live at app-open. Registering only in MenuBarView.onAppear
+        // left the Talk handler uninstalled until the panel was opened once.
+        hotkey.start(
+            keyCode: 14, // "e"
+            flags: [.command, .shift],
+            handler: { [weak self] in
+                Task { @MainActor in
+                    self?.toggleTalk()
+                }
+            }
+        )
+        // ev.ears and live cannot share the input. Kill ears before any
+        // AVAudioEngine tap or Talk can race it (that abort looked like quit).
+        EarsProcess.stopAndWait()
+        // Claim the mic before any await. If Talk/hotkey fires during
+        // refresh(), a second AVAudioEngine on the same input aborts EV.
+        live.start()
         Task {
             await refresh()
+            await bootstrapIfNeeded()
         }
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -129,6 +157,38 @@ final class AppModel: ObservableObject {
         await syncQueue()
         await updateQueueCount()
         await refreshConversation()
+    }
+
+    func bootstrapIfNeeded() async {
+        do {
+            let registryId = try await ensureRegistryDevice()
+            let result = try await client.bootstrapDevice(id: registryId)
+            if result.spoken, let line = result.spokenText, !line.isEmpty {
+                lastError = nil
+            }
+            if result.prefsLoaded == false {
+                lastError = result.spokenText ?? "I couldn't load prefs; using defaults."
+            }
+        } catch {
+            if isUnauthorized(error) {
+                status = .offline
+            }
+        }
+    }
+
+    private func ensureRegistryDevice() async throws -> String {
+        let defaults = UserDefaults.standard
+        if let stored = defaults.string(forKey: "EV_REGISTRY_DEVICE_ID"),
+           UUID(uuidString: stored) != nil {
+            return stored
+        }
+        let created = try await client.createDevice(
+            name: config.deviceID,
+            capabilities: ["attention", "voice"],
+            deviceType: "mac"
+        )
+        defaults.set(created.device.id, forKey: "EV_REGISTRY_DEVICE_ID")
+        return created.device.id
     }
 
     func refreshHealth() async {
@@ -270,25 +330,110 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Voice (push-to-talk fallback — always-on wake is ev.ears)
+    // MARK: - Voice (live duplex while the app is open; PTT is fallback)
 
     func toggleTalk() {
-        if isRecording {
+        // Live owns the mic while the app is open. Never start the clip
+        // recorder on top of it — two AVAudioEngines on one input abort
+        // the process, which looked like “Talk closes the app”.
+        switch TalkRouting.action(
+            liveOwnsInput: TalkRouting.liveOwnsInput(
+                isLiveActive: isLiveActive,
+                isLiveMuted: isLiveMuted,
+                liveIsRunning: live.isRunning
+            ),
+            isRecording: isRecording,
+            sendingVoice: sendingVoice
+        ) {
+        case .toggleLiveMute:
+            live.toggleMute()
+        case .stopClipCapture:
             stopAndSend()
-        } else if sendingVoice {
+        case .ignore:
             return
-        } else {
+        case .startClipCapture:
             startRecording()
         }
     }
 
+    func noteMicrophoneDenied() {
+        lastError = "Microphone permission denied — open EV → Permissions for the fix."
+        // Health owns offline vs listening. Never mark offline just because
+        // capture was treated as denied.
+        if status == .offline {
+            Task { await refreshHealth() }
+        }
+    }
+
+    func noteMicrophoneCaptureFailed(_ detail: String? = nil) {
+        if let detail, !detail.isEmpty {
+            lastError = "Microphone capture failed: \(detail)"
+        } else {
+            lastError = "Microphone capture failed. Try Talk again."
+        }
+        if status == .offline {
+            Task { await refreshHealth() }
+        }
+    }
+
+    private func observeMicrophoneAuthorization() {
+        if micAuthObserver != nil { return }
+        micAuthObserver = NotificationCenter.default.addObserver(
+            forName: MicrophoneAuthorization.didChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.microphoneAuthorizationDidChange()
+            }
+        }
+    }
+
+    private func microphoneAuthorizationDidChange() {
+        guard MicrophoneAuthorization.current() == .granted else { return }
+        if lastError?.localizedCaseInsensitiveContains("microphone permission") == true {
+            lastError = nil
+        }
+        if !live.isRunning {
+            live.start()
+        }
+        if status == .offline {
+            Task { await refreshHealth() }
+        }
+    }
+
+    func formattedLiveError(_ error: Error) -> String {
+        formattedAPIError(error, fallback: "Live listen failed")
+    }
+
     func startRecording() {
+        if TalkRouting.liveOwnsInput(
+            isLiveActive: isLiveActive,
+            isLiveMuted: isLiveMuted,
+            liveIsRunning: live.isRunning
+        ) {
+            return
+        }
         Task {
-            let granted = await mic.start()
-            isRecording = granted
-            status = granted ? .listening : status
-            if !granted {
-                lastError = "Microphone permission denied — open EV → Permissions for the fix."
+            let started = await mic.start()
+            if TalkRouting.liveOwnsInput(
+                isLiveActive: isLiveActive,
+                isLiveMuted: isLiveMuted,
+                liveIsRunning: live.isRunning
+            ) {
+                if started {
+                    _ = mic.stop()
+                }
+                return
+            }
+            isRecording = started
+            status = started ? .listening : status
+            if !started {
+                if MicrophoneAuthorization.current().isUsable {
+                    noteMicrophoneCaptureFailed()
+                } else {
+                    noteMicrophoneDenied()
+                }
                 return
             }
             lastError = nil
@@ -327,73 +472,107 @@ final class AppModel: ObservableObject {
             status = .thinking
             lastError = nil
             defer { sendingVoice = false }
-            do {
-                // Reuse an already-open Talk session. A second press must not
-                // end the follow-up and start a new wake cycle.
-                guard let session = try await openTalkSession(audioB64: audioB64) else {
-                    lastError = "No voice session — grant voice consent in Permissions."
+            var attempt = 0
+            while attempt < 2 {
+                attempt += 1
+                do {
+                    // Reuse an already-open Talk session. A second press must not
+                    // end the follow-up and start a new wake cycle — unless the
+                    // held id is already ENDED (SSE "wake EVIE again" loop).
+                    guard let session = try await openTalkSession(audioB64: audioB64) else {
+                        lastError = "No voice session — grant voice consent in Permissions."
+                        status = .listening
+                        return
+                    }
+                    var streamedAudio = false
+                    var assistantID: String?
+                    var deadSession = false
+                    for try await event in client.streamUtterance(
+                        sessionId: session,
+                        audioB64: audioB64,
+                        pushToTalk: true
+                    ) {
+                        switch event {
+                        case .partial:
+                            break
+                        case .transcript(let spoken):
+                            transcript = spoken.text
+                            if !spoken.text.isEmpty {
+                                messages.append(ChatMessage(id: UUID().uuidString, role: "user", text: spoken.text, streaming: false))
+                            }
+                            let id = UUID().uuidString
+                            assistantID = id
+                            messages.append(ChatMessage(id: id, role: "assistant", text: "", streaming: true))
+                        case .ttsChunk(let chunk):
+                            // One speaker: play TTS bytes only. Never /usr/bin/say
+                            // alongside real audio, and never say() a text chunk
+                            // that later arrives as TTS.
+                            if let b64 = chunk.audioB64, let data = Data(base64Encoded: b64), !data.isEmpty {
+                                streamedAudio = true
+                                status = .speaking
+                                try? player.enqueue(data)
+                            }
+                        case .reply(let response):
+                            if let id = assistantID, let index = messages.firstIndex(where: { $0.id == id }) {
+                                messages[index].text = response.reply
+                                messages[index].streaming = false
+                            } else {
+                                messages.append(ChatMessage(id: UUID().uuidString, role: "assistant", text: response.reply, streaming: false))
+                            }
+                            if response.state == "ended" {
+                                sessionId = nil
+                            }
+                            if let err = response.error, !err.isEmpty {
+                                lastError = err
+                            }
+                            if !streamedAudio {
+                                await playReply(response)
+                            }
+                        case .error(let message):
+                            if attempt == 1 && isDeadVoiceSession(message) {
+                                sessionId = nil
+                                deadSession = true
+                                break
+                            }
+                            lastError = message
+                        case .done:
+                            break
+                        }
+                    }
+                    if deadSession {
+                        continue
+                    }
+                    if let id = assistantID, let index = messages.firstIndex(where: { $0.id == id }) {
+                        messages[index].streaming = false
+                    }
+                    status = streamedAudio && player.isPlaying ? .speaking : .listening
+                    return
+                } catch {
+                    let rendered = formattedAPIError(error, fallback: "Voice failed")
+                    if attempt == 1 && isDeadVoiceSession(rendered) {
+                        sessionId = nil
+                        continue
+                    }
+                    sessionId = nil
+                    lastError = rendered
                     status = .listening
                     return
                 }
-                var streamedAudio = false
-                var assistantID: String?
-                for try await event in client.streamUtterance(
-                    sessionId: session,
-                    audioB64: audioB64,
-                    pushToTalk: true
-                ) {
-                    switch event {
-                    case .partial:
-                        break
-                    case .transcript(let spoken):
-                        transcript = spoken.text
-                        if !spoken.text.isEmpty {
-                            messages.append(ChatMessage(id: UUID().uuidString, role: "user", text: spoken.text, streaming: false))
-                        }
-                        let id = UUID().uuidString
-                        assistantID = id
-                        messages.append(ChatMessage(id: id, role: "assistant", text: "", streaming: true))
-                    case .ttsChunk(let chunk):
-                        // One speaker: play TTS bytes only. Never /usr/bin/say
-                        // alongside real audio, and never say() a text chunk
-                        // that later arrives as TTS.
-                        if let b64 = chunk.audioB64, let data = Data(base64Encoded: b64), !data.isEmpty {
-                            streamedAudio = true
-                            status = .speaking
-                            try? player.enqueue(data)
-                        }
-                    case .reply(let response):
-                        if let id = assistantID, let index = messages.firstIndex(where: { $0.id == id }) {
-                            messages[index].text = response.reply
-                            messages[index].streaming = false
-                        } else {
-                            messages.append(ChatMessage(id: UUID().uuidString, role: "assistant", text: response.reply, streaming: false))
-                        }
-                        if response.state == "ended" {
-                            sessionId = nil
-                        }
-                        if let err = response.error, !err.isEmpty {
-                            lastError = err
-                        }
-                        if !streamedAudio {
-                            await playReply(response)
-                        }
-                    case .error(let message):
-                        lastError = message
-                    case .done:
-                        break
-                    }
-                }
-                if let id = assistantID, let index = messages.firstIndex(where: { $0.id == id }) {
-                    messages[index].streaming = false
-                }
-                status = streamedAudio && player.isPlaying ? .speaking : .listening
-            } catch {
-                sessionId = nil
-                lastError = formattedAPIError(error, fallback: "Voice failed")
-                status = .listening
+            }
+            status = .listening
+            if lastError == nil {
+                lastError = "Voice session ended — wake EVIE again"
             }
         }
+    }
+
+    private func isDeadVoiceSession(_ message: String) -> Bool {
+        let lower = message.lowercased()
+        return lower.contains("wake evie again")
+            || lower.contains("session ended")
+            || lower.contains("session_ended")
+            || lower.contains("session not found")
+            || lower.contains("not verified")
     }
 
     private func openTalkSession(audioB64: String) async throws -> String? {

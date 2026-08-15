@@ -13,10 +13,39 @@ OpenAI-compatible ASR/TTS are recommended when a valid key exists, and local
 Parakeet/Kokoro remain the no-network, no-cost default once weights are
 registered.
 
+The HTTP utterance path in this document is the **turn-based** door
+(`POST /v1/voice/utterance` / SSE). The continuous full-duplex runtime —
+turn-taking, thinking pauses, backchannels, native barge-in, and
+foreground conversation + background DeepSeek — lives in
+[`LIVE_VOICE.md`](LIVE_VOICE.md) and `WS /v1/voice/live`. Both share the
+same ASR/TTS contracts, wake session, and chat pipeline.
+
+The spoken brain for **typed chat and the HTTP utterance path** is still a
+chat-completions model: official DeepSeek (`deepseek-v4-flash`) or official
+xAI (`grok-4.6`) via `EV_CHAT_PROVIDER`.
+
+**Grok Voice Think Fast 2.0 is not that.** It is a speech-to-speech realtime
+model (`wss://api.x.ai/v1/realtime`). When `EV_XAI_API_KEY` is set and
+`EV_VOICE_LIVE_BRAIN` is `auto` or `xai`, `WS /v1/voice/live` forwards 16 kHz
+PCM to that model and plays its audio back as `tts_chunk` events. Typed chat
+can stay on DeepSeek — live does not send every question through
+chat-completions. Local ASR/TTS/turn-taking step aside for that channel. EV
+life tools still run here when Grok asks. Until the xAI key is set, live
+keeps the DeepSeek pipeline.
+
+Thinking/CoT is off for DeepSeek (`EV_DEEPSEEK_THINKING=false`) and Grok Voice
+uses `reasoning.effort=none` so the first spoken audio is the answer.
+Actions the owner asked for still run in EV (`backend/app/ev/turn.py` on the
+pipeline path; function calls on the Grok Voice path). `opencode-go` remains
+an optional fallback, not the voice default.
+
 ## 0. Session state machine (Wave Life)
 
-The wake word is a **door**, not a password for every sentence. One wake opens
-a verified session; the owner stays in conversation until a clear dismissal or
+The wake word is a **door for when EV.app is not already listening**, not a
+password for every sentence. Opening EV.app starts the full-duplex live
+channel immediately (`POST /v1/voice/live/open` + `WS /v1/voice/live`); you
+do not say EVIE. When the app is closed, one wake from `ev.ears` opens a
+verified session; the owner stays in conversation until a clear dismissal or
 long true idle.
 
 ```text
@@ -384,6 +413,9 @@ uv run mypy app clients
   follow-up timer reset, no re-wake inside ACTIVE/FOLLOW_UP, sleep phrases,
   non-owner/silence addressivity rejection, push-to-talk bypass, and the
   configurable follow-up timeout.
+- `test_voice_live.py` — EV LIVE turn-taking (thinking vs complete vs
+  trailing pauses), barge-in cancel, backchannels, behavior envelopes,
+  deep-work routing, sleep-phrase close, and `WS /v1/voice/live` registration.
 
 ## 12. Still needs a human
 

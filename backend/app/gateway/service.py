@@ -10,6 +10,7 @@ identity and behavior live outside this module.
 from __future__ import annotations
 
 import inspect
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -45,9 +46,34 @@ LIFE_TOOL_PERMISSIONS = frozenset(
 )
 
 
+_YOU_ARE_RE = re.compile(r"You are ([^,\n]+)")
+
+
+def _spoken_name_for_agency(
+    messages: list[ChatMessage],
+    envelope: RequestEnvelope | None = None,
+) -> str:
+    """Prefer envelope spoken_name, then the identity prefix, then EVIE."""
+
+    from app.ev.assistant import spoken_name
+
+    meta = (envelope.metadata if envelope is not None else None) or {}
+    explicit = meta.get("spoken_name")
+    if explicit:
+        return spoken_name(str(explicit))
+    for message in messages:
+        if message.role != "system":
+            continue
+        match = _YOU_ARE_RE.search(message.content or "")
+        if match:
+            return spoken_name(match.group(1).strip())
+    return spoken_name(None)
+
+
 def _with_life_agency_prompt(
     messages: list[ChatMessage],
     tool_specs: list[ToolSpec],
+    envelope: RequestEnvelope | None = None,
 ) -> list[ChatMessage]:
     """Attach the life-agency block when life tools are offered.
 
@@ -60,7 +86,7 @@ def _with_life_agency_prompt(
         spec.permission in LIFE_TOOL_PERMISSIONS for spec in tool_specs
     ):
         return messages
-    block = life_agency_prompt()
+    block = life_agency_prompt(_spoken_name_for_agency(messages, envelope))
     result = list(messages)
     for index in range(len(result) - 1, -1, -1):
         if result[index].role == "system":
@@ -221,7 +247,7 @@ class ModelGateway:
                     model=model,
                     status="error",
                 )
-        safe_messages = _with_life_agency_prompt(safe_messages, tool_specs)
+        safe_messages = _with_life_agency_prompt(safe_messages, tool_specs, envelope)
         try:
             if tool_specs:
                 result = await self.provider.chat_with_tools(
@@ -331,7 +357,7 @@ class ModelGateway:
                 yield GatewayStreamEvent(kind="error", error=str(exc))
                 yield GatewayStreamEvent(kind="done", call=call)
                 return
-        safe_messages = _with_life_agency_prompt(safe_messages, tool_specs)
+        safe_messages = _with_life_agency_prompt(safe_messages, tool_specs, envelope)
 
         try:
             if isinstance(self.provider, StreamingChatProvider):

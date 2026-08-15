@@ -6,21 +6,20 @@
   <title>EVIE lookout</title>
   <link rel="stylesheet" href="/app/lookout.css">
 </head>
-<body class="sheet">
-  <main class="hud" id="lookout">
-    <div class="mark-row">
+<body class="folio">
+  <main class="hud folio-sheet" id="lookout">
+    <div class="kicker">
       <p class="mark">EVIE</p>
-      <span id="kind" class="kind">CARD</span>
-      <span id="time" class="time">LINGER</span>
+      <span id="kind" class="kind">card</span>
+      <span id="time" class="time">linger</span>
       <span id="live" class="live" hidden></span>
       <span id="source" class="source"></span>
     </div>
-    <h1 id="title">EVIE</h1>
-    <p id="body" class="body"></p>
-    <p id="rec" class="rec" hidden></p>
-    <ul id="items" class="items"></ul>
+    <div id="compose" class="compose"></div>
     <div id="ttl" class="ttl" hidden><span></span></div>
-    <div class="hud-corners"></div>
+    <p id="offline" class="body" hidden>offline</p>
+    <ol id="transcript" class="notes" hidden></ol>
+    <div id="diagnostics-strip" class="notes" data-source="/v1/diagnostics/last"></div>
   </main>
   <script src="/app/lookout.js" defer></script>
 </body>

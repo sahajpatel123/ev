@@ -85,11 +85,34 @@ def _check_chat() -> tuple[str, str, str]:
         return _check_opencode()
     if provider == "deepseek":
         if settings.deepseek_api_key:
-            return "REAL", "deepseek", "DeepSeek API key set"
+            from app.voice.live.grok_voice import grok_voice_enabled
+
+            model = settings.deepseek_model or "deepseek-v4-flash"
+            if grok_voice_enabled():
+                live = "live: Grok Voice Think Fast 2.0"
+            elif (settings.xai_api_key or "").strip():
+                live = "live: pipeline (EV_VOICE_LIVE_BRAIN=pipeline)"
+            else:
+                live = "live: DeepSeek pipeline until EV_XAI_API_KEY is set"
+            return "REAL", "deepseek", f"DeepSeek API key set ({model}); {live}"
         return (
             "PARTIAL",
             "deepseek",
             "configured DeepSeek but EV_DEEPSEEK_API_KEY is empty — chat will "
+            "fail at request time; fill the key in .env",
+        )
+    if provider == "xai":
+        if settings.xai_api_key:
+            live = (
+                "typed: grok-4.6; live: Grok Voice Think Fast 2.0"
+                if (settings.voice_live_brain or "auto") != "pipeline"
+                else f"typed+live pipeline: {settings.xai_model}"
+            )
+            return "REAL", "xai", f"xAI API key set ({live})"
+        return (
+            "PARTIAL",
+            "xai",
+            "configured xAI but EV_XAI_API_KEY is empty — chat/live will "
             "fail at request time; fill the key in .env",
         )
     if provider == "local":

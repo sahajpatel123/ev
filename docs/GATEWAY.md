@@ -15,10 +15,15 @@ adds one method:
 def stream_chat(self, messages, *, model=None, temperature=0.7) -> AsyncIterator[ChatStreamChunk]
 ```
 
-Implemented by `echo`, `mock`, `deepseek`, and `local`. DeepSeek/local use the
-OpenAI-compatible `stream: true` chat-completions endpoint and parse SSE lines
-into `ChatStreamChunk` deltas; tool-call deltas are accumulated per index and
-returned on the terminal chunk.
+Implemented by `echo`, `mock`, `deepseek`, `xai`, and `local`. DeepSeek, xAI
+chat, and local use the OpenAI-compatible `stream: true` chat-completions
+endpoint and parse SSE lines into `ChatStreamChunk` deltas; tool-call deltas
+are accumulated per index and returned on the terminal chunk.
+
+Grok Voice Think Fast 2.0 is **not** this path. It is wired in
+`app.voice.live.grok_voice` as a speech-to-speech realtime socket for live
+talk. Typed chat stays on `EV_CHAT_PROVIDER` (`deepseek-v4-flash` or, if
+chosen, `grok-4.6`).
 
 ### SSE endpoint
 

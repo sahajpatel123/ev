@@ -182,6 +182,12 @@ async def _ip_place() -> str | None:
     return None
 
 
+def home_coords() -> tuple[float, float] | None:
+    if settings.home_lat is None or settings.home_lon is None:
+        return None
+    return (float(settings.home_lat), float(settings.home_lon))
+
+
 async def resolve_place(text: str) -> str | None:
     return extract_place(text) or default_place() or await _ip_place()
 
@@ -252,7 +258,27 @@ def _format_forecast(geo: dict, data: dict) -> str:
     return snippet
 
 
-async def weather_results(query: str, *, limit: int = 3) -> list:
+async def weather_results(
+    query: str,
+    *,
+    limit: int = 3,
+    lat: float | None = None,
+    lon: float | None = None,
+) -> list:
+    if lat is None or lon is None:
+        home = home_coords()
+        if home is not None and not extract_place(query or ""):
+            lat, lon = home
+    if lat is not None and lon is not None:
+        geo = {
+            "name": extract_place(query) or default_place() or "home",
+            "admin": "",
+            "country": "",
+            "latitude": lat,
+            "longitude": lon,
+            "timezone": "auto",
+        }
+        return await _forecast_results(geo, limit=limit)
     place = await resolve_place(query)
     if not place:
         return [
@@ -261,7 +287,7 @@ async def weather_results(query: str, *, limit: int = 3) -> list:
                 "https://open-meteo.com/",
                 (
                     "No coarse place is configured. Ask 'weather in <city>' "
-                    "or set EV_LOCATION_PLACE."
+                    "or set EV_LOCATION_PLACE / EV_HOME_LAT and EV_HOME_LON."
                 ),
             )
         ]
@@ -274,6 +300,10 @@ async def weather_results(query: str, *, limit: int = 3) -> list:
                 f"Open-Meteo geocoding returned no match for {place!r}.",
             )
         ]
+    return await _forecast_results(geo, limit=limit)
+
+
+async def _forecast_results(geo: dict, *, limit: int = 3) -> list:
     async with _client() as client:
         try:
             resp = await client.get(

@@ -53,8 +53,9 @@ Configuration (environment → `defaults` → `~/Library/Application Support/EV/
 | `EV_DEVICE_ID` | `mac-<hostname>` |
 
 `scripts/package.sh` writes `api.env` and `defaults` so the GUI app does not
-need a shell environment. Always-on listening is `ev.ears`; the menu bar
-shows **Listening for EVIE** and opens an overlay when you say the name.
+need a shell environment. While EV.app is open it owns the microphone and
+listens continuously over EV LIVE — no wake word. The menu bar shows
+**listening** / **speaking**.
 
 Example:
 
@@ -499,10 +500,12 @@ something to show; the owner never navigates to a screen for it.
 - The **permission matrix appears only during the initial grant flow** (it
   auto-presents on first launch and is reachable from the panel afterwards;
   it is not a persistent settings surface).
-- Every summoned surface uses the same visual language: translucent dark glass
-  (window opacity 75%, pane tint 30% so 70% of the desktop shows through),
-  cyan EVIE wordmark, warm gold JARVIS accents, one typography hierarchy,
-  Escape/close dismissal, and content-first layout.
+- Every summoned surface uses the same visual language: translucent dusk
+  glass (window opacity 75%, pane tint 30% so 70% of the desktop shows
+  through), a terracotta spine instead of a title bar, serif questions and
+  sans replies, one folio family with varied inner layouts, Escape/dismiss,
+  and content-first composition. Folios drift slightly so they never snap
+  like OS windows.
 
 ## 15. `ev://present` kinds, sizes, and time-types
 
@@ -539,6 +542,10 @@ Query parameters:
 - `title`, `body`, `kind` (default `card`; `auto` lets intelligence choose)
 - `size`, `time`, `place`, `ttl` (milliseconds), `id`, `lookout=1`
 - `items` — pipe (`|`) or newline separated entries
+- `questions` — pipe-separated asks, rendered in serif
+- `response` — the reply, rendered separately from the ask
+- `layout` — `ask` `reply` `split` `stack` `pulse` `ribbon` `field` `ledger`
+- `dx` / `dy` / `tilt` — presentation drift (hashed from id when omitted)
 - `recommendation`, `source`
 - `lat` / `lon` / `dest_lat` / `dest_lon` — map route coordinates
 
@@ -551,15 +558,15 @@ is a fallback, not the product.
 
 ## 16. macOS NSPanel behaviour
 
-Each lookout is its own `NSPanel` (`.titled`, `.closable`,
-`.fullSizeContentView`, `.nonactivatingPanel`). The panel is not opaque:
-`isOpaque = false`, `backgroundColor = .clear`, `alphaValue = 0.75`, and
-the SwiftUI pane fill is a 30% tint so 70% of the desktop stays visible.
-Several can be on screen at once, parked in the corners like JARVIS
-peripheral feeds. Floating level; `canJoinAllSpaces` +
-`fullScreenAuxiliary`; movable by background; Escape / close / TTL
-dismissal. Timed windows (`flash`, `glance`, `linger`, `pulse`) close
-themselves. Lookouts stay until the owner or EVIE dismisses them.
+Each lookout is its own `NSPanel` (`.borderless`, `.nonactivatingPanel`).
+The panel is not an OS window: no title bar, no traffic lights. `isOpaque =
+false`, `backgroundColor = .clear`, `alphaValue = 0.75`, and the SwiftUI
+pane fill is a 30% tint so 70% of the desktop stays visible. Several can
+be on screen at once, drifted into corners rather than snapped to a grid.
+Floating level; `canJoinAllSpaces` + `fullScreenAuxiliary`; movable by
+background; Escape / dismiss / TTL dismissal. Timed windows (`flash`,
+`glance`, `linger`, `pulse`) close themselves. Lookouts stay until the
+owner or EVIE dismisses them.
 
 Accessory-mode presentation path (explicitly tested):
 

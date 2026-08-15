@@ -482,8 +482,44 @@ class DeviceOut(BaseModel):
     paired_at: datetime | None = None
     push_platform: str | None = None
     push_registered: bool = False
+    bootstrapped_at: datetime | None = None
+    bootstrapped_spoken_at: datetime | None = None
 
     model_config = {"from_attributes": True}
+
+
+class OwnerPrefsOut(BaseModel):
+    nickname: str
+    quiet_hours: dict = Field(default_factory=dict)
+    hud_layout: dict = Field(default_factory=dict)
+    feature_gates: list[dict] = Field(default_factory=list)
+    tts_voice: str | None = "default"
+    live_conversation_id: str | None = None
+    volume_percent: int = 70
+
+
+class DeviceBootstrapOut(BaseModel):
+    device_id: str
+    prefs: dict
+    spoken: bool = False
+    spoken_text: str | None = None
+    tts_device_id: str | None = None
+    bootstrapped_spoken_at: str | None = None
+    prefs_loaded: bool = True
+    actor: str | None = None
+
+
+class TranscriptEventOut(BaseModel):
+    id: str
+    event_type: str
+    occurred_at: str
+    text: str = ""
+    source: str | None = None
+
+
+class TranscriptOut(BaseModel):
+    conversation_id: str
+    events: list[TranscriptEventOut] = Field(default_factory=list)
 
 
 class AttachmentOut(BaseModel):
@@ -672,6 +708,15 @@ class CalibrationReport(BaseModel):
     overall: Literal["ok", "degraded", "failed"]
     checks: list[DiagnosticCheck] = Field(default_factory=list)
     recommendations: list[str] = Field(default_factory=list)
+
+
+class DiagnosticsLastOut(BaseModel):
+    schema_version: Literal["ev.diagnostics.last.v1"] = "ev.diagnostics.last.v1"
+    generated_at: datetime | None = None
+    stale: bool = True
+    overall: Literal["ok", "degraded", "failed", "unknown"] = "unknown"
+    report: CalibrationReport | None = None
+    hud: dict = Field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -915,6 +960,23 @@ class VoiceWakeResponse(BaseModel):
     challenge_nonce: str | None = None
     challenge_phrase: str | None = None
     message: str | None = None
+    greeting: str | None = None
+    onboarding: str | None = None
+    conversation_id: UUID | None = None
+
+
+class VoiceLiveOpenRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=128)
+
+
+class VoiceLiveOpenResponse(BaseModel):
+    session_id: UUID
+    state: str
+    conversation_id: UUID | None = None
+    live: bool = True
+    message: str | None = None
+    greeting: str | None = None
+    onboarding: str | None = None
 
 
 class VoiceSessionVerifyRequest(BaseModel):
@@ -936,6 +998,7 @@ class VoiceSessionVerifyResponse(BaseModel):
     reason: str = ""
     conversation_id: UUID | None = None
     greeting: str | None = None
+    onboarding: str | None = None
 
 
 class SpeechStyleOut(BaseModel):
@@ -993,6 +1056,7 @@ class VoiceUtteranceResponse(BaseModel):
     reply: str
     conversation_id: UUID | None = None
     tts: TtsOut | None = None
+    tts_device_id: UUID | None = None
     style: SpeechStyleOut | None = None
     model: str | None = None
     context_tokens: int = 0
@@ -1301,6 +1365,7 @@ class ReverificationRequest(BaseModel):
         "adapter.delete",
         "person.delete",
         "fleet.write",
+        "life.action",
     ]
     voice_session_id: UUID | None = None
 
@@ -1331,6 +1396,7 @@ class ReverificationConsumeRequest(BaseModel):
         "adapter.delete",
         "person.delete",
         "fleet.write",
+        "life.action",
     ]
 
 
@@ -1957,6 +2023,9 @@ class AssistantProfileOut(BaseModel):
     dedication_played_at: datetime | None = None
     training_wheels_started_at: datetime | None = None
     training_wheels_completed_at: datetime | None = None
+    tts_voice: str | None = "default"
+    hud_layout: dict = Field(default_factory=dict)
+    volume_percent: int = 70
 
 
 class AssistantNameRequest(BaseModel):
@@ -2144,6 +2213,12 @@ class HudLookoutWindow(BaseModel):
     source: str | None = None
     lookout: bool = False
     priority: float = 0.4
+    questions: list[str] = Field(default_factory=list)
+    response: str | None = None
+    layout: str = "stack"
+    drift_x: int = 0
+    drift_y: int = 0
+    tilt: float = 0.0
 
 
 class HudLookoutOut(BaseModel):
@@ -2213,6 +2288,7 @@ class ToolCallRequest(BaseModel):
     arguments: dict = Field(default_factory=dict)
     allow_sensitive: bool = False
     request_id: str | None = Field(default=None, max_length=128)
+    life_verified: bool = False
 
 
 class ToolCallResponse(BaseModel):
@@ -2241,6 +2317,9 @@ class RuntimeHeartbeatCreate(BaseModel):
     status: Literal["ok", "degraded", "error"] = "ok"
     listener_state: Literal["listening", "sleep", "off"] = "listening"
     battery_percent: float | None = Field(default=None, ge=0, le=100)
+    battery_pct: float | None = Field(default=None, ge=0, le=100)
+    storage_free_bytes: int | None = Field(default=None, ge=0)
+    storage_free_b: int | None = Field(default=None, ge=0)
     latency_ms: int | None = Field(default=None, ge=0)
     details: dict = Field(default_factory=dict)
 
@@ -2252,6 +2331,7 @@ class RuntimeHeartbeatOut(BaseModel):
     status: str
     listener_state: str
     battery_percent: float | None
+    storage_free_bytes: int | None = None
     latency_ms: int | None
     details: dict
 
@@ -2334,6 +2414,7 @@ class RuntimeUtteranceResponse(BaseModel):
     reply: str
     conversation_id: UUID | None = None
     tts: TtsOut | None = None
+    tts_device_id: UUID | None = None
     style: SpeechStyleOut | None = None
     model: str | None = None
     context_tokens: int = 0
@@ -3387,6 +3468,111 @@ class LifeOutboxOut(BaseModel):
     items: list[LifeOutboxEntryOut] = Field(default_factory=list)
 
 
+# --------------------------------------------------------------------------- #
+# Workbench: telemetry, location shares, beacons, lookout utterance
+# --------------------------------------------------------------------------- #
+
+
+class TelemetrySessionCreate(BaseModel):
+    label: str = Field(default="test", min_length=1, max_length=128)
+
+
+class TelemetrySessionOut(BaseModel):
+    id: UUID
+    label: str
+    status: str
+    started_at: datetime
+    ended_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class TelemetrySampleCreate(BaseModel):
+    source: Literal["drone", "vehicle", "phone"]
+    battery: float | None = Field(default=None, ge=0, le=100)
+    alt: float | None = None
+    speed: float | None = None
+    lat: float | None = None
+    lon: float | None = None
+    session_id: UUID | None = None
+    details: dict = Field(default_factory=dict)
+
+
+class TelemetrySampleOut(BaseModel):
+    id: UUID
+    session_id: UUID | None
+    source: str
+    battery: float | None
+    alt: float | None
+    speed: float | None
+    lat: float | None
+    lon: float | None
+    reported_at: datetime
+    details: dict
+
+    model_config = {"from_attributes": True}
+
+
+class LocationShareCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    last_lat: float
+    last_lon: float
+    token_expires: datetime | None = None
+    source: str = "consent"
+    owner_family_device: bool = False
+
+
+class LocationShareOut(BaseModel):
+    id: UUID
+    person_name: str
+    last_lat: float | None
+    last_lon: float | None
+    token_expires: datetime
+    source: str
+
+    model_config = {"from_attributes": True}
+
+
+class BeaconCreate(BaseModel):
+    label: str = Field(min_length=1, max_length=128)
+    kind: Literal["findmy", "ble", "ev_device"] = "ev_device"
+    last_lat: float | None = None
+    last_lon: float | None = None
+    details: dict = Field(default_factory=dict)
+
+
+class BeaconOut(BaseModel):
+    id: UUID
+    label: str
+    kind: str
+    last_lat: float | None
+    last_lon: float | None
+    owner_only: bool = True
+    last_seen_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class LookoutUtteranceIn(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    conversation_id: UUID | None = None
+    prefer_haptic: bool = True
+
+
+class OwnerCameraCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    vault_ref: str | None = Field(default=None, max_length=256)
+    kind: str = "upload"
+    clip_attachment_id: UUID | None = None
+
+
+class PublicFeedCreate(BaseModel):
+    kind: str = Field(default="rss", max_length=32)
+    url: str = Field(min_length=1, max_length=1024)
+    label: str = Field(min_length=1, max_length=256)
+    items: list[dict] = Field(default_factory=list)
+
+
 # --- PRESENCE (EVIE overlay) ---
 
 
@@ -3410,6 +3596,9 @@ class PresenceShowIn(BaseModel):
     lon: float | None = None
     dest_lat: float | None = None
     dest_lon: float | None = None
+    questions: list[str] = Field(default_factory=list)
+    response: str | None = Field(default=None, max_length=4000)
+    layout: str | None = Field(default=None, max_length=16)
 
 
 class PresenceShowOut(BaseModel):

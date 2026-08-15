@@ -46,6 +46,8 @@ from app.voice.contracts import (
 )
 from app.voice.pipeline import (
     PipelineOutcome,
+    TtsChunk,
+    cached_listen_ack,
     persist_tts_audio,
     run_chat_tts_pipeline,
     stream_chat_tts_pipeline,
@@ -56,10 +58,6 @@ from app.voice.sensitive import REVERIFY_PURPOSE, classify_sensitive
 from app.voice.speaker import default_speaker_verifier
 from app.voice.tts import get_synthesizer
 from app.voice.wake import configured_wake_engine
-
-#: Cached wake listen-acks ("Yes?" / "Hmm." / "Mhm." / "Yes.") keyed by
-#: (kind, phrase, voice) so a wake handshake never waits on a TTS round trip.
-_ACK_CACHE: dict[tuple[str, str, str], SynthesisResult] = {}
 
 
 class VoiceState:
@@ -170,6 +168,9 @@ class WakeOutcome:
     transcript: str | None = None
     reply: str | None = None
     tts: SynthesisResult | None = None
+    greeting: str | None = None
+    onboarding: str | None = None
+    conversation_id: str | None = None
 
 
 @dataclass
@@ -196,6 +197,7 @@ class VerifyOutcome:
     reason: str = ""
     conversation_id: str | None = None
     greeting: str | None = None
+    onboarding: str | None = None
 
 
 @dataclass
@@ -384,6 +386,22 @@ class VoiceRuntime:
         )
         return result.scalar_one_or_none()
 
+    async def _latest_session(self, device_id: str) -> VoiceSession | None:
+        """Most recent session for this device, including one that already ended.
+
+        Talk reuses the menu-bar's session id. After sleep / idle lock the
+        row is ENDED, so ``_active_session`` misses it and a new wake would
+        mint a second id — leaving the button stuck on the dead one.
+        """
+
+        result = await self.session.execute(
+            select(VoiceSession)
+            .where(VoiceSession.device_id == device_id)
+            .order_by(VoiceSession.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
     async def _get_session(self, session_id) -> VoiceSession:
         if isinstance(session_id, str):
             session_id = UUID(session_id)
@@ -516,6 +534,10 @@ class VoiceRuntime:
         )
         self.session.add(voiceprint)
         await self.session.flush()
+        from app.ev.training_wheels import mark_step_from_event
+
+        await mark_step_from_event(self.session, "speaker_enroll")
+        await mark_step_from_event(self.session, "mic_permission")
         await self._log(
             "enroll",
             "accepted",
@@ -765,24 +787,70 @@ class VoiceRuntime:
         row.conversation_id = thread.id
         return str(thread.id)
 
-    def _reuse_push_to_talk_session(self, row: VoiceSession) -> None:
-        """Keep a healthy Talk session; recover stale processing in place."""
+    APP_LIVE_VERIFIERS = frozenset({"push_to_talk", "app_open"})
+
+    def _reuse_push_to_talk_session(
+        self, row: VoiceSession, *, verifier_name: str | None = None
+    ) -> None:
+        """Re-open a Talk / app-open session in place, including one that ended.
+
+        The menu-bar keeps ``sessionId`` across presses. Sleep phrases, the
+        idle lock, and SSE ``session_ended`` errors used to leave that id
+        pointing at an ENDED row, so every later Talk press failed with
+        "wake EVIE again". Talk and in-app live are already owner-authenticated,
+        so revive.
+        """
 
         now = utcnow()
         row.state = VoiceState.AWAKE
         row.owner_verified = True
-        row.verifier_name = row.verifier_name or "push_to_talk"
+        row.verifier_name = (
+            verifier_name or row.verifier_name or "push_to_talk"
+        )
         row.ended_at = None
         row.end_reason = None
         row.expires_at = now + timedelta(seconds=self.session_timeout_seconds)
         row.follow_up_until = now + timedelta(seconds=self.session_timeout_seconds)
 
-    async def _begin_push_to_talk_session(
-        self, *, device_id: str, wake_word: str
-    ) -> WakeOutcome:
-        """Open or reuse an AWAKE session for the menu-bar Talk button.
+    async def open_live_session(self, *, device_id: str) -> WakeOutcome:
+        """Open a full-duplex live conversation without a wake word.
 
-        Talk is already authenticated by the API key. A second press on a
+        Opening EV.app is the door. The owner is already authenticated by
+        the API key; there is no Evie gate on this path.
+        """
+
+        await self._expire_stale()
+        return await self._begin_push_to_talk_session(
+            device_id=device_id, wake_word="evie", verifier_name="app_open"
+        )
+
+    async def refresh_live_lease(self, session_id) -> None:
+        """Keep an open live WebSocket from idle-locking mid-conversation."""
+
+        row = await self._get_session(session_id)
+        if row.ended_at is not None:
+            return
+        now = utcnow()
+        row.expires_at = now + timedelta(seconds=self.session_timeout_seconds)
+        row.follow_up_until = now + timedelta(seconds=self.session_timeout_seconds)
+        if row.state not in {
+            VoiceState.AWAKE,
+            VoiceState.FOLLOW_UP,
+            VoiceState.PROCESSING,
+            VoiceState.RESPONDING,
+        }:
+            self._reuse_push_to_talk_session(row)
+
+    async def _begin_push_to_talk_session(
+        self,
+        *,
+        device_id: str,
+        wake_word: str,
+        verifier_name: str = "push_to_talk",
+    ) -> WakeOutcome:
+        """Open or reuse an AWAKE session for Talk or in-app live.
+
+        The client is already authenticated by the API key. A second open on a
         live session must keep the same session (and conversation thread).
         Stale PROCESSING/RESPONDING is recovered in place so a hung turn
         cannot 409 forever; a healthy follow-up is never killed.
@@ -790,19 +858,33 @@ class VoiceRuntime:
 
         await self._require_voice_consent()
         existing = await self._active_session(device_id)
+        if existing is None:
+            existing = await self._latest_session(device_id)
         enrollment = await self._current_enrollment()
         if existing is not None:
+            from app.ev import assistant as assistant_mod
+
             prior_state = existing.state
-            self._reuse_push_to_talk_session(existing)
+            was_ended = existing.ended_at is not None
+            self._reuse_push_to_talk_session(existing, verifier_name=verifier_name)
             if existing.conversation_id is None:
                 await self._bind_live_thread(existing)
+            greeting = None
+            onboarding = None
+            if was_ended:
+                existing.greeted_at = None
+                awake = await assistant_mod.companion_on_awake(
+                    self.session, existing, actor=self.actor
+                )
+                greeting = awake.greeting
+                onboarding = awake.onboarding
             await self.session.flush()
             await self._log(
                 "wake",
                 "accepted",
                 session_id=existing.id,
                 device_id=device_id,
-                reason="push-to-talk-reuse",
+                reason=f"{verifier_name}-reuse",
                 wake_word=wake_word,
                 prior_state=prior_state,
             )
@@ -810,7 +892,12 @@ class VoiceRuntime:
                 session_id=str(existing.id),
                 state=VoiceState.AWAKE,
                 owner_enrolled=enrollment is not None,
-                message="Wake accepted. Listening.",
+                message="Listening.",
+                greeting=greeting,
+                onboarding=onboarding,
+                conversation_id=(
+                    str(existing.conversation_id) if existing.conversation_id else None
+                ),
             )
         service = EventService(self.session, actor=self.actor)
         wake_event = await service.create(
@@ -822,7 +909,7 @@ class VoiceRuntime:
                     "confidence": 1.0,
                     "stage": "burst",
                     "power_state": "burst",
-                    "engine": "push_to_talk",
+                    "engine": verifier_name,
                 },
                 metadata={"device_id": device_id},
                 device_id=device_id,
@@ -837,7 +924,7 @@ class VoiceRuntime:
             state=VoiceState.AWAKE,
             owner_verified=True,
             speaker_confidence=1.0,
-            verifier_name="push_to_talk",
+            verifier_name=verifier_name,
             wake_confidence=1.0,
             wake_event_id=wake_event.id,
             verified_at=now,
@@ -847,20 +934,28 @@ class VoiceRuntime:
         self.session.add(row)
         await self.session.flush()
         await self._bind_live_thread(row)
+        from app.ev import assistant as assistant_mod
+
+        awake = await assistant_mod.companion_on_awake(
+            self.session, row, actor=self.actor
+        )
         await self.session.flush()
         await self._log(
             "wake",
             "accepted",
             session_id=row.id,
             device_id=device_id,
-            reason="push-to-talk",
+            reason=verifier_name,
             wake_word=wake_word,
         )
         return WakeOutcome(
             session_id=str(row.id),
             state=VoiceState.AWAKE,
             owner_enrolled=enrollment is not None,
-            message="Wake accepted. Listening.",
+            message="Listening.",
+            greeting=awake.greeting,
+            onboarding=awake.onboarding,
+            conversation_id=str(row.conversation_id) if row.conversation_id else None,
         )
 
     async def _fallback_utterance(
@@ -1728,8 +1823,6 @@ class VoiceRuntime:
         verified = confidence >= enrollment.threshold
         if verified:
             from app.ev import assistant as assistant_mod
-            from app.ev.callouts import session_malfunction_callout
-            from app.ev.protocols import capability_reply, mark_onboarding
 
             thread = await assistant_mod.bind_live_thread(self.session)
             row.state = VoiceState.AWAKE
@@ -1739,34 +1832,9 @@ class VoiceRuntime:
             row.verified_at = utcnow()
             row.expires_at = utcnow() + timedelta(seconds=self.session_timeout_seconds)
             row.conversation_id = thread.id
-            greeting = None
-            if row.greeted_at is None:
-                greeting = await assistant_mod.emit_awake_greeting(
-                    self.session, thread_id=thread.id, actor=self.actor
-                )
-                row.greeted_at = utcnow()
-            if row.malfunction_spoken_at is None:
-                callout = await session_malfunction_callout(
-                    self.session, session_key=str(row.id)
-                )
-                if callout is not None:
-                    row.malfunction_spoken_at = utcnow()
-            profile = await assistant_mod.get_profile(self.session)
-            if profile.onboarding_completed_at is None:
-                tour = await capability_reply(self.session, include_refused=False)
-                from app.schemas import EventCreate
-                from app.services.event_service import EventService
-
-                await EventService(self.session, actor=self.actor).create(
-                    EventCreate(
-                        source="voice",
-                        event_type="assistant.onboarding",
-                        text=tour["reply"],
-                        conversation_id=thread.id,
-                        metadata={"kind": "onboarding", "hud": tour["hud"]},
-                    )
-                )
-                mark_onboarding(profile)
+            awake = await assistant_mod.companion_on_awake(
+                self.session, row, actor=self.actor
+            )
             await self._log(
                 "verify",
                 "accepted",
@@ -1785,7 +1853,8 @@ class VoiceRuntime:
                 confidence=confidence,
                 reason="owner voiceprint match",
                 conversation_id=str(thread.id),
-                greeting=greeting,
+                greeting=awake.greeting,
+                onboarding=awake.onboarding,
             )
 
         await self._log(
@@ -1905,10 +1974,12 @@ class VoiceRuntime:
         try:
             values, _sample_rate = decode_waveform(raw)
         except (ValueError, wave.Error, EOFError) as exc:
+            from app.voice.asr import hear_status_message
+
             raise VoiceError(
-                "Speech ignored — audio could not be decoded for addressivity",
-                status=403,
-                code="voice_ignored",
+                hear_status_message("asr_undecodable_audio"),
+                status=422,
+                code="asr_undecodable_audio",
             ) from exc
         return [
             max(-32768, min(32767, int(round(value * 32767))))
@@ -1993,21 +2064,6 @@ class VoiceRuntime:
             enrolled_payload=enrolled_payload,
             threshold=min(enrollment.threshold, settings.voiceprint_wake_threshold),
         )
-        if (
-            not decision.verified
-            and row.owner_verified
-            and decision.confidence >= self._WAKE_NEAR_MISS
-        ):
-            from app.voice.contracts import SpeakerDecision
-
-            decision = SpeakerDecision(
-                verified=True,
-                confidence=decision.confidence,
-                threshold=self._WAKE_NEAR_MISS,
-                algorithm=decision.algorithm,
-                speaker_id=decision.speaker_id,
-                reason="follow-up near-miss",
-            )
         if not decision.verified:
             await self._log(
                 "addressivity",
@@ -2083,20 +2139,7 @@ class VoiceRuntime:
         return is_wake_only_name(text)
 
     async def _listening_ack(self, heard: str = "") -> SynthesisResult:
-        from app.voice.speech import choose_listen_ack, listen_ack_style
-
-        phrase = choose_listen_ack(heard or "evie")
-        # Wake must feel instant. Acks are a closed set ("Yes?" / "Hmm." /
-        # "Mhm." / "Yes."), so synthesize each once per voice and replay the
-        # cached bytes on every later wake instead of a network TTS round trip.
-        voice = str(getattr(self.synthesizer, "voice", None) or getattr(self.synthesizer, "name", "tts"))
-        key = ("ack", phrase, voice)
-        cached = _ACK_CACHE.get(key)
-        if cached is not None:
-            return cached
-        result = await self.synthesizer.synthesize(phrase, style=listen_ack_style())
-        if result.audio:
-            _ACK_CACHE[key] = result
+        _phrase, result = await cached_listen_ack(self.synthesizer, heard)
         return result
 
     def _remember_spoken_reply(
@@ -2240,7 +2283,42 @@ class VoiceRuntime:
             style=style,
         )
 
-    async def _validate_utterance_row(self, row: VoiceSession, follow_up: bool) -> None:
+    def _is_talk_request(self, row: VoiceSession, push_to_talk: bool) -> bool:
+        """Talk / in-app live: explicit PTT flag or an owner-authenticated door."""
+
+        return bool(
+            push_to_talk
+            or row.verifier_name in self.APP_LIVE_VERIFIERS
+        )
+
+    async def _validate_utterance_row(
+        self, row: VoiceSession, follow_up: bool, *, push_to_talk: bool = False
+    ) -> None:
+        if self._is_talk_request(row, push_to_talk):
+            # Talk is owner-authenticated. Never trap the button behind a
+            # stale ENDED / VERIFYING / idle-locked row the client still holds.
+            if row.state in BUSY_STATES:
+                if (
+                    self._busy_session_age(row) < STALE_BUSY_SECONDS
+                    and session_in_flight(str(row.id))
+                ):
+                    raise VoiceError(
+                        f"Utterance only valid from a listening state (current: {row.state})",
+                        status=409,
+                        code="invalid_state",
+                    )
+                self._reuse_push_to_talk_session(row)
+            elif (
+                row.ended_at is not None
+                or row.state not in {VoiceState.AWAKE, VoiceState.FOLLOW_UP}
+                or not row.owner_verified
+            ):
+                self._reuse_push_to_talk_session(row)
+            if row.state == VoiceState.FOLLOW_UP and follow_up_hint_expired(
+                row.follow_up_until
+            ):
+                row.state = VoiceState.AWAKE
+            return
         if row.ended_at is not None or row.state == VoiceState.ENDED:
             raise VoiceError(
                 "Voice session ended — wake EVIE again",
@@ -2331,6 +2409,7 @@ class VoiceRuntime:
             "asr_audio_required",
             "asr_echo_no_audio",
             "asr_engine_error",
+            "asr_unreadable",
         }
     )
 
@@ -2338,22 +2417,84 @@ class VoiceRuntime:
         return exc.code in self._ASR_RECOVERABLE
 
     def _asr_recovery_reply(self, code: str) -> str:
-        if code == "asr_timeout":
-            return "That took too long to hear. Try a shorter question."
-        if code in {
-            "asr_undecodable_audio",
-            "asr_bad_base64",
-            "asr_empty_audio",
-            "asr_audio_required",
-        }:
-            return "I couldn't read that clip. Hold Push to talk and try again."
-        return "I didn't catch that. Hold Push to talk and try again."
+        from app.voice.asr import hear_status_message
+
+        return hear_status_message(code)
 
     def _busy_session_age(self, row: VoiceSession) -> float:
         stamp = _aware(row.updated_at)
         if stamp is None:
             return 0.0
         return max(0.0, (utcnow() - stamp).total_seconds())
+
+    async def _drain_asr_stream(
+        self,
+        *,
+        audio_ref: str | None,
+        audio_b64: str | None,
+        text_hint: str | None,
+        language: str,
+    ) -> list[tuple[str, object]]:
+        """Collect ASR stream events under the ASR timeout (not a silent wait)."""
+
+        events: list[tuple[str, object]] = []
+        deadline = time.monotonic() + float(settings.voice_asr_timeout_seconds)
+        stream = self.transcriber.stream(
+            audio_ref=audio_ref,
+            audio_b64=audio_b64,
+            text_hint=text_hint,
+            language=language,
+        )
+        if asyncio.iscoroutine(stream):
+            remaining = deadline - time.monotonic()
+            stream = await asyncio.wait_for(stream, timeout=max(0.05, remaining))
+        iterator = stream.__aiter__()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VoiceError(
+                    "Speech recognition took too long",
+                    status=504,
+                    code="asr_timeout",
+                )
+            try:
+                item = await asyncio.wait_for(
+                    iterator.__anext__(), timeout=remaining
+                )
+            except StopAsyncIteration:
+                break
+            except TimeoutError as exc:
+                raise VoiceError(
+                    "Speech recognition took too long",
+                    status=504,
+                    code="asr_timeout",
+                ) from exc
+            if isinstance(item, TranscriptPartial):
+                events.append(("partial", item))
+            else:
+                events.append(("final_transcript", item))
+        return events
+
+    async def _unreadable_outcome(
+        self, *, row: VoiceSession, transcript: Transcript
+    ) -> UtteranceOutcome:
+        from app.voice.asr import classify_hear_failure
+
+        raw = (transcript.text or "").strip()
+        if not raw:
+            details = transcript.details or {}
+            if details.get("code") in {"asr_empty_audio", "asr_undecodable_audio", "asr_no_speech"}:
+                _code, reply = classify_hear_failure(code=str(details["code"]))
+            else:
+                _code, reply = classify_hear_failure(no_speech=True)
+        else:
+            reply = self._asr_recovery_reply("asr_unreadable")
+        return await self._fallback_utterance(
+            row=row,
+            transcript=transcript,
+            reply=reply,
+            error=reply,
+        )
 
     async def _run_pipeline_for(
         self,
@@ -2416,6 +2557,13 @@ class VoiceRuntime:
             raise
         finally:
             clear_session_in_flight(str(row.id))
+        if not (getattr(outcome, "reply", None) or "").strip():
+            return await self._fallback_utterance(
+                row=row,
+                transcript=transcript,
+                reply="I heard you, but I don't have a spoken answer yet.",
+                error="empty_reply",
+            )
         self._refresh_listen_window(row)
         await self._log(
             "utterance" if not follow_up else "follow_up",
@@ -2451,7 +2599,9 @@ class VoiceRuntime:
     ) -> UtteranceOutcome:
         await self._expire_stale()
         row = await self._get_session(session_id)
-        await self._validate_utterance_row(row, follow_up)
+        await self._validate_utterance_row(
+            row, follow_up, push_to_talk=push_to_talk
+        )
         if row.conversation_id is None:
             await self._bind_live_thread(row)
         await self._addressivity_gate(
@@ -2496,6 +2646,10 @@ class VoiceRuntime:
                 asr_provider=transcript.provider,
             )
             raise self._degraded_transcript_error(transcript)
+        from app.voice.speech import is_unreadable_transcript
+
+        if is_unreadable_transcript(transcript.text):
+            return await self._unreadable_outcome(row=row, transcript=transcript)
         if self._is_sleep_phrase(transcript.text):
             return await self._sleep_outcome(row=row, transcript=transcript)
         if self._is_wake_only(transcript.text):
@@ -2568,10 +2722,18 @@ class VoiceRuntime:
         / ``reply`` / ``error``. The caller (API layer) serializes them.
         """
 
+        from app.voice.speech import (
+            choose_listen_ack,
+            is_unreadable_transcript,
+            starts_with_evie,
+        )
+
         await self._expire_stale()
         try:
             row = await self._get_session(session_id)
-            await self._validate_utterance_row(row, follow_up)
+            await self._validate_utterance_row(
+                row, follow_up, push_to_talk=push_to_talk
+            )
             if row.conversation_id is None:
                 await self._bind_live_thread(row)
         except VoiceError as exc:
@@ -2580,6 +2742,8 @@ class VoiceRuntime:
             yield "error", exc
             return
         final_transcript: Transcript | None = None
+        already_acked = False
+        mark_session_in_flight(str(row.id))
         try:
             await self._addressivity_gate(
                 row=row,
@@ -2588,9 +2752,32 @@ class VoiceRuntime:
                 text=text,
                 push_to_talk=push_to_talk,
             )
-            if text and audio_b64 is None and audio_ref is None:
+            # Talk / Evie-start: speak the listen-ack immediately. Do not sit
+            # silent through ASR (45s) + LLM + TTS. ASR starts in parallel.
+            evie_start = starts_with_evie(text or "")
+            talk_turn = bool(push_to_talk or row.verifier_name == "push_to_talk")
+            early_ack = evie_start or talk_turn
+            need_asr = not (text and audio_b64 is None and audio_ref is None)
+            asr_task: asyncio.Task | None = None
+            if need_asr:
+                asr_task = asyncio.create_task(
+                    self._drain_asr_stream(
+                        audio_ref=audio_ref,
+                        audio_b64=audio_b64,
+                        text_hint=text,
+                        language=language,
+                    )
+                )
+            if early_ack:
+                ack_heard = (text or "").strip() or "evie"
+                ack_phrase = choose_listen_ack(ack_heard)
+                ack_tts = await self._listening_ack(ack_heard)
+                already_acked = True
+                self._remember_spoken_reply(row.device_id, ack_phrase, tts=ack_tts)
+                yield "tts_chunk", TtsChunk(index=0, text=ack_phrase, tts=ack_tts)
+            if not need_asr:
                 final_transcript = Transcript(
-                    text=text,
+                    text=text or "",
                     confidence=1.0,
                     language=language,
                     provider="text",
@@ -2598,17 +2785,12 @@ class VoiceRuntime:
                 )
                 yield "final_transcript", final_transcript
             else:
-                async for item in self.transcriber.stream(
-                    audio_ref=audio_ref,
-                    audio_b64=audio_b64,
-                    text_hint=text,
-                    language=language,
-                ):
-                    if isinstance(item, TranscriptPartial):
-                        yield "partial", item
-                    else:
-                        final_transcript = item
-                        yield "final_transcript", item
+                assert asr_task is not None
+                asr_events = await asr_task
+                for kind, payload in asr_events:
+                    yield kind, payload
+                    if kind == "final_transcript" and isinstance(payload, Transcript):
+                        final_transcript = payload
             if final_transcript is None:
                 raise VoiceError(
                     "ASR stream ended without a final transcript",
@@ -2625,10 +2807,34 @@ class VoiceRuntime:
                     asr_provider=final_transcript.provider,
                 )
                 raise self._degraded_transcript_error(final_transcript)
+            if is_unreadable_transcript(final_transcript.text):
+                yield "reply", await self._unreadable_outcome(
+                    row=row, transcript=final_transcript
+                )
+                return
             if self._is_sleep_phrase(final_transcript.text):
                 yield "reply", await self._sleep_outcome(
                     row=row,
                     transcript=final_transcript,
+                )
+                return
+            if self._is_wake_only(final_transcript.text):
+                if already_acked:
+                    self._refresh_listen_window(row)
+                    phrase = choose_listen_ack(final_transcript.text or "evie")
+                    yield "reply", UtteranceOutcome(
+                        session_id=str(row.id),
+                        state=VoiceState.FOLLOW_UP,
+                        transcript=final_transcript,
+                        reply=phrase,
+                        conversation_id=(
+                            str(row.conversation_id) if row.conversation_id else None
+                        ),
+                        tts=await self._listening_ack(final_transcript.text),
+                    )
+                    return
+                yield "reply", await self._wake_only_listen_outcome(
+                    row=row, transcript=final_transcript
                 )
                 return
             if self._is_self_echo(row, final_transcript.text):
@@ -2664,6 +2870,7 @@ class VoiceRuntime:
                     conversation_id=conversation_id,
                     synthesizer=self.synthesizer,
                     speaker_confidence=row.speaker_confidence,
+                    skip_listen_ack=already_acked,
                 ):
                     if kind == "tts_chunk":
                         yield "tts_chunk", payload
@@ -2688,7 +2895,13 @@ class VoiceRuntime:
                 return
             if outcome is None:
                 raise VoiceError("Voice reply failed", status=503, code="voice_pipeline")
+            if is_unreadable_transcript(outcome.reply or ""):
+                yield "reply", await self._unreadable_outcome(
+                    row=row, transcript=final_transcript
+                )
+                return
             self._refresh_listen_window(row)
+            self._remember_spoken_reply(row.device_id, outcome.reply, tts=outcome.tts)
             if self._interrupt_event(str(session_id)).is_set():
                 self._interrupt_event(str(session_id)).clear()
                 raise VoiceError(
@@ -2735,6 +2948,8 @@ class VoiceRuntime:
                 status=503,
                 code="voice_pipeline",
             )
+        finally:
+            clear_session_in_flight(str(row.id))
 
     async def handle_barge_in(self, session_id) -> SessionStatus:
         """Stop playback immediately and re-enter listening (AWAKE)."""

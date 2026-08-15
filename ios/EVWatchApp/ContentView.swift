@@ -23,7 +23,10 @@ struct ContentView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                TextField("Quick note", text: $note)
+                TextField("Ask EV", text: $note)
+                Button("Ask") {
+                    ask()
+                }
                 Button("Remember") {
                     remember()
                 }
@@ -41,6 +44,23 @@ struct ContentView: View {
     private func load() async {
         let client = EVAPIClient(baseURL: config.baseURL, token: config.apiKey)
         card = try? await client.hudCard()
+    }
+
+    private func ask() {
+        let text = note
+        note = ""
+        Task {
+            let client = EVAPIClient(baseURL: config.baseURL, token: config.apiKey)
+            do {
+                let result = try await client.lookoutUtterance(text: text)
+                status = result.reply
+                if let hud = result.hud {
+                    card = hud
+                }
+            } catch {
+                status = "Failed: \(error)"
+            }
+        }
     }
 
     private func remember() {

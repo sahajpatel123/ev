@@ -22,5 +22,9 @@ if arguments.contains("--smoke-test") {
 } else if arguments.contains("--request-pending") {
     exit(EVSmokeTest.runRequestPending())
 } else {
+    // Bind the shared app to EVApplication before SwiftUI touches AppKit,
+    // so last-window / stray terminate hits TerminatePolicy even when the
+    // MenuBarExtra adaptor has not wired AppDelegate yet.
+    _ = EVApplication.shared
     EVApp.main()
 }

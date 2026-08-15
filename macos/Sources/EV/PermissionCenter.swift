@@ -1,6 +1,7 @@
 import ApplicationServices
 import AVFoundation
 import Contacts
+import EVRuntime
 import CoreBluetooth
 import CoreGraphics
 import CoreLocation
@@ -143,7 +144,7 @@ enum PermissionCenter {
     static func request(_ kind: PermissionKind) async -> Bool {
         switch kind {
         case .microphone:
-            return await AVCaptureDevice.requestAccess(for: .audio)
+            return await MicrophoneAuthorization.requestAccess()
         case .camera:
             return await AVCaptureDevice.requestAccess(for: .video)
         case .notifications:
@@ -332,19 +333,22 @@ enum PermissionCenter {
 
     // MARK: - Individual checks
 
-    private static func microphoneStatus() -> PermissionStatus {
-        let state: PermissionState
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
-        case .authorized: state = .granted
-        case .denied: state = .denied
-        case .notDetermined: state = .notDetermined
-        case .restricted: state = .restricted
-        @unknown default: state = .notDetermined
+    private static func permissionState(_ grant: MicrophoneGrant) -> PermissionState {
+        switch grant {
+        case .granted: return .granted
+        case .denied: return .denied
+        case .notDetermined: return .notDetermined
+        case .restricted: return .restricted
         }
+    }
+
+    private static func microphoneStatus() -> PermissionStatus {
+        MicrophoneAuthorization.publishCurrent()
+        let state = permissionState(MicrophoneAuthorization.current())
         return PermissionStatus(
             kind: .microphone,
             state: state,
-            whatBreaks: "Push-to-talk in the menu bar cannot record. Always-on “EVIE” wake still runs in the ev.ears process if that process has Microphone access.",
+            whatBreaks: "EV cannot hear you. Grant Microphone so the open app can listen continuously.",
             settingsURL: settingsURL(for: .microphone),
             canRequest: true
         )
@@ -750,7 +754,16 @@ enum PermissionCenter {
     }
 
     private static func notificationStatus() async -> PermissionStatus {
-        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        guard let center = ObjCException.notificationCenter() else {
+            return PermissionStatus(
+                kind: .notifications,
+                state: .notDetermined,
+                whatBreaks: "EV cannot surface alerts/digests delivered through Agent 14's notifier path.",
+                settingsURL: settingsURL(for: .notifications),
+                canRequest: true
+            )
+        }
+        let settings = await center.notificationSettings()
         let state: PermissionState
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:
@@ -1001,6 +1014,9 @@ struct PermissionsPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: 520, alignment: .top)
+        .onReceive(NotificationCenter.default.publisher(for: MicrophoneAuthorization.didChange)) { _ in
+            Task { await load() }
+        }
         .task {
             await load()
             // One-time per version: fire every still-undecided request so EV

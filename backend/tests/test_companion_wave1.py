@@ -192,6 +192,40 @@ async def test_greeting_on_awake_not_followup(
     assert len(greetings_after) == 1
 
 
+async def test_first_wake_speaks_protocol_tour_once(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    wake_out = await wake(client, "mac-first-wake-tour")
+    first = await verify(
+        client,
+        session_id=wake_out["session_id"],
+        nonce=wake_out["challenge_nonce"],
+        phrase=wake_out["challenge_phrase"],
+        samples=[voice_b64(SAMPLE_A)],
+    )
+    tour = first.get("onboarding") or ""
+    assert "You have these protocols" in tour
+    assert "start training wheels" in tour.lower()
+    assert "Instant Kill" not in tour
+    listed = await client.get("/v1/assistant/callouts?limit=10")
+    assert listed.status_code == 200
+    onboarding = [item for item in listed.json() if item["source"] == "onboarding"]
+    assert onboarding
+    assert onboarding[0]["hud"].get("title") == "Protocols"
+
+    second_wake = await wake(client, "mac-second-wake-tour")
+    second = await verify(
+        client,
+        session_id=second_wake["session_id"],
+        nonce=second_wake["challenge_nonce"],
+        phrase=second_wake["challenge_phrase"],
+        samples=[voice_b64(SAMPLE_A)],
+    )
+    assert not second.get("onboarding")
+
+
 async def test_text_thread_greeting_once(client: AsyncClient, db_session: AsyncSession) -> None:
     profile = await assistant_mod.get_profile(db_session)
     profile.owner_preferred_name = None
@@ -249,6 +283,109 @@ async def test_nickname_set_reset_and_impersonation_refuse(
     assert refused_person.status_code == 400
     profile_still = await client.get("/v1/assistant/profile")
     assert profile_still.json()["nickname"] == "EVIE"
+
+
+async def test_voice_spoken_turn_uses_live_nickname(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """After set_assistant_name, the next spoken model turn must not say EVIE."""
+
+    named = await client.post("/v1/assistant/name", json={"name": "Karen"})
+    assert named.status_code == 200, named.text
+    assert named.json()["nickname"] == "Karen"
+
+    captured: list[str] = []
+    from app.gateway.providers import MockProvider
+
+    class RecordingProvider(MockProvider):
+        async def chat(self, messages, **kwargs):
+            captured.extend(m.content for m in messages if m.role == "system")
+            return await super().chat(messages, **kwargs)
+
+        async def chat_with_tools(self, messages, tools, **kwargs):
+            captured.extend(m.content for m in messages if m.role == "system")
+            return await super().chat(messages, **kwargs)
+
+        async def stream_chat(self, messages, **kwargs):
+            captured.extend(m.content for m in messages if m.role == "system")
+            async for chunk in super().stream_chat(messages, **kwargs):
+                yield chunk
+
+    monkeypatch.setattr("app.api.core.get_chat_provider", lambda: RecordingProvider())
+
+    await grant_voice_consent(client)
+    await enroll_owner(client)
+    session = await _verified_session(client, "mac-spoken-name")
+    resp = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": session["session_id"],
+            "text": "What's next on my calendar?",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured, "voice utterance must send a system prompt to the model"
+    system = "\n".join(captured)
+    assert "SPOKEN TURN — you are Karen" in system
+    assert "SPOKEN TURN — you are EVIE" not in system
+    assert "so Karen opens her own HUD" in system
+    assert "so EVIE opens her own HUD" not in system
+
+
+async def test_life_agency_prompt_uses_live_nickname(
+    client: AsyncClient, monkeypatch
+) -> None:
+    """Life-tool turns must use the same spoken name as compile_identity."""
+
+    named = await client.post("/v1/assistant/name", json={"name": "Karen"})
+    assert named.status_code == 200, named.text
+    assert named.json()["nickname"] == "Karen"
+
+    captured: list[str] = []
+    from app.gateway.providers import MockProvider
+
+    class RecordingProvider(MockProvider):
+        async def chat(self, messages, **kwargs):
+            captured.extend(m.content for m in messages if m.role == "system")
+            return await super().chat(messages, **kwargs)
+
+        async def chat_with_tools(self, messages, tools, **kwargs):
+            captured.extend(m.content for m in messages if m.role == "system")
+            return await super().chat(messages, **kwargs)
+
+        async def stream_chat(self, messages, **kwargs):
+            captured.extend(m.content for m in messages if m.role == "system")
+            async for chunk in super().stream_chat(messages, **kwargs):
+                yield chunk
+
+    monkeypatch.setattr("app.api.core.get_chat_provider", lambda: RecordingProvider())
+
+    resp = await client.post(
+        "/v1/chat",
+        json={"message": "text Mom I'm late", "stream": False},
+    )
+    assert resp.status_code == 200, resp.text
+    assert captured, "life-tool chat must send a system prompt to the model"
+    system = "\n".join(captured)
+    assert "LIFE AGENCY. You are Karen" in system
+    assert "LIFE AGENCY. You are EVIE" not in system
+    assert "so Karen opens her own HUD" in system
+    assert "so EVIE opens her own HUD" not in system
+
+
+async def test_capabilities_briefing_uses_live_nickname(
+    db_session: AsyncSession,
+) -> None:
+    decision = await assistant_mod.set_nickname(db_session, "Karen")
+    assert decision.ok is True
+    from app.ev.briefing import gather_intelligence_briefing
+
+    brief = await gather_intelligence_briefing(
+        db_session, "what can you do", actor="test"
+    )
+    assert brief is not None
+    assert "Named companion Karen" in brief
+    assert "Named companion EVIE" not in brief
 
 
 async def test_identity_block_sliders_change_next_compile(
@@ -332,9 +469,9 @@ async def test_protocol_sheet_refused_needs_setup_and_what_can_you_do(
     assert len(enabled) <= 8
     assert "protocols" in reply.lower() or "You have these protocols" in reply
     surfaces = chat.json().get("surfaces") or {}
-    assert surfaces.get("title") == "Protocols" or (
-        surfaces.get("schema_version") == "ev.hud.card.v1"
-    )
+    assert surfaces.get("title") == "Protocols"
+    assert surfaces.get("schema_version") == "ev.hud.card.v1"
+    assert "Instant Kill" not in (surfaces.get("body") or "")
 
 
 async def test_dedication_set_play_and_one_shot_after_wheels(
@@ -349,6 +486,15 @@ async def test_dedication_set_play_and_one_shot_after_wheels(
 
     start = await client.post("/v1/assistant/training-wheels/start")
     assert start.status_code == 200
+    from app.db import SessionLocal
+    from app.ev.assistant import get_profile
+    from app.ev.training_wheels import TRAINING_STEPS
+    from app.utils.text import utcnow
+
+    async with SessionLocal() as session:
+        profile = await get_profile(session)
+        profile.training_steps = {step: utcnow().isoformat() for step in TRAINING_STEPS}
+        await session.commit()
     first = await client.post("/v1/assistant/training-wheels/complete")
     assert first.status_code == 200, first.text
     assert first.json()["dedication"]["played"] is True
@@ -585,3 +731,71 @@ async def test_tools_and_cli_protocols(client: AsyncClient) -> None:
     sheet = await list_protocols(client=client)
     titles = {item["title"] for item in sheet["protocols"]}
     assert "Instant Kill" in titles
+
+
+async def test_quiet_hours_end_digest_speaks_once(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.services import runtime as runtime_mod
+
+    monkeypatch.setattr(settings, "timezone", "UTC")
+    monkeypatch.setattr(runtime_mod, "quiet_hours_active", lambda now=None: False)
+    first = await runtime_mod.maybe_quiet_hours_end_digest(db_session)
+    assert first is not None
+    assert "Quiet hours ended" in first["text"]
+    second = await runtime_mod.maybe_quiet_hours_end_digest(db_session)
+    assert second is None
+    from app.ev.callouts import list_callouts
+
+    rows = await list_callouts(db_session, limit=5)
+    assert any(row.source == "quiet_hours_digest" for row in rows)
+
+
+def test_presence_check_is_a_local_companion_intent() -> None:
+    matched = assistant_mod.match_companion_intent("Evie can you hear me?")
+    assert matched is not None
+    assert matched[0] == "presence"
+    assert assistant_mod.match_companion_intent("what's next on my calendar") is None
+    assert assistant_mod.match_companion_intent("evie can you check the time") is None
+
+
+async def test_handle_local_intent_answers_hear_check(
+    db_session: AsyncSession,
+) -> None:
+    from app.voice.speech import is_unreadable_transcript
+
+    local = await assistant_mod.handle_local_intent(
+        db_session, "Evie can you hear me?"
+    )
+    assert local is not None
+    assert local["kind"] == "presence"
+    reply = (local.get("reply") or "").strip()
+    assert reply
+    assert not is_unreadable_transcript(reply)
+    lowered = reply.lower()
+    assert any(token in lowered for token in ("hear", "heard", "listening", "here"))
+    skipped = await assistant_mod.handle_local_intent(
+        db_session, "what's next on my calendar"
+    )
+    assert skipped is None
+
+
+async def test_chat_presence_check_uses_local_intent_not_gateway(
+    client: AsyncClient,
+) -> None:
+    """Shipped /v1/chat must answer a hear-check without the model gateway."""
+
+    from app.voice.speech import is_unreadable_transcript
+
+    resp = await client.post(
+        "/v1/chat",
+        json={"message": "Evie can you hear me?", "stream": False},
+    )
+    assert resp.status_code == 200, resp.text
+    text = (resp.json().get("reply") or "").strip()
+    assert text
+    assert not is_unreadable_transcript(text)
+    assert "DHM" not in text.upper().split()
+    lowered = text.lower()
+    assert any(token in lowered for token in ("hear", "heard", "listening", "here"))
+    assert "mock reply" not in lowered

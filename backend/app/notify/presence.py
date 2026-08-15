@@ -46,6 +46,12 @@ def present_url(
     lon: float | None = None,
     dest_lat: float | None = None,
     dest_lon: float | None = None,
+    questions: Iterable[str] | None = None,
+    response: str | None = None,
+    layout: str | None = None,
+    drift_x: int | None = None,
+    drift_y: int | None = None,
+    tilt: float | None = None,
 ) -> str:
     query: dict[str, str] = {
         "title": title[:120],
@@ -67,10 +73,23 @@ def present_url(
     packed_items = [str(item) for item in (items or []) if str(item).strip()]
     if packed_items:
         query["items"] = "|".join(packed_items)[:1500]
+    packed_questions = [str(item) for item in (questions or []) if str(item).strip()]
+    if packed_questions:
+        query["questions"] = "|".join(packed_questions)[:1500]
     if recommendation:
         query["recommendation"] = recommendation[:400]
     if source:
         query["source"] = source[:160]
+    if response:
+        query["response"] = response[:4000]
+    if layout:
+        query["layout"] = str(layout)[:16]
+    if drift_x is not None:
+        query["dx"] = str(int(drift_x))
+    if drift_y is not None:
+        query["dy"] = str(int(drift_y))
+    if tilt is not None:
+        query["tilt"] = f"{float(tilt):.2f}"
     if lat is not None:
         query["lat"] = str(lat)
     if lon is not None:
@@ -97,8 +116,14 @@ def lookout_web_url(window: SurfaceWindow) -> str:
             "ttl": "" if window.ttl_ms is None else str(window.ttl_ms),
             "lookout": "1" if window.lookout else "0",
             "items": "|".join(window.items)[:1500],
+            "questions": "|".join(window.questions)[:1500],
             "recommendation": window.recommendation or "",
             "source": window.source or "",
+            "response": window.response or "",
+            "layout": window.layout or "",
+            "dx": str(window.drift_x),
+            "dy": str(window.drift_y),
+            "tilt": f"{window.tilt:.2f}",
         },
         quote_via=quote,
     )
@@ -163,6 +188,12 @@ async def _open_native(window: SurfaceWindow) -> dict[str, Any]:
         lon=window.origin_lon,
         dest_lat=window.dest_lat,
         dest_lon=window.dest_lon,
+        questions=window.questions,
+        response=window.response,
+        layout=window.layout,
+        drift_x=window.drift_x,
+        drift_y=window.drift_y,
+        tilt=window.tilt,
     )
     helper = _helper_path()
     helper_error = "EVNotificationHelper not installed"
@@ -189,10 +220,17 @@ async def _open_native(window: SurfaceWindow) -> dict[str, Any]:
             command.extend(["--ttl", str(window.ttl_ms)])
         if window.items:
             command.extend(["--items", "|".join(window.items)[:1500]])
+        if window.questions:
+            command.extend(["--questions", "|".join(window.questions)[:1500]])
         if window.recommendation:
             command.extend(["--recommendation", window.recommendation[:400]])
         if window.source:
             command.extend(["--source", window.source[:160]])
+        if window.response:
+            command.extend(["--response", window.response[:4000]])
+        if window.layout:
+            command.extend(["--layout", window.layout])
+        command.extend(["--dx", str(window.drift_x), "--dy", str(window.drift_y), "--tilt", f"{window.tilt:.2f}"])
         if window.lookout:
             command.append("--lookout")
         result = await _run(command, 15)
@@ -247,6 +285,9 @@ async def open_presence(
     lon: float | None = None,
     dest_lat: float | None = None,
     dest_lon: float | None = None,
+    questions: Iterable[str] | None = None,
+    response: str | None = None,
+    layout: str | None = None,
 ) -> dict:
     """Ask the native EVIE app to float one or more HUD windows."""
 
@@ -283,6 +324,9 @@ async def open_presence(
             origin_lon=lon,
             dest_lat=dest_lat,
             dest_lon=dest_lon,
+            questions=questions,
+            response=response,
+            layout=layout,
         )
         resolved = list(resolved_plan.windows)
     else:
@@ -304,6 +348,9 @@ async def open_presence(
                 origin_lon=lon,
                 dest_lat=dest_lat,
                 dest_lon=dest_lon,
+                questions=questions,
+                response=response,
+                layout=layout,
             )
         ]
         resolved_plan = SurfacePlan(
@@ -331,6 +378,12 @@ async def open_presence(
             lon=window.origin_lon,
             dest_lat=window.dest_lat,
             dest_lon=window.dest_lon,
+            questions=window.questions,
+            response=window.response,
+            layout=window.layout,
+            drift_x=window.drift_x,
+            drift_y=window.drift_y,
+            tilt=window.tilt,
         )
         for window in resolved
     ]

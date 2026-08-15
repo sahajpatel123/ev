@@ -9,6 +9,7 @@ privacy, and security logic is fully testable without hardware.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import re
 import wave
@@ -595,6 +596,58 @@ class WhisperPhraseWakeEngine:
 
     def __init__(self, *, transcriber=None) -> None:
         self._transcriber = transcriber
+        self._warmed = False
+
+    async def warmup(self) -> None:
+        """Preload the spotter so the first spoken EVIE is not a cold load.
+
+        A fresh faster-whisper load is multi-second. Repeating "Evie" during
+        that window reads as a missed wake. Warm once at process start.
+        """
+
+        if self._warmed:
+            return
+        transcriber = self._transcriber_or_default()
+        load = getattr(transcriber, "_load_model", None)
+        if load is None:
+            self._warmed = True
+            return
+
+        def _load() -> None:
+            model = load()
+            if model is None:
+                return
+            import tempfile
+            import wave
+
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+                path = handle.name
+            try:
+                with wave.open(path, "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(16000)
+                    wav.writeframes(b"\x00\x00" * 8000)
+                transcribe = getattr(model, "transcribe", None)
+                if transcribe is None:
+                    return
+                list(
+                    transcribe(
+                        path,
+                        language="en",
+                        beam_size=1,
+                        temperature=0.0,
+                        vad_filter=False,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - warmup is best-effort
+                return
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+
+        await asyncio.to_thread(_load)
+        self._warmed = True
 
     def _transcriber_or_default(self):
         if self._transcriber is not None:
@@ -678,6 +731,20 @@ class WhisperPhraseWakeEngine:
         normalized = normalize(transcript)
         strong, weak = self._classify_transcript(normalized)
         triggered = strong or (weak and self._real_speech(result))
+        degraded = bool(getattr(result, "degraded", False))
+        details = {
+            "engine": self.name,
+            "transcript": transcript,
+            "no_speech_prob": getattr(result, "details", {}).get("no_speech_prob"),
+            "weak_alias": weak and not strong,
+            "sample_rate": sample_rate,
+            "degraded": degraded,
+        }
+        if degraded:
+            details["error"] = str(
+                getattr(result, "details", {}).get("reason")
+                or "wake ASR is degraded"
+            )
         return WakeDetection(
             triggered=triggered,
             wake_word="evie",
@@ -685,13 +752,7 @@ class WhisperPhraseWakeEngine:
             device_id=device_id,
             stage="burst" if triggered else "low_power",
             power_state=self.power_state,
-            details={
-                "engine": self.name,
-                "transcript": transcript,
-                "no_speech_prob": getattr(result, "details", {}).get("no_speech_prob"),
-                "weak_alias": weak and not strong,
-                "sample_rate": sample_rate,
-            },
+            details=details,
         )
 
     @classmethod
@@ -818,16 +879,21 @@ def configured_wake_engine() -> WakeWordEngine:
     if _default_override is not None:
         return _default_override
     engine = default_wake_engine()
-    if engine.name == "openwakeword" or (
-        engine.name == "multi-stage"
-        and settings.voice_asr_provider == "faster_whisper"
-        and settings.voice_wake_provider in {"openwakeword", "phrase"}
-    ):
+    # Spoken EVIE never contains the ASCII bytes ``evie``. Phrase matching
+    # and a missing openWakeWord ONNX head must not be the live detector —
+    # fall through to the ASR spotter so stock config (echo ASR + phrase
+    # wake) actually hears the name.
+    if engine.name == "openwakeword":
         path = getattr(engine, "model_path", None)
-        if engine.name != "openwakeword" or not path or not Path(str(path)).expanduser().is_file():
-            if _whisper_phrase_wake is None:
-                _whisper_phrase_wake = WhisperPhraseWakeEngine()
-            return _whisper_phrase_wake
+        if path and Path(str(path)).expanduser().is_file():
+            return engine
+        if _whisper_phrase_wake is None:
+            _whisper_phrase_wake = WhisperPhraseWakeEngine()
+        return _whisper_phrase_wake
+    if engine.name == "multi-stage":
+        if _whisper_phrase_wake is None:
+            _whisper_phrase_wake = WhisperPhraseWakeEngine()
+        return _whisper_phrase_wake
     return engine
 
 

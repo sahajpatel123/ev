@@ -10,6 +10,7 @@ import re
 
 from app.schemas import CommunicationMode, InteractionStrategy
 from app.utils.text import normalize_text
+from app.voice.speech import is_presence_check
 
 URGENT_TOKENS = {
     "urgent",
@@ -283,6 +284,8 @@ def _has_task_ask(text: str, lowered: str) -> bool:
 def detect_intent(message: str) -> str:
     text = message.strip()
     lowered = text.lower()
+    if is_presence_check(text):
+        return "presence"
     if VENTING_PATTERNS.search(text) and not _has_task_ask(text, lowered):
         return "venting"
     if detect_life_action(text):
@@ -590,6 +593,12 @@ def build_strategy(
         length_targets[mode] = "one action plus a confirmed result"
         directness = dict(directness)
         directness[mode] = "maximum"
+    if intent == "presence":
+        ask_question = False
+        length_targets = dict(length_targets)
+        length_targets[mode] = "one short sentence confirming you can hear them"
+        directness = dict(directness)
+        directness[mode] = "high"
 
     rationale_parts = [f"intent={intent}", f"urgency={urgency:.2f}", f"emotion={emotion}"]
     if life_action:
@@ -625,8 +634,12 @@ def build_strategy(
     )
 
 
-def strategy_block(strategy: InteractionStrategy) -> str:
+def strategy_block(strategy: InteractionStrategy, *, who: str | None = None) -> str:
     """Compile the strategy into a prompt instruction for the reasoning model."""
+
+    from app.ev.assistant import spoken_name
+
+    name = spoken_name(who)
     lines = [
         f"Communication mode: {strategy.mode}",
         f"Intent: {strategy.intent}",
@@ -655,6 +668,12 @@ def strategy_block(strategy: InteractionStrategy) -> str:
     emotion_line = _EMOTION_POLICY.get(strategy.emotional_state or "")
     if emotion_line:
         lines.append(f"Owner emotion: {strategy.emotional_state}. {emotion_line}")
+    if strategy.intent == "presence":
+        lines.append(
+            "They are checking whether you can hear them. Confirm you can "
+            "hear them in one short spoken sentence. Do not invent a task "
+            "or dump diagnostics."
+        )
     if strategy.intent == "life_action":
         lines.append(
             "Life action: prefer action over essay. Execute the requested "
@@ -666,7 +685,7 @@ def strategy_block(strategy: InteractionStrategy) -> str:
         lines.append("Prioritize the single most important action; no filler.")
     lines.append(
         "Do not tell the owner to open a website or localhost. When something "
-        "should be seen, call the present tool so EVIE opens her own HUD "
+        f"should be seen, call the present tool so {name} opens her own HUD "
         "windows. kind=auto lets surface intelligence pick size (pip/chip/"
         "card/brief/slate/canvas/lookout/ticker), time-type (flash/glance/"
         "linger/hold/lookout/pulse/session), and lookout kind (radar, vitals, "

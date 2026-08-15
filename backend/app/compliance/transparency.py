@@ -229,7 +229,11 @@ async def transparency_report(session: AsyncSession) -> dict:
             "kind": "chat",
             "provider": settings.chat_provider,
             "remote": settings.chat_provider not in ("echo", "mock"),
-            "destination": settings.deepseek_base_url,
+            "destination": (
+                settings.xai_base_url
+                if settings.chat_provider == "xai"
+                else settings.deepseek_base_url
+            ),
             "consent_track": "chat_egress",
             "consent_active": "chat_egress" in active_tracks,
             "remote_gate_allowed": remote_processing_allowed("chat_egress"),

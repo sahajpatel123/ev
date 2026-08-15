@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.ev.hud import HUD_SCHEMAS, validate_hud
 from app.ev.interaction import build_strategy
-from app.ev.lookout import compose_and_maybe_open, plan_surfaces
+from app.ev.lookout import compose_and_maybe_open, make_window, plan_surfaces
 from app.ev.tool_select import select_tool
 from app.notify.lookouts import list_windows, reset
 from app.notify.presence import present_url
@@ -60,6 +60,58 @@ def test_kind_auto_still_respects_small_talk() -> None:
     strategy = build_strategy("hey")
     plan = plan_surfaces("hey", strategy=strategy)
     assert plan.open is False
+
+
+def test_layout_is_stable_for_the_same_id() -> None:
+    first = make_window(kind="card", title="Decision", body="Keep SQLite.", window_id="hud-stable")
+    second = make_window(kind="card", title="Decision", body="Keep SQLite.", window_id="hud-stable")
+    assert first.layout == second.layout
+    assert first.drift_x == second.drift_x
+    assert first.tilt == second.tilt
+    assert first.layout in {"ask", "reply", "split", "stack", "pulse", "ribbon", "field", "ledger"}
+
+
+def test_question_copy_is_separated_from_the_reply() -> None:
+    window = make_window(
+        kind="card",
+        title="Decision",
+        body="What did I decide about SQLite?",
+        response="You chose SQLite on August 9.",
+        window_id="hud-q",
+    )
+    assert any("SQLite" in question for question in window.questions)
+    assert window.response == "You chose SQLite on August 9."
+    assert window.layout in {"ask", "reply", "split", "ledger", "stack"}
+
+
+def test_different_ids_vary_composition() -> None:
+    layouts = {
+        make_window(
+            kind="card",
+            title="Open thread",
+            body="What should I do next?",
+            response="Protect the evening.",
+            window_id=f"hud-vary-{index}",
+        ).layout
+        for index in range(24)
+    }
+    assert len(layouts) >= 2
+
+
+def test_present_url_carries_questions_and_layout() -> None:
+    url = present_url(
+        title="Decision",
+        body="Keep SQLite.",
+        questions=["What did I decide about SQLite?"],
+        response="You chose SQLite on August 9.",
+        layout="split",
+        drift_x=12,
+        drift_y=-8,
+        tilt=-0.6,
+    )
+    assert "questions=" in url
+    assert "layout=split" in url
+    assert "dx=12" in url
 
 
 def test_present_url_encodes_size_and_time() -> None:

@@ -212,6 +212,14 @@ public struct VoiceWakeResponse: Codable, Sendable, Equatable {
     public let message: String?
 }
 
+public struct VoiceLiveOpenResponse: Codable, Sendable, Equatable {
+    public let sessionId: String
+    public let state: String
+    public let conversationId: String?
+    public let live: Bool
+    public let message: String?
+}
+
 public struct VoiceSessionVerifyResponse: Codable, Sendable, Equatable {
     public let sessionId: String?
     public let state: String
@@ -243,6 +251,43 @@ public struct SpeechStyleOut: Codable, Sendable, Equatable {
     public let directness: String
 }
 
+public struct OwnerPrefs: Codable, Sendable, Equatable {
+    public let nickname: String
+    public let quietHours: [String: String?]?
+    public let hudLayout: [String: AnyCodable]?
+    public let featureGates: [AnyCodable]?
+    public let ttsVoice: String?
+    public let liveConversationId: String?
+    public let volumePercent: Int?
+}
+
+public struct DeviceCreateResponse: Codable, Sendable, Equatable {
+    public let device: DeviceRegistryRow
+    public let token: String
+}
+
+public struct DeviceRegistryRow: Codable, Sendable, Equatable {
+    public let id: String
+    public let name: String
+}
+
+public struct DeviceBootstrap: Codable, Sendable, Equatable {
+    public let deviceId: String
+    public let prefs: OwnerPrefs?
+    public let spoken: Bool
+    public let spokenText: String?
+    public let ttsDeviceId: String?
+    public let bootstrappedSpokenAt: String?
+    public let prefsLoaded: Bool?
+}
+
+public struct DevicePanic: Codable, Sendable, Equatable {
+    public let ok: Bool
+    public let revoked: Bool?
+    public let spoken: String?
+    public let lookout: String?
+}
+
 public struct VoiceUtteranceResponse: Codable, Sendable, Equatable {
     public let sessionId: String
     public let state: String
@@ -253,6 +298,7 @@ public struct VoiceUtteranceResponse: Codable, Sendable, Equatable {
     public let reply: String
     public let conversationId: String?
     public let tts: TtsOut?
+    public let ttsDeviceId: String?
     public let style: SpeechStyleOut?
     public let model: String?
     public let contextTokens: Int

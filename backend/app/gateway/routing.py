@@ -136,10 +136,12 @@ def routing_candidates() -> list[str]:
 
     candidates: set[str] = set()
     primary = settings.chat_provider
-    if primary in ("deepseek", "local", "echo", "mock"):
+    if primary in ("deepseek", "local", "echo", "mock", "xai"):
         candidates.add(primary)
     if settings.deepseek_api_key or os.getenv("EV_DEEPSEEK_API_KEY"):
         candidates.add("deepseek")
+    if settings.xai_api_key or os.getenv("EV_XAI_API_KEY"):
+        candidates.add("xai")
     if (
         settings.local_model_base_url
         or os.getenv("EV_LOCAL_MODEL_BASE_URL")

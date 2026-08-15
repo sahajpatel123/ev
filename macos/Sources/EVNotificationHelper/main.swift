@@ -55,10 +55,16 @@ if let time = value(for: "--time-type") { queryItems.append(URLQueryItem(name: "
 if let place = value(for: "--place") { queryItems.append(URLQueryItem(name: "place", value: place)) }
 if let ttl = value(for: "--ttl") { queryItems.append(URLQueryItem(name: "ttl", value: ttl)) }
 if let items = value(for: "--items") { queryItems.append(URLQueryItem(name: "items", value: items)) }
+if let questions = value(for: "--questions") { queryItems.append(URLQueryItem(name: "questions", value: questions)) }
 if let recommendation = value(for: "--recommendation") {
     queryItems.append(URLQueryItem(name: "recommendation", value: recommendation))
 }
 if let source = value(for: "--source") { queryItems.append(URLQueryItem(name: "source", value: source)) }
+if let response = value(for: "--response") { queryItems.append(URLQueryItem(name: "response", value: response)) }
+if let layout = value(for: "--layout") { queryItems.append(URLQueryItem(name: "layout", value: layout)) }
+if let dx = value(for: "--dx") { queryItems.append(URLQueryItem(name: "dx", value: dx)) }
+if let dy = value(for: "--dy") { queryItems.append(URLQueryItem(name: "dy", value: dy)) }
+if let tilt = value(for: "--tilt") { queryItems.append(URLQueryItem(name: "tilt", value: tilt)) }
 if arguments.contains("--lookout") { queryItems.append(URLQueryItem(name: "lookout", value: "1")) }
 components.queryItems = queryItems
 

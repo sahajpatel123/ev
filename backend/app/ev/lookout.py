@@ -1,18 +1,17 @@
-"""Surface intelligence: which HUD windows EVIE opens, and for how long.
+"""Surface intelligence: which HUD folios EVIE opens, and for how long.
 
-JARVIS (Iron Man) and Karen / E.V.I.E. (Spider-Man) do not use one dashboard.
-They spawn different *sizes*, *time-types*, and *lookouts*:
+EVIE does not use one dashboard and does not paint OS window chrome.
+She settles independent *folios* on the desk: different sizes, time-types,
+placements, and inner layouts. A folio is a sheet with a spine, not a
+title-bar window.
 
-- JARVIS: peripheral chips, stacked slates, large schematic canvases,
-  countdown pulses, and persistent lab lookouts on a visor-sphere.
-- Karen: compact Training-Wheels checklists, flash threat boxes, body-scan
-  vitals, and the Baby Monitor lookout that watches without being asked.
-- E.V.I.E.: less intrusive than Karen — speak when a sentence is enough;
-  open glass only when the owner asked, or when a signal is actually urgent.
+Questions and replies get their own type. Layout (ask / reply / split /
+stack / pulse / ribbon / field / ledger) is picked from the window id so
+compositions look varied while staying in one material language.
 
 This module is deterministic. The model fills wording; this layer decides
-whether a window exists, what kind it is, how big, how long it lives, and
-where it sits. It never tells the owner to open a website.
+whether a folio exists, what kind it is, how it is composed, how long it
+lives, and where it sits. It never tells the owner to open a website.
 """
 
 from __future__ import annotations
@@ -99,6 +98,20 @@ KIND_DEFAULTS: dict[str, tuple[str, str, str]] = {
 
 LOOKOUT_KINDS = {"radar", "vitals", "horizon", "scope", "bench", "wire"}
 
+# Inner compositions. One family; which member appears is hashed from id.
+LAYOUTS = (
+    "ask",
+    "reply",
+    "split",
+    "stack",
+    "pulse",
+    "ribbon",
+    "field",
+    "ledger",
+)
+
+ASK_KINDS = {"card", "briefing", "conversation", "trace", "list"}
+
 EXPLICIT_RE = re.compile(
     r"\b(?:show(?:\s+me)?|pull up|put (?:that|it|this) on (?:screen|the screen)|"
     r"open a (?:window|card|lookout)|display|hud|lookout|"
@@ -178,6 +191,12 @@ class SurfaceWindow:
     origin_lon: float | None = None
     dest_lat: float | None = None
     dest_lon: float | None = None
+    questions: list[str] = field(default_factory=list)
+    response: str | None = None
+    layout: str = "stack"
+    drift_x: int = 0
+    drift_y: int = 0
+    tilt: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -252,6 +271,84 @@ def normalize_placement(placement: str | None, kind: str) -> str:
     return KIND_DEFAULTS.get(kind, KIND_DEFAULTS["card"])[2]
 
 
+def normalize_layout(layout: str | None) -> str | None:
+    raw = (layout or "").strip().lower().replace("-", "_")
+    if raw in LAYOUTS:
+        return raw
+    return None
+
+
+def stable_int(key: str) -> int:
+    """djb2 — same algorithm as the web/native renderers."""
+    value = 5381
+    for byte in (key or "").encode("utf-8"):
+        value = ((value << 5) + value + byte) & 0xFFFFFFFF
+    return value
+
+
+def extract_questions(*texts: str) -> list[str]:
+    found: list[str] = []
+    for text in texts:
+        for match in re.findall(r"[^.!\n]{8,180}\?", text or ""):
+            question = re.sub(r"\s+", " ", match).strip()
+            if question and question not in found:
+                found.append(question)
+    return found[:6]
+
+
+def _split_lines(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part.strip()[:240] for part in re.split(r"[|\n]", value) if part.strip()][:6]
+    return [str(part).strip()[:240] for part in value if str(part).strip()][:6]
+
+
+def pick_layout(
+    *,
+    window_id: str,
+    kind: str,
+    questions: list[str],
+    response: str | None,
+    body: str,
+    items: list[str],
+    layout: str | None = None,
+) -> str:
+    forced = normalize_layout(layout)
+    if forced:
+        return forced
+    if kind in {"ticker", "conversation"}:
+        return "ribbon"
+    if kind in {"chip", "pulse"}:
+        return "pulse"
+    if kind == "map":
+        return "field"
+    asks = [item for item in questions if item.strip()]
+    reply = (response or "").strip() or (body or "").strip()
+    seed = stable_int(window_id or kind)
+    if asks and reply and reply not in asks:
+        pool = ("ask", "reply", "split", "ledger", "stack")
+    elif asks:
+        pool = ("ask", "stack", "ledger")
+    elif items:
+        pool = ("stack", "field", "ledger")
+    else:
+        pool = ("reply", "stack")
+    return pool[seed % len(pool)]
+
+
+def pick_drift(window_id: str, placement: str) -> tuple[int, int, float]:
+    seed = stable_int(window_id or placement)
+    drift_x = int(seed % 73) - 36
+    drift_y = int((seed >> 7) % 61) - 30
+    tilt = ((int((seed >> 14) % 29) - 14) / 10.0)
+    if placement == "top":
+        return int(seed % 41) - 20, 0, 0.0
+    if placement == "center":
+        return int(seed % 49) - 24, int((seed >> 8) % 37) - 18, tilt * 0.6
+    return drift_x, drift_y, tilt
+
+
 def ttl_for(time_type: str, override: int | None = None) -> int | None:
     if override is not None:
         return max(0, int(override))
@@ -277,6 +374,9 @@ def make_window(
     origin_lon: float | None = None,
     dest_lat: float | None = None,
     dest_lon: float | None = None,
+    questions: Iterable[str] | None = None,
+    response: str | None = None,
+    layout: str | None = None,
 ) -> SurfaceWindow:
     kind = normalize_kind(kind)
     if kind == "auto":
@@ -286,16 +386,36 @@ def make_window(
     if is_lookout and resolved_time not in {"lookout", "session", "hold", "pulse"}:
         resolved_time = "lookout"
     ident = window_id or (f"lookout-{kind}" if is_lookout else f"hud-{uuid4().hex[:10]}")
+    packed_items = [str(item)[:240] for item in (items or []) if str(item).strip()][:12]
+    packed_questions = [str(item)[:240] for item in (questions or []) if str(item).strip()][:6]
+    if not packed_questions and kind in ASK_KINDS:
+        packed_questions = extract_questions(title, body)
+    packed_response = (response[:4000] if response else None)
+    if packed_response is None and kind in ASK_KINDS:
+        blob = (body or "").strip()
+        if blob and blob not in packed_questions:
+            packed_response = blob[:4000]
+    resolved_place = normalize_placement(placement, kind)
+    drift_x, drift_y, tilt = pick_drift(ident, resolved_place)
+    resolved_layout = pick_layout(
+        window_id=ident,
+        kind=kind,
+        questions=packed_questions,
+        response=packed_response,
+        body=body or "",
+        items=packed_items,
+        layout=layout,
+    )
     return SurfaceWindow(
         id=ident[:64],
         kind=kind,
         size=normalize_size(size, kind),
         time_type=resolved_time,
-        placement=normalize_placement(placement, kind),
+        placement=resolved_place,
         title=(title or "EVIE")[:120],
         body=(body or "")[:4000],
         ttl_ms=ttl_for(resolved_time, ttl_ms),
-        items=[str(item)[:240] for item in (items or []) if str(item).strip()][:12],
+        items=packed_items,
         recommendation=(recommendation[:400] if recommendation else None),
         source=(source[:160] if source else None),
         lookout=is_lookout,
@@ -304,6 +424,12 @@ def make_window(
         origin_lon=origin_lon,
         dest_lat=dest_lat,
         dest_lon=dest_lon,
+        questions=packed_questions,
+        response=packed_response,
+        layout=resolved_layout,
+        drift_x=drift_x,
+        drift_y=drift_y,
+        tilt=tilt,
     )
 
 
@@ -329,6 +455,9 @@ def window_from_args(args: dict[str, Any]) -> SurfaceWindow:
         origin_lon=_maybe_float(args.get("lon") or args.get("origin_lon")),
         dest_lat=_maybe_float(args.get("dest_lat")),
         dest_lon=_maybe_float(args.get("dest_lon")),
+        questions=_split_lines(args.get("questions")),
+        response=args.get("response") or args.get("reply"),
+        layout=args.get("layout"),
     )
 
 
@@ -366,6 +495,9 @@ def plan_surfaces(
     dest_lon: float | None = None,
     health_emergency: bool = False,
     calibration: dict[str, Any] | None = None,
+    questions: Iterable[str] | None = None,
+    response: str | None = None,
+    layout: str | None = None,
 ) -> SurfacePlan:
     """Decide whether EVIE opens glass, and which windows.
 
@@ -422,6 +554,18 @@ def plan_surfaces(
     def add(kind_name: str, win_title: str, win_body: str, **kwargs: Any) -> None:
         if any(existing.kind == kind_name for existing in windows):
             return
+        if kind_name in ASK_KINDS and "questions" not in kwargs:
+            kwargs["questions"] = list(questions or []) or asked_questions
+        if kind_name in ASK_KINDS and "response" not in kwargs:
+            if response:
+                kwargs["response"] = response
+            elif (
+                (body or "").strip()
+                and (body or "").strip() != text.strip()
+            ):
+                kwargs["response"] = body
+        if layout and "layout" not in kwargs:
+            kwargs["layout"] = layout
         windows.append(
             make_window(
                 kind=kind_name,
@@ -436,6 +580,7 @@ def plan_surfaces(
 
     heading = (title or "").strip() or _title_from_message(text)
     copy = (body or "").strip() or text
+    asked_questions = extract_questions(text, heading, copy)
 
     if forced_kind not in {"auto", ""}:
         add(
@@ -668,6 +813,16 @@ async def fill_windows_from_state(session: Any, plan: SurfacePlan) -> SurfacePla
             window.body = ops.summary
             window.items = list(ops.command_cards or [])[:5]
             window.source = "ops"
+    for window in plan.windows:
+        window.layout = pick_layout(
+            window_id=window.id,
+            kind=window.kind,
+            questions=window.questions,
+            response=window.response,
+            body=window.body,
+            items=window.items,
+        )
+        window.drift_x, window.drift_y, window.tilt = pick_drift(window.id, window.placement)
     return plan
 
 
@@ -722,10 +877,20 @@ async def compose_and_maybe_open(
     await fill_windows_from_state(session, plan)
     if reply:
         for window in plan.windows:
-            if window.kind in {"card", "briefing", "list", "conversation", "trace"} and (
-                not window.body or window.body == message
-            ):
-                window.body = reply[:4000]
+            if window.kind in ASK_KINDS:
+                if not window.body or window.body == message:
+                    window.body = reply[:4000]
+                window.response = reply[:4000]
+                if not window.questions:
+                    window.questions = extract_questions(message)
+                window.layout = pick_layout(
+                    window_id=window.id,
+                    kind=window.kind,
+                    questions=window.questions,
+                    response=window.response,
+                    body=window.body,
+                    items=window.items,
+                )
     outcome = await open_presence(windows=plan.windows, plan=plan, title=title or "EVIE", body=reply or message)
     payload = plan.as_dict()
     payload["generated_at"] = utcnow().isoformat()

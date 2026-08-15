@@ -721,12 +721,14 @@ async def sync_integration(
     since = now - timedelta(hours=1)
     until = now + timedelta(days=days or settings.calendar_sync_days)
     token = vault.decrypt(credential.encrypted_access)
+    sync_config = dict(integration.config or {})
+    sync_config["_session"] = session
     try:
         try:
             result = await adapter.sync(
                 token=token,
                 scopes=list(integration.scopes or []),
-                config=integration.config or {},
+                config=sync_config,
                 since=since,
                 until=until,
             )
@@ -741,7 +743,7 @@ async def sync_integration(
             result = await adapter.sync(
                 token=token,
                 scopes=list(integration.scopes or []),
-                config=integration.config or {},
+                config=sync_config,
                 since=since,
                 until=until,
             )
@@ -981,7 +983,8 @@ async def execute_action(
     effective_args, issues = validate_arguments(args or {}, spec.parameters)
     if issues:
         raise ValueError("; ".join(issues))
-    config = integration.config or {}
+    config = dict(integration.config or {})
+    config["_session"] = session
     provider = config.get("provider")
 
     if provider == "device_proxy" and adapter.slug == "device_proxy":

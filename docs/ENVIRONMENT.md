@@ -120,10 +120,17 @@ the compliance keys in §13.
 
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
-| `EV_CHAT_PROVIDER` | `echo` | `echo` / `mock` / `deepseek` / `local` | Provider registry selection |
-| `EV_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | URL | DeepSeek-compatible chat endpoint |
-| `EV_DEEPSEEK_API_KEY` | — | string | DeepSeek API key |
-| `EV_DEEPSEEK_MODEL` | `deepseek-v4-flash-0731` | string | Default chat model |
+| `EV_CHAT_PROVIDER` | `echo` | `echo` / `mock` / `deepseek` / `xai` / `local` / `opencode` | Typed chat / HUD / HTTP utterance. Daily: `deepseek`. Live speech is `EV_VOICE_LIVE_BRAIN`, not this. |
+| `EV_DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | URL | Official DeepSeek chat endpoint |
+| `EV_DEEPSEEK_API_KEY` | — | string | Official DeepSeek API key (`platform.deepseek.com`) |
+| `EV_DEEPSEEK_MODEL` | `deepseek-v4-flash` | string | Official API model id (not the Hugging Face checkpoint name) |
+| `EV_DEEPSEEK_THINKING` | `false` | boolean | V4 thinking/CoT. Off for spoken-speed voice replies |
+| `EV_XAI_BASE_URL` | `https://api.x.ai/v1` | URL | Official xAI OpenAI-compatible chat endpoint |
+| `EV_XAI_API_KEY` | — | string | Official xAI API key (`console.x.ai`) |
+| `EV_XAI_MODEL` | `grok-4.6` | string | Typed chat / tools / HUD model. Not the voice model. |
+| `EV_XAI_VOICE_MODEL` | `grok-voice-think-fast-2.0` | string | Live speech-to-speech model on `wss://api.x.ai/v1/realtime` |
+| `EV_XAI_VOICE_VOICE` | `eve` | string | Built-in Grok Voice roster id |
+| `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` / `xai` / `pipeline` | `auto` uses Grok Voice whenever `EV_XAI_API_KEY` is set, even if typed chat is DeepSeek |
 | `EV_LOCAL_MODEL_BASE_URL` | `http://localhost:11434/v1` | URL | OpenAI-compatible local server (Ollama/llama.cpp) used when `EV_CHAT_PROVIDER=local` |
 | `EV_LOCAL_MODEL_NAME` | `llama3` | string | Local model name |
 | `EV_MODEL_CALL_LOG_ENABLED` | `true` | boolean | Persist every gateway call to `model_calls` for audit |

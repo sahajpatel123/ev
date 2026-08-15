@@ -29,7 +29,7 @@
     <key>NSHumanReadableCopyright</key>
     <string>© 2026 EV — personal memory companion</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>EV records your voice for push-to-talk in the menu bar. Always-on “EVIE” wake listening runs in the background ears process.</string>
+    <string>EV listens continuously while the app is open so you can talk without a wake word. Audio is processed on your device and the local EV API.</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>EV controls Messages, Mail, and System Events only when you invoke EVLifeHelper commands (send texts/email, read inboxes, drive apps).</string>
     <key>NSBluetoothAlwaysUsageDescription</key>
@@ -49,7 +49,7 @@
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>EV uses on-device speech recognition for quick dictation capture when you enable it.</string>
     <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
+    <string>EVApplication</string>
     <key>CFBundleURLTypes</key>
     <array>
         <dict>

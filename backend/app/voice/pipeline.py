@@ -7,6 +7,7 @@ single path so voice behavior stays provider-agnostic and identical everywhere.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -27,12 +28,17 @@ from app.voice.speech import (
     choose_listen_ack,
     choose_voice_filler,
     concat_wav_bytes,
+    is_unreadable_transcript,
     listen_ack_style,
     owner_facing_speech,
     pop_speakable,
     starts_with_evie,
 )
 from app.voice.tts import speech_style_from_strategy
+
+#: Cached listen-acks ("Yes?" / "Hmm." / "Mhm." / "Yes.") keyed by
+#: (kind, phrase, voice) so Talk/wake never wait on a TTS round trip twice.
+_ACK_CACHE: dict[tuple[str, str, str], SynthesisResult] = {}
 
 
 @dataclass
@@ -167,6 +173,26 @@ async def synthesize_owner_facing(
     return await _synth_sentence(synthesizer, text, style or SpeechStyle())
 
 
+async def cached_listen_ack(synthesizer, heard: str) -> tuple[str, SynthesisResult]:
+    """Synthesize the Evie listen-ack, reusing cached audio per voice."""
+
+    phrase = choose_listen_ack(heard or "evie")
+    voice = str(
+        getattr(synthesizer, "voice", None) or getattr(synthesizer, "name", "tts")
+    )
+    key = ("ack", phrase, voice)
+    cached = _ACK_CACHE.get(key)
+    if cached is not None:
+        return phrase, cached
+    ack_timeout = max(float(settings.voice_tts_timeout_seconds), 8.0)
+    result = await _synth_sentence(
+        synthesizer, phrase, listen_ack_style(), timeout=ack_timeout
+    )
+    if result.audio:
+        _ACK_CACHE[key] = result
+    return phrase, result
+
+
 async def stream_chat_tts_pipeline(
     session: AsyncSession,
     *,
@@ -176,6 +202,8 @@ async def stream_chat_tts_pipeline(
     conversation_id=None,
     synthesizer,
     speaker_confidence: float | None = None,
+    skip_listen_ack: bool = False,
+    skip_status_filler: bool = False,
 ) -> AsyncIterator[tuple[str, object]]:
     """Yield ``tts_chunk`` events as soon as a spoken unit is ready, then outcome."""
 
@@ -203,6 +231,13 @@ async def stream_chat_tts_pipeline(
                         conversation_id=thread.id,
                         device_id=device_id,
                         allow_sensitive_tools=True,
+                        model=(
+                            settings.xai_model
+                            if settings.chat_provider == "xai"
+                            else settings.deepseek_model
+                            if settings.chat_provider == "deepseek"
+                            else None
+                        ),
                     ),
                     session,
                     actor,
@@ -231,28 +266,24 @@ async def stream_chat_tts_pipeline(
     wavs: list[bytes] = []
     last_tts: SynthesisResult | None = None
     pipeline: dict[str, Any] | None = None
+    streamed_answer = False
     # WAV engines stream per sentence (start speaking while the model writes);
     # non-WAV engines (Edge MP3) buffer the text and synthesize once, because
     # MP3 chunks cannot be concatenated without re-encoding.
     streamable = bool(getattr(synthesizer, "streamable_output", True))
     filler_task: asyncio.Task | None = None
-    evie_turn = starts_with_evie(transcript.text)
+    evie_turn = starts_with_evie(transcript.text) and not skip_listen_ack
     # Evie-start always speaks a listen-ack first, including Edge/MP3
     # (streamable_output=False). Those engines still cannot concat later
-    # sentences, but the ack is its own playable chunk.
+    # sentences, but the ack is its own playable chunk. Skip when the
+    # Talk stream already emitted the ack before ASR finished.
+    filler_text = ""
     if evie_turn:
         filler_text = choose_listen_ack(transcript.text)
-        filler_style = listen_ack_style()
-        # Talk only plays tts_chunk.audio_b64. Wait the real engine
-        # budget (Edge's EV_VOICE_TTS_TIMEOUT_SECONDS), not a 2s cut
-        # that yields a silent first chunk.
-        ack_timeout = max(float(settings.voice_tts_timeout_seconds), 8.0)
         filler_task = asyncio.create_task(
-            _synth_sentence(
-                synthesizer, filler_text, filler_style, timeout=ack_timeout
-            )
+            cached_listen_ack(synthesizer, transcript.text)
         )
-    elif streamable:
+    elif streamable and not skip_status_filler:
         filler_text = choose_voice_filler(transcript.text)
         filler_style = SpeechStyle(warmth=0.9, brevity=0.95, urgency=0.15)
         filler_task = asyncio.create_task(
@@ -260,12 +291,19 @@ async def stream_chat_tts_pipeline(
         )
     try:
         if filler_task is not None:
-            filler = await filler_task
-            if filler.audio:
+            filler_result = await filler_task
+            if evie_turn:
+                filler_text, filler = filler_result
+            else:
+                filler = filler_result
+            # Listen-ack is the first spoken event even when the engine
+            # is a text-only double (no audio bytes). Searching fillers
+            # still require playable audio so Talk does not flash text.
+            if evie_turn or filler.audio:
                 yield ("tts_chunk", TtsChunk(index=0, text=filler_text, tts=filler))
                 index = 1
                 # Do not concat a non-WAV ack into the final reply audio.
-                if streamable:
+                if streamable and filler.audio:
                     wavs.append(filler.audio)
                     last_tts = filler
         while True:
@@ -289,6 +327,7 @@ async def stream_chat_tts_pipeline(
                         last_tts = chunk
                         yield ("tts_chunk", TtsChunk(index=index, text=sentence, tts=chunk))
                         index += 1
+                        streamed_answer = True
                 continue
             if kind == "error":
                 from fastapi import HTTPException
@@ -314,14 +353,23 @@ async def stream_chat_tts_pipeline(
             # Single-shot engine: the whole buffered reply is one unit.
             leftover = buffer.strip() or None
             buffer = ""
+        spoken_reply = owner_facing_speech(pipeline["result"].text) if pipeline else None
+        # Local intent / non-streaming completions never fill the delta
+        # buffer. Talk already played the listen-ack tts_chunk and will
+        # skip reply.tts, so the answer must be its own playable chunk.
+        if not leftover and spoken_reply and not streamed_answer:
+            leftover = spoken_reply
         if leftover:
             chunk = await _synth_sentence(synthesizer, leftover, style)
-            if chunk.audio:
-                wavs.append(chunk.audio)
-                last_tts = chunk
+            if chunk.audio or leftover == spoken_reply:
+                if chunk.audio:
+                    wavs.append(chunk.audio)
+                    last_tts = chunk
                 yield ("tts_chunk", TtsChunk(index=index, text=leftover, tts=chunk))
     finally:
         if not llm_task.done():
+            llm_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
             await llm_task
 
     if pipeline is None:
@@ -337,11 +385,18 @@ async def stream_chat_tts_pipeline(
             await _synth_sentence(synthesizer, pipeline["result"].text, style)
         )
 
+    spoken = owner_facing_speech(pipeline["result"].text)
+    raw_reply = pipeline["result"].text or ""
+    if spoken is None and is_unreadable_transcript(raw_reply):
+        raw_reply = ""
+    reply = spoken if spoken is not None else raw_reply
+    if not (reply or "").strip():
+        reply = "I heard you, but I don't have a spoken answer yet."
     yield (
         "outcome",
         PipelineOutcome(
             transcript=transcript,
-            reply=pipeline["result"].text,
+            reply=reply,
             conversation_id=str(thread.id),
             tts=synthesis,
             style=style,
@@ -361,6 +416,7 @@ async def run_chat_tts_pipeline(
     conversation_id=None,
     synthesizer,
     speaker_confidence: float | None = None,
+    skip_listen_ack: bool = False,
 ) -> PipelineOutcome:
     """Conversation/intelligence-filter/memory/provider pipeline + TTS reply."""
 
@@ -373,6 +429,7 @@ async def run_chat_tts_pipeline(
         conversation_id=conversation_id,
         synthesizer=synthesizer,
         speaker_confidence=speaker_confidence,
+        skip_listen_ack=skip_listen_ack,
     ):
         if kind == "outcome":
             outcome = payload  # type: ignore[assignment]

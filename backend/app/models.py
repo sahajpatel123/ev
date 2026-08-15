@@ -291,6 +291,10 @@ class Device(Base):
         DateTime(timezone=True)
     )
     push_bundle_id: Mapped[str | None] = mapped_column(String(256))
+    battery_percent: Mapped[float | None] = mapped_column(Float)
+    storage_free_bytes: Mapped[int | None] = mapped_column(Integer)
+    bootstrapped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bootstrapped_spoken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     @property
     def push_platform(self) -> str | None:
@@ -512,6 +516,9 @@ class PrintJob(Base):
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     estimated_minutes: Mapped[int | None] = mapped_column(Integer)
     filament_grams: Mapped[float | None] = mapped_column(Float)
+    vendor_job_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    adapter: Mapped[str | None] = mapped_column(String(32))
+    details: Mapped[dict] = mapped_column(JSONType, default=dict)
     error_log: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -1139,6 +1146,7 @@ class RuntimeHeartbeat(Base):
     status: Mapped[str] = mapped_column(String(16), default="ok", index=True)
     listener_state: Mapped[str] = mapped_column(String(16), default="listening")
     battery_percent: Mapped[float | None] = mapped_column(Float)
+    storage_free_bytes: Mapped[int | None] = mapped_column(Integer)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     details: Mapped[dict] = mapped_column(JSONType, default=dict)
 
@@ -1739,6 +1747,12 @@ class AssistantProfile(Base):
     nickname: Mapped[str] = mapped_column(String(64), default="EVIE")
     owner_preferred_name: Mapped[str | None] = mapped_column(String(128))
     greeting_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    tts_voice_id: Mapped[str | None] = mapped_column(String(64))
+    tts_rate: Mapped[float | None] = mapped_column(Float)
+    last_sense_why: Mapped[str | None] = mapped_column(Text)
+    last_sense_source_ids: Mapped[list] = mapped_column(JSONType, default=list)
+    last_sense_callout_id: Mapped[UUID | None] = mapped_column(Uuid)
+    morning_brief_spoken_on: Mapped[str | None] = mapped_column(String(16))
     onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     dedication_text: Mapped[str | None] = mapped_column(String(500))
     dedication_blob_id: Mapped[str | None] = mapped_column(String(256))
@@ -1759,6 +1773,10 @@ class AssistantProfile(Base):
     quiet_hours_start: Mapped[str | None] = mapped_column(String(16))
     quiet_hours_end: Mapped[str | None] = mapped_column(String(16))
     quiet_digest_spoken_on: Mapped[str | None] = mapped_column(String(16))
+    tts_voice: Mapped[str | None] = mapped_column(String(64), default="default")
+    hud_layout: Mapped[dict] = mapped_column(JSONType, default=dict)
+    training_steps: Mapped[dict] = mapped_column(JSONType, default=dict)
+    volume_percent: Mapped[int] = mapped_column(Integer, default=70)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -1807,3 +1825,219 @@ class FeatureGate(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
+
+
+# --------------------------------------------------------------------------- #
+# House / lab / devices (items 11–25)
+# --------------------------------------------------------------------------- #
+
+
+class OwnerTimer(Base):
+    """Durable owner timer. Survives process restart; daemon due-scans fire it."""
+
+    __tablename__ = "timers"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    late: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Delegate(Base):
+    """Time- and scope-boxed account share. Never a second owner."""
+
+    __tablename__ = "delegates"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    person_id: Mapped[UUID | None] = mapped_column(ForeignKey("entities.id"), index=True)
+    person_name: Mapped[str] = mapped_column(String(256), index=True)
+    device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"), index=True)
+    scopes: Mapped[list] = mapped_column(JSONType, default=list)
+    not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    granted_by: Mapped[str] = mapped_column(String(64), default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class HomeEntity(Base):
+    """Smart-home inventory so names like 'lab lights' resolve."""
+
+    __tablename__ = "home_entities"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    entity_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
+    area: Mapped[str | None] = mapped_column(String(128), index=True)
+    domain: Mapped[str] = mapped_column(String(32), index=True)
+    state: Mapped[str] = mapped_column(String(64), default="unknown")
+    attributes: Mapped[dict] = mapped_column(JSONType, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class IndoorNode(Base):
+    """Owner-authored indoor map node (a room or waypoint)."""
+
+    __tablename__ = "indoor_nodes"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    aliases: Mapped[list] = mapped_column(JSONType, default=list)
+    photo_ref: Mapped[str | None] = mapped_column(String(512))
+    x: Mapped[float | None] = mapped_column(Float)
+    y: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class IndoorEdge(Base):
+    """Directed walk between two indoor nodes."""
+
+    __tablename__ = "indoor_edges"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    from_node_id: Mapped[UUID] = mapped_column(ForeignKey("indoor_nodes.id"), index=True)
+    to_node_id: Mapped[UUID] = mapped_column(ForeignKey("indoor_nodes.id"), index=True)
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    meters: Mapped[float | None] = mapped_column(Float)
+
+
+class LocationShare(Base):
+    """Opt-in live location share. Never created without that person's consent."""
+
+    __tablename__ = "location_shares"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    person_id: Mapped[UUID | None] = mapped_column(ForeignKey("entities.id"), index=True)
+    person_name: Mapped[str] = mapped_column(String(256), index=True)
+    token_expires: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_lat: Mapped[float | None] = mapped_column(Float)
+    last_lon: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(32), default="consent")
+    owner_family_device: Mapped[bool] = mapped_column(Boolean, default=False)
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Beacon(Base):
+    """Owner-registered finder tag for *their* gear — never a person hunt."""
+
+    __tablename__ = "beacons"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    label: Mapped[str] = mapped_column(String(128), index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="ev_device", index=True)
+    last_lat: Mapped[float | None] = mapped_column(Float)
+    last_lon: Mapped[float | None] = mapped_column(Float)
+    owner_only: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    details: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TelemetrySession(Base):
+    """Owner-started vehicle/drone test window."""
+
+    __tablename__ = "telemetry_sessions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    label: Mapped[str] = mapped_column(String(128), default="test")
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TelemetrySample(Base):
+    """One owner-posted telemetry pulse (drone, vehicle, or phone stand-in)."""
+
+    __tablename__ = "telemetry_samples"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    session_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("telemetry_sessions.id"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    battery: Mapped[float | None] = mapped_column(Float)
+    alt: Mapped[float | None] = mapped_column(Float)
+    speed: Mapped[float | None] = mapped_column(Float)
+    lat: Mapped[float | None] = mapped_column(Float)
+    lon: Mapped[float | None] = mapped_column(Float)
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    details: Mapped[dict] = mapped_column(JSONType, default=dict)
+
+
+class MailDraft(Base):
+    """Draft-not-send mail. Helper send requires owner confirm."""
+
+    __tablename__ = "mail_drafts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    mail_id: Mapped[str] = mapped_column(String(128), index=True)
+    to_addr: Mapped[str | None] = mapped_column(String(256))
+    subject: Mapped[str | None] = mapped_column(String(512))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+    confirm: Mapped[bool] = mapped_column(Boolean, default=False)
+    sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class HardwareAudit(Base):
+    """Every printer/drone/camera command is audited."""
+
+    __tablename__ = "hardware_audits"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    command: Mapped[str] = mapped_column(String(64), index=True)
+    args: Mapped[dict] = mapped_column(JSONType, default=dict)
+    result: Mapped[dict] = mapped_column(JSONType, default=dict)
+    actor: Mapped[str] = mapped_column(String(64), default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class PublicFeed(Base):
+    """Owner-picked public RSS/NWS feed — not a private scanner."""
+
+    __tablename__ = "public_feeds"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(32), default="rss", index=True)
+    url: Mapped[str] = mapped_column(String(1024))
+    label: Mapped[str] = mapped_column(String(256))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_items: Mapped[list] = mapped_column(JSONType, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OwnerCamera(Base):
+    """Owner-added camera only. Never LAN-discovered."""
+
+    __tablename__ = "owner_cameras"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    vault_ref: Mapped[str | None] = mapped_column(String(256))
+    kind: Mapped[str] = mapped_column(String(32), default="upload")
+    clip_attachment_id: Mapped[UUID | None] = mapped_column(ForeignKey("attachments.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class HudPush(Base):
+    """Last validated HUD payload pushed to lookout / Watch / widget."""
+
+    __tablename__ = "hud_pushes"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    schema_version: Mapped[str] = mapped_column(String(32), default="ev.hud.card.v1")
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_threads.id"), index=True
+    )
+    prefer_haptic: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(64), default="tool")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)

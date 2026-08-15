@@ -856,7 +856,16 @@ def enforce_persona(
 
 def apply_safety(text: str) -> tuple[str, dict, list[FilterFlag]]:
     flags: list[FilterFlag] = []
-    redacted = text
+    from app.ev.workbench import (
+        protect_citation_urls,
+        reject_interrogation_copy,
+        restore_citation_urls,
+        strip_concussion_diagnosis,
+    )
+
+    redacted, citation_urls = protect_citation_urls(text)
+    redacted = strip_concussion_diagnosis(redacted)
+    redacted = reject_interrogation_copy(redacted)
     redaction_count = 0
     for pattern, label in OUTPUT_REDACTION_PATTERNS:
         redacted, count = pattern.subn("[redacted]", redacted)
@@ -893,6 +902,7 @@ def apply_safety(text: str) -> tuple[str, dict, list[FilterFlag]]:
                     action="flag",
                 )
             )
+    redacted = restore_citation_urls(redacted, citation_urls)
     safety = {
         "redactions": redaction_count,
         "toxic": any(f.name == "toxic_language" for f in flags),

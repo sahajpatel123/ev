@@ -86,13 +86,16 @@ def test_shipped_ptt_and_validation_reuse_open_session() -> None:
     begin = inspect.getsource(VoiceRuntime._begin_push_to_talk_session)
     validate = inspect.getsource(VoiceRuntime._validate_utterance_row)
     assert "_reuse_push_to_talk_session" in begin
+    assert "_latest_session" in begin
     assert "superseded by push-to-talk" not in begin
     assert "follow_up_expired" not in validate
+    assert "push_to_talk" in validate
     app_model = (
         Path(__file__).resolve().parents[2] / "macos" / "Sources" / "EV" / "AppModel.swift"
     ).read_text(encoding="utf-8")
     assert "if let existing = sessionId" in app_model
     assert "openTalkSession" in app_model
+    assert "isDeadVoiceSession" in app_model
 
 
 async def test_voice_followup_reuses_thread_without_rewake(
@@ -247,6 +250,162 @@ async def test_ptt_second_press_reuses_session_and_thread(client: AsyncClient) -
     assert body["conversation_id"] == conversation_id
     assert body["reply"]
     assert body["state"] in {"awake", "follow_up"}
+
+
+async def test_ptt_revives_ended_session_instead_of_wake_again(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Talk must not get stuck on a stale ENDED session id.
+
+    The Mac client reuses ``sessionId`` across presses. Sleep / idle-lock
+    used to 428 every later Talk press with "wake EVIE again".
+    """
+
+    await grant_voice_consent(client)
+    wake = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-ptt-revive", "push_to_talk": True},
+    )
+    assert wake.status_code == 201, wake.text
+    session_id = wake.json()["session_id"]
+    first = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": session_id,
+            "text": "stop listening",
+            "push_to_talk": True,
+        },
+    )
+    assert first.status_code == 200, first.text
+    assert first.json()["state"] == "ended"
+
+    revived = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": session_id,
+            "text": "what's next on my calendar",
+            "push_to_talk": True,
+        },
+    )
+    assert revived.status_code == 200, revived.text
+    body = revived.json()
+    assert body["session_id"] == session_id
+    assert body["state"] in {"awake", "follow_up"}
+    assert body["reply"]
+    status = await _status(client, session_id)
+    assert status["state"] in {"awake", "follow_up"}
+
+    stream = await client.post(
+        "/v1/voice/sessions/" + session_id + "/end",
+    )
+    assert stream.status_code == 200
+    streamed = await client.post(
+        "/v1/voice/utterance/stream",
+        json={
+            "session_id": session_id,
+            "text": "what time is it",
+            "push_to_talk": True,
+        },
+    )
+    assert streamed.status_code == 200, streamed.text
+    events = _sse_events(streamed.text)
+    kinds = [name for name, _ in events]
+    assert "error" not in kinds or all(
+        payload.get("code") != "session_ended"
+        for name, payload in events
+        if name == "error"
+    )
+    assert "reply" in kinds
+
+
+async def test_stream_revives_ended_ptt_session_even_without_flag(
+    client: AsyncClient,
+) -> None:
+    """EV.app may reuse a silence-locked Talk session id.
+
+    The stream must revive it even if push_to_talk is omitted — the session
+    was opened by Talk (verifier_name=push_to_talk).
+    """
+
+    await grant_voice_consent(client)
+    wake = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-ptt-ended-stream", "push_to_talk": True},
+    )
+    assert wake.status_code == 201, wake.text
+    session_id = wake.json()["session_id"]
+    ended = await client.post(f"/v1/voice/sessions/{session_id}/end")
+    assert ended.status_code == 200, ended.text
+    assert ended.json()["state"] == "ended"
+
+    streamed = await client.post(
+        "/v1/voice/utterance/stream",
+        json={"session_id": session_id, "text": "Evie can you hear me?"},
+    )
+    assert streamed.status_code == 200, streamed.text
+    events = _sse_events(streamed.text)
+    assert all(
+        payload.get("code") != "session_ended"
+        for name, payload in events
+        if name == "error"
+    )
+    assert any(name == "reply" for name, _ in events)
+    reply = next(data for name, data in events if name == "reply")
+    assert reply.get("state") in {"awake", "follow_up"}
+    assert reply.get("reply")
+
+
+async def test_ptt_revives_idle_locked_session(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """Idle lock used to 428 Talk forever while the Mac still held the id."""
+
+    await grant_voice_consent(client)
+    wake = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-ptt-idle-revive", "push_to_talk": True},
+    )
+    assert wake.status_code == 201, wake.text
+    session_id = wake.json()["session_id"]
+    first = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": session_id,
+            "text": "what's next",
+            "push_to_talk": True,
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    row = await db_session.get(VoiceSession, UUID(session_id))
+    assert row is not None
+    row.expires_at = utcnow() - timedelta(seconds=1)
+    await db_session.commit()
+
+    revived = await client.post(
+        "/v1/voice/utterance",
+        json={
+            "session_id": session_id,
+            "text": "and after that",
+            "push_to_talk": True,
+        },
+    )
+    assert revived.status_code == 200, revived.text
+    assert revived.headers.get("x-error-code") != "session_ended"
+    body = revived.json()
+    assert body["session_id"] == session_id
+    assert body["state"] in {"awake", "follow_up"}
+    assert body["reply"]
+
+    ended = await client.post(f"/v1/voice/sessions/{session_id}/end")
+    assert ended.status_code == 200
+    wake_again = await client.post(
+        "/v1/voice/wake",
+        json={"device_id": "mac-ptt-idle-revive", "push_to_talk": True},
+    )
+    assert wake_again.status_code == 201, wake_again.text
+    assert wake_again.json()["session_id"] == session_id
+    assert wake_again.json()["state"] == "awake"
 
 
 async def test_ears_followup_and_hint_expiry_reuse_session(
@@ -554,3 +713,61 @@ async def test_runtime_sleep_and_long_idle_still_close(client: AsyncClient, db_s
     assert locked.status_code == 428
     assert locked.headers.get("x-error-code") == "session_ended"
     assert runtime_service.listening_idle_expired(row.updated_at, utcnow())
+
+
+async def test_open_live_creates_awake_session_without_wake_word(
+    client: AsyncClient,
+) -> None:
+    """Opening EV.app is the door — no Evie gate."""
+
+    await grant_voice_consent(client)
+    resp = await client.post(
+        "/v1/voice/live/open",
+        json={"device_id": "mac-live-open"},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["state"] == "awake"
+    assert body["live"] is True
+    assert body["session_id"]
+    assert body["conversation_id"]
+    again = await client.post(
+        "/v1/voice/live/open",
+        json={"device_id": "mac-live-open"},
+    )
+    assert again.status_code == 201, again.text
+    assert again.json()["session_id"] == body["session_id"]
+
+
+async def test_bind_live_revives_ended_app_open_session(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A dropped live socket must reopen the same owner-authenticated session."""
+
+    from app.auth import ActorContext
+    from app.voice.live.transport import bind_live_session
+
+    await grant_voice_consent(client)
+    opened = await client.post(
+        "/v1/voice/live/open",
+        json={"device_id": "mac-live-bind"},
+    )
+    assert opened.status_code == 201, opened.text
+    session_id = UUID(opened.json()["session_id"])
+    row = await db_session.get(VoiceSession, session_id)
+    assert row is not None
+    row.state = "ended"
+    row.ended_at = utcnow()
+    row.end_reason = "sleep-phrase"
+    await db_session.commit()
+
+    live = await bind_live_session(
+        session_id=session_id,
+        ctx=ActorContext(actor="master", is_master=True),
+    )
+    assert live.session_id == str(session_id)
+    revived = await db_session.get(VoiceSession, session_id)
+    await db_session.refresh(revived)
+    assert revived is not None
+    assert revived.ended_at is None
+    assert revived.state == "awake"

@@ -35,6 +35,15 @@ from app.ev.continuity import is_continuation
 from app.ev.interaction import build_strategy, strategy_block
 from app.ev.personality import get_current, to_dict
 from app.ev.self_eval import log_response
+from app.ev.turn import (
+    build_system_prompt,
+    confirmed_reply,
+    execute_requested_actions,
+    presented_this_turn,
+    receipt_messages,
+    snapshot_working_on,
+    writes_ran,
+)
 from app.ev.user_state import build_user_state
 from app.filter.envelope import (
     OutputReport,
@@ -676,7 +685,16 @@ async def chat(
     data: ChatRequest,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ):
+    if data.allow_sensitive_tools and not ctx.is_master and (
+        ctx.device is None or ctx.device.trust_level != "owner"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner-trusted device required for sensitive tools",
+            headers={"X-Error-Code": "owner_trust_required"},
+        )
     if data.stream:
         thread = await assistant_mod.resolve_live_thread(session, data.conversation_id)
         return StreamingResponse(
@@ -1049,10 +1067,13 @@ async def run_chat_pipeline(
             }
         ]
 
+    who = assistant_mod.spoken_name(
+        (await assistant_mod.get_profile(session)).nickname
+    )
     context, context_tokens, context_plan = _assemble_context(
         memories,
         user_state=user_state,
-        strategy_text=strategy_block(strategy),
+        strategy_text=strategy_block(strategy, who=who),
         budget=budget,
         message=data.message,
         perception_lines=perception_lines,
@@ -1076,6 +1097,7 @@ async def run_chat_pipeline(
     )
 
     local = await assistant_mod.handle_local_intent(session, data.message)
+    receipts: list = []
 
     if decision.blocked:
         final_draft = (
@@ -1089,6 +1111,8 @@ async def run_chat_pipeline(
         )
         result = ChatResult(text=final_draft)
         envelope_hash = None
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
     elif local is not None:
         result = ChatResult(text=str(local["reply"]))
         report = OutputReport(
@@ -1097,6 +1121,11 @@ async def run_chat_pipeline(
             flags=decision.flags,
         )
         envelope_hash = None
+        # Voice Talk only plays tts_chunk audio. Local intents never
+        # stream token deltas, so push the full reply into the same
+        # callback the model path uses or the answer stays silent.
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
     else:
         envelope_hash = compute_envelope_hash(
             message=decision.provider_message,
@@ -1138,60 +1167,15 @@ async def run_chat_pipeline(
             },
             media_refs=chat_media_refs,
         )
-        identity = await assistant_mod.compile_identity(session, compact=source == "voice")
-        system_prompt = (
-            f"{identity}\n\n"
-            "ASSISTANT MODE — you are the owner's hands-on personal assistant, "
-            "not a chatbot:\n"
-            "- DO, DON'T DESCRIBE. For actionable requests (reminder, calendar, "
-            "message, call, mail, weather, lookup, math, research, open a window), "
-            "execute the tool and report the confirmed result. Never reply with an "
-            "essay about what you could do.\n"
-            "- THINK IN AN ACTION LOOP: understand the intent, gather the minimum "
-            "facts, perform the requested reversible or authorized action, verify "
-            "the result, then speak. The user should not have to restate a request "
-            "just because the first turn needed a tool.\n"
-            "- NEVER CLAIM COMPLETION WITHOUT EVIDENCE. If a bridge is unavailable, "
-            "say exactly what failed and give the next useful setup step.\n"
-            "- OFFER THE NEXT STEP. After answering, if a clearly useful next step "
-            "exists, take it when it is read-only or reversible; otherwise offer it "
-            "in one short line.\n"
-            "- PERSONALIZE. Ground your answer in the owner's memory, goals, "
-            "projects, calendar, people, and live context. Use their name naturally "
-            "when it fits.\n"
-            "- BE BRIEF AND HUMAN. Lead with the answer in the first clause. No "
-            "filler, no \"As an AI…\", no \"Great question!\". One or two sentences "
-            "unless they asked for a briefing or a deep comparison.\n\n"
-            "Answer the CURRENT user message directly and completely. It may be a "
-            "brand-new topic with no connection to anything said before. Every prior "
-            "turn, summary, and memory below is OPTIONAL background: use it only when "
-            "the current message explicitly refers to it (\"as I asked before\", "
-            "\"about the markets\", \"that thing\"). Do not treat the current message "
-            "as a continuation of older topics, and never answer with a question like "
-            "\"do you mean X or Y?\" merely because earlier context exists. If the "
-            "current message is clear on its own, answer it directly; only ask for "
-            "clarification when the message itself is genuinely ambiguous.\n\n"
-            "You reason over memory that EV's system has retrieved for you; never invent memories. "
-            "Be honest about uncertainty, cite dates/sources when you use them, and keep the user's "
-            "goals in mind.\n\n"
-            f"{context}"
+        identity = await assistant_mod.compile_identity(session, compact=True)
+        envelope.metadata["spoken_name"] = who
+        working_on = snapshot_working_on(
+            decision.provider_message,
+            user_state=user_state,
+            conv_state=state,
+            continuation=continuation,
         )
-        if source == "voice":
-            system_prompt += (
-                "\n\nSPOKEN TURN — you are EVIE, the owner's operator and chief of "
-                "staff, not a chatbot. When the owner tells you to do something "
-                "(send, call, remind, present, search, remember, set up), DO it and "
-                "confirm the result with real evidence — the tools in this turn are "
-                "there for exactly that. When they ask a question, answer it directly "
-                "in one to three short spoken sentences and stop. Never narrate what "
-                "you are about to do (no 'Checking', 'Searching', 'Wait', 'Let me "
-                "look'); do it silently and speak the result. If something is worth "
-                "seeing, call the present tool so it opens on their Mac rather than "
-                "telling them to check a website. If a pending alert or a stored "
-                "follow-up is genuinely relevant to this request, mention it once. "
-                "Do not recite your capabilities, do not ask 'how can I help', and "
-                "do not answer a clear request with a question."
-            )
+        envelope.metadata["working_on"] = working_on
         from app.ev.briefing import (
             WRITE_TOOLS,
             gather_intelligence_briefing,
@@ -1210,21 +1194,43 @@ async def run_chat_pipeline(
             allow_sensitive=allow_sensitive,
             source=source,
         )
-        if briefing:
-            system_prompt += "\n\n" + briefing
+        await _progress("actions")
+        receipts = await execute_requested_actions(
+            session,
+            decision.provider_message,
+            actor=actor,
+            allow_sensitive=allow_sensitive,
+            request_id=request_id,
+        )
+        envelope.metadata["actions"] = [
+            {"name": item.name, "ok": item.ok} for item in receipts
+        ]
+        system_prompt = build_system_prompt(
+            identity=identity,
+            who=who,
+            source=source,
+            working_on=working_on,
+            context=context,
+            briefing=briefing,
+            receipts=receipts,
+        )
         if on_turn_ready is not None:
             await on_turn_ready(strategy)
         gateway = ModelGateway(provider)
         chat_messages = [
             ChatMessage(role="system", content=system_prompt),
             ChatMessage(role="user", content=decision.provider_message),
+            *receipt_messages(receipts),
         ]
         offer_tools = source != "voice" or voice_needs_tools(decision.provider_message)
         tool_specs = tool_specs_from_dicts(tools_for_turn(decision.provider_message)) if offer_tools else []
         write_needed = bool(
             detect_life_action(decision.provider_message)
             or select_tool(decision.provider_message).selected in WRITE_TOOLS
+            or writes_ran(receipts)
         )
+        supports_native_tools = bool(getattr(provider, "supports_tools", True))
+        dispatched_names = {item.name for item in receipts}
         stream_tokens = text_delta_callback is not None and not write_needed
         if stream_tokens and text_delta_callback is not None:
             await _progress("model", {"streaming": True})
@@ -1247,7 +1253,7 @@ async def run_chat_pipeline(
             await log_model_call(session, call=call, actor=actor)
             if not (call.result.text or "").strip():
                 call.result.text = "".join(parts)
-        else:
+        elif supports_native_tools:
             await _progress("tools" if offer_tools else "model")
             call = await run_tool_loop(
                 session,
@@ -1259,10 +1265,22 @@ async def run_chat_pipeline(
                 actor=actor,
                 allow_sensitive_tools=allow_sensitive,
                 request_id=request_id,
+                already_dispatched=dispatched_names,
             )
-            if text_delta_callback is not None and call.result.text:
-                await text_delta_callback(call.result.text)
+        else:
+            await _progress("model")
+            call = await gateway.chat(
+                chat_messages,
+                envelope=envelope,
+                tools=[],
+                model=data.model,
+                allow_sensitive_tools=allow_sensitive,
+            )
+            await log_model_call(session, call=call, actor=actor)
         result = call.result
+        result.text = confirmed_reply(result.text, receipts)
+        if not stream_tokens and text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
         if call.status == "blocked":
             raise HTTPException(
                 status_code=403,
@@ -1396,6 +1414,7 @@ async def run_chat_pipeline(
             "last_assistant_message": result.text[:1000],
             "context_tokens": context_tokens,
             "context_depth": depth,
+            "last_actions": [item.name for item in receipts],
         },
     )
     await session.commit()
@@ -1409,7 +1428,7 @@ async def run_chat_pipeline(
             "windows": [local["hud"]],
             **local["hud"],
         }
-    if surfaces is None and not decision.blocked:
+    if surfaces is None and not decision.blocked and not presented_this_turn(receipts):
         try:
             from app.ev.lookout import compose_and_maybe_open
 
@@ -1725,6 +1744,47 @@ async def deregister_push_token(
         registered=False,
         updated_at=device.push_token_updated_at,
     )
+
+
+@router.get("/devices/{device_id}/bootstrap")
+async def bootstrap_device(
+    device_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """Import owner prefs onto this device. First success speaks We're online. once."""
+    if ctx.is_device and ctx.device_id != device_id:
+        raise HTTPException(status_code=403, detail="Device can only bootstrap itself")
+    from app.ev.fleet import bootstrap_device as do_bootstrap
+
+    try:
+        payload = await do_bootstrap(session, device_id, actor=ctx.actor)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    await session.commit()
+    return payload
+
+
+@router.post("/devices/{device_id}/panic")
+async def panic_device(
+    device_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """Revoke one device. Remaining trusted devices hear that it went offline."""
+    if ctx.is_device and ctx.device is not None and ctx.device.trust_level != "owner":
+        if ctx.device_id != device_id:
+            raise HTTPException(status_code=403, detail="Owner trust required to panic another device")
+    from app.ev.fleet import panic_device as do_panic
+
+    try:
+        payload = await do_panic(session, device_id, actor=ctx.actor)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    await session.commit()
+    return payload
 
 
 @router.get("/devices/{device_id}/status")

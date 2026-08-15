@@ -10,9 +10,12 @@ from app.voice.speech import (
     choose_listen_ack,
     choose_voice_filler,
     concat_wav_bytes,
+    is_presence_check,
+    is_unreadable_transcript,
     listen_ack_style,
     pop_speakable,
     starts_with_evie,
+    strip_wake_prefix,
 )
 
 
@@ -28,6 +31,12 @@ def test_choose_listen_ack_varies_with_evie_start() -> None:
     assert len({wake, question, command, soft}) > 1
     assert starts_with_evie("Evie look that up")
     assert not starts_with_evie("what's the weather")
+    assert strip_wake_prefix("Evie what's the weather") == "what's the weather"
+    assert strip_wake_prefix("hey evie, text mom") == "text mom"
+    assert strip_wake_prefix("EVIE") == ""
+    assert strip_wake_prefix("what's the weather") == "what's the weather"
+    assert strip_wake_prefix("That's interesting.") == "That's interesting."
+    assert strip_wake_prefix("Evie what's the weather?") == "what's the weather?"
     listen = listen_ack_style()
     answer = answer_speech_style()
     assert listen.warmth > answer.warmth
@@ -102,3 +111,24 @@ def test_compact_identity_is_short() -> None:
     assert "first clause" in compact
     assert len(compact) < len(full)
     assert "Personality profile" not in compact
+    assert "hear them" in compact.lower()
+
+
+def test_unreadable_transcript_rejects_dhm_class() -> None:
+    assert is_unreadable_transcript("DHM")
+    assert is_unreadable_transcript("dhm")
+    assert is_unreadable_transcript("")
+    assert is_unreadable_transcript("asr_timeout")
+    assert is_unreadable_transcript("Speech recognition took too long")
+    assert not is_unreadable_transcript("Evie can you hear me?")
+    assert not is_unreadable_transcript("yes")
+    assert not is_unreadable_transcript("100")
+    assert not is_unreadable_transcript("what's next")
+
+
+def test_presence_check_detects_hear_me() -> None:
+    assert is_presence_check("Evie can you hear me?")
+    assert is_presence_check("are you there")
+    assert is_presence_check("hey evie are you listening")
+    assert not is_presence_check("evie can you check the time")
+    assert not is_presence_check("what's next on my calendar")

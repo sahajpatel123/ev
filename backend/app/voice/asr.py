@@ -12,7 +12,6 @@ from __future__ import annotations
 import array
 import asyncio
 import base64
-import contextlib
 import io
 import math
 import os
@@ -34,6 +33,171 @@ from app.voice.contracts import (
     VoiceError,
     acquire_model,
 )
+
+# --------------------------------------------------------------------------- #
+# Hear classification: never a silent drop
+# --------------------------------------------------------------------------- #
+
+
+HEAR_CODES = frozenset(
+    {
+        "asr_no_speech",
+        "asr_empty_result",
+        "asr_degraded",
+        "asr_undecodable_audio",
+        "asr_empty_audio",
+        "asr_bad_base64",
+        "asr_audio_required",
+        "mic_denied",
+        "asr_device_unusable",
+    }
+)
+
+
+def classify_hear_failure(
+    *,
+    code: str | None = None,
+    empty_audio: bool = False,
+    undecodable: bool = False,
+    no_speech: bool = False,
+    empty_result: bool = False,
+    degraded: bool = False,
+    mic_denied: bool = False,
+    device_unusable: bool = False,
+) -> tuple[str, str]:
+    """Map a hear failure to a typed owner-visible (code, message)."""
+
+    if code and code in HEAR_CODES:
+        return code, hear_status_message(code)
+    if mic_denied:
+        return "mic_denied", hear_status_message("mic_denied")
+    if device_unusable:
+        return "asr_device_unusable", hear_status_message("asr_device_unusable")
+    if empty_audio:
+        return "asr_empty_audio", hear_status_message("asr_empty_audio")
+    if undecodable:
+        return "asr_undecodable_audio", hear_status_message("asr_undecodable_audio")
+    if degraded:
+        return "asr_degraded", hear_status_message("asr_degraded")
+    if no_speech:
+        return "asr_no_speech", hear_status_message("asr_no_speech")
+    if empty_result:
+        return "asr_empty_result", hear_status_message("asr_empty_result")
+    return "asr_empty_result", hear_status_message("asr_empty_result")
+
+
+def hear_failure_from_exception(exc: BaseException) -> tuple[str, str]:
+    """Map a capture/OS error to a typed hear failure (mic denied, unusable)."""
+
+    text = f"{type(exc).__name__} {exc}".lower()
+    if "denied" in text or "tcc" in text or "not permitted" in text:
+        return classify_hear_failure(mic_denied=True)
+    if "unavailable" in text or "no input" in text or "device" in text:
+        return classify_hear_failure(device_unusable=True)
+    return classify_hear_failure(device_unusable=True)
+
+
+def hear_status_message(code: str) -> str:
+    """Owner-facing line for a typed hear failure. Never an empty string."""
+
+    return {
+        "asr_no_speech": "I didn't hear any speech in that clip.",
+        "asr_empty_result": "I didn't catch that. Hold Push to talk and try again.",
+        "asr_degraded": "Speech recognition is unavailable. Check the ASR engine or weights.",
+        "asr_undecodable_audio": "I couldn't read that clip. Hold Push to talk and try again.",
+        "asr_empty_audio": "I couldn't read that clip. Hold Push to talk and try again.",
+        "asr_bad_base64": "I couldn't read that clip. Hold Push to talk and try again.",
+        "asr_audio_required": "I couldn't read that clip. Hold Push to talk and try again.",
+        "mic_denied": (
+            "Microphone permission is denied. Enable it in System Settings → "
+            "Privacy & Security → Microphone, then try again."
+        ),
+        "asr_device_unusable": (
+            "The microphone device is unusable. Pick another input and try again."
+        ),
+        "asr_timeout": "That took too long to hear. Try a shorter question.",
+        "asr_unreadable": "I didn't catch that. Hold Push to talk and try again.",
+    }.get(code, "I didn't catch that. Hold Push to talk and try again.")
+
+
+def pcm_rms(pcm: bytes) -> float:
+    """RMS of little-endian 16-bit PCM. 0.0 for empty or odd-length buffers."""
+
+    if len(pcm) < 4:
+        return 0.0
+    samples = array.array("h")
+    try:
+        samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    except Exception:
+        return 0.0
+    if not samples:
+        return 0.0
+    acc = 0.0
+    for sample in samples:
+        acc += float(sample) * float(sample)
+    return math.sqrt(acc / len(samples))
+
+
+def wav_is_silent(raw: bytes, *, rms_floor: float = 180.0) -> bool:
+    """True when a WAV/PCM buffer is empty or below the speech-energy floor."""
+
+    try:
+        normalized = normalize_asr_audio(raw)
+        with wave.open(io.BytesIO(normalized), "rb") as wav:
+            pcm = wav.readframes(wav.getnframes())
+    except VoiceError:
+        return True
+    except Exception:
+        return True
+    return pcm_rms(pcm) < rms_floor
+
+
+def normalize_asr_audio(raw: bytes) -> bytes:
+    """Wrap PCM, convert containers, resample to 16 kHz mono 16-bit WAV.
+
+    Phone/Mac clips often arrive as raw PCM16, 44.1/48 kHz WAV, or m4a.
+    Every shipped transcriber must see the same 16 kHz contract — never
+    reject a readable clip as ``asr_undecodable_audio`` just for rate.
+    """
+
+    if not raw:
+        raise VoiceError(
+            hear_status_message("asr_empty_audio"),
+            status=422,
+            code="asr_empty_audio",
+        )
+    try:
+        from app.audio.capture import pcm_to_wav_bytes
+        from app.voice.speaker import decode_waveform, ensure_wav_bytes
+
+        wav = ensure_wav_bytes(raw)
+        values, rate = decode_waveform(wav)
+        if not values:
+            raise VoiceError(
+                hear_status_message("asr_empty_audio"),
+                status=422,
+                code="asr_empty_audio",
+            )
+        pcm = array.array(
+            "h",
+            (max(-32768, min(32767, int(round(sample * 32767)))) for sample in values),
+        )
+        return pcm_to_wav_bytes(pcm.tobytes(), 16000 if rate else 16000)
+    except VoiceError:
+        raise
+    except ValueError as exc:
+        raise VoiceError(
+            hear_status_message("asr_undecodable_audio"),
+            status=422,
+            code="asr_undecodable_audio",
+        ) from exc
+    except Exception as exc:
+        raise VoiceError(
+            hear_status_message("asr_undecodable_audio"),
+            status=422,
+            code="asr_undecodable_audio",
+        ) from exc
+
 
 # --------------------------------------------------------------------------- #
 # Audio input: fail closed, allowlisted refs only
@@ -126,16 +290,11 @@ async def _read_audio(audio_b64: str | None, audio_ref: str | None) -> tuple[byt
             ) from exc
         if not raw:
             raise VoiceError(
-                "audio_b64 must not be empty",
+                hear_status_message("asr_empty_audio"),
                 status=422,
                 code="asr_empty_audio",
             )
-        from app.voice.speaker import ensure_wav_bytes
-
-        with contextlib.suppress(ValueError):
-            # Tiny or unknown buffers stay as-is; the transcriber fails closed.
-            raw = ensure_wav_bytes(raw)
-        return clip_wav_to_max_seconds(raw), "voice.wav"
+        return clip_wav_to_max_seconds(normalize_asr_audio(raw)), "voice.wav"
     if audio_ref:
         key = _object_store_key(audio_ref)
         if key is not None:
@@ -155,7 +314,7 @@ async def _read_audio(audio_b64: str | None, audio_ref: str | None) -> tuple[byt
                     status=404,
                     code="asr_audio_ref_missing",
                 ) from exc
-            return clip_wav_to_max_seconds(raw), Path(key).name
+            return clip_wav_to_max_seconds(normalize_asr_audio(raw)), Path(key).name
         path = _safe_local_path(audio_ref)
         if not path.is_file():
             raise VoiceError(
@@ -163,7 +322,7 @@ async def _read_audio(audio_b64: str | None, audio_ref: str | None) -> tuple[byt
                 status=404,
                 code="asr_audio_ref_missing",
             )
-        return clip_wav_to_max_seconds(path.read_bytes()), path.name
+        return clip_wav_to_max_seconds(normalize_asr_audio(path.read_bytes())), path.name
     raise VoiceError(
         "ASR requires audio_b64 or a readable audio_ref; real engines never "
         "accept a transcript hint in place of audio",
@@ -187,20 +346,17 @@ def _wav_pcm(data: bytes) -> tuple[array.array, int]:
             status=422,
             code="asr_undecodable_audio",
         ) from exc
-    if width != 2:
+    if width not in (1, 2):
         raise VoiceError(
-            "ASR requires 16-bit PCM WAV",
+            hear_status_message("asr_undecodable_audio"),
             status=422,
             code="asr_undecodable_audio",
         )
-    if rate != 16000:
-        raise VoiceError(
-            f"ASR requires 16 kHz audio (got {rate} Hz)",
-            status=422,
-            code="asr_undecodable_audio",
-        )
-    samples = array.array("h")
-    samples.frombytes(frames)
+    if width == 1:
+        samples = array.array("h", ((byte - 128) * 256 for byte in frames))
+    else:
+        samples = array.array("h")
+        samples.frombytes(frames)
     if channels > 1:
         samples = array.array(
             "h",
@@ -209,6 +365,16 @@ def _wav_pcm(data: bytes) -> tuple[array.array, int]:
                 for i in range(0, len(samples) - channels + 1, channels)
             ),
         )
+    if rate != 16000:
+        from app.voice.speaker import _resample
+
+        floated = [sample / 32768.0 for sample in samples]
+        resampled = _resample(floated, rate, 16000)
+        samples = array.array(
+            "h",
+            (max(-32768, min(32767, int(round(value * 32767)))) for value in resampled),
+        )
+        rate = 16000
     return samples, rate
 
 

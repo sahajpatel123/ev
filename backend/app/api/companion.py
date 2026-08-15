@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.core import _memory_out
-from app.auth import require_actor
+from app.auth import ActorContext, require_actor, require_actor_context
 from app.db import get_session
 from app.ev import (
     companionship,
@@ -314,6 +314,24 @@ async def hud_card(
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> HudCardOut:
+    from app.ev.workbench import last_hud_payload
+    from app.schemas import HudCardOut
+
+    last = await last_hud_payload(session)
+    if last and last.get("schema_version") == "ev.hud.card.v1":
+        try:
+            return HudCardOut.model_validate(
+                {
+                    "schema_version": "ev.hud.card.v1",
+                    "generated_at": last.get("generated_at"),
+                    "title": last.get("title") or "EV",
+                    "body": last.get("body") or "",
+                    "priority": last.get("priority") or 0.0,
+                    "meta": last.get("meta") if isinstance(last.get("meta"), dict) else {},
+                }
+            )
+        except Exception:
+            pass
     return await hud.status_card(session)
 
 
@@ -445,21 +463,25 @@ async def list_tools(
 async def call_tool(
     data: ToolCallRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
+    x_ev_reverify: str | None = Header(default=None),
 ) -> ToolCallResponse:
     """Declarative tool dispatch used by the orchestrator/gateway.
 
     Every invocation is validated against the registry schema, checked against
     the permission matrix (sensitive tools need an explicit gate), executed,
-    and written to the access log before commit.
+    and written to the access log before commit. Life actions require a
+    purpose-bound reverify proof for device actors — a body flag is ignored.
     """
     response = await tools.dispatch(
         session,
         data.name,
         data.arguments,
-        actor=actor,
+        actor=ctx.actor,
         allow_sensitive=data.allow_sensitive,
         request_id=data.request_id,
+        device_id=ctx.device_id,
+        reverify_token=x_ev_reverify,
     )
     await session.commit()
     return response
@@ -604,3 +626,84 @@ async def continue_session(
         recent_context=recent_context,
         next_actions=next_actions,
     )
+
+
+@router.get("/indoor/graph")
+async def indoor_graph(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from app.models import IndoorEdge, IndoorNode
+
+    nodes = list((await session.execute(select(IndoorNode))).scalars().all())
+    edges = list((await session.execute(select(IndoorEdge))).scalars().all())
+    return {
+        "nodes": [
+            {
+                "id": str(node.id),
+                "name": node.name,
+                "aliases": node.aliases or [],
+                "photo_ref": node.photo_ref,
+                "x": node.x,
+                "y": node.y,
+            }
+            for node in nodes
+        ],
+        "edges": [
+            {
+                "id": str(edge.id),
+                "from": str(edge.from_node_id),
+                "to": str(edge.to_node_id),
+                "instruction": edge.instruction,
+                "meters": edge.meters,
+            }
+            for edge in edges
+        ],
+    }
+
+
+@router.post("/indoor/nodes")
+async def indoor_add_node(
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from app.ev.travel import upsert_node
+
+    name = str(data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    node = await upsert_node(
+        session,
+        name,
+        aliases=list(data.get("aliases") or []),
+        photo_ref=data.get("photo_ref"),
+        x=data.get("x"),
+        y=data.get("y"),
+    )
+    await session.commit()
+    return {"id": str(node.id), "name": node.name}
+
+
+@router.post("/indoor/edges")
+async def indoor_add_edge(
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from uuid import UUID as _UUID
+
+    from app.ev.travel import connect_nodes
+
+    try:
+        edge = await connect_nodes(
+            session,
+            _UUID(str(data["from"])),
+            _UUID(str(data["to"])),
+            instruction=str(data.get("instruction") or ""),
+            meters=data.get("meters"),
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await session.commit()
+    return {"id": str(edge.id)}

@@ -6,6 +6,7 @@ import Foundation
 final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
     private var player: AVAudioPlayer?
     private var queue: [Data] = []
+    var onPlayingChange: ((Bool) -> Void)?
 
     var isPlaying: Bool {
         player?.isPlaying ?? false
@@ -25,13 +26,18 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
     }
 
     func stop() {
+        let wasPlaying = isPlaying || !queue.isEmpty
         queue.removeAll()
         player?.delegate = nil
         player?.stop()
         player = nil
+        if wasPlaying {
+            onPlayingChange?(false)
+        }
     }
 
     private func playNow(_ data: Data) throws {
+        let wasPlaying = isPlaying
         player?.delegate = nil
         player?.stop()
         let next = try AVAudioPlayer(data: data)
@@ -39,11 +45,18 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
         next.prepareToPlay()
         next.play()
         player = next
+        if !wasPlaying {
+            onPlayingChange?(true)
+        }
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        guard !queue.isEmpty else { return }
-        let next = queue.removeFirst()
-        try? playNow(next)
+        if !queue.isEmpty {
+            let next = queue.removeFirst()
+            try? playNow(next)
+            return
+        }
+        self.player = nil
+        onPlayingChange?(false)
     }
 }

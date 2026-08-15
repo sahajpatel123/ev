@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from app.audio.capture import (
     MicrophoneDeniedError,
@@ -32,6 +33,7 @@ from app.audio.ring import PCM16RingBuffer, pcm16_bytes
 from app.audio.scene import classify_wav, default_scene_classifier, set_scene_classifier
 from app.audio.vad import StreamingSegmenter, default_vad_engine, looks_stuck_loop
 from app.config import settings
+from clients.ears.live import EarsLiveChannel, EarsLivePlayer, EarsLiveUnavailable
 from clients.ears.wake import PhraseFallbackWake
 
 #: Voice session states in which the ears process may keep streaming follow-up
@@ -63,7 +65,8 @@ def start_app_watchdog(
     app_alive: Callable[[], bool],
     *,
     interval_s: float = 5.0,
-) -> None:
+    on_exit: Callable[[], None] | None = None,
+) -> threading.Event:
     """Force-exit this process when the EV menu-bar app disappears.
 
     The main asyncio loop can be blocked in a long HTTP/TTS call and would not
@@ -71,11 +74,21 @@ def start_app_watchdog(
     periodically and hard-exits with ``os._exit`` — process death makes the OS
     reclaim the microphone instantly, which is exactly what the user expects
     when they quit EV. KeepAlive=false on the launchd job means it stays dead.
+
+    The returned ``Event`` stops the watchdog thread; ``run_ears`` sets it on
+    shutdown so the thread never outlives the loop (which would hard-exit the
+    host process, including pytest, from the next test's timeline). ``on_exit``
+    is injectable so tests can observe the shutdown decision without dying.
     """
 
+    exit_fn = on_exit or (lambda: os._exit(0))
+    stop = threading.Event()
+
     def watch() -> None:
-        while True:
-            time.sleep(interval_s)
+        while not stop.is_set():
+            stop.wait(interval_s)
+            if stop.is_set():
+                return
             try:
                 alive = app_alive()
             except Exception:  # noqa: BLE001 - a flaky check must not kill ears
@@ -84,9 +97,10 @@ def start_app_watchdog(
                 LOGGER.warning(
                     "ears: EV menu-bar app is not running; exiting (mic released)"
                 )
-                os._exit(0)
+                exit_fn()
 
     threading.Thread(target=watch, name="ears-app-watchdog", daemon=True).start()
+    return stop
 
 
 @dataclass
@@ -107,7 +121,7 @@ class EarConfig:
     echo_tail_s: float = 0.6
     # Idle wake spotting: room noise never goes "silent", so a 60s cap
     # sends one huge clip to Whisper and the loop blocks until it returns.
-    wake_chunk_s: float = 2.5
+    wake_chunk_s: float = 1.2
     idle_min_rms: float = 140.0
     idle_min_peak: int = 600
     wake_model_path: str | None = None
@@ -118,6 +132,7 @@ class EarConfig:
     stuck_loop_drop: bool = True
     stuck_loop_threshold: float = 0.10
     stream_playback: bool = True
+    live_enabled: bool = True
     scene_model_path: str | None = None
     scene_labels_path: str | None = None
     api_url: str | None = None
@@ -176,6 +191,19 @@ def idle_clip_worth_spotting(
 def build_config(args: argparse.Namespace | None = None) -> EarConfig:
     """Config from settings + CLI flags (CLI wins)."""
 
+    api_url = settings.ears_api_url
+    api_key = settings.ears_api_key
+    host = (urlparse(api_url).hostname or "").lower() if api_url else ""
+    if not api_key and host in {"localhost", "127.0.0.1", "::1"}:
+        # Keep zero-setup local development working without ever sending the
+        # root key to a non-loopback API URL.
+        api_key = settings.master_key
+    elif api_url and not api_key:
+        LOGGER.error(
+            "EV_EARS_API_KEY is required for non-loopback ears API delivery; "
+            "refusing to use EV_MASTER_KEY as a remote bearer token"
+        )
+
     cfg = EarConfig(
         device=settings.ears_device,
         sample_rate=settings.ears_sample_rate,
@@ -201,10 +229,11 @@ def build_config(args: argparse.Namespace | None = None) -> EarConfig:
         stuck_loop_drop=settings.ears_stuck_loop_drop,
         stuck_loop_threshold=settings.ears_stuck_loop_threshold,
         stream_playback=settings.ears_stream_playback,
+        live_enabled=settings.ears_live_enabled,
         scene_model_path=settings.ears_scene_model_path,
         scene_labels_path=settings.ears_scene_labels_path,
-        api_url=settings.ears_api_url,
-        api_key=settings.ears_api_key or settings.master_key,
+        api_url=api_url,
+        api_key=api_key,
         consent=settings.ears_consent,
         dry_run=settings.ears_dry_run,
         save_segments_dir=settings.ears_save_segments_dir,
@@ -234,6 +263,7 @@ def build_config(args: argparse.Namespace | None = None) -> EarConfig:
         "stuck_loop_drop": args.stuck_loop_drop,
         "stuck_loop_threshold": args.stuck_loop_threshold,
         "stream_playback": args.stream_playback,
+        "live_enabled": args.live_enabled,
         "scene_model_path": args.scene_model_path,
         "scene_labels_path": args.scene_labels_path,
         "api_url": args.api_url,
@@ -250,6 +280,18 @@ def build_config(args: argparse.Namespace | None = None) -> EarConfig:
     for name, value in overrides.items():
         if value is not None:
             setattr(cfg, name, value)
+    cfg_host = (urlparse(cfg.api_url).hostname or "").lower() if cfg.api_url else ""
+    if (
+        cfg.api_url
+        and cfg_host not in {"localhost", "127.0.0.1", "::1"}
+        and not settings.ears_api_key
+        and cfg.api_key == settings.master_key
+    ):
+        LOGGER.error(
+            "remote ears delivery requires a dedicated --api-key/EV_EARS_API_KEY; "
+            "master-key fallback disabled"
+        )
+        cfg.api_key = None
     if cfg.wake_model_path and not Path(cfg.wake_model_path).expanduser().is_file():
         fallback = (
             "using the local Whisper spotter"
@@ -898,6 +940,7 @@ async def run_ears(
     require_menu_bar_app: bool = False,
     app_check_interval_s: float = 5.0,
     app_running: Callable[[], bool] | None = None,
+    app_exit: Callable[[], None] | None = None,
 ) -> EarRunStats:
     """Run the ears loop until stopped or ``duration_s`` elapses.
 
@@ -910,6 +953,7 @@ async def run_ears(
     stats = EarRunStats()
     stop = stop_event or asyncio.Event()
     app_alive = app_running or menu_bar_app_running
+    watchdog_stop: threading.Event | None = None
     block_samples = max(1, int(cfg.sample_rate * cfg.block_ms / 1000))
     simulate = bool(cfg.simulate_wav)
     ring: Any
@@ -951,6 +995,11 @@ async def run_ears(
     ingest_busy = False
     pending_segment = None
     ingest_tasks: set[asyncio.Task] = set()
+    live_channel: EarsLiveChannel | None = None
+    live_player: EarsLivePlayer | None = None
+    live_drain: asyncio.Task | None = None
+    live_sse_fallback = False
+    shutting_down = False
     # Live API spotting: only when no on-device engine exists at all. With the
     # local Whisper spotter (default) or an openWakeWord head the ears process
     # detects EVIE on-device and sends the clip + confidence only on a hit,
@@ -980,8 +1029,117 @@ async def run_ears(
             with contextlib.suppress(Exception):
                 ring.read_new()
 
+    async def _fetch_audio_ref(ref: str) -> bytes | None:
+        if not cfg.api_url or not cfg.stream_playback:
+            return None
+        import httpx
+
+        key = ref[len("ev://") :].lstrip("/") if ref.startswith("ev://") else ref.lstrip("/")
+        url = f"{cfg.api_url.rstrip('/')}/v1/voice/audio/{key}"
+        headers = {"Authorization": f"Bearer {cfg.api_key}"} if cfg.api_key else {}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url, headers=headers)
+        response.raise_for_status()
+        return response.content
+
+    async def _open_live(target_session_id: str) -> bool:
+        """Open the persistent live door for this session, or mark SSE fallback."""
+
+        nonlocal live_channel, live_player, live_drain, live_sse_fallback
+        if shutting_down or not cfg.live_enabled or not cfg.consent or not cfg.api_url:
+            return False
+        if live_channel is not None and not live_channel.closed:
+            return True
+        try:
+            channel = await EarsLiveChannel.open(
+                api_url=cfg.api_url,
+                session_id=target_session_id,
+                api_key=cfg.api_key,
+            )
+        except EarsLiveUnavailable as exc:
+            LOGGER.warning(
+                "ears live unavailable (%s) — falling back to SSE: %s",
+                exc.code,
+                exc,
+            )
+            live_sse_fallback = True
+            return False
+        player = EarsLivePlayer(
+            fetch_audio=_fetch_audio_ref,
+            on_idle=lambda: _echo_hold(False),
+        )
+        await player.start()
+        live_channel = channel
+        live_player = player
+        live_drain = asyncio.create_task(
+            _drain_live(channel, player),
+            name="ears-live-drain",
+        )
+        return True
+
+    async def _drain_live(channel: EarsLiveChannel, player: EarsLivePlayer) -> None:
+        """Consume server events for one live conversation."""
+
+        nonlocal listening, session_id, live_channel, live_player, live_drain
+        try:
+            while True:
+                event = await channel.receive()
+                kind = str(event.get("type") or "")
+                if kind in {"ready", "state"}:
+                    raw_state = event.get("state")
+                    state = raw_state if isinstance(raw_state, dict) else {}
+                    if state.get("interruption_state") == "barged_in":
+                        await player.stop()
+                    continue
+                if kind in {"backchannel", "tts_chunk"}:
+                    audio_b64 = event.get("audio_b64")
+                    audio_ref = event.get("audio_ref")
+                    if cfg.stream_playback and (audio_b64 or audio_ref):
+                        _echo_hold(True)
+                        player.enqueue(
+                            audio_b64=audio_b64,
+                            audio_ref=audio_ref,
+                        )
+                    continue
+                if kind == "reply":
+                    reply = str(event.get("text") or "")
+                    if reply:
+                        _present_reply(reply)
+                    continue
+                if kind == "barge_in":
+                    LOGGER.info("ears live barge-in — stopping playback")
+                    await player.stop()
+                    _echo_hold(False)
+                    continue
+                if kind == "error":
+                    code = str(event.get("code") or "")
+                    message = str(event.get("message") or "")
+                    fatal = bool(event.get("fatal"))
+                    LOGGER.warning(
+                        "ears live error code=%s fatal=%s: %s", code, fatal, message
+                    )
+                    if code in {"session_ended", "session_expired", "not_verified"}:
+                        listening = False
+                        session_id = None
+                    if fatal or code in {"session_ended", "session_expired"}:
+                        break
+                    continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - socket death is recoverable
+            LOGGER.info("ears live channel closed: %s", exc)
+        finally:
+            await player.stop()
+            await player.aclose()
+            await channel.close()
+            if live_channel is channel:
+                live_channel = None
+                live_player = None
+                live_drain = None
+
     async def handle_segment(segment) -> None:
         nonlocal last_report, last_cpu, listening, pending_segment, session_id
+        nonlocal live_channel, live_sse_fallback
         stats.segments += 1
         duration = len(segment.samples) / max(1, cfg.sample_rate)
         peak, rms = pcm_peak_rms(segment.samples)
@@ -1026,20 +1184,32 @@ async def run_ears(
         frames_b64 = base64.b64encode(pcm16_bytes(segment.samples)).decode("ascii")
         outcome: dict[str, Any] = {}
         if listening and session_id:
-            # Open Siri-style session: stream this follow-up and play each
-            # sentence as the model writes it.
-            wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
-            outcome = await stream_follow_up(
-                cfg,
-                session_id,
-                audio_b64=wav_b64,
-                echo_hold=_echo_hold,
-            )
-            if not outcome.get("listening"):
-                session_id = None
-                listening = False
-            else:
+            # Full-duplex door: raw mic blocks already stream continuously on
+            # the live socket, so this VAD segment is not re-delivered. If the
+            # door is not open yet (or the server refused it), fall back to
+            # one clip per SSE request.
+            if live_channel is not None and not live_channel.closed:
                 stats.utterances_sent += 1
+            elif cfg.live_enabled and not live_sse_fallback and await _open_live(
+                str(session_id)
+            ):
+                channel = live_channel
+                if channel is not None:
+                    await channel.send_audio_segment(pcm16_bytes(segment.samples))
+                stats.utterances_sent += 1
+            else:
+                wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
+                outcome = await stream_follow_up(
+                    cfg,
+                    session_id,
+                    audio_b64=wav_b64,
+                    echo_hold=_echo_hold,
+                )
+                if not outcome.get("listening"):
+                    session_id = None
+                    listening = False
+                else:
+                    stats.utterances_sent += 1
         elif not api_spotting and not listening:
             detection = await wake.detect(
                 frames=pcm16_bytes(segment.samples),
@@ -1093,17 +1263,45 @@ async def run_ears(
             _apply_segment_cap()
             if command and session_id and listening:
                 LOGGER.info("ears wake+command streaming: %r", command[:80])
-                follow = await stream_follow_up(
-                    cfg,
-                    session_id,
-                    text=command,
-                    echo_hold=_echo_hold,
-                )
-                if not follow.get("listening"):
-                    session_id = None
-                    listening = False
-                else:
+                if cfg.live_enabled and await _open_live(str(session_id)):
+                    channel = live_channel
+                    if channel is not None:
+                        await channel.send_text(command)
                     stats.utterances_sent += 1
+                else:
+                    follow = await stream_follow_up(
+                        cfg,
+                        session_id,
+                        text=command,
+                        echo_hold=_echo_hold,
+                    )
+                    if not follow.get("listening"):
+                        session_id = None
+                        listening = False
+                    else:
+                        stats.utterances_sent += 1
+            elif not heard and session_id and listening:
+                # openWakeWord supplies a hit score but no transcript. Reuse
+                # the captured WAV as the command clip so "EVIE, do X" is not
+                # reduced to an acknowledgment and discarded.
+                LOGGER.info("ears wake hit had no transcript; streaming captured clip for ASR")
+                if cfg.live_enabled and await _open_live(str(session_id)):
+                    channel = live_channel
+                    if channel is not None:
+                        await channel.send_audio_segment(pcm16_bytes(segment.samples))
+                    stats.utterances_sent += 1
+                else:
+                    follow = await stream_follow_up(
+                        cfg,
+                        session_id,
+                        audio_b64=base64.b64encode(wav_bytes).decode("ascii"),
+                        echo_hold=_echo_hold,
+                    )
+                    if not follow.get("listening"):
+                        session_id = None
+                        listening = False
+                    else:
+                        stats.utterances_sent += 1
         else:
             # Idle API spotting fallback (no on-device engine): send every
             # segment and let the server spot EVIE.
@@ -1195,7 +1393,9 @@ async def run_ears(
     if require_menu_bar_app:
         # Hard guarantee: release the mic even if the main loop is stuck in a
         # long HTTP/TTS call and never gets around to the periodic in-loop check.
-        start_app_watchdog(app_alive, interval_s=app_check_interval_s)
+        watchdog_stop = start_app_watchdog(
+            app_alive, interval_s=app_check_interval_s, on_exit=app_exit
+        )
     # Warm the wake model before opening the mic. Otherwise the first spoken
     # "EVIE" pays a model download + load (~15 s) and reads as a missed wake.
     warmup: Any = getattr(wake, "warmup", None)
@@ -1277,6 +1477,12 @@ async def run_ears(
                     await asyncio.sleep(cfg.block_ms / 1000)
                 if echo_guard:
                     continue
+                channel = live_channel
+                if channel is not None and not channel.closed:
+                    # Full-duplex: the server owns turn-taking now. The local
+                    # segmenter below still watches for wake in idle mode, but
+                    # an open live door receives every block unmodified.
+                    channel.offer_pcm(pcm16_bytes(block))
                 try:
                     probability = await vad.block_probability(block, cfg.sample_rate)
                 except Exception as exc:  # model failure → degrade, never crash loop
@@ -1311,12 +1517,26 @@ async def run_ears(
     try:
         await run_loop()
     finally:
+        # Stop the watchdog thread before it can hard-exit the host process on
+        # a later timeline (the app-runs check would fire os._exit once the
+        # injected ``app_running`` flips false — this is what kills pytest on
+        # the *next* test if the thread is left running).
+        if watchdog_stop is not None:
+            watchdog_stop.set()
         # Release the microphone the instant the loop ends — never wait for
         # in-flight ingestion/TTS before closing the mic, or it would appear
         # "on" for up to a full HTTP timeout after EV quits.
         stream.close()
     if ingest_tasks:
         await asyncio.gather(*ingest_tasks, return_exceptions=True)
+    shutting_down = True
+    channel = live_channel
+    if channel is not None:
+        await channel.close()
+    if live_player is not None:
+        await live_player.aclose()
+    if live_drain is not None:
+        await asyncio.gather(live_drain, return_exceptions=True)
     tail = segmenter.flush()
     if tail is not None:
         await handle_segment(tail)
@@ -1375,6 +1595,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stuck-loop-threshold", type=float, default=None)
     parser.add_argument("--stream-playback", dest="stream_playback", action="store_true", default=None)
     parser.add_argument("--no-stream-playback", dest="stream_playback", action="store_false")
+    parser.add_argument("--live", dest="live_enabled", action="store_true", default=None)
+    parser.add_argument("--no-live", dest="live_enabled", action="store_false")
     parser.add_argument("--scene-model-path", default=None)
     parser.add_argument("--scene-labels-path", default=None)
     parser.add_argument("--api-url", default=None)

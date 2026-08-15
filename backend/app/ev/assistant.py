@@ -225,6 +225,9 @@ async def cache_calibration(session: AsyncSession, report) -> None:
     )
     session.add(row)
     await session.flush()
+    from app.ev.training_wheels import mark_step_from_event
+
+    await mark_step_from_event(session, "first_calibrate")
 
 
 def worst_check(report: dict) -> dict | None:
@@ -310,6 +313,76 @@ async def emit_awake_greeting(
     return line
 
 
+@dataclass(frozen=True)
+class AwakeCompanion:
+    greeting: str | None = None
+    onboarding: str | None = None
+    malfunction: str | None = None
+    hud: dict | None = None
+
+
+async def companion_on_awake(
+    session: AsyncSession,
+    row,
+    *,
+    actor: str = "voice",
+) -> AwakeCompanion:
+    """One-shot greeting, red-calibrate line, and first-wake protocol tour.
+
+    Bind ``row.conversation_id`` first. Greeting fires once per voice session
+    (``greeted_at``). The protocol tour fires once per install
+    (``onboarding_completed_at``) and is stored as a replayable callout plus
+    an ``ev.hud.card.v1`` payload.
+    """
+
+    from app.ev.callouts import emit_callout, session_malfunction_callout
+    from app.ev.protocols import capability_reply, mark_onboarding
+    from app.services.event_service import EventService
+
+    thread_id = row.conversation_id
+    if thread_id is None:
+        thread = await bind_live_thread(session)
+        row.conversation_id = thread.id
+        thread_id = thread.id
+
+    greeting = None
+    if getattr(row, "greeted_at", None) is None:
+        greeting = await emit_awake_greeting(session, thread_id=thread_id, actor=actor)
+        row.greeted_at = utcnow()
+
+    malfunction = None
+    if getattr(row, "malfunction_spoken_at", None) is None:
+        callout = await session_malfunction_callout(session, session_key=str(row.id))
+        if callout is not None:
+            row.malfunction_spoken_at = utcnow()
+            malfunction = callout.text
+
+    onboarding = None
+    hud = None
+    profile = await get_profile(session)
+    if profile.onboarding_completed_at is None:
+        tour = await capability_reply(session, include_refused=False)
+        onboarding = tour["reply"]
+        hud = tour["hud"]
+        await EventService(session, actor=actor).create(
+            EventCreate(
+                source="voice",
+                event_type="assistant.onboarding",
+                text=onboarding,
+                conversation_id=thread_id,
+                metadata={"kind": "onboarding", "hud": hud},
+            )
+        )
+        await emit_callout(session, onboarding, source="onboarding", hud=hud)
+        mark_onboarding(profile)
+    return AwakeCompanion(
+        greeting=greeting,
+        onboarding=onboarding,
+        malfunction=malfunction,
+        hud=hud,
+    )
+
+
 async def set_dedication(
     session: AsyncSession,
     *,
@@ -382,6 +455,16 @@ SET_DEDICATION_RE = re.compile(
 )
 START_WHEELS_RE = re.compile(r"\bstart training wheels\b", re.IGNORECASE)
 COMPLETE_WHEELS_RE = re.compile(r"\b(?:finish|complete) training wheels\b", re.IGNORECASE)
+WHAT_LOCKED_RE = re.compile(r"\bwhat(?:'s| is) locked\b", re.IGNORECASE)
+LOCK_EVERYTHING_RE = re.compile(r"\block everything\b", re.IGNORECASE)
+TIMER_RE = re.compile(
+    r"\b(?:remind me in|set a timer for)\s+(\d+(?:\.\d+)?)\s*(minutes|minute|min|hours|hour|hrs)?\b",
+    re.IGNORECASE,
+)
+ELAPSED_RE = re.compile(
+    r"\bhow long have i been (?:here|awake|in this session)\b",
+    re.IGNORECASE,
+)
 PERSONALITY_RE = re.compile(
     r"\b(?:be funnier|more humor|less formal|more formal|more concise|"
     r"less verbose|more verbose|be briefer|more direct)\b",
@@ -413,6 +496,18 @@ def match_companion_intent(message: str) -> tuple[str, dict] | None:
         return "start_training_wheels", {}
     if COMPLETE_WHEELS_RE.search(text):
         return "complete_training_wheels", {}
+    if WHAT_LOCKED_RE.search(text):
+        return "list_locked", {}
+    if LOCK_EVERYTHING_RE.search(text):
+        return "lock_everything", {}
+    match = TIMER_RE.search(text)
+    if match:
+        amount = float(match.group(1))
+        unit = (match.group(2) or "minutes").lower()
+        minutes = amount * 60 if unit.startswith("hour") or unit.startswith("hr") else amount
+        return "start_timer", {"minutes": minutes, "text": text}
+    if ELAPSED_RE.search(text):
+        return "session_elapsed", {}
     match = QUIET_RANGE_RE.search(text)
     if match:
         return "set_quiet_hours", {"start": match.group(1), "end": match.group(2)}
@@ -421,6 +516,10 @@ def match_companion_intent(message: str) -> tuple[str, dict] | None:
         return "set_quiet_hours", {"until": match.group(1)}
     if PERSONALITY_RE.search(text):
         return "update_personality", {"phrase": text.lower()}
+    from app.voice.speech import is_presence_check
+
+    if is_presence_check(text):
+        return "presence", {}
     return None
 
 
@@ -508,6 +607,28 @@ async def handle_local_intent(session: AsyncSession, message: str) -> dict | Non
 
         payload = await complete_training_wheels(session)
         return {"reply": payload["reply"] or "Training wheels complete.", "kind": "training_wheels", **payload}
+    if intent == "list_locked":
+        from app.ev.training_wheels import list_locked
+
+        payload = await list_locked(session)
+        return {"reply": payload["spoken"], "kind": "locked", **payload}
+    if intent == "lock_everything":
+        from app.ev.fleet import lock_all
+
+        payload = await lock_all(session, actor="voice", trusted=True)
+        return {"reply": payload.get("spoken") or "Everything is locked.", "kind": "lock-all", **payload}
+    if intent == "start_timer":
+        from app.ev.timers import start_timer
+
+        payload = await start_timer(
+            session, minutes=args.get("minutes"), text=str(args.get("text") or "")
+        )
+        return {"reply": payload.get("spoken") or "Timer set.", "kind": "timer", **payload}
+    if intent == "session_elapsed":
+        from app.ev.timers import session_elapsed
+
+        payload = await session_elapsed(session)
+        return {"reply": payload.get("spoken") or "No session.", "kind": "elapsed", **payload}
     if intent == "set_quiet_hours":
         from app.notify.proactive import persist_quiet_hours, set_quiet_hours
 
@@ -529,5 +650,10 @@ async def handle_local_intent(session: AsyncSession, message: str) -> dict | Non
             ),
             "kind": "personality",
             "profile": to_dict(updated),
+        }
+    if intent == "presence":
+        return {
+            "reply": "Yes, I can hear you.",
+            "kind": "presence",
         }
     return None

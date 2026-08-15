@@ -7,7 +7,8 @@ import AppKit
 /// SUIT app exposes in its Permissions panel: without it the hotkey silently
 /// does nothing, so we surface it loudly instead.
 final class GlobalHotkey {
-    private var monitor: Any?
+    private var globalMonitor: Any?
+    private var localMonitor: Any?
 
     func start(
         keyCode: UInt16,
@@ -15,17 +16,31 @@ final class GlobalHotkey {
         handler: @escaping () -> Void
     ) {
         stop()
-        monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+        let matches: (NSEvent) -> Bool = { event in
             let pressed = event.modifierFlags.intersection([.command, .option, .control, .shift])
-            guard event.keyCode == keyCode, pressed == flags else { return }
+            return event.keyCode == keyCode && pressed == flags
+        }
+        // Other apps: requires Accessibility. EV-is-key: local monitor
+        // (global monitors never see this process's key-downs).
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { event in
+            guard matches(event) else { return }
             DispatchQueue.main.async(execute: handler)
+        }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard matches(event) else { return event }
+            DispatchQueue.main.async(execute: handler)
+            return nil
         }
     }
 
     func stop() {
-        if let monitor {
-            NSEvent.removeMonitor(monitor)
-            self.monitor = nil
+        if let globalMonitor {
+            NSEvent.removeMonitor(globalMonitor)
+            self.globalMonitor = nil
+        }
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+            self.localMonitor = nil
         }
     }
 }

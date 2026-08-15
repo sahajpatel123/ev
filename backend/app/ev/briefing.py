@@ -48,13 +48,20 @@ LIFE_TURN_TOOLS = (
     "list_mail",
     "set_reminder",
 )
-CAPABILITIES_TEXT = (
-    "Named companion EVIE. Memory, decisions, timeline. Live weather. Web lookup. "
-    "Clock, calendar, leave-by. Health trends when asked. Gear/battery. People in "
-    "memory. Research and maker projects. Safe math. HUD/lookout via present. "
-    "Messages, calls, mail, reminders through granted Mac/iPhone bridges. "
-    "Not city surveillance, not weapons, not a host-model brand."
-)
+def capabilities_text(name: str | None = None) -> str:
+    from app.ev.assistant import spoken_name
+
+    who = spoken_name(name)
+    return (
+        f"Named companion {who}. Memory, decisions, timeline. Live weather. Web lookup. "
+        "Clock, calendar, leave-by. Health trends when asked. Gear/battery. People in "
+        "memory. Research and maker projects. Safe math. HUD/lookout via present. "
+        "Messages, calls, mail, reminders through granted Mac/iPhone bridges. "
+        "Not city surveillance, not weapons, not a host-model brand."
+    )
+
+
+CAPABILITIES_TEXT = capabilities_text()
 
 _PERCENT_RE = re.compile(
     r"(\d[\d,]*(?:\.\d+)?)\s*%\s+of\s+(\d[\d,]*(?:\.\d+)?)",
@@ -147,6 +154,27 @@ _REMIND_RE = re.compile(
     re.IGNORECASE,
 )
 _OPEN_URL_RE = re.compile(r"(https?://\S+)", re.IGNORECASE)
+_WHEN_IN_RE = re.compile(
+    r"\bin\s+(\d+(?:\.\d+)?)\s*(minutes?|mins?|hours?|hrs?)\b",
+    re.IGNORECASE,
+)
+_WHEN_AT_RE = re.compile(
+    r"\bat\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\b",
+    re.IGNORECASE,
+)
+
+
+def extract_reminder_when(message: str) -> str | None:
+    """Pull an explicit when-clause out of a reminder ask, if present."""
+
+    text = message or ""
+    relative = _WHEN_IN_RE.search(text)
+    if relative:
+        return f"in {relative.group(1)} {relative.group(2)}"
+    clock = _WHEN_AT_RE.search(text)
+    if clock:
+        return clock.group(1).strip()
+    return None
 
 
 def infer_send_message_args(message: str) -> dict[str, Any] | None:
@@ -190,7 +218,13 @@ def infer_write_args(name: str, message: str) -> dict[str, Any] | None:
         match = _REMIND_RE.search(message or "")
         body = (match.group("text") if match else None) or (message or "").strip()
         body = body.strip()
-        return {"text": body} if body else None
+        if not body:
+            return None
+        args: dict[str, Any] = {"text": body}
+        when = extract_reminder_when(message)
+        if when:
+            args["when"] = when
+        return args
     if name == "open_url":
         match = _OPEN_URL_RE.search(message or "")
         return {"url": match.group(1)} if match else None
@@ -372,7 +406,10 @@ async def _situational(session: AsyncSession, message: str, *, allow_sensitive: 
         except Exception:  # noqa: BLE001
             pass
     if CAPABILITIES_RE.search(message or ""):
-        lines.append("Capabilities: " + CAPABILITIES_TEXT)
+        from app.ev.assistant import get_profile
+
+        profile = await get_profile(session)
+        lines.append("Capabilities: " + capabilities_text(profile.nickname))
     if TIME_RE.search(message or ""):
         lines.append("Owner asked the clock — answer with local time first.")
     return lines

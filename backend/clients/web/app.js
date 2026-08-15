@@ -2343,6 +2343,7 @@ async function refreshConsole() {
     api("/v1/runtime/notify/status"),
     api("/v1/runtime/notifications"),
     api("/v1/runtime/health"),
+    api("/v1/diagnostics/last"),
   ]);
   const [
     hud,
@@ -2423,6 +2424,23 @@ async function refreshConsole() {
         `${escapeHtml(alert.tier || "alert")}</span> ${escapeHtml(alert.title || alert.body || "")}</div>`
     )
     .join("") || `<div class="muted">alerts: ${failReason(parts, 3) || "none"}</div>`;
+
+  const diagnosticsValue = fulfill(parts, parts.length - 1);
+  const diagEl = $("diagnostics-strip");
+  if (diagEl) {
+    const checks = ((diagnosticsValue && diagnosticsValue.report && diagnosticsValue.report.checks) || []);
+    const stale = diagnosticsValue && diagnosticsValue.stale;
+    const stamp = diagnosticsValue && diagnosticsValue.generated_at;
+    diagEl.innerHTML =
+      tileHtml("overall", diagnosticsValue && diagnosticsValue.overall) +
+      (stale ? `<div class="muted">stale${stamp ? " · " + escapeHtml(String(stamp)) : ""}</div>` : "") +
+      checks
+        .map(
+          (check) =>
+            `<div>${escapeHtml(check.name)}: ${escapeHtml(check.status)}</div>`
+        )
+        .join("") || `<div class="muted">diagnostics: ${stale ? "stale" : "empty"}</div>`;
+  }
 
   const gearEl = $("gear-tiles");
   gearEl.innerHTML = (gearValue || [])

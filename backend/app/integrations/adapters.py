@@ -225,6 +225,8 @@ class CalendarAdapter(Adapter):
                 "events": events,
                 "signals": derive_calendar_signals(events),
             }
+        if action == "calendar.create_event":
+            return await self._create_event(args, token, config)
         return await super().act(
             action=action,
             args=args,
@@ -280,6 +282,58 @@ class CalendarAdapter(Adapter):
                 raise oauth.OAuthProviderError("calendar OAuth provider unavailable")
             return await provider.revoke(token)
         return await super().revoke_remote(token=token, config=config)
+
+    async def _create_event(self, args: dict, token: str, config: dict) -> dict:
+        title = _text(args.get("summary") or args.get("title"), 256) or "Untitled event"
+        if config.get("provider") == "google":
+            if not token:
+                raise oauth.OAuthAuthError("calendar write requires an access token")
+            provider = oauth.provider_for("calendar")
+            if provider is None:
+                raise oauth.OAuthProviderError("calendar OAuth provider unavailable")
+            calendar_id = str(config.get("calendar_id") or "primary")
+            body = {
+                "summary": title,
+                "start": {"dateTime": args.get("start")},
+                "end": {"dateTime": args.get("end") or args.get("start")},
+            }
+            if args.get("location"):
+                body["location"] = _text(args.get("location"), 512)
+            url = f"{provider.api_base}/calendars/{quote(calendar_id, safe='')}/events"
+            async with _make_client() as client:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=body,
+                )
+            if response.status_code in (401, 403):
+                raise oauth.OAuthAuthError("calendar provider rejected the access token")
+            if response.status_code >= 400:
+                raise oauth.OAuthProviderError(
+                    f"calendar create failed (status {response.status_code})"
+                )
+            data = response.json()
+            event_id = _text(data.get("id"), 256)
+            if not event_id:
+                return {"ok": False, "error": "missing_event_id", "mode": "google"}
+            return {
+                "ok": True,
+                "mode": "google",
+                "id": event_id,
+                "event_id": event_id,
+                "evidence": {"id": event_id},
+            }
+        from uuid import uuid4
+
+        event_id = f"local-{uuid4()}"
+        return {
+            "ok": True,
+            "mode": "local",
+            "id": event_id,
+            "event_id": event_id,
+            "evidence": {"id": event_id},
+            "summary": title,
+        }
 
     async def _fetch_google_events(
         self,
@@ -710,6 +764,50 @@ class GitHubAdapter(Adapter):
 
 @dataclass(frozen=True)
 class SmartHomeAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        from app.ev.home import adapter_act
+
+        return await adapter_act(
+            action=action,
+            args=args or {},
+            token=token,
+            scopes=scopes,
+            config=config,
+            session=config.get("_session"),
+        )
+
+    async def sync(
+        self,
+        *,
+        token: str,
+        scopes: list[str],
+        config: dict,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> AdapterSyncResult:
+        if config.get("provider") == "homeassistant":
+            from app.ev.home import sync_from_ha
+
+            session = config.get("_session")
+            count = 0
+            if session is not None:
+                count = await sync_from_ha(session, token=token, config=config)
+            return AdapterSyncResult(signals={"mode": "homeassistant", "synced": count})
+        return AdapterSyncResult(signals={"mode": "local", "simulated": True})
+
     async def translate_webhook(
         self,
         payload: dict,
@@ -1120,6 +1218,99 @@ class SearchAdapter(Adapter):
         return {**result, **normalize_search_results(result.get("results"))}
 
 
+class OctoPrintAdapter(Adapter):
+    """Local fake job or OctoPrint/Moonraker REST (key in vault)."""
+
+    async def act(self, *, action: str, args: dict, token: str, scopes: list[str], config: dict) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        if config.get("connected") is False:
+            return {"ok": False, "error": "no printer connected", "mode": "local"}
+        if action == "octoprint.ping":
+            if config.get("provider") == "http" and config.get("base_url"):
+                try:
+                    async with _make_client(timeout=3.0) as client:
+                        resp = await client.get(f"{str(config['base_url']).rstrip('/')}/api/version")
+                        resp.raise_for_status()
+                    return {"ok": True, "mode": "http", "status": "ok"}
+                except Exception as exc:  # noqa: BLE001
+                    return {"ok": False, "mode": "http", "error": str(exc)}
+            return {"ok": True, "mode": "local", "status": "ok"}
+        if action == "octoprint.start":
+            return {
+                "ok": True,
+                "mode": config.get("provider") or "local",
+                "vendor_job_id": f"local-{args.get('job_id') or 'job'}",
+                "status": "printing",
+            }
+        if action == "octoprint.status":
+            return {
+                "ok": True,
+                "mode": "local",
+                "status": config.get("job_status") or "done",
+                "filament_remaining_g": config.get("filament_remaining_g", 120.0),
+            }
+        return {"ok": True, "mode": "local", "action": action}
+
+
+class CameraAdapter(Adapter):
+    """Owner-registered cameras only. Never scan the LAN."""
+
+    async def act(self, *, action: str, args: dict, token: str, scopes: list[str], config: dict) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        if action == "cameras.clip":
+            return {
+                "ok": True,
+                "mode": "local",
+                "camera": args.get("camera"),
+                "at": args.get("at"),
+                "discovered_lan": False,
+                "blob_id": config.get("clip_attachment_id"),
+            }
+        if action == "cameras.list":
+            return {"ok": True, "cameras": list(config.get("cameras") or []), "discovered_lan": False}
+        return {"ok": True, "mode": "local", "action": action, "discovered_lan": False}
+
+
+class DroneAdapter(Adapter):
+    """Owner-paired sim or Tello/MAVLink. Takeoff/hover/land/rtl only."""
+
+    async def act(self, *, action: str, args: dict, token: str, scopes: list[str], config: dict) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        cmd = action.split(".", 1)[-1]
+        return {
+            "ok": True,
+            "mode": config.get("provider") or "local",
+            "sim": (config.get("provider") or "local") == "local",
+            "status": cmd,
+            "command": cmd,
+        }
+
+
+class PublicFeedsAdapter(Adapter):
+    """Owner-picked RSS/NWS public feeds. Not a private scanner."""
+
+    async def act(self, *, action: str, args: dict, token: str, scopes: list[str], config: dict) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        items = list(config.get("items") or args.get("items") or [])
+        return {"ok": True, "mode": "local", "items": items, "url": args.get("url")}
+
+
 BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
     CalendarAdapter(
         slug="calendar",
@@ -1209,7 +1400,25 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
         event_types=("home.device.updated",),
         actions=(
             AdapterAction("home.list_devices", "home:read", "List smart-home devices and state"),
-            AdapterAction("home.set_device", "home:act", "Set a device state"),
+            AdapterAction("home.status", "home:read", "Read home entity state"),
+            AdapterAction(
+                "home.set_device",
+                "home:act",
+                "Set a device state",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "entity": {"type": "string"},
+                        "entity_id": {"type": "string"},
+                        "action": {"type": "string"},
+                        "state": {"type": "string"},
+                        "confirm": {"type": "boolean"},
+                    },
+                },
+            ),
+            AdapterAction("light.set", "home:act", "Set a light on or off"),
+            AdapterAction("lock.set", "home:act", "Lock or unlock"),
+            AdapterAction("cover.set", "home:act", "Open or close a cover"),
         ),
     ),
     MessagingAdapter(
@@ -1437,6 +1646,60 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
                     "required": ["query"],
                 },
             ),
+        ),
+    ),
+    OctoPrintAdapter(
+        slug="octoprint",
+        name="OctoPrint",
+        description="Owner 3D printer via OctoPrint/Moonraker or a local fake job.",
+        capabilities=("printer:read", "printer:act"),
+        default_scopes=("printer:read", "printer:act"),
+        min_privacy="normal",
+        privacy_kind="app",
+        actions=(
+            AdapterAction("octoprint.ping", "printer:read", "Ping the printer"),
+            AdapterAction("octoprint.start", "printer:act", "Start a queued print"),
+            AdapterAction("octoprint.status", "printer:read", "Poll a print job"),
+        ),
+    ),
+    CameraAdapter(
+        slug="cameras",
+        name="Owner cameras",
+        description="Replay owner-added cameras only. Never discover the LAN.",
+        capabilities=("camera:read",),
+        default_scopes=("camera:read",),
+        min_privacy="private",
+        privacy_kind="app",
+        actions=(
+            AdapterAction("cameras.clip", "camera:read", "Fetch an owner clip"),
+            AdapterAction("cameras.list", "camera:read", "List owner-added cameras"),
+        ),
+    ),
+    DroneAdapter(
+        slug="drone",
+        name="Owner drone",
+        description="Leashed owner drone: takeoff, hover, land, return-to-launch.",
+        capabilities=("drone:act",),
+        default_scopes=("drone:act",),
+        min_privacy="normal",
+        privacy_kind="app",
+        actions=(
+            AdapterAction("drone.takeoff", "drone:act", "Take off (confirm required)"),
+            AdapterAction("drone.hover", "drone:act", "Hover in place"),
+            AdapterAction("drone.land", "drone:act", "Land"),
+            AdapterAction("drone.rtl", "drone:act", "Return to launch"),
+        ),
+    ),
+    PublicFeedsAdapter(
+        slug="public_feeds",
+        name="Public feeds",
+        description="Owner-picked RSS and NWS public alerts. Not a private scanner.",
+        capabilities=("feeds:read",),
+        default_scopes=("feeds:read",),
+        min_privacy="normal",
+        privacy_kind="app",
+        actions=(
+            AdapterAction("public_feeds.poll", "feeds:read", "Poll an owner-picked public feed"),
         ),
     ),
 )

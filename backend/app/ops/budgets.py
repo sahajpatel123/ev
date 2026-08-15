@@ -21,6 +21,7 @@ MONTHLY_COST_BUDGET_USD = 40.0
 # not billing quotes; update when provider pricing changes.
 MODEL_PRICES_USD_PER_1M = {
     "deepseek": {"input": 0.27, "output": 1.10},
+    "xai": {"input": 2.00, "output": 6.00},
     "echo": {"input": 0.0, "output": 0.0},
     "mock": {"input": 0.0, "output": 0.0},
     "default": {"input": 1.00, "output": 3.00},

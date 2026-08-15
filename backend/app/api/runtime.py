@@ -15,6 +15,7 @@ from app.auth import (
     ActorContext,
     require_actor,
     require_actor_context,
+    require_master,
     require_owner_trust,
     require_reverification,
 )
@@ -176,6 +177,7 @@ async def utterance(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     await session.commit()
+    tts_device_id = result.get("tts_device_id")
     return RuntimeUtteranceResponse(
         session_id=current.id,
         state=result.get("state") or current.state,
@@ -183,6 +185,7 @@ async def utterance(
         transcript_confidence=result["transcript"].confidence,
         reply=result["reply"],
         conversation_id=UUID(result["conversation_id"]) if result["conversation_id"] else None,
+        tts_device_id=UUID(str(tts_device_id)) if tts_device_id else None,
         tts=(
             TtsOut(
                 provider=result["tts"].provider,
@@ -220,6 +223,66 @@ async def utterance(
             if isinstance(d, dict)
         ],
     )
+
+
+@router.get("/transcript")
+async def transcript(
+    since: datetime | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """JSON snapshot of the owner's live conversation thread."""
+    from app.ev.fleet import list_transcript
+
+    payload = await list_transcript(session, since=since, limit=limit)
+    await session.commit()
+    return payload
+
+
+@router.get("/transcript/stream")
+async def transcript_stream(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+):
+    """SSE stream of new live-thread events for web/Mac lookout."""
+    import asyncio
+    import json
+
+    from fastapi.responses import StreamingResponse
+
+    from app.ev.fleet import list_transcript
+
+    first = await list_transcript(session, limit=50)
+    await session.commit()
+    last_ids = {item["id"] for item in first["events"]}
+
+    async def events():
+        yield f"data: {json.dumps(first)}\n\n"
+        for _ in range(120):
+            await asyncio.sleep(1.0)
+            nxt = await list_transcript(session, limit=50)
+            fresh = [item for item in nxt["events"] if item["id"] not in last_ids]
+            if fresh:
+                last_ids.update(item["id"] for item in fresh)
+                yield f"data: {json.dumps({'conversation_id': nxt['conversation_id'], 'events': fresh})}\n\n"
+            else:
+                yield ":\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@router.post("/lock-all")
+async def lock_all(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> dict:
+    """Master key: revoke every device token."""
+    from app.ev.fleet import lock_all as do_lock
+
+    payload = await do_lock(session, actor=actor, trusted=True)
+    await session.commit()
+    return payload
 
 
 @router.get("/status", response_model=RuntimeStatusOut)
@@ -656,6 +719,9 @@ async def present_overlay(
         lon=data.lon,
         dest_lat=data.dest_lat,
         dest_lon=data.dest_lon,
+        questions=data.questions,
+        response=data.response,
+        layout=data.layout,
     )
     return PresenceShowOut.model_validate(outcome)
 

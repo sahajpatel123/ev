@@ -22,15 +22,6 @@ struct MenuBarView: View {
         .padding(12)
         .onAppear {
             model.start()
-            model.hotkey.start(
-                keyCode: 14, // "e"
-                flags: [.command, .shift],
-                handler: { [weak model] in
-                    Task { @MainActor in
-                        model?.toggleTalk()
-                    }
-                }
-            )
             if !hasSeenLifeGrant {
                 showPermissions = true
                 hasSeenLifeGrant = true
@@ -66,7 +57,15 @@ struct MenuBarView: View {
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             Spacer()
-            if model.isRecording {
+            if model.isLiveMuted {
+                Text("muted")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+            } else if model.isLiveActive {
+                Text("live")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+            } else if model.isRecording {
                 Text("REC · \(Int(MicCapture.maxSeconds))s max")
                     .font(.caption2)
                     .foregroundStyle(.red)
@@ -115,7 +114,7 @@ struct MenuBarView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if model.messages.isEmpty {
-                        Text("Say “EVIE” — always-on listening is already running in the background.")
+                        Text("Just talk — EV is listening. No need to say EVIE.")
                             .font(.caption)
                             .foregroundStyle(.tertiary)
                     }
@@ -140,7 +139,7 @@ struct MenuBarView: View {
 
             HStack(spacing: 8) {
                 Spacer()
-                Button(model.isRecording ? "Stop & send" : "Push to talk") {
+                Button(liveButtonTitle) {
                     model.toggleTalk()
                 }
                 .font(.caption)
@@ -175,6 +174,13 @@ struct MenuBarView: View {
             }
             .font(.caption)
         }
+    }
+
+    private var liveButtonTitle: String {
+        if model.isLiveActive || model.isLiveMuted {
+            return model.isLiveMuted ? "Unmute" : "Mute"
+        }
+        return model.isRecording ? "Stop & send" : "Push to talk"
     }
 
     private var launchAtLoginBinding: Binding<Bool> {

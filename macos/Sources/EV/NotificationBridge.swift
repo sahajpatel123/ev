@@ -34,6 +34,9 @@ final class NotificationBridge {
             let items = (value("items") ?? "")
                 .split(whereSeparator: { $0 == "|" || $0 == "\n" })
                 .map(String.init)
+            let questions = (value("questions") ?? "")
+                .split(whereSeparator: { $0 == "|" || $0 == "\n" })
+                .map(String.init)
             let lat = value("lat").flatMap(Double.init)
             let lon = value("lon").flatMap(Double.init)
             let destLat = value("dest_lat").flatMap(Double.init)
@@ -50,10 +53,16 @@ final class NotificationBridge {
                 timeType: timeType,
                 placement: placement,
                 items: items,
+                questions: questions,
+                response: value("response"),
                 recommendation: value("recommendation"),
                 source: value("source"),
                 lookout: lookout,
                 ttl: ttlMs.map { $0 / 1000.0 },
+                layout: value("layout"),
+                driftX: value("dx").flatMap(Double.init).map { CGFloat($0) },
+                driftY: value("dy").flatMap(Double.init).map { CGFloat($0) },
+                tilt: value("tilt").flatMap(Double.init),
                 origin: (lat != nil && lon != nil)
                     ? CLLocationCoordinate2D(latitude: lat!, longitude: lon!)
                     : nil,

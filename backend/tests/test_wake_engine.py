@@ -221,6 +221,19 @@ def test_configured_wake_engine_uses_audio_fallback_without_exported_head(monkey
     assert isinstance(configured_wake_engine(), WhisperPhraseWakeEngine)
 
 
+def test_configured_wake_engine_hears_speech_when_asr_is_echo(monkeypatch) -> None:
+    """Stock config is echo ASR + phrase wake. Byte-search cannot hear EVIE."""
+
+    import app.voice.wake as wake_module
+    from app.config import settings
+
+    set_default_wake_engine(None)
+    monkeypatch.setattr(wake_module, "_whisper_phrase_wake", None)
+    monkeypatch.setattr(settings, "voice_wake_provider", "phrase")
+    monkeypatch.setattr(settings, "voice_asr_provider", "echo")
+    assert isinstance(configured_wake_engine(), WhisperPhraseWakeEngine)
+
+
 def _write_test_wav(path: Path, *, wake: bool, seconds: float = 0.5) -> None:
     payload = (b"evie" if wake else b"xxxx") + b"\x00\x00" * int(16000 * seconds)
     with wave.open(str(path), "wb") as wav:
@@ -325,6 +338,25 @@ async def test_whisper_phrase_detects_spoken_evie_from_transcriber() -> None:
     )
     assert miss.triggered is False
 
+    class _DegradedAsr:
+        async def transcribe(self, **kwargs):
+            from app.voice.contracts import Transcript
+
+            return Transcript(
+                text="",
+                confidence=0.0,
+                provider="faster_whisper",
+                degraded=True,
+                details={"reason": "weights missing"},
+            )
+
+    degraded = await WhisperPhraseWakeEngine(transcriber=_DegradedAsr()).detect(
+        frames=frames, sample_rate=16000
+    )
+    assert degraded.triggered is False
+    assert degraded.details["degraded"] is True
+    assert "weights missing" in degraded.details["error"]
+
     class _EveryAsr:
         async def transcribe(self, **kwargs):
             return Transcript(text="every", confidence=0.7, provider="faster_whisper")
@@ -388,3 +420,105 @@ async def test_whisper_phrase_detects_spoken_evie_from_transcriber() -> None:
         frames=frames, sample_rate=16000
     )
     assert buried.triggered is False
+
+
+_WAKE_DATA = Path(__file__).resolve().parents[1] / "data" / "wake"
+_EVIE_FIXTURE = _WAKE_DATA / "clips" / "evie-001-close.wav"
+_NEG_FIXTURE = _WAKE_DATA / "negatives" / "negative-01.wav"
+
+
+def _wav_pcm16(path: Path) -> bytes:
+    with wave.open(str(path), "rb") as wav:
+        assert wav.getnchannels() == 1
+        assert wav.getsampwidth() == 2
+        return wav.readframes(wav.getnframes())
+
+
+class _FixtureTranscriber:
+    """Consumes the WAV the detector actually sends; maps fixture PCM → phrase."""
+
+    def __init__(self) -> None:
+        self.positive = _wav_pcm16(_EVIE_FIXTURE)
+        self.negative = _wav_pcm16(_NEG_FIXTURE)
+        self.seen: list[int] = []
+
+    def _pcm_from_kwargs(self, kwargs: dict) -> bytes:
+        import base64
+        import io
+
+        audio_b64 = kwargs.get("audio_b64")
+        audio_ref = kwargs.get("audio_ref")
+        assert audio_b64 or audio_ref, "detect() must pass audio, not a text hint"
+        if audio_b64:
+            raw = base64.b64decode(audio_b64)
+            with wave.open(io.BytesIO(raw), "rb") as wav:
+                return wav.readframes(wav.getnframes())
+        with wave.open(str(audio_ref), "rb") as wav:
+            return wav.readframes(wav.getnframes())
+
+    async def transcribe(self, **kwargs):
+        from app.voice.contracts import Transcript
+
+        pcm = self._pcm_from_kwargs(kwargs)
+        self.seen.append(len(pcm))
+        pos = self.positive
+        if pcm[: len(pos)] == pos or pos[: min(len(pos), len(pcm))] == pcm[: min(len(pos), len(pcm))]:
+            return Transcript(
+                text="EVIE",
+                confidence=0.9,
+                provider="fixture",
+                details={"no_speech_prob": 0.25},
+            )
+        return Transcript(
+            text="room tone",
+            confidence=0.2,
+            provider="fixture",
+            details={"no_speech_prob": 0.85},
+        )
+
+
+@pytest.mark.asyncio
+async def test_phrase_engine_does_not_trigger_on_spoken_evie_bytes() -> None:
+    """Spoken EVIE WAV must not contain the ASCII bytes the phrase engine hunts."""
+
+    assert _EVIE_FIXTURE.is_file()
+    pcm = _wav_pcm16(_EVIE_FIXTURE)
+    assert b"evie" not in pcm.lower()
+    engine = PhraseWakeEngine()
+    miss = await engine.detect(frames=pcm, sample_rate=16000)
+    assert miss.triggered is False
+
+
+@pytest.mark.asyncio
+async def test_whisper_phrase_detects_evie_fixture_not_negative() -> None:
+    """Shipped WhisperPhraseWakeEngine.detect on the in-repo spoken clips."""
+
+    assert _EVIE_FIXTURE.is_file()
+    assert _NEG_FIXTURE.is_file()
+    asr = _FixtureTranscriber()
+    engine = WhisperPhraseWakeEngine(transcriber=asr)
+    await engine.warmup()
+
+    import time
+
+    pos_pcm = _wav_pcm16(_EVIE_FIXTURE)
+    t0 = time.perf_counter()
+    hit = await engine.detect(frames=pos_pcm, sample_rate=16000, audio_ref=str(_EVIE_FIXTURE))
+    first_ms = (time.perf_counter() - t0) * 1000.0
+    assert hit.triggered is True
+    assert hit.details.get("transcript") == "EVIE"
+    assert first_ms < 2500.0, first_ms
+
+    t1 = time.perf_counter()
+    again = await engine.detect(frames=pos_pcm, sample_rate=16000)
+    second_ms = (time.perf_counter() - t1) * 1000.0
+    assert again.triggered is True
+    assert second_ms < 2500.0, second_ms
+
+    neg = await engine.detect(
+        frames=_wav_pcm16(_NEG_FIXTURE),
+        sample_rate=16000,
+        audio_ref=str(_NEG_FIXTURE),
+    )
+    assert neg.triggered is False
+    assert asr.seen, "detector must have fed the fixture audio to the transcriber"

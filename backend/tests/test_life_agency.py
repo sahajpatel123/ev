@@ -255,8 +255,8 @@ async def test_missing_bridge_is_honest_capability_theater(db_session) -> None:
         actor="owner",
     )
     assert reminded.result is not None
-    assert reminded.result["degraded"] is True
-    assert "reminders bridge" in reminded.result["next_step"]
+    assert reminded.result.get("ok") is True
+    assert "stand" in str(reminded.result.get("text") or reminded.result.get("spoken") or "").lower()
 
     search = await ev_tools.dispatch(
         db_session,

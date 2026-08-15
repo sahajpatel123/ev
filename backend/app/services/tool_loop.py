@@ -100,12 +100,13 @@ async def run_tool_loop(
     actor: str,
     allow_sensitive_tools: bool = False,
     request_id: str | None = None,
+    already_dispatched: set[str] | None = None,
 ) -> GatewayCall:
     """Run the model/tool loop for one turn with a hard round cap."""
     current_messages = list(messages)
-    dispatched: set[str] = set()
+    dispatched: set[str] = set(already_dispatched or ())
     last_write_result: dict | None = None
-    planned_injected = False
+    planned_injected = any(name in WRITE_TOOLS for name in dispatched)
     preplanned_signatures: set[tuple[str, str]] = set()
 
     async def _cost_guard() -> None:
@@ -157,15 +158,19 @@ async def run_tool_loop(
     # model to phrase the confirmed result. Native providers retain the normal
     # model -> tool -> model protocol below.
     if not getattr(gateway.provider, "supports_tools", True):
-        planned = planned_calls_for(
-            current_messages,
-            tool_specs,
-            sensitive_allowed=allow_sensitive_tools,
-        )
+        planned = [
+            item
+            for item in planned_calls_for(
+                current_messages,
+                tool_specs,
+                sensitive_allowed=allow_sensitive_tools,
+            )
+            if item.call.name not in dispatched
+        ]
         for validated in planned:
             preplanned_signatures.add(_call_signature(validated.call))
             await dispatch_call(validated)
-        planned_injected = bool(planned)
+        planned_injected = planned_injected or bool(planned)
 
     call = await gateway.chat(
         current_messages,
@@ -189,6 +194,10 @@ async def run_tool_loop(
             for validated in call.tool_validation
             if validated.status in ("ok", "rectified")
             and _call_signature(validated.call) not in preplanned_signatures
+            and not (
+                validated.call.name in WRITE_TOOLS
+                and validated.call.name in dispatched
+            )
         ]
         if not executable and not planned_injected:
             planned = [

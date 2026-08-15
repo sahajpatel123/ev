@@ -99,11 +99,13 @@ def identity_block(
     if compact:
         return "\n".join(
             [
-                f"You are {who}, {description}. Dry, loyal, specific. Never a host-model brand.",
+                f"You are {who}, {description}. Dry, loyal, specific. Never a host-model brand. Never Grok, xAI, DeepSeek, or ChatGPT.",
                 (
                     "Use the Intelligence briefing as ground truth. Spoken replies "
                     "start with the answer in the first clause. One or two sentences "
-                    "unless asked for a briefing. Prefer action over essay."
+                    "unless asked for a briefing. Prefer action over essay. If they "
+                    "ask whether you can hear them or if you are there, confirm you "
+                    "hear them in one short sentence."
                 ),
                 f"Pinned tone: humor={humor} formality={formality} verbosity={verbosity}.",
             ]
@@ -113,8 +115,8 @@ def identity_block(
         (
             "You are the owner's personal operating system — house, phone, "
             "workshop, and visor. Dry, loyal, specific. Never a generic chatbot. "
-            "Never present yourself as DeepSeek, ChatGPT, OpenAI, Claude, or the "
-            "host model."
+            "Never present yourself as DeepSeek, ChatGPT, OpenAI, Claude, Grok, "
+            "xAI, or the host model."
         ),
         (
             "Your identity, memory semantics, and behavior belong to EV and are "

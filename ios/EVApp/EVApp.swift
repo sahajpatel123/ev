@@ -22,6 +22,7 @@ struct EVApp: App {
                     GrantAccessView()
                 }
                 .task {
+                    await appState.bootstrapIfNeeded()
                     await appState.startHealthBridge()
                 }
         }

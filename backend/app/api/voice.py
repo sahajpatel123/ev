@@ -8,7 +8,7 @@ import json
 import re
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,7 +19,7 @@ from app.auth import (
     require_reverification,
 )
 from app.config import settings
-from app.db import get_session
+from app.db import SessionLocal, get_session
 from app.identity import service as identity_service
 from app.models import VoiceSession
 from app.schemas import (
@@ -39,6 +39,8 @@ from app.schemas import (
     VoiceSessionVerifyRequest,
     VoiceSessionVerifyResponse,
     VoiceStatusOut,
+    VoiceLiveOpenRequest,
+    VoiceLiveOpenResponse,
     VoiceUtteranceRequest,
     VoiceUtteranceResponse,
     VoiceWakeRequest,
@@ -116,7 +118,7 @@ def _as_uuid(value) -> UUID | None:
         return None
 
 
-def _utterance_response(outcome) -> VoiceUtteranceResponse:
+def _utterance_response(outcome, *, tts_device_id=None) -> VoiceUtteranceResponse:
     state = getattr(outcome.state, "value", outcome.state)
     return VoiceUtteranceResponse(
         session_id=_as_uuid(outcome.session_id) or UUID(int=0),
@@ -128,6 +130,7 @@ def _utterance_response(outcome) -> VoiceUtteranceResponse:
         reply=outcome.reply,
         conversation_id=_as_uuid(outcome.conversation_id),
         tts=_tts_out(outcome.tts),
+        tts_device_id=_as_uuid(tts_device_id),
         style=(
             SpeechStyleOut(
                 urgency=outcome.style.urgency,
@@ -268,6 +271,14 @@ async def wake(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> VoiceWakeResponse:
+    if data.push_to_talk and not ctx.is_master and (
+        ctx.device is None or ctx.device.trust_level != "owner"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner-trusted device required for push-to-talk",
+            headers={"X-Error-Code": "owner_trust_required"},
+        )
     runtime = _runtime(session)
     try:
         outcome = await runtime.handle_wake(
@@ -296,6 +307,11 @@ async def wake(
         challenge_nonce=outcome.challenge_nonce,
         challenge_phrase=outcome.challenge_phrase,
         message=outcome.message,
+        greeting=outcome.greeting,
+        onboarding=outcome.onboarding,
+        conversation_id=(
+            UUID(outcome.conversation_id) if outcome.conversation_id else None
+        ),
     )
 
 
@@ -332,6 +348,7 @@ async def verify(
         reason=outcome.reason,
         conversation_id=UUID(outcome.conversation_id) if outcome.conversation_id else None,
         greeting=outcome.greeting,
+        onboarding=outcome.onboarding,
     )
 
 
@@ -361,8 +378,13 @@ async def utterance(
     except VoiceError as exc:
         await session.commit()
         raise _http(exc) from exc
+    from app.ev.fleet import tts_playback_device
+
+    target = await tts_playback_device(session)
     await session.commit()
-    return _utterance_response(outcome)
+    return _utterance_response(
+        outcome, tts_device_id=str(target.id) if target is not None else None
+    )
 
 
 @router.post("/utterance/stream")
@@ -429,10 +451,16 @@ async def stream_utterance(
                         },
                     )
                 elif event == "reply":
+                    from app.ev.fleet import tts_playback_device
+
+                    target = await tts_playback_device(session)
                     await session.commit()
                     yield _sse(
                         "reply",
-                        _utterance_response(payload).model_dump(mode="json"),
+                        _utterance_response(
+                            payload,
+                            tts_device_id=str(target.id) if target is not None else None,
+                        ).model_dump(mode="json"),
                     )
                 else:
                     await session.commit()
@@ -489,6 +517,128 @@ async def barge_in(
         ended_at=status.ended_at,
         end_reason=status.end_reason,
     )
+
+
+def _ws_authorization(websocket: WebSocket, token: str | None) -> str | None:
+    header = websocket.headers.get("authorization")
+    if header:
+        return header
+    if token:
+        return f"Bearer {token}"
+    return None
+
+
+@router.post("/live/open", response_model=VoiceLiveOpenResponse, status_code=201)
+async def open_live_voice(
+    data: VoiceLiveOpenRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> VoiceLiveOpenResponse:
+    """Open a full-duplex live conversation without a wake word.
+
+    EV.app calls this on launch. The owner is already authenticated; saying
+    Evie is not required while the app is open.
+    """
+
+    if not ctx.is_master and (
+        ctx.device is None or ctx.device.trust_level != "owner"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner-trusted device required for live conversation",
+            headers={"X-Error-Code": "owner_trust_required"},
+        )
+    runtime = _runtime(session)
+    try:
+        outcome = await runtime.open_live_session(
+            device_id=str(ctx.device_id) if ctx.is_device else data.device_id,
+        )
+    except VoiceError as exc:
+        await session.commit()
+        raise _http(exc) from exc
+    if outcome.session_id is None:
+        raise HTTPException(status_code=500, detail="Live session failed to open")
+    session_row = await session.get(VoiceSession, UUID(outcome.session_id))
+    owner = await identity_service.get_owner(session)
+    if session_row is not None and owner is not None:
+        session_row.owner_id = owner.id
+    conversation_id = session_row.conversation_id if session_row is not None else None
+    await session.commit()
+    return VoiceLiveOpenResponse(
+        session_id=UUID(outcome.session_id),
+        state=outcome.state,
+        conversation_id=conversation_id,
+        live=True,
+        message=outcome.message or "Listening.",
+        greeting=outcome.greeting,
+        onboarding=outcome.onboarding,
+    )
+
+
+@router.websocket("/live")
+async def voice_live(
+    websocket: WebSocket,
+    session_id: UUID,
+    token: str | None = None,
+) -> None:
+    """Full-duplex EV LIVE channel. See ``docs/LIVE_VOICE.md``."""
+
+    await websocket.accept()
+    if not settings.voice_live_enabled:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "code": "live_disabled",
+                "message": "EV LIVE is disabled",
+                "fatal": True,
+            }
+        )
+        await websocket.close(code=4003)
+        return
+
+    from app.auth import _resolve_actor
+    from app.voice.live.transport import bind_live_session, serve_live_websocket
+
+    authorization = _ws_authorization(websocket, token)
+    try:
+        async with SessionLocal() as session:
+            actor, device = await _resolve_actor(authorization, session)
+            ctx = ActorContext(
+                actor=actor,
+                device_id=device.id if device else None,
+                is_master=device is None,
+                device=device,
+            )
+            row = await session.get(VoiceSession, session_id)
+            if row is not None:
+                _guard_session(row, ctx)
+    except HTTPException as exc:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "code": "unauthorized" if exc.status_code == 401 else "forbidden",
+                "message": str(exc.detail),
+                "fatal": True,
+            }
+        )
+        await websocket.close(code=4001 if exc.status_code == 401 else 4003)
+        return
+
+    try:
+        live = await bind_live_session(session_id=session_id, ctx=ctx)
+    except VoiceError as exc:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "code": exc.code,
+                "message": exc.message,
+                "fatal": True,
+            }
+        )
+        await websocket.close(code=4004)
+        return
+
+    await serve_live_websocket(websocket, live=live)
 
 
 _AUDIO_CONTENT_TYPES = {

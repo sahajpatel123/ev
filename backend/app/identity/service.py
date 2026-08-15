@@ -85,6 +85,7 @@ REVERIFY_ACTIONS = {
     "adapter.delete",
     "person.delete",
     "fleet.write",
+    "life.action",
 }
 
 RECOVERY_CODE_COUNT = 8

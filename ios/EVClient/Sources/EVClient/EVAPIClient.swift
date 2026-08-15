@@ -75,6 +75,10 @@ private struct VoiceWakeRequestBody: Encodable {
     let pushToTalk: Bool
 }
 
+private struct VoiceLiveOpenRequestBody: Encodable {
+    let deviceId: String
+}
+
 private struct VoiceUtteranceRequestBody: Encodable {
     let sessionId: String
     let text: String?
@@ -351,6 +355,24 @@ public struct EVAPIClient: Sendable {
         return card
     }
 
+    public func lookoutUtterance(
+        text: String,
+        conversationId: String? = nil,
+        preferHaptic: Bool = true
+    ) async throws -> LookoutUtteranceResult {
+        struct Body: Encodable {
+            let text: String
+            let conversationId: String?
+            let preferHaptic: Bool
+        }
+        let (_, data) = try await send(
+            "/v1/lookout/utterance",
+            method: "POST",
+            body: encode(Body(text: text, conversationId: conversationId, preferHaptic: preferHaptic))
+        )
+        return try decode(LookoutUtteranceResult.self, from: data)
+    }
+
     public func quickCard(
         topic: String,
         stakes: String? = nil,
@@ -444,6 +466,19 @@ public struct EVAPIClient: Sendable {
             timeout: 20
         )
         return try decode(VoiceWakeResponse.self, from: data)
+    }
+
+    /// Open a full-duplex live conversation without a wake word.
+    public func openLiveVoice(deviceId: String) async throws -> VoiceLiveOpenResponse {
+        let body = try encode(VoiceLiveOpenRequestBody(deviceId: deviceId))
+        let (_, data) = try await send(
+            "/v1/voice/live/open",
+            method: "POST",
+            body: body,
+            allowedStatuses: [200, 201],
+            timeout: 20
+        )
+        return try decode(VoiceLiveOpenResponse.self, from: data)
     }
 
     public func verifyVoice(
@@ -557,5 +592,49 @@ public struct EVAPIClient: Sendable {
         let route = try decode(HUDRoute.self, from: data)
         try route.validate()
         return route
+    }
+
+    public func createDevice(
+        name: String,
+        capabilities: [String],
+        deviceType: String = "unknown"
+    ) async throws -> DeviceCreateResponse {
+        struct Body: Encodable {
+            let name: String
+            let capabilities: [String]
+            let deviceType: String
+        }
+        let (_, data) = try await send(
+            "/v1/devices",
+            method: "POST",
+            body: encode(Body(name: name, capabilities: capabilities, deviceType: deviceType)),
+            allowedStatuses: [200, 201]
+        )
+        return try decode(DeviceCreateResponse.self, from: data)
+    }
+
+    public func bootstrapDevice(id: String) async throws -> DeviceBootstrap {
+        let (_, data) = try await send("/v1/devices/\(id)/bootstrap")
+        return try decode(DeviceBootstrap.self, from: data)
+    }
+
+    public func panicDevice(id: String) async throws -> DevicePanic {
+        let (_, data) = try await send(
+            "/v1/devices/\(id)/panic",
+            method: "POST",
+            body: Data("{}".utf8),
+            allowedStatuses: [200, 201]
+        )
+        return try decode(DevicePanic.self, from: data)
+    }
+
+    public func lockAll() async throws -> DevicePanic {
+        let (_, data) = try await send(
+            "/v1/runtime/lock-all",
+            method: "POST",
+            body: Data("{}".utf8),
+            allowedStatuses: [200, 201]
+        )
+        return try decode(DevicePanic.self, from: data)
     }
 }

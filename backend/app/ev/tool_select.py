@@ -130,6 +130,46 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("search_timeline", 2, "The message asks about past events.")
     if any(t in lowered for t in ("decision", "decided", "what did i decide")):
         add("search_decisions", 3, "The message asks about past decisions.")
+    if any(p in lowered for p in ("calibrat", "check the calibration", "run diagnostics", "checkup")):
+        add("calibrate", 7, "The owner asked to check calibration.")
+    if lowered.startswith("research ") or "cite sources" in lowered or "cite your sources" in lowered:
+        add("research", 7, "The owner asked for cited research.")
+    if any(p in lowered for p in ("print the", "start the print", "start printing")):
+        add("print_start", 7, "The owner asked to start a print.")
+    if "how long will this take" in lowered or "estimate print" in lowered:
+        add("estimate_print", 6, "The owner asked for a print estimate.")
+    if any(p in lowered for p in ("phone battery", "watch battery", "gear power", "what's the battery", "hows the battery", "how's the battery")):
+        add("gear_power", 7, "The owner asked about device or telemetry battery.")
+    if any(p in lowered for p in ("how do i look", "how do i feel", "you look wrecked", "readiness")):
+        add("health_how_do_i_look", 7, "The owner asked how they look.")
+    if any(p in lowered for p in ("hit my head", "i hit my head", "concussion", "head injury")):
+        add("head_injury_screen", 8, "The owner reported a head injury.")
+    if lowered.strip() in {"brief me", "brief us"} or lowered.startswith("brief me"):
+        add("brief_me", 7, "The owner asked for a tactical brief.")
+    if "where is " in lowered or lowered.startswith("where's ") or "whereabouts" in lowered:
+        add("where_is", 6, "The owner asked where someone is.")
+    if "camera" in lowered and any(p in lowered for p in ("show", "replay", "from ")):
+        add("camera_replay", 6, "The owner asked to replay an owner camera.")
+    if any(p in lowered for p in ("subscribe", "watchlist", "watch for")):
+        add("watchlist_add", 6, "The owner asked to add a watchlist item.")
+    if "digest" in lowered and "alert" in lowered:
+        add("alerts_digest", 6, "The owner asked for an alerts digest.")
+    if any(p in lowered for p in ("likely fake", "is this real", "deepfake", "media check")):
+        add("media_check", 7, "The owner asked about media authenticity.")
+    if any(p in lowered for p in ("lower voice", "slower voice", "use the lower", "change your voice")):
+        add("set_voice", 7, "The owner asked to change TTS voice.")
+    if any(p in lowered for p in ("what's public", "public record", "sec filing")):
+        add("public_lookup", 6, "The owner asked for public records.")
+    if any(p in lowered for p in ("where's my", "find my ", "backpack tag", "airtag")):
+        add("find_gear", 6, "The owner asked to find their gear.")
+    if "why did you ping" in lowered or "why'd you ping" in lowered:
+        add("why_did_you_ping", 8, "The owner asked why they were pinged.")
+    if any(p in lowered for p in ("on my plate", "what's on my plate", "whats on my plate")):
+        add("whats_on_my_plate", 7, "The owner asked for the daily plate.")
+    if "draft" in lowered and any(p in lowered for p in ("reply", "email", "mail")):
+        add("draft_reply", 6, "The owner asked to draft a reply.")
+    if any(p in lowered for p in ("take off", "takeoff", "hover", "land the drone", "return to launch")):
+        add("drone", 7, "The owner issued a leashed drone command.")
     if is_weather_query(message):
         add("get_weather", 6, "The message asks for live weather or a forecast.")
     if SEARCH_WEB_RE.search(message) or looks_world_knowledge(message):

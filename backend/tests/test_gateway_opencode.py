@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 from collections.abc import AsyncIterator
 from typing import Any
@@ -534,9 +535,12 @@ def _server_up() -> bool:
         return False
 
 
-@pytest.mark.skipif(not _server_up(), reason="no opencode server on EV_OPENCODE_BASE_URL")
+@pytest.mark.skipif(
+    os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1" or not _server_up(),
+    reason="live opencode round trip requires EV_TEST_USE_LIVE_CHAT=1 and a running server",
+)
 async def test_live_opencode_round_trip() -> None:
-    """Real call against a running server (skipped, never failed, when absent)."""
+    """Real call against a running server (opt-in via EV_TEST_USE_LIVE_CHAT=1)."""
 
     provider = OpenCodeProvider()
     result = await provider.chat(

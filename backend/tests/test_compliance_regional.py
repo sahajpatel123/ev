@@ -413,7 +413,9 @@ async def test_retention_sweep_prunes_expired_access_logs(
 
 
 async def test_web_transparency_panel_served(client: AsyncClient) -> None:
-    resp = await client.get("/app/")
+    # The full workbench (with the compliance panels) is served at /app/ops;
+    # /app/ is the presence overview.
+    resp = await client.get("/app/ops")
     assert resp.status_code == 200, resp.text
     assert 'id="ev-transparency"' in resp.text
     assert "transparency-load" in resp.text
@@ -425,7 +427,7 @@ async def test_web_transparency_panel_served(client: AsyncClient) -> None:
 
 
 async def test_web_voice_enrollment_panel_served(client: AsyncClient) -> None:
-    resp = await client.get("/app/")
+    resp = await client.get("/app/ops")
     assert resp.status_code == 200, resp.text
     assert 'id="ev-voice"' in resp.text
     assert "voice-enroll" in resp.text
