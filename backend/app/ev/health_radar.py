@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import statistics
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +36,55 @@ HELIO_ALIASES = {
     "pai": "pai",
     "stress_score": "stress",
 }
+
+HEALTH_STALE_AFTER_SECONDS = 24 * 60 * 60
+DEFAULT_UNITS = {
+    "heart_rate": "bpm",
+    "resting_hr": "bpm",
+    "hrv_ms": "ms",
+    "steps": "count",
+    "active_kcal": "kcal",
+    "sleep_hours": "hours",
+    "spo2": "percent",
+    "resp_rate": "breaths/min",
+    "vo2_max": "mL/kg/min",
+    "stress": "score",
+    "readiness_raw": "score",
+    "recovery": "score",
+    "workout_minutes": "minutes",
+    "workout_count": "count",
+}
+
+
+def freshness_state(
+    synced_at: datetime | None,
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: int = HEALTH_STALE_AFTER_SECONDS,
+) -> str:
+    """Classify sync age so a health answer can never imply current data silently."""
+
+    if synced_at is None:
+        return "unknown"
+    now = now or utcnow()
+    if synced_at.tzinfo is None:
+        synced_at = synced_at.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    age = (now.astimezone(UTC) - synced_at.astimezone(UTC)).total_seconds()
+    return "fresh" if age <= max(0, stale_after_seconds) else "stale"
+
+
+def snapshot_freshness(snapshot: HealthSnapshot) -> str:
+    """A sample is stale when either its measurement or sync is stale."""
+
+    states = [
+        freshness_state(snapshot.occurred_at),
+        freshness_state(snapshot.synced_at),
+    ]
+    if "stale" in states:
+        return "stale"
+    return "fresh" if "fresh" in states else "unknown"
 
 
 def normalize_metrics(metrics: dict) -> dict[str, float]:
@@ -201,10 +250,23 @@ async def create_snapshot(
     source: str = "api",
     device_id: str | None = None,
     occurred_at=None,
+    permission_state: str = "authorized",
+    synced_at: datetime | None = None,
+    units: dict | None = None,
+    source_metadata: dict | None = None,
 ) -> HealthSnapshot:
     occurred_at = occurred_at or utcnow()
-    metrics = normalize_metrics(metrics)
-    readiness, band = readiness_score(metrics)
+    synced_at = synced_at or utcnow()
+    metrics = normalize_metrics(metrics) if permission_state == "authorized" else {}
+    readiness, band = readiness_score(metrics) if metrics else (None, None)
+    source_metadata = dict(source_metadata or {})
+    source_metadata.setdefault(
+        "provider_chain",
+        ["Amazfit Helio", "Zepp", "Apple Health", "HealthKit", "EV iOS bridge"]
+        if source in {"amazfit_helio", "zepp", "healthkit"}
+        else [source],
+    )
+    resolved_units = {**DEFAULT_UNITS, **(units or {})}
     snapshot = HealthSnapshot(
         occurred_at=occurred_at,
         source=source,
@@ -213,6 +275,15 @@ async def create_snapshot(
         readiness=readiness,
         band=band,
         anomalies=[],
+        permission_state=permission_state,
+        synced_at=synced_at,
+        units=resolved_units,
+        source_metadata=source_metadata,
+        freshness_state=(
+            "stale"
+            if freshness_state(occurred_at) == "stale" or freshness_state(synced_at) == "stale"
+            else "fresh"
+        ),
     )
     session.add(snapshot)
     await session.flush()
@@ -260,6 +331,10 @@ async def trend(
         "current": current,
         "z_scores": z_scores,
         "anomalies": anomalies,
+        "freshness_state": snapshot_freshness(rows[-1]) if rows else "unknown",
+        "last_sync_at": rows[-1].synced_at if rows else None,
+        "source": rows[-1].source if rows else None,
+        "permission_state": rows[-1].permission_state if rows else "unknown",
     }
 
 
@@ -289,6 +364,9 @@ async def morning_brief(session: AsyncSession) -> dict:
             "band": None,
             "recommendation": "No health data yet. Share a snapshot and I'll start tracking trends.",
             "anomalies": [],
+            "freshness_state": "unknown",
+            "last_sync_at": None,
+            "permission_state": "unknown",
         }
     recommendation, question = morning_recommendation(latest.readiness, latest.metrics, latest.anomalies or [])
     metrics = normalize_metrics(latest.metrics or {})
@@ -303,6 +381,10 @@ async def morning_brief(session: AsyncSession) -> dict:
         "spo2": metrics.get("spo2"),
         "stress": metrics.get("stress"),
         "source": latest.source,
+        "permission_state": latest.permission_state,
+        "freshness_state": snapshot_freshness(latest),
+        "last_sync_at": latest.synced_at,
+        "source_metadata": latest.source_metadata or {},
         "recommendation": recommendation,
         "open_question": question,
         "anomalies": latest.anomalies or [],
@@ -326,4 +408,8 @@ async def latest_clinical(session: AsyncSession) -> dict:
         "readiness": latest.readiness,
         "source": latest.source,
         "metrics": normalize_metrics(latest.metrics or {}),
+        "freshness_state": snapshot_freshness(latest),
+        "last_sync_at": latest.synced_at,
+        "permission_state": latest.permission_state,
+        "source_metadata": latest.source_metadata or {},
     }

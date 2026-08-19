@@ -11,6 +11,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from uuid import UUID
 
@@ -21,12 +22,25 @@ from app.config import settings
 from app.db import SessionLocal
 from app.voice.contracts import Transcript
 from app.voice.live.behavior import to_speech_style
-from app.voice.live.events import LiveEvent, ReplyEvent, TtsChunkEvent
-from app.voice.live.grok_voice import GrokVoiceBridge, grok_voice_enabled
+from app.voice.live.events import ErrorEvent, LiveEvent, ReplyEvent, TtsChunkEvent
+from app.voice.live.grok_voice import (
+    GrokVoiceBridge,
+    approved_live_tool_specs,
+    grok_voice_enabled,
+    live_realtime_provider,
+)
+from app.voice.live.layer import (
+    build_live_capability_manifest,
+    register_live,
+    tool_result_is_successful,
+    unregister_live,
+)
 from app.voice.live.session import LiveSession
 from app.voice.live.turn_taking import TurnTakingConfig
 from app.voice.pipeline import PipelineOutcome, TtsChunk, stream_chat_tts_pipeline
 from app.voice.tts import get_synthesizer
+
+logger = logging.getLogger("ev.voice.live.transport")
 
 
 def live_turn_config() -> TurnTakingConfig:
@@ -75,6 +89,7 @@ def make_pipeline_responder(
     conversation_id,
     synthesizer,
     speaker_confidence: float | None = None,
+    tts_device_id: str | None = None,
 ):
     """Return a ``LiveSession`` respond callback that uses the shared pipeline."""
 
@@ -124,6 +139,12 @@ def make_pipeline_responder(
                         model=payload.model,
                         context_tokens=payload.context_tokens,
                         style=_style_dict(payload.style or style),
+                        device_id=str(device_id) if device_id else None,
+                        tts_device_id=(
+                            str(tts_device_id)
+                            if tts_device_id
+                            else (str(device_id) if device_id else None)
+                        ),
                     )
             await session.commit()
 
@@ -143,15 +164,9 @@ async def serve_live_websocket(
     if on_heartbeat is None:
         on_heartbeat = getattr(live, "on_heartbeat", None)
     await websocket.send_json(live.ready_event().as_dict())
+    register_live(live)
     if getattr(live, "grok_voice", None) is not None:
-        started = await live.grok_voice.start()
-        if not started:
-            live.grok_voice.close()
-            live.grok_voice = None
-            ensure = getattr(live, "ensure_pipeline", None)
-            if callable(ensure):
-                ensure()
-
+        await live.grok_voice.start()
     async def recv_loop() -> None:
         try:
             while not live._closed:
@@ -176,11 +191,22 @@ async def serve_live_websocket(
 
     async def tick_loop() -> None:
         last_beat = 0.0
+        last_mail = 0.0
         while not live._closed:
             await asyncio.sleep(max(0.02, cadence))
             if live.grok_voice is None:
                 await live.tick()
             now = asyncio.get_running_loop().time()
+            if now - last_mail >= 1.0:
+                last_mail = now
+                with contextlib.suppress(Exception):
+                    from app.voice.live.layer import drain_live_mail
+
+                    await drain_live_mail(live)
+                with contextlib.suppress(Exception):
+                    from app.ev.timers import sweep_due_timers
+
+                    await sweep_due_timers()
             if on_heartbeat is not None and now - last_beat >= 30.0:
                 last_beat = now
                 with contextlib.suppress(Exception):
@@ -195,8 +221,10 @@ async def serve_live_websocket(
                     return
                 continue
             try:
-                await websocket.send_json(event.as_dict())
-            except (WebSocketDisconnect, RuntimeError):
+                await asyncio.wait_for(
+                    websocket.send_json(event.as_dict()), timeout=2.0
+                )
+            except (TimeoutError, WebSocketDisconnect, RuntimeError):
                 return
             if getattr(event, "fatal", False):
                 live.close()
@@ -216,6 +244,7 @@ async def serve_live_websocket(
             if exc is not None and not isinstance(exc, WebSocketDisconnect):
                 raise exc
     finally:
+        unregister_live(live)
         live.close()
         for task in (recv, tick, send):
             task.cancel()
@@ -255,6 +284,27 @@ async def bind_live_session(
         conversation_id = row.conversation_id
         device_id = row.device_id
         speaker_confidence = row.speaker_confidence
+        tts_device_id = str(device_id) if device_id else None
+        try:
+            from app.ev.fleet import resolve_registry_device, tts_playback_device
+
+            prefer = None
+            resolved = await resolve_registry_device(
+                session, str(device_id) if device_id else None
+            )
+            if resolved is not None:
+                prefer = resolved.id
+                tts_device_id = str(resolved.id)
+            elif device_id:
+                try:
+                    prefer = UUID(str(device_id))
+                except ValueError:
+                    prefer = None
+            target = await tts_playback_device(session, prefer_device_id=prefer)
+            if target is not None:
+                tts_device_id = str(target.id)
+        except Exception:  # noqa: BLE001 - routing metadata must not block live
+            pass
         await session.commit()
 
     async def on_sleep(_text: str) -> None:
@@ -273,12 +323,12 @@ async def bind_live_session(
             await runtime.refresh_live_lease(session_id)
             await db.commit()
 
-    synthesizer = None
+    synthesizer = get_synthesizer()
     transcriber = None
     respond = None
     use_grok = grok_voice_enabled()
+    provider = live_realtime_provider() if use_grok else "pipeline"
     if not use_grok:
-        synthesizer = get_synthesizer()
         transcriber = live_transcriber()
         respond = make_pipeline_responder(
             actor=ctx.actor,
@@ -286,7 +336,80 @@ async def bind_live_session(
             conversation_id=conversation_id,
             synthesizer=synthesizer,
             speaker_confidence=speaker_confidence,
+            tts_device_id=tts_device_id,
         )
+
+    async def capability_reply(*, include_refused: bool = False):
+        from app.ev.protocols import capability_reply as protocol_reply
+
+        async with SessionLocal() as db:
+            payload = await protocol_reply(
+                db,
+                include_refused=include_refused,
+                actor=ctx.actor,
+                device_id=device_id,
+                realtime_provider=provider,
+                channel="voice" if use_grok else "action",
+            )
+            await db.commit()
+        return payload
+
+    async def approved_live_tools():
+        """Load the current policy capability projection for Realtime.
+
+        The voice bridge receives an explicit empty list when the projection
+        cannot approve any live function. It never falls back to the full
+        registry at runtime; each call is still authorized by dispatch.
+        """
+
+        payload = await capability_reply()
+        projection = payload.get("live_tool_projection")
+        if not isinstance(projection, list):
+            return []
+        return approved_live_tool_specs({"capabilities": projection})
+
+    capability_manifest = None
+    approved_tool_specs: list[dict] = []
+    initial_capabilities: dict = {}
+    capability_error: str | None = None
+    try:
+        initial_capabilities = await capability_reply()
+        capability_manifest = build_live_capability_manifest(
+            initial_capabilities,
+            device_id=str(device_id) if device_id else None,
+            tts_device_id=tts_device_id,
+            provider=provider,
+        )
+    except Exception as exc:  # noqa: BLE001 - fail closed but expose the reason
+        capability_error = f"{type(exc).__name__}: {exc}"[:500]
+        logger.exception(
+            "live capability projection failed session=%s provider=%s",
+            session_id,
+            provider,
+        )
+        capability_manifest = build_live_capability_manifest(
+            {
+                "active_providers": {"realtime": provider, "fallback": "pipeline"},
+                "live_tool_projection": [],
+                "realtime_tools": [],
+                "approved_tools": [],
+                "executable_tools": [],
+                "capability_error": capability_error,
+            },
+            device_id=str(device_id) if device_id else None,
+            tts_device_id=tts_device_id,
+            provider=provider,
+        )
+    if use_grok:
+        try:
+            projection = initial_capabilities.get("live_tool_projection")
+            approved_tool_specs = (
+                approved_live_tool_specs({"capabilities": projection})
+                if isinstance(projection, list)
+                else []
+            )
+        except Exception:  # noqa: BLE001 - fail closed for remote function exposure
+            approved_tool_specs = []
 
     live_session = LiveSession(
         session_id=str(session_id),
@@ -299,7 +422,22 @@ async def bind_live_session(
         backchannel_enabled=settings.voice_live_backchannel,
         vad_threshold=settings.voice_live_vad_threshold,
         on_sleep=on_sleep,
+        device_id=str(device_id) if device_id else None,
+        tts_device_id=tts_device_id,
+        capability_reply=capability_reply,
+        capability_manifest=capability_manifest,
     )
+    if capability_error:
+        await live_session.emit(
+            ErrorEvent(
+                at_ms=live_session.now(),
+                code="live_capabilities_unavailable",
+                message=(
+                    "Live function tools are unavailable: " + capability_error
+                )[:240],
+                fatal=False,
+            )
+        )
     live_session.on_heartbeat = on_heartbeat
 
     def ensure_pipeline() -> None:
@@ -315,26 +453,44 @@ async def bind_live_session(
                 conversation_id=conversation_id,
                 synthesizer=synth,
                 speaker_confidence=speaker_confidence,
+                tts_device_id=tts_device_id,
             ),
         )
 
     live_session.ensure_pipeline = ensure_pipeline
+    tool_runner = _grok_tool_runner(
+        actor=ctx.actor, device_id=device_id, live=live_session
+    )
+    live_session.run_live_tool = tool_runner
     if use_grok:
         live_session.grok_voice = GrokVoiceBridge(
             on_event=live_session.emit,
-            on_tool=_grok_tool_runner(actor=ctx.actor, device_id=device_id),
+            on_tool=tool_runner,
             now_ms=live_session.now,
+            provider=provider,
+            capability_manifest=capability_manifest,
+            capability_manifest_loader=capability_reply,
+            approved_tool_specs=approved_tool_specs,
+            tool_specs_loader=approved_live_tools,
         )
     return live_session
 
 
-def _grok_tool_runner(*, actor: str, device_id):
-    """Execute EV life tools when Grok Voice asks for a function call."""
+def _grok_tool_runner(*, actor: str, device_id, live: LiveSession):
+    """Execute EV life tools when a live model or the pipeline intent resolver asks.
+
+    Confirmation never blocks this callback. The audio loop stays alive and
+    the hold line / HUD card are emitted immediately.
+    """
 
     async def on_tool(name: str, arguments: dict, call_id: str) -> str:
-        del call_id
         from app.ev.tools import dispatch
 
+        # Realtime has already enforced the advertised name/schema boundary.
+        # Do not run a second sync policy preview here: it lacks the async
+        # provider, device, and delegate-scope context. ``dispatch`` is the
+        # canonical authorization/execution boundary and rechecks all of it.
+        await live.push_progress(name)
         async with SessionLocal() as db:
             result = await dispatch(
                 db,
@@ -342,14 +498,39 @@ def _grok_tool_runner(*, actor: str, device_id):
                 arguments,
                 actor=actor,
                 allow_sensitive=True,
+                request_id=call_id,
                 device_id=device_id,
+                channel="voice",
+                live_session_id=live.session_id,
             )
             await db.commit()
+        body = result.result if isinstance(result.result, dict) else {}
+        successful = bool(result.ok and tool_result_is_successful(body))
+        if result.error == "confirmation_required" or body.get("confirmation_required"):
+            hold = dict(body)
+            if not hold:
+                hold = {
+                    "ok": False,
+                    "error": "confirmation_required",
+                    "confirmation_required": True,
+                    "hold": True,
+                }
+            hold["_realtime_call_id"] = call_id
+            await live.apply_approval_hold(hold, speak=False)
+        elif successful and body:
+            await live.push_evidence(name, body)
+        elif body:
+            await live.push_tool_result(name, body)
         payload = {
-            "ok": result.ok,
+            "ok": successful,
             "name": result.name,
             "result": result.result,
-            "error": result.error,
+            "evidence": body.get("evidence"),
+            "spoken": body.get("spoken"),
+            "error": result.error or (body.get("error") if not successful else None),
+            "confirmation_required": bool(
+                result.error == "confirmation_required" or body.get("confirmation_required")
+            ),
         }
         return json.dumps(payload, default=str)[:4000]
 

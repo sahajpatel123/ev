@@ -685,7 +685,7 @@ async def verify_webauthn_registration(
     return row
 
 
-async def verify_webauthn_authentication(
+async def verify_webauthn_assertion(
     session: AsyncSession,
     *,
     challenge_id: UUID,
@@ -693,10 +693,12 @@ async def verify_webauthn_authentication(
     client_data_json: str,
     authenticator_data: str,
     signature: str,
-    device_name: str,
-    capabilities: list[str] | None = None,
-) -> tuple[Device, str, OwnerIdentity]:
-    """Verify a passkey authentication and issue a fresh owner device token."""
+) -> tuple[PasskeyCredential, PasskeyAuthMaterial, OwnerIdentity]:
+    """Verify a passkey assertion without issuing a new device token.
+
+    This is the independent confirmation factor for parked R3/R4 actions.
+    Login still goes through ``verify_webauthn_authentication``.
+    """
     from app.config import settings
     from app.identity import webauthn
 
@@ -720,9 +722,7 @@ async def verify_webauthn_authentication(
         )
     material = (
         await session.execute(
-            select(PasskeyAuthMaterial).where(
-                PasskeyAuthMaterial.passkey_id == row.id
-            )
+            select(PasskeyAuthMaterial).where(PasskeyAuthMaterial.passkey_id == row.id)
         )
     ).scalar_one_or_none()
     if material is None:
@@ -731,18 +731,53 @@ async def verify_webauthn_authentication(
             status=401,
             code="passkey_material_missing",
         )
-    new_sign_count = webauthn.verify_authentication(
-        client_data_raw=webauthn.b64url_decode(client_data_json),
-        authenticator_data_raw=webauthn.b64url_decode(authenticator_data),
-        signature=webauthn.b64url_decode(signature),
-        expected_challenge_hash=challenge_row.challenge_hash,
-        rp_id=challenge_row.rp_id,
-        allowed_origins=list(settings.webauthn_origins),
-        stored_public_key_cose=material.public_key_cose,
-        stored_sign_count=material.sign_count,
-    )
+    try:
+        new_sign_count = webauthn.verify_authentication(
+            client_data_raw=webauthn.b64url_decode(client_data_json),
+            authenticator_data_raw=webauthn.b64url_decode(authenticator_data),
+            signature=webauthn.b64url_decode(signature),
+            expected_challenge_hash=challenge_row.challenge_hash,
+            rp_id=challenge_row.rp_id,
+            allowed_origins=list(settings.webauthn_origins),
+            stored_public_key_cose=material.public_key_cose,
+            stored_sign_count=material.sign_count,
+        )
+    except webauthn.WebauthnError as exc:
+        raise IdentityError(str(exc), status=401, code=exc.code) from exc
     material.sign_count = new_sign_count
     material.last_used_at = utcnow()
+    await log_access(
+        session,
+        actor="passkey",
+        action="passkey_assert",
+        endpoint="POST /v1/runtime/actions/{id}/approve",
+        resource_type="passkey",
+        resource_ids=[row.id],
+        details={"owner_id": str(owner.id), "sign_count": new_sign_count},
+    )
+    return row, material, owner
+
+
+async def verify_webauthn_authentication(
+    session: AsyncSession,
+    *,
+    challenge_id: UUID,
+    credential_id: str,
+    client_data_json: str,
+    authenticator_data: str,
+    signature: str,
+    device_name: str,
+    capabilities: list[str] | None = None,
+) -> tuple[Device, str, OwnerIdentity]:
+    """Verify a passkey authentication and issue a fresh owner device token."""
+    row, _material, owner = await verify_webauthn_assertion(
+        session,
+        challenge_id=challenge_id,
+        credential_id=credential_id,
+        client_data_json=client_data_json,
+        authenticator_data=authenticator_data,
+        signature=signature,
+    )
     token = secrets.token_urlsafe(32)
     device = Device(
         name=device_name.strip() or "Passkey device",
@@ -763,7 +798,7 @@ async def verify_webauthn_authentication(
         details={
             "owner_id": str(owner.id),
             "passkey_id": str(row.id),
-            "sign_count": new_sign_count,
+            "sign_count": _material.sign_count,
         },
     )
     return device, token, owner

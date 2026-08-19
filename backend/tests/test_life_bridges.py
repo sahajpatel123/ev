@@ -99,7 +99,31 @@ if command == "call.place":
     print(json.dumps({"ok": True, "data": data}))
     sys.exit(0)
 
-if command in ("mail.list", "call.check", "apps.frontmost", "apps.activate"):
+if command == "apps.activate":
+    print(json.dumps({"ok": True, "data": {
+        "bundle_identifier": args.get("--bundle-id"),
+        "activated": True,
+        "launched": True,
+    }}))
+    sys.exit(0)
+
+if command == "apps.quit":
+    print(json.dumps({"ok": True, "data": {
+        "bundle_identifier": args.get("--bundle-id"),
+        "quit": True,
+        "was_running": True,
+        "already_closed": False,
+    }}))
+    sys.exit(0)
+
+if command == "open.url":
+    print(json.dumps({"ok": True, "data": {
+        "url": args.get("--url"),
+        "opened": True,
+    }}))
+    sys.exit(0)
+
+if command in ("mail.list", "call.check", "apps.frontmost"):
     print(json.dumps({"ok": True, "data": {}}))
     sys.exit(0)
 

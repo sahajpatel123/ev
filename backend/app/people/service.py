@@ -8,6 +8,7 @@ silently creates a person and never enables face recognition by itself.
 
 from __future__ import annotations
 
+from datetime import UTC, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -29,7 +30,7 @@ from app.schemas import (
     PersonRosterEntryOut,
     PersonRosterOut,
 )
-from app.utils.text import normalize_text
+from app.utils.text import normalize_text, utcnow
 
 
 async def _active_enrollment(
@@ -94,14 +95,44 @@ async def _last_seen_for_entity(
         )
     ).scalar_one_or_none()
     if sighting is not None:
+        created_at = sighting.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        age = (utcnow() - created_at.astimezone(UTC)).total_seconds()
         return {
             "occurred_at": sighting.created_at.isoformat(),
             "recognition_id": str(sighting.id),
             "source": "face",
             "confidence": sighting.confidence,
+            "freshness_state": "fresh" if age <= timedelta(days=1).total_seconds() else "stale",
             "text": f"Recognized {sighting.label}.",
         }
-    from app.models import Event
+    from app.models import Event, ObservationRecord
+
+    world_observation = (
+        await session.execute(
+            select(ObservationRecord)
+            .where(
+                ObservationRecord.subject_type == "person",
+                ObservationRecord.deleted_at.is_(None),
+            )
+            .order_by(ObservationRecord.observed_at.desc())
+            .limit(200)
+        )
+    ).scalars().all()
+    for observation in world_observation:
+        if normalize_text(observation.subject) == normalized:
+            return {
+                "occurred_at": observation.observed_at.isoformat(),
+                "observation_id": str(observation.id),
+                "source": "world_model",
+                "source_device": observation.source_device,
+                "evidence_ref": observation.evidence_ref,
+                "confidence": observation.confidence,
+                "freshness_state": observation.freshness_state,
+                "uncertainty": observation.uncertainty,
+                "text": f"Observed {observation.subject} at {observation.location}.",
+            }
 
     events = list(
         (

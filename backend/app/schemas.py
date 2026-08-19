@@ -729,6 +729,10 @@ class HealthSnapshotCreate(BaseModel):
     source: str = "api"
     device_id: str | None = None
     metrics: dict[str, float] = Field(default_factory=dict)
+    permission_state: Literal["authorized", "denied", "restricted", "unavailable", "unknown"] = "authorized"
+    synced_at: datetime | None = None
+    units: dict[str, str] = Field(default_factory=dict)
+    source_metadata: dict = Field(default_factory=dict)
 
 
 class HealthSnapshotOut(BaseModel):
@@ -740,9 +744,180 @@ class HealthSnapshotOut(BaseModel):
     readiness: float | None
     band: str | None
     anomalies: list
+    permission_state: str = "authorized"
+    synced_at: datetime | None = None
+    units: dict = Field(default_factory=dict)
+    source_metadata: dict = Field(default_factory=dict)
+    freshness_state: str = "unknown"
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# --------------------------------------------------------------------------- #
+# Personal world model: observations, owner objects, and camera state
+# --------------------------------------------------------------------------- #
+
+
+class ObservationCreate(BaseModel):
+    subject: str = Field(min_length=1, max_length=256)
+    subject_type: str = Field(default="owner", min_length=1, max_length=32)
+    object_or_event: str = Field(
+        min_length=1,
+        max_length=256,
+        validation_alias=AliasChoices("object_or_event", "object"),
+    )
+    action: str = Field(min_length=1, max_length=128)
+    location: str = Field(min_length=1, max_length=512)
+    observed_at: datetime | None = None
+    source_device: str = Field(min_length=1, max_length=128)
+    evidence_ref: str = Field(min_length=1, max_length=512)
+    confidence: float = Field(ge=0.0, le=1.0)
+    uncertainty: str = Field(min_length=1, max_length=512)
+    consent_state: str = Field(min_length=1, max_length=32)
+    retention_class: str = Field(default="standard", min_length=1, max_length=64)
+    stale_after_seconds: int = Field(default=86_400, ge=0, le=31_536_000)
+    fact_kind: Literal["observed", "reported", "inferred", "guessed"] = "observed"
+    metadata: dict = Field(default_factory=dict)
+    persist_raw_frame: bool = False
+
+    model_config = {"populate_by_name": True}
+
+
+class ObservationOut(BaseModel):
+    id: UUID
+    subject: str
+    subject_type: str
+    object_or_event: str = Field(serialization_alias="object")
+    action: str
+    location: str
+    observed_at: datetime
+    source_device: str
+    evidence_ref: str
+    confidence: float
+    uncertainty: str
+    consent_state: str
+    retention_class: str
+    freshness_state: str
+    stale_after_seconds: int
+    fact_kind: str
+    metadata: dict = Field(default_factory=dict, validation_alias=AliasChoices("metadata_", "metadata"))
+    deleted_at: datetime | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class OwnerObjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    object_type: str = Field(default="thing", min_length=1, max_length=64)
+    owner: str = Field(default="owner", min_length=1, max_length=256)
+    enrollment_source: Literal["user", "owner", "explicit"] = "user"
+    appearance_references: list = Field(default_factory=list)
+    common_locations: list[str] = Field(default_factory=list)
+
+
+class OwnerObjectOut(BaseModel):
+    id: UUID
+    owner: str
+    name: str
+    object_type: str
+    enrollment_source: str
+    appearance_references: list
+    common_locations: list
+    last_observed_location: str | None = None
+    last_observed_at: datetime | None = None
+    last_evidence_ref: str | None = None
+    last_confidence: float | None = None
+    last_uncertainty: str | None = None
+    last_freshness_state: str
+    possible_matches: list
+    status: str
+    deleted_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ObjectObservationCreate(BaseModel):
+    location: str = Field(min_length=1, max_length=512)
+    observed_at: datetime | None = None
+    source_device: str = Field(min_length=1, max_length=128)
+    evidence_ref: str = Field(min_length=1, max_length=512)
+    confidence: float = Field(ge=0.0, le=1.0)
+    uncertainty: str = Field(
+        default="visual match may be wrong or the object may have moved",
+        max_length=512,
+    )
+    action: str = Field(default="seen", min_length=1, max_length=128)
+    fact_kind: Literal["observed", "reported", "inferred", "guessed"] = "observed"
+    possible_matches: list = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+    persist_raw_frame: bool = False
+
+
+class ObjectLastSeenOut(BaseModel):
+    object_id: str
+    name: str
+    found: bool
+    location: str | None = None
+    freshness_state: str
+    evidence_ref: str | None = None
+    observed_at: datetime | None = None
+    confidence: float | None = None
+    uncertainty: str
+    fact_kind: str | None = None
+    answer: str
+    why: dict = Field(default_factory=dict)
+
+
+class CameraStateUpdate(BaseModel):
+    state: Literal[
+        "off",
+        "paused",
+        "active",
+        "explicit_one_shot",
+        "one_shot",
+        "permission_denied",
+        "denied",
+        "unavailable",
+        "error",
+    ]
+    platform: str = Field(default="mac", min_length=1, max_length=32)
+    permission_state: str | None = Field(default=None, max_length=32)
+    explicit_request: bool | None = None
+    paused_reason: str | None = Field(default=None, max_length=256)
+    consent_state: str | None = Field(default=None, max_length=32)
+    raw_frames_persisted: bool = False
+    last_error: str | None = Field(default=None, max_length=512)
+
+
+class CameraStateOut(BaseModel):
+    id: UUID | None = None
+    device_id: str | None
+    platform: str | None
+    state: str
+    visible: bool
+    permission_state: str
+    explicit_request: bool
+    paused_reason: str | None = None
+    consent_state: str
+    raw_frames_persisted: bool
+    last_error: str | None = None
+    updated_at: datetime | None = None
+
+
+class PersonObservationCreate(BaseModel):
+    person_name: str | None = Field(default=None, max_length=256)
+    location: str = Field(min_length=1, max_length=512)
+    observed_at: datetime | None = None
+    source_device: str = Field(min_length=1, max_length=128)
+    evidence_ref: str = Field(min_length=1, max_length=512)
+    confidence: float = Field(ge=0.0, le=1.0)
+    uncertainty: str = Field(default="visual similarity is not certain identity", max_length=512)
+    consent_state: str = Field(default="explicit", max_length=32)
+    action: str = Field(default="seen", max_length=128)
 
 
 class AttachmentCreateResponse(BaseModel):
@@ -1423,6 +1598,10 @@ class HealthTrendOut(BaseModel):
     current: float | None = None
     z_scores: list[float] = Field(default_factory=list)
     anomalies: list[dict] = Field(default_factory=list)
+    freshness_state: str = "unknown"
+    last_sync_at: datetime | None = None
+    source: str | None = None
+    permission_state: str = "unknown"
 
 
 class HealthSummaryOut(BaseModel):
@@ -1440,6 +1619,10 @@ class HealthSummaryOut(BaseModel):
     stress: float | None = None
     source: str | None = None
     emergency: bool = False
+    permission_state: str = "unknown"
+    freshness_state: str = "unknown"
+    last_sync_at: datetime | None = None
+    source_metadata: dict = Field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -1631,6 +1814,7 @@ class PersonWhereaboutsOut(BaseModel):
     enrolled: dict | None = None
     face_sightings: list[dict] = Field(default_factory=list)
     voice_sightings: list[dict] = Field(default_factory=list)
+    world_observations: list[dict] = Field(default_factory=list)
     public_biodata: dict | None = None
     biodata_merged: bool = False
 
@@ -1875,8 +2059,22 @@ class ResearchNoteOut(BaseModel):
 class ResearchSessionOut(BaseModel):
     id: UUID
     question: str
+    goal: str = ""
+    owner: str = "master"
+    mode: str = "session"
     status: str
     conclusion: str | None
+    allowed_tools: list[str] = Field(default_factory=list)
+    deadline_at: datetime | None = None
+    budget: dict = Field(default_factory=dict)
+    checkpoints: list[dict] = Field(default_factory=list)
+    progress: dict = Field(default_factory=dict)
+    final_artifacts: list[dict] = Field(default_factory=list)
+    citations: list[dict] = Field(default_factory=list)
+    evidence: dict = Field(default_factory=dict)
+    cancel_requested: bool = False
+    attempts: int = 0
+    last_error: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -1885,6 +2083,19 @@ class ResearchSessionOut(BaseModel):
 
 class ResearchSessionDetail(ResearchSessionOut):
     notes: list[ResearchNoteOut] = Field(default_factory=list)
+
+
+class ResearchJobCreate(BaseModel):
+    goal: str = Field(min_length=1, max_length=2000)
+    allowed_tools: list[str] = Field(default_factory=lambda: ["web_search"], max_length=4)
+    deadline_at: datetime | None = None
+    max_results: int = Field(default=5, ge=1, le=20)
+    timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    checkpoints: list[str] = Field(default_factory=lambda: ["collect_sources"], max_length=16)
+
+
+class ResearchJobOut(ResearchSessionOut):
+    """Explicit job-shaped response; the durable id is ``id``."""
 
 
 class ResearchConclude(BaseModel):
@@ -2276,9 +2487,21 @@ class ToolSpecOut(BaseModel):
     name: str
     description: str
     parameters: dict
+    version: str = "1"
     sensitive: bool = False
     read_only: bool = True
     permission: str = "memory:read"
+    required_scopes: list[str] = Field(default_factory=list)
+    risk_class: str = "R0"
+    confirmation: str = "none"
+    target_ownership: str = "owner"
+    provider: str = "local"
+    fallback: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    idempotency: str = "natural"
+    timeout_seconds: int = 10
+    cancellation: str = "not_applicable"
+    audit_event: str | None = None
     undoable: bool = False
     output: dict = Field(default_factory=dict)
 
@@ -2495,16 +2718,40 @@ class ActionSpecOut(BaseModel):
     name: str
     description: str
     payload: dict = Field(default_factory=dict)
+    version: str = "1"
     output: dict = Field(default_factory=dict)
     requires_approval: bool = True
     undoable: bool = False
     permission: str
+    required_scopes: list[str] = Field(default_factory=list)
+    risk_class: str = "R0"
+    confirmation: str = "none"
+    target_ownership: str = "owner"
+    provider: str = "local"
+    fallback: str | None = None
+    evidence: list[str] = Field(default_factory=list)
+    idempotency: str = "natural"
+    timeout_seconds: int = 10
+    cancellation: str = "not_applicable"
+    audit_event: str | None = None
     read_only: bool = True
+
+
+class WebauthnAssertionIn(BaseModel):
+    """Passkey assertion used as an independent confirm factor (not a login)."""
+
+    challenge_id: UUID
+    credential_id: str = Field(min_length=1, max_length=1024)
+    client_data_json: str = Field(min_length=1, max_length=16384)
+    authenticator_data: str = Field(min_length=1, max_length=16384)
+    signature: str = Field(min_length=1, max_length=16384)
 
 
 class ActionDecisionRequest(BaseModel):
     reason: str | None = None
     result: dict = Field(default_factory=dict)
+    factor: str | None = None
+    webauthn: WebauthnAssertionIn | None = None
 
 
 class DeadLetterCreate(BaseModel):

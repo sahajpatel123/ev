@@ -17,7 +17,9 @@ enum AppLifecycle {
         set { TerminatePolicy.explicitQuit = newValue }
     }
 
+    @MainActor
     static func quit() {
+        VoiceOrbOverlay.shared.hide()
         TerminatePolicy.markExplicitQuit()
         NSApp.terminate(nil)
     }

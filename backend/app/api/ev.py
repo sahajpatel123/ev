@@ -8,11 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor
+from app.auth import require_actor, require_actor_context
 from app.db import get_session
 from app.ev import (
     alert_radar,
-    diagnostics,
     ev_sense,
     gear,
     health_radar,
@@ -35,18 +34,9 @@ from app.schemas import (
     BeaconCreate,
     BeaconOut,
     CalibrationReport,
-    DiagnosticsLastOut,
-    LocationShareCreate,
-    LocationShareOut,
-    LookoutUtteranceIn,
-    OwnerCameraCreate,
-    PublicFeedCreate,
-    TelemetrySampleCreate,
-    TelemetrySampleOut,
-    TelemetrySessionCreate,
-    TelemetrySessionOut,
     DecisionOutcomeCreate,
     DecisionOutcomeOut,
+    DiagnosticsLastOut,
     GearScanResponse,
     GearSnapshotCreate,
     GearSnapshotOut,
@@ -57,15 +47,24 @@ from app.schemas import (
     HudQuickCardOut,
     InteractionModeRequest,
     InteractionModeResponse,
+    LocationShareCreate,
+    LocationShareOut,
+    LookoutUtteranceIn,
+    OwnerCameraCreate,
     PersonWhereaboutsOut,
     PredictionOut,
     PredictionOutcomeUpdate,
     ProactiveTuningOut,
+    PublicFeedCreate,
     SensePredictRequest,
     SensePredictResponse,
     TacticalBriefOut,
     TacticalBriefRequest,
     TacticalQuickRequest,
+    TelemetrySampleCreate,
+    TelemetrySampleOut,
+    TelemetrySessionCreate,
+    TelemetrySessionOut,
     WatchlistCreate,
     WatchlistOut,
 )
@@ -77,10 +76,28 @@ router = APIRouter(prefix="/v1")
 @router.post("/diagnostics/calibrate", response_model=CalibrationReport)
 async def calibrate(
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx=Depends(require_actor_context),
 ) -> CalibrationReport:
-    """E.V.-style self-calibration: database, embeddings, gateway, retrieval, storage."""
-    report = await diagnostics.run_calibration(session)
+    """Run diagnostics through the same policy and audit path as other tools."""
+    from app.ev.tools import dispatch
+
+    tool = await dispatch(
+        session,
+        "calibrate",
+        {},
+        actor=ctx.actor,
+        allow_sensitive=True,
+        device_id=ctx.device_id,
+        channel="action",
+        audit_endpoint="POST /v1/diagnostics/calibrate",
+    )
+    payload = tool.result if isinstance(tool.result, dict) else {}
+    report_payload = payload.get("report") if isinstance(payload.get("report"), dict) else payload
+    if not tool.ok or not report_payload.get("checks"):
+        error = str(tool.error or payload.get("error") or "diagnostics unavailable")
+        status = 503 if error in {"not_connected", "unavailable"} else 403
+        raise HTTPException(status_code=status, detail=error)
+    report = CalibrationReport.model_validate(report_payload)
     await session.commit()
     return report
 
@@ -400,6 +417,10 @@ async def health_snapshot(
         source=data.source,
         device_id=data.device_id,
         occurred_at=data.occurred_at,
+        permission_state=data.permission_state,
+        synced_at=data.synced_at,
+        units=data.units,
+        source_metadata=data.source_metadata,
     )
     await session.commit()
     if any(flag.get("emergency") for flag in (snapshot.anomalies or [])) or (

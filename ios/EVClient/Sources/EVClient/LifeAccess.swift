@@ -29,6 +29,18 @@ public enum EVLifeError: Error, Sendable, Equatable {
 }
 
 public enum EVLifeBiometric {
+    /// True when Face ID / Touch ID can be evaluated on this device.
+    /// Unavailable hardware is not a failure — HUD tap still counts.
+    public static var isAvailable: Bool {
+        #if canImport(LocalAuthentication)
+        let context = LAContext()
+        var error: NSError?
+        return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+        #else
+        return false
+        #endif
+    }
+
     /// Face ID / Touch ID before place_call, lock home_act, or delegate_grant.
     /// Failure means the client must not send the request.
     public static func confirmLifeAction(reason: String) async -> Bool {

@@ -10,10 +10,11 @@ import Foundation
 /// long enough for the menu-bar client to time out on "thinking".
 ///
 /// This capture converts the hardware stream to 16 kHz mono 16-bit PCM and
-/// caps the clip at ``maxSeconds`` so ASR stays bounded.
+/// keeps the clip bounded for memory safety while allowing normal long-form
+/// questions and dictation.
 final class MicCapture: NSObject {
     static let sampleRate: Double = 16_000
-    static let maxSeconds: Double = 12
+    static let maxSeconds: Double = 120
 
     private var engine = AVAudioEngine()
     private var converter: AVAudioConverter?

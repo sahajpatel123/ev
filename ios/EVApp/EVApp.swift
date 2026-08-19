@@ -10,7 +10,12 @@ struct EVApp: App {
 
     var body: some Scene {
         WindowGroup {
-            AppShellView(client: appState.client, queue: appState.queue)
+            AppShellView(
+                client: appState.client,
+                queue: appState.queue,
+                deviceId: appState.registryDeviceId,
+                live: appState.live
+            )
                 .toolbar {
                     Button {
                         showGrantAccess = true
@@ -21,8 +26,12 @@ struct EVApp: App {
                 .sheet(isPresented: $showGrantAccess) {
                     GrantAccessView()
                 }
+                .onChange(of: appState.live.conversationId) { _, id in
+                    appState.noteConversation(id)
+                }
                 .task {
                     await appState.bootstrapIfNeeded()
+                    appState.startLiveIfPossible()
                     await appState.startHealthBridge()
                 }
         }

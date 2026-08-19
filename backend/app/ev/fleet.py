@@ -27,6 +27,31 @@ WE_ARE_ONLINE = "We're online."
 PREFS_FAILED = "I couldn't load prefs; using defaults."
 
 
+async def resolve_registry_device(
+    session: AsyncSession,
+    raw: str | None,
+) -> Device | None:
+    """Accept a Device UUID or the registered Device.name (hostname tag)."""
+
+    value = (raw or "").strip()
+    if not value:
+        return None
+    try:
+        uid = UUID(value)
+    except ValueError:
+        uid = None
+    if uid is not None:
+        device = await session.get(Device, uid)
+        if device is not None and device.revoked_at is None:
+            return device
+    row = (
+        await session.execute(
+            select(Device).where(Device.name == value, Device.revoked_at.is_(None))
+        )
+    ).scalars().first()
+    return row
+
+
 async def tts_playback_device(
     session: AsyncSession,
     *,

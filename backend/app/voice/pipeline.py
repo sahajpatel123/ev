@@ -141,11 +141,7 @@ async def _synth_sentence(
             degraded=False,
             details={"reason": "not_speakable"},
         )
-    limit = (
-        float(timeout)
-        if timeout is not None
-        else min(8.0, float(settings.voice_tts_timeout_seconds))
-    )
+    limit = float(timeout) if timeout is not None else float(settings.voice_tts_timeout_seconds)
     try:
         return await asyncio.wait_for(
             synthesizer.synthesize(speakable, style=style),
@@ -184,7 +180,7 @@ async def cached_listen_ack(synthesizer, heard: str) -> tuple[str, SynthesisResu
     cached = _ACK_CACHE.get(key)
     if cached is not None:
         return phrase, cached
-    ack_timeout = max(float(settings.voice_tts_timeout_seconds), 8.0)
+    ack_timeout = float(settings.voice_tts_timeout_seconds)
     result = await _synth_sentence(
         synthesizer, phrase, listen_ack_style(), timeout=ack_timeout
     )

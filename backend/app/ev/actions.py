@@ -15,6 +15,8 @@ LIFE_ACTION_NAMES = frozenset(
         "place_call",
         "list_mail",
         "open_url",
+        "open_app",
+        "close_app",
         "set_reminder",
     }
 )
@@ -54,9 +56,13 @@ def life_agency_prompt(name: str | None = None) -> str:
         f"LIFE AGENCY. You are {who}, the owner's agent, and the owner has standing "
         "authority: when the owner tells you to do something and a granted life "
         "bridge exists, DO it.\n"
-        "- Execute life actions (messages, calls, mail, contacts) through the "
-        "granted bridges. Under EV_OWNER_AUTONOMY=full, no per-action approval "
-        "is required inside granted scopes.\n"
+        "- Execute life actions (messages, calls, mail, contacts, open/close "
+        "allowlisted Mac apps and https links) through the granted bridges. "
+        "Under EV_OWNER_AUTONOMY=full, no per-action approval is required "
+        "inside granted scopes.\n"
+        "- Opening Safari, Messages, Mail, or another allowlisted app is a "
+        "real helper action. Do it. Never invent a refusal such as "
+        "'I cannot open Safari for you'.\n"
         "- If a bridge is missing or a permission/scope is denied, explain "
         "exactly WHAT must be granted and WHICH helper is required (integration "
         "slug + scope, or helper command). Never invent a theatrical or moral "
@@ -213,6 +219,108 @@ ACTION_SPECS: list[dict[str, Any]] = [
         "undoable": False,
         "permission": "message:send",
         "read_only": False,
+        "risk_class": "R2",
+        "confirmation": "standing",
+        "target_ownership": "owner",
+        "provider": "messaging",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "key",
+        "cancellation": "not_applicable",
+    },
+    {
+        "name": "list_messages",
+        "description": "List recent messages from the granted messaging bridge.",
+        "payload": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "channel": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "default": "messages",
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            },
+        },
+        "output": {"type": "object"},
+        "requires_approval": False,
+        "undoable": False,
+        "permission": "message:read",
+        "read_only": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "messaging",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["message:read"],
+    },
+    {
+        "name": "get_weather",
+        "description": "Live weather and a 3-day forecast via Open-Meteo.",
+        "payload": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "place": {"type": "string", "minLength": 1, "maxLength": 80},
+                "query": {"type": "string", "minLength": 1, "maxLength": 200},
+            },
+        },
+        "output": {"type": "object", "required": ["ok", "count", "results"]},
+        "requires_approval": False,
+        "undoable": False,
+        "permission": "web:search",
+        "read_only": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "public",
+        "provider": "open-meteo",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+    },
+    {
+        "name": "calibrate",
+        "description": "Run self-diagnostics (database, embeddings, gateway, retrieval, storage).",
+        "payload": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object", "required": ["spoken", "hud"]},
+        "requires_approval": False,
+        "undoable": False,
+        "permission": "diagnostics:read",
+        "read_only": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+    },
+    {
+        "name": "calendar_read",
+        "description": "Read the owner's calendar signals (next event, leave-by). Never writes.",
+        "payload": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            },
+        },
+        "output": {"type": "object", "required": ["ok", "spoken"]},
+        "requires_approval": False,
+        "undoable": False,
+        "permission": "calendar:read",
+        "read_only": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "calendar",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["calendar:read"],
     },
     {
         "name": "execute_command",
@@ -224,6 +332,7 @@ ACTION_SPECS: list[dict[str, Any]] = [
                 "command": {"type": "string", "minLength": 1, "maxLength": 4000},
                 "cwd": {"type": "string", "maxLength": 512},
                 "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300, "default": 30},
+                "confirm": {"type": "boolean", "default": False},
             },
             "required": ["command"],
         },
@@ -240,9 +349,11 @@ def get_action_spec(name: str) -> dict | None:
     """Return the declared spec for an action name, or None when unknown."""
     for spec in ACTION_SPECS:
         if spec["name"] == name:
+            from app.ev.policy import annotate_spec
+
             resolved = dict(spec)
             resolved["requires_approval"] = life_action_requires_approval(name)
-            return resolved
+            return annotate_spec(resolved)
     return None
 
 
@@ -256,7 +367,9 @@ def validate_action_payload(name: str, payload: dict) -> list[str]:
 
 
 def list_action_specs() -> list[dict]:
+    from app.ev.policy import annotate_spec
+
     return [
-        {**spec, "requires_approval": life_action_requires_approval(spec["name"])}
+        annotate_spec({**spec, "requires_approval": life_action_requires_approval(spec["name"])})
         for spec in ACTION_SPECS
     ]

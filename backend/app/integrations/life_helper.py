@@ -7,7 +7,8 @@ contract implemented in ``macos/Sources/EVLifeHelper/main.swift``:
 - commands: ``contacts.list | contacts.resolve --query | messages.list
   [--limit N] | messages.send --to --text | mail.list [--limit N] |
   mail.send --to --subject --body | call.place --destination [--kind
-  tel|facetime] | call.check | apps.frontmost | apps.activate``
+  tel|facetime] | call.check | apps.frontmost | apps.activate |
+  apps.quit | open.url``
 - stdout: one JSON object (UTF-8). stderr is human diagnostics only.
 - success envelope: ``{"ok": true, "data": {...}}``
 - error envelope: ``{"ok": false, "error": {"code": "...", "message": "..."}}``
@@ -58,6 +59,8 @@ COMMAND_FLAGS: dict[str, tuple[tuple[str, str], ...]] = {
     "call.check": (("destination", "--destination"), ("kind", "--kind")),
     "apps.frontmost": (),
     "apps.activate": (("bundle_id", "--bundle-id"), ("name", "--name")),
+    "apps.quit": (("bundle_id", "--bundle-id"), ("name", "--name")),
+    "open.url": (("url", "--url"),),
 }
 
 MAX_ARGS_BYTES = 200_000  # argv is bounded; message bodies stay well under

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 from typing import Any
-
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -119,7 +118,7 @@ async def _resolve_callee(session: AsyncSession, target: str, *, actor: str) -> 
     integration = await _active_life_integration(session, "contacts")
     if integration is not None:
         try:
-            outcome = await integrations.execute_action(
+            outcome = await integrations.execute_action_after_policy(
                 session,
                 integration.id,
                 "contacts.resolve",
@@ -128,15 +127,56 @@ async def _resolve_callee(session: AsyncSession, target: str, *, actor: str) -> 
             )
             payload = getattr(outcome, "result", None) or {}
             contact = payload.get("contact") if isinstance(payload, dict) else None
-            if isinstance(contact, dict) and (contact.get("name") or contact.get("phone")):
+            contacts = payload.get("contacts") if isinstance(payload, dict) else None
+            if payload.get("error") == "ambiguous" and isinstance(contacts, list):
+                return {
+                    "query": target,
+                    "source": "contacts",
+                    "error": "ambiguous",
+                    "candidates": contacts,
+                    "display_name": target,
+                    "destination": target,
+                }
+            if isinstance(contact, dict) and (contact.get("name") or contact.get("phone") or contact.get("email")):
                 resolved = {
                     "query": target,
                     "source": "contacts",
                     "contact": contact,
-                    "destination": contact.get("phone") or contact.get("destination") or target,
-                    "display_name": contact.get("name") or target,
+                    "destination": contact.get("phone") or contact.get("email") or contact.get("destination") or target,
+                    "display_name": contact.get("name") or contact.get("display_name") or target,
                 }
                 return resolved
+            if isinstance(contacts, list) and contacts:
+                from app.ev.resolve import pick_unique
+
+                match = pick_unique(
+                    target,
+                    [row for row in contacts if isinstance(row, dict)],
+                    labels=lambda row: [
+                        str(row.get("name") or ""),
+                        str(row.get("display_name") or ""),
+                        str(row.get("phone") or ""),
+                        str(row.get("email") or ""),
+                    ],
+                )
+                if match.status == "ambiguous":
+                    return {
+                        "query": target,
+                        "source": "contacts",
+                        "error": "ambiguous",
+                        "candidates": list(match.candidates),
+                        "display_name": target,
+                        "destination": target,
+                    }
+                if match.unique and isinstance(match.item, dict):
+                    contact = match.item
+                    return {
+                        "query": target,
+                        "source": "contacts",
+                        "contact": contact,
+                        "destination": contact.get("phone") or contact.get("email") or target,
+                        "display_name": contact.get("name") or target,
+                    }
         except Exception:
             pass
     try:
@@ -169,8 +209,18 @@ async def place_call(
     *,
     actor: str = "master",
 ) -> dict:
+    from app.ev.actuator import (
+        CALL_IDEMPOTENCY_TTL,
+        DEFAULT_TIMEOUT_SECONDS,
+        evidence_base,
+        fingerprint,
+        prior_result,
+        record_actuator,
+        with_timeout,
+    )
     from app.ev.tools import _active_life_integration, _life_unavailable
     from app.integrations import service as integrations
+    from app.utils.text import utcnow
 
     target = str(args.get("name") or args.get("destination") or args.get("to") or "").strip()
     if not target:
@@ -186,12 +236,34 @@ async def place_call(
         return {
             "ok": False,
             "error": "confirm_required",
-            "spoken": f"Confirm to call {target}.",
+            "spoken": f"Call {target} on {kind} now?",
         }
 
     resolved = await _resolve_callee(session, target, actor=actor)
     display = str(resolved.get("display_name") or target)
     destination = str(resolved.get("destination") or target)
+    if resolved.get("error") == "ambiguous":
+        from app.ev.resolve import ambiguous_spoken, candidate_names
+
+        names = candidate_names(
+            resolved.get("candidates") or [],
+            name_of=lambda row: str((row or {}).get("name") or (row or {}).get("display_name") or ""),
+        )
+        return {
+            "ok": False,
+            "error": "ambiguous",
+            "opened": False,
+            "candidates": resolved.get("candidates") or [],
+            "spoken": ambiguous_spoken("person", names),
+        }
+    from app.ev.resolve import looks_like_destination
+
+    key = fingerprint("place_call", kind, display, destination)
+    replayed = await prior_result(
+        session, name="place_call", key=key, max_age=CALL_IDEMPOTENCY_TTL
+    )
+    if replayed is not None:
+        return replayed
 
     integration = await _active_life_integration(session, "phone")
     if integration is None:
@@ -203,20 +275,40 @@ async def place_call(
             ),
         )
         unavailable["spoken"] = "Calling isn't available on this device"
+        unavailable["error"] = "not_connected"
         return unavailable
+    provider = str((integration.config or {}).get("provider") or "local").lower()
+    if (
+        not looks_like_destination(destination)
+        and not any(ch.isdigit() for ch in destination)
+        and provider in {"macos_life", "device_proxy"}
+    ):
+        return {
+            "ok": False,
+            "error": "unresolved_destination",
+            "opened": False,
+            "spoken": f"I don't have a number for {display}.",
+            "name": display,
+            "destination": destination,
+            "resolved": resolved,
+        }
 
     try:
-        outcome = await integrations.execute_action(
-            session,
-            integration.id,
-            "phone.call" if kind == "tel" else "facetime.call",
-            {
-                "to": destination,
-                "destination": destination,
-                "kind": kind,
-                "confirm": True,
-            },
-            actor=actor,
+        outcome = await with_timeout(
+            integrations.execute_action_after_policy(
+                session,
+                integration.id,
+                "phone.call" if kind == "tel" else "facetime.call",
+                {
+                    "to": destination,
+                    "destination": destination,
+                    "kind": kind,
+                    "confirm": True,
+                },
+                actor=actor,
+            ),
+            seconds=DEFAULT_TIMEOUT_SECONDS,
+            spoken="The call request timed out. I will not claim it rang.",
         )
     except LifeHelperUnavailableError:
         return {
@@ -247,18 +339,33 @@ async def place_call(
             "spoken": str(exc) or type(exc).__name__,
         }
 
+    if isinstance(outcome, dict) and outcome.get("error") in {"timeout", "cancelled"}:
+        return outcome
+
     payload = getattr(outcome, "result", None) or {}
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     delivery = payload.get("delivery") if isinstance(payload.get("delivery"), dict) else {}
-    evidence = delivery.get("evidence") if isinstance(delivery.get("evidence"), dict) else {}
+    helper_evidence = delivery.get("evidence") if isinstance(delivery.get("evidence"), dict) else {}
     opened = (
         data.get("opened") is True
         or payload.get("opened") is True
-        or evidence.get("opened") is True
+        or helper_evidence.get("opened") is True
+    )
+    now = utcnow()
+    evidence = evidence_base(
+        source=str(payload.get("mode") or helper_evidence.get("source") or "phone"),
+        accepted=True,
+        observed=opened,
+        now=now,
+        opened=opened,
+        destination=destination,
+        name=display,
+        kind=kind,
+        simulated=bool(payload.get("simulated") or payload.get("mode") == "local"),
     )
     if opened:
         spoken = f"Ringing {display}"
-        return {
+        result = {
             "ok": True,
             "spoken": spoken,
             "opened": True,
@@ -267,19 +374,25 @@ async def place_call(
             "destination": destination,
             "resolved": resolved,
             "delivery": delivery,
+            "evidence": evidence,
         }
+        await record_actuator(
+            session, name="place_call", actor=actor, key=key, result=result, target=display
+        )
+        return result
     error = (
-        str(data.get("error") or payload.get("error") or evidence.get("error") or "not_opened")
+        str(data.get("error") or payload.get("error") or helper_evidence.get("error") or "not_opened")
     )
     return {
         "ok": False,
         "opened": False,
         "error": error,
-        "spoken": error,
+        "spoken": error if error != "not_opened" else f"The call to {display} did not open.",
         "kind": kind,
         "name": display,
         "destination": destination,
         "resolved": resolved,
+        "evidence": evidence,
     }
 
 

@@ -1,8 +1,9 @@
 # opencode as an EV chat provider (optional fallback)
 
 Typed chat uses official DeepSeek (`EV_CHAT_PROVIDER=deepseek`,
-`deepseek-v4-flash`). Live talk uses Grok Voice Think Fast 2.0 when
-`EV_XAI_API_KEY` is set — that is not a chat-completions model. See
+`deepseek-v4-flash`). Live talk uses OpenAI Realtime (`gpt-realtime-2.1-mini`)
+when `EV_OPENAI_API_KEY` is set, else Grok Voice Think Fast 2.0 when
+`EV_XAI_API_KEY` is set — those are not chat-completions models. See
 `docs/VOICE.md` and `docs/ENVIRONMENT.md`.
 
 `EV_CHAT_PROVIDER=opencode` remains an optional route through the locally

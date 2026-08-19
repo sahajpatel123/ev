@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import FeatureGate, Integration
+from app.models import FeatureGate, Integration, IntegrationCredential
 from app.utils.text import utcnow
 
 REFUSED_PROTOCOLS: tuple[tuple[str, str, str], ...] = (
@@ -122,6 +122,63 @@ async def _integration_active(session: AsyncSession, adapter: str) -> bool:
     return row is not None
 
 
+async def _integration_ready(
+    session: AsyncSession,
+    adapter: str,
+    *,
+    required_scopes: tuple[str, ...] = (),
+) -> tuple[bool, str]:
+    """Report provider readiness, including credentials and granted scopes."""
+
+    row = (
+        await session.execute(
+            select(Integration)
+            .where(
+                Integration.adapter == adapter,
+                Integration.status == "active",
+            )
+            .order_by(Integration.created_at.asc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if row is None:
+        return False, f"{adapter} adapter is not installed."
+    scopes = {str(scope) for scope in (row.scopes or [])}
+    aliases = {
+        "calendar:read": {"calendar:read"},
+        "messaging:read": {"messaging:read", "message:read"},
+    }
+    missing = [
+        scope for scope in required_scopes
+        if not scopes.intersection(aliases.get(scope, {scope}))
+    ]
+    if missing:
+        return False, "Missing provider scope: " + ", ".join(missing) + "."
+    config = row.config if isinstance(row.config, dict) else {}
+    provider = str(config.get("provider") or "").strip().lower()
+    credential_required = adapter in {"calendar", "messaging", "phone", "mail", "contacts"} and provider not in {
+        "local",
+        "macos_life",
+        "device_proxy",
+    }
+    if credential_required:
+        credential = (
+            await session.execute(
+                select(IntegrationCredential.id)
+                .where(
+                    IntegrationCredential.integration_id == row.id,
+                    IntegrationCredential.kind == "oauth",
+                    IntegrationCredential.revoked_at.is_(None),
+                    IntegrationCredential.encrypted_access.is_not(None),
+                )
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if credential is None:
+            return False, "Provider credential is not configured; authorize the integration."
+    return True, "Provider adapter and required credentials are ready."
+
+
 async def protocol_sheet(session: AsyncSession) -> list[Protocol]:
     """Live capability list. Refused is always present even if gates are empty."""
 
@@ -154,29 +211,67 @@ async def protocol_sheet(session: AsyncSession) -> list[Protocol]:
         )
     else:
         items.append(Protocol("web_search", "Web search", "enabled", f"provider={search}"))
-        items.append(Protocol("weather", "Live weather", "enabled", "Open-Meteo / live search."))
+    # Weather is an executable Open-Meteo capability, not a web-search
+    # capability. Keep the human protocol sheet aligned with the runtime
+    # projection when EV_SEARCH_PROVIDER is intentionally disabled.
+    items.append(Protocol("weather", "Live weather", "enabled", "Open-Meteo."))
 
-    if await _integration_active(session, "calendar"):
-        items.append(Protocol("calendar", "Calendar / leave-by", "enabled", "Calendar adapter healthy."))
+    calendar_ready, calendar_detail = await _integration_ready(
+        session,
+        "calendar",
+        required_scopes=("calendar:read",),
+    )
+    if calendar_ready:
+        items.append(Protocol("calendar", "Calendar / leave-by", "enabled", calendar_detail))
     else:
         items.append(
             Protocol(
                 "calendar",
                 "Calendar / leave-by",
                 "needs_setup",
-                "Calendar adapter not installed.",
+                (
+                    calendar_detail
+                    + " macOS Calendar permission alone does not connect the backend calendar provider."
+                ),
             )
         )
 
-    if await _integration_active(session, "messaging"):
-        items.append(Protocol("messages", "Messages via life bridge", "enabled", "Messaging adapter active."))
+    messaging_ready, messaging_detail = await _integration_ready(
+        session,
+        "messaging",
+        required_scopes=("messaging:read",),
+    )
+    if messaging_ready:
+        items.append(Protocol("messages", "Messages via life bridge", "enabled", messaging_detail))
     else:
         items.append(
             Protocol(
                 "messages",
                 "Messages via life bridge",
                 "needs_setup",
-                "Messaging bridge unset (install messaging adapter).",
+                messaging_detail,
+            )
+        )
+
+    from app.ev.apps import find_macos_life_integration
+
+    apps_row = await find_macos_life_integration(session)
+    if apps_row is not None:
+        items.append(
+            Protocol(
+                "macos_apps",
+                "Open and close Mac apps",
+                "enabled",
+                "macos_life helper: apps.activate, apps.quit, open.url.",
+            )
+        )
+    else:
+        items.append(
+            Protocol(
+                "macos_apps",
+                "Open and close Mac apps",
+                "needs_setup",
+                "Connect the macos_life messaging bridge and EVLifeHelper.",
             )
         )
 
@@ -194,6 +289,14 @@ async def protocol_sheet(session: AsyncSession) -> list[Protocol]:
         )
 
     items.append(Protocol("hud", "HUD / lookout", "enabled", "Native glass via present."))
+    items.append(
+        Protocol(
+            "sight",
+            "Camera look and OCR",
+            "enabled",
+            "One consented frame: on-device OCR, object labels, enrolled matches only.",
+        )
+    )
 
     wheels_gate = await _gate(session, "training_wheels")
     if profile.training_wheels_completed_at is not None:
@@ -251,24 +354,325 @@ def speak_enabled(items: list[Protocol], *, limit: int = 8) -> str:
     )
 
 
+# This is deliberately a speech vocabulary, not a second capability registry.
+# The runtime projection supplies the names and states; these labels only keep
+# those names out of partner speech.
+_SPOKEN_CAPABILITY_LABELS = {
+    "get_weather": "weather",
+    "start_timer": "timers",
+    "set_reminder": "timers",
+    "list_timers": "timers",
+    "cancel_timer": "timers",
+    "search_memory": "memory",
+    "search_decisions": "memory",
+    "search_timeline": "memory",
+    "get_person": "memory",
+    "present": "HUD",
+    "calibrate": "diagnostics",
+    "search_web": "web search",
+    "web_search": "web search",
+    "calculate": "safe math",
+    "get_health_trends": "health trends",
+    "get_gear_status": "gear status",
+    "brief_me": "briefings",
+    "calendar_read": "calendar",
+    "calendar_add": "calendar",
+    "list_messages": "messages",
+    "send_message": "messages",
+    "list_mail": "mail",
+    "resolve_contact": "contacts",
+    "place_call": "calls",
+    "open_url": "open apps",
+    "open_app": "open apps",
+    "close_app": "close apps",
+    "home_status": "home status",
+    "home_act": "home actions",
+    "look": "camera look",
+    "camera_replay": "camera replay",
+}
+
+_SPOKEN_CAPABILITY_ORDER = (
+    "weather",
+    "timers",
+    "memory",
+    "HUD",
+    "diagnostics",
+    "web search",
+    "safe math",
+    "health trends",
+    "gear status",
+    "briefings",
+    "calendar",
+    "messages",
+    "mail",
+    "contacts",
+    "open apps",
+    "close apps",
+    "home status",
+    "calls",
+    "home actions",
+    "camera look",
+)
+
+
+def _manifest_lists(manifest: dict, *keys: str) -> tuple[list[dict], bool]:
+    """Read the first authoritative list without widening an empty projection."""
+
+    containers = [manifest]
+    runtime = manifest.get("runtime_manifest")
+    if isinstance(runtime, dict):
+        containers.append(runtime)
+    for container in containers:
+        for key in keys:
+            value = container.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)], True
+    return [], False
+
+
+def _spoken_projection_entries(manifest: dict) -> list[dict]:
+    entries, present = _manifest_lists(manifest, "live_tool_projection", "live_tools")
+    if present:
+        return entries
+    entries, present = _manifest_lists(manifest, "capabilities", "runtime_capabilities")
+    if present:
+        return entries
+    entries, _ = _manifest_lists(manifest, "realtime_tools", "tools")
+    return entries
+
+
+def _spoken_all_entries(manifest: dict) -> list[dict]:
+    entries, present = _manifest_lists(manifest, "capabilities", "runtime_capabilities")
+    if present:
+        return entries
+    return _spoken_projection_entries(manifest)
+
+
+def _manifest_names(manifest: dict, key: str) -> tuple[set[str], bool]:
+    containers = [manifest]
+    runtime = manifest.get("runtime_manifest")
+    if isinstance(runtime, dict):
+        containers.append(runtime)
+    for container in containers:
+        value = container.get(key)
+        if isinstance(value, list):
+            names = {
+                _spoken_name(item) if isinstance(item, dict) else str(item).strip()
+                for item in value
+            }
+            return {name for name in names if name}, True
+    return set(), False
+
+
+def _spoken_name(entry: dict) -> str:
+    return str(entry.get("name") or "").strip()
+
+
+def _is_spoken_ready(entry: dict) -> bool:
+    """Require the state fields when present; flat function payloads are accepted."""
+
+    if entry.get("availability") is not None and entry.get("availability") != "available":
+        return False
+    if entry.get("risk_class") in {"R4", "forbidden"}:
+        return False
+    for field in ("model_exposed", "realtime_eligible", "executable"):
+        if field in entry and entry.get(field) is not True:
+            return False
+    return bool(_spoken_name(entry))
+
+
+def _spoken_label(entry: dict, *, setup: bool = False) -> str | None:
+    name = _spoken_name(entry)
+    label = _SPOKEN_CAPABILITY_LABELS.get(name)
+    if label is None:
+        return None
+    if setup and label == "calendar":
+        return "calendar (Google)"
+    if setup and label == "messages":
+        return "messages (life helper)"
+    if setup and label in {"open apps", "close apps"}:
+        return f"{label} (life helper)"
+    return label
+
+
+def _spoken_labels(entries: list[dict], *, predicate, setup: bool = False) -> list[str]:
+    labels: set[str] = set()
+    try:
+        from app.ev.tool_select import LIVE_VOICE_TOOLS
+
+        allowed = LIVE_VOICE_TOOLS
+    except ImportError:  # pragma: no cover - keeps this pure for minimal tooling
+        allowed = frozenset(_SPOKEN_CAPABILITY_LABELS)
+    for entry in entries:
+        if _spoken_name(entry) not in allowed or not predicate(entry):
+            continue
+        label = _spoken_label(entry, setup=setup)
+        if label:
+            labels.add(label)
+    ordered: list[str] = []
+    for label in _SPOKEN_CAPABILITY_ORDER:
+        for candidate in (label, f"{label} (Google)", f"{label} (life helper)"):
+            if candidate in labels:
+                ordered.append(candidate)
+                break
+    return ordered
+
+
+def _ready_spoken_labels(manifest: dict) -> list[str]:
+    projected = _spoken_projection_entries(manifest)
+    executable_set, executable_names_present = _manifest_names(manifest, "executable_tools")
+    if executable_names_present:
+        projected = [item for item in projected if _spoken_name(item) in executable_set]
+    return _spoken_labels(projected, predicate=_is_spoken_ready)
+
+
+def spoken_ready_capability_line(manifest: dict | None) -> str:
+    current = manifest if isinstance(manifest, dict) else {}
+    ready = _ready_spoken_labels(current)
+    return "I can do now: " + (", ".join(ready) if ready else "nothing is verified yet") + "."
+
+
+def spoken_operator_sheet(
+    manifest: dict | None,
+    *,
+    include_refused: bool = False,
+    refused: list[Protocol] | None = None,
+) -> str:
+    """Render the current runtime projection as concise partner speech.
+
+    The sheet is intentionally derived from ``live_tool_projection`` for the
+    ready line. A registry entry with no current provider, device, or policy
+    state can therefore appear only as setup/confirmation context, never as a
+    callable capability.
+    """
+
+    current = manifest if isinstance(manifest, dict) else {}
+    all_entries = _spoken_all_entries(current)
+    ready_line = spoken_ready_capability_line(current)
+    setup = _spoken_labels(
+        all_entries,
+        setup=True,
+        predicate=lambda entry: entry.get("availability") in {"not_connected", "unavailable"},
+    )
+    confirmation = _spoken_labels(
+        all_entries,
+        predicate=lambda entry: (
+            entry.get("availability") == "available"
+            and (
+                entry.get("confirmation_required") is True
+                or entry.get("risk_class") in {"R3", "R4"}
+            )
+        ),
+    )
+
+    lines = [
+        ready_line,
+    ]
+    if setup:
+        lines.append("Needs a connection: " + ", ".join(setup) + ".")
+    if confirmation:
+        lines.append("Needs a tap on your phone: " + ", ".join(confirmation) + ".")
+    if include_refused:
+        refused_items = refused if refused is not None else _refused()
+        names = ", ".join(item.title for item in refused_items)
+        if names:
+            lines.append("I will not do: " + names + ".")
+    return " ".join(lines)
+
+
 async def capability_reply(
     session: AsyncSession,
     *,
     include_refused: bool = False,
+    actor: str | None = None,
+    device_id=None,
+    realtime_provider: str | None = None,
+    channel: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     items = await protocol_sheet(session)
+    from app.ev.policy import capability_manifest as build_manifest
+
+    runtime = await build_manifest(
+        session,
+        actor=actor,
+        device_id=device_id,
+        realtime_provider=realtime_provider,
+        channel=channel,
+        session_id=session_id,
+    )
+    runtime_entries = [
+        item for item in runtime.get("capabilities", []) if isinstance(item, dict)
+    ]
+    runtime_confirmation = [
+        item
+        for item in runtime_entries
+        if item.get("availability") == "available"
+        and (
+            item.get("confirmation") not in {None, "none"}
+            or item.get("confirmation_required") is True
+            or item.get("risk_class") in {"R3", "R4"}
+        )
+    ]
+    runtime_setup = [
+        item
+        for item in runtime_entries
+        if item.get("availability") in {"not_connected", "unavailable"}
+    ]
+    approved_tools = list(runtime.get("approved_tools") or [])
+    executable_tools = list(runtime.get("executable_tools") or [])
+    # Speech must only call a capability "ready" when the current actor,
+    # device, provider, and policy state say it is executable. Provider
+    # availability alone is not enough for confirmation-gated or unscoped
+    # capabilities.
     if include_refused:
         refused = [p for p in items if p.status == "refused"]
-        names = "; ".join(p.title for p in refused)
-        text = f"I refuse these: {names}."
+        text = spoken_operator_sheet(runtime, include_refused=True, refused=refused)
     else:
-        text = speak_enabled(items)
+        text = spoken_operator_sheet(runtime)
+        capability_error = str(runtime.get("capability_error") or "").strip()
+        if capability_error:
+            text += (
+                " Live capability projection failed. I won't claim an action is "
+                "ready until it recovers."
+            )
+    projected_value = runtime.get("live_tool_projection")
+    if not isinstance(projected_value, list):
+        projected_value = runtime.get("tools")
+    if not isinstance(projected_value, list):
+        projected_value = []
+    realtime_value = runtime.get("realtime_tools")
+    if not isinstance(realtime_value, list):
+        realtime_value = runtime.get("tools")
+    if not isinstance(realtime_value, list):
+        realtime_value = []
     hud = protocols_hud(items, include_refused=include_refused)
     return {
         "reply": text,
         "hud": hud,
         "protocols": protocols_to_dicts(items),
         "enabled": [p.title for p in enabled_tour(items)],
+        "runtime_manifest": runtime,
+        "runtime_capabilities": runtime_entries,
+        "live_tool_projection": list(projected_value),
+        "realtime_tools": list(realtime_value),
+        "realtime_tool_names": [
+            str(item.get("name"))
+            for item in realtime_value
+            if isinstance(item, dict) and item.get("name")
+        ],
+        "realtime_tool_choice": (runtime.get("realtime") or {}).get("tool_choice", "auto"),
+        "approved_tools": approved_tools,
+        "executable_tools": executable_tools,
+        "confirmation_tools": list(runtime.get("confirmation_tools") or []),
+        "current_device": runtime.get("current_device") or runtime.get("device"),
+        "current_provider": runtime.get("current_provider"),
+        "missing_setup": runtime_setup,
+        "requires_confirmation": runtime_confirmation,
+        "capability_error": runtime.get("capability_error"),
+        "capability_diagnostics": runtime.get("diagnostics") or {},
+        "session_id": runtime.get("session_id"),
+        "projection_timestamp": runtime.get("projection_timestamp"),
     }
 
 

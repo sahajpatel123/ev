@@ -8,6 +8,7 @@ import Foundation
 /// "Invalid or revoked device token".
 struct AppConfig {
     let baseURL: URL
+    let baseURLSource: String
     let apiKey: String
     let deviceID: String
 
@@ -18,11 +19,18 @@ struct AppConfig {
     ) {
         let fileValues = Self.loadDotEnv(fileManager: fileManager)
 
-        let urlString =
-            environment["EV_API_URL"]
-            ?? defaults.string(forKey: "EV_API_URL")
-            ?? fileValues["EV_API_URL"]
-            ?? "http://127.0.0.1:8000"
+        let urlSelection: (value: String, source: String)
+        if let value = environment["EV_API_URL"], !value.isEmpty {
+            urlSelection = (value, "process environment EV_API_URL")
+        } else if let value = defaults.string(forKey: "EV_API_URL"), !value.isEmpty {
+            urlSelection = (value, "UserDefaults EV_API_URL")
+        } else if let value = fileValues["EV_API_URL"], !value.isEmpty {
+            urlSelection = (value, "dotenv EV_API_URL")
+        } else {
+            urlSelection = ("http://127.0.0.1:8000", "built-in default")
+        }
+        let urlString = urlSelection.value
+        baseURLSource = urlSelection.source
         baseURL = URL(string: urlString) ?? URL(string: "http://127.0.0.1:8000")!
 
         // DO NOT CHANGE — see EVAuth/APIAuthKey.swift

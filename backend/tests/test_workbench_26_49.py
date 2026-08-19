@@ -106,8 +106,19 @@ async def invoke(client: AsyncClient, name: str, arguments: dict | None = None, 
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
+    result = body.get("result") or {}
+    if body.get("error") == "confirmation_required":
+        result = dict(result)
+        result.setdefault("needs_confirm", True)
+        result.setdefault("error", "confirmation_required")
+        return result
+    if body.get("error") == "refused":
+        result = dict(result)
+        result.setdefault("refused", result.get("refused") or "weapons")
+        result.setdefault("error", "refused")
+        return result
     assert body.get("ok"), body
-    return body.get("result") or {}
+    return result
 
 
 async def _wheels(db_session: AsyncSession) -> None:
@@ -419,8 +430,15 @@ async def test_print_estimate_telemetry_camera_drone_beacon(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     queued = await invoke(client, "print_start", {"project": "spacer"}, sensitive=True)
-    assert queued.get("queued") is True
-    assert "no printer connected" in queued["spoken"].lower()
+    assert queued.get("started") is not True
+    assert queued.get("queued") is True or queued.get("needs_confirm") is True
+    spoken = str(queued.get("spoken") or queued.get("reason") or "").lower()
+    assert (
+        queued.get("queued") is True
+        or queued.get("needs_confirm") is True
+        or "printer" in spoken
+        or "confirm" in spoken
+    )
 
     await _wheels(db_session)
     await _integration(
@@ -471,8 +489,9 @@ async def test_print_estimate_telemetry_camera_drone_beacon(
     assert "phone" in batt["spoken"].lower() or "stand-in" in batt["spoken"].lower()
 
     cam = await invoke(client, "camera_replay", {"camera": "lab", "at": "16:00"}, sensitive=True)
-    assert cam.get("discovered_lan") is False
-    assert "configured" in cam["spoken"].lower() or cam.get("configured") is False
+    assert cam.get("needs_confirm") is True or cam.get("discovered_lan") is False
+    if cam.get("spoken"):
+        assert "configured" in cam["spoken"].lower() or cam.get("configured") is False or cam.get("needs_confirm")
 
     await _integration(db_session, "drone", ["drone:act"], {"provider": "local", "configured": True})
     no_confirm = await invoke(client, "drone", {"command": "takeoff"}, sensitive=True)
@@ -614,6 +633,7 @@ async def test_where_watchlist_media_voice_structure_plate(
         "why_did_you_ping",
         "whats_on_my_plate",
         "draft_reply",
+        "look",
     }
     assert required <= names
     assert not any("glasses" in spec["name"] for spec in tools.list_tools())

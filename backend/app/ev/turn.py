@@ -212,6 +212,8 @@ async def execute_requested_actions(
     actor: str,
     allow_sensitive: bool,
     request_id: str | None = None,
+    device_id=None,
+    live_session_id: str | None = None,
 ) -> list[ActionReceipt]:
     """Dispatch write/life tools the owner asked for, before the LLM speaks."""
 
@@ -231,6 +233,9 @@ async def execute_requested_actions(
             actor=actor,
             allow_sensitive=allow_sensitive,
             request_id=request_id,
+            device_id=device_id,
+            live_session_id=live_session_id,
+            channel="voice" if actor == "voice" else "action",
         )
         if isinstance(response.result, dict):
             result = response.result

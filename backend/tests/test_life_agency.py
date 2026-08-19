@@ -21,6 +21,8 @@ LIFE_TOOL_NAMES = {
     "place_call",
     "list_mail",
     "open_url",
+    "open_app",
+    "close_app",
     "set_reminder",
 }
 

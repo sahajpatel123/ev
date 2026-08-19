@@ -436,6 +436,19 @@ async def live_grounding_text(message: str) -> str | None:
     provider = get_search_provider()
     if provider is None:
         return None
+    from app.ev.policy import evaluate_policy
+    from app.ev.tools import get_spec
+
+    decision = evaluate_policy(
+        "search_web",
+        spec=get_spec("search_web"),
+        actor="master",
+        channel="action",
+        arguments={"query": message, "limit": 3},
+        provider_connected=True,
+    )
+    if not decision.allowed:
+        return None
     try:
         results = await provider.search(message, limit=3)
     except Exception:  # noqa: BLE001 - grounding is best-effort

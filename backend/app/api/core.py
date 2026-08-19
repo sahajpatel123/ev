@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import secrets
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -122,6 +123,7 @@ from app.services.tool_loop import run_tool_loop
 from app.storage.object_store import get_object_store, sha256_bytes
 from app.utils.text import sha256_hex, utcnow
 
+PROCESS_STARTED_AT = datetime.now(UTC).isoformat()
 router = APIRouter(prefix="/v1")
 
 
@@ -182,6 +184,19 @@ async def _memory_out(session: AsyncSession, memory: Memory) -> MemoryOut:
 
 @router.get("/health")
 async def health() -> dict:
+    from app.voice.live.grok_voice import (
+        GROK_VOICE_TOOL_NAMES,
+        REALTIME_BRIDGE_SOURCE_FINGERPRINT,
+        REALTIME_BRIDGE_VERSION,
+        GrokVoiceBridge,
+        live_realtime_provider,
+    )
+
+    live = live_realtime_provider()
+    live_label = {
+        "openai": "openai-realtime",
+        "xai": "grok-voice",
+    }.get(live or "", "pipeline")
     return {
         "status": "ok",
         "app": settings.app_name,
@@ -212,8 +227,26 @@ async def health() -> dict:
         ],
         "providers": {
             "chat": settings.chat_provider,
+            "live": live_label,
             "embeddings": settings.embedding_provider,
             "storage": settings.object_store_backend,
+        },
+        "runtime": {
+            "pid": os.getpid(),
+            "started_at": PROCESS_STARTED_AT,
+            "realtime_bridge_version": REALTIME_BRIDGE_VERSION,
+            "realtime_bridge_source_fingerprint": REALTIME_BRIDGE_SOURCE_FINGERPRINT,
+            "realtime_supports_function_calls": bool(
+                GrokVoiceBridge.supports_function_calls
+            ),
+            "realtime_model": (
+                settings.openai_realtime_model
+                if live == "openai"
+                else settings.xai_voice_model
+                if live == "xai"
+                else None
+            ),
+            "realtime_allowlist": list(GROK_VOICE_TOOL_NAMES),
         },
     }
 
@@ -698,7 +731,13 @@ async def chat(
     if data.stream:
         thread = await assistant_mod.resolve_live_thread(session, data.conversation_id)
         return StreamingResponse(
-            _stream_chat(data, session, actor, thread_id=thread.id),
+            _stream_chat(
+                data,
+                session,
+                actor,
+                thread_id=thread.id,
+                device_id=ctx.device_id,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -706,7 +745,13 @@ async def chat(
         thread = await assistant_mod.resolve_live_thread(session, data.conversation_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Conversation not found") from None
-    pipeline = await run_chat_pipeline(data, session, actor, thread_id=thread.id)
+    pipeline = await run_chat_pipeline(
+        data,
+        session,
+        actor,
+        thread_id=thread.id,
+        device_id=ctx.device_id,
+    )
     return ChatResponse(
         reply=pipeline["result"].text,
         conversation_id=pipeline["conversation_id"],
@@ -726,7 +771,14 @@ def _sse(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
-async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, thread_id: UUID):
+async def _stream_chat(
+    data: ChatRequest,
+    session: AsyncSession,
+    actor: str,
+    *,
+    thread_id: UUID,
+    device_id: UUID | None = None,
+):
     """Yield SSE as the pipeline runs — never wait for the last stage first."""
 
     queue: asyncio.Queue[tuple[str, dict] | BaseException | None] = asyncio.Queue()
@@ -752,6 +804,7 @@ async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, 
                 session,
                 actor,
                 thread_id=thread_id,
+                device_id=device_id,
                 progress_callback=progress,
                 text_delta_callback=on_delta,
             )
@@ -822,6 +875,7 @@ async def run_chat_pipeline(
     actor: str,
     *,
     thread_id: UUID,
+    device_id: UUID | None = None,
     source: str = "chat",
     user_event_type: str = "message.user",
     event_privacy: PrivacyLevel = "normal",
@@ -1009,63 +1063,100 @@ async def run_chat_pipeline(
     perception_provenance: list[ProvenanceItem] = []
     chat_media_refs: list[dict] = []
     if data.attachment_id is not None:
-        try:
-            perception_event = await vision.analyze_attachment(
-                session,
-                data.attachment_id,
-                actor=actor,
-                permission=True,
-                allow_raw=data.allow_raw_media,
-                provider=provider,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Attachment not found") from None
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from None
-        perception_payload = perception_event.payload or {}
-        summary = str(perception_payload.get("summary") or "No summary")
-        perception_lines = [summary]
-        labels = perception_payload.get("labels") or []
-        if labels:
-            perception_lines.append(
-                "suggested labels: " + ", ".join(str(item.get("label")) for item in labels)
-            )
-        perception_lines.append(
-            "provenance: "
-            f"perception_event={perception_event.id}, "
-            f"attachment={perception_payload.get('attachment_id')}, "
-            f"source_event={perception_payload.get('source_event_id')}, "
-            f"provider={perception_payload.get('provider')}, "
-            f"raw_sent={perception_payload.get('raw_sent')}"
+        # Chat attachments are an explicit authenticated request, but the
+        # request itself still has to cross the camera policy boundary.  The
+        # confirmation is derived from the authenticated action, never from a
+        # body-level permission flag.
+        from app.ev.policy import Confirmation, authorize
+        from app.ev.tools import get_spec
+
+        camera_decision = await authorize(
+            session,
+            "camera_replay",
+            actor=actor,
+            arguments={"camera": str(data.attachment_id)},
+            device_id=device_id,
+            channel="action",
+            confirmation=Confirmation(
+                factor="http_approve",
+                confirmed=True,
+                target=str(data.attachment_id),
+                issued_at=utcnow(),
+            ),
+            spec=get_spec("camera_replay"),
+            provider_connected_override=True,
         )
-        perception_provenance = [
-            ProvenanceItem(
-                memory_id=None,
-                text=summary,
-                memory_type="perception",
-                score=float(perception_payload.get("confidence") or 0.0),
-                kind="perception",
-                attachment_id=data.attachment_id,
-                perception_event_id=perception_event.id,
-                source_event_id=(
-                    UUID(perception_payload["source_event_id"])
-                    if perception_payload.get("source_event_id")
-                    else None
-                ),
-                raw_sent=bool(perception_payload.get("raw_sent")),
+        if not camera_decision.allowed:
+            spoken = camera_decision.spoken or camera_decision.reason
+            perception_lines = [spoken]
+            perception_provenance = [
+                ProvenanceItem(
+                    memory_id=None,
+                    text=spoken,
+                    memory_type="perception",
+                    kind="perception",
+                    attachment_id=data.attachment_id,
+                    raw_sent=False,
+                )
+            ]
+        else:
+            try:
+                perception_event = await vision.analyze_attachment(
+                    session,
+                    data.attachment_id,
+                    actor=actor,
+                    permission=True,
+                    allow_raw=data.allow_raw_media,
+                    provider=provider,
+                )
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Attachment not found") from None
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from None
+            perception_payload = perception_event.payload or {}
+            summary = str(perception_payload.get("summary") or "No summary")
+            perception_lines = [summary]
+            labels = perception_payload.get("labels") or []
+            if labels:
+                perception_lines.append(
+                    "suggested labels: " + ", ".join(str(item.get("label")) for item in labels)
+                )
+            perception_lines.append(
+                "provenance: "
+                f"perception_event={perception_event.id}, "
+                f"attachment={perception_payload.get('attachment_id')}, "
+                f"source_event={perception_payload.get('source_event_id')}, "
+                f"provider={perception_payload.get('provider')}, "
+                f"raw_sent={perception_payload.get('raw_sent')}"
             )
-        ]
-        chat_media_refs = [
-            {
-                "kind": "perception",
-                "mime": perception_payload.get("content_type"),
-                "ref": str(perception_event.id),
-                "size_bytes": perception_payload.get("size_bytes"),
-                "attachment_id": str(data.attachment_id),
-                "raw": bool(perception_payload.get("raw_sent")),
-                "derived_text_used": bool(perception_payload.get("derived_text_used")),
-            }
-        ]
+            perception_provenance = [
+                ProvenanceItem(
+                    memory_id=None,
+                    text=summary,
+                    memory_type="perception",
+                    score=float(perception_payload.get("confidence") or 0.0),
+                    kind="perception",
+                    attachment_id=data.attachment_id,
+                    perception_event_id=perception_event.id,
+                    source_event_id=(
+                        UUID(perception_payload["source_event_id"])
+                        if perception_payload.get("source_event_id")
+                        else None
+                    ),
+                    raw_sent=bool(perception_payload.get("raw_sent")),
+                )
+            ]
+            chat_media_refs = [
+                {
+                    "kind": "perception",
+                    "mime": perception_payload.get("content_type"),
+                    "ref": str(perception_event.id),
+                    "size_bytes": perception_payload.get("size_bytes"),
+                    "attachment_id": str(data.attachment_id),
+                    "raw": bool(perception_payload.get("raw_sent")),
+                    "derived_text_used": bool(perception_payload.get("derived_text_used")),
+                }
+            ]
 
     who = assistant_mod.spoken_name(
         (await assistant_mod.get_profile(session)).nickname
@@ -1096,7 +1187,12 @@ async def run_chat_pipeline(
         ),
     )
 
-    local = await assistant_mod.handle_local_intent(session, data.message)
+    local = await assistant_mod.handle_local_intent(
+        session,
+        data.message,
+        actor=actor,
+        device_id=device_id,
+    )
     receipts: list = []
 
     if decision.blocked:
@@ -1201,6 +1297,7 @@ async def run_chat_pipeline(
             actor=actor,
             allow_sensitive=allow_sensitive,
             request_id=request_id,
+            device_id=data.device_id,
         )
         envelope.metadata["actions"] = [
             {"name": item.name, "ok": item.ok} for item in receipts
@@ -1774,9 +1871,13 @@ async def panic_device(
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
     """Revoke one device. Remaining trusted devices hear that it went offline."""
-    if ctx.is_device and ctx.device is not None and ctx.device.trust_level != "owner":
-        if ctx.device_id != device_id:
-            raise HTTPException(status_code=403, detail="Owner trust required to panic another device")
+    if (
+        ctx.is_device
+        and ctx.device is not None
+        and ctx.device.trust_level != "owner"
+        and ctx.device_id != device_id
+    ):
+        raise HTTPException(status_code=403, detail="Owner trust required to panic another device")
     from app.ev.fleet import panic_device as do_panic
 
     try:

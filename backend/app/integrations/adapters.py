@@ -226,6 +226,14 @@ class CalendarAdapter(Adapter):
                 "signals": derive_calendar_signals(events),
             }
         if action == "calendar.create_event":
+            if config.get("provider") == "http":
+                return await super().act(
+                    action=action,
+                    args=args,
+                    token=token,
+                    scopes=scopes,
+                    config=config,
+                )
             return await self._create_event(args, token, config)
         return await super().act(
             action=action,
@@ -299,6 +307,37 @@ class CalendarAdapter(Adapter):
             }
             if args.get("location"):
                 body["location"] = _text(args.get("location"), 512)
+            start_at = parse_event_time(str(args.get("start") or ""))
+            if start_at is not None:
+                from app.ev.resolve import is_near_duplicate
+
+                try:
+                    nearby = await self._fetch_google_events(
+                        token,
+                        config,
+                        since=start_at - timedelta(minutes=15),
+                        until=start_at + timedelta(minutes=15),
+                    )
+                except Exception:
+                    nearby = []
+                for existing in nearby:
+                    if is_near_duplicate(
+                        title=title,
+                        start=args.get("start"),
+                        other_title=str(existing.get("summary") or existing.get("title") or ""),
+                        other_start=existing.get("start") or existing.get("starts_at"),
+                    ):
+                        event_id = _text(existing.get("id"), 256)
+                        if event_id:
+                            return {
+                                "ok": True,
+                                "mode": "google",
+                                "id": event_id,
+                                "event_id": event_id,
+                                "duplicate": True,
+                                "evidence": {"id": event_id, "duplicate": True},
+                                "summary": title,
+                            }
             url = f"{provider.api_base}/calendars/{quote(calendar_id, safe='')}/events"
             async with _make_client() as client:
                 response = await client.post(
@@ -325,7 +364,43 @@ class CalendarAdapter(Adapter):
             }
         from uuid import uuid4
 
+        from app.ev.resolve import is_near_duplicate
+
+        events = config.setdefault("events", [])
+        if not isinstance(events, list):
+            events = []
+            config["events"] = events
+        start = str(args.get("start") or "")
+        for existing in events:
+            if not isinstance(existing, dict):
+                continue
+            if is_near_duplicate(
+                title=title,
+                start=start,
+                other_title=str(existing.get("summary") or existing.get("title") or ""),
+                other_start=existing.get("start"),
+            ):
+                event_id = str(existing.get("id") or "")
+                if event_id:
+                    return {
+                        "ok": True,
+                        "mode": "local",
+                        "id": event_id,
+                        "event_id": event_id,
+                        "duplicate": True,
+                        "evidence": {"id": event_id, "duplicate": True},
+                        "summary": title,
+                    }
         event_id = f"local-{uuid4()}"
+        events.append(
+            {
+                "id": event_id,
+                "summary": title,
+                "start": start,
+                "end": args.get("end"),
+                "location": args.get("location"),
+            }
+        )
         return {
             "ok": True,
             "mode": "local",
@@ -528,6 +603,19 @@ class GitHubAdapter(Adapter):
         config: dict,
     ) -> dict:
         if config.get("provider") != "github":
+            spec = self.action(action)
+            if spec is None:
+                raise KeyError(f"unknown action '{action}'")
+            if spec.scope not in scopes:
+                raise PermissionError(f"scope '{spec.scope}' is not granted")
+            if action == "github.list_issues":
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "issues": list(config.get("issues") or []),
+                    "simulated": True,
+                }
             return await super().act(
                 action=action,
                 args=args,
@@ -973,6 +1061,57 @@ class ContactsAdapter(Adapter):
         scopes: list[str],
         config: dict,
     ) -> dict:
+        provider = config.get("provider")
+        if provider in {None, "local"}:
+            spec = self.action(action)
+            if spec is None:
+                raise KeyError(f"unknown action '{action}'")
+            if spec.scope not in scopes:
+                raise PermissionError(f"scope '{spec.scope}' is not granted")
+            contacts = [item for item in (config.get("contacts") or []) if isinstance(item, dict)]
+            if action == "contacts.list":
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "contacts": contacts,
+                    "simulated": True,
+                }
+            if action == "contacts.resolve":
+                from app.ev.resolve import pick_unique
+
+                query = str(args.get("query") or args.get("name") or "")
+                match = pick_unique(
+                    query,
+                    contacts,
+                    labels=lambda row: [
+                        str(row.get("name") or ""),
+                        str(row.get("display_name") or ""),
+                        str(row.get("nickname") or ""),
+                        str(row.get("phone") or ""),
+                        str(row.get("email") or ""),
+                    ],
+                )
+                if match.status == "ambiguous":
+                    return {
+                        "ok": False,
+                        "mode": "local",
+                        "action": action,
+                        "error": "ambiguous",
+                        "contacts": list(match.candidates),
+                        "simulated": True,
+                    }
+                contact = match.item if match.unique else None
+                return {
+                    "ok": bool(contact),
+                    "mode": "local",
+                    "action": action,
+                    "contact": contact,
+                    "contacts": [contact] if contact else [],
+                    "simulated": True,
+                    "error": None if contact else "not_found",
+                }
+            raise KeyError(f"unknown action '{action}'")
         _life_read_only_action(provider=config.get("provider"))
         command = {
             "contacts.resolve": "contacts.resolve",
@@ -1004,6 +1143,29 @@ class PhoneAdapter(Adapter):
         config: dict,
     ) -> dict:
         provider = config.get("provider")
+        if provider in {None, "local"}:
+            spec = self.action(action)
+            if spec is None:
+                raise KeyError(f"unknown action '{action}'")
+            if spec.scope not in scopes:
+                raise PermissionError(f"scope '{spec.scope}' is not granted")
+            destination = str(args.get("to") or args.get("destination") or "")
+            opened = bool(config.get("simulate_opened"))
+            return {
+                "ok": opened,
+                "mode": "local",
+                "action": action,
+                "opened": opened,
+                "simulated": True,
+                "error": None if opened else "not_opened",
+                "delivery": {
+                    "evidence": {
+                        "opened": opened,
+                        "source": "local",
+                        "recipient": destination,
+                    }
+                },
+            }
         if provider == "macos_life":
             helper_args, policy = _life_action_common(
                 action=action,
@@ -1061,7 +1223,52 @@ class MailAdapter(Adapter):
         scopes: list[str],
         config: dict,
     ) -> dict:
-        _life_read_only_action(provider=config.get("provider"))
+        provider = config.get("provider")
+        if provider in {None, "local"}:
+            spec = self.action(action)
+            if spec is None:
+                raise KeyError(f"unknown action '{action}'")
+            if spec.scope not in scopes:
+                raise PermissionError(f"scope '{spec.scope}' is not granted")
+            if action == "mail.list":
+                items = list(config.get("inbox") or [])
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "items": items,
+                    "simulated": True,
+                }
+            if action == "mail.draft":
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "drafted": True,
+                    "sent": False,
+                    "simulated": True,
+                }
+            if action == "mail.send":
+                if not args.get("confirm"):
+                    return {
+                        "ok": False,
+                        "mode": "local",
+                        "sent": False,
+                        "error": "confirm_required",
+                    }
+                from uuid import uuid4
+
+                message_id = f"local-{uuid4()}"
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "sent": True,
+                    "simulated": True,
+                    "message_id": message_id,
+                }
+            raise KeyError(f"unknown action '{action}'")
+        _life_read_only_action(provider=provider)
         command = {
             "mail.list": "mail.list",
             "mail.send": "mail.send",
@@ -1557,6 +1764,19 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
                         "confirm": {"type": "boolean"},
                     },
                     "required": ["to", "body"],
+                },
+            ),
+            AdapterAction(
+                "mail.draft",
+                "mail:act",
+                "Save a mail draft without sending",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "maxLength": 256},
+                        "subject": {"type": "string", "maxLength": 256},
+                        "body": {"type": "string", "maxLength": 4000},
+                    },
                 },
             ),
         ),

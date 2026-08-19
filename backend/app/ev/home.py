@@ -8,6 +8,14 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ev.actuator import (
+    DEFAULT_TIMEOUT_SECONDS,
+    evidence_base,
+    record_actuator,
+    with_retry,
+    with_timeout,
+)
+from app.ev.resolve import Match, ambiguous_spoken, candidate_names, pick_unique
 from app.models import HomeEntity, Integration
 from app.services.access_log import log_access
 from app.utils.text import utcnow
@@ -119,9 +127,14 @@ async def load_home_provider(session: AsyncSession) -> tuple[str, dict]:
     return token, config
 
 
+def _ha_ready(config: dict, token: str) -> bool:
+    provider = str(config.get("provider") or "").lower()
+    return provider == "homeassistant" and bool(str(config.get("base_url") or "").strip()) and bool(token)
+
+
 async def ha_configured(session: AsyncSession) -> bool:
-    _token, config = await load_home_provider(session)
-    return str(config.get("provider") or "").lower() == "homeassistant"
+    token, config = await load_home_provider(session)
+    return _ha_ready(config, token)
 
 
 async def ensure_inventory(session: AsyncSession) -> list[HomeEntity]:
@@ -145,23 +158,27 @@ async def ensure_inventory(session: AsyncSession) -> list[HomeEntity]:
     return created
 
 
-async def resolve_entity(session: AsyncSession, name_or_id: str) -> HomeEntity | None:
+def _entity_labels(row: HomeEntity) -> list[str]:
+    aliases = (row.attributes or {}).get("aliases") or []
+    labels = [row.entity_id, row.name, *(str(alias) for alias in aliases)]
+    if row.area:
+        labels.append(f"{row.area} {row.domain}")
+        labels.append(f"{row.area} {row.name}")
+    return labels
+
+
+async def match_home_entity(session: AsyncSession, name_or_id: str) -> Match[HomeEntity]:
     await ensure_inventory(session)
     raw = (name_or_id or "").strip()
     if not raw:
-        return None
-    lowered = raw.lower()
+        return Match(status="none", item=None, score=0.0)
     rows = list((await session.execute(select(HomeEntity))).scalars().all())
-    for row in rows:
-        if row.entity_id.lower() == lowered or row.name.lower() == lowered:
-            return row
-    for row in rows:
-        if lowered in row.name.lower() or lowered in row.entity_id.lower():
-            return row
-        aliases = (row.attributes or {}).get("aliases") or []
-        if any(lowered == str(alias).lower() for alias in aliases):
-            return row
-    return None
+    return pick_unique(raw, rows, labels=_entity_labels)
+
+
+async def resolve_entity(session: AsyncSession, name_or_id: str) -> HomeEntity | None:
+    match = await match_home_entity(session, name_or_id)
+    return match.item if match.unique else None
 
 
 def entity_dict(row: HomeEntity) -> dict:
@@ -177,7 +194,9 @@ def entity_dict(row: HomeEntity) -> dict:
 
 async def home_status(session: AsyncSession, area: str | None = None) -> dict:
     await ensure_inventory(session)
-    simulated = not await ha_configured(session)
+    token, config = await load_home_provider(session)
+    provider = str(config.get("provider") or "local").lower()
+    simulated = provider != "homeassistant"
     rows = list((await session.execute(select(HomeEntity))).scalars().all())
     if area:
         wanted = area.strip().lower()
@@ -186,24 +205,72 @@ async def home_status(session: AsyncSession, area: str | None = None) -> dict:
             for row in rows
             if (row.area or "").lower() == wanted or wanted in (row.name or "").lower()
         ]
-    spoken = (
-        "This is a simulated home."
-        if simulated
-        else f"{len(rows)} home entities."
-    )
-    if rows and simulated:
-        bits = [f"{row.name} is {row.state}" for row in rows[:6]]
-        spoken = "Simulated home. " + "; ".join(bits) + "."
-    elif rows:
-        bits = [f"{row.name} is {row.state}" for row in rows[:6]]
-        spoken = "; ".join(bits) + "."
-    return {
+    observed = simulated
+    stale = False
+    error = None
+    source = "local"
+    if provider == "homeassistant":
+        source = "homeassistant"
+        if not _ha_ready(config, token):
+            observed = False
+            stale = True
+            error = "not_connected"
+        else:
+            refreshed = await with_timeout(
+                _ha_refresh_rows(
+                    session,
+                    rows,
+                    token=token,
+                    base_url=str(config.get("base_url") or ""),
+                ),
+                seconds=DEFAULT_TIMEOUT_SECONDS,
+                spoken="Home Assistant timed out. Showing last known state.",
+            )
+            if isinstance(refreshed, dict) and refreshed.get("error") in {"timeout", "cancelled"}:
+                observed = False
+                stale = True
+                error = str(refreshed.get("error"))
+            elif isinstance(refreshed, dict) and refreshed.get("ok") is False:
+                observed = False
+                stale = True
+                error = str(refreshed.get("error") or "provider_error")
+            else:
+                observed = True
+                rows = list((await session.execute(select(HomeEntity))).scalars().all())
+                if area:
+                    wanted = area.strip().lower()
+                    rows = [
+                        row
+                        for row in rows
+                        if (row.area or "").lower() == wanted or wanted in (row.name or "").lower()
+                    ]
+    bits = [f"{row.name} is {row.state}" for row in rows[:6]]
+    if simulated:
+        spoken = "Simulated home. " + ("; ".join(bits) + "." if bits else "No entities.")
+    elif stale:
+        prefix = "Home Assistant is not configured." if error == "not_connected" else "Home Assistant did not respond."
+        spoken = prefix + (" Last known: " + "; ".join(bits) + "." if bits else "")
+    else:
+        spoken = "; ".join(bits) + "." if bits else f"{len(rows)} home entities."
+    result = {
         "ok": True,
         "simulated": simulated,
+        "stale": stale,
         "spoken": spoken,
         "count": len(rows),
         "entities": [entity_dict(row) for row in rows],
+        "evidence": evidence_base(
+            source=source,
+            accepted=True,
+            observed=observed,
+            entity_count=len(rows),
+            stale=stale,
+        ),
     }
+    if error:
+        result["error"] = error
+        result["evidence"]["error"] = error
+    return result
 
 
 def _states_match(domain: str, requested: str, actual: str) -> bool:
@@ -227,6 +294,56 @@ async def _apply_local(row: HomeEntity, action: str) -> str:
     return target
 
 
+class TransientHomeError(Exception):
+    """Retryable Home Assistant transport or gateway failure."""
+
+
+def _ha_headers(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+async def _ha_request_json(
+    method: str,
+    url: str,
+    *,
+    token: str,
+    json: dict | None = None,
+) -> dict | list:
+    async def once() -> dict | list:
+        headers = _ha_headers(token)
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT_SECONDS) as client:
+            if method.upper() == "GET":
+                response = await client.get(url, headers=headers)
+            else:
+                response = await client.post(url, headers=headers, json=json)
+            status = getattr(response, "status_code", 200)
+            if status in {429, 502, 503, 504}:
+                raise TransientHomeError(f"homeassistant status {status}")
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, (dict, list)):
+                return {}
+            return payload
+
+    return await with_retry(
+        once,
+        retry_on=(TransientHomeError, httpx.TransportError, httpx.TimeoutException),
+    )
+
+
+async def _ha_get_state(*, entity_id: str, token: str, base_url: str) -> dict:
+    payload = await _ha_request_json(
+        "GET",
+        f"{base_url.rstrip('/')}/api/states/{entity_id}",
+        token=token,
+    )
+    state = ""
+    raw = payload if isinstance(payload, dict) else {}
+    if isinstance(payload, dict):
+        state = str(payload.get("state") or "")
+    return {"state": state, "raw": raw, "accepted": True}
+
+
 async def _ha_act(
     *,
     entity_id: str,
@@ -239,23 +356,36 @@ async def _ha_act(
     if service is None:
         raise ValueError(f"unsupported homeassistant action {domain}.{action}")
     svc_domain, svc_name = service
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
     root = base_url.rstrip("/")
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        posted = await client.post(
-            f"{root}/api/services/{svc_domain}/{svc_name}",
-            headers=headers,
-            json={"entity_id": entity_id},
-        )
-        posted.raise_for_status()
-        state_resp = await client.get(
-            f"{root}/api/states/{entity_id}",
-            headers=headers,
-        )
-        state_resp.raise_for_status()
-        payload = state_resp.json()
-    new_state = str(payload.get("state") or "")
-    return {"state": new_state, "raw": payload}
+    await _ha_request_json(
+        "POST",
+        f"{root}/api/services/{svc_domain}/{svc_name}",
+        token=token,
+        json={"entity_id": entity_id},
+    )
+    observed = await _ha_get_state(entity_id=entity_id, token=token, base_url=base_url)
+    return {"state": observed.get("state") or "", "raw": observed.get("raw") or {}, "accepted": True}
+
+
+async def _ha_refresh_rows(
+    session: AsyncSession,
+    rows: list[HomeEntity],
+    *,
+    token: str,
+    base_url: str,
+) -> dict:
+    updated = 0
+    for row in rows:
+        if row.domain != "light":
+            continue
+        snapshot = await _ha_get_state(entity_id=row.entity_id, token=token, base_url=base_url)
+        state = str(snapshot.get("state") or "")
+        if state:
+            row.state = state
+            row.updated_at = utcnow()
+            updated += 1
+    await session.flush()
+    return {"ok": True, "updated": updated}
 
 
 async def home_act(
@@ -270,7 +400,17 @@ async def home_act(
 ) -> dict:
     from app.ev.actions import autonomy_mode
 
-    row = await resolve_entity(session, entity)
+    match = await match_home_entity(session, entity)
+    if match.status == "ambiguous":
+        names = candidate_names(match.candidates, name_of=lambda row: row.name)
+        kind = "light" if all(row.domain == "light" for row in match.candidates) else "device"
+        return {
+            "ok": False,
+            "error": "ambiguous",
+            "candidates": [entity_dict(row) for row in match.candidates],
+            "spoken": ambiguous_spoken(kind, names),
+        }
+    row = match.item
     if row is None:
         return {
             "ok": False,
@@ -299,28 +439,29 @@ async def home_act(
             token = loaded_token
     config = config or {}
     provider = str(config.get("provider") or "local").lower()
+    target_state = _TARGET_STATE.get((row.domain, canonical), canonical)
+    skipped_command = False
+    accepted = False
     new_state: str
     if provider == "homeassistant":
         base_url = str(config.get("base_url") or "").strip()
         if not base_url:
             return {
                 "ok": False,
-                "error": "missing_base_url",
+                "error": "not_connected",
                 "spoken": "Home Assistant is not configured.",
             }
         if not token:
             return {
                 "ok": False,
-                "error": "missing_token",
+                "error": "not_connected",
                 "spoken": "Home Assistant token is not in the vault.",
             }
         try:
-            result = await _ha_act(
-                entity_id=row.entity_id,
-                domain=row.domain,
-                action=canonical,
-                token=token,
-                base_url=base_url,
+            live = await with_timeout(
+                _ha_get_state(entity_id=row.entity_id, token=token, base_url=base_url),
+                seconds=DEFAULT_TIMEOUT_SECONDS,
+                spoken="Home Assistant timed out. I will not claim the light changed.",
             )
         except Exception as exc:  # noqa: BLE001 - adapter boundary
             return {
@@ -328,19 +469,68 @@ async def home_act(
                 "error": "provider_error",
                 "spoken": f"Home Assistant failed: {exc}",
             }
-        new_state = str(result.get("state") or "")
-        row.state = new_state or row.state
-        row.updated_at = utcnow()
+        if isinstance(live, dict) and live.get("error") in {"timeout", "cancelled"}:
+            return live
+        live_state = str((live or {}).get("state") or "")
+        if live_state:
+            row.state = live_state
+            row.updated_at = utcnow()
+        if _states_match(row.domain, canonical, row.state):
+            skipped_command = True
+            accepted = True
+            new_state = row.state
+        else:
+            try:
+                result = await with_timeout(
+                    _ha_act(
+                        entity_id=row.entity_id,
+                        domain=row.domain,
+                        action=canonical,
+                        token=token,
+                        base_url=base_url,
+                    ),
+                    seconds=DEFAULT_TIMEOUT_SECONDS,
+                    spoken="Home Assistant timed out. I will not claim the light changed.",
+                )
+            except Exception as exc:  # noqa: BLE001 - adapter boundary
+                return {
+                    "ok": False,
+                    "error": "provider_error",
+                    "spoken": f"Home Assistant failed: {exc}",
+                }
+            if isinstance(result, dict) and result.get("error") in {"timeout", "cancelled"}:
+                return result
+            new_state = str((result or {}).get("state") or "")
+            accepted = bool((result or {}).get("accepted"))
+            row.state = new_state or row.state
+            row.updated_at = utcnow()
     else:
-        if config.get("simulate_mismatch"):
+        if _states_match(row.domain, canonical, row.state) and not config.get("simulate_mismatch"):
+            skipped_command = True
+            accepted = True
+            new_state = row.state
+        elif config.get("simulate_mismatch"):
+            accepted = True
             new_state = row.state
         else:
             await _apply_local(row, canonical)
             await session.flush()
             refreshed = await session.get(HomeEntity, row.id)
             new_state = refreshed.state if refreshed is not None else row.state
+            accepted = True
 
     matched = _states_match(row.domain, canonical, new_state)
+    now = utcnow()
+    evidence = evidence_base(
+        source="homeassistant" if provider == "homeassistant" else "local",
+        accepted=accepted,
+        observed=matched,
+        now=now,
+        entity_id=row.entity_id,
+        accepted_state=target_state,
+        observed_state=new_state,
+        idempotent=skipped_command,
+    )
     await log_access(
         session,
         actor=actor,
@@ -354,12 +544,13 @@ async def home_act(
             "new_state": new_state,
             "matched": matched,
             "provider": provider,
+            "accepted": accepted,
         },
     )
     await session.flush()
     simulated = provider != "homeassistant"
     if not matched:
-        return {
+        result = {
             "ok": False,
             "error": "state_mismatch",
             "spoken": f"I asked to {canonical} {row.name} but it reads {new_state}.",
@@ -367,18 +558,33 @@ async def home_act(
             "requested": canonical,
             "new_state": new_state,
             "simulated": simulated,
+            "evidence": evidence,
         }
+        await record_actuator(
+            session, name="home_act", actor=actor, key=row.entity_id, result=result, target=row.name
+        )
+        return result
     spoken = f"{row.name} is now {new_state}."
     if simulated:
         spoken = f"Simulated home. {spoken}"
-    return {
+    if skipped_command:
+        spoken = f"{row.name} is already {new_state}."
+        if simulated:
+            spoken = f"Simulated home. {spoken}"
+    result = {
         "ok": True,
         "spoken": spoken,
         "entity": entity_dict(row),
         "requested": canonical,
         "new_state": new_state,
         "simulated": simulated,
+        "idempotent_replay": skipped_command,
+        "evidence": evidence,
     }
+    await record_actuator(
+        session, name="home_act", actor=actor, key=f"{row.entity_id}:{canonical}", result=result, target=row.name
+    )
+    return result
 
 
 async def adapter_act(
@@ -516,6 +722,14 @@ def _memory_act(action: str, args: dict, config: dict) -> dict:
         "requested": canonical,
         "new_state": row["state"],
         "simulated": True,
+        "evidence": {
+            "source": "local",
+            "accepted": True,
+            "observed": True,
+            "accepted_state": target,
+            "observed_state": row["state"],
+            "entity_id": row["entity_id"],
+        },
     }
 
 
@@ -570,3 +784,42 @@ async def sync_from_ha(
         count += 1
     await session.flush()
     return count
+
+
+async def apply_observed_updates(session: AsyncSession, events: list) -> int:
+    """Apply HA webhook state onto owned inventory. Unknown devices are ignored."""
+
+    updated = 0
+    for event in events:
+        event_type = getattr(event, "event_type", None)
+        payload = getattr(event, "payload", None)
+        if isinstance(event, dict):
+            event_type = event.get("event_type")
+            payload = event.get("payload")
+        if event_type not in {None, "home.device.updated"}:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        device = str(payload.get("entity_id") or payload.get("device_id") or payload.get("device") or "").strip()
+        state = payload.get("state")
+        if not device or state is None:
+            continue
+        row = (
+            await session.execute(select(HomeEntity).where(HomeEntity.entity_id == device))
+        ).scalar_one_or_none()
+        if row is None:
+            match = await match_home_entity(session, device)
+            row = match.item if match.unique else None
+        if row is None:
+            continue
+        row.state = str(state)
+        attrs = payload.get("attributes")
+        if isinstance(attrs, dict):
+            merged = dict(row.attributes or {})
+            merged.update(attrs)
+            row.attributes = merged
+        row.updated_at = utcnow()
+        updated += 1
+    if updated:
+        await session.flush()
+    return updated

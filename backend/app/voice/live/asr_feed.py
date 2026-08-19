@@ -352,11 +352,13 @@ class LiveAsrFeed:
                 name="ev-live-asr-final",
             )
 
-    def abort(self) -> None:
+    def abort(self, *, clear_pre_roll: bool = False) -> None:
         """The user interrupted / a new turn started: drop in-flight work."""
 
         self._abort_workers()
         self._buffer.clear()
+        if clear_pre_roll:
+            self._pre_roll.clear()
         self._speech_active = False
         self._last_partial = ""
 

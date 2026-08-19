@@ -83,8 +83,20 @@ async def weather_note(place: str | None = None) -> str | None:
     """Overlay existing get_weather / Open-Meteo. Do not add a provider."""
 
     try:
+        from app.ev.policy import evaluate_policy
+        from app.ev.tools import get_spec
         from app.search.live import weather_results
     except Exception:
+        return None
+    decision = evaluate_policy(
+        "get_weather",
+        spec=get_spec("get_weather"),
+        actor="master",
+        channel="action",
+        arguments={"place": place or "home"},
+        provider_connected=True,
+    )
+    if not decision.allowed:
         return None
     query = f"weather in {place}" if place else "weather"
     try:

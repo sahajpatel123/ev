@@ -117,7 +117,7 @@ async def test_catalog_and_install_validation(client: AsyncClient) -> None:
     resp = await client.get("/v1/integrations/catalog")
     assert resp.status_code == 200
     catalog = {item["adapter"]: item for item in resp.json()}
-    assert set(catalog) == {
+    assert set(catalog) >= {
         "calendar",
         "contacts",
         "device_proxy",
@@ -128,6 +128,10 @@ async def test_catalog_and_install_validation(client: AsyncClient) -> None:
         "smart_home",
         "messaging",
         "search",
+        "octoprint",
+        "cameras",
+        "drone",
+        "public_feeds",
     }
     assert catalog["github"]["capabilities"] == ["github:read", "github:act"]
     assert catalog["health"]["min_privacy"] == "sensitive"

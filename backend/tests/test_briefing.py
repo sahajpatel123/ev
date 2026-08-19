@@ -15,7 +15,8 @@ from app.ev.tools import list_tools
 
 def test_identity_names_evie_and_capabilities() -> None:
     block = identity_block("EV", "the owner's personal AI")
-    assert "EVIE" in block
+    assert "You are E V" in block
+    assert "never E-y or Evie" in block
     assert "DeepSeek" in block
     assert "present" in block
     assert "weather" in block.lower()
@@ -24,7 +25,7 @@ def test_identity_names_evie_and_capabilities() -> None:
 def test_select_tool_covers_assistant_range() -> None:
     assert select_tool("what's the weather in Surat?").selected == "get_weather"
     assert select_tool("what is the capital of France").selected == "search_web"
-    assert select_tool("what's on my calendar today").selected == "get_upcoming_alerts"
+    assert select_tool("what's on my calendar today").selected == "calendar_read"
     assert select_tool("when should I leave").selected == "get_upcoming_alerts"
     assert select_tool("how was my sleep this week?").selected == "get_health_trends"
     assert select_tool("what's 14% of 3500").selected == "calculate"

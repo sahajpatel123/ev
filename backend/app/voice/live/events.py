@@ -61,6 +61,47 @@ class StateEvent(LiveEvent):
 
 
 @dataclass
+class CameraRequestEvent(LiveEvent):
+    """A target-bound request for a camera provider to resolve explicitly."""
+
+    action: str
+    device_id: str | None = None
+
+    def __init__(
+        self,
+        *,
+        at_ms: int,
+        action: str,
+        device_id: str | None = None,
+    ) -> None:
+        super().__init__("camera_request", at_ms)
+        self.action = action
+        self.device_id = device_id
+
+
+@dataclass
+class CameraStateEvent(LiveEvent):
+    """Provider-reported camera state; clients may present this as fact."""
+
+    camera_state: dict = field(default_factory=dict)
+
+    def __init__(self, *, at_ms: int, camera_state: dict) -> None:
+        super().__init__("camera_state", at_ms)
+        self.camera_state = camera_state
+
+
+@dataclass
+class RealtimeDiagnosticsEvent(LiveEvent):
+    """Safe provider/session diagnostics for developer-facing clients."""
+
+    diagnostics: dict = field(default_factory=dict)
+
+    def __init__(self, *, at_ms: int, diagnostics: dict) -> None:
+        super().__init__("realtime_diagnostics", at_ms)
+        self.diagnostics = diagnostics
+
+
+@dataclass
 class PartialTranscriptEvent(LiveEvent):
     """Incremental ASR hypothesis while the human is still speaking."""
 
@@ -139,6 +180,7 @@ class TtsChunkEvent(LiveEvent):
     audio_ref: str | None = None
     content_type: str | None = None
     duration_ms: int | None = None
+    sample_rate: int | None = None
     provider: str = "dev"
 
     def __init__(
@@ -151,6 +193,7 @@ class TtsChunkEvent(LiveEvent):
         audio_ref: str | None = None,
         content_type: str | None = None,
         duration_ms: int | None = None,
+        sample_rate: int | None = None,
         provider: str = "dev",
     ) -> None:
         super().__init__("tts_chunk", at_ms)
@@ -160,6 +203,7 @@ class TtsChunkEvent(LiveEvent):
         self.audio_ref = audio_ref
         self.content_type = content_type
         self.duration_ms = duration_ms
+        self.sample_rate = sample_rate
         self.provider = provider
 
 
@@ -172,6 +216,8 @@ class ReplyEvent(LiveEvent):
     model: str | None = None
     context_tokens: int = 0
     style: dict = field(default_factory=dict)
+    device_id: str | None = None
+    tts_device_id: str | None = None
 
     def __init__(
         self,
@@ -182,6 +228,8 @@ class ReplyEvent(LiveEvent):
         model: str | None = None,
         context_tokens: int = 0,
         style: dict | None = None,
+        device_id: str | None = None,
+        tts_device_id: str | None = None,
     ) -> None:
         super().__init__("reply", at_ms)
         self.text = text
@@ -189,6 +237,8 @@ class ReplyEvent(LiveEvent):
         self.model = model
         self.context_tokens = context_tokens
         self.style = style or {}
+        self.device_id = device_id
+        self.tts_device_id = tts_device_id
 
 
 @dataclass
@@ -228,3 +278,32 @@ class ErrorEvent(LiveEvent):
         self.code = code
         self.message = message
         self.fatal = fatal
+
+    def as_dict(self) -> dict[str, Any]:
+        out = super().as_dict()
+        out["text"] = self.message
+        return out
+
+
+@dataclass
+class HudEvent(LiveEvent):
+    """A HUD card the client should render now (progress, evidence, hold)."""
+
+    card: dict = field(default_factory=dict)
+    kind: str = "card"
+
+    def __init__(
+        self,
+        *,
+        at_ms: int,
+        card: dict | None = None,
+        kind: str = "card",
+    ) -> None:
+        super().__init__("hud", at_ms)
+        self.card = card or {}
+        self.kind = kind
+
+    def as_dict(self) -> dict[str, Any]:
+        out = super().as_dict()
+        out["hud"] = self.card
+        return out

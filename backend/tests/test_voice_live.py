@@ -351,6 +351,26 @@ async def test_backchannel_synthesis_does_not_hold_the_floor() -> None:
     session.close()
 
 
+async def test_backchannel_is_cancelled_at_a_new_turn_boundary() -> None:
+    """A delayed listening cue must not speak after the owner starts a turn."""
+
+    clock = ManualClock(0)
+    engine = LiveEngine(clock_ms=clock)
+    synth = _BlockingSynthesizer()
+    session = LiveSession(engine=engine, synthesizer=synth)
+    await session.handle_client({"type": "speech", "active": True})
+    clock.advance(2000)
+    await session.tick()
+    await asyncio.wait_for(synth.started.wait(), timeout=1)
+
+    await session.emit(
+        FinalTranscriptEvent(at_ms=session.now(), text="new question", provider="text")
+    )
+    await asyncio.wait_for(synth.cancelled.wait(), timeout=1)
+    assert [event.type for event in session.outbound._queue] == ["final_transcript"]
+    session.close()
+
+
 async def test_live_session_barge_in_cancels_filler_before_reply() -> None:
     synth = _BlockingSynthesizer()
     replied = asyncio.Event()

@@ -6,17 +6,17 @@ Tools register through ``app.ev.tools`` and share one HUD schema
 
 from __future__ import annotations
 
+import contextlib
 import re
-from datetime import timedelta
 from typing import Any
-from uuid import UUID
 from urllib.parse import urlparse
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.ev.assistant import last_calibration_report, malfunction_line, worst_check
+from app.ev.assistant import worst_check
 from app.ev.hud import validate_hud
 from app.models import (
     Alert,
@@ -321,12 +321,17 @@ async def push_status_hud(
 # --------------------------------------------------------------------------- #
 
 
-async def handle_research(session: AsyncSession, question: str) -> dict:
+async def handle_research(
+    session: AsyncSession,
+    question: str,
+    *,
+    actor: str = "workbench",
+) -> dict:
     from app.ev.research import ResearchService, list_notes
     from app.memory.retrieval import Retriever
     from app.search.providers import get_search_provider
 
-    svc = ResearchService(session, actor="workbench")
+    svc = ResearchService(session, actor=actor)
     research = await svc.create_session(ResearchSessionCreate(question=question))
     retriever = Retriever(session)
     memory_hits = await retriever.search(question, k=5, access="model")
@@ -345,7 +350,7 @@ async def handle_research(session: AsyncSession, question: str) -> dict:
         if get_search_provider() is None:
             raise KeyError("web search is disabled")
         await svc.web_search(research.id, question, limit=5)
-    except KeyError as exc:
+    except (KeyError, PermissionError) as exc:
         memory_only = True
         web_error = str(exc)
     notes = await list_notes(session, research.id)
@@ -365,10 +370,8 @@ async def handle_research(session: AsyncSession, question: str) -> dict:
     else:
         spoken = f"{answer} according to {n} sources."
     conclusion = spoken
-    try:
+    with contextlib.suppress(ValueError):
         await svc.conclude(research.id, ResearchConclude(conclusion=conclusion[:4000]))
-    except ValueError:
-        pass
     hud = hud_card(
         "Research",
         spoken,
@@ -498,7 +501,13 @@ def refuse_private_person_lookup(query: str, kind: str) -> bool:
     return bool(PRIVATE_PERSON_PII_RE.search(query or ""))
 
 
-async def handle_public_lookup(session: AsyncSession, query: str, kind: str = "org") -> dict:
+async def handle_public_lookup(
+    session: AsyncSession,
+    query: str,
+    kind: str = "org",
+    *,
+    actor: str = "workbench",
+) -> dict:
     from app.search.providers import get_search_provider
 
     if refuse_private_person_lookup(query, kind):
@@ -514,10 +523,21 @@ async def handle_public_lookup(session: AsyncSession, query: str, kind: str = "o
     citations: list[dict] = []
     provider = get_search_provider()
     if provider is not None:
-        results = await provider.search(query, limit=5)
-        for item in results:
-            if item.url and host_allowed(item.url):
-                citations.append({"title": item.title, "url": item.url})
+        from app.ev.policy import authorize
+
+        decision = await authorize(
+            session,
+            "search_web",
+            actor=actor,
+            channel="action",
+            arguments={"query": query, "limit": 5},
+            provider_connected_override=True,
+        )
+        if decision.allowed:
+            results = await provider.search(query, limit=5)
+            for item in results:
+                if item.url and host_allowed(item.url):
+                    citations.append({"title": item.title, "url": item.url})
     wiki = "https://en.wikipedia.org/wiki/" + query.strip().replace(" ", "_")
     if not any(c["url"] == wiki for c in citations):
         citations.append({"title": f"Wikipedia: {query}", "url": wiki})
@@ -749,6 +769,8 @@ async def maybe_morning_brief_callout(session: AsyncSession) -> dict | None:
         return None
     fp = f"morning-brief:{today}"
     decision = await may_speak_proactive(session, emergency=False, fingerprint=fp)
+    if not decision.allowed:
+        return None
     text = (
         f"Morning brief: readiness {brief.get('readiness')} ({brief.get('band')}). "
         f"{brief.get('recommendation') or ''}"
@@ -778,8 +800,6 @@ async def fused_sense_pass(session: AsyncSession) -> dict:
     from app.ev.health_radar import latest_clinical
     from app.models import Prediction
     from app.notify.proactive import may_speak_proactive
-    from app.schemas import SensePrediction
-
     preds = await generate_predictions(session)
     preds = await apply_attention_policy(session, preds)
     clinical = await latest_clinical(session)
@@ -1146,38 +1166,89 @@ async def handle_set_voice(session: AsyncSession, voice_id: str | None = None) -
 # --------------------------------------------------------------------------- #
 
 
-async def handle_whats_on_my_plate(session: AsyncSession) -> dict:
+async def handle_whats_on_my_plate(
+    session: AsyncSession,
+    *,
+    actor: str = "master",
+) -> dict:
     from app.ev import calendar as calendar_feed
+    from app.ev.actuator import evidence_base
+    from app.ev.resolve import rank_plate
     from app.ev.tools import _active_life_integration, _dispatch_life_action
+    from app.models import Integration, OwnerTimer
+    from app.utils.text import utcnow
 
+    now = utcnow()
+    sources: dict[str, dict] = {}
     cal = await calendar_feed.calendar_signals(session)
     upcoming = []
-    if cal.get("next_event"):
-        upcoming.append(cal["next_event"])
+    calendar_row = (
+        await session.execute(
+            select(Integration).where(
+                Integration.adapter == "calendar",
+                Integration.status == "active",
+            ).limit(1)
+        )
+    ).scalars().first()
+    if calendar_row is None:
+        sources["calendar"] = {"ok": False, "error": "not_connected"}
+    else:
+        if cal.get("next_event"):
+            upcoming.append(cal["next_event"])
+        sources["calendar"] = {
+            "ok": True,
+            "count": len(upcoming),
+            "source": (cal.get("source") or {}).get("kind") if isinstance(cal.get("source"), dict) else "calendar",
+        }
     mail_items: list[dict] = []
     mail_missing = True
     integration = await _active_life_integration(session, "mail")
     if integration is not None:
         mail_missing = False
         try:
-            listed = await _dispatch_life_action(session, "list_mail", {"limit": 5}, actor="workbench")
+            listed = await _dispatch_life_action(
+                session,
+                "list_mail",
+                {"limit": 5},
+                actor=actor,
+            )
             mail_items = list(listed.get("items") or listed.get("messages") or [])
-        except Exception:
+            sources["mail"] = {
+                "ok": listed.get("ok") is not False and listed.get("error") != "not_connected",
+                "count": len(mail_items),
+                "error": listed.get("error"),
+            }
+        except Exception as exc:  # noqa: BLE001
+            sources["mail"] = {"ok": False, "error": type(exc).__name__}
             mail_items = []
+    else:
+        sources["mail"] = {"ok": False, "error": "not_connected"}
     github: list[dict] = []
     gh = (
         await session.execute(
-            select(__import__("app.models", fromlist=["Integration"]).Integration).where(
-                __import__("app.models", fromlist=["Integration"]).Integration.adapter == "github",
-                __import__("app.models", fromlist=["Integration"]).Integration.status == "active",
+            select(Integration).where(
+                Integration.adapter == "github",
+                Integration.status == "active",
             ).limit(1)
         )
     ).scalars().first()
     if gh is not None:
         from app.ev.hardware import adapter_act
 
-        listed = await adapter_act(session, "github", "github.list_issues", {"repo": "owner/repo", "limit": 5})
-        github = list(listed.get("issues") or listed.get("items") or [])
+        repo = str((gh.config or {}).get("repo") or (gh.config or {}).get("repository") or "").strip()
+        if not repo:
+            sources["github"] = {"ok": False, "error": "missing_repo"}
+        else:
+            listed = await adapter_act(session, "github", "github.list_issues", {"repo": repo, "limit": 5})
+            github = list(listed.get("issues") or listed.get("items") or [])
+            sources["github"] = {
+                "ok": bool(listed.get("ok")),
+                "count": len(github),
+                "error": listed.get("error"),
+                "repo": repo,
+            }
+    else:
+        sources["github"] = {"ok": False, "error": "not_connected"}
     deadlines = list(
         (
             await session.execute(
@@ -1189,7 +1260,34 @@ async def handle_whats_on_my_plate(session: AsyncSession) -> dict:
         ).scalars().all()
     )
     deadline_vals = [d.value for d in deadlines]
+    pending_timers = list(
+        (
+            await session.execute(
+                select(OwnerTimer).where(OwnerTimer.status == "pending").order_by(OwnerTimer.fire_at.asc())
+            )
+        ).scalars().all()
+    )
+    timer_items = [
+        {
+            "id": str(row.id),
+            "text": (row.payload or {}).get("text"),
+            "fire_at": row.fire_at.isoformat() if row.fire_at is not None else None,
+        }
+        for row in pending_timers
+    ]
+    priority = rank_plate(
+        calendar=upcoming,
+        mail=mail_items,
+        github=github,
+        timers=timer_items,
+        deadlines=deadline_vals,
+        now=now,
+    )
     parts = []
+    if priority:
+        top = priority[0]
+        conflict = " Overlapping events." if top.get("conflict") else ""
+        parts.append(f"First: {top['title']}.{conflict}".strip())
     if upcoming:
         parts.append(f"Next: {upcoming[0].get('summary') or upcoming[0]}")
     if deadline_vals:
@@ -1200,16 +1298,29 @@ async def handle_whats_on_my_plate(session: AsyncSession) -> dict:
         parts.append(f"{len(mail_items)} mail item(s).")
     if github:
         parts.append(f"{len(github)} GitHub item(s).")
+    elif sources.get("github", {}).get("error") == "not_connected":
+        parts.append("GitHub is not connected.")
     spoken = " ".join(parts) if parts else "Plate is clear."
+    evidence = evidence_base(
+        source="digest",
+        accepted=True,
+        observed=True,
+        now=now,
+        sources=sources,
+    )
     return {
         "ok": True,
         "calendar": upcoming,
         "mail": mail_items,
         "github": github,
         "deadlines": deadline_vals,
+        "timers": timer_items,
+        "priority": priority,
         "calendar_only": mail_missing,
+        "sources": sources,
         "spoken": spoken,
-        "hud": hud_card("Plate", spoken, {"calendar_only": mail_missing}),
+        "evidence": evidence,
+        "hud": hud_card("Plate", spoken, {"calendar_only": mail_missing, "sources": sources}),
     }
 
 
@@ -1220,15 +1331,31 @@ async def handle_draft_reply(
     body: str | None = None,
     confirm: bool = False,
     send: bool = False,
+    to_addr: str | None = None,
+    subject: str | None = None,
+    actor: str = "workbench",
 ) -> dict:
+    from app.ev.actuator import (
+        DEFAULT_TIMEOUT_SECONDS,
+        evidence_base,
+        fingerprint,
+        prior_result,
+        record_actuator,
+        with_timeout,
+    )
     from app.ev.tools import _active_life_integration
+    from app.utils.text import utcnow
 
+    now = utcnow()
+    key = fingerprint("draft_reply", mail_id, "send" if send else "draft")
     draft = (
         await session.execute(select(MailDraft).where(MailDraft.mail_id == mail_id).limit(1))
     ).scalars().first()
     if draft is None:
         draft = MailDraft(
             mail_id=mail_id,
+            to_addr=to_addr,
+            subject=subject,
             body=body or f"Draft reply to {mail_id}.",
             status="draft",
             confirm=False,
@@ -1236,41 +1363,99 @@ async def handle_draft_reply(
         )
         session.add(draft)
         await session.flush()
-    elif body:
-        draft.body = body
+    else:
+        if body:
+            draft.body = body
+        if to_addr:
+            draft.to_addr = to_addr
+        if subject:
+            draft.subject = subject
+    if send and draft.sent:
+        evidence = evidence_base(
+            source="mail",
+            accepted=True,
+            observed=True,
+            now=now,
+            draft_id=str(draft.id),
+            sent=True,
+        )
+        return {
+            "ok": True,
+            "draft_id": str(draft.id),
+            "sent": True,
+            "helper_sent": True,
+            "idempotent_replay": True,
+            "spoken": "That mail was already sent.",
+            "evidence": evidence,
+            "hud": hud_card("Mail", "Already sent.", {"mail_id": mail_id}),
+        }
     if send and not (confirm or draft.confirm):
         spoken = "I drafted it. Confirm before I send."
+        evidence = evidence_base(
+            source="mail_draft",
+            accepted=True,
+            observed=True,
+            now=now,
+            draft_id=str(draft.id),
+            sent=False,
+        )
         return {
             "ok": False,
             "draft_id": str(draft.id),
             "sent": False,
             "confirm": False,
             "spoken": spoken,
+            "evidence": evidence,
             "hud": hud_card("Draft", spoken, {"mail_id": mail_id}),
         }
     if send and (confirm or draft.confirm):
+        replayed = await prior_result(session, name="draft_reply", key=key)
+        if replayed is not None:
+            return replayed
         draft.confirm = True
         helper = await _active_life_integration(session, "mail")
         if helper is None:
             spoken = "Draft saved. No mail helper to send."
+            evidence = evidence_base(
+                source="mail_draft",
+                accepted=True,
+                observed=True,
+                now=now,
+                draft_id=str(draft.id),
+                sent=False,
+            )
             return {
                 "ok": True,
                 "draft_id": str(draft.id),
                 "sent": False,
                 "helper_sent": False,
+                "error": "not_connected",
                 "spoken": spoken,
+                "evidence": evidence,
                 "hud": hud_card("Draft", spoken, {"mail_id": mail_id}),
             }
         from app.integrations import service as integrations
 
         try:
-            outcome = await integrations.execute_action(
-                session,
-                helper.id,
-                "mail.send",
-                {"mail_id": mail_id, "body": draft.body, "confirm": True},
-                actor="workbench",
+            outcome = await with_timeout(
+                integrations.execute_action_after_policy(
+                    session,
+                    helper.id,
+                    "mail.send",
+                    {
+                        "mail_id": mail_id,
+                        "to": draft.to_addr or mail_id,
+                        "subject": draft.subject or "",
+                        "body": draft.body,
+                        "confirm": True,
+                    },
+                    actor=actor,
+                ),
+                seconds=DEFAULT_TIMEOUT_SECONDS,
+                spoken="Mail send timed out. I will not claim it was sent.",
             )
+            if isinstance(outcome, dict) and outcome.get("error") in {"timeout", "cancelled"}:
+                return outcome
             payload = getattr(outcome, "result", None) or {}
             helper_sent = bool(payload.get("sent") is True)
         except Exception as exc:  # noqa: BLE001
@@ -1278,16 +1463,46 @@ async def handle_draft_reply(
             payload = {"error": str(exc)}
         draft.sent = helper_sent
         draft.status = "sent" if helper_sent else "draft"
-        spoken = "Sent." if helper_sent else "Draft still unsent — helper did not confirm sent."
-        return {
+        simulated = bool(payload.get("simulated") or payload.get("mode") == "local")
+        if helper_sent and simulated:
+            spoken = "Recorded a local send double. Real mail is not connected."
+        elif helper_sent:
+            spoken = "Sent."
+        else:
+            spoken = "Draft still unsent — helper did not confirm sent."
+        evidence = evidence_base(
+            source=str(payload.get("mode") or "mail"),
+            accepted=True,
+            observed=helper_sent,
+            now=now,
+            draft_id=str(draft.id),
+            sent=helper_sent,
+            simulated=simulated,
+            message_id=payload.get("message_id") or payload.get("id"),
+        )
+        result = {
             "ok": helper_sent,
             "draft_id": str(draft.id),
             "sent": helper_sent,
             "helper_sent": helper_sent,
             "spoken": spoken,
+            "evidence": evidence,
             "hud": hud_card("Mail", spoken, {"mail_id": mail_id}),
         }
+        if helper_sent:
+            await record_actuator(
+                session, name="draft_reply", actor=actor, key=key, result=result, target=mail_id
+            )
+        return result
     spoken = "Draft saved. Say confirm when you want it sent."
+    evidence = evidence_base(
+        source="mail_draft",
+        accepted=True,
+        observed=True,
+        now=now,
+        draft_id=str(draft.id),
+        sent=False,
+    )
     return {
         "ok": True,
         "draft_id": str(draft.id),
@@ -1296,6 +1511,7 @@ async def handle_draft_reply(
         "sent": False,
         "confirm": False,
         "spoken": spoken,
+        "evidence": evidence,
         "hud": hud_card("Draft", spoken, {"mail_id": mail_id}),
     }
 
@@ -1361,10 +1577,8 @@ async def post_utterance(
         )
     )
     if isinstance(hud, dict):
-        try:
+        with contextlib.suppress(ValueError):
             await cache_hud(session, hud, source="utterance")
-        except ValueError:
-            pass
     history = await conversation.history(session, thread.id, limit=20)
     return {
         "ok": True,

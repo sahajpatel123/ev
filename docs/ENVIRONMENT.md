@@ -130,10 +130,26 @@ the compliance keys in §13.
 | `EV_XAI_MODEL` | `grok-4.6` | string | Typed chat / tools / HUD model. Not the voice model. |
 | `EV_XAI_VOICE_MODEL` | `grok-voice-think-fast-2.0` | string | Live speech-to-speech model on `wss://api.x.ai/v1/realtime` |
 | `EV_XAI_VOICE_VOICE` | `eve` | string | Built-in Grok Voice roster id |
-| `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` / `xai` / `pipeline` | `auto` uses Grok Voice whenever `EV_XAI_API_KEY` is set, even if typed chat is DeepSeek |
+| `EV_XAI_VOICE_VAD_THRESHOLD` | `0.72` | float | Live server VAD. Higher resists speaker echo cutting her off |
+| `EV_XAI_VOICE_SILENCE_MS` | `550` | int | Pause allowed before Grok Voice ends your turn |
+| `EV_VOICE_LIVE_BRAIN` | `auto` | `auto` / `openai` / `xai` / `pipeline` | `auto` uses OpenAI Realtime when `EV_OPENAI_API_KEY` is set, else Grok Voice when `EV_XAI_API_KEY` is set |
+| `EV_OPENAI_API_KEY` | — | string | Official OpenAI API key (`platform.openai.com`). Live talk, not typed chat. |
+| `EV_OPENAI_REALTIME_MODEL` | `gpt-realtime-2.1-mini` | string | OpenAI Realtime speech-to-speech model. Live function tools come from the current runtime capability projection and are rechecked by policy before dispatch. |
+| `EV_OPENAI_REALTIME_URL` | `wss://api.openai.com/v1/realtime` | URL | OpenAI Realtime WebSocket |
 | `EV_LOCAL_MODEL_BASE_URL` | `http://localhost:11434/v1` | URL | OpenAI-compatible local server (Ollama/llama.cpp) used when `EV_CHAT_PROVIDER=local` |
 | `EV_LOCAL_MODEL_NAME` | `llama3` | string | Local model name |
 | `EV_MODEL_CALL_LOG_ENABLED` | `true` | boolean | Persist every gateway call to `model_calls` for audit |
+
+## 7b. Vision, camera look, OCR
+
+| Key | Default | Values | Purpose |
+| --- | --- | --- | --- |
+| `EV_VISION_PROVIDER` | `deterministic` | `deterministic` / `tesseract` / `apple_vision` / `deepseek_ocr` | OCR engine. Darwin auto-selects Apple Vision when `evvision` exists (not under pytest). |
+| `EV_VISION_TESSERACT_BINARY` | `tesseract` | path | Tesseract binary when `EV_VISION_PROVIDER=tesseract` |
+| `EV_VISION_DEEPSEEK_OCR_URL` | — | URL | Self-hosted DeepSeek-OCR HTTP endpoint. Official `api.deepseek.com` is refused (text-only). |
+| `EV_VISION_DEEPSEEK_OCR_TIMEOUT` | `20` | seconds | Hosted OCR timeout |
+
+The live `look` tool takes **one** consented camera frame (or an owner photo), runs OCR + object labels on-device, names only enrolled/consented matches, and may use DeepSeek **chat** to polish the spoken sentence from derived text. Raw pixels are not sent to `api.deepseek.com`.
 
 ## 8. Intelligence filter
 

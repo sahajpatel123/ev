@@ -6,9 +6,11 @@ import EVClient
 
 public struct HUDCardView: View {
     public let card: HUDCard
+    public var onConfirm: (() -> Void)?
 
-    public init(card: HUDCard) {
+    public init(card: HUDCard, onConfirm: (() -> Void)? = nil) {
         self.card = card
+        self.onConfirm = onConfirm
     }
 
     public var body: some View {
@@ -19,6 +21,15 @@ public struct HUDCardView: View {
                 Text(card.schemaVersion).font(.caption).foregroundStyle(.secondary)
             }
             Text(card.body).font(.body)
+            if let kind = card.metaKind, !kind.isEmpty {
+                Text(kind.replacingOccurrences(of: "_", with: " "))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if card.isApprovalHold, let onConfirm {
+                Button("Confirm on this phone", action: onConfirm)
+                    .font(.caption)
+            }
             Text(String(format: "priority %.2f", card.priority))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -31,6 +42,7 @@ public struct HUDCardView: View {
 
 public struct TodayView: View {
     @State private var card: HUDCard?
+    @State private var confirming = false
     public let client: EVAPIClient
 
     public init(client: EVAPIClient) {
@@ -41,7 +53,7 @@ public struct TodayView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Today").font(.title2)
             if let card {
-                HUDCardView(card: card)
+                HUDCardView(card: card, onConfirm: card.isApprovalHold ? { confirmHold() } : nil)
             } else {
                 Text("Loading…").foregroundStyle(.secondary)
             }
@@ -52,6 +64,34 @@ public struct TodayView: View {
 
     private func load() async {
         card = try? await client.hudCard()
+    }
+
+    private func confirmHold() {
+        guard !confirming, let card, card.isApprovalHold else { return }
+        confirming = true
+        Task {
+            defer { confirming = false }
+            if EVLifeBiometric.isAvailable {
+                let ok = await EVLifeBiometric.confirmLifeAction(
+                    reason: "Confirm \(card.holdToolName ?? "this action")"
+                )
+                guard ok else { return }
+            }
+            do {
+                if let actionId = card.holdActionId, !actionId.isEmpty {
+                    _ = try await client.approveAction(id: actionId)
+                } else if let name = card.holdToolName, !name.isEmpty {
+                    _ = try await client.dispatchTool(
+                        name: name,
+                        arguments: card.holdArguments,
+                        confirm: true
+                    )
+                }
+                await load()
+            } catch {
+                return
+            }
+        }
     }
 }
 
@@ -236,36 +276,85 @@ public struct VoiceCaptureView: View {
     @State private var listening = false
     @State private var sessionId: String?
     @State private var utteranceText = ""
+    @ObservedObject private var live: LiveVoiceCoordinator
     public let client: EVAPIClient
     public let deviceId: String
 
-    public init(client: EVAPIClient, deviceId: String) {
+    public init(client: EVAPIClient, deviceId: String, live: LiveVoiceCoordinator? = nil) {
         self.client = client
         self.deviceId = deviceId
+        _live = ObservedObject(wrappedValue: live ?? LiveVoiceCoordinator())
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Voice").font(.headline)
-            Button(listening ? "Listening…" : "Wake EV") {
-                Task { await wake() }
-            }
-            .disabled(listening)
-            Text(outcome).font(.caption).foregroundStyle(.secondary)
-            if sessionId != nil {
-                HStack {
-                    TextField("Speak (text fallback)…", text: $utteranceText)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Send") {
-                        Task { await speak() }
+            if live.isRunning || live.isActive {
+                liveControls
+            } else {
+                Button(listening ? "Listening…" : "Wake EV") {
+                    Task { await wake() }
+                }
+                .disabled(listening)
+                Button("Start live conversation") {
+                    live.start(client: client, deviceId: deviceId)
+                }
+                Text(outcome).font(.caption).foregroundStyle(.secondary)
+                if sessionId != nil {
+                    HStack {
+                        TextField("Speak (text fallback)…", text: $utteranceText)
+                            .textFieldStyle(.roundedBorder)
+                        Button("Send") {
+                            Task { await speak() }
+                        }
                     }
                 }
             }
-            Text("Mic capture needs the iOS app target and a permission grant.")
+            Text("Opening the app is the door. Live conversation streams while EV is in the foreground.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
         .padding()
+    }
+
+    @ViewBuilder
+    private var liveControls: some View {
+        HStack {
+            Text(live.isActive ? (live.isMuted ? "Muted" : "Live") : "Connecting…")
+                .font(.caption)
+            Spacer()
+            Button(live.isMuted ? "Unmute" : "Mute") {
+                live.toggleMute()
+            }
+            Button(live.cameraState.state == .active ? "Camera off" : "Camera on") {
+                live.toggleCamera()
+            }
+            .disabled(live.cameraRequestInFlight || live.cameraState.state == .denied)
+            if live.hudCard?.isApprovalHold == true {
+                Button(live.confirmingHud ? "Confirming…" : "Confirm") {
+                    live.confirmHold()
+                }
+                .disabled(live.confirmingHud)
+            }
+        }
+        Text("Camera: \(live.cameraState.state.label)")
+            .font(.caption2)
+            .foregroundStyle(live.cameraState.state == .active ? .green : .secondary)
+        if !live.capabilityManifest.isEmpty {
+            Text("Capabilities: \(live.capabilityManifest.enabled.prefix(4).joined(separator: ", "))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        if let card = live.hudCard {
+            Text(card.title).font(.subheadline)
+            Text(card.body).font(.caption).foregroundStyle(.secondary)
+        }
+        if let error = live.lastError, !error.isEmpty {
+            Text(error).font(.caption).foregroundStyle(.orange)
+        }
+        if !live.transcript.isEmpty {
+            Text(live.transcript).font(.caption)
+        }
     }
 
     private func wake() async {
@@ -318,10 +407,19 @@ public struct QueueIndicatorView: View {
 public struct AppShellView: View {
     public let client: EVAPIClient
     public let queue: OfflineCaptureQueue
+    public let deviceId: String
+    @ObservedObject private var live: LiveVoiceCoordinator
 
-    public init(client: EVAPIClient, queue: OfflineCaptureQueue) {
+    public init(
+        client: EVAPIClient,
+        queue: OfflineCaptureQueue,
+        deviceId: String = "mac-shell",
+        live: LiveVoiceCoordinator? = nil
+    ) {
         self.client = client
         self.queue = queue
+        self.deviceId = deviceId
+        _live = ObservedObject(wrappedValue: live ?? LiveVoiceCoordinator())
     }
 
     public var body: some View {
@@ -334,7 +432,7 @@ public struct AppShellView: View {
                 .tabItem { Label("Capture", systemImage: "plus.circle") }
             MemoryBrowserView(client: client)
                 .tabItem { Label("Memory", systemImage: "brain") }
-            VoiceCaptureView(client: client, deviceId: "mac-shell")
+            VoiceCaptureView(client: client, deviceId: deviceId, live: live)
                 .tabItem { Label("Voice", systemImage: "mic") }
         }
     }

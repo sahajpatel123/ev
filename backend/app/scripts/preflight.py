@@ -89,7 +89,13 @@ def _check_chat() -> tuple[str, str, str]:
 
             model = settings.deepseek_model or "deepseek-v4-flash"
             if grok_voice_enabled():
-                live = "live: Grok Voice Think Fast 2.0"
+                from app.voice.live.grok_voice import live_realtime_provider
+
+                live = (
+                    "live: gpt-realtime-2.1-mini"
+                    if live_realtime_provider() == "openai"
+                    else "live: Grok Voice Think Fast 2.0"
+                )
             elif (settings.xai_api_key or "").strip():
                 live = "live: pipeline (EV_VOICE_LIVE_BRAIN=pipeline)"
             else:
@@ -103,11 +109,15 @@ def _check_chat() -> tuple[str, str, str]:
         )
     if provider == "xai":
         if settings.xai_api_key:
-            live = (
-                "typed: grok-4.6; live: Grok Voice Think Fast 2.0"
-                if (settings.voice_live_brain or "auto") != "pipeline"
-                else f"typed+live pipeline: {settings.xai_model}"
-            )
+            from app.voice.live.grok_voice import live_realtime_provider
+
+            live_p = live_realtime_provider()
+            if live_p == "openai":
+                live = "typed: grok-4.6; live: gpt-realtime-2.1-mini"
+            elif live_p == "xai":
+                live = "typed: grok-4.6; live: Grok Voice Think Fast 2.0"
+            else:
+                live = f"typed+live pipeline: {settings.xai_model}"
             return "REAL", "xai", f"xAI API key set ({live})"
         return (
             "PARTIAL",

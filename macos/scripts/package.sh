@@ -22,6 +22,29 @@ cp "$BIN" "$APP/Contents/MacOS/EV"
 cp "$HELPER" "$APP/Contents/MacOS/EVNotificationHelper"
 cp "$LIFE_HELPER" "$APP/Contents/MacOS/EVLifeHelper"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
+cp -R "$ROOT/Resources/orb" "$APP/Contents/Resources/orb"
+
+if [[ ! -f "$APP/Contents/Resources/orb/filament-orb.mp4" ]]; then
+    echo "ERROR: filament-orb.mp4 missing from $APP" >&2
+    exit 1
+fi
+if [[ ! -f "$APP/Contents/Resources/orb/BUILD_ID.txt" ]]; then
+    echo "ERROR: BUILD_ID.txt missing from $APP" >&2
+    exit 1
+fi
+if grep -R -l 'three.module.js\|UnrealBloomPass\|index.html' "$APP/Contents/Resources/orb" >/dev/null 2>&1; then
+    echo "ERROR: stale Three.js orb assets were copied into $APP" >&2
+    exit 1
+fi
+if ! grep -a -q 'metal-video-quad-v4-presence' "$APP/Contents/MacOS/EV"; then
+    echo "ERROR: packaged binary is missing the current orb renderer identity" >&2
+    exit 1
+fi
+if grep -a -q 'VoiceOrbFallbackView' "$APP/Contents/MacOS/EV"; then
+    echo "ERROR: packaged binary still contains the WKWebView orb fallback" >&2
+    exit 1
+fi
+echo "Orb identity: $(tr '\n' ' ' < "$APP/Contents/Resources/orb/BUILD_ID.txt")"
 
 # Sign with the stable self-signed "EV Code Signing" identity created by
 # signing.sh. TCC ties every permission grant to the app's code signature;

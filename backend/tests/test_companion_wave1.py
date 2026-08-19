@@ -206,8 +206,7 @@ async def test_first_wake_speaks_protocol_tour_once(
         samples=[voice_b64(SAMPLE_A)],
     )
     tour = first.get("onboarding") or ""
-    assert "You have these protocols" in tour
-    assert "start training wheels" in tour.lower()
+    assert "I can do now:" in tour
     assert "Instant Kill" not in tour
     listed = await client.get("/v1/assistant/callouts?limit=10")
     assert listed.status_code == 200
@@ -249,7 +248,8 @@ async def test_nickname_set_reset_and_impersonation_refuse(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     before = identity_block("EVIE", "the owner's personal AI")
-    assert "You are EVIE" in before
+    assert "You are E V" in before
+    assert "never E-y or Evie" in before
 
     named = await client.post("/v1/assistant/name", json={"name": "Karen"})
     assert named.status_code == 200, named.text
@@ -270,7 +270,8 @@ async def test_nickname_set_reset_and_impersonation_refuse(
 
     async with SessionLocal() as fresh:
         compiled_reset = await assistant_mod.compile_identity(fresh)
-        assert "You are EVIE" in compiled_reset
+        assert "You are E V" in compiled_reset
+        assert "never E-y or Evie" in compiled_reset
 
     await db_session.rollback()
     owner = await assistant_mod.get_profile(db_session)
@@ -467,7 +468,7 @@ async def test_protocol_sheet_refused_needs_setup_and_what_can_you_do(
     assert "Instant Kill" not in reply
     enabled = body["enabled"]
     assert len(enabled) <= 8
-    assert "protocols" in reply.lower() or "You have these protocols" in reply
+    assert "I can do now:" in reply
     surfaces = chat.json().get("surfaces") or {}
     assert surfaces.get("title") == "Protocols"
     assert surfaces.get("schema_version") == "ev.hud.card.v1"

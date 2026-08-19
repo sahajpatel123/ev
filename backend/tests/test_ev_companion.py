@@ -390,7 +390,7 @@ async def test_tool_selection_routes_intents(client: AsyncClient) -> None:
         "tell me something from my memory": "search_memory",
         "what's the weather in Surat?": "get_weather",
         "what is the capital of France": "search_web",
-        "what's on my calendar today": "get_upcoming_alerts",
+        "what's on my calendar today": "calendar_read",
     }
     for message, expected in cases.items():
         resp = await client.post("/v1/gateway/select-tool", json={"message": message})

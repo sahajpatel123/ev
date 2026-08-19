@@ -11,7 +11,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext, require_actor, require_actor_context
+from app.auth import (
+    ActorContext,
+    require_actor,
+    require_actor_context,
+    require_reverification,
+)
 from app.db import get_session
 from app.ev import conversation, edith, live, vision
 from app.ev.rollup import build_rollup
@@ -50,6 +55,7 @@ from app.schemas import (
     VisionPerceptionOut,
 )
 from app.services.access_log import log_access
+from app.utils.text import utcnow
 
 router = APIRouter(prefix="/v1")
 
@@ -613,13 +619,41 @@ def _perception_out(row: LiveEvent) -> VisionPerceptionOut:
 async def analyze_vision(
     data: VisionAnalyzeRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_reverification("camera.analyze")),
 ) -> VisionPerceptionOut:
+    if not data.permission:
+        raise HTTPException(
+            status_code=403,
+            detail="Explicit permission is required before any perception analysis",
+        )
+    from app.ev.policy import Confirmation, authorize
+    from app.ev.tools import get_spec
+
+    now = utcnow()
+    confirmation = Confirmation(
+        factor="master_key" if ctx.is_master else "reverify",
+        confirmed=True,
+        target=str(data.attachment_id),
+        issued_at=now,
+    )
+    decision = await authorize(
+        session,
+        "camera_replay",
+        actor=ctx.actor,
+        arguments={"camera": str(data.attachment_id)},
+        device_id=ctx.device_id,
+        channel="action",
+        confirmation=confirmation,
+        spec=get_spec("camera_replay"),
+        provider_connected_override=True,
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail=decision.reason)
     try:
         row = await vision.analyze_attachment(
             session,
             data.attachment_id,
-            actor=actor,
+            actor=ctx.actor,
             permission=data.permission,
             allow_raw=data.allow_raw,
             prompt=data.prompt,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -9,10 +11,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.embeddings import get_embedder
 from app.models import Event, Memory, MemoryEvent, ResearchNote, ResearchSession
-from app.schemas import EventCreate, ResearchConclude, ResearchNoteCreate, ResearchSessionCreate
-from app.search.providers import get_search_provider
+from app.schemas import (
+    EventCreate,
+    ResearchConclude,
+    ResearchJobCreate,
+    ResearchNoteCreate,
+    ResearchSessionCreate,
+)
+from app.search.providers import SearchProvider, SearchResult, get_search_provider
+from app.services.access_log import log_access
 from app.services.event_service import EventService
 from app.utils.text import fingerprint, normalize_text
+
+JOB_STATUSES = {"queued", "running", "paused", "failed", "cancelled", "completed"}
+ALLOWED_JOB_TOOLS = {"web_search"}
 
 
 class ResearchService:
@@ -30,7 +42,13 @@ class ResearchService:
         for row in open_rows:
             if normalize_text(row.question) == key:
                 return row
-        session = ResearchSession(question=data.question, status="open")
+        session = ResearchSession(
+            question=data.question,
+            goal=data.question,
+            owner=self.actor,
+            mode="session",
+            status="open",
+        )
         self.session.add(session)
         await self.session.flush()
         await EventService(self.session, actor=self.actor).create(
@@ -43,6 +61,338 @@ class ResearchService:
         )
         return session
 
+    async def create_job(self, data: ResearchJobCreate) -> ResearchSession:
+        """Create an idempotent, bounded research job in the existing session table."""
+        tools = sorted({str(item).strip() for item in data.allowed_tools if str(item).strip()})
+        if not tools:
+            tools = ["web_search"]
+        unknown = sorted(set(tools) - ALLOWED_JOB_TOOLS)
+        if unknown:
+            raise ValueError(f"unsupported research tools: {', '.join(unknown)}")
+        if data.deadline_at is not None:
+            deadline = data.deadline_at
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=UTC)
+            if deadline <= datetime.now(UTC):
+                raise ValueError("deadline_at must be in the future")
+        existing = (
+            await self.session.execute(
+                select(ResearchSession).where(
+                    ResearchSession.mode == "job",
+                    ResearchSession.owner == self.actor,
+                    ResearchSession.status.in_(["queued", "running", "paused"]),
+                )
+            )
+        ).scalars().all()
+        key = normalize_text(data.goal)
+        for row in existing:
+            if normalize_text(row.goal or row.question) == key:
+                return row
+        checkpoints = [
+            {"name": name, "status": "pending"}
+            for name in data.checkpoints
+            if name.strip()
+        ]
+        if not checkpoints:
+            checkpoints = [{"name": "collect_sources", "status": "pending"}]
+        job = ResearchSession(
+            question=data.goal,
+            goal=data.goal,
+            owner=self.actor,
+            mode="job",
+            status="queued",
+            allowed_tools=tools,
+            deadline_at=data.deadline_at,
+            budget={
+                "max_results": data.max_results,
+                "timeout_seconds": data.timeout_seconds,
+            },
+            checkpoints=checkpoints,
+            progress={
+                "phase": "queued",
+                "completed": 0,
+                "total": len(checkpoints),
+                "percent": 0,
+            },
+            final_artifacts=[],
+            citations=[],
+            evidence={},
+        )
+        self.session.add(job)
+        await self.session.flush()
+        await EventService(self.session, actor=self.actor).create(
+            EventCreate(
+                source="research",
+                event_type="research.job.created",
+                text=f"Research job: {data.goal}",
+                metadata={
+                    "research_job_id": str(job.id),
+                    "owner": self.actor,
+                    "allowed_tools": tools,
+                    "budget": job.budget,
+                },
+            )
+        )
+        await log_access(
+            self.session,
+            actor=self.actor,
+            action="research.job.create",
+            endpoint="POST /v1/research/jobs",
+            resource_type="research_job",
+            resource_ids=[job.id],
+            details={"allowed_tools": tools, "budget": job.budget},
+        )
+        return job
+
+    async def _job(self, job_id: UUID) -> ResearchSession:
+        job = await self.session.get(ResearchSession, job_id)
+        if job is None or job.mode != "job":
+            raise KeyError(f"Research job {job_id} not found")
+        if job.owner != self.actor and self.actor not in {"master", "scheduler", "worker"}:
+            raise PermissionError("research job belongs to another owner")
+        return job
+
+    @staticmethod
+    def _job_payload(job: ResearchSession, *, replay: bool = False) -> dict:
+        payload = {
+            "id": str(job.id),
+            "owner": job.owner,
+            "goal": job.goal or job.question,
+            "status": job.status,
+            "allowed_tools": list(job.allowed_tools or []),
+            "deadline_at": job.deadline_at.isoformat() if job.deadline_at else None,
+            "budget": dict(job.budget or {}),
+            "checkpoints": list(job.checkpoints or []),
+            "progress": dict(job.progress or {}),
+            "final_artifacts": list(job.final_artifacts or []),
+            "citations": list(job.citations or []),
+            "evidence": dict(job.evidence or {}),
+            "cancel_requested": bool(job.cancel_requested),
+            "attempts": int(job.attempts or 0),
+            "last_error": job.last_error,
+        }
+        if replay:
+            payload["idempotent_replay"] = True
+        return payload
+
+    async def run_job(
+        self,
+        job_id: UUID,
+        *,
+        provider: SearchProvider | None = None,
+    ) -> dict:
+        """Run one bounded research step; every state transition is durable."""
+        job = await self._job(job_id)
+        if job.status in {"completed", "cancelled"}:
+            return self._job_payload(job, replay=True)
+        now = datetime.now(UTC)
+        deadline = job.deadline_at
+        if deadline is not None and deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+        if deadline is not None and deadline <= now:
+            job.status = "failed"
+            job.last_error = "deadline_exceeded"
+            job.progress = {**(job.progress or {}), "phase": "failed"}
+            job.evidence = {"source": "research_job", "accepted": False, "observed": False, "error": job.last_error}
+            await self.session.flush()
+            return self._job_payload(job)
+        if job.cancel_requested:
+            job.status = "cancelled"
+            job.progress = {**(job.progress or {}), "phase": "cancelled"}
+            await self.session.flush()
+            return self._job_payload(job)
+        job.status = "running"
+        job.cancel_requested = False
+        job.attempts = int(job.attempts or 0) + 1
+        job.last_error = None
+        job.progress = {**(job.progress or {}), "phase": "collecting"}
+        await self.session.flush()
+        if "web_search" not in set(job.allowed_tools or []):
+            job.status = "failed"
+            job.last_error = "search_tool_not_allowed"
+            job.progress = {**(job.progress or {}), "phase": "failed"}
+            await self.session.flush()
+            return self._job_payload(job)
+        provider = provider or get_search_provider()
+        if provider is None:
+            job.status = "failed"
+            job.last_error = "provider_not_connected"
+            job.progress = {**(job.progress or {}), "phase": "failed"}
+            job.evidence = {
+                "source": "research_provider",
+                "accepted": False,
+                "observed": False,
+                "error": "not_connected",
+            }
+            await self.session.flush()
+            return self._job_payload(job)
+        budget = dict(job.budget or {})
+        limit = max(1, min(int(budget.get("max_results") or 5), 20))
+        timeout = max(0.01, min(float(budget.get("timeout_seconds") or 10.0), 60.0))
+        # Research is a network side effect even though its stored output is
+        # read-only.  Gate the provider call through the same policy decision
+        # used by live/HTTP tool dispatch; the injected provider remains an
+        # adapter double for tests and does not bypass authorization.
+        from app.ev.policy import authorize
+
+        decision = await authorize(
+            self.session,
+            "search_web",
+            actor=self.actor,
+            channel="action",
+            arguments={"query": str(job.goal or job.question), "limit": limit},
+            provider_connected_override=True,
+        )
+        if not decision.allowed:
+            job.status = "paused" if decision.effect == "confirm" else "failed"
+            job.last_error = decision.reason
+            job.progress = {
+                **(job.progress or {}),
+                "phase": "paused" if decision.effect == "confirm" else "failed",
+            }
+            job.evidence = {
+                "source": "policy",
+                "accepted": False,
+                "observed": False,
+                "error": decision.effect,
+                "reason": decision.reason,
+                "risk_class": decision.risk_class,
+            }
+            await self.session.flush()
+            return self._job_payload(job)
+        try:
+            results = await asyncio.wait_for(
+                provider.search(job.goal or job.question, limit=limit),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            job.status = "paused"
+            job.last_error = "provider_timeout"
+            job.progress = {**(job.progress or {}), "phase": "paused"}
+            job.evidence = {
+                "source": getattr(provider, "name", "research_provider"),
+                "accepted": False,
+                "observed": False,
+                "error": "timeout",
+            }
+            await self.session.flush()
+            return self._job_payload(job)
+        except asyncio.CancelledError:
+            job.status = "cancelled"
+            job.cancel_requested = True
+            job.progress = {**(job.progress or {}), "phase": "cancelled"}
+            await self.session.flush()
+            return self._job_payload(job)
+        except Exception as exc:  # noqa: BLE001 - provider boundary
+            job.status = "failed"
+            job.last_error = f"provider_error:{type(exc).__name__}"
+            job.progress = {**(job.progress or {}), "phase": "failed"}
+            job.evidence = {
+                "source": getattr(provider, "name", "research_provider"),
+                "accepted": False,
+                "observed": False,
+                "error": str(exc)[:512],
+            }
+            await self.session.flush()
+            return self._job_payload(job)
+        notes = await list_notes(self.session, job.id)
+        seen_urls = {note.source_url for note in notes if note.source_url}
+        stored = 0
+        citations: list[dict] = []
+        for result in results[:limit]:
+            if job.cancel_requested:
+                job.status = "cancelled"
+                job.progress = {**(job.progress or {}), "phase": "cancelled"}
+                await self.session.flush()
+                return self._job_payload(job)
+            if isinstance(result, SearchResult):
+                title, url, snippet = result.title, result.url, result.snippet
+            elif isinstance(result, dict):
+                title = str(result.get("title") or "")
+                url = str(result.get("url") or "")
+                snippet = str(result.get("snippet") or result.get("description") or "")
+            else:
+                title = str(getattr(result, "title", "") or "")
+                url = str(getattr(result, "url", "") or "")
+                snippet = str(getattr(result, "snippet", "") or "")
+            if not snippet or (url and url in seen_urls):
+                continue
+            await self.add_note(
+                job.id,
+                ResearchNoteCreate(note=snippet[:10_000], source_url=url[:1024] or None, source_title=title[:512] or None),
+            )
+            seen_urls.add(url)
+            citations.append({"title": title[:512], "url": url[:1024], "snippet": snippet[:500]})
+            stored += 1
+        checkpoints = [dict(item) for item in (job.checkpoints or []) if isinstance(item, dict)]
+        for checkpoint in checkpoints:
+            checkpoint["status"] = "completed"
+        job.checkpoints = checkpoints
+        job.citations = citations
+        job.status = "completed"
+        job.progress = {"phase": "completed", "completed": len(checkpoints), "total": len(checkpoints), "percent": 100}
+        job.final_artifacts = [{"kind": "research_notes", "count": stored, "job_id": str(job.id)}]
+        job.evidence = {
+            "source": getattr(provider, "name", "research_provider"),
+            "accepted": True,
+            "observed": True,
+            "source_count": stored,
+            "completed_at": datetime.now(UTC).isoformat(),
+        }
+        await log_access(
+            self.session,
+            actor=self.actor,
+            action="research.job.run",
+            endpoint="POST /v1/research/jobs/{job_id}/run",
+            resource_type="research_job",
+            resource_ids=[job.id],
+            details={"status": job.status, "source_count": stored, "evidence": job.evidence},
+        )
+        await self.session.flush()
+        return self._job_payload(job)
+
+    async def cancel_job(self, job_id: UUID) -> dict:
+        job = await self._job(job_id)
+        if job.status in {"completed", "cancelled"}:
+            return self._job_payload(job, replay=True)
+        job.cancel_requested = True
+        job.status = "cancelled"
+        job.progress = {**(job.progress or {}), "phase": "cancelled"}
+        job.evidence = {"source": "research_job", "accepted": True, "observed": True, "status": "cancelled"}
+        await log_access(
+            self.session,
+            actor=self.actor,
+            action="research.job.cancel",
+            endpoint="POST /v1/research/jobs/{job_id}/cancel",
+            resource_type="research_job",
+            resource_ids=[job.id],
+            details={"status": "cancelled"},
+        )
+        await self.session.flush()
+        return self._job_payload(job)
+
+    async def resume_job(self, job_id: UUID) -> dict:
+        job = await self._job(job_id)
+        if job.status == "completed":
+            return self._job_payload(job, replay=True)
+        if job.status == "cancelled":
+            raise ValueError("cancelled research jobs cannot be resumed")
+        job.status = "queued"
+        job.cancel_requested = False
+        job.last_error = None
+        job.progress = {**(job.progress or {}), "phase": "queued"}
+        await log_access(
+            self.session,
+            actor=self.actor,
+            action="research.job.resume",
+            endpoint="POST /v1/research/jobs/{job_id}/resume",
+            resource_type="research_job",
+            resource_ids=[job.id],
+            details={"status": "queued"},
+        )
+        await self.session.flush()
+        return self._job_payload(job)
+
     async def add_note(
         self,
         session_id: UUID,
@@ -51,7 +401,10 @@ class ResearchService:
         research = await self.session.get(ResearchSession, session_id)
         if research is None:
             raise KeyError(f"Research session {session_id} not found")
-        if research.status != "open":
+        allowed_statuses = {"open"}
+        if research.mode == "job":
+            allowed_statuses = {"queued", "running"}
+        if research.status not in allowed_statuses:
             raise ValueError("Research session is already concluded")
         event = await EventService(self.session, actor=self.actor).create(
             EventCreate(
@@ -182,6 +535,18 @@ class ResearchService:
             raise KeyError(
                 "Web search is disabled: set EV_SEARCH_PROVIDER and an API key to enable it"
             )
+        from app.ev.policy import authorize
+
+        decision = await authorize(
+            self.session,
+            "search_web",
+            actor=self.actor,
+            channel="action",
+            arguments={"query": query, "limit": limit},
+            provider_connected_override=True,
+        )
+        if not decision.allowed:
+            raise PermissionError(decision.reason)
         results = await provider.search(query, limit=limit)
         notes: list[ResearchNote] = []
         for result in results:

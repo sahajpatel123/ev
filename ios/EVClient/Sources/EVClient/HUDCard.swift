@@ -65,4 +65,25 @@ public struct HUDCard: Codable, Sendable, Equatable {
     public func renderText() -> String {
         "[\(schemaVersion)] \(title) (priority \(priority))\n\(body)"
     }
+
+    public var metaKind: String? {
+        meta?["kind"]?.stringValue
+    }
+
+    public var isApprovalHold: Bool {
+        metaKind == "approval_hold"
+    }
+
+    public var holdToolName: String? {
+        meta?["tool"]?.stringValue
+    }
+
+    public var holdActionId: String? {
+        meta?["action_id"]?.stringValue
+    }
+
+    public var holdArguments: [String: Any] {
+        guard let object = meta?["arguments"]?.objectValue else { return [:] }
+        return object.mapValues { $0.jsonObject() }
+    }
 }

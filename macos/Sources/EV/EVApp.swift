@@ -32,6 +32,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var keepAliveWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if ProcessInfo.processInfo.arguments.contains("--orb-preview") {
+            NSApp.setActivationPolicy(.regular)
+            VoiceOrbPreview.shared.start()
+            return
+        }
         NSApp.setActivationPolicy(.accessory)
         installKeepAliveWindow()
         // URL scheme delivery for EVNotificationHelper (single notification
@@ -47,6 +52,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // In-app live owns the microphone. ev.ears is a wake-word front end
         // and must not share the same input device while EV.app is open.
         EarsProcess.stopAndWait()
+        installPressureGuard()
+        // Orb windows created during AppModel.start are held until this
+        // point: switching to accessory above would otherwise hide them.
+        Task { @MainActor in
+            VoiceOrbOverlay.shared.noteAppDidFinishLaunching()
+        }
     }
 
     /// The window-style menu panel is a real `NSWindow`. Closing it (Talk,
@@ -80,6 +91,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
         window.orderFrontRegardless()
         keepAliveWindow = window
+    }
+
+    /// macOS 27 SwiftUI crashes in `NSHostingView.hitTest` when a Force
+    /// Touch pressure event latches this menu-bar panel. Clicks still
+    /// arrive as mouseUp.
+    private func installPressureGuard() {
+        NSEvent.addLocalMonitorForEvents(matching: [.pressure]) { _ in nil }
     }
 
     /// Menu-bar-only apps have no Dock icon or visible menu bar, so ⌘Q is the

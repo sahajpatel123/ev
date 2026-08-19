@@ -30,7 +30,15 @@ MAX_PREFETCH = 3
 RESULT_CHARS = 900
 
 WRITE_TOOLS = frozenset(
-    {"send_message", "place_call", "open_url", "set_reminder", "present"}
+    {
+        "send_message",
+        "place_call",
+        "open_url",
+        "open_app",
+        "close_app",
+        "set_reminder",
+        "present",
+    }
 )
 CORE_TURN_TOOLS = (
     "search_memory",
@@ -39,6 +47,7 @@ CORE_TURN_TOOLS = (
     "calculate",
     "present",
     "get_upcoming_alerts",
+    "calendar_read",
 )
 LIFE_TURN_TOOLS = (
     "resolve_contact",
@@ -308,6 +317,8 @@ def infer_args(name: str, message: str) -> dict[str, Any] | None:
     if name == "get_gear_status":
         return {}
     if name == "get_upcoming_alerts":
+        return {"limit": 8}
+    if name == "calendar_read":
         return {"limit": 8}
     if name in {"get_goals", "get_patterns"}:
         return {}

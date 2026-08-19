@@ -702,6 +702,7 @@ async def sync_integration(
     actor: str,
     *,
     days: int | None = None,
+    device_id=None,
 ) -> IntegrationSyncOut:
     """Pull provider data into the integration's live channel (idempotent)."""
     integration = await _active_integration(session, integration_id)
@@ -710,6 +711,42 @@ async def sync_integration(
         raise LookupError(f"adapter '{integration.adapter}' is unavailable")
     if integration.live_channel_id is None:
         raise LookupError("integration has no live channel")
+    from app.ev.policy import authorize
+    from app.ev.tools import get_spec
+
+    sync_name = {
+        "calendar": "calendar_read",
+        "messaging": "list_messages",
+        "mail": "list_mail",
+        "contacts": "resolve_contact",
+    }.get(integration.adapter)
+    sync_spec = get_spec(sync_name) if sync_name else {
+        "name": f"{integration.adapter}.sync",
+        "description": f"Read from the {integration.adapter} provider",
+        "parameters": {"type": "object", "additionalProperties": False},
+        "output": {"type": "object"},
+        "permission": f"{integration.adapter}:read",
+        "read_only": True,
+        "sensitive": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": integration.adapter,
+        "evidence": ["source", "timestamp"],
+    }
+    decision = await authorize(
+        session,
+        sync_name or f"{integration.adapter}.sync",
+        actor=actor,
+        arguments={},
+        device_id=device_id,
+        channel="action",
+        spec=sync_spec,
+        provider_scopes_override=list(integration.scopes or []),
+        provider_connected_override=True,
+    )
+    if not decision.allowed:
+        raise PermissionError(decision.reason)
     credential = await _credential(session, integration_id, "oauth")
     if (
         credential is None
@@ -964,12 +1001,146 @@ async def rotate_vault(
     return {"rotated": True, "reencrypted_credentials": reencrypted}
 
 
+def _integration_policy_spec(adapter_slug: str, action: str, adapter_spec) -> tuple[str, dict]:
+    """Map an adapter action onto a policy-shaped capability contract."""
+
+    from app.ev.policy import confirmation_policy_for
+
+    adapter_name = str(adapter_slug or "integration")
+    action_name = str(action or "")
+    lowered = action_name.lower()
+    if adapter_name == "calendar":
+        capability_name = "calendar_read" if any(
+            token in lowered for token in ("read", "list", "availability", "freebusy")
+        ) else "calendar_add"
+    elif adapter_name == "messaging":
+        capability_name = "list_messages" if any(
+            token in lowered for token in ("list", "read", "inbox")
+        ) else "send_message"
+    elif adapter_name == "contacts":
+        capability_name = "resolve_contact"
+    elif adapter_name == "phone":
+        capability_name = "place_call"
+    elif adapter_name == "mail":
+        capability_name = "list_mail" if any(
+            token in lowered for token in ("list", "read", "inbox")
+        ) else "mail_send"
+    elif adapter_name == "smart_home":
+        capability_name = "home_status" if any(
+            token in lowered for token in ("status", "list", "read")
+        ) else "home_act"
+    else:
+        capability_name = f"{adapter_name}.{action_name}"
+    scope = str(adapter_spec.scope or "")
+    high_risk = scope in {"phone:act", "home:act", "drone:act", "printer:act"}
+    acting = bool(
+        high_risk
+        or scope.endswith(":act")
+        or scope.endswith(":write")
+        or any(token in lowered for token in ("send", "create", "set", "write", "call"))
+    )
+    risk = "R3" if high_risk else "R2" if acting else "R0"
+    policy_spec = {
+        "name": capability_name,
+        "description": str(adapter_spec.description or action_name),
+        "parameters": dict(adapter_spec.parameters or {"type": "object"}),
+        "output": {"type": "object"},
+        "permission": scope,
+        "required_scopes": [scope] if scope else [],
+        "risk_class": risk,
+        "confirmation": confirmation_policy_for(risk),
+        "target_ownership": "owner",
+        "provider": adapter_name,
+        "read_only": not acting,
+        "sensitive": acting,
+        "evidence": ["source", "timestamp"],
+    }
+    if adapter_name == "device_proxy" and scope == "phone:act":
+        policy_spec["queue_only"] = True
+    return capability_name, policy_spec
+
+
+async def _authorize_integration_binding(
+    session: AsyncSession,
+    *,
+    integration: Integration,
+    adapter,
+    action: str,
+    adapter_spec,
+    arguments: dict,
+    actor: str,
+    device_id=None,
+    confirmation=None,
+) -> None:
+    from app.ev.policy import authorize
+
+    capability_name, policy_spec = _integration_policy_spec(
+        adapter.slug,
+        action,
+        adapter_spec,
+    )
+    decision = await authorize(
+        session,
+        capability_name,
+        actor=actor,
+        arguments=arguments,
+        device_id=device_id,
+        channel="action",
+        confirmation=confirmation,
+        spec=policy_spec,
+        provider_scopes_override=list(integration.scopes or []),
+        provider_connected_override=True,
+    )
+    if not decision.allowed:
+        raise PermissionError(decision.reason)
+
+
+async def authorize_integration_action(
+    session: AsyncSession,
+    integration_id: UUID,
+    *,
+    action: str,
+    args: dict,
+    actor: str,
+    device_id=None,
+    confirmation=None,
+) -> None:
+    """Policy-only preflight for HTTP/device callers before adapter dispatch."""
+
+    integration = await _active_integration(session, integration_id)
+    adapter = registry.get(integration.adapter)
+    if adapter is None:
+        raise LookupError(f"adapter '{integration.adapter}' is unavailable")
+    adapter_spec = adapter.action(action)
+    if adapter_spec is None:
+        raise ValueError(f"adapter '{adapter.slug}' has no action '{action}'")
+    if adapter_spec.scope not in (integration.scopes or []):
+        raise PermissionError(f"scope '{adapter_spec.scope}' is not granted")
+    effective_args, issues = validate_arguments(args or {}, adapter_spec.parameters)
+    if issues:
+        raise ValueError("; ".join(issues))
+    await _authorize_integration_binding(
+        session,
+        integration=integration,
+        adapter=adapter,
+        action=action,
+        adapter_spec=adapter_spec,
+        arguments=effective_args,
+        actor=actor,
+        device_id=device_id,
+        confirmation=confirmation,
+    )
+
+
 async def execute_action(
     session: AsyncSession,
     integration_id: UUID,
     action: str,
     args: dict,
     actor: str,
+    *,
+    device_id=None,
+    policy_checked: bool = False,
 ) -> IntegrationActionOut:
     integration = await _active_integration(session, integration_id)
     adapter = registry.get(integration.adapter)
@@ -983,6 +1154,17 @@ async def execute_action(
     effective_args, issues = validate_arguments(args or {}, spec.parameters)
     if issues:
         raise ValueError("; ".join(issues))
+    if not policy_checked:
+        await _authorize_integration_binding(
+            session,
+            integration=integration,
+            adapter=adapter,
+            action=action,
+            adapter_spec=spec,
+            arguments=effective_args,
+            actor=actor,
+            device_id=device_id,
+        )
     config = dict(integration.config or {})
     config["_session"] = session
     provider = config.get("provider")
@@ -998,9 +1180,9 @@ async def execute_action(
         )
 
     # Life adapters (macos_life / device_proxy) are authenticated by the local
-    # helper + TCC, not by a vaulted OAuth token. Everything else keeps the
-    # existing fail-closed OAuth gate.
-    needs_oauth = provider not in ("macos_life", "device_proxy")
+    # helper + TCC, not by a vaulted OAuth token. Local doubles are CI-only and
+    # must never require a provider credential.
+    needs_oauth = provider not in ("macos_life", "device_proxy", "local")
     token = ""
     credential = await _credential(session, integration_id, "oauth")
     if needs_oauth:
@@ -1084,6 +1266,42 @@ async def execute_action(
         result=result,
         executed_at=utcnow(),
     )
+
+
+async def execute_action_after_policy(
+    session: AsyncSession,
+    integration_id: UUID,
+    action: str,
+    args: dict,
+    *,
+    actor: str,
+    device_id=None,
+) -> IntegrationActionOut:
+    """Dispatch after an outer policy preflight without double confirmation.
+
+    A few local callers and test doubles still expose the historical
+    ``execute_action`` signature. The compatibility retry is limited to the
+    missing keyword error; adapter/runtime TypeErrors are never swallowed.
+    """
+
+    kwargs = {"actor": actor, "policy_checked": True}
+    if device_id is not None:
+        kwargs["device_id"] = device_id
+    try:
+        return await execute_action(session, integration_id, action, args, **kwargs)
+    except TypeError as exc:
+        if "unexpected keyword argument 'policy_checked'" not in str(exc):
+            raise
+        fallback_kwargs = {"actor": actor}
+        if device_id is not None:
+            fallback_kwargs["device_id"] = device_id
+        return await execute_action(
+            session,
+            integration_id,
+            action,
+            args,
+            **fallback_kwargs,
+        )
 
 
 async def _queue_device_action(
@@ -1386,6 +1604,10 @@ async def ingest_webhook(
     if channel is None or not channel.active:
         raise LookupError("integration live channel is inactive")
     stored = await ingest_events(session, channel, events)
+    if adapter.slug == "smart_home":
+        from app.ev.home import apply_observed_updates
+
+        await apply_observed_updates(session, events)
     integration.last_webhook_at = utcnow()
     if delivery_key:
         session.add(

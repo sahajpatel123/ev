@@ -31,6 +31,7 @@ from app.api import (
     training,
     voice,
     web,
+    world_model,
 )
 from app.config import settings
 from app.db import init_db
@@ -67,7 +68,11 @@ async def lifespan(_: FastAPI):
     await init_db()
     await _restore_companion_prefs()
     warmup = asyncio.create_task(_warmup_tts())
+    from app.ev.timers import timer_watch_loop
+
+    watch = asyncio.create_task(timer_watch_loop(), name="ev-timer-watch")
     yield
+    watch.cancel()
     warmup.cancel()
 
 
@@ -98,6 +103,7 @@ app.include_router(training.router)
 app.include_router(voice.router)
 app.include_router(ears.router)
 app.include_router(people.router)  # AGENT 7 ROSTER
+app.include_router(world_model.router)  # AGENT 2 personal world model
 app.include_router(filter.router)
 app.include_router(integrations.router)
 app.include_router(maintenance.router)

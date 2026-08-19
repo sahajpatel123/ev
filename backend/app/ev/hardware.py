@@ -9,9 +9,8 @@ from __future__ import annotations
 import math
 import re
 import struct
-from datetime import timedelta
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +27,7 @@ from app.models import (
     TelemetrySession,
 )
 from app.schemas import PrintJobCreate, PrintJobStatusUpdate
-from app.utils.text import normalize_text, utcnow
+from app.utils.text import utcnow
 
 WEAPONS_RE = re.compile(
     r"\b(weapon|weapons|fire|firing|shoot|shot|missile|armed|arm|kill|attack|bomb|payload)\b",
@@ -77,6 +76,8 @@ async def adapter_act(
     args: dict | None = None,
     *,
     actor: str = "owner",
+    device_id=None,
+    policy_checked: bool = False,
 ) -> dict:
     from app.integrations.adapters import registry
 
@@ -88,6 +89,25 @@ async def adapter_act(
             "configured": False,
             "error": f"no {adapter} connected",
         }
+    if not policy_checked:
+        from app.integrations.service import authorize_integration_action
+
+        try:
+            await authorize_integration_action(
+                session,
+                integration.id,
+                action=action,
+                args=args or {},
+                actor=actor,
+                device_id=device_id,
+            )
+        except (PermissionError, LookupError, ValueError) as exc:
+            return {
+                "ok": False,
+                "configured": True,
+                "error": "policy_denied",
+                "reason": str(exc),
+            }
     config = dict(integration.config or {})
     token = ""
     try:
@@ -204,6 +224,7 @@ async def print_start(
         "octoprint.start",
         {"project": name, "gcode": gcode, "job_id": str(job.id)},
         actor=actor,
+        policy_checked=True,
     )
     if not result.get("ok"):
         spoken = result.get("error") or "No printer connected."
@@ -489,7 +510,20 @@ async def last_sample(session: AsyncSession) -> TelemetrySample | None:
 
 
 async def telemetry_weather_overlay(sample: TelemetrySample | None) -> list[dict]:
+    from app.ev.policy import evaluate_policy
+    from app.ev.tools import get_spec
     from app.search.live import weather_results
+
+    decision = evaluate_policy(
+        "get_weather",
+        spec=get_spec("get_weather"),
+        actor="master",
+        channel="action",
+        arguments={"place": "home"},
+        provider_connected=True,
+    )
+    if not decision.allowed:
+        return []
 
     lat = sample.lat if sample is not None else settings.home_lat
     lon = sample.lon if sample is not None else settings.home_lon
@@ -511,7 +545,6 @@ async def camera_replay(
 ) -> dict:
     from app.storage.object_store import get_object_store
 
-    wanted = normalize_text(camera)
     row = (
         await session.execute(
             select(OwnerCamera).where(OwnerCamera.name.ilike(f"%{camera}%")).limit(1)
@@ -555,6 +588,7 @@ async def camera_replay(
         "cameras.clip",
         {"camera": row.name, "at": at},
         actor=actor,
+        policy_checked=True,
     )
     if result.get("blob_id"):
         blob_id = result.get("blob_id")
@@ -690,6 +724,7 @@ async def drone_command(
         f"drone.{cmd}",
         {"lat": lat, "lon": lon},
         actor=actor,
+        policy_checked=True,
     )
     sim = bool(result.get("sim") or (integration.config or {}).get("provider", "local") == "local")
     _DRONE_STATE[str(integration.id)] = cmd
@@ -713,7 +748,6 @@ async def drone_command(
 async def find_gear(session: AsyncSession, label: str) -> dict:
     from app.models import Device, Entity, GearSnapshot
 
-    wanted = normalize_text(label)
     person = (
         await session.execute(
             select(Entity).where(

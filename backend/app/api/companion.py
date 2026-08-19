@@ -50,6 +50,8 @@ from app.schemas import (
     PrintJobStatusUpdate,
     RelationshipOut,
     ResearchConclude,
+    ResearchJobCreate,
+    ResearchJobOut,
     ResearchNoteCreate,
     ResearchNoteOut,
     ResearchSessionCreate,
@@ -71,6 +73,85 @@ router = APIRouter(prefix="/v1")
 # --------------------------------------------------------------------------- #
 # Research assistant
 # --------------------------------------------------------------------------- #
+
+
+@router.post("/research/jobs", response_model=ResearchJobOut, status_code=201)
+async def create_research_job(
+    data: ResearchJobCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        row = await service.create_job(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    await session.commit()
+    return ResearchJobOut.model_validate(row)
+
+
+@router.get("/research/jobs/{job_id}", response_model=ResearchJobOut)
+async def get_research_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        row = await service._job(job_id)
+    except (KeyError, PermissionError):
+        raise HTTPException(status_code=404, detail="Research job not found") from None
+    return ResearchJobOut.model_validate(row)
+
+
+@router.post("/research/jobs/{job_id}/run", response_model=ResearchJobOut)
+async def run_research_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        await service.run_job(job_id)
+        row = await service._job(job_id)
+    except (KeyError, PermissionError):
+        raise HTTPException(status_code=404, detail="Research job not found") from None
+    await session.commit()
+    return ResearchJobOut.model_validate(row)
+
+
+@router.post("/research/jobs/{job_id}/cancel", response_model=ResearchJobOut)
+async def cancel_research_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        await service.cancel_job(job_id)
+        row = await service._job(job_id)
+    except (KeyError, PermissionError):
+        raise HTTPException(status_code=404, detail="Research job not found") from None
+    await session.commit()
+    return ResearchJobOut.model_validate(row)
+
+
+@router.post("/research/jobs/{job_id}/resume", response_model=ResearchJobOut)
+async def resume_research_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        await service.resume_job(job_id)
+        row = await service._job(job_id)
+    except (KeyError, PermissionError):
+        raise HTTPException(status_code=404, detail="Research job not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    await session.commit()
+    return ResearchJobOut.model_validate(row)
 
 
 @router.post("/research/sessions", response_model=ResearchSessionOut, status_code=201)
@@ -459,6 +540,27 @@ async def list_tools(
     return [ToolSpecOut.model_validate(spec) for spec in tools.list_tools()]
 
 
+@router.get("/capabilities")
+async def capability_manifest(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+    session_id: str | None = Query(default=None, max_length=128),
+) -> dict:
+    """Expose current capability contracts and honest provider availability."""
+
+    from app.ev.policy import capability_manifest as build_manifest
+    from app.voice.live.grok_voice import live_realtime_provider
+
+    return await build_manifest(
+        session,
+        actor=ctx.actor,
+        device_id=ctx.device_id,
+        realtime_provider=live_realtime_provider() or "pipeline",
+        channel="action",
+        session_id=session_id,
+    )
+
+
 @router.post("/gateway/tools", response_model=ToolCallResponse)
 async def call_tool(
     data: ToolCallRequest,
@@ -482,6 +584,7 @@ async def call_tool(
         request_id=data.request_id,
         device_id=ctx.device_id,
         reverify_token=x_ev_reverify,
+        channel="action",
     )
     await session.commit()
     return response

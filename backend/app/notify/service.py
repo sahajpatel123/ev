@@ -258,7 +258,17 @@ async def dispatch_action(session: AsyncSession, action: ApprovedAction) -> Noti
             emergency=True,
             bypass_policy=True,
             backend_override=backend_override,
-            details={"channel": channel, "to": target},
+            details={
+                "channel": channel,
+                "to": target,
+                # A local receipt can document the runtime action's delivery
+                # attempt, but it must retain an unavailable provider result;
+                # this prevents a console/webhook receipt from masquerading
+                # as an SMS or Messages success.
+                "provider_result": dict(action.result or {})
+                if isinstance(action.result, dict)
+                else None,
+            },
         )
     if action.action_type in ("present", "hud_card"):
         from app.notify.presence import open_presence

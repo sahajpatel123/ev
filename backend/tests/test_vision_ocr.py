@@ -270,3 +270,48 @@ async def test_never_send_to_model_media_never_reaches_provider(
     assert (await client.get("/v1/vision/log")).json() == []
     assert payload["local_degraded"] is True
     assert payload["face_detections"][0]["count"] == 0
+
+
+async def test_deepseek_ocr_provider_parses_hosted_json(monkeypatch) -> None:
+    from app.vision.providers import DeepSeekOCRProvider
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self) -> dict:
+            return {
+                "text": "MENU PAD THAI 12",
+                "lines": [{"text": "MENU", "confidence": 0.9}],
+            }
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, json=None):
+            assert "localhost" in url
+            assert json["prompt"]
+            return FakeResponse()
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+    provider = DeepSeekOCRProvider(endpoint="http://localhost:8090/ocr", timeout=1)
+    result = await provider.analyze(data=b"png-bytes", content_type="image/png")
+    assert result.provider == "deepseek_ocr"
+    assert result.ocr_text == "MENU PAD THAI 12"
+    assert result.lines[0]["text"] == "MENU"
+    assert result.degraded is False
+
+
+async def test_deepseek_ocr_refuses_official_chat_api() -> None:
+    from app.vision.providers import DeepSeekOCRProvider, VisionEngineError
+
+    provider = DeepSeekOCRProvider(endpoint="https://api.deepseek.com/chat/completions")
+    with pytest.raises(VisionEngineError, match="text-only"):
+        await provider.analyze(data=b"x", content_type="image/png")
+

@@ -1032,7 +1032,29 @@ async def route_action(
     if issues:
         raise ValueError(f"Invalid action payload: {'; '.join(issues)}")
     requires_approval = force_requires_approval or bool(spec["requires_approval"])
+    from app.ev.policy import authorize, infer_channel, should_enforce
+
+    auth_channel = infer_channel(requested_by, "action")
     current = await active_session(session)
+    decision = await authorize(
+        session,
+        data.action_type,
+        actor=requested_by,
+        arguments=data.payload or {},
+        device_id=device_id,
+        channel=auth_channel,
+        spec=spec,
+        session_id=str(current.id) if current else None,
+    )
+    if should_enforce(decision, name=data.action_type, channel=auth_channel):
+        # A disconnected provider prevents execution, but it should not erase
+        # the user's auditable queued action.  The adapter will return the
+        # same honest `not_connected` result when the action is approved and
+        # executed; only policy refusals reject creation outright.
+        if decision.effect in {"refuse", "reject", "deny"}:
+            raise ValueError(decision.reason)
+        if decision.confirmation_required:
+            requires_approval = True
     approved = data.auto_approve and not requires_approval
     action = ApprovedAction(
         action_type=data.action_type,
@@ -1073,6 +1095,8 @@ async def route_action(
             "undoable": bool(spec["undoable"]),
             "permission": spec["permission"],
             "read_only": bool(spec["read_only"]),
+            "risk_class": decision.risk_class,
+            "policy_effect": decision.effect,
         },
     )
     return action
@@ -1092,14 +1116,32 @@ async def decide_action(
     if action.status != "pending":
         raise ValueError(f"Action is already {action.status}")
     now = utcnow()
+    from app.ev.confirm import (
+        confirmation_expired,
+        expire_action,
+        payload_tampered,
+        pol_meta,
+        release_parked_hold,
+    )
+
     if decision == "approve":
-        action.status = "approved"
-        action.approved_at = now
-        action.approved_by = actor
+        if confirmation_expired(action.payload, now=now):
+            expire_action(action, reason="confirmation_expired", now=now)
+            await session.flush()
+            await release_parked_hold(action, spoken="That confirmation expired.")
+        elif payload_tampered(action.payload):
+            expire_action(action, reason="confirmation_target_mismatch", now=now)
+            await session.flush()
+            await release_parked_hold(action, spoken="That confirmation no longer matches the target.")
+        else:
+            action.status = "approved"
+            action.approved_at = now
+            action.approved_by = actor
     else:
         action.status = "denied"
         action.denied_at = now
         action.denied_reason = reason or "denied"
+        await release_parked_hold(action, spoken="Cancelled.")
     action.updated_at = now
     await session.flush()
     await record_runtime_event(
@@ -1119,6 +1161,13 @@ async def decide_action(
         resource_ids=[action.id],
         details={"decision": decision, "reason": reason},
     )
+    if action.status == "denied" and action.denied_reason in {
+        "confirmation_expired",
+        "confirmation_target_mismatch",
+    }:
+        raise ValueError(action.denied_reason.replace("_", " "))
+    if decision == "approve" and action.status == "approved" and pol_meta(action.payload).get("resume_on_approve"):
+        return await execute_action(session, action.id, actor=actor)
     return action
 
 
@@ -1134,14 +1183,69 @@ async def execute_action(
         raise KeyError(f"Action {action_id} not found")
     if action.status != "approved":
         raise ValueError("Only approved actions can be executed")
+    from app.ev.confirm import (
+        deliver_parked_result,
+        payload_tampered,
+        pol_meta,
+        tool_arguments,
+    )
+    from app.ev.policy import ROUTED_CAPABILITIES, Confirmation, canonical_target
+
+    if payload_tampered(action.payload):
+        raise ValueError("confirmation target mismatch")
     action.status = "executed"
     action.executed_at = utcnow()
     action.result = result or {}
     action.updated_at = utcnow()
+    args = tool_arguments(action.payload)
+    meta = pol_meta(action.payload)
+    should_dispatch = action.action_type in ROUTED_CAPABILITIES or bool(meta)
+    dispatched_via_tool = False
+    provider_unavailable = False
+
+    if should_dispatch:
+        from app.ev.tools import dispatch as dispatch_tool
+
+        bound = None
+        if action.approved_at is not None:
+            stored_target = str(meta.get("target") or "") or canonical_target(
+                action.action_type, args
+            )
+            bound = Confirmation(
+                factor="http_approve",
+                confirmed=True,
+                target=stored_target,
+                issued_at=action.approved_at,
+                session_id=str(meta.get("live_session_id") or action.session_id or "") or None,
+            )
+        tool = await dispatch_tool(
+            session,
+            action.action_type,
+            args,
+            actor=actor,
+            allow_sensitive=True,
+            channel="action",
+            confirmation=bound,
+            live_session_id=str(meta.get("live_session_id") or action.session_id or "") or None,
+            audit_endpoint="POST /v1/runtime/actions/{id}/execute",
+        )
+        dispatched_via_tool = True
+        action.result = tool.result or {"error": tool.error}
+        provider_unavailable = bool(
+            isinstance(action.result, dict)
+            and action.result.get("error") == "not_connected"
+        )
+        if isinstance(action.result, dict) and action.result.get("error"):
+            action.error = str(action.result.get("error"))
+    if meta:
+        await deliver_parked_result(action, action.result or {})
     await session.flush()
     # Real dispatch for deliverable actions; the receipt lives in the
     # notifications ledger (never derived from the caller-supplied result).
-    if action.action_type in ("notification", "send_message", "present", "hud_card"):
+    if (
+        action.action_type in ("notification", "send_message", "present", "hud_card")
+        and (not dispatched_via_tool or provider_unavailable)
+    ):
         from app.notify.service import dispatch_action
 
         try:

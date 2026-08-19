@@ -6,6 +6,33 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+TIMER_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "ok": {"type": "boolean"},
+        "id": {"type": "string"},
+        "timer_id": {"type": "string"},
+        "fire_at": {"type": "string"},
+        "status": {"type": "string"},
+        "text": {"type": "string"},
+        "spoken": {"type": "string"},
+        "error": {"type": "string"},
+        "evidence": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string"},
+                "timestamp": {"type": "string"},
+                "accepted": {"type": "boolean"},
+                "observed": {"type": "boolean"},
+                "timer_id": {"type": "string"},
+                "fire_at": {"type": "string"},
+                "status": {"type": "string"},
+            },
+        },
+        "idempotent_replay": {"type": "boolean"},
+    },
+}
+
 FLEET_TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "home_status",
@@ -20,10 +47,21 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": True,
         "permission": "home:read",
         "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
     },
     {
         "name": "home_act",
-        "description": "Change a home entity (light, lock, cover). Locks need confirm.",
+        "description": (
+            "Change an owner home entity. This pass completes light control "
+            "with accepted and observed evidence. Locks and covers stay on "
+            "the existing path and are not expanded."
+        ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -39,6 +77,14 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": False,
         "permission": "home:act",
         "undoable": True,
+        "risk_class": "R3",
+        "confirmation": "fresh",
+        "target_ownership": "owner",
+        "provider": "smart_home",
+        "evidence": ["source", "timestamp", "accepted_state", "observed_state"],
+        "idempotency": "natural",
+        "cancellation": "timeout",
+        "required_scopes": ["home:act"],
     },
     {
         "name": "actuate",
@@ -61,7 +107,11 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "start_timer",
-        "description": "Start a durable timer that speaks when it fires.",
+        "description": (
+            "Start a durable timer that rings and shows a HUD when it fires. "
+            "For a one-minute timer pass minutes=1. Do not narrate a timer "
+            "instead of calling this."
+        ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -69,6 +119,73 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
                 "minutes": {"type": "number", "minimum": 0, "default": None},
                 "at": {"type": "string", "maxLength": 64, "default": None},
                 "text": {"type": "string", "maxLength": 500, "default": None},
+                "idempotency_key": {"type": "string", "maxLength": 128, "default": None},
+            },
+        },
+        "output": TIMER_OUTPUT_SCHEMA,
+        "sensitive": False,
+        "read_only": False,
+        "permission": "assistant:profile",
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "key",
+        "cancellation": "cancel_timer",
+    },
+    {
+        "name": "cancel_timer",
+        "description": "Cancel a pending owner timer by id or matching text.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "id": {"type": "string", "maxLength": 64, "default": None},
+                "text": {"type": "string", "maxLength": 500, "default": None},
+            },
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "assistant:profile",
+        "undoable": False,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+    },
+    {
+        "name": "list_timers",
+        "description": "List pending owner timers.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "assistant:profile",
+        "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+    },
+    {
+        "name": "snooze_timer",
+        "description": "Delay a pending timer or restart a fired one.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "id": {"type": "string", "maxLength": 64, "default": None},
+                "text": {"type": "string", "maxLength": 500, "default": None},
+                "minutes": {"type": "number", "minimum": 0.5, "default": 5},
             },
         },
         "output": {"type": "object"},
@@ -76,6 +193,13 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": False,
         "permission": "assistant:profile",
         "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "key",
+        "cancellation": "cancel_timer",
     },
     {
         "name": "session_elapsed",
@@ -114,6 +238,7 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
                 "end": {"type": "string", "minLength": 1, "maxLength": 64},
                 "location": {"type": "string", "maxLength": 512, "default": None},
                 "confirm": {"type": "boolean", "default": False},
+                "idempotency_key": {"type": "string", "maxLength": 128, "default": None},
             },
             "required": ["title", "start", "end"],
         },
@@ -122,7 +247,40 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": False,
         "permission": "calendar:write",
         "undoable": True,
+        "risk_class": "R2",
+        "confirmation": "standing",
+        "target_ownership": "owner",
+        "provider": "calendar",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "key",
+        "cancellation": "timeout",
+        "required_scopes": ["calendar:write"],
     },
+    {
+        "name": "calendar_read",
+        "description": "Read the owner's calendar signals (next event, leave-by). Never writes.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            },
+        },
+        "output": {"type": "object", "required": ["ok", "spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "calendar:read",
+        "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "calendar",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["calendar:read"],
+    },
+
     {
         "name": "ticket_hold",
         "description": "Draft a ticket search URL and optional calendar hold. Never buys.",
@@ -162,6 +320,13 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": False,
         "permission": "ticket:buy",
         "undoable": False,
+        "risk_class": "R4",
+        "confirmation": "fresh",
+        "target_ownership": "owner",
+        "provider": "tickets",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "key",
+        "cancellation": "required",
     },
     {
         "name": "gear_explain",
@@ -299,6 +464,15 @@ def actuate_permission(verb: str) -> str:
     return "actuator:software"
 
 
+def _optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 async def handle_fleet_tool(
     session: AsyncSession,
     name: str,
@@ -339,9 +513,34 @@ async def handle_fleet_tool(
 
         return await start_timer(
             session,
-            minutes=args.get("minutes"),
+            minutes=_optional_float(args.get("minutes")),
             at=args.get("at"),
             text=str(args.get("text") or ""),
+            actor=actor,
+            idempotency_key=args.get("idempotency_key"),
+        )
+    if name == "cancel_timer":
+        from app.ev.timers import cancel_timer
+
+        return await cancel_timer(
+            session,
+            timer_id=args.get("id"),
+            text=args.get("text"),
+            actor=actor,
+        )
+    if name == "list_timers":
+        from app.ev.timers import list_timers
+
+        return await list_timers(session)
+    if name == "snooze_timer":
+        from app.ev.timers import snooze_timer
+
+        return await snooze_timer(
+            session,
+            timer_id=args.get("id"),
+            text=args.get("text"),
+            minutes=float(args.get("minutes") or 5),
+            actor=actor,
         )
     if name == "session_elapsed":
         from app.ev.timers import session_elapsed
@@ -362,7 +561,10 @@ async def handle_fleet_tool(
             location=args.get("location"),
             confirm=bool(args.get("confirm")),
             actor=actor,
+            idempotency_key=args.get("idempotency_key"),
         )
+    if name == "calendar_read":
+        return await _calendar_read(session, limit=int(args.get("limit") or 20))
     if name == "ticket_hold":
         from app.ev.calendar_write import ticket_hold
 
@@ -426,3 +628,57 @@ async def handle_fleet_tool(
 
         return await whereabouts_honest(session, str(args["name"]))
     return None
+
+
+async def _calendar_read(session: AsyncSession, *, limit: int = 20) -> dict:
+    """Owner calendar signals from the existing calendar feed. Honest if missing."""
+
+    from sqlalchemy import select
+
+    from app.ev import calendar as calendar_feed
+    from app.models import Integration
+    from app.utils.text import utcnow
+
+    integration = (
+        await session.execute(
+            select(Integration).where(
+                Integration.adapter == "calendar",
+                Integration.status == "active",
+            ).limit(1)
+        )
+    ).scalars().first()
+    if integration is None:
+        return {
+            "ok": False,
+            "error": "not_connected",
+            "degraded": True,
+            "provider": "calendar",
+            "spoken": "Calendar is not connected.",
+            "next_step": (
+                "install the calendar integration and grant scope 'calendar:read' "
+                "(POST /v1/integrations with adapter=calendar)"
+            ),
+        }
+    signals = await calendar_feed.calendar_signals(session, limit=min(limit, 500))
+    next_event = signals.get("next_event") or {}
+    summary = str(next_event.get("summary") or "").strip()
+    spoken = f"Next: {summary}." if summary else "No upcoming calendar events."
+    source = signals.get("source") if isinstance(signals.get("source"), dict) else {}
+    return {
+        "ok": True,
+        "next_event": next_event or None,
+        "leave_by": signals.get("leave_by"),
+        "today": signals.get("today"),
+        "signals": {
+            "next_event": next_event or None,
+            "leave_by": signals.get("leave_by"),
+            "today": signals.get("today"),
+        },
+        "spoken": spoken,
+        "evidence": {
+            "source": source.get("kind") or "calendar",
+            "timestamp": utcnow().isoformat(),
+            "event_ids": source.get("event_ids") or [],
+            "provider": integration.config.get("provider") if isinstance(integration.config, dict) else None,
+        },
+    }

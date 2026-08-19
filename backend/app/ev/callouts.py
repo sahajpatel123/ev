@@ -19,26 +19,53 @@ async def emit_callout(
     source_item: str | None = None,
     emergency: bool = False,
     tts_available: bool = True,
+    owner_scheduled: bool = False,
 ) -> Callout:
-    """Write a replayable row; mark spoken only when policy and TTS allow."""
+    """Write a replayable row; mark spoken only when policy and TTS allow.
 
-    decision = await may_speak_proactive(
-        session,
-        emergency=emergency,
-        fingerprint=f"callout:{source}:{source_item or text[:80]}",
-    )
-    spoken = bool(decision.allowed and tts_available)
+    Owner-scheduled lines (timers the owner asked for) speak even during
+    quiet hours. Unsolicited proactive speech still goes through the gate.
+    """
+
+    from app.voice.live.layer import OWNER_SCHEDULED_KEY
+
+    hud_payload = dict(hud or {})
+    if owner_scheduled:
+        hud_payload[OWNER_SCHEDULED_KEY] = True
+        may_speak = bool(tts_available)
+    else:
+        decision = await may_speak_proactive(
+            session,
+            emergency=emergency,
+            fingerprint=f"callout:{source}:{source_item or text[:80]}",
+        )
+        may_speak = bool(decision.allowed and tts_available)
     row = Callout(
         text=text,
         source=source,
         source_item=source_item,
-        hud=hud or {},
-        spoken=spoken,
+        hud=hud_payload,
+        spoken=False,
         emergency=emergency,
         created_at=utcnow(),
     )
     session.add(row)
     await session.flush()
+    if may_speak:
+        from app.voice.live.layer import speak_on_live, stamp_live_mail
+
+        delivered = await speak_on_live(
+            text,
+            hud=hud_payload,
+            emergency=emergency,
+            db=session,
+            persist_on_miss=False,
+            bypass_quiet_hours=owner_scheduled,
+        )
+        if delivered:
+            row.spoken = True
+        else:
+            stamp_live_mail(row)
     return row
 
 

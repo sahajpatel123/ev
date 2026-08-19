@@ -14,7 +14,7 @@ from uuid import UUID
 
 from httpx import AsyncClient
 
-from app.voice.live.events import ReplyEvent, TtsChunkEvent
+from app.voice.live.events import BargeInEvent, ErrorEvent, FinalTranscriptEvent, ReplyEvent, TtsChunkEvent
 from app.voice.live.session import LiveSession
 from app.voice.live.transport import serve_live_websocket
 from tests.test_voice_lifecycle import grant_voice_consent
@@ -91,6 +91,172 @@ async def test_live_ws_roundtrip_text_turn() -> None:
     finally:
         await ws.put_disconnect()
         await asyncio.wait_for(server, timeout=5.0)
+
+
+async def test_live_outbound_audio_preserves_chunk_order() -> None:
+    """A burst of streamed audio never creates missing syllables."""
+
+    session = LiveSession(synthesizer=None, transcriber=None)
+    for index in range(7):
+        await session.emit(
+            TtsChunkEvent(
+                at_ms=index,
+                index=index,
+                text="" if index else "Hello",
+                audio_b64="QUJD",
+                duration_ms=160,
+            )
+        )
+
+    queued_audio = [event for event in session.outbound._queue if event.type == "tts_chunk"]
+    assert len(queued_audio) == 7
+    assert [event.index for event in queued_audio] == list(range(7))
+
+    # A late user transcript is the turn she is answering. Dropping queued
+    # speech here is what made replies stall mid-sentence.
+    await session.emit(
+        FinalTranscriptEvent(at_ms=20, text="new question", provider="text")
+    )
+    kinds = [event.type for event in session.outbound._queue]
+    assert kinds.count("tts_chunk") == 7
+    assert kinds[-1] == "final_transcript"
+
+    await session.emit(BargeInEvent(at_ms=21, reason="user_speech"))
+    assert [event.type for event in session.outbound._queue] == [
+        "final_transcript",
+        "barge_in",
+    ]
+
+
+async def test_live_outbound_audio_is_released_at_render_speed() -> None:
+    """A fast producer cannot put a whole reply into the playback backlog."""
+
+    session = LiveSession(synthesizer=None, transcriber=None)
+    await session.emit(
+        TtsChunkEvent(
+            at_ms=1,
+            index=0,
+            text="first",
+            audio_b64="QUJD",
+            duration_ms=80,
+        )
+    )
+    started = asyncio.get_running_loop().time()
+    await session.emit(
+        TtsChunkEvent(
+            at_ms=2,
+            index=1,
+            text="second",
+            audio_b64="QUJD",
+            duration_ms=80,
+        )
+    )
+    assert asyncio.get_running_loop().time() - started >= 0.06
+
+
+async def test_live_s2s_audio_survives_its_own_transcript() -> None:
+    """Realtime audio must not wait on pacing or die when the transcript lands."""
+
+    session = LiveSession(synthesizer=None, transcriber=None)
+    started = asyncio.get_running_loop().time()
+    await session.emit(
+        TtsChunkEvent(
+            at_ms=1,
+            index=0,
+            text="hello",
+            audio_b64="QUJD",
+            duration_ms=400,
+            provider="openai-realtime",
+        )
+    )
+    await session.emit(
+        TtsChunkEvent(
+            at_ms=2,
+            index=1,
+            text="",
+            audio_b64="QUJD",
+            duration_ms=400,
+            provider="grok-voice",
+        )
+    )
+    assert asyncio.get_running_loop().time() - started < 0.15
+    await session.emit(
+        FinalTranscriptEvent(at_ms=3, text="hello", provider="openai-realtime")
+    )
+    kinds = [event.type for event in session.outbound._queue]
+    assert kinds.count("tts_chunk") == 2
+    assert kinds[-1] == "final_transcript"
+
+
+async def test_live_boundary_cancels_waiting_audio() -> None:
+    """A new turn wakes a paced producer instead of leaving it stuck."""
+
+    session = LiveSession(synthesizer=None, transcriber=None)
+    await session.emit(
+        TtsChunkEvent(
+            at_ms=1,
+            index=0,
+            text="first",
+            audio_b64="QUJD",
+            duration_ms=500,
+        )
+    )
+    waiting = asyncio.create_task(
+        session.emit(
+            TtsChunkEvent(
+                at_ms=2,
+                index=1,
+                text="stale",
+                audio_b64="QUJD",
+                duration_ms=500,
+            )
+        )
+    )
+    await asyncio.sleep(0.01)
+    await session.emit(BargeInEvent(at_ms=3, reason="user_speech"))
+    await asyncio.wait_for(waiting, timeout=0.2)
+    assert [event.type for event in session.outbound._queue] == ["barge_in"]
+
+
+async def test_live_boundary_releases_a_full_queue_audio_waiter() -> None:
+    """A blocked stale audio putter must not deadlock a new turn."""
+
+    session = LiveSession(synthesizer=None, transcriber=None)
+    for index in range(8):
+        await session.emit(TtsChunkEvent(at_ms=index, index=index, text=""))
+    waiting = asyncio.create_task(
+        session.emit(
+            TtsChunkEvent(
+                at_ms=9,
+                index=9,
+                text="stale",
+                audio_b64="QUJD",
+                duration_ms=80,
+            )
+        )
+    )
+    await asyncio.sleep(0)
+    await session.emit(BargeInEvent(at_ms=10, reason="user_speech"))
+    await asyncio.wait_for(waiting, timeout=0.2)
+    assert [event.type for event in session.outbound._queue] == ["barge_in"]
+
+
+async def test_live_realtime_disconnect_drops_old_playback() -> None:
+    """A reconnect boundary must not replay audio from the dead provider."""
+
+    session = LiveSession(synthesizer=None, transcriber=None)
+    await session.emit(
+        TtsChunkEvent(at_ms=1, index=0, text="old", audio_b64="QUJD", duration_ms=80)
+    )
+    await session.emit(
+        ErrorEvent(
+            at_ms=2,
+            code="realtime_disconnect",
+            message="provider disconnected",
+            fatal=False,
+        )
+    )
+    assert [event.type for event in session.outbound._queue] == ["error"]
 
 
 async def test_live_ws_barge_in_cancels_in_flight_reply() -> None:

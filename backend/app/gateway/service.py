@@ -42,6 +42,7 @@ LIFE_TOOL_PERMISSIONS = frozenset(
         "contacts:read",
         "life:open_url",
         "life:reminder",
+        "apps:act",
     }
 )
 
@@ -157,6 +158,18 @@ def tool_specs_from_dicts(specs: Sequence[dict]) -> list[ToolSpec]:
                 permission=str(spec.get("permission", "memory:read")),
                 undoable=bool(spec.get("undoable", False)),
                 output=spec.get("output") or {},
+                version=str(spec.get("version", "1")),
+                required_scopes=[str(scope) for scope in spec.get("required_scopes", [])],
+                risk_class=str(spec.get("risk_class", "R0")),
+                confirmation=str(spec.get("confirmation", "none")),
+                target_ownership=str(spec.get("target_ownership", "owner")),
+                provider=str(spec.get("provider", "local")),
+                fallback=spec.get("fallback"),
+                evidence=[str(item) for item in spec.get("evidence", [])],
+                idempotency=str(spec.get("idempotency", "natural")),
+                timeout_seconds=int(spec.get("timeout_seconds", 10)),
+                cancellation=str(spec.get("cancellation", "not_applicable")),
+                audit_event=spec.get("audit_event"),
             )
         )
     return converted

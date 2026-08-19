@@ -14,6 +14,7 @@ import math
 import operator
 import time
 from collections.abc import Callable
+from datetime import timedelta
 from typing import Any, cast
 
 from sqlalchemy import select
@@ -31,6 +32,7 @@ from app.models import GearSnapshot, Integration, Memory
 from app.schemas import ToolCallResponse
 from app.search.providers import get_search_provider
 from app.services.access_log import log_access
+from app.utils.text import utcnow
 
 MAX_EXPRESSION_LENGTH = 200
 MAX_EXPONENT = 100
@@ -348,6 +350,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": True,
         "permission": "web:search",
         "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "public",
+        "provider": "open-meteo",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
     },
     {
         "name": "resolve_contact",
@@ -399,6 +408,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": False,
         "permission": "message:send",
         "undoable": False,
+        "risk_class": "R2",
+        "confirmation": "standing",
+        "target_ownership": "owner",
+        "provider": "messaging",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "key",
+        "cancellation": "not_applicable",
     },
     {
         "name": "list_messages",
@@ -421,6 +437,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": True,
         "permission": "message:read",
         "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "messaging",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["message:read"],
     },
     {
         "name": "place_call",
@@ -445,6 +469,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": False,
         "permission": "phone:act",
         "undoable": False,
+        "risk_class": "R3",
+        "confirmation": "fresh",
+        "target_ownership": "owner",
+        "provider": "phone",
+        "evidence": ["source", "timestamp", "opened"],
+        "idempotency": "key",
+        "cancellation": "timeout",
+        "required_scopes": ["phone:act"],
     },
     {
         "name": "list_mail",
@@ -461,10 +493,22 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": True,
         "permission": "mail:read",
         "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "mail",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["mail:read"],
     },
     {
         "name": "open_url",
-        "description": "Open a URL on the owner's default browser/device.",
+        "description": (
+            "Open an http or https link in the owner's default browser via the "
+            "Mac life helper. Do not invent a URL. Do not claim success without "
+            "opened evidence."
+        ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -474,10 +518,77 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "required": ["url"],
         },
         "output": {"type": "object"},
-        "sensitive": None,  # resolved by EV_OWNER_AUTONOMY
+        "sensitive": None,
         "read_only": False,
         "permission": "life:open_url",
         "undoable": False,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "macos_life",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["life:open_url"],
+    },
+    {
+        "name": "open_app",
+        "description": (
+            "Open or focus an allowlisted Mac app through the life helper. "
+            "When the owner says open Safari, Messages, Mail, Calendar, Notes, "
+            "Music, Chrome, Slack, Maps, Photos, Settings, FaceTime, "
+            "Reminders, or Terminal, call this with that name. "
+            "Do not pass a bundle id. Do not say you cannot open the app."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 64}
+            },
+            "required": ["name"],
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "macos_life",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "close_app",
+        "required_scopes": ["apps:act"],
+    },
+    {
+        "name": "close_app",
+        "description": (
+            "Quit an allowlisted Mac app through the life helper. Same name "
+            "list as open_app. Will not quit Finder or EV."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 64}
+            },
+            "required": ["name"],
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "apps:act",
+        "undoable": False,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "macos_life",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
     },
     {
         "name": "set_reminder",
@@ -495,7 +606,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "sensitive": None,  # resolved by EV_OWNER_AUTONOMY
         "read_only": False,
         "permission": "life:reminder",
-        "undoable": False,
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "key",
+        "cancellation": "cancel_timer",
     },
     {
         "name": "present",
@@ -663,6 +781,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": True,
         "permission": "diagnostics:read",
         "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
     },
     {
         "name": "research",
@@ -678,6 +803,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": False,
         "permission": "research:write",
         "undoable": False,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "public",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "cooperative",
     },
     {
         "name": "print_start",
@@ -806,6 +938,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "properties": {
                 "camera": {"type": "string", "minLength": 1, "maxLength": 128},
                 "at": {"type": "string", "maxLength": 64, "default": None},
+                "confirm": {"type": "boolean", "default": False},
             },
             "required": ["camera"],
         },
@@ -814,6 +947,43 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": True,
         "permission": "camera:read",
         "undoable": False,
+    },
+    {
+        "name": "look",
+        "description": (
+            "Take one consented camera frame, or an owner photo, and describe "
+            "visible text, objects, and enrolled people only. Never names "
+            "strangers. Never streams. Call this when the owner asks what you "
+            "see, to look at something in view, or to read a label."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "prompt": {"type": "string", "maxLength": 400, "default": None},
+                "attachment_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "default": None,
+                },
+                "focus": {
+                    "type": "string",
+                    "enum": ["auto", "text", "objects", "people"],
+                    "default": "auto",
+                },
+            },
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": True,
+        "permission": "vision:read",
+        "undoable": False,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "provider": "vision",
+        "fallback": "report unavailable; do not fabricate seeing the room",
+        "evidence": ["source", "timestamp"],
     },
     {
         "name": "watchlist_add",
@@ -948,6 +1118,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": True,
         "permission": "life:read",
         "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
     },
     {
         "name": "draft_reply",
@@ -960,6 +1137,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "body": {"type": "string", "maxLength": 8000, "default": None},
                 "confirm": {"type": "boolean", "default": False},
                 "send": {"type": "boolean", "default": False},
+                "to": {"type": "string", "maxLength": 256, "default": None},
+                "subject": {"type": "string", "maxLength": 512, "default": None},
             },
             "required": ["mail_id"],
         },
@@ -968,6 +1147,14 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": False,
         "permission": "mail:write",
         "undoable": True,
+        "risk_class": "R2",
+        "confirmation": "standing",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "key",
+        "cancellation": "timeout",
+        "required_scopes": ["mail:write"],
     },
     {
         "name": "drone",
@@ -988,6 +1175,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "read_only": False,
         "permission": "drone:act",
         "undoable": False,
+        "risk_class": "R3",
+        "confirmation": "fresh",
+        "target_ownership": "owner",
+        "provider": "drone",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "none",
+        "cancellation": "required",
     },
     {
         "name": "set_quiet_hours",
@@ -1041,18 +1235,35 @@ def _life_unavailable(reason: str, *, next_step: str, error: str | None = None) 
 
 
 def get_spec(name: str) -> dict | None:
-    """Return the declared spec for a tool name, or None when unknown."""
+    """Return the declared spec for a tool or action name.
+
+    ``list_tools()`` stays the model catalog. Action-only names such as
+    ``execute_command`` resolve here so HUD resume and ``/v1/tools/execute``
+    share ``dispatch`` / ``evaluate_policy`` without a fourth registry.
+    """
+    from app.ev.policy import annotate_spec
+
     for spec in TOOL_SPECS:
         if spec["name"] == name:
             resolved = dict(spec)
             resolved["sensitive"] = _resolved_sensitive(spec)
-            return resolved
-    return None
+            return annotate_spec(resolved)
+    from app.ev.actions import get_action_spec
+
+    action = get_action_spec(name)
+    if action is None:
+        return None
+    resolved = dict(action)
+    resolved.setdefault("parameters", action.get("payload") or {"type": "object"})
+    resolved["sensitive"] = True
+    return annotate_spec(resolved)
 
 
 def list_tools() -> list[dict]:
+    from app.ev.policy import annotate_spec
+
     return [
-        {**spec, "sensitive": _resolved_sensitive(spec)}
+        annotate_spec({**spec, "sensitive": _resolved_sensitive(spec)})
         for spec in TOOL_SPECS
     ]
 
@@ -1134,55 +1345,120 @@ async def dispatch(
     request_id: str | None = None,
     device_id=None,
     reverify_token: str | None = None,
+    channel: str | None = None,
+    confirmation=None,
+    live_session_id: str | None = None,
+    audit_endpoint: str = "POST /v1/gateway/tools",
 ) -> ToolCallResponse:
     """Validate, authorize, execute, shape-check, and log one tool invocation."""
 
     from app.ev.delegates import scope_blocked
+    from app.ev.policy import (
+        IGNORED_ARGUMENT_KEYS,
+        Confirmation,
+        attach_evidence,
+        authorize,
+        canonical_target,
+        derive_risk_class,
+        infer_channel,
+        not_connected_payload,
+        should_enforce,
+    )
     from app.ev.training_wheels import ensure_seed_gates, refuse_if_locked
     from app.ev.voice_life import WEAPON_RE, consume_life_reverify
 
     started = time.perf_counter()
+    # Confidence is model metadata, not a capability argument. Keep it out of
+    # the adapter/schema path as well as out of authorization decisions.
+    dispatch_arguments = {
+        key: value
+        for key, value in dict(arguments or {}).items()
+        if key not in IGNORED_ARGUMENT_KEYS
+    }
     spec = get_spec(name)
     status = "ok"
     error: str | None = None
     result: dict | None = None
     await ensure_seed_gates(session)
+    auth_channel = infer_channel(actor, channel)
 
     if spec is not None and name == "actuate":
         spec = dict(spec)
-        spec["permission"] = actuate_permission(str((arguments or {}).get("verb") or ""))
+        spec["permission"] = actuate_permission(str((dispatch_arguments or {}).get("verb") or ""))
 
-    if spec is None:
+    weapon_text = ""
+    if name == "actuate":
+        weapon_text = str((dispatch_arguments or {}).get("verb") or "")
+    elif name == "drone":
+        weapon_text = str((dispatch_arguments or {}).get("command") or "")
+
+    policy_confirmation = confirmation
+    # ``allow_sensitive`` is the existing explicit-permission switch used by
+    # the gateway for bounded sensitive reads. Treat it as an explicit R2
+    # approval for the owner, but never as the independent fresh factor needed
+    # by R3/R4 capabilities.
+    if (
+        policy_confirmation is None
+        and allow_sensitive
+        and actor in {"master", "owner"}
+        and spec is not None
+        and derive_risk_class(spec, name) == "R2"
+    ):
+        issued_at = utcnow()
+        policy_confirmation = Confirmation(
+            factor="http_approve",
+            confirmed=True,
+            target=canonical_target(name, dispatch_arguments),
+            issued_at=issued_at,
+            expires_at=issued_at + timedelta(seconds=120),
+        )
+
+    decision = await authorize(
+        session,
+        name,
+        actor=actor,
+        arguments=dispatch_arguments,
+        device_id=device_id,
+        channel=auth_channel,
+        confirmation=policy_confirmation,
+        reverify_token=reverify_token,
+        spec=spec,
+        session_id=live_session_id,
+    )
+
+    if spec is None and decision.effect != "refuse":
         status = "error"
         error = f"Unknown tool '{name}'"
-    elif name == "actuate" and WEAPON_RE.search(str((arguments or {}).get("verb") or "")):
+    elif weapon_text and WEAPON_RE.search(weapon_text):
         status = "denied"
         error = "refused"
         result = {
             "ok": False,
             "error": "refused",
+            "refused": "weapons",
             "spoken": "I will not run kill or weapon verbs.",
         }
-    elif spec["sensitive"] and not allow_sensitive:
-        status = "denied"
-        error = f"Permission denied: '{name}' requires explicit permission before execution"
     else:
-        bio = await consume_life_reverify(
-            session,
-            actor=actor,
-            device_id=device_id,
-            reverify_token=reverify_token,
-            name=name,
-            args=arguments or {},
-        )
-        refuse = await refuse_if_locked(session, spec)
-        scoped = await scope_blocked(
-            session,
-            actor=actor,
-            permission=str(spec["permission"]),
-            name=name,
-            device_id=device_id,
-        )
+        bio = None
+        refuse = None
+        scoped = None
+        if spec is not None:
+            bio = await consume_life_reverify(
+                session,
+                actor=actor,
+                device_id=device_id,
+                reverify_token=reverify_token,
+                name=name,
+                args=dispatch_arguments,
+            )
+            refuse = await refuse_if_locked(session, spec)
+            scoped = await scope_blocked(
+                session,
+                actor=actor,
+                permission=str(spec["permission"]),
+                name=name,
+                device_id=device_id,
+            )
         if bio is not None:
             status = "denied"
             error = "biometric_required"
@@ -1195,14 +1471,77 @@ async def dispatch(
             status = "denied"
             error = str(scoped.get("error") or "delegate_scope")
             result = scoped
-        else:
-            effective, issues = validate_arguments(arguments, spec["parameters"])
+        # Keep the existing explicit-sensitive permission boundary visible to
+        # callers. A standing/R2 confirmation decision is not permission to
+        # execute a sensitive tool when the request did not opt into it.
+        elif (
+            spec is not None
+            and spec["sensitive"]
+            and not allow_sensitive
+            and decision.effect in {"allow", "confirm"}
+        ):
+            status = "denied"
+            error = f"Permission denied: '{name}' requires explicit permission before execution"
+        elif should_enforce(decision, name=name, channel=auth_channel) and not decision.allowed:
+            result = (
+                not_connected_payload(decision)
+                if decision.effect == "not_connected"
+                else decision.to_result()
+            )
+            if decision.effect == "reject":
+                status = "error"
+                error = f"Unknown tool '{name}'"
+            elif decision.effect == "confirm":
+                status = "denied"
+                error = "confirmation_required"
+                if decision.independent_confirmation:
+                    result = await _park_independent_hold(
+                        session,
+                        name=name,
+                        arguments=dispatch_arguments,
+                        decision=decision,
+                        actor=actor,
+                        device_id=device_id,
+                        live_session_id=live_session_id,
+                        request_id=request_id,
+                        channel=auth_channel,
+                    )
+                else:
+                    from app.voice.live.layer import hold_result
+
+                    result = hold_result(decision, name=name, arguments=dispatch_arguments)
+            elif decision.effect == "not_connected":
+                status = "ok"
+                error = None
+                result = not_connected_payload(decision)
+            elif decision.effect == "refuse":
+                status = "denied"
+                error = "refused"
+            else:
+                status = "denied"
+                error = decision.reason
+        elif spec is not None:
+            effective, issues = validate_arguments(dispatch_arguments, spec["parameters"])
             if issues:
                 status = "rejected"
                 error = "Invalid arguments: " + "; ".join(issues)
             else:
                 try:
-                    result = await _handle(session, name, effective, actor=actor)
+                    result = await _handle(
+                        session,
+                        name,
+                        effective,
+                        actor=actor,
+                        live_session_id=live_session_id,
+                        device_id=device_id,
+                    )
+                    if decision.routed:
+                        if isinstance(result, dict) and (
+                            result.get("degraded") or result.get("error") == "not_connected"
+                        ):
+                            result = {**result, "error": "not_connected", "degraded": True}
+                        else:
+                            result = attach_evidence(result, decision)
                     if result is not None:
                         from app.ev.workbench import push_status_hud
 
@@ -1233,7 +1572,7 @@ async def dispatch(
         session,
         actor=actor,
         action="tool_call",
-        endpoint="POST /v1/gateway/tools",
+        endpoint=audit_endpoint,
         resource_type="tool",
         resource_ids=[name],
         request_id=request_id,
@@ -1244,15 +1583,184 @@ async def dispatch(
             "sensitive": bool(spec and spec["sensitive"]),
             "read_only": bool(spec and spec["read_only"]),
             "error": error,
+            "risk_class": decision.risk_class,
+            "policy_effect": decision.effect,
+            "channel": auth_channel,
+            "confirmation_required": decision.confirmation_required,
+            "confirmation_policy": decision.confirmation_policy,
+            "confirmation_factor": getattr(policy_confirmation, "factor", None),
+            "provider": decision.provider,
+            "target": decision.target,
+            "device_id": str(device_id) if device_id else None,
+            "live_session_id": live_session_id,
+            "argument_keys": sorted(dispatch_arguments),
+            "result": {
+                "ok": result.get("ok") if isinstance(result, dict) else None,
+                "error": result.get("error") if isinstance(result, dict) else error,
+                "evidence": result.get("evidence") if isinstance(result, dict) else None,
+            },
         },
     )
     return response
 
 
-async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -> dict:
+async def _park_independent_hold(
+    session: AsyncSession,
+    *,
+    name: str,
+    arguments: dict,
+    decision,
+    actor: str,
+    device_id=None,
+    live_session_id: str | None,
+    request_id: str | None,
+    channel: str,
+) -> dict:
+    """Park a HUD ticket and keep the realtime loop alive. Never waits."""
+
+    from app.ev.confirm import attach_hold_to_live, park_confirmation, pol_meta
+    from app.voice.live.layer import hold_result
+
+    parked = await park_confirmation(
+        session,
+        name=name,
+        arguments=arguments,
+        decision=decision,
+        actor=actor,
+        device_id=device_id,
+        live_session_id=live_session_id,
+        request_id=request_id,
+        channel=channel,
+    )
+    payload = hold_result(decision, name=name, arguments=arguments)
+    payload["action_id"] = str(parked.id)
+    meta = pol_meta(parked.payload)
+    if meta.get("expires_at"):
+        payload["expires_at"] = meta["expires_at"]
+    hud = payload.get("hud")
+    if isinstance(hud, dict):
+        card_meta = dict(hud.get("meta") or {})
+        card_meta["action_id"] = str(parked.id)
+        if meta.get("expires_at"):
+            card_meta["expires_at"] = meta["expires_at"]
+        hud["meta"] = card_meta
+    try:
+        from app.ev.workbench import cache_hud
+
+        hud = payload.get("hud")
+        if isinstance(hud, dict):
+            payload["hud"] = await cache_hud(session, hud, source="approval_hold")
+    except Exception:  # noqa: BLE001 - HUD must not block the hold
+        pass
+    await attach_hold_to_live(
+        payload,
+        live_session_id=live_session_id,
+        device_id=device_id,
+    )
+    return payload
+
+
+async def _run_execute_command(session: AsyncSession, args: dict, *, actor: str) -> dict:
+    """R4 sandbox run with idempotent replay. Never a raw shell."""
+
+    import asyncio
+
+    from app.ev.actuator import (
+        CALL_IDEMPOTENCY_TTL,
+        evidence_base,
+        fingerprint,
+        prior_result,
+        record_actuator,
+        with_timeout,
+    )
+    from app.tools.operations import operation_for_command
+    from app.tools.sandbox import SandboxError, run_command
+
+    command = str(args.get("command") or "")
+    operation = operation_for_command(command)
+    if operation is None:
+        return {
+            "ok": False,
+            "error": "operation_not_allowed",
+            "spoken": "That software operation is not allowlisted.",
+            "command": command,
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": "",
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+    cwd = args.get("cwd")
+    timeout = int(args.get("timeout_seconds") or 30)
+    key = fingerprint("execute_command", command, cwd)
+    replayed = await prior_result(
+        session, name="execute_command", key=key, max_age=CALL_IDEMPOTENCY_TTL
+    )
+    if replayed is not None:
+        return replayed
+
+    async def _run() -> dict:
+        return await asyncio.to_thread(
+            run_command, command, cwd=cwd, timeout_seconds=timeout
+        )
+
+    try:
+        timed = await with_timeout(_run(), seconds=float(timeout) + 1.0)
+    except SandboxError as exc:
+        failed = {
+            "ok": False,
+            "error": "sandbox",
+            "spoken": str(exc),
+            "command": command,
+            "exit_code": -1,
+            "stdout": "",
+            "stderr": str(exc),
+            "stdout_truncated": False,
+            "stderr_truncated": False,
+        }
+        await record_actuator(
+            session, name="execute_command", actor=actor, key=key, result=failed, target=command
+        )
+        return failed
+    if isinstance(timed, dict) and timed.get("error") in {"timeout", "cancelled"}:
+        await record_actuator(
+            session, name="execute_command", actor=actor, key=key, result=timed, target=command
+        )
+        return timed
+    raw = timed if isinstance(timed, dict) else {}
+    ok = int(raw.get("exit_code", 1)) == 0
+    result = {
+        **raw,
+        "ok": ok,
+        "spoken": "Done." if ok else "That command failed inside the sandbox.",
+        "evidence": evidence_base(
+            source="sandbox",
+            accepted=ok,
+            observed=ok,
+            command=command,
+            exit_code=raw.get("exit_code"),
+        ),
+    }
+    await record_actuator(
+        session, name="execute_command", actor=actor, key=key, result=result, target=command
+    )
+    return result
+
+
+async def _handle(
+    session: AsyncSession,
+    name: str,
+    args: dict,
+    *,
+    actor: str,
+    live_session_id: str | None = None,
+    device_id=None,
+) -> dict:
     fleet = await handle_fleet_tool(session, name, args, actor=actor)
     if fleet is not None:
         return fleet
+    if name == "execute_command":
+        return await _run_execute_command(session, args, actor=actor)
     retriever = Retriever(session)
     if name == "search_memory":
         memory_hits = await retriever.search(
@@ -1482,45 +1990,47 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
             "hud": weather_hud(payload),
         }
     if name in _LIFE_BRIDGES:
-        return await _dispatch_life_action(session, name, args, actor=actor)
-    if name == "open_url":
-        return _life_unavailable(
-            "no open-url bridge is installed",
-            next_step=(
-                "grant an open-url bridge: SUIT can add an EVLifeHelper "
-                "'apps.activate'/'open.url' command or CONDUIT a device_proxy "
-                "action, then wire it in app/integrations/adapters.py"
-            ),
+        return await _dispatch_life_action(
+            session, name, args, actor=actor, policy_checked=True
         )
+    if name == "open_url":
+        from app.ev.apps import open_url
+
+        return await open_url(session, args, actor=actor)
+    if name == "open_app":
+        from app.ev.apps import open_app
+
+        return await open_app(session, args, actor=actor)
+    if name == "close_app":
+        from app.ev.apps import close_app
+
+        return await close_app(session, args, actor=actor)
     if name == "set_reminder":
         from uuid import uuid4
 
         from app.ev.briefing import extract_reminder_when
+        from app.ev.resolve import parse_owner_when
         from app.ev.timers import start_timer
         from app.models import Alert
+        from app.utils.text import utcnow as _utcnow
 
         text = str(args.get("text") or "").strip()
+        now = _utcnow()
         when = args.get("when") or extract_reminder_when(text)
-        blob = f"{when or ''} {text}"
-        minutes: float | None = None
-        at: str | None = None
-        relative = extract_reminder_when(blob)
-        if relative and relative.lower().startswith("in "):
-            parts = relative.split()
-            try:
-                amount = float(parts[1])
-            except (IndexError, ValueError, TypeError):
-                amount = None
-            unit = parts[2].lower() if len(parts) > 2 else "minutes"
-            if amount is not None:
-                hours = unit.startswith("hour") or unit.startswith("hr")
-                minutes = amount * 60 if hours else amount
-        elif relative:
-            at = relative
-        elif when:
-            at = str(when)
-        if minutes is not None or at:
-            timed = await start_timer(session, minutes=minutes, at=at, text=text)
+        fire_at = None
+        for candidate in (when, extract_reminder_when(f"{when or ''} {text}"), text):
+            if not candidate:
+                continue
+            fire_at = parse_owner_when(str(candidate), now=now)
+            if fire_at is not None:
+                break
+        if fire_at is not None:
+            timed = await start_timer(
+                session,
+                at=fire_at.isoformat(),
+                text=text,
+                actor=actor,
+            )
             if timed.get("ok"):
                 return {
                     "ok": True,
@@ -1528,6 +2038,7 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
                     "when": timed.get("fire_at"),
                     "id": timed.get("id"),
                     "spoken": timed.get("spoken") or f"Reminder set: {text}.",
+                    "evidence": timed.get("evidence"),
                 }
         alert = Alert(
             kind="reminder",
@@ -1543,12 +2054,22 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
         )
         session.add(alert)
         await session.flush()
+        from app.ev.actuator import evidence_base
+        from app.utils.text import utcnow as _utcnow
+
         return {
             "ok": True,
             "text": text,
             "id": str(alert.id),
             "stored": "alert",
             "spoken": f"Reminder set: {text}.",
+            "evidence": evidence_base(
+                source="alert",
+                accepted=True,
+                observed=True,
+                now=_utcnow(),
+                alert_id=str(alert.id),
+            ),
         }
     if name == "set_assistant_name":
         from app.ev.assistant import set_nickname
@@ -1632,7 +2153,7 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
     if name == "research":
         from app.ev.workbench import handle_research
 
-        return await handle_research(session, str(args["question"]))
+        return await handle_research(session, str(args["question"]), actor=actor)
     if name == "print_start":
         from app.ev.hardware import print_start
 
@@ -1681,6 +2202,18 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
         return await camera_replay(
             session, camera=str(args["camera"]), at=args.get("at"), actor=actor
         )
+    if name == "look":
+        from app.ev.look import look_with_timeout
+
+        return await look_with_timeout(
+            session,
+            actor=actor,
+            prompt=args.get("prompt"),
+            attachment_id=args.get("attachment_id"),
+            focus=str(args.get("focus") or "auto"),
+            live_session_id=live_session_id,
+            device_id=str(device_id) if device_id else None,
+        )
     if name == "watchlist_add":
         from app.ev.workbench import handle_watchlist_add
 
@@ -1703,7 +2236,10 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
         from app.ev.workbench import handle_public_lookup
 
         return await handle_public_lookup(
-            session, str(args["query"]), kind=str(args.get("kind") or "org")
+            session,
+            str(args["query"]),
+            kind=str(args.get("kind") or "org"),
+            actor=actor,
         )
     if name == "find_gear":
         from app.ev.hardware import find_gear
@@ -1724,7 +2260,7 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
     if name == "whats_on_my_plate":
         from app.ev.workbench import handle_whats_on_my_plate
 
-        return await handle_whats_on_my_plate(session)
+        return await handle_whats_on_my_plate(session, actor=actor)
     if name == "draft_reply":
         from app.ev.workbench import handle_draft_reply
 
@@ -1734,6 +2270,9 @@ async def _handle(session: AsyncSession, name: str, args: dict, *, actor: str) -
             body=args.get("body"),
             confirm=bool(args.get("confirm")),
             send=bool(args.get("send")),
+            to_addr=args.get("to"),
+            subject=args.get("subject"),
+            actor=actor,
         )
     if name == "drone":
         from app.ev.hardware import drone_command
@@ -1799,6 +2338,7 @@ async def _dispatch_life_action(
     args: dict,
     *,
     actor: str,
+    policy_checked: bool = False,
 ) -> dict:
     """Call the CONDUIT adapter for one life action; never fake success."""
 
@@ -1813,13 +2353,22 @@ async def _dispatch_life_action(
             ),
         )
     try:
-        outcome = await integrations.execute_action(
-            session,
-            integration.id,
-            action,
-            args,
-            actor=actor,
-        )
+        if policy_checked:
+            outcome = await integrations.execute_action_after_policy(
+                session,
+                integration.id,
+                action,
+                args,
+                actor=actor,
+            )
+        else:
+            outcome = await integrations.execute_action(
+                session,
+                integration.id,
+                action,
+                args,
+                actor=actor,
+            )
     except LifeHelperUnavailableError as exc:
         return _life_unavailable(
             f"{slug} bridge is unavailable",

@@ -160,7 +160,7 @@ async def test_tool_selection_routes_extended_intents(client) -> None:
         "what's 14% of 3,500?": "calculate",
         "compute 12 * 12": "calculate",
         "who is Maya?": "get_person",
-        "anything on my calendar tomorrow?": "get_upcoming_alerts",
+        "anything on my calendar tomorrow?": "calendar_read",
         "what did I decide about SQLite?": "search_decisions",
     }
     for message, expected in cases.items():
@@ -193,9 +193,18 @@ async def test_search_decisions_tool_returns_decision_memory(client) -> None:
 
 
 def test_gateway_prevalidates_model_tool_calls() -> None:
+    from dataclasses import fields as dc_fields
+
     from app.ev.tools import get_spec
 
-    specs = [ToolSpec(**{k: v for k, v in get_spec("calculate").items()})]
+    known = {item.name for item in dc_fields(ToolSpec)}
+
+    def as_contract(name: str) -> ToolSpec:
+        spec = get_spec(name)
+        assert spec is not None
+        return ToolSpec(**{key: value for key, value in spec.items() if key in known})
+
+    specs = [as_contract("calculate")]
     good = validate_tool_calls(
         [ToolCall(id="1", name="calculate", arguments={"expression": "1+1"})],
         specs,
@@ -216,7 +225,7 @@ def test_gateway_prevalidates_model_tool_calls() -> None:
     assert unknown[0].status == "rejected"
     assert "unknown tool" in unknown[0].issues[0]
 
-    health_spec = ToolSpec(**{k: v for k, v in get_spec("get_health_trends").items()})
+    health_spec = as_contract("get_health_trends")
     denied = validate_tool_calls(
         [ToolCall(id="4", name="get_health_trends", arguments={"metric": "sleep_hours"})],
         [health_spec],

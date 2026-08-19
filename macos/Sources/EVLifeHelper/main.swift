@@ -147,6 +147,8 @@ guard arguments.count >= 2 else {
               call.check --destination <number> [--kind tel|facetime]
               apps.frontmost
               apps.activate --bundle-id <id> [--name <name>]
+              apps.quit --bundle-id <id>
+              open.url --url <https-url>
             """,
         ],
     ])
@@ -355,6 +357,43 @@ case "apps.activate":
         success(["bundle_identifier": bundleID, "activated": launched, "launched": launched])
     } else {
         fail(.notAvailable, "not_available", "no app found for bundle id \(bundleID)")
+    }
+
+case "apps.quit":
+    guard let bundleID = argumentValue("--bundle-id") else {
+        fail(.badArguments, "bad_arguments", "apps.quit requires --bundle-id")
+    }
+    let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+    guard let app = running.first else {
+        success([
+            "bundle_identifier": bundleID,
+            "quit": true,
+            "was_running": false,
+            "already_closed": true,
+        ])
+    }
+    let quit = app.terminate()
+    success([
+        "bundle_identifier": bundleID,
+        "quit": quit,
+        "was_running": true,
+        "already_closed": false,
+    ])
+
+case "open.url":
+    guard let urlString = argumentValue("--url"), !urlString.isEmpty else {
+        fail(.badArguments, "bad_arguments", "open.url requires --url")
+    }
+    guard let url = URL(string: urlString),
+          let scheme = url.scheme?.lowercased(),
+          scheme == "http" || scheme == "https"
+    else {
+        fail(.badArguments, "bad_arguments", "open.url only accepts http or https URLs")
+    }
+    if NSWorkspace.shared.open(url) {
+        success(["url": urlString, "opened": true])
+    } else {
+        fail(.notAvailable, "not_available", "could not open \(urlString)")
     }
 
 default:

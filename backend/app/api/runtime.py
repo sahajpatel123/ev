@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -278,9 +278,21 @@ async def lock_all(
     actor: str = Depends(require_master),
 ) -> dict:
     """Master key: revoke every device token."""
-    from app.ev.fleet import lock_all as do_lock
+    from app.ev.tools import dispatch
 
-    payload = await do_lock(session, actor=actor, trusted=True)
+    result = await dispatch(
+        session,
+        "lock_everything",
+        {"confirm": True},
+        actor=actor,
+        allow_sensitive=True,
+        channel="action",
+        request_id="runtime-lock-all",
+    )
+    payload = result.result if isinstance(result.result, dict) else {
+        "ok": result.ok,
+        "error": result.error,
+    }
     await session.commit()
     return payload
 
@@ -489,13 +501,68 @@ async def list_actions(
     return [ApprovedActionOut.model_validate(row) for row in rows]
 
 
+async def _require_independent_approve_factor(
+    session: AsyncSession,
+    ctx: ActorContext,
+    data: ActionDecisionRequest | None,
+    x_ev_reverify: str | None,
+) -> None:
+    """Master, purpose-bound reverify, or a verified WebAuthn assertion."""
+
+    if ctx.is_master:
+        return
+    assertion = data.webauthn if data is not None else None
+    if assertion is not None:
+        from app.identity.service import IdentityError, verify_webauthn_assertion
+
+        try:
+            await verify_webauthn_assertion(
+                session,
+                challenge_id=assertion.challenge_id,
+                credential_id=assertion.credential_id,
+                client_data_json=assertion.client_data_json,
+                authenticator_data=assertion.authenticator_data,
+                signature=assertion.signature,
+            )
+        except IdentityError as exc:
+            raise HTTPException(
+                status_code=exc.status,
+                detail=exc.message,
+                headers={"X-Error-Code": exc.code},
+            ) from exc
+        return
+    if not x_ev_reverify:
+        raise HTTPException(
+            status_code=403,
+            detail="Re-verification required for this sensitive action",
+            headers={"X-Error-Code": "reverification_required"},
+        )
+    from app.identity.service import IdentityError, consume_reverification
+
+    try:
+        await consume_reverification(
+            session,
+            token=x_ev_reverify,
+            purpose="runtime.action",
+            ctx=ctx,
+        )
+    except IdentityError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail=exc.message,
+            headers={"X-Error-Code": exc.code},
+        ) from exc
+
+
 @router.post("/actions/{action_id}/approve", response_model=ApprovedActionOut)
 async def approve_action(
     action_id: UUID,
     data: ActionDecisionRequest | None = None,
     session: AsyncSession = Depends(get_session),
-    ctx: ActorContext = Depends(require_reverification("runtime.action")),
+    ctx: ActorContext = Depends(require_actor_context),
+    x_ev_reverify: str | None = Header(default=None, alias="X-EV-Reverify"),
 ) -> ApprovedActionOut:
+    await _require_independent_approve_factor(session, ctx, data, x_ev_reverify)
     actor = ctx.actor
     try:
         action = await runtime_service.decide_action(
@@ -508,6 +575,7 @@ async def approve_action(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except ValueError as exc:
+        await session.commit()
         raise HTTPException(status_code=409, detail=str(exc)) from None
     await session.commit()
     return ApprovedActionOut.model_validate(action)
@@ -694,35 +762,44 @@ async def claim_life_job(
 @router.post("/present", response_model=PresenceShowOut)
 async def present_overlay(
     data: PresenceShowIn,
-    actor: str = Depends(require_actor),
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> PresenceShowOut:
     """Open EVIE's native HUD on the owner's Mac. Never a fake success."""
-    from app.notify.presence import open_presence
+    from app.ev.tools import dispatch
 
-    outcome = await open_presence(
-        title=data.title,
-        body=data.body,
-        kind=data.kind,
-        size=data.size,
-        time_type=data.time_type,
-        placement=data.placement,
-        ttl_ms=data.ttl_ms,
-        items=data.items,
-        recommendation=data.recommendation,
-        source=data.source,
-        window_id=data.window_id,
-        lookout=data.lookout,
-        auto=data.auto or data.kind.lower() in {"auto", "decide"},
-        message=data.message or data.title,
-        windows=data.windows or None,
-        lat=data.lat,
-        lon=data.lon,
-        dest_lat=data.dest_lat,
-        dest_lon=data.dest_lon,
-        questions=data.questions,
-        response=data.response,
-        layout=data.layout,
+    response = await dispatch(
+        session,
+        "present",
+        {
+            "title": data.title,
+            "body": data.body,
+            "kind": data.kind,
+            "size": data.size,
+            "time_type": data.time_type,
+            "placement": data.placement,
+            "ttl_ms": data.ttl_ms,
+            "items": data.items,
+            "questions": data.questions,
+            "response": data.response,
+            "layout": data.layout,
+            "recommendation": data.recommendation,
+            "source": data.source,
+            "lookout": data.lookout,
+            "window_id": data.window_id,
+        },
+        actor=ctx.actor,
+        device_id=ctx.device_id,
+        channel="action",
     )
+    await session.commit()
+    outcome = response.result if isinstance(response.result, dict) else {
+        "ok": False,
+        "opened": False,
+        "reason": response.error or "present_failed",
+    }
+    outcome.setdefault("ok", response.ok)
+    outcome.setdefault("opened", False)
     return PresenceShowOut.model_validate(outcome)
 
 

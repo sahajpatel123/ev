@@ -820,8 +820,12 @@ class VoiceRuntime:
         """
 
         await self._expire_stale()
+        from app.ev.fleet import resolve_registry_device
+
+        resolved = await resolve_registry_device(self.session, device_id)
+        canonical = str(resolved.id) if resolved is not None else device_id
         return await self._begin_push_to_talk_session(
-            device_id=device_id, wake_word="evie", verifier_name="app_open"
+            device_id=canonical, wake_word="evie", verifier_name="app_open"
         )
 
     async def refresh_live_lease(self, session_id) -> None:
@@ -972,7 +976,7 @@ class VoiceRuntime:
         try:
             tts = await asyncio.wait_for(
                 self.synthesizer.synthesize(reply, style=style),
-                timeout=min(8.0, float(settings.voice_tts_timeout_seconds)),
+                timeout=float(settings.voice_tts_timeout_seconds),
             )
             tts = await persist_tts_audio(tts)
         except Exception:  # noqa: BLE001 - text reply is enough

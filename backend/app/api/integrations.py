@@ -16,6 +16,7 @@ from app.auth import (
 )
 from app.config import settings
 from app.db import get_session
+from app.ev.policy import Confirmation
 from app.integrations import oauth, webhooks
 from app.integrations import plugins as plugin_service
 from app.integrations import service as integrations
@@ -52,6 +53,7 @@ from app.schemas import (
     WebhookIngestOut,
     WebhookSecretOut,
 )
+from app.utils.text import utcnow
 
 router = APIRouter(prefix="/v1")
 
@@ -358,13 +360,37 @@ async def run_integration_action(
     ctx: ActorContext = Depends(require_reverification("integration.action")),
 ) -> IntegrationActionOut:
     actor = ctx.actor
+    confirmation_target = next(
+        (
+            str(data.args.get(key))
+            for key in ("to", "name", "entity", "entity_id", "command", "project", "summary", "query", "id")
+            if data.args.get(key) not in (None, "")
+        ),
+        None,
+    )
+    confirmation = Confirmation(
+        factor="master_key" if ctx.is_master else "reverify",
+        confirmed=True,
+        target=confirmation_target,
+        issued_at=utcnow(),
+    )
     try:
-        result = await integrations.execute_action(
+        await integrations.authorize_integration_action(
             session,
             integration_id,
             action=data.action,
             args=data.args,
             actor=actor,
+            device_id=ctx.device_id,
+            confirmation=confirmation,
+        )
+        result = await integrations.execute_action_after_policy(
+            session,
+            integration_id,
+            action=data.action,
+            args=data.args,
+            actor=actor,
+            device_id=ctx.device_id,
         )
     except Exception as exc:
         raise _integration_error(exc) from exc
@@ -391,6 +417,7 @@ async def sync_integration(
             integration_id,
             actor=actor,
             days=effective_days,
+            device_id=ctx.device_id,
         )
     except Exception as exc:
         raise _integration_error(exc) from exc
@@ -405,13 +432,54 @@ async def sync_integration(
 async def calendar_signals(
     integration_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
     """Derived calendar signals (next event, leave-by, density, quiet hours)."""
+    integration = await session.get(Integration, integration_id)
+    if integration is None:
+        raise _integration_error(KeyError(integration_id))
+    if integration.adapter != "calendar":
+        raise _integration_error(ValueError("integration is not a calendar adapter"))
+    from app.ev.policy import authorize, not_connected_payload
+    from app.ev.tools import get_spec
+
+    decision = await authorize(
+        session,
+        "calendar_read",
+        actor=ctx.actor,
+        arguments={},
+        device_id=ctx.device_id,
+        channel="action",
+        spec=get_spec("calendar_read"),
+        provider_scopes_override=list(integration.scopes or []),
+        provider_connected_override=integration.status == "active",
+    )
+    if not decision.allowed:
+        if decision.effect in {"not_connected", "unavailable"}:
+            return not_connected_payload(decision)
+        raise HTTPException(status_code=403, detail=decision.reason)
     try:
-        return await integrations.calendar_signals(session, integration_id)
+        result = await integrations.calendar_signals(session, integration_id)
     except Exception as exc:
         raise _integration_error(exc) from exc
+    from app.services.access_log import log_access
+
+    await log_access(
+        session,
+        actor=ctx.actor,
+        action="calendar.read",
+        endpoint="GET /v1/integrations/{id}/calendar/signals",
+        resource_type="integration",
+        resource_ids=[integration.id],
+        details={
+            "policy_effect": decision.effect,
+            "risk_class": decision.risk_class,
+            "provider": decision.provider,
+            "evidence": (result.get("source") if isinstance(result, dict) else None),
+        },
+    )
+    await session.commit()
+    return result
 
 
 @router.get(
@@ -644,6 +712,7 @@ async def run_plugin_command(
             command_name,
             args=data.args,
             actor=actor,
+            device_id=ctx.device_id,
         )
     except Exception as exc:
         raise _plugin_error(exc) from exc

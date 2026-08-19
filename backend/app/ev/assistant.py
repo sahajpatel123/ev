@@ -22,11 +22,13 @@ _RESET_NAMES = frozenset({"evie", "ev", "e.v.", "go back to evie", "reset"})
 
 
 def spoken_name(name: str | None) -> str:
-    """Canonical spoken nickname. Unset / EV / E.V. collapse to EVIE."""
+    """Canonical spoken nickname; the default EVIE is rendered as E V for TTS."""
+
+    from app.ev.personality import SPOKEN_DEFAULT_NAME
 
     raw = (name or "").strip()
-    if not raw or raw.upper() in {"EV", "E.V."}:
-        return DEFAULT_NICKNAME
+    if not raw or raw.upper() in {"EV", "E.V.", "EVIE"}:
+        return SPOKEN_DEFAULT_NAME
     return raw
 
 
@@ -541,7 +543,13 @@ def _personality_from_phrase(phrase: str, current: dict) -> dict:
     return data
 
 
-async def handle_local_intent(session: AsyncSession, message: str) -> dict | None:
+async def handle_local_intent(
+    session: AsyncSession,
+    message: str,
+    *,
+    actor: str = "master",
+    device_id=None,
+) -> dict | None:
     """Deterministic companion turns that must not wait on the gateway."""
 
     from app.ev.interaction import ROMANTIC_REFUSAL, romantic_replacement_refused
@@ -613,16 +621,37 @@ async def handle_local_intent(session: AsyncSession, message: str) -> dict | Non
         payload = await list_locked(session)
         return {"reply": payload["spoken"], "kind": "locked", **payload}
     if intent == "lock_everything":
-        from app.ev.fleet import lock_all
+        from app.ev.tools import dispatch
 
-        payload = await lock_all(session, actor="voice", trusted=True)
+        response = await dispatch(
+            session,
+            "lock_everything",
+            {},
+            actor=actor,
+            device_id=device_id,
+            channel="action",
+            allow_sensitive=True,
+        )
+        payload = response.result if isinstance(response.result, dict) else {
+            "ok": response.ok,
+            "error": response.error,
+        }
         return {"reply": payload.get("spoken") or "Everything is locked.", "kind": "lock-all", **payload}
     if intent == "start_timer":
-        from app.ev.timers import start_timer
+        from app.ev.tools import dispatch
 
-        payload = await start_timer(
-            session, minutes=args.get("minutes"), text=str(args.get("text") or "")
+        response = await dispatch(
+            session,
+            "start_timer",
+            {"minutes": args.get("minutes"), "text": str(args.get("text") or "")},
+            actor=actor,
+            device_id=device_id,
+            channel="action",
         )
+        payload = response.result if isinstance(response.result, dict) else {
+            "ok": response.ok,
+            "error": response.error,
+        }
         return {"reply": payload.get("spoken") or "Timer set.", "kind": "timer", **payload}
     if intent == "session_elapsed":
         from app.ev.timers import session_elapsed

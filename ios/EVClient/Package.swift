@@ -26,7 +26,10 @@ let package = Package(
         ),
         .target(
             name: "EVClient",
-            dependencies: ["EVClientObjC"]
+            dependencies: ["EVClientObjC"],
+            linkerSettings: [
+                .linkedFramework("AVFoundation"),
+            ]
         ),
         .executableTarget(name: "EVClientCheck", dependencies: ["EVClient"]),
         .target(name: "EVUI", dependencies: ["EVClient"]),

@@ -16,6 +16,46 @@ let client = EVAPIClient(
     session: mockSession()
 )
 
+// 0. Capability status buckets are mutually exclusive in the presentation.
+let manifest = CapabilityManifest(json: [
+    "enabled": ["HUD", "hud"],
+    "needs_permission": ["Screen Recording", "screen recording"],
+    "unavailable": ["screen recording", "Calendar", "calendar"],
+    "refused": ["screen recording", "Calendar", "Mail"]
+])
+expect(manifest.enabled == ["HUD"], "capability enabled list is deduplicated")
+expect(manifest.needsPermission == ["Screen Recording"], "needs-permission list is deduplicated")
+expect(manifest.unavailable == ["Calendar"], "unavailable excludes needs-permission overlap")
+expect(manifest.refused == ["Mail"], "refused excludes higher-precedence statuses")
+expect(
+    manifest.availability(of: " screen RECORDING ") == .needsPermission,
+    "capability availability follows presentation precedence"
+)
+print("ok: capability manifest status buckets")
+
+let setupManifest = CapabilityManifest(json: [
+    "protocols": [
+        ["title": "Calendar / leave-by", "status": "needs_setup"],
+        ["title": "Messages via life bridge", "status": "needs_setup"],
+    ]
+])
+expect(setupManifest.needsPermission.isEmpty, "provider setup is not reported as OS permission")
+expect(
+    setupManifest.unavailable == ["Calendar / leave-by", "Messages via life bridge"],
+    "provider setup is shown only as unavailable/setup"
+)
+let legacySetupManifest = CapabilityManifest(json: [
+    "missing_permissions": [
+        ["title": "Calendar / leave-by", "status": "needs_setup"]
+    ]
+])
+expect(
+    legacySetupManifest.needsPermission.isEmpty
+        && legacySetupManifest.unavailable == ["Calendar / leave-by"],
+    "legacy setup payload is migrated out of the permission bucket"
+)
+print("ok: provider setup stays separate from OS permissions")
+
 // 1. HUD card: decode, validate, render consistently.
 do {
     let json = """

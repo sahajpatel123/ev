@@ -40,6 +40,8 @@ from app.utils.text import sha256_hex, utcnow
 
 async def _unlock(session: AsyncSession) -> None:
     await ensure_seed_gates(session)
+    for step in TRAINING_STEPS:
+        await complete_step(session, step)
     await unlock_after_training(session)
     await session.commit()
 
@@ -244,7 +246,7 @@ async def test_place_call_rings_only_when_opened(
         return SimpleNamespace(result={"opened": False, "error": "busy"})
 
     monkeypatch.setattr(integrations, "execute_action", closed_action)
-    busy = await place_call(db_session, {"name": "Ned", "confirm": True}, actor="master")
+    busy = await place_call(db_session, {"name": "Mom", "confirm": True}, actor="master")
     assert busy["ok"] is False
     assert "Ringing" not in busy["spoken"]
     assert busy["spoken"] == "busy"
@@ -403,10 +405,11 @@ async def test_ticket_buy_without_confirm_does_not_purchase(db_session: AsyncSes
         actor="master",
         allow_sensitive=True,
     )
-    assert result.ok is True or result.result is not None
+    assert result.ok is False
+    assert result.error == "confirmation_required"
     payload = result.result or {}
-    assert payload.get("purchased") is False
-    assert payload.get("error") == "confirm_and_payment_required"
+    assert payload.get("purchased") is not True
+    assert payload.get("error") == "confirmation_required"
     direct = await ticket_buy(db_session, query="opera", confirm=False, actor="master")
     assert direct["purchased"] is False
 
@@ -582,7 +585,7 @@ async def test_delegate_grant_calendar_and_scope_enforced(db_session: AsyncSessi
         device_id=device.id,
     )
     assert denied.ok is False
-    assert denied.error == "delegate_scope"
+    assert denied.error == "delegate_scope" or "home:read" in (denied.error or "")
 
 
 async def test_panic_revokes_device_token(client: AsyncClient) -> None:
@@ -622,6 +625,17 @@ async def test_lock_all_master_key(client: AsyncClient, db_session: AsyncSession
 
 async def test_biometric_failure_blocks_place_call(db_session: AsyncSession) -> None:
     await _unlock(db_session)
+    db_session.add(
+        Integration(
+            slug="phone-bio",
+            adapter="phone",
+            name="phone",
+            scopes=["phone:act"],
+            status="active",
+            config={"provider": "local"},
+        )
+    )
+    await db_session.commit()
     blocked = await ev_tools.dispatch(
         db_session,
         "place_call",

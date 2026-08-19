@@ -75,7 +75,7 @@ class Settings(BaseSettings):
 
     # Local vision/OCR (Domain 15): deterministic is the zero-dependency
     # default; tesseract enables real OCR when the binary is installed.
-    vision_provider: str = "deterministic"  # deterministic | tesseract
+    vision_provider: str = "deterministic"  # deterministic | tesseract | apple_vision | deepseek_ocr
     vision_tesseract_binary: str = "tesseract"
     # Hard cap on any single media part crossing the model boundary.
     max_media_bytes: int = 10 * 1024 * 1024
@@ -271,10 +271,10 @@ class Settings(BaseSettings):
     voice_addressivity_vad_threshold: float = 0.5
     # Push-to-talk / utterance bounds so the menu bar cannot sit on ".thinking."
     # until URLSession's default 60s timeout. Clip audio, cap ASR, cap chat+TTS.
-    voice_utterance_max_seconds: float = 15.0
-    voice_asr_timeout_seconds: float = 45.0
-    voice_turn_timeout_seconds: float = 90.0
-    voice_tts_timeout_seconds: float = 12.0
+    voice_utterance_max_seconds: float = 120.0
+    voice_asr_timeout_seconds: float = 120.0
+    voice_turn_timeout_seconds: float = 300.0
+    voice_tts_timeout_seconds: float = 60.0
     voice_sleep_phrases: list[str] = Field(
         default_factory=lambda: [
             "that's all",
@@ -323,11 +323,16 @@ class Settings(BaseSettings):
     xai_voice_model: str = "grok-voice-think-fast-2.0"
     xai_voice_voice: str = "eve"
     xai_voice_realtime_url: str = "wss://api.x.ai/v1/realtime"
-    xai_voice_vad_threshold: float = 0.45
-    xai_voice_silence_ms: int = 400
-    # auto = live speech uses Grok Voice when EV_XAI_API_KEY is set, even
-    # if typed chat is DeepSeek; xai = force; pipeline = local ASR + chat + TTS.
+    xai_voice_vad_threshold: float = 0.72
+    xai_voice_silence_ms: int = 550
+    # auto = OpenAI Realtime if EV_OPENAI_API_KEY is set, else Grok Voice if
+    # EV_XAI_API_KEY is set; openai / xai = force; pipeline = local ASR+chat+TTS.
     voice_live_brain: str = "auto"
+    openai_api_key: str | None = None
+    openai_realtime_model: str = "gpt-realtime-2.1-mini"
+    # OpenAI Realtime voice for spoken output (marin is the natural default).
+    openai_realtime_voice: str = "marin"
+    openai_realtime_url: str = "wss://api.openai.com/v1/realtime"
 
     # Intelligence filter: optional provider-backed critic (staged trust).
     filter_critic_enabled: bool = False

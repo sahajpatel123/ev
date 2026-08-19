@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-08-14T10:30:00+00:00",
+  "locked_at": "2026-08-18T13:33:24.585731+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -66,7 +66,16 @@
     "/v1/backup/verify": [
       "post"
     ],
+    "/v1/beacons": [
+      "post"
+    ],
     "/v1/calibration/tuning": [
+      "get"
+    ],
+    "/v1/cameras": [
+      "post"
+    ],
+    "/v1/capabilities": [
       "get"
     ],
     "/v1/chat": [
@@ -133,6 +142,12 @@
     "/v1/devices/{device_id}": [
       "delete"
     ],
+    "/v1/devices/{device_id}/bootstrap": [
+      "get"
+    ],
+    "/v1/devices/{device_id}/panic": [
+      "post"
+    ],
     "/v1/devices/{device_id}/push-token": [
       "delete",
       "post"
@@ -142,6 +157,9 @@
     ],
     "/v1/diagnostics/calibrate": [
       "post"
+    ],
+    "/v1/diagnostics/last": [
+      "get"
     ],
     "/v1/ears/wake": [
       "post"
@@ -327,6 +345,15 @@
     "/v1/import": [
       "post"
     ],
+    "/v1/indoor/edges": [
+      "post"
+    ],
+    "/v1/indoor/graph": [
+      "get"
+    ],
+    "/v1/indoor/nodes": [
+      "post"
+    ],
     "/v1/integrations": [
       "get",
       "post"
@@ -413,6 +440,18 @@
     ],
     "/v1/live/stream": [
       "get"
+    ],
+    "/v1/location-shares": [
+      "post"
+    ],
+    "/v1/lookout/live": [
+      "get"
+    ],
+    "/v1/lookout/transcript": [
+      "get"
+    ],
+    "/v1/lookout/utterance": [
+      "post"
     ],
     "/v1/maintenance/prune-backups": [
       "post"
@@ -555,11 +594,29 @@
     "/v1/projects/{project_id}/status": [
       "patch"
     ],
+    "/v1/public-feeds": [
+      "post"
+    ],
     "/v1/recall/week": [
       "get"
     ],
     "/v1/relationship": [
       "get"
+    ],
+    "/v1/research/jobs": [
+      "post"
+    ],
+    "/v1/research/jobs/{job_id}": [
+      "get"
+    ],
+    "/v1/research/jobs/{job_id}/cancel": [
+      "post"
+    ],
+    "/v1/research/jobs/{job_id}/resume": [
+      "post"
+    ],
+    "/v1/research/jobs/{job_id}/run": [
+      "post"
     ],
     "/v1/research/sessions": [
       "get",
@@ -670,6 +727,9 @@
     "/v1/runtime/life-jobs/{job_id}/claim": [
       "post"
     ],
+    "/v1/runtime/lock-all": [
+      "post"
+    ],
     "/v1/runtime/lookouts": [
       "get",
       "post"
@@ -693,6 +753,12 @@
       "get"
     ],
     "/v1/runtime/sync": [
+      "get"
+    ],
+    "/v1/runtime/transcript": [
+      "get"
+    ],
+    "/v1/runtime/transcript/stream": [
       "get"
     ],
     "/v1/runtime/transition": [
@@ -730,6 +796,12 @@
     ],
     "/v1/tactical/quick": [
       "get"
+    ],
+    "/v1/telemetry/sample": [
+      "post"
+    ],
+    "/v1/telemetry/sessions": [
+      "post"
     ],
     "/v1/temporal/memories": [
       "get"
@@ -909,6 +981,9 @@
     "/v1/voice/enrollments/{enrollment_id}/rollback": [
       "post"
     ],
+    "/v1/voice/live/open": [
+      "post"
+    ],
     "/v1/voice/sessions/{session_id}": [
       "get"
     ],
@@ -929,6 +1004,56 @@
     ],
     "/v1/voice/wake": [
       "post"
+    ],
+    "/v1/world-model/cameras": [
+      "get"
+    ],
+    "/v1/world-model/cameras/{device_id}": [
+      "get",
+      "put"
+    ],
+    "/v1/world-model/forget-last-hour": [
+      "post"
+    ],
+    "/v1/world-model/locations/{location}/changes": [
+      "get"
+    ],
+    "/v1/world-model/objects": [
+      "get",
+      "post"
+    ],
+    "/v1/world-model/objects/by-name/{name}/last-seen": [
+      "get"
+    ],
+    "/v1/world-model/objects/{object_id}": [
+      "delete",
+      "get"
+    ],
+    "/v1/world-model/objects/{object_id}/last-seen": [
+      "get"
+    ],
+    "/v1/world-model/objects/{object_id}/observations": [
+      "post"
+    ],
+    "/v1/world-model/objects/{object_id}/why": [
+      "get"
+    ],
+    "/v1/world-model/observations": [
+      "get",
+      "post"
+    ],
+    "/v1/world-model/observations/{observation_id}": [
+      "delete",
+      "get"
+    ],
+    "/v1/world-model/observations/{observation_id}/why": [
+      "get"
+    ],
+    "/v1/world-model/people/observations": [
+      "post"
+    ],
+    "/v1/world-model/people/{name}": [
+      "delete"
     ]
   },
   "schema_version": "ev.contract.v1",

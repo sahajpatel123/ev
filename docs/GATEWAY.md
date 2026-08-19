@@ -20,10 +20,10 @@ chat, and local use the OpenAI-compatible `stream: true` chat-completions
 endpoint and parse SSE lines into `ChatStreamChunk` deltas; tool-call deltas
 are accumulated per index and returned on the terminal chunk.
 
-Grok Voice Think Fast 2.0 is **not** this path. It is wired in
-`app.voice.live.grok_voice` as a speech-to-speech realtime socket for live
-talk. Typed chat stays on `EV_CHAT_PROVIDER` (`deepseek-v4-flash` or, if
-chosen, `grok-4.6`).
+OpenAI Realtime and Grok Voice Think Fast 2.0 are **not** this path. They
+are wired in `app.voice.live.grok_voice` as speech-to-speech realtime
+sockets for live talk. Typed chat stays on `EV_CHAT_PROVIDER`
+(`deepseek-v4-flash` or, if chosen, `grok-4.6`).
 
 ### SSE endpoint
 
@@ -222,6 +222,10 @@ it on every result (`isolation`, `network`, `memory_limit_mb`,
 absolute/symlink paths, cwd escapes, host reads/writes, HTTP and socket
 egress, fork bomb, memory bomb, timeout, output cap, shell metacharacter
 injection, environment exfiltration, workspace writes — all blocked.
+
+The owner-facing tools execute endpoint accepts a fixed named operation from
+app/tools/operations.py (currently workspace_smoke_test); raw command strings are rejected. It still passes
+the R4 confirmation and access-log path before invoking the sandbox.
 
 ## 7. Web search with honest citations
 

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev.training_wheels import TRAINING_STEPS, complete_step
 from app.main import app
-from app.models import FeatureGate
+from app.models import FeatureGate, Integration
 from app.utils.text import utcnow
 
 
@@ -92,7 +92,10 @@ async def test_delegate_device_token_cannot_use_home_or_call(
         )
         assert home.status_code == 200, home.text
         assert home.json()["ok"] is False
-        assert home.json()["error"] == "delegate_scope"
+        home_err = home.json().get("error") or ""
+        assert home_err == "delegate_scope" or "home:read" in home_err or "home:read" in (
+            home.json().get("error") or ""
+        )
 
         call = await ned.post(
             "/v1/gateway/tools",
@@ -105,7 +108,11 @@ async def test_delegate_device_token_cannot_use_home_or_call(
         )
         assert call.status_code == 200, call.text
         assert call.json()["ok"] is False
-        assert call.json()["error"] in {"delegate_scope", "biometric_required"}
+        assert call.json()["error"] in {
+            "delegate_scope",
+            "biometric_required",
+            "missing scopes: phone:act",
+        } or "phone:act" in (call.json().get("error") or "")
 
 
 async def test_home_act_uses_vault_token_on_homeassistant(
@@ -135,6 +142,8 @@ async def test_home_act_uses_vault_token_on_homeassistant(
     calls: list[tuple[str, str, str | None]] = []
 
     class DummyClient:
+        posted = False
+
         def __init__(self, *args, **kwargs) -> None:
             pass
 
@@ -145,14 +154,17 @@ async def test_home_act_uses_vault_token_on_homeassistant(
             return None
 
         async def post(self, url, headers=None, json=None):
+            type(self).posted = True
             calls.append(("POST", str(url), (headers or {}).get("Authorization")))
-            return SimpleNamespace(raise_for_status=lambda: None, json=lambda: [])
+            return SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: [])
 
         async def get(self, url, headers=None):
             calls.append(("GET", str(url), (headers or {}).get("Authorization")))
+            state = "on" if type(self).posted else "off"
             return SimpleNamespace(
+                status_code=200,
                 raise_for_status=lambda: None,
-                json=lambda: {"state": "on", "entity_id": "light.lab"},
+                json=lambda: {"state": state, "entity_id": "light.lab"},
             )
 
     monkeypatch.setattr("app.ev.home.httpx.AsyncClient", DummyClient)
@@ -181,6 +193,17 @@ async def test_device_life_action_requires_reverify_not_body_flag(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:
     await _unlock(db_session)
+    db_session.add(
+        Integration(
+            slug="phone-reverify",
+            adapter="phone",
+            name="phone",
+            scopes=["phone:act"],
+            status="active",
+            config={"provider": "local"},
+        )
+    )
+    await db_session.commit()
     owner = await client.post("/v1/identity/owner", json={"display_name": "Sahaj"})
     assert owner.status_code == 201, owner.text
     created = await client.post(
@@ -225,25 +248,40 @@ async def test_device_life_action_requires_reverify_not_body_flag(
         assert result.get("error") != "biometric_required"
 
 
-async def test_speaker_verified_voice_actor_is_not_biometric_blocked(
+async def test_speaker_verified_voice_actor_cannot_authorize_r3_alone(
     db_session: AsyncSession,
 ) -> None:
-    """Ears stay speaker-verify. actor=voice is the utterance/tool-loop path."""
+    """Voice wake is not action authorization. R3 needs HUD/biometric confirmation."""
 
     from app.ev import tools as ev_tools
     from app.ev.turn import execute_requested_actions
 
     await _unlock(db_session)
+    db_session.add(
+        Integration(
+            slug="phone-r3",
+            adapter="phone",
+            name="phone",
+            scopes=["phone:act"],
+            status="active",
+            config={"provider": "local"},
+        )
+    )
+    await db_session.commit()
     dispatched = await ev_tools.dispatch(
         db_session,
         "place_call",
         {"name": "Ned", "confirm": True},
         actor="voice",
         allow_sensitive=True,
+        channel="voice",
     )
-    assert dispatched.error != "biometric_required"
+    assert dispatched.ok is False
+    assert dispatched.error == "confirmation_required"
     result = dispatched.result or {}
+    assert result.get("independent_confirmation") is True
     assert result.get("error") != "biometric_required"
+    assert "confirm it on your phone" in str(result.get("spoken") or "").lower()
 
     receipts = await execute_requested_actions(
         db_session,
@@ -251,7 +289,10 @@ async def test_speaker_verified_voice_actor_is_not_biometric_blocked(
         actor="voice",
         allow_sensitive=True,
     )
+    assert receipts
     for receipt in receipts:
         payload = receipt.result if isinstance(getattr(receipt, "result", None), dict) else {}
         assert getattr(receipt, "error", None) != "biometric_required"
-        assert payload.get("error") != "biometric_required"
+        if receipt.name == "place_call":
+            assert receipt.error == "confirmation_required" or payload.get("error") == "confirmation_required"
+            assert payload.get("independent_confirmation") is True

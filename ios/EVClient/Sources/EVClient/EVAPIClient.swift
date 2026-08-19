@@ -79,6 +79,15 @@ private struct VoiceLiveOpenRequestBody: Encodable {
     let deviceId: String
 }
 
+private struct IntegrationCreateRequestBody: Encodable {
+    let adapter: String
+    let slug: String
+    let name: String
+    let scopes: [String]
+    let privacyLevel: String
+    let config: [String: AnyCodable]
+}
+
 private struct VoiceUtteranceRequestBody: Encodable {
     let sessionId: String
     let text: String?
@@ -355,6 +364,85 @@ public struct EVAPIClient: Sendable {
         return card
     }
 
+    /// Confirm or retry a tool on the HTTP action channel (`POST /v1/gateway/tools`).
+    /// Voice never calls this while holding the audio loop.
+    public func dispatchTool(
+        name: String,
+        arguments: [String: Any] = [:],
+        confirm: Bool = false,
+        allowSensitive: Bool = true,
+        requestId: String? = nil
+    ) async throws -> ToolDispatchResponse {
+        var merged = arguments
+        if confirm {
+            merged["confirm"] = true
+        }
+        struct Body: Encodable {
+            let name: String
+            let arguments: AnyCodable
+            let allowSensitive: Bool
+            let requestId: String?
+        }
+        let (_, data) = try await send(
+            "/v1/gateway/tools",
+            method: "POST",
+            body: encode(
+                Body(
+                    name: name,
+                    arguments: .wrap(merged),
+                    allowSensitive: allowSensitive,
+                    requestId: requestId
+                )
+            )
+        )
+        return try decode(ToolDispatchResponse.self, from: data)
+    }
+
+    /// Independent HUD / HTTP approval for a parked R3/R4 ticket.
+    /// Device actors must pass a purpose-bound reverify token (Face ID / Touch ID
+    /// then `POST /v1/identity/reverification`) or a WebAuthn assertion.
+    public func approveAction(
+        id: String,
+        reason: String? = nil,
+        reverifyToken: String? = nil,
+        webauthn: WebauthnAssertion? = nil
+    ) async throws -> ApprovedActionOut {
+        struct Body: Encodable {
+            let reason: String?
+            let factor: String?
+            let webauthn: WebauthnAssertion?
+        }
+        var headers: [String: String] = [:]
+        if let reverifyToken, !reverifyToken.isEmpty {
+            headers["X-EV-Reverify"] = reverifyToken
+        }
+        let factor = webauthn == nil ? nil : "webauthn"
+        let (_, data) = try await send(
+            "/v1/runtime/actions/\(id)/approve",
+            method: "POST",
+            body: encode(Body(reason: reason, factor: factor, webauthn: webauthn)),
+            headers: headers
+        )
+        return try decode(ApprovedActionOut.self, from: data)
+    }
+
+    public func issueReverification(
+        purpose: String,
+        voiceSessionId: String? = nil
+    ) async throws -> ReverificationResponse {
+        struct Body: Encodable {
+            let purpose: String
+            let voiceSessionId: String?
+        }
+        let (_, data) = try await send(
+            "/v1/identity/reverification",
+            method: "POST",
+            body: encode(Body(purpose: purpose, voiceSessionId: voiceSessionId)),
+            allowedStatuses: [200, 201]
+        )
+        return try decode(ReverificationResponse.self, from: data)
+    }
+
     public func lookoutUtterance(
         text: String,
         conversationId: String? = nil,
@@ -398,17 +486,38 @@ public struct EVAPIClient: Sendable {
     public func postHealthSnapshot(
         source: String,
         deviceId: String? = nil,
-        metrics: [String: Double]
+        metrics: [String: Double],
+        occurredAt: String? = nil,
+        permissionState: String = "authorized",
+        syncedAt: String? = nil,
+        units: [String: String] = [:],
+        sourceMetadata: [String: String] = [:]
     ) async throws {
         struct Body: Encodable {
             let source: String
             let deviceId: String?
             let metrics: [String: Double]
+            let occurredAt: String?
+            let permissionState: String
+            let syncedAt: String?
+            let units: [String: String]
+            let sourceMetadata: [String: String]
         }
         _ = try await send(
             "/v1/health/snapshot",
             method: "POST",
-            body: encode(Body(source: source, deviceId: deviceId, metrics: metrics)),
+            body: encode(
+                Body(
+                    source: source,
+                    deviceId: deviceId,
+                    metrics: metrics,
+                    occurredAt: occurredAt,
+                    permissionState: permissionState,
+                    syncedAt: syncedAt,
+                    units: units,
+                    sourceMetadata: sourceMetadata
+                )
+            ),
             allowedStatuses: [201]
         )
     }
@@ -416,6 +525,81 @@ public struct EVAPIClient: Sendable {
     public func health() async throws -> HealthResponse {
         let (_, data) = try await send("/v1/health", timeout: 8)
         return try decode(HealthResponse.self, from: data)
+    }
+
+    // MARK: - Integration bridges
+
+    public func integrations(includeRevoked: Bool = true) async throws -> [IntegrationRecord] {
+        let (_, data) = try await send(
+            "/v1/integrations",
+            queryItems: [URLQueryItem(name: "include_revoked", value: includeRevoked ? "true" : "false")],
+            allowedStatuses: [200],
+            timeout: 15
+        )
+        return try decode([IntegrationRecord].self, from: data)
+    }
+
+    public func installIntegration(
+        adapter: String,
+        slug: String,
+        name: String,
+        scopes: [String],
+        config: [String: AnyCodable] = [:]
+    ) async throws -> IntegrationRecord {
+        let body = try encode(
+            IntegrationCreateRequestBody(
+                adapter: adapter,
+                slug: slug,
+                name: name,
+                scopes: scopes,
+                privacyLevel: "normal",
+                config: config
+            )
+        )
+        let (_, data) = try await send(
+            "/v1/integrations",
+            method: "POST",
+            body: body,
+            allowedStatuses: [201],
+            timeout: 20
+        )
+        return try decode(IntegrationRecord.self, from: data)
+    }
+
+    public func beginIntegrationOAuth(integrationID: String) async throws -> IntegrationOAuthAuthorize {
+        let (_, data) = try await send(
+            "/v1/integrations/oauth/authorize",
+            queryItems: [URLQueryItem(name: "integration_id", value: integrationID)],
+            allowedStatuses: [200],
+            timeout: 20
+        )
+        return try decode(IntegrationOAuthAuthorize.self, from: data)
+    }
+
+    public func integrationOAuthStatus(integrationID: String) async throws -> IntegrationOAuthStatus {
+        let (_, data) = try await send(
+            "/v1/integrations/\(integrationID)/oauth/status",
+            allowedStatuses: [200],
+            timeout: 15
+        )
+        return try decode(IntegrationOAuthStatus.self, from: data)
+    }
+
+    /// Fetch the convergent device/runtime snapshot used by the Mac and iOS
+    /// clients. A fresh snapshot replaces the previous node set so vanished
+    /// devices do not remain visually present.
+    public func runtimeSync(since: String? = nil, limit: Int = 200) async throws -> RuntimeSync {
+        var items = [URLQueryItem(name: "limit", value: String(limit))]
+        if let since {
+            items.append(URLQueryItem(name: "since", value: since))
+        }
+        let (_, data) = try await send(
+            "/v1/runtime/sync",
+            queryItems: items,
+            allowedStatuses: [200],
+            timeout: 15
+        )
+        return try decode(RuntimeSync.self, from: data)
     }
 
     public func conversation(limit: Int = 50) async throws -> ConversationDetail {

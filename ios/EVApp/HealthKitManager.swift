@@ -46,6 +46,7 @@ final class HealthKitManager {
         if let sleep = HKObjectType.categoryType(forIdentifier: .sleepAnalysis) {
             types.insert(sleep)
         }
+        types.insert(HKObjectType.workoutType())
         try await store.requestAuthorization(toShare: [], read: types)
     }
 
@@ -126,17 +127,64 @@ final class HealthKitManager {
         if let sleepHours = await sleepHours(start: dayAgo, end: now) {
             metrics["sleep_hours"] = sleepHours
         }
+        if let workout = await workoutMetrics(start: dayAgo, end: now) {
+            metrics["workout_minutes"] = workout.minutes
+            metrics["workout_count"] = Double(workout.count)
+        }
         return (metrics, sourceName)
     }
 
     func publish(using client: EVAPIClient, deviceId: String) async {
         let snapshot = await latestMetrics()
         guard !snapshot.metrics.isEmpty else { return }
+        let formatter = ISO8601DateFormatter()
+        let syncedAt = formatter.string(from: Date())
+        let units: [String: String] = [
+            "heart_rate": "bpm",
+            "resting_hr": "bpm",
+            "hrv_ms": "ms",
+            "steps": "count",
+            "active_kcal": "kcal",
+            "sleep_hours": "hours",
+            "spo2": "percent",
+            "resp_rate": "breaths/min",
+            "vo2_max": "mL/kg/min",
+            "workout_minutes": "minutes",
+            "workout_count": "count",
+        ]
+        let sourceMetadata = [
+            "healthkit_source": snapshot.source,
+            "provider_chain": "Amazfit Helio -> Zepp -> Apple Health -> HealthKit -> EV iOS bridge",
+        ]
         try? await client.postHealthSnapshot(
             source: snapshot.source,
             deviceId: deviceId,
-            metrics: snapshot.metrics
+            metrics: snapshot.metrics,
+            syncedAt: syncedAt,
+            units: units,
+            sourceMetadata: sourceMetadata
         )
+    }
+
+    private func workoutMetrics(start: Date, end: Date) async -> (minutes: Double, count: Int)? {
+        let type = HKObjectType.workoutType()
+        return await withCheckedContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: type,
+                predicate: HKQuery.predicateForSamples(withStart: start, end: end),
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: nil
+            ) { _, samples, _ in
+                let workouts = samples as? [HKWorkout] ?? []
+                guard !workouts.isEmpty else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let minutes = workouts.reduce(0.0) { $0 + $1.duration } / 60.0
+                continuation.resume(returning: (minutes: minutes, count: workouts.count))
+            }
+            self.store.execute(query)
+        }
     }
 
     private func sleepHours(start: Date, end: Date) async -> Double? {

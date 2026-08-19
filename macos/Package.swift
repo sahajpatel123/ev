@@ -46,11 +46,21 @@ let package = Package(
                 .product(name: "EVClient", package: "EVClient"),
                 .product(name: "EVUI", package: "EVClient"),
             ],
-            path: "Sources/EV"
+            path: "Sources/EV",
+            linkerSettings: [
+                .linkedFramework("Metal"),
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("CoreVideo"),
+                .linkedFramework("QuartzCore"),
+                .linkedFramework("IOSurface"),
+            ]
         ),
         .executableTarget(
             name: "EVMicTalkTests",
-            dependencies: ["EVRuntime"],
+            dependencies: [
+                "EVRuntime",
+                .product(name: "EVClient", package: "EVClient"),
+            ],
             path: "Tests/EVTests"
         ),
         .executableTarget(

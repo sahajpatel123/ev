@@ -12,6 +12,7 @@ os.environ.setdefault("EV_PROCESSING_MODE", "sync")
 if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
     os.environ["EV_CHAT_PROVIDER"] = "mock"
     os.environ["EV_XAI_API_KEY"] = ""
+    os.environ["EV_OPENAI_API_KEY"] = ""
     os.environ.setdefault("EV_VOICE_LIVE_BRAIN", "pipeline")
 os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
 os.environ.setdefault("EV_EMBEDDING_DIM", "64")

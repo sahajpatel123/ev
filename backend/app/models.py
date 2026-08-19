@@ -318,6 +318,83 @@ class Attachment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class ObservationRecord(Base):
+    """Structured, provenance-first observation in the personal world model.
+
+    This table deliberately keeps the observation's epistemic status separate
+    from its content.  A model guess is never accepted as a stored fact by the
+    world-model writer; ``fact_kind`` is limited by that writer to observed,
+    reported, or inferred.
+    """
+
+    __tablename__ = "observations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    subject: Mapped[str] = mapped_column(String(256), index=True)
+    subject_type: Mapped[str] = mapped_column(String(32), index=True, default="owner")
+    object_or_event: Mapped[str] = mapped_column("object", String(256), index=True)
+    action: Mapped[str] = mapped_column(String(128), index=True)
+    location: Mapped[str] = mapped_column(String(512), default="unknown")
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
+    source_device: Mapped[str] = mapped_column(String(128), index=True, default="unknown")
+    evidence_ref: Mapped[str] = mapped_column(String(512), index=True, default="unknown")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    uncertainty: Mapped[str] = mapped_column(String(512), default="unknown")
+    consent_state: Mapped[str] = mapped_column(String(32), index=True, default="unknown")
+    retention_class: Mapped[str] = mapped_column(String(64), index=True, default="standard")
+    freshness_state: Mapped[str] = mapped_column(String(16), index=True, default="fresh")
+    stale_after_seconds: Mapped[int] = mapped_column(Integer, default=86_400)
+    fact_kind: Mapped[str] = mapped_column(String(16), index=True, default="observed")
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONType, default=dict)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OwnerObject(Base):
+    """An explicitly enrolled owner-owned object and its last evidence."""
+
+    __tablename__ = "owner_objects"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner: Mapped[str] = mapped_column(String(256), default="owner", index=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
+    object_type: Mapped[str] = mapped_column(String(64), index=True, default="thing")
+    enrollment_source: Mapped[str] = mapped_column(String(128), default="user", index=True)
+    appearance_references: Mapped[list] = mapped_column(JSONType, default=list)
+    common_locations: Mapped[list] = mapped_column(JSONType, default=list)
+    last_observed_location: Mapped[str | None] = mapped_column(String(512))
+    last_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_evidence_ref: Mapped[str | None] = mapped_column(String(512))
+    last_confidence: Mapped[float | None] = mapped_column(Float)
+    last_uncertainty: Mapped[str | None] = mapped_column(String(512))
+    last_freshness_state: Mapped[str] = mapped_column(String(16), default="unknown")
+    possible_matches: Mapped[list] = mapped_column(JSONType, default=list)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class CameraState(Base):
+    """Current visible state of one permissioned camera provider."""
+
+    __tablename__ = "camera_states"
+    __table_args__ = (UniqueConstraint("device_id", name="uq_camera_states_device"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    device_id: Mapped[str] = mapped_column(String(128), index=True)
+    platform: Mapped[str] = mapped_column(String(32), default="mac", index=True)
+    state: Mapped[str] = mapped_column(String(32), index=True, default="off")
+    visible: Mapped[bool] = mapped_column(Boolean, default=False)
+    permission_state: Mapped[str] = mapped_column(String(32), default="unknown")
+    explicit_request: Mapped[bool] = mapped_column(Boolean, default=False)
+    paused_reason: Mapped[str | None] = mapped_column(String(256))
+    consent_state: Mapped[str] = mapped_column(String(32), default="not_granted")
+    raw_frames_persisted: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_error: Mapped[str | None] = mapped_column(String(512))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 # --------------------------------------------------------------------------- #
 # E.V. advanced layer
 # --------------------------------------------------------------------------- #
@@ -336,6 +413,11 @@ class HealthSnapshot(Base):
     readiness: Mapped[float | None] = mapped_column(Float, index=True)
     band: Mapped[str | None] = mapped_column(String(16))
     anomalies: Mapped[list] = mapped_column(JSONType, default=list)
+    permission_state: Mapped[str] = mapped_column(String(32), index=True, default="authorized")
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
+    units: Mapped[dict] = mapped_column(JSONType, default=dict)
+    source_metadata: Mapped[dict] = mapped_column(JSONType, default=dict)
+    freshness_state: Mapped[str] = mapped_column(String(16), index=True, default="fresh")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -447,14 +529,35 @@ class DecisionOutcome(Base):
 
 
 class ResearchSession(Base):
-    """A memory-grounded research session (E.V.'s science-assistant role)."""
+    """A memory-grounded research session or durable research job.
+
+    ``mode=session`` preserves the original interactive note-taking flow.
+    ``mode=job`` uses the same durable row as the long-running execution
+    substrate: the row contains the owner, bounded scope, progress,
+    checkpoints, citations, artifacts, and provider evidence needed to resume
+    after a worker restart without inventing a second job framework.
+    """
 
     __tablename__ = "research_sessions"
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     question: Mapped[str] = mapped_column(Text, index=True)
+    goal: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(128), default="master", index=True)
+    mode: Mapped[str] = mapped_column(String(16), default="session", index=True)
     status: Mapped[str] = mapped_column(String(16), default="open", index=True)
     conclusion: Mapped[str | None] = mapped_column(Text)
+    allowed_tools: Mapped[list] = mapped_column(JSONType, default=list)
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    budget: Mapped[dict] = mapped_column(JSONType, default=dict)
+    checkpoints: Mapped[list] = mapped_column(JSONType, default=list)
+    progress: Mapped[dict] = mapped_column(JSONType, default=dict)
+    final_artifacts: Mapped[list] = mapped_column(JSONType, default=list)
+    citations: Mapped[list] = mapped_column(JSONType, default=list)
+    evidence: Mapped[dict] = mapped_column(JSONType, default=dict)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow

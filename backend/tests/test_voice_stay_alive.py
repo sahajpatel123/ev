@@ -27,15 +27,13 @@ def test_last_window_closed_does_not_quit_the_app() -> None:
     evapp = _read(MACOS_EV / "EVApp.swift")
     lifecycle = _read(MACOS_EV / "AppLifecycle.swift")
     assert "applicationShouldTerminateAfterLastWindowClosed" in evapp
-    assert "false" in evapp.split("applicationShouldTerminateAfterLastWindowClosed", 1)[1][
-        :400
-    ]
+    snippet = evapp.split("applicationShouldTerminateAfterLastWindowClosed", 1)[1][:400]
+    assert "TerminatePolicy.shouldTerminateAfterLastWindowClosed" in snippet
     assert "isQuitting" in lifecycle
-    assert "isQuitting" in evapp
-    assert ".terminateCancel" in evapp
-    # Voice must not flip the quit latch.
-    assert "isQuitting = true" in lifecycle
-    assert lifecycle.count("isQuitting = true") == 1
+    assert "TerminatePolicy.reply()" in evapp
+    # Voice must not flip the quit latch — only AppLifecycle.quit() does.
+    assert "TerminatePolicy.markExplicitQuit()" in lifecycle
+    assert lifecycle.count("TerminatePolicy.markExplicitQuit()") == 1
     # ⌘Q / app menu must set the latch. NSApplication.terminate skips it
     # and applicationShouldTerminate then cancel-quits forever.
     menu = evapp.split("func installAppMenu", 1)[1].split("func ", 1)[0]

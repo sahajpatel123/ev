@@ -5,10 +5,14 @@ import Foundation
 final class AppState: ObservableObject {
     let client: EVAPIClient
     let queue: OfflineCaptureQueue
+    let live = LiveVoiceCoordinator()
+    @Published var liveConversationId: String?
+    @Published var registryDeviceId: String
 
     init() {
         let config = AppConfig()
         client = EVAPIClient(baseURL: config.baseURL, token: config.apiKey)
+        registryDeviceId = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID") ?? config.deviceID
 
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
             .first?
@@ -16,6 +20,7 @@ final class AppState: ObservableObject {
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("EVQueue", isDirectory: true)
         try? FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
         queue = OfflineCaptureQueue(store: FileCaptureQueueStore(directory: documents))
+        liveConversationId = UserDefaults.standard.string(forKey: "EV_LIVE_CONVERSATION_ID")
     }
 
     func bootstrapIfNeeded() async {
@@ -37,7 +42,26 @@ final class AppState: ObservableObject {
                 return
             }
         }
-        _ = try? await client.bootstrapDevice(id: registryId)
+        registryDeviceId = registryId
+        do {
+            let result = try await client.bootstrapDevice(id: registryId)
+            if let id = result.prefs?.liveConversationId, !id.isEmpty {
+                liveConversationId = id
+                defaults.set(id, forKey: "EV_LIVE_CONVERSATION_ID")
+            }
+        } catch {
+            return
+        }
+    }
+
+    func startLiveIfPossible() {
+        live.start(client: client, deviceId: registryDeviceId)
+    }
+
+    func noteConversation(_ id: String?) {
+        guard let id, !id.isEmpty else { return }
+        liveConversationId = id
+        UserDefaults.standard.set(id, forKey: "EV_LIVE_CONVERSATION_ID")
     }
 
     func startHealthBridge() async {

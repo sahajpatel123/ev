@@ -24,19 +24,22 @@ The spoken brain for **typed chat and the HTTP utterance path** is still a
 chat-completions model: official DeepSeek (`deepseek-v4-flash`) or official
 xAI (`grok-4.6`) via `EV_CHAT_PROVIDER`.
 
-**Grok Voice Think Fast 2.0 is not that.** It is a speech-to-speech realtime
-model (`wss://api.x.ai/v1/realtime`). When `EV_XAI_API_KEY` is set and
-`EV_VOICE_LIVE_BRAIN` is `auto` or `xai`, `WS /v1/voice/live` forwards 16 kHz
-PCM to that model and plays its audio back as `tts_chunk` events. Typed chat
-can stay on DeepSeek — live does not send every question through
-chat-completions. Local ASR/TTS/turn-taking step aside for that channel. EV
-life tools still run here when Grok asks. Until the xAI key is set, live
-keeps the DeepSeek pipeline.
+**Live talk is not that.** It is a speech-to-speech realtime model. When
+`EV_OPENAI_API_KEY` is set and `EV_VOICE_LIVE_BRAIN` is `auto` or `openai`,
+`WS /v1/voice/live` forwards 16 kHz PCM to OpenAI Realtime
+(`gpt-realtime-2.1-mini` at 24 kHz, resampled in the bridge) and plays
+audio back as `tts_chunk` events. If only `EV_XAI_API_KEY` is set, live
+uses Grok Voice Think Fast 2.0 instead. Typed chat can stay on DeepSeek —
+live does not send every question through chat-completions. Local
+ASR/TTS/turn-taking step aside for that channel. EV life tools still run
+here when the voice model asks. Until a realtime key is set, live keeps
+the DeepSeek pipeline.
 
-Thinking/CoT is off for DeepSeek (`EV_DEEPSEEK_THINKING=false`) and Grok Voice
-uses `reasoning.effort=none` so the first spoken audio is the answer.
+Thinking/CoT is off for DeepSeek (`EV_DEEPSEEK_THINKING=false`). OpenAI
+Realtime mini answers in audio; Grok Voice uses `reasoning.effort=none` so
+the first spoken audio is the answer.
 Actions the owner asked for still run in EV (`backend/app/ev/turn.py` on the
-pipeline path; function calls on the Grok Voice path). `opencode-go` remains
+pipeline path; function calls on the realtime path). `opencode-go` remains
 an optional fallback, not the voice default.
 
 ## 0. Session state machine (Wave Life)
