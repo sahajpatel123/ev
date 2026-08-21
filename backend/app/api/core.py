@@ -28,11 +28,11 @@ from app.config import settings
 from app.context.compiler import ContextPlan
 from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
+from app.device_gateway.auth import assert_not_sandbox_production
 from app.ev import alert_radar, conversation, vision
 from app.ev import assistant as assistant_mod
 from app.ev import rollup as rollup_service
 from app.ev.calibration import proactive_tuning
-from app.ev.continuity import is_continuation
 from app.ev.interaction import build_strategy, strategy_block
 from app.ev.personality import get_current, to_dict
 from app.ev.self_eval import log_response
@@ -247,7 +247,164 @@ async def health() -> dict:
                 else None
             ),
             "realtime_allowlist": list(GROK_VOICE_TOOL_NAMES),
+            "camera": _camera_health(),
+            "memory": await _memory_health(),
+            "device_gateway": _device_gateway_health(),
         },
+    }
+
+
+def _camera_health() -> dict:
+    from app.ev.camera_runtime import readiness_from_camera_state
+    from app.voice.live.layer import active_lives
+
+    lives = active_lives()
+    live = lives[0] if lives else None
+    if live is None:
+        from app.voice.live.grok_voice import live_realtime_provider
+
+        return readiness_from_camera_state(
+            {},
+            client_connected=False,
+            realtime_provider=live_realtime_provider(),
+        ).as_dict()
+    ready = live.camera_readiness()
+    return ready.as_dict()
+
+
+def _device_gateway_health() -> dict:
+    return {
+        "ready": True,
+        "protocol_version": settings.device_protocol_version,
+        "pwa_build": settings.pwa_build,
+        "production_memory_enabled": bool(settings.cross_platform_production_memory),
+        "health": "/v1/device-gateway/health",
+        "pwa": "/evie/",
+    }
+
+
+async def _memory_health() -> dict:
+    from redis import Redis
+    from rq import Queue
+    from rq.registry import FailedJobRegistry
+
+    from app.memory.curator import curator_available
+    from app.memory.os_health import snapshot as os_snapshot
+    from app.services.processor import queue_worker_available
+    from app.voice.live.layer import active_lives
+
+    mode = settings.processing_mode
+    worker = queue_worker_available() if mode == "queue" else True
+    lives = active_lives()
+    live = lives[0] if lives else None
+    redis_ok = False
+    queue_depth = None
+    failed_jobs = None
+    try:
+        conn = Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=0.4,
+            socket_timeout=0.4,
+        )
+        redis_ok = bool(conn.ping())
+        queue = Queue("ingestion", connection=conn)
+        queue_depth = queue.count
+        failed_jobs = FailedJobRegistry(queue=queue).count
+    except Exception:  # noqa: BLE001 - health must never raise
+        redis_ok = False
+    ingestion = "ok" if worker or mode == "sync" else "degraded"
+    os_part = os_snapshot()
+    from app.memory.prefetch import snapshot as prefetch_snap
+
+    prefetch_part = prefetch_snap()
+    pending = failed_os = retryable = open_loop_count = active_project_count = 0
+    last_user = None
+    try:
+        from sqlalchemy import func, select
+
+        from app.db import SessionLocal
+        from app.memory.outbox import job_counts, pending_counts
+        from app.models import Event
+
+        async with SessionLocal() as session:
+            pending, failed_os = await pending_counts(session)
+            counts = await job_counts(session)
+            retryable = counts["retryable_failed"]
+            last_user = (
+                await session.execute(
+                    select(func.max(Event.occurred_at)).where(
+                        Event.event_type == "message.user",
+                        Event.tombstoned_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            from app.memory.loops import list_loops
+
+            opens = await list_loops(session, k=200)
+            open_loop_count = len(opens)
+            active_project_count = len(
+                {str((row.payload or {}).get("scope") or "").strip().lower() for row in opens if (row.payload or {}).get("scope")}
+            )
+    except Exception:  # noqa: BLE001 - health must still return
+        pending = failed_os = 0
+        last_user = None
+    return {
+        "processing_mode": mode,
+        "worker_available": worker,
+        "redis_ok": redis_ok,
+        "queue_depth": queue_depth,
+        "failed_jobs": failed_jobs,
+        "ingestion": ingestion,
+        "sync_fallback": mode == "queue" and not worker,
+        "live_client_connected": live is not None,
+        "live_conversation_id": getattr(live, "conversation_id", None) if live else None,
+        "provider_is_not_source_of_truth": True,
+        "raw_event_store_ready": True,
+        "curator_ready": curator_available(),
+        "curation_degraded": not curator_available(),
+        "vector_index_ready": os_part.get("vector_ready"),
+        "fulltext_ready": os_part.get("fulltext_ready"),
+        "bootstrap_ready": bool(os_part.get("bootstrap_version")),
+        "cache_ready": bool(os_part.get("bootstrap_version")),
+        "deep_recall_ready": True,
+        "temporal_retrieval_ready": True,
+        "memory_gate_mode": (settings.memory_gate or "off").strip().lower(),
+        "memory_gate_p50_ms": os_part.get("memory_gate_p50_ms"),
+        "memory_gate_p95_ms": os_part.get("memory_gate_p95_ms"),
+        "bootstrap_version": os_part.get("bootstrap_version"),
+        "bootstrap_age": os_part.get("bootstrap_age"),
+        "last_curated_event_id": os_part.get("last_curated_event_id"),
+        "curator_status": os_part.get("curator_status"),
+        "pending_curation_jobs": pending,
+        "failed_curation_jobs": failed_os,
+        "curator_pending_jobs": pending,
+        "curator_retryable_failed": retryable,
+        "curator_permanent_failed": failed_os,
+        "open_loop_count": open_loop_count,
+        "active_project_count": active_project_count,
+        "last_reflection_at": os_part.get("last_reflection_at"),
+        "reflection_lag_events": os_part.get("reflection_lag_events"),
+        "curator_version": settings.memory_curator_version,
+        "prefetch_mode": (settings.memory_prefetch or "off").strip().lower(),
+        "prefetch_hit_rate": prefetch_part.get("prefetch_hit_rate"),
+        "last_user_event_committed_at": last_user.isoformat() if last_user else None,
+        **_voice_memory_health(),
+    }
+
+
+def _voice_memory_health() -> dict:
+    from app.voice.live.voice_memory import health_snapshot
+
+    snap = health_snapshot()
+    return {
+        "pending_voice_turns": snap["pending_voice_turns"],
+        "last_voice_transcript_status": snap["last_voice_transcript_status"],
+        "last_voice_event_commit_at": snap["last_voice_event_commit_at"],
+        "last_turn_memory_safe": snap["last_turn_memory_safe"],
+        "last_transcription_latency_ms": snap["last_transcription_latency_ms"],
+        "durable_voice_memory_ready": snap["durable_voice_memory_ready"],
+        "realtime_input_transcription": snap["realtime_input_transcription"],
+        "provider_session_id": snap["provider_session_id"],
     }
 
 
@@ -296,6 +453,12 @@ async def create_event(
     await consider_event(session, event=event)
     await session.commit()
     deltas = await ensure_processed(event.id)
+    try:
+        from app.memory.curator import schedule_curation
+
+        schedule_curation(limit=1)
+    except Exception:  # noqa: BLE001 - capture already succeeded
+        pass
     return EventCreateResponse(
         event=EventOut.model_validate(event),
         memory_delta=[MemoryDelta.model_validate(d) for d in deltas],
@@ -434,7 +597,9 @@ async def list_memories(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> MemoryListResponse:
+    assert_not_sandbox_production(ctx.device)
     stmt = select(Memory)
     if memory_type:
         stmt = stmt.where(Memory.memory_type == memory_type)
@@ -481,8 +646,10 @@ async def memory_changes(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> MemoryChangesResponse:
     """Version-chain query: what has the user changed their mind about since ``since``."""
+    assert_not_sandbox_production(ctx.device)
     if since.tzinfo is not None:
         since = since.astimezone(UTC).replace(tzinfo=None)
     stmt = select(Memory).where(Memory.valid_from >= since)
@@ -544,7 +711,9 @@ async def get_memory(
     memory_id: UUID,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> MemoryOut:
+    assert_not_sandbox_production(ctx.device)
     memory = await session.get(Memory, memory_id)
     if memory is None:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -720,6 +889,7 @@ async def chat(
     actor: str = Depends(require_actor),
     ctx: ActorContext = Depends(require_actor_context),
 ):
+    assert_not_sandbox_production(ctx.device)
     if data.allow_sensitive_tools and not ctx.is_master and (
         ctx.device is None or ctx.device.trust_level != "owner"
     ):
@@ -937,6 +1107,12 @@ async def run_chat_pipeline(
     )
     await session.commit()
     memory_deltas = await ensure_processed(user_event.id)
+    try:
+        from app.memory.curator import schedule_curation
+
+        schedule_curation(limit=1)
+    except Exception:  # noqa: BLE001 - typed chat must not wait on DeepSeek
+        pass
     await _progress("retrieve")
 
     history_events = [
@@ -949,7 +1125,10 @@ async def run_chat_pipeline(
         )
         if event.id != user_event.id
     ]
-    memories = await retriever.search(
+    from app.memory.select import select_context_memories
+
+    memory_intent, memories = await select_context_memories(
+        session,
         input_decision.provider_message,
         k=retrieval_k,
         access="model",
@@ -958,7 +1137,7 @@ async def run_chat_pipeline(
     user_state = await build_user_state(
         session, access="voice_model" if voice_model_access else "model"
     )
-    if depth != "standard":
+    if depth != "standard" and memory_intent != "fresh":
         secondary_query = (
             user_state.current_task or user_state.active_project or input_decision.provider_message
         )
@@ -1037,7 +1216,7 @@ async def run_chat_pipeline(
     # not point back at earlier turns, drop the conversation-derived context
     # (history, rollup, open questions) and suppress the clarifying-question
     # directive so the model answers the current message on its own merits.
-    continuation = is_continuation(data.message)
+    continuation = memory_intent in {"continuation", "explicit_recall", "pin"}
     if not continuation and getattr(strategy, "ask_question", None):
         updater = getattr(strategy, "model_copy", None)
         if callable(updater):
@@ -1161,6 +1340,43 @@ async def run_chat_pipeline(
     who = assistant_mod.spoken_name(
         (await assistant_mod.get_profile(session)).nickname
     )
+    from app.memory.observe import log_memory as log_memory_trace
+    from app.memory.relationship import MEMORY_BEHAVIOR, relationship_card
+    from app.memory.select import _lexical_overlap
+
+    if memory_intent == "fresh":
+        relationship_text = MEMORY_BEHAVIOR
+        updater = getattr(user_state, "model_copy", None)
+        if callable(updater):
+            def _keep_state(value: str | None) -> str | None:
+                if not value:
+                    return None
+                return value if _lexical_overlap(data.message, value) >= 0.15 else None
+
+            user_state = updater(
+                update={
+                    "recent_topics": [
+                        topic
+                        for topic in (user_state.recent_topics or [])
+                        if _lexical_overlap(data.message, str(topic)) >= 0.15
+                    ],
+                    "current_task": _keep_state(user_state.current_task),
+                    "active_project": _keep_state(user_state.active_project),
+                    "active_goal": _keep_state(user_state.active_goal),
+                    "activity": _keep_state(user_state.activity),
+                }
+            )
+    else:
+        try:
+            from app.memory.bootstrap import bootstrap_instructions, get_bootstrap
+
+            pack = await get_bootstrap(session)
+            if pack.get("relationship"):
+                relationship_text = bootstrap_instructions(pack)
+            else:
+                relationship_text = MEMORY_BEHAVIOR + "\n" + await relationship_card(session)
+        except Exception:  # noqa: BLE001 - chat must still answer
+            relationship_text = MEMORY_BEHAVIOR
     context, context_tokens, context_plan = _assemble_context(
         memories,
         user_state=user_state,
@@ -1170,10 +1386,7 @@ async def run_chat_pipeline(
         perception_lines=perception_lines,
         rollup_summary=(model_rollup.summary if continuation else None),
         open_questions=(open_questions if continuation else []),
-        # Open conflicts are memory facts (e.g. two recorded preferences), not
-        # conversation history — they stay relevant to any question that
-        # touches them, so they are not gated on continuity.
-        open_conflicts=open_conflicts,
+        open_conflicts=(open_conflicts if continuation or memories else []),
         history=(
             [
                 {
@@ -1185,6 +1398,17 @@ async def run_chat_pipeline(
             if continuation
             else []
         ),
+        relationship_text=relationship_text,
+        memory_intent=memory_intent,
+    )
+    log_memory_trace(
+        "memory.context_injected",
+        extra={
+            "intent": memory_intent,
+            "retrieved": len(memories),
+            "tokens": context_plan.used_tokens,
+            "sections": ",".join(section.name for section in context_plan.sections if section.items_included),
+        },
     )
 
     local = await assistant_mod.handle_local_intent(
@@ -1512,8 +1736,12 @@ async def run_chat_pipeline(
             "context_tokens": context_tokens,
             "context_depth": depth,
             "last_actions": [item.name for item in receipts],
+            "memory_intent": memory_intent,
         },
     )
+    from app.memory.episodes import maybe_update_episode
+
+    await maybe_update_episode(session, thread_id, seed_event=user_event)
     await session.commit()
 
     surfaces = None
@@ -1658,6 +1886,8 @@ def _assemble_context(
     rollup_summary: str | None = None,
     open_questions: list[str] | None = None,
     open_conflicts: list[str] | None = None,
+    relationship_text: str | None = None,
+    memory_intent: str | None = None,
 ) -> tuple[str, int, ContextPlan]:
     """Compile the request window through the ContextCompiler (plan 2.4)."""
     from app.context.compiler import ContextCompiler
@@ -1673,6 +1903,8 @@ def _assemble_context(
         rollup_summary=rollup_summary,
         open_questions=open_questions,
         open_conflicts=open_conflicts,
+        relationship_text=relationship_text,
+        memory_intent=memory_intent,
     )
     return plan.text, plan.used_tokens, plan
 
@@ -1953,6 +2185,7 @@ async def gateway_chat(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> GatewayChatResponse:
+    assert_not_sandbox_production(ctx.device)
     actor = ctx.actor
     sensitive_allowed = data.allow_sensitive_tools
     if sensitive_allowed and not (
@@ -2452,10 +2685,12 @@ async def temporal_memories(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> MemoryListResponse:
     """As-of temporal search: memories whose resolved temporal range or event
     time overlaps ``[period_start, period_end)`` (e.g. 'what was I thinking in
     March?')."""
+    assert_not_sandbox_production(ctx.device)
     from app.memory.temporal import memory_temporal_bounds, temporal_overlap
 
     if period_start.tzinfo is None:

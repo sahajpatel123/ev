@@ -18,6 +18,25 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from app.ev.camera_runtime import (
+    CameraReadiness,
+    LookFrame,
+    decode_frame_payload,
+    log_camera,
+    readiness_from_camera_state,
+    validate_jpeg,
+)
+from app.ev.computer_runtime import (
+    ComputerReadiness,
+    cancel_computer_task,
+    drop_state,
+    ensure_state,
+    log_computer,
+    note_goal,
+    readiness_from_computer_state,
+    skip_silent_lifecycle_for,
+)
+from app.ev.computer_strategy import looks_like_computer_task
 from app.ev.policy import HOLD_LINE
 from app.voice.contracts import SpeechStyle, SynthesisResult
 from app.voice.live.asr_feed import LiveAsrFeed
@@ -29,6 +48,8 @@ from app.voice.live.events import (
     BargeInEvent,
     CameraRequestEvent,
     CameraStateEvent,
+    ComputerRequestEvent,
+    ComputerStateEvent,
     ErrorEvent,
     FinalTranscriptEvent,
     HudEvent,
@@ -169,6 +190,7 @@ class LiveSession:
         self._backchannel_task: asyncio.Task | None = None
         self._pcm = array.array("h")
         self._closed = False
+        self._client_gone = False
         self._vad: Any = None
         self._speech_active = False
         self._authorized_at_ms: int | None = None
@@ -188,7 +210,13 @@ class LiveSession:
             dict(capability_manifest) if isinstance(capability_manifest, dict) else None
         )
         self._camera_state = self._normalize_camera_state(camera_state)
-        self._look_frame_future: asyncio.Future[str] | None = None
+        self._look_frame_queues: dict[str, asyncio.Queue] = {}
+        self._look_frame_order: list[str] = []
+        self._last_capture_status: str | None = None
+        self._computer_state: dict[str, Any] = {}
+        self._computer_queues: dict[str, asyncio.Queue] = {}
+        self._computer_order: list[str] = []
+        self._last_computer_status: str | None = None
         self._paused = False
         self._muted = False
         self._approval_hold: dict | None = None
@@ -226,6 +254,24 @@ class LiveSession:
     def now(self) -> int:
         return self.engine.now()
 
+    def _schedule_relationship_turn(
+        self,
+        role: str,
+        text: str | None,
+        *,
+        transcript_source: str | None = None,
+    ) -> None:
+        from app.memory.turns import schedule_live_turn
+
+        schedule_live_turn(
+            text=text or "",
+            role=role,
+            conversation_id=self.conversation_id,
+            device_id=self.device_id,
+            live_session_id=self.session_id,
+            transcript_source=transcript_source,
+        )
+
     async def emit(self, event: LiveEvent) -> None:
         tts_generation: int | None = None
         is_boundary = self._is_playback_boundary(event)
@@ -244,6 +290,21 @@ class LiveSession:
             tts_generation = self._tts_pacing_generation
             if not await self._pace_tts(event):
                 return
+        persist_user = isinstance(event, FinalTranscriptEvent)
+        persist_assistant = (
+            isinstance(event, ReplyEvent)
+            and self.grok_voice is not None
+            and event.model
+        )
+        if persist_user:
+            from_s2s = event.provider in {"openai-realtime", "grok-voice"}
+            await self._maybe_local_intent(event.text, from_grok=from_s2s)
+            if self.grok_voice is not None or from_s2s:
+                self._schedule_relationship_turn(
+                    "user",
+                    event.text,
+                    transcript_source=getattr(event, "transcript_source", None),
+                )
         self._prepare_outbound(event)
         try:
             self.outbound.put_nowait(event)
@@ -253,21 +314,34 @@ class LiveSession:
             # a burst of audio.
             if event.type in _LIVE_COALESCED_EVENT_TYPES:
                 return
-            if (
+            if persist_user and self._client_gone:
+                return
+            if isinstance(event, (FinalTranscriptEvent, ReplyEvent)):
+                self._discard_outbound(
+                    lambda queued: queued.type in _LIVE_COALESCED_EVENT_TYPES
+                    or queued.type == "partial"
+                )
+                try:
+                    self.outbound.put_nowait(event)
+                except asyncio.QueueFull:
+                    if persist_user and self._client_gone:
+                        return
+                    await self.outbound.put(event)
+            elif (
                 tts_generation is not None
                 and tts_generation != self._tts_pacing_generation
             ):
                 return
-            await self.outbound.put(event)
-            if (
-                tts_generation is not None
-                and tts_generation != self._tts_pacing_generation
-            ):
-                self._discard_outbound(lambda queued: queued is event, first_only=True)
-                return
-        if isinstance(event, FinalTranscriptEvent):
-            from_s2s = event.provider in {"openai-realtime", "grok-voice"}
-            await self._maybe_local_intent(event.text, from_grok=from_s2s)
+            else:
+                await self.outbound.put(event)
+                if (
+                    tts_generation is not None
+                    and tts_generation != self._tts_pacing_generation
+                ):
+                    self._discard_outbound(lambda queued: queued is event, first_only=True)
+                    return
+        if persist_assistant:
+            self._schedule_relationship_turn("assistant", event.text)
 
     async def _pace_tts(self, event: TtsChunkEvent) -> bool:
         """Release pipeline audio at speaker speed instead of buffering whole replies."""
@@ -321,10 +395,12 @@ class LiveSession:
             # a no-op; it matters only when the socket is under pressure.
             if self.outbound.full():
                 self._discard_outbound(lambda queued: queued.type == event.type)
-        elif isinstance(event, TtsChunkEvent) and self.outbound.full():
-            # Preserve every spoken chunk in order.  Telemetry is disposable;
-            # audio is not.  If the queue is full of telemetry, make room
-            # before applying normal backpressure to the producer.
+        elif (
+            isinstance(event, (TtsChunkEvent, ReplyEvent, FinalTranscriptEvent))
+            and self.outbound.full()
+        ):
+            # Preserve spoken audio, transcripts, and replies. Telemetry is
+            # disposable if the client is behind.
             self._discard_outbound(
                 lambda queued: queued.type in _LIVE_COALESCED_EVENT_TYPES
             )
@@ -398,6 +474,11 @@ class LiveSession:
             "function_call_error": bool(bridge_diagnostics.get("function_call_error", False)),
             "session_update": getattr(bridge, "session_update_metadata", {}),
             "session_ack": getattr(bridge, "session_ack_metadata", {}),
+            "computer_tool_schema_hash": bridge_diagnostics.get("computer_tool_schema_hash"),
+            "tool_schema_match": bridge_diagnostics.get("tool_schema_match"),
+            "provider_tools_confirmed": bridge_diagnostics.get("provider_tools_confirmed"),
+            "computer_control_ready": bridge_diagnostics.get("computer_control_ready"),
+            "tool_schema_generation": bridge_diagnostics.get("tool_schema_generation"),
         }
 
     def ready_event(self) -> ReadyEvent:
@@ -425,6 +506,7 @@ class LiveSession:
                 "capability_manifest": self._capability_manifest,
                 "realtime": self._realtime_diagnostics(),
                 "camera_state": dict(self._camera_state),
+                "camera": self.camera_readiness().as_dict(),
             },
         )
 
@@ -441,6 +523,7 @@ class LiveSession:
                 "capability_manifest": self._capability_manifest,
                 "realtime": self._realtime_diagnostics(),
                 "camera_state": dict(self._camera_state),
+                "camera": self.camera_readiness().as_dict(),
             }
         )
         return snap
@@ -462,7 +545,7 @@ class LiveSession:
     async def handle_client(self, message: dict | bytes) -> None:
         """Ingest one client frame and run a decision tick."""
 
-        if self._closed:
+        if self._closed or self._client_gone:
             return
         if self._paused or self._muted:
             if await self._handle_while_held(message):
@@ -523,6 +606,8 @@ class LiveSession:
                 return
             if await self._maybe_local_intent(text, from_grok=True):
                 return
+            if looks_like_computer_task(text):
+                note_goal(ensure_state(self.session_id), text)
             if getattr(grok, "_response_active", False) or getattr(
                 grok, "_assistant_open", False
             ):
@@ -552,6 +637,12 @@ class LiveSession:
             return
         if kind == "look_frame":
             await self._handle_look_frame(message)
+            return
+        if kind in {"computer", "computer_state"}:
+            await self._handle_computer_state_message(message)
+            return
+        if kind == "computer_result":
+            await self._handle_computer_result(message)
             return
         if kind == "control":
             await self._handle_control(str(message.get("action") or ""))
@@ -620,6 +711,12 @@ class LiveSession:
         if kind == "look_frame":
             await self._handle_look_frame(message)
             return
+        if kind in {"computer", "computer_state"}:
+            await self._handle_computer_state_message(message)
+            return
+        if kind == "computer_result":
+            await self._handle_computer_result(message)
+            return
         if kind == "control":
             await self._handle_control(str(message.get("action") or ""))
             return
@@ -687,6 +784,15 @@ class LiveSession:
             # Cancel in-flight speech only. Durable jobs keep running.
             self._reset_playback_boundary()
             self._cancel_respond()
+            self._fail_look_futures(LookFrame(request_id="", error="cancelled", last=True))
+            self._fail_computer_futures({"ok": False, "error": "cancelled", "spoken": "Stopped."})
+            await self.emit(
+                CameraRequestEvent(
+                    at_ms=self.now(),
+                    action="observe_stop",
+                    device_id=self.device_id,
+                )
+            )
             if self.grok_voice is not None:
                 await self.grok_voice.cancel()
             if self.asr_feed is not None:
@@ -716,7 +822,16 @@ class LiveSession:
         raw_camera = message.get("camera")
         if isinstance(raw_camera, dict) and not raw_action:
             raw_action = str(raw_camera.get("state") or "").strip().lower()
-        if raw_action not in {"off", "paused", "active", "capture", "look", "once"}:
+        if raw_action not in {
+            "off",
+            "paused",
+            "active",
+            "capture",
+            "look",
+            "once",
+            "observe",
+            "observe_stop",
+        }:
             await self.emit(
                 ErrorEvent(
                     at_ms=self.now(),
@@ -727,50 +842,377 @@ class LiveSession:
             )
             return
         target_id = str(message.get("device_id") or self.device_id or "").strip() or None
+        request_id = str(message.get("request_id") or "").strip() or None
         target = live_for_device(target_id) if target_id else self
-        if target is not None and target is not self:
-            await target.emit(
-                CameraRequestEvent(at_ms=target.now(), action=raw_action, device_id=target_id)
-            )
-            return
-        await self.emit(
-            CameraRequestEvent(at_ms=self.now(), action=raw_action, device_id=target_id)
+        event = CameraRequestEvent(
+            at_ms=(target or self).now(),
+            action=raw_action,
+            device_id=target_id,
+            request_id=request_id,
         )
+        if target is not None and target is not self:
+            await target.emit(event)
+            return
+        await self.emit(event)
 
-    async def request_look_frame(self, *, timeout: float = 12.0) -> str | None:
-        """Ask the attached camera client for one frame. Does not mark the camera active."""
+    def camera_readiness(self) -> CameraReadiness:
+        provider = None
+        if self.grok_voice is not None:
+            provider = getattr(self.grok_voice, "_provider", None)
+        elif isinstance(self._capability_manifest, dict):
+            provider = (
+                self._capability_manifest.get("current_provider")
+                or (self._capability_manifest.get("active_providers") or {}).get("realtime")
+            )
+        ready = readiness_from_camera_state(
+            self._camera_state,
+            client_connected=not self._closed,
+            realtime_provider=str(provider or ""),
+            device_id=self.device_id,
+            session_id=self.session_id,
+            connecting_device=bool(self.device_id),
+        )
+        ready.last_capture_status = self._last_capture_status
+        return ready
 
-        loop = asyncio.get_running_loop()
-        previous = self._look_frame_future
-        future: asyncio.Future[str] = loop.create_future()
-        self._look_frame_future = future
-        if previous is not None and not previous.done():
-            previous.set_result("")
+    def computer_readiness(self) -> ComputerReadiness:
+        helper_ready = False
+        if isinstance(self._capability_manifest, dict):
+            computer = self._capability_manifest.get("computer_control")
+            if isinstance(computer, dict):
+                helper_ready = bool(computer.get("app_lifecycle_ready") and not computer.get("mac_client_connected"))
+        provider = None
+        if self.grok_voice is not None:
+            provider = getattr(self.grok_voice, "_provider", None)
+        ready = readiness_from_computer_state(
+            self._computer_state,
+            client_connected=not self._closed,
+            helper_ready=helper_ready,
+            realtime_provider=str(provider or ""),
+            device_id=self.device_id,
+            session_id=self.session_id,
+        )
+        ready.last_error = self._last_computer_status
+        return ready
+
+    def _ensure_look_queue(self, request_id: str) -> asyncio.Queue:
+        queue = self._look_frame_queues.get(request_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._look_frame_queues[request_id] = queue
+            self._look_frame_order.append(request_id)
+        return queue
+
+    def _drop_look_queue(self, request_id: str | None) -> None:
+        if not request_id:
+            return
+        self._look_frame_queues.pop(request_id, None)
+        if request_id in self._look_frame_order:
+            self._look_frame_order.remove(request_id)
+
+    def _fail_look_futures(self, frame: LookFrame) -> None:
+        for request_id in list(self._look_frame_order):
+            queue = self._look_frame_queues.get(request_id)
+            if queue is not None:
+                failed = LookFrame(
+                    request_id=request_id,
+                    error=frame.error,
+                    permission=frame.permission,
+                    last=True,
+                )
+                if queue.empty():
+                    queue.put_nowait(failed)
+        self._look_frame_queues.clear()
+        self._look_frame_order.clear()
+
+    async def request_look_frame(
+        self,
+        *,
+        timeout: float = 12.0,
+        request_id: str | None = None,
+        detail: str | None = None,
+    ) -> LookFrame | None:
+        """Ask the attached camera client for one frame. Does not keep the camera on."""
+
+        rid = str(request_id or "").strip() or f"look-{self.now()}"
+        log_camera(
+            "camera.request_sent",
+            request_id=rid,
+            extra={"device_id": self.device_id, "action": "capture"},
+        )
+        queue = self._ensure_look_queue(rid)
         await self.emit(
             CameraRequestEvent(
                 at_ms=self.now(),
                 action="capture",
                 device_id=self.device_id,
+                request_id=rid,
+                detail=detail,
             )
         )
         try:
-            attachment_id = await asyncio.wait_for(future, timeout=timeout)
+            frame = await asyncio.wait_for(queue.get(), timeout=timeout)
         except TimeoutError:
-            return None
+            self._last_capture_status = "timeout"
+            return LookFrame(request_id=rid, error="timeout", last=True)
+        except asyncio.CancelledError:
+            raise
         finally:
-            if self._look_frame_future is future:
-                self._look_frame_future = None
-        return attachment_id or None
+            self._drop_look_queue(rid)
+        return frame
+
+    async def request_observe_frames(
+        self,
+        *,
+        duration_s: float,
+        interval_s: float,
+        max_frames: int,
+        timeout: float,
+        request_id: str | None = None,
+        detail: str | None = None,
+    ) -> list[LookFrame]:
+        """Bounded temporal capture. The client stops at last=true, timeout, or cancel."""
+
+        rid = str(request_id or "").strip() or f"observe-{self.now()}"
+        log_camera(
+            "camera.request_sent",
+            request_id=rid,
+            extra={
+                "device_id": self.device_id,
+                "action": "observe",
+                "duration_s": duration_s,
+                "max_frames": max_frames,
+            },
+        )
+        queue = self._ensure_look_queue(rid)
+        await self.emit(
+            CameraRequestEvent(
+                at_ms=self.now(),
+                action="observe",
+                device_id=self.device_id,
+                request_id=rid,
+                duration_ms=int(duration_s * 1000),
+                interval_ms=int(interval_s * 1000),
+                max_frames=max_frames,
+                detail=detail,
+            )
+        )
+        frames: list[LookFrame] = []
+        deadline = time.monotonic() + max(timeout, duration_s + 2.0)
+        try:
+            while time.monotonic() < deadline and len(frames) < max_frames:
+                remaining = deadline - time.monotonic()
+                frame = await asyncio.wait_for(queue.get(), timeout=max(0.1, remaining))
+                frames.append(frame)
+                if frame.last or frame.error:
+                    break
+        except TimeoutError:
+            if not frames:
+                self._last_capture_status = "timeout"
+                return [LookFrame(request_id=rid, error="timeout", last=True)]
+        except asyncio.CancelledError:
+            await self.emit(
+                CameraRequestEvent(
+                    at_ms=self.now(),
+                    action="observe_stop",
+                    device_id=self.device_id,
+                    request_id=rid,
+                )
+            )
+            raise
+        finally:
+            self._drop_look_queue(rid)
+        return frames
+
+    async def cancel_camera_requests(self, *, reason: str = "cancelled") -> None:
+        self._fail_look_futures(LookFrame(request_id="", error=reason, last=True))
 
     async def _handle_look_frame(self, message: dict) -> None:
-        attachment_id = str(message.get("attachment_id") or "").strip()
-        self._complete_look_frame(attachment_id)
-
-    def _complete_look_frame(self, attachment_id: str) -> None:
-        future = self._look_frame_future
-        if future is None or future.done():
+        request_id = str(message.get("request_id") or "").strip()
+        attachment_id = str(message.get("attachment_id") or "").strip() or None
+        permission = str(message.get("permission") or message.get("permission_state") or "") or None
+        error = str(message.get("error") or "").strip() or None
+        jpeg = decode_frame_payload(
+            message.get("jpeg_b64") or message.get("image_b64") or message.get("image")
+        )
+        width = message.get("width")
+        height = message.get("height")
+        if jpeg:
+            validated = validate_jpeg(jpeg)
+            if validated is None:
+                jpeg = None
+                error = error or "malformed_image"
+            else:
+                jpeg, parsed_w, parsed_h = validated
+                width = width or parsed_w
+                height = height or parsed_h
+        if jpeg is None and not attachment_id and not error:
+            error = "empty_frame"
+        try:
+            sequence = int(message.get("sequence") or 0)
+        except (TypeError, ValueError):
+            sequence = 0
+        last_raw = message.get("last")
+        last = True if last_raw is None else bool(last_raw)
+        try:
+            parsed_width = int(width) if width is not None else None
+        except (TypeError, ValueError):
+            parsed_width = None
+        try:
+            parsed_height = int(height) if height is not None else None
+        except (TypeError, ValueError):
+            parsed_height = None
+        frame = LookFrame(
+            request_id=request_id,
+            jpeg=jpeg,
+            attachment_id=attachment_id,
+            width=parsed_width,
+            height=parsed_height,
+            error=error,
+            permission=permission,
+            camera_name=str(message.get("camera_name") or "") or None,
+            sequence=sequence,
+            last=last,
+            encoded_bytes=len(jpeg) if jpeg else 0,
+        )
+        if permission:
+            self._camera_state["permission_state"] = permission
+        if error:
+            self._last_capture_status = error
+        elif jpeg or attachment_id:
+            self._last_capture_status = "success"
+        queue = self._look_frame_queues.get(request_id) if request_id else None
+        if queue is None and self._look_frame_order:
+            queue = self._look_frame_queues.get(self._look_frame_order[0])
+        if queue is None:
             return
-        future.set_result(attachment_id)
+        queue.put_nowait(frame)
+
+    def _ensure_computer_queue(self, request_id: str) -> asyncio.Queue:
+        queue = self._computer_queues.get(request_id)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._computer_queues[request_id] = queue
+            self._computer_order.append(request_id)
+        return queue
+
+    def _drop_computer_queue(self, request_id: str | None) -> None:
+        if not request_id:
+            return
+        self._computer_queues.pop(request_id, None)
+        if request_id in self._computer_order:
+            self._computer_order.remove(request_id)
+
+    def _fail_computer_futures(self, payload: dict) -> None:
+        for request_id in list(self._computer_order):
+            queue = self._computer_queues.get(request_id)
+            if queue is not None and queue.empty():
+                queue.put_nowait({**payload, "request_id": request_id})
+        self._computer_queues.clear()
+        self._computer_order.clear()
+
+    async def request_computer(
+        self,
+        command: str,
+        arguments: dict | None = None,
+        *,
+        timeout: float = 12.0,
+        request_id: str | None = None,
+    ) -> dict:
+        """Ask the attached Mac client to perform one structured computer action."""
+
+        rid = str(request_id or "").strip() or f"computer-{self.now()}"
+        queue = self._ensure_computer_queue(rid)
+        await self.emit(
+            ComputerRequestEvent(
+                at_ms=self.now(),
+                command=command,
+                request_id=rid,
+                arguments=dict(arguments or {}),
+                device_id=self.device_id,
+            )
+        )
+        try:
+            result = await asyncio.wait_for(queue.get(), timeout=timeout)
+        except TimeoutError:
+            self._last_computer_status = "timeout"
+            return {
+                "ok": False,
+                "error": "timeout",
+                "spoken": "The Mac did not complete that action in time.",
+                "request_id": rid,
+                "command": command,
+            }
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._drop_computer_queue(rid)
+        if isinstance(result, dict):
+            result.setdefault("request_id", rid)
+            result.setdefault("command", command)
+            return result
+        return {"ok": False, "error": "invalid_result", "request_id": rid, "command": command}
+
+    async def cancel_computer_requests(self, *, reason: str = "cancelled") -> None:
+        self._fail_computer_futures({"ok": False, "error": reason, "spoken": "Stopped."})
+        await self.emit(
+            ComputerRequestEvent(
+                at_ms=self.now(),
+                command="cancel",
+                request_id=f"cancel-{self.now()}",
+                arguments={"reason": reason},
+                device_id=self.device_id,
+            )
+        )
+
+    async def _handle_computer_state_message(self, message: dict) -> None:
+        raw = message.get("computer_state")
+        if not isinstance(raw, dict):
+            raw = {key: value for key, value in message.items() if key != "type"}
+        previous = dict(self._computer_state)
+        self._computer_state = dict(raw)
+        await self.emit(ComputerStateEvent(at_ms=self.now(), computer_state=dict(self._computer_state)))
+        prev_ready = previous.get("generic_ui_control_ready")
+        now_ready = self._computer_state.get("generic_ui_control_ready")
+        prev_ax = previous.get("accessibility_permission")
+        now_ax = self._computer_state.get("accessibility_permission")
+        if (prev_ready, prev_ax) != (now_ready, now_ax) and self.grok_voice is not None:
+            refresher = getattr(self.grok_voice, "refresh_live_instructions", None)
+            if callable(refresher):
+                try:
+                    await refresher()
+                except Exception:  # noqa: BLE001 - instruction refresh must not kill audio
+                    log_computer("computer.replan", extra={"reason": "instruction_refresh_failed"})
+
+    async def _handle_computer_result(self, message: dict) -> None:
+        request_id = str(message.get("request_id") or "").strip()
+        payload = dict(message)
+        payload.pop("type", None)
+        if payload.get("ok") is False:
+            self._last_computer_status = str(payload.get("error") or "failed")
+        else:
+            self._last_computer_status = "success"
+        permissions = {
+            key: payload.get(key)
+            for key in (
+                "accessibility_permission",
+                "screen_capture_permission",
+                "foreground_app",
+                "foreground_bundle_id",
+                "generic_ui_control_ready",
+                "accessibility_ready",
+                "accessibility_probe",
+            )
+            if payload.get(key) is not None
+        }
+        if permissions:
+            self._computer_state.update(permissions)
+        queue = self._computer_queues.get(request_id) if request_id else None
+        if queue is None and self._computer_order:
+            queue = self._computer_queues.get(self._computer_order[0])
+        if queue is None:
+            return
+        queue.put_nowait(payload)
 
     async def publish_camera_state(self, state: dict) -> None:
         """Publish an Agent 2 provider report to the attached client."""
@@ -792,6 +1234,7 @@ class LiveSession:
             "device_id": str(raw.get("device_id") or "") or None,
             "platform": str(raw.get("platform") or "unknown"),
             "permission_state": str(raw.get("permission_state") or "unknown"),
+            "camera_name": str(raw.get("camera_name") or "") or None,
             "explicit_request": bool(raw.get("explicit_request", False)),
             "paused_reason": raw.get("paused_reason"),
             "consent_state": str(raw.get("consent_state") or "not_granted"),
@@ -1074,6 +1517,8 @@ class LiveSession:
                 return True
             if intent == "cancel":
                 await self._handle_control("cancel")
+                await self.cancel_computer_requests(reason="owner_stop")
+                cancel_computer_task(self.session_id, reason="owner_stop")
                 await self.speak_honesty(CANCEL_SPOKEN)
                 return True
             if intent in {"capability", "refused"}:
@@ -1099,6 +1544,7 @@ class LiveSession:
             and resolved is not None
             and resolved[0] in DETERMINISTIC_LIVE_ACTIONS
             and self.run_live_tool is not None
+            and not skip_silent_lifecycle_for(text)
         ):
             self._schedule_silent_life_action(*resolved)
             return False
@@ -1481,6 +1927,9 @@ class LiveSession:
 
     def close(self) -> None:
         self._closed = True
+        self._fail_look_futures(LookFrame(request_id="", error="client_disconnected"))
+        self._fail_computer_futures({"ok": False, "error": "client_disconnected"})
+        drop_state(self.session_id)
         self._reset_playback_boundary()
         unregister_live(self)
         self._cancel_respond()
@@ -1499,3 +1948,21 @@ class LiveSession:
                     fatal=True,
                 )
             )
+
+    def note_client_gone(self) -> None:
+        """Client websocket dropped. Do not close the provider until drain completes."""
+
+        self._client_gone = True
+
+    async def drain_durable_voice_memory(self, *, timeout_s: float | None = None) -> None:
+        grok = self.grok_voice
+        if grok is None:
+            return
+        drain = getattr(grok, "drain_voice_memory", None)
+        if callable(drain):
+            await drain(timeout_s=timeout_s)
+
+    async def flush_relationship_turns(self, *, timeout_s: float = 4.0) -> None:
+        from app.memory.turns import flush_live_turns
+
+        await flush_live_turns(timeout_s=timeout_s)

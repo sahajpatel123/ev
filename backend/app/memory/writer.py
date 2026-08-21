@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.contracts import MemoryCandidate
 from app.memory.entities import link_entities
 from app.memory.importance import score_importance
+from app.memory.observe import log_memory
 from app.models import Conflict, Memory, MemoryEvent
 from app.utils.text import canonical_json, fingerprint, normalize_text, utcnow
 
@@ -52,31 +53,64 @@ class MemoryWriter:
             return WriteResult(str(existing.id), candidate.memory_type, "updated", candidate.text)
 
         key = self._semantic_key(candidate)
+        prev = None
         if key is not None:
             prev = await self._find_current_by_key(candidate.memory_type, key)
-            if prev is not None and canonical_json(prev.payload) != canonical_json(candidate.payload):
-                memory = await self._create_memory(event, candidate, prev=prev, reason="Value changed")
-                prev.is_current = False
-                prev.superseded_by_id = memory.id
-                prev.valid_until = event.occurred_at or utcnow()
-                self.session.add(
-                    Conflict(
-                        memory_id_a=prev.id,
-                        memory_id_b=memory.id,
-                        reason=f"Value changed from {prev.text} to {candidate.text}",
-                        status="resolved",
-                        resolution=f"Superseded by {memory.id}",
-                        resolution_memory_id=memory.id,
-                        resolved_time=utcnow(),
-                    )
+        if prev is None and candidate.memory_type == "open_loop":
+            from app.memory.loops import find_similar_loop
+
+            prev = await find_similar_loop(self.session, candidate)
+        if prev is None and candidate.memory_type == "preference" and (candidate.payload or {}).get(
+            "replaces_latest"
+        ):
+            prev = await self._latest_current("preference")
+        if prev is not None and candidate.memory_type == "open_loop":
+            from app.memory.loops import inherit_loop_identity
+
+            inherit_loop_identity(prev, candidate)
+        if prev is not None and canonical_json(prev.payload) != canonical_json(candidate.payload):
+            memory = await self._create_memory(event, candidate, prev=prev, reason="Value changed")
+            prev.is_current = False
+            prev.superseded_by_id = memory.id
+            prev.valid_until = event.occurred_at or utcnow()
+            if candidate.memory_type == "open_loop":
+                from app.memory.loops import log_loop_transition
+
+                log_loop_transition(str((candidate.payload or {}).get("status") or "open"), memory.id)
+            elif candidate.memory_type == "decision":
+                log_memory("memory.decision_superseded", extra={"memory_id": str(prev.id)})
+            log_memory(
+                "memory.superseded",
+                extra={
+                    "memory_id": str(prev.id),
+                    "successor": str(memory.id),
+                    "memory_type": candidate.memory_type,
+                },
+            )
+            self.session.add(
+                Conflict(
+                    memory_id_a=prev.id,
+                    memory_id_b=memory.id,
+                    reason=f"Value changed from {prev.text} to {candidate.text}",
+                    status="resolved",
+                    resolution=f"Superseded by {memory.id}",
+                    resolution_memory_id=memory.id,
+                    resolved_time=utcnow(),
                 )
-                return WriteResult(str(memory.id), candidate.memory_type, "updated", candidate.text)
-            if prev is not None:
-                await self._add_provenance(prev, event)
-                return WriteResult(str(prev.id), candidate.memory_type, "updated", candidate.text)
+            )
+            return WriteResult(str(memory.id), candidate.memory_type, "updated", candidate.text)
+        if prev is not None:
+            await self._add_provenance(prev, event)
+            return WriteResult(str(prev.id), candidate.memory_type, "updated", candidate.text)
 
         memory = await self._create_memory(event, candidate)
         action = "created"
+        if candidate.memory_type == "open_loop":
+            from app.memory.loops import log_loop_transition
+
+            log_loop_transition(str((candidate.payload or {}).get("status") or "open"), memory.id)
+        elif candidate.memory_type == "decision":
+            log_memory("memory.decision_added", extra={"memory_id": str(memory.id)})
         await self._detect_conflicts(memory, candidate)
         return WriteResult(str(memory.id), candidate.memory_type, action, candidate.text)
 
@@ -147,6 +181,19 @@ class MemoryWriter:
         )
         return result.scalars().first()
 
+    async def _latest_current(self, memory_type: str) -> Memory | None:
+        result = await self.session.execute(
+            select(Memory)
+            .where(
+                Memory.memory_type == memory_type,
+                Memory.is_current.is_(True),
+                Memory.redacted.is_(False),
+            )
+            .order_by(Memory.valid_from.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
     async def _find_current_by_key(self, memory_type: str, key: tuple) -> Memory | None:
         result = await self.session.execute(
             select(Memory)
@@ -179,6 +226,20 @@ class MemoryWriter:
             subject = normalize_text((payload.get("subject") or "")[:80])
             prop = normalize_text((payload.get("property") or "")[:80])
             return ("fact", subject, prop) if subject and prop else None
+        if memory_type == "open_loop":
+            scope = normalize_text(str(payload.get("scope") or "")[:80])
+            key = normalize_text(str(payload.get("loop_key") or payload.get("title") or "")[:80])
+            return ("open_loop", scope, key) if key else None
+        if memory_type == "rejection":
+            topic = normalize_text((payload.get("topic") or payload.get("value") or "")[:80])
+            return ("rejection", topic) if topic else None
+        if memory_type == "hypothesis":
+            topic = normalize_text((payload.get("topic") or payload.get("value") or "")[:80])
+            return ("hypothesis", topic) if topic else None
+        if memory_type == "summary" and payload.get("kind") == "episode":
+            thread = str(payload.get("thread_id") or "")
+            start = str(payload.get("window_start") or "")
+            return ("episode", thread, start) if thread and start else None
         return None
 
     async def _detect_conflicts(self, memory: Memory, candidate) -> None:

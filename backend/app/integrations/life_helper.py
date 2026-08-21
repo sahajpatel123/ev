@@ -58,6 +58,7 @@ COMMAND_FLAGS: dict[str, tuple[tuple[str, str], ...]] = {
     "call.place": (("destination", "--destination"), ("kind", "--kind")),
     "call.check": (("destination", "--destination"), ("kind", "--kind")),
     "apps.frontmost": (),
+    "apps.list": (("query", "--query"), ("running", "--running")),
     "apps.activate": (("bundle_id", "--bundle-id"), ("name", "--name")),
     "apps.quit": (("bundle_id", "--bundle-id"), ("name", "--name")),
     "open.url": (("url", "--url"),),

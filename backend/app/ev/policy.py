@@ -102,6 +102,13 @@ ROUTED_CAPABILITIES = frozenset(
         "open_url",
         "open_app",
         "close_app",
+        "activate_app",
+        "list_apps",
+        "computer_status",
+        "inspect_ui",
+        "ui_action",
+        "screen_look",
+        "app_action",
         "list_mail",
         "draft_reply",
         "whats_on_my_plate",
@@ -111,6 +118,8 @@ ROUTED_CAPABILITIES = frozenset(
         "estimate_print",
         "camera_replay",
         "look",
+        "phone_action",
+        "observe_camera",
         "drone",
         "media_check",
         "estimate_structure",
@@ -127,6 +136,9 @@ INDEPENDENT_FACTORS = frozenset(
 )
 VOICE_FACTORS = frozenset({"voice", "voice_wake", "speaker_verified"})
 OWNER_ACTORS = frozenset({"master", "voice", "owner"})
+OWNER_AUTO_PERCEPTION = frozenset(
+    {"look", "observe_camera", "computer_status", "list_apps", "inspect_ui", "screen_look"}
+)
 
 R3_TTL_SECONDS = 120
 R4_TTL_SECONDS = 60
@@ -213,8 +225,17 @@ PROVIDER_SLUGS: dict[str, str] = {
     "open_url": "macos_life",
     "open_app": "macos_life",
     "close_app": "macos_life",
+    "activate_app": "computer",
+    "list_apps": "computer",
+    "computer_status": "computer",
+    "inspect_ui": "computer",
+    "ui_action": "computer",
+    "screen_look": "computer",
+    "app_action": "computer",
     "camera_replay": "camera",
     "look": "vision",
+    "phone_action": "phone",
+    "observe_camera": "vision",
     "list_mail": "mail",
     "draft_reply": "local",
     "whats_on_my_plate": "local",
@@ -523,6 +544,8 @@ def evaluate_policy(
         trusted = False
     scopes = required_scopes_for(resolved)
     confirm_policy = resolved.get("confirmation") if resolved else None
+    if name in OWNER_AUTO_PERCEPTION and trusted:
+        confirm_policy = CONFIRMATION_NONE
     if confirm_policy not in {
         CONFIRMATION_NONE,
         CONFIRMATION_STANDING,
@@ -1070,6 +1093,8 @@ async def provider_connected(session: AsyncSession, name: str, spec: dict | None
         from app.ev.apps import find_macos_life_integration
 
         return await find_macos_life_integration(session) is not None
+    if provider == "computer":
+        return True
     if provider not in INTEGRATION_PROVIDERS:
         return True
     row = (

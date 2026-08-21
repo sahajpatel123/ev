@@ -1,4 +1,5 @@
 import ApplicationServices
+import AppKit
 import AVFoundation
 import Contacts
 import EVRuntime
@@ -7,6 +8,7 @@ import CoreGraphics
 import CoreLocation
 import CoreServices
 import EventKit
+import Combine
 import Foundation
 import IOKit.hid
 import ScreenCaptureKit
@@ -282,6 +284,7 @@ enum PermissionCenter {
         // directly and launches Messages/Mail so every target gets its own
         // consent prompt (and row) in the Automation pane.
         _ = await request(.automation)
+        _ = await request(.accessibility)
         // Let any final consent prompts settle before reporting statuses.
         try? await Task.sleep(nanoseconds: 2_000_000_000)
         return await statuses()
@@ -323,9 +326,9 @@ enum PermissionCenter {
         case .denied:
             // Screen Recording has no "undecided" state — CGPreflight returns
             // denied until granted — so a request is the only way to register
-            // EV in that pane. Every other denied permission must be fixed in
-            // System Settings (the OS will not re-prompt after a denial).
-            return status.kind == .screenRecording
+            // EV in that pane. Accessibility is the same: EV must ask so it
+            // appears in the + list, then the owner toggles it.
+            return status.kind == .screenRecording || status.kind == .accessibility
         case .partial, .granted, .restricted:
             return false
         }
@@ -407,9 +410,9 @@ enum PermissionCenter {
         return PermissionStatus(
             kind: .accessibility,
             state: trusted ? .granted : .denied,
-            whatBreaks: "The fallback ⇧⌘E push-to-talk hotkey cannot see key presses from other apps. Always-on “EVIE” wake does not need this.",
+            whatBreaks: "Evie can open and close apps, but cannot click, type, or inspect controls inside them. The ⇧⌘E hotkey also cannot see keys from other apps.",
             settingsURL: settingsURL(for: .accessibility),
-            canRequest: false,
+            canRequest: true,
             repairHint: stale ? accessibilityRepairHint : nil
         )
     }
@@ -903,7 +906,7 @@ struct PermissionRowView: View {
             return status.canRequest
         case .denied:
             return status.kind == .screenRecording
-                || (status.kind == .accessibility && status.repairHint != nil)
+                || status.kind == .accessibility
         case .partial:
             return status.kind == .automation
         case .granted, .restricted:
@@ -913,7 +916,7 @@ struct PermissionRowView: View {
 
     private var askButtonTitle: String {
         switch status.kind {
-        case .accessibility: return "Re-grant"
+        case .accessibility: return "Enable Mac Control"
         default: return "Ask"
         }
     }
@@ -1033,6 +1036,9 @@ struct PermissionsPanelView: View {
                 isRequesting = false
                 autoRequestedVersion = PermissionCenter.registrationVersion
             }
+        }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            Task { await load() }
         }
     }
 

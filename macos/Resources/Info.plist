@@ -35,7 +35,7 @@
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>EV discovers and uses Bluetooth peripherals you explicitly pair (keyboard, mouse, health belt) for presence and readiness.</string>
     <key>NSCameraUsageDescription</key>
-    <string>EV uses the camera only when you explicitly capture a photo or video note.</string>
+    <string>EV uses the Mac camera when you ask it to look at something in the physical world.</string>
     <key>NSCalendarsUsageDescription</key>
     <string>EV reads and creates calendar events only for the HUD and routine features you enable.</string>
     <key>NSContactsUsageDescription</key>
@@ -45,7 +45,7 @@
     <key>NSRemindersUsageDescription</key>
     <string>EV reads and creates reminders only for routine follow-ups you enable.</string>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>EV uses screen content only when you enable ambient context collectors, and never sends raw pixels to any model.</string>
+    <string>EV captures a window screenshot only when you ask it to look at or operate the screen, and only after Screen Recording permission is granted.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>EV uses on-device speech recognition for quick dictation capture when you enable it.</string>
     <key>NSPrincipalClass</key>

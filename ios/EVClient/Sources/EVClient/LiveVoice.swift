@@ -29,6 +29,13 @@ public struct LiveVoiceEvent: Sendable {
     public let deviceMesh: [DeviceMeshNode]
     public let deviceMeshReported: Bool
     public let action: String?
+    public let requestId: String?
+    public let durationMs: Int?
+    public let intervalMs: Int?
+    public let maxFrames: Int?
+    public let detail: String?
+    public let command: String?
+    public let arguments: [String: AnyCodable]
 
     public init(
         type: String,
@@ -53,7 +60,14 @@ public struct LiveVoiceEvent: Sendable {
         realtimeDiagnostics: [String: AnyCodable]? = nil,
         deviceMesh: [DeviceMeshNode] = [],
         deviceMeshReported: Bool = false,
-        action: String? = nil
+        action: String? = nil,
+        requestId: String? = nil,
+        durationMs: Int? = nil,
+        intervalMs: Int? = nil,
+        maxFrames: Int? = nil,
+        detail: String? = nil,
+        command: String? = nil,
+        arguments: [String: AnyCodable] = [:]
     ) {
         self.type = type
         self.text = text
@@ -78,6 +92,17 @@ public struct LiveVoiceEvent: Sendable {
         self.deviceMesh = deviceMesh
         self.deviceMeshReported = deviceMeshReported
         self.action = action
+        self.requestId = requestId
+        self.durationMs = durationMs
+        self.intervalMs = intervalMs
+        self.maxFrames = maxFrames
+        self.detail = detail
+        self.command = command
+        self.arguments = arguments
+    }
+
+    public var argumentObject: [String: Any] {
+        arguments.mapValues { $0.jsonObject() }
     }
 }
 
@@ -193,11 +218,103 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     }
 
     public func sendLookFrame(attachmentId: String, deviceId: String?) {
+        sendLookFrame(
+            requestId: nil,
+            jpeg: nil,
+            width: nil,
+            height: nil,
+            error: attachmentId.isEmpty ? "empty_frame" : nil,
+            permission: nil,
+            deviceId: deviceId,
+            attachmentId: attachmentId
+        )
+    }
+
+    public func sendLookFrame(
+        requestId: String?,
+        jpeg: Data?,
+        width: Int?,
+        height: Int?,
+        error: String?,
+        permission: String?,
+        deviceId: String?,
+        attachmentId: String? = nil,
+        sequence: Int? = nil,
+        last: Bool? = nil,
+        cameraName: String? = nil
+    ) {
         var payload: [String: Any] = [
             "type": "look_frame",
-            "attachment_id": attachmentId,
             "explicit_request": true,
         ]
+        if let requestId, !requestId.isEmpty {
+            payload["request_id"] = requestId
+        }
+        if let attachmentId {
+            payload["attachment_id"] = attachmentId
+        }
+        if let jpeg, !jpeg.isEmpty {
+            payload["jpeg_b64"] = jpeg.base64EncodedString()
+        }
+        if let width { payload["width"] = width }
+        if let height { payload["height"] = height }
+        if let error, !error.isEmpty { payload["error"] = error }
+        if let permission, !permission.isEmpty { payload["permission"] = permission }
+        if let deviceId, !deviceId.isEmpty { payload["device_id"] = deviceId }
+        if let sequence { payload["sequence"] = sequence }
+        if let last { payload["last"] = last }
+        if let cameraName, !cameraName.isEmpty { payload["camera_name"] = cameraName }
+        sendJSON(payload)
+    }
+
+    public func sendCameraReadiness(
+        permission: String,
+        deviceId: String?,
+        cameraName: String?
+    ) {
+        var state: [String: Any] = [
+            "state": permission == "denied" ? "denied" : "off",
+            "visible": false,
+            "permission_state": permission,
+            "platform": "macos",
+            "raw_frames_persisted": false,
+            "explicit_request": false,
+        ]
+        if let deviceId, !deviceId.isEmpty { state["device_id"] = deviceId }
+        if let cameraName, !cameraName.isEmpty { state["camera_name"] = cameraName }
+        sendJSON(["type": "camera_state", "camera_state": state])
+    }
+
+    public func sendComputerState(_ state: [String: Any], deviceId: String?) {
+        var payload: [String: Any] = [
+            "type": "computer_state",
+            "computer_state": state,
+        ]
+        if let deviceId, !deviceId.isEmpty {
+            payload["device_id"] = deviceId
+        }
+        sendJSON(payload)
+    }
+
+    public func sendComputerResult(
+        requestId: String?,
+        command: String?,
+        result: [String: Any],
+        jpeg: Data? = nil,
+        deviceId: String? = nil
+    ) {
+        var payload = Self.jsonSafeDictionary(result)
+        payload["type"] = "computer_result"
+        if let requestId, !requestId.isEmpty {
+            payload["request_id"] = requestId
+        }
+        if let command, !command.isEmpty {
+            payload["command"] = command
+        }
+        if let jpeg, !jpeg.isEmpty {
+            payload["jpeg_b64"] = jpeg.base64EncodedString()
+            payload.removeValue(forKey: "jpeg")
+        }
         if let deviceId, !deviceId.isEmpty {
             payload["device_id"] = deviceId
         }
@@ -237,6 +354,45 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
         queue(.text(String(decoding: data, as: UTF8.self)),
               coalescePlayback: object["type"] as? String == "playback")
+    }
+
+    private static func jsonSafeDictionary(_ raw: [String: Any]) -> [String: Any] {
+        var out: [String: Any] = [:]
+        for (key, value) in raw {
+            if let safe = jsonSafe(value) {
+                out[key] = safe
+            }
+        }
+        return out
+    }
+
+    private static func jsonSafe(_ value: Any) -> Any? {
+        switch value {
+        case is NSNull, is String, is Bool:
+            return value
+        case let number as Int:
+            return number
+        case let number as Double:
+            return number
+        case let number as Float:
+            return Double(number)
+        case let number as Int32:
+            return Int(number)
+        case let number as UInt32:
+            return Int(number)
+        case let number as Int64:
+            return Int(number)
+        case let number as NSNumber:
+            return number
+        case let data as Data:
+            return data.base64EncodedString()
+        case let array as [Any]:
+            return array.compactMap { jsonSafe($0) }
+        case let dict as [String: Any]:
+            return jsonSafeDictionary(dict)
+        default:
+            return String(describing: value)
+        }
     }
 
     private func queue(_ message: PendingMessage, coalescePlayback: Bool = false) {
@@ -356,14 +512,7 @@ public final class LiveVoiceConnection: @unchecked Sendable {
                 $0[$1.key] = value.stringValue
             }
         }
-        let msValue: Int?
-        if let number = object["ms"] as? Int {
-            msValue = number
-        } else if let number = object["ms"] as? Double {
-            msValue = Int(number)
-        } else {
-            msValue = nil
-        }
+        let msValue: Int? = Self.intValue(object["ms"])
         let sampleRate: Int?
         if let number = object["sample_rate"] as? Int {
             sampleRate = number
@@ -432,8 +581,22 @@ public final class LiveVoiceConnection: @unchecked Sendable {
             realtimeDiagnostics: realtimeDiagnostics,
             deviceMesh: deviceMesh,
             deviceMeshReported: deviceMeshReported,
-            action: object["action"] as? String
+            action: object["action"] as? String,
+            requestId: object["request_id"] as? String,
+            durationMs: Self.intValue(object["duration_ms"]),
+            intervalMs: Self.intValue(object["interval_ms"]),
+            maxFrames: Self.intValue(object["max_frames"]),
+            detail: object["detail"] as? String,
+            command: object["command"] as? String ?? object["action"] as? String,
+            arguments: AnyCodable.dictionary(object["arguments"] as? [String: Any]) ?? [:]
         )
+    }
+
+    private static func intValue(_ raw: Any?) -> Int? {
+        if let value = raw as? Int { return value }
+        if let value = raw as? Double { return Int(value) }
+        if let value = raw as? NSNumber { return value.intValue }
+        return nil
     }
 
     private static func decodeCamera(_ raw: Any?) -> CameraStateSnapshot? {

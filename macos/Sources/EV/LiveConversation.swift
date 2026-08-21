@@ -24,6 +24,9 @@ final class LiveConversation {
     private var stayMuted = false
     private var mutedAt: Date?
     private var cameraRequestTask: Task<Void, Never>?
+    private var computerRequestTask: Task<Void, Never>?
+    private var computerStateTask: Task<Void, Never>?
+    private var lastComputerFingerprint = ""
     private var cameraLifecycleObservers: [NSObjectProtocol] = []
     private var audioGraphObservers: [NSObjectProtocol] = []
     private var lastPartialRenderAt = Date.distantPast
@@ -70,6 +73,10 @@ final class LiveConversation {
         stopCameraForSleepOrShutdown()
         cameraRequestTask?.cancel()
         cameraRequestTask = nil
+        computerRequestTask?.cancel()
+        computerRequestTask = nil
+        computerStateTask?.cancel()
+        computerStateTask = nil
         loopTask?.cancel()
         loopTask = nil
         tearDownChannel()
@@ -216,33 +223,165 @@ final class LiveConversation {
         }
     }
 
-    private func fulfillLookCapture(deviceId: String?) async {
+    private func fulfillLookCapture(deviceId: String?, requestId: String?) async {
         guard let model else { return }
         guard let connection else {
             model.lastError = "Camera look is unavailable until the live session connects."
             return
         }
+        let permission = CameraManager.shared.permissionState()
         do {
-            let jpeg = try await CameraFrameCapture.captureJPEG()
-            let uploaded = try await model.client.attach(
-                filename: "look.jpg",
-                contentType: "image/jpeg",
-                data: jpeg,
-                source: "macos",
-                eventType: "camera.look",
-                privacyLevel: "normal",
-                deviceID: deviceId ?? model.cameraState.deviceId
-            )
+            let frame = try await CameraManager.shared.captureFrame()
             connection.sendLookFrame(
-                attachmentId: uploaded.attachment.id,
-                deviceId: deviceId ?? model.cameraState.deviceId
+                requestId: requestId,
+                jpeg: frame.jpeg,
+                width: frame.width,
+                height: frame.height,
+                error: nil,
+                permission: frame.permission,
+                deviceId: deviceId ?? model.cameraState.deviceId,
+                sequence: 0,
+                last: true,
+                cameraName: frame.cameraName
             )
         } catch {
+            let code: String
+            if let capture = error as? CameraManager.CaptureError {
+                code = capture.code
+            } else {
+                code = "capture_failed"
+            }
             model.lastError = error.localizedDescription
             connection.sendLookFrame(
-                attachmentId: "",
-                deviceId: deviceId ?? model.cameraState.deviceId
+                requestId: requestId,
+                jpeg: nil,
+                width: nil,
+                height: nil,
+                error: code,
+                permission: permission,
+                deviceId: deviceId ?? model.cameraState.deviceId,
+                last: true
             )
+        }
+    }
+
+    private func fulfillObserve(
+        deviceId: String?,
+        requestId: String?,
+        durationMs: Int?,
+        intervalMs: Int?,
+        maxFrames: Int?
+    ) {
+        guard let connection else { return }
+        let duration = TimeInterval(durationMs ?? 4000) / 1000
+        let interval = TimeInterval(intervalMs ?? 1500) / 1000
+        let frames = maxFrames ?? 5
+        let resolvedDeviceId = deviceId ?? model?.cameraState.deviceId
+        CameraManager.shared.observe(
+            duration: duration,
+            interval: interval,
+            maxFrames: frames
+        ) { [weak connection] result, index, last in
+            guard let connection else { return }
+            switch result {
+            case .success(let frame):
+                connection.sendLookFrame(
+                    requestId: requestId,
+                    jpeg: frame.jpeg,
+                    width: frame.width,
+                    height: frame.height,
+                    error: nil,
+                    permission: frame.permission,
+                    deviceId: resolvedDeviceId,
+                    sequence: index,
+                    last: last,
+                    cameraName: frame.cameraName
+                )
+            case .failure(let error):
+                let code = (error as? CameraManager.CaptureError)?.code ?? "capture_failed"
+                connection.sendLookFrame(
+                    requestId: requestId,
+                    jpeg: nil,
+                    width: nil,
+                    height: nil,
+                    error: code,
+                    permission: CameraManager.shared.permissionState(),
+                    deviceId: resolvedDeviceId,
+                    sequence: index,
+                    last: true
+                )
+            }
+        }
+    }
+
+    private func fulfillComputer(_ event: LiveVoiceEvent) {
+        let command = event.command ?? event.action ?? ""
+        let requestId = event.requestId ?? "computer-\(Int(Date().timeIntervalSince1970 * 1000))"
+        let arguments = event.argumentObject
+        let deviceId = event.deviceId ?? model?.cameraState.deviceId
+        computerRequestTask = Task.detached(priority: .userInitiated) { [weak self] in
+            if command == "cancel" {
+                MacControlService.shared.cancel(requestId: requestId)
+            }
+            let result = MacControlService.shared.handle(
+                command: command,
+                arguments: arguments,
+                requestId: requestId
+            )
+            let jpeg = result["jpeg"] as? Data
+            var payload = result
+            payload.removeValue(forKey: "jpeg")
+            let snapshot = payload
+            let device = deviceId
+            let cmd = command
+            let rid = requestId
+            let conversation = self
+            await MainActor.run {
+                if let error = snapshot["error"] as? String, error == "accessibility_denied" {
+                    conversation?.model?.needsComputerAccessibility = true
+                    conversation?.model?.lastError =
+                        "I can open apps, but macOS hasn't given EV Accessibility access yet. Open Permissions and enable it."
+                }
+                conversation?.connection?.sendComputerResult(
+                    requestId: rid,
+                    command: cmd,
+                    result: snapshot,
+                    jpeg: jpeg,
+                    deviceId: device
+                )
+            }
+        }
+    }
+
+    private func startComputerStateWatch(deviceId: String?) {
+        computerStateTask?.cancel()
+        lastComputerFingerprint = ""
+        publishComputerStateIfChanged(deviceId: deviceId)
+        computerStateTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                await MainActor.run {
+                    self?.publishComputerStateIfChanged(deviceId: deviceId)
+                }
+            }
+        }
+    }
+
+    private func publishComputerStateIfChanged(deviceId: String?) {
+        let snap = MacControlService.shared.permissionSnapshot()
+        let fp = [
+            String(describing: snap["accessibility_permission"] ?? ""),
+            String(describing: snap["generic_ui_control_ready"] ?? false),
+            String(describing: snap["screen_capture_permission"] ?? ""),
+        ].joined(separator: "|")
+        guard fp != lastComputerFingerprint else { return }
+        lastComputerFingerprint = fp
+        connection?.sendComputerState(snap, deviceId: deviceId)
+        if snap["generic_ui_control_ready"] as? Bool == true {
+            model?.needsComputerAccessibility = false
+            if model?.lastError?.localizedCaseInsensitiveContains("accessibility") == true {
+                model?.lastError = nil
+            }
         }
     }
 
@@ -322,6 +461,16 @@ final class LiveConversation {
                 if Task.isCancelled { break }
                 if !microphoneStarted, event.type == "ready" {
                     microphoneStarted = startMicrophone(on: connection)
+                    connection.sendCameraReadiness(
+                        permission: CameraManager.shared.permissionState(),
+                        deviceId: deviceId,
+                        cameraName: nil
+                    )
+                    connection.sendComputerState(
+                        MacControlService.shared.permissionSnapshot(),
+                        deviceId: deviceId
+                    )
+                    startComputerStateWatch(deviceId: deviceId)
                 }
                 await handle(event)
                 if event.fatal {
@@ -539,9 +688,25 @@ final class LiveConversation {
             }
         case "camera_request":
             let action = (event.action ?? "").lowercased()
-            if ["capture", "look", "once"].contains(action) {
-                await fulfillLookCapture(deviceId: event.deviceId)
+            if action == "observe_stop" {
+                CameraManager.shared.cancelObserve()
+                break
             }
+            if action == "observe" {
+                fulfillObserve(
+                    deviceId: event.deviceId,
+                    requestId: event.requestId,
+                    durationMs: event.durationMs,
+                    intervalMs: event.intervalMs,
+                    maxFrames: event.maxFrames
+                )
+                break
+            }
+            if ["capture", "look", "once"].contains(action) {
+                await fulfillLookCapture(deviceId: event.deviceId, requestId: event.requestId)
+            }
+        case "computer_request":
+            fulfillComputer(event)
         default:
             break
         }
@@ -750,6 +915,8 @@ final class LiveConversation {
     }
 
     private func tearDownChannel() {
+        computerStateTask?.cancel()
+        computerStateTask = nil
         model?.player.stop()
         microphone.stop()
         VoiceLevelMeter.shared.resetInput()

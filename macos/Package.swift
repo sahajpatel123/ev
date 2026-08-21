@@ -53,6 +53,9 @@ let package = Package(
                 .linkedFramework("CoreVideo"),
                 .linkedFramework("QuartzCore"),
                 .linkedFramework("IOSurface"),
+                .linkedFramework("ApplicationServices"),
+                .linkedFramework("Carbon"),
+                .linkedFramework("CoreGraphics"),
             ]
         ),
         .executableTarget(

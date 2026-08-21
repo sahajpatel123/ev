@@ -1,11 +1,8 @@
-"""One-shot camera look: capture, OCR, objects, enrolled identity only.
+"""Camera look: capture a real frame and hand pixels to the live model.
 
-This is an observation tool, not a stream and not a stranger hunt.  A look
-grabs at most one consented frame, runs on-device OCR and perception, then
-uses the chat provider (DeepSeek) on *derived text and labels only* to
-compose a spoken answer.  Official ``api.deepseek.com`` is text-only, so raw
-pixels never go there.  People are named only when Agent 7 roster matching
-resolves an enrolled, consented face or when OCR text matches that roster.
+Live voice uses the connected Mac camera. The Realtime model must receive the
+JPEG itself. On-device OCR is optional metadata, never a substitute for vision.
+Raw frames are not persisted unless the owner already supplied an attachment.
 """
 
 from __future__ import annotations
@@ -25,6 +22,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.contracts import ChatMessage, RequestEnvelope
+from app.ev.camera_runtime import (
+    OBSERVE_DEFAULT_INTERVAL,
+    OBSERVE_MAX_FRAMES,
+    CameraObservation,
+    clamp_observe_duration,
+    log_camera,
+    now_mono,
+    stash_observation,
+    validate_jpeg,
+)
 from app.ev.workbench import hud_card
 from app.gateway.providers import get_chat_provider
 from app.gateway.service import ModelGateway
@@ -42,11 +49,23 @@ OCR_SNIPPET = 280
 MAX_LABELS = 8
 
 UNAVAILABLE_SPOKEN = (
-    "I can't see a camera frame right now. Turn the camera on or share a photo, "
-    "then ask me to look again."
+    "I can't see a camera frame right now. No camera source is currently connected."
 )
 DENIED_SPOKEN = (
-    "Camera permission is denied. Grant camera access in Privacy settings, then ask again."
+    "I can't access the camera because macOS hasn't granted EV camera access."
+)
+MALFORMED_SPOKEN = "The camera frame could not be transferred. I did not see anything."
+TIMEOUT_SPOKEN = "The camera did not return a frame in time. I did not see anything."
+LIVE_CAPTURED_SPOKEN = (
+    "A current camera observation was submitted as an image in this conversation. "
+    "Describe only what you can actually see in that image. If you cannot see an "
+    "image, say you could not receive the camera frame. Never invent visual contents. "
+    "Any local text hints are optional metadata, not a substitute for the image."
+)
+OBSERVE_CAPTURED_SPOKEN = (
+    "Bounded camera observations were submitted as images in this conversation. "
+    "Describe what changed or what you can see across those frames. If you cannot "
+    "see the images, say you could not receive them. Never invent visual contents."
 )
 
 
@@ -144,17 +163,84 @@ async def _wait_for_live_frame(
     live_session_id: str | None,
     device_id: str | None,
     timeout: float = LOOK_TIMEOUT_SECONDS,
-) -> str | None:
+    request_id: str | None = None,
+    detail: str | None = None,
+):
+    from app.ev.camera_runtime import LookFrame
     from app.voice.live.layer import live_for_device, live_for_session
 
     live = live_for_session(live_session_id) or live_for_device(device_id)
     if live is None:
-        return None
+        return None, None
     try:
-        return await live.request_look_frame(timeout=timeout)
+        frame = await live.request_look_frame(
+            timeout=timeout,
+            request_id=request_id,
+            detail=detail,
+        )
+        return live, frame
     except Exception:  # noqa: BLE001 - live capture is optional
         logger.info("live look frame request failed", exc_info=True)
+        return live, LookFrame(request_id=request_id or "", error="capture_failed", last=True)
+
+
+def _spoken_for_capture_error(error: str | None, permission: str | None = None) -> str:
+    raw = str(error or "").strip().lower()
+    perm = str(permission or "").strip().lower()
+    if raw in {"denied", "permission_denied"} or perm in {"denied", "restricted"}:
+        return DENIED_SPOKEN
+    if raw in {"timeout"}:
+        return TIMEOUT_SPOKEN
+    if raw in {"malformed_image", "empty_frame"}:
+        return MALFORMED_SPOKEN
+    if raw in {"client_disconnected", "disconnected"}:
+        return "No camera source is currently connected."
+    if raw in {"unavailable", "no_camera"}:
+        return "No camera is available on the connected Mac."
+    return UNAVAILABLE_SPOKEN
+
+
+def _stash_frame(
+    *,
+    call_id: str | None,
+    request_id: str,
+    jpeg: bytes,
+    width: int | None,
+    height: int | None,
+    camera_name: str | None,
+    detail: str,
+    t0: float,
+    sequence: int = 0,
+) -> None:
+    if not call_id or not jpeg:
+        return
+    stash_observation(
+        CameraObservation(
+            request_id=request_id,
+            call_id=str(call_id),
+            jpeg=jpeg,
+            width=width,
+            height=height,
+            detail=detail if detail in {"auto", "low", "high"} else "high",
+            camera_name=camera_name,
+            sequence=sequence,
+            t0=t0,
+            t4=now_mono(),
+        )
+    )
+
+
+async def _jpeg_from_attachment(session: AsyncSession, attachment: Attachment) -> bytes | None:
+    try:
+        data = await get_object_store().get(attachment.storage_key)
+    except Exception:  # noqa: BLE001
         return None
+    if not data:
+        return None
+    if attachment.content_type == "image/jpeg" or data.startswith(b"\xff\xd8"):
+        validated = validate_jpeg(data)
+        return validated[0] if validated else data
+    return data
 
 
 async def _resolve_attachment(
@@ -428,6 +514,53 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
         return draft
 
 
+def _live_image_result(
+    *,
+    request_id: str,
+    source: str,
+    width: int | None,
+    height: int | None,
+    encoded_bytes: int,
+    camera_name: str | None,
+    focus: str,
+    frames: int = 1,
+    ocr_text: str | None = None,
+    labels: list[str] | None = None,
+    observe: bool = False,
+) -> dict[str, Any]:
+    spoken = OBSERVE_CAPTURED_SPOKEN if observe else LIVE_CAPTURED_SPOKEN
+    return {
+        "ok": True,
+        "spoken": spoken,
+        "summary": spoken,
+        "image_ready": True,
+        "model_image_delivered": False,
+        "persist_raw": False,
+        "raw_sent": False,
+        "request_id": request_id,
+        "source": source,
+        "width": width,
+        "height": height,
+        "encoded_bytes": encoded_bytes,
+        "camera_name": camera_name,
+        "focus": focus,
+        "frames": frames,
+        "local_ocr": (ocr_text or "")[:OCR_SNIPPET] or None,
+        "labels": labels or [],
+        "hud": _card(
+            spoken,
+            {
+                "ok": True,
+                "source": source,
+                "request_id": request_id,
+                "width": width,
+                "height": height,
+                "frames": frames,
+            },
+        ),
+    }
+
+
 async def look_now(
     session: AsyncSession,
     *,
@@ -437,15 +570,25 @@ async def look_now(
     focus: str = "auto",
     live_session_id: str | None = None,
     device_id: str | None = None,
+    request_id: str | None = None,
+    detail: str = "high",
 ) -> dict[str, Any]:
-    """Capture or accept one frame, perceive it, and speak an honest description."""
+    """Capture or accept one frame. Live voice stashes JPEG for Realtime injection."""
 
+    t0 = now_mono()
     focus_value = (focus or "auto").strip().lower()
     if focus_value not in {"auto", "text", "objects", "people"}:
         focus_value = "auto"
+    detail_value = (detail or "high").strip().lower()
+    if detail_value not in {"auto", "low", "high"}:
+        detail_value = "high"
+    call_id = str(request_id or "").strip() or None
+    capture_id = call_id or str(uuid4())
     source = "none"
     attachment: Attachment | None = None
     spoken_error: str | None = None
+    live_connected = False
+    log_camera("camera.tool_called", request_id=capture_id, extra={"tool": "look"})
 
     if attachment_id:
         try:
@@ -460,18 +603,54 @@ async def look_now(
             }
 
     if attachment is None:
-        live_id = await _wait_for_live_frame(
+        live, frame = await _wait_for_live_frame(
             live_session_id=live_session_id,
             device_id=device_id,
+            request_id=capture_id,
+            detail=detail_value,
         )
-        if live_id:
-            try:
-                attachment = await _resolve_attachment(session, UUID(str(live_id)))
-                source = "live_camera"
-            except (KeyError, ValueError):
-                attachment = None
+        live_connected = live is not None
+        if frame is not None and (frame.jpeg or frame.attachment_id) and not frame.error:
+            source = "live_camera"
+            if frame.jpeg:
+                _stash_frame(
+                    call_id=call_id,
+                    request_id=frame.request_id or capture_id,
+                    jpeg=frame.jpeg,
+                    width=frame.width,
+                    height=frame.height,
+                    camera_name=frame.camera_name,
+                    detail=detail_value,
+                    t0=t0,
+                )
+                return _live_image_result(
+                    request_id=frame.request_id or capture_id,
+                    source=source,
+                    width=frame.width,
+                    height=frame.height,
+                    encoded_bytes=len(frame.jpeg),
+                    camera_name=frame.camera_name,
+                    focus=focus_value,
+                )
+            if frame.attachment_id:
+                try:
+                    attachment = await _resolve_attachment(session, UUID(str(frame.attachment_id)))
+                except (KeyError, ValueError):
+                    attachment = None
+        elif frame is not None and frame.error:
+            spoken = _spoken_for_capture_error(frame.error, frame.permission)
+            return {
+                "ok": False,
+                "spoken": spoken,
+                "error": frame.error,
+                "degraded": True,
+                "source": "live_camera",
+                "request_id": frame.request_id or capture_id,
+                "model_image_delivered": False,
+                "hud": _card(spoken, {"ok": False, "error": frame.error}),
+            }
 
-    if attachment is None:
+    if attachment is None and not live_connected:
         local, spoken_error = await _capture_local_frame(
             session, actor=actor, device_id=device_id
         )
@@ -481,14 +660,42 @@ async def look_now(
 
     if attachment is None:
         spoken = spoken_error or UNAVAILABLE_SPOKEN
+        error = "macos_permission_denied" if spoken == DENIED_SPOKEN else "not_connected"
         return {
             "ok": False,
             "spoken": spoken,
-            "error": "not_connected",
+            "error": error,
             "degraded": True,
             "source": source,
+            "model_image_delivered": False,
             "hud": _card(spoken, {"ok": False, "source": source}),
         }
+
+    if live_session_id:
+        jpeg = await _jpeg_from_attachment(session, attachment)
+        if jpeg:
+            dims = validate_jpeg(jpeg)
+            width = dims[1] if dims else None
+            height = dims[2] if dims else None
+            _stash_frame(
+                call_id=call_id,
+                request_id=capture_id,
+                jpeg=jpeg,
+                width=width,
+                height=height,
+                camera_name=None,
+                detail=detail_value,
+                t0=t0,
+            )
+            return _live_image_result(
+                request_id=capture_id,
+                source=source,
+                width=width,
+                height=height,
+                encoded_bytes=len(jpeg),
+                camera_name=None,
+                focus=focus_value,
+            )
 
     from app.ev.vision import analyze_attachment
 
@@ -608,11 +815,134 @@ async def look_with_timeout(
             timeout=LOOK_TIMEOUT_SECONDS + 8.0,
         )
     except TimeoutError:
-        spoken = UNAVAILABLE_SPOKEN
+        spoken = TIMEOUT_SPOKEN
         return {
             "ok": False,
             "spoken": spoken,
             "error": "timeout",
             "degraded": True,
+            "model_image_delivered": False,
             "hud": _card(spoken, {"ok": False, "error": "timeout"}),
         }
+
+
+async def observe_camera_now(
+    session: AsyncSession,
+    *,
+    actor: str = "owner",
+    duration_seconds: float | None = None,
+    objective: str | None = None,
+    strategy: str = "interval",
+    live_session_id: str | None = None,
+    device_id: str | None = None,
+    request_id: str | None = None,
+    detail: str = "low",
+) -> dict[str, Any]:
+    """Capture a bounded sequence of frames and stash each for Realtime injection."""
+
+    del session, actor, objective
+    t0 = now_mono()
+    duration = clamp_observe_duration(duration_seconds)
+    interval = OBSERVE_DEFAULT_INTERVAL if strategy != "change" else 1.0
+    call_id = str(request_id or "").strip() or None
+    capture_id = call_id or str(uuid4())
+    detail_value = (detail or "low").strip().lower()
+    if detail_value not in {"auto", "low", "high"}:
+        detail_value = "low"
+    log_camera(
+        "camera.tool_called",
+        request_id=capture_id,
+        extra={"tool": "observe_camera", "duration_s": duration},
+    )
+    from app.voice.live.layer import live_for_device, live_for_session
+
+    live = live_for_session(live_session_id) or live_for_device(device_id)
+    if live is None:
+        spoken = UNAVAILABLE_SPOKEN
+        return {
+            "ok": False,
+            "spoken": spoken,
+            "error": "not_connected",
+            "degraded": True,
+            "model_image_delivered": False,
+            "hud": _card(spoken, {"ok": False, "error": "not_connected"}),
+        }
+    frames = await live.request_observe_frames(
+        duration_s=duration,
+        interval_s=interval,
+        max_frames=OBSERVE_MAX_FRAMES,
+        timeout=duration + 4.0,
+        request_id=capture_id,
+        detail=detail_value,
+    )
+    kept = 0
+    last_error = None
+    width = height = None
+    camera_name = None
+    encoded = 0
+    for index, frame in enumerate(frames):
+        if frame.error and not frame.jpeg:
+            last_error = frame.error
+            continue
+        if not frame.jpeg:
+            continue
+        _stash_frame(
+            call_id=call_id,
+            request_id=frame.request_id or capture_id,
+            jpeg=frame.jpeg,
+            width=frame.width,
+            height=frame.height,
+            camera_name=frame.camera_name,
+            detail=detail_value,
+            t0=t0,
+            sequence=index,
+        )
+        kept += 1
+        width = frame.width
+        height = frame.height
+        camera_name = frame.camera_name
+        encoded += len(frame.jpeg)
+    if kept == 0:
+        spoken = _spoken_for_capture_error(last_error or "timeout")
+        return {
+            "ok": False,
+            "spoken": spoken,
+            "error": last_error or "timeout",
+            "degraded": True,
+            "model_image_delivered": False,
+            "hud": _card(spoken, {"ok": False, "error": last_error or "timeout"}),
+        }
+    return _live_image_result(
+        request_id=capture_id,
+        source="live_camera",
+        width=width,
+        height=height,
+        encoded_bytes=encoded,
+        camera_name=camera_name,
+        focus="auto",
+        frames=kept,
+        observe=True,
+    )
+
+
+async def observe_camera_with_timeout(
+    session: AsyncSession,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    duration = clamp_observe_duration(kwargs.get("duration_seconds"))
+    try:
+        return await asyncio.wait_for(
+            observe_camera_now(session, **kwargs),
+            timeout=duration + 10.0,
+        )
+    except TimeoutError:
+        spoken = TIMEOUT_SPOKEN
+        return {
+            "ok": False,
+            "spoken": spoken,
+            "error": "timeout",
+            "degraded": True,
+            "model_image_delivered": False,
+            "hud": _card(spoken, {"ok": False, "error": "timeout"}),
+        }
+

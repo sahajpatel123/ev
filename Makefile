@@ -1,4 +1,4 @@
-.PHONY: install dev test e2e-cli eval lint typecheck doctor verify compose-up compose-down migrate seed postgres-e2e
+.PHONY: install dev test e2e-cli eval lint typecheck doctor verify compose-up compose-down migrate seed postgres-e2e package-macos mac-control-live-e2e mac-control-live-e2e-full mac-control-dev-restart evie-cross-platform-dev evie-home-station evie-cross-platform-ready cross-platform-e2e mobile-voice-e2e mobile-voice-config-diff mobile-actions-e2e
 
 # Backend commands run from backend/ where pydantic looks for ./.env. Load the
 # repo-root .env into the environment first so EV_VAULT_KEY and friends are
@@ -12,6 +12,39 @@ install:
 
 dev:
 	$(call backend-run, uv run uvicorn app.main:app --reload --port 8000)
+
+evie-cross-platform-dev:
+	$(call backend-run, uv run python -m app.scripts.cross_platform_dev)
+
+evie-home-station:
+	$(call backend-run, uv run python -m app.scripts.home_station)
+
+evie-cross-platform-ready:
+	$(call backend-run, uv run python -m app.scripts.cross_platform_ready)
+
+cross-platform-e2e:
+	$(call backend-run, uv run python -m app.scripts.cross_platform_e2e)
+
+mobile-voice-config-diff:
+	$(call backend-run, uv run python -m app.scripts.mobile_voice_config_diff)
+
+mobile-voice-e2e:
+	cd backend && uv run pytest -q tests/test_mobile_voice_core.py tests/test_phone_audio_architecture.py tests/test_pwa_audio.py tests/test_webrtc_connection.py
+
+mobile-actions-e2e:
+	cd backend && uv run pytest -q tests/test_mobile_actions.py tests/test_phone_audio_architecture.py tests/test_device_gateway.py
+
+package-macos:
+	macos/scripts/package.sh
+
+mac-control-dev-restart:
+	$(call backend-run, uv run python -m app.scripts.mac_control_live_e2e --restart-only --skip-package)
+
+mac-control-live-e2e:
+	$(call backend-run, uv run python -m app.scripts.mac_control_live_e2e --suite music)
+
+mac-control-live-e2e-full:
+	$(call backend-run, uv run python -m app.scripts.mac_control_live_e2e --suite full --timeout 120)
 
 test:
 	cd backend && uv run pytest -q

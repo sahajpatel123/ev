@@ -10,10 +10,15 @@ os.environ["EV_MASTER_KEY"] = "test-key"
 os.environ["EV_API_KEY"] = "test-key"
 os.environ.setdefault("EV_PROCESSING_MODE", "sync")
 if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
+    # Overwrite inherited shell/env-file provider keys. setdefault leaks the
+    # owner's EV_VOICE_LIVE_BRAIN=openai and a live DeepSeek key into unit tests.
     os.environ["EV_CHAT_PROVIDER"] = "mock"
     os.environ["EV_XAI_API_KEY"] = ""
     os.environ["EV_OPENAI_API_KEY"] = ""
-    os.environ.setdefault("EV_VOICE_LIVE_BRAIN", "pipeline")
+    os.environ["EV_DEEPSEEK_API_KEY"] = ""
+    os.environ["EV_OPENCODE_API_KEY"] = ""
+    os.environ["EV_VOICE_LIVE_BRAIN"] = "pipeline"
+    os.environ["EV_BRAVE_SEARCH_API_KEY"] = ""
 os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
 os.environ.setdefault("EV_EMBEDDING_DIM", "64")
 os.environ["EV_VOICEPRINT_PROVIDER"] = "hash"
@@ -31,6 +36,10 @@ os.environ.pop("EV_EARS_API_KEY", None)
 os.environ.setdefault("EV_MASTER_KEY", "test-key")
 os.environ.setdefault("EV_VAULT_KEY", "test-vault-key-0123456789abcdef")
 os.environ.setdefault("EV_STORAGE_ROOT", f"{_TMP}/storage")
+os.environ.setdefault("EV_MEMORY_DIR", f"{_TMP}/ev-memory")
+os.environ.setdefault("EV_MEMORY_GATE", "off")
+os.environ.setdefault("EV_MEMORY_PREFETCH", "off")
+os.environ.setdefault("EV_ENVIRONMENT", "test")
 os.environ.setdefault("EV_ACCESS_LOG_ENABLED", "true")
 os.environ.setdefault("EV_QUIET_HOURS_START", "23:59")
 os.environ.setdefault("EV_QUIET_HOURS_END", "00:00")
@@ -68,11 +77,24 @@ def reset_mutable_settings() -> Iterator[None]:
     test so the mutation is test-local.
     """
 
+    from app.gateway.reliability import CIRCUIT_BREAKERS
+
+    CIRCUIT_BREAKERS.reset()
     yield
     from app.config import settings
 
     settings.quiet_hours_start = "23:59"
     settings.quiet_hours_end = "00:00"
+    settings.memory_gate = os.environ.get("EV_MEMORY_GATE", "off")
+    settings.memory_dir = os.environ.get("EV_MEMORY_DIR")
+    settings.memory_curator_enabled = True
+    settings.memory_prefetch = os.environ.get("EV_MEMORY_PREFETCH", "off")
+    settings.cross_platform_production_memory = False
+    from app.memory.bootstrap import reset_bootstrap_cache
+    from app.memory.prefetch import reset_prefetch
+
+    reset_bootstrap_cache()
+    reset_prefetch()
 
 
 @pytest.fixture

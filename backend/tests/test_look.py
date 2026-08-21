@@ -58,7 +58,8 @@ def test_look_is_live_r1_vision_capability() -> None:
 
 async def test_look_is_ready_on_live_capability_manifest(db_session: AsyncSession) -> None:
     from app.ev.protocols import spoken_ready_capability_line
-    from app.voice.live.layer import build_live_capability_manifest
+    from app.voice.live.layer import build_live_capability_manifest, reset_live_registry
+    from app.voice.live.session import LiveSession
 
     projection = await build_runtime_projection(
         db_session,
@@ -67,19 +68,37 @@ async def test_look_is_ready_on_live_capability_manifest(db_session: AsyncSessio
     )
     by_name = {entry["name"]: entry for entry in projection["capabilities"]}
     assert by_name["look"]["provider"] == "vision"
+    assert by_name["look"]["availability"] == "not_connected"
+    names = {tool["name"] for tool in projection["realtime"]["tools"]}
+    assert "look" not in names
+
+    reset_live_registry()
+    session = LiveSession(session_id="look-ready", device_id="mac", backchannel_enabled=False)
+    session._camera_state["permission_state"] = "authorized"
+    projection = await build_runtime_projection(
+        db_session,
+        actor="master",
+        realtime_provider="openai",
+        session_id="look-ready",
+    )
+    by_name = {entry["name"]: entry for entry in projection["capabilities"]}
     assert by_name["look"]["availability"] == "available"
     assert by_name["look"]["realtime_eligible"] is True
+    assert by_name["look"]["capture_ready"] is True
     names = {tool["name"] for tool in projection["realtime"]["tools"]}
     assert "look" in names
     manifest = build_live_capability_manifest(projection, provider="openai")
     line = spoken_ready_capability_line(manifest).lower()
     assert "camera look" in line
+    session.close()
+    reset_live_registry()
 
 
 def test_look_intent_does_not_steal_search_or_health() -> None:
-    assert select_tool("what do you see").selected == "look"
-    assert select_tool("look at this").selected == "look"
-    assert select_tool("read this label").selected == "look"
+    assert select_tool("what am I holding").selected == "look"
+    assert select_tool("read this").selected == "look"
+    assert select_tool("what color is this").selected == "look"
+    assert select_tool("watch this and tell me when it turns green").selected == "observe_camera"
     assert select_tool("how do i look").selected == "health_how_do_i_look"
     assert select_tool("look this up on the web").selected != "look"
     action = resolve_live_action("what do you see")
@@ -168,7 +187,9 @@ async def test_live_look_frame_handshake() -> None:
     assert request is not None
     assert request.action == "capture"
     await session.handle_client({"type": "look_frame", "attachment_id": "att-look-1"})
-    assert await task == "att-look-1"
+    frame = await task
+    assert frame is not None
+    assert frame.attachment_id == "att-look-1"
     session.close()
     reset_live_registry()
 

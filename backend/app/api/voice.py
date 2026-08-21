@@ -580,6 +580,7 @@ async def voice_live(
     websocket: WebSocket,
     session_id: UUID,
     token: str | None = None,
+    ticket: str | None = None,
 ) -> None:
     """Full-duplex EV LIVE channel. See ``docs/LIVE_VOICE.md``."""
 
@@ -597,35 +598,84 @@ async def voice_live(
         return
 
     from app.auth import _resolve_actor
+    from app.device_gateway.tickets import consume as consume_ws_ticket
+    from app.models import Device as DeviceRow
     from app.voice.live.transport import bind_live_session, serve_live_websocket
 
-    authorization = _ws_authorization(websocket, token)
-    try:
-        async with SessionLocal() as session:
-            actor, device = await _resolve_actor(authorization, session)
-            ctx = ActorContext(
-                actor=actor,
-                device_id=device.id if device else None,
-                is_master=device is None,
-                device=device,
+    ctx = None
+    claimed = None
+    if ticket:
+        claimed = consume_ws_ticket(ticket, session_id=str(session_id))
+        if claimed is None:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "unauthorized",
+                    "message": "Invalid or expired live ticket",
+                    "fatal": True,
+                }
             )
-            row = await session.get(VoiceSession, session_id)
-            if row is not None:
-                _guard_session(row, ctx)
-    except HTTPException as exc:
-        await websocket.send_json(
-            {
-                "type": "error",
-                "code": "unauthorized" if exc.status_code == 401 else "forbidden",
-                "message": str(exc.detail),
-                "fatal": True,
-            }
-        )
-        await websocket.close(code=4001 if exc.status_code == 401 else 4003)
-        return
+            await websocket.close(code=4001)
+            return
+        try:
+            async with SessionLocal() as session:
+                device = await session.get(DeviceRow, UUID(str(claimed["device_id"])))
+                if device is None or device.revoked_at is not None:
+                    raise HTTPException(status_code=401, detail="Invalid or revoked device")
+                row = await session.get(VoiceSession, session_id)
+                ctx = ActorContext(
+                    actor=f"device:{device.name}",
+                    device_id=device.id,
+                    is_master=False,
+                    device=device,
+                )
+                if row is not None:
+                    _guard_session(row, ctx)
+        except HTTPException as exc:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "unauthorized" if exc.status_code == 401 else "forbidden",
+                    "message": str(exc.detail),
+                    "fatal": True,
+                }
+            )
+            await websocket.close(code=4001 if exc.status_code == 401 else 4003)
+            return
+    else:
+        authorization = _ws_authorization(websocket, token)
+        try:
+            async with SessionLocal() as session:
+                actor, device = await _resolve_actor(authorization, session)
+                ctx = ActorContext(
+                    actor=actor,
+                    device_id=device.id if device else None,
+                    is_master=device is None,
+                    device=device,
+                )
+                row = await session.get(VoiceSession, session_id)
+                if row is not None:
+                    _guard_session(row, ctx)
+        except HTTPException as exc:
+            await websocket.send_json(
+                {
+                    "type": "error",
+                    "code": "unauthorized" if exc.status_code == 401 else "forbidden",
+                    "message": str(exc.detail),
+                    "fatal": True,
+                }
+            )
+            await websocket.close(code=4001 if exc.status_code == 401 else 4003)
+            return
 
     try:
         live = await bind_live_session(session_id=session_id, ctx=ctx)
+        if claimed:
+            live.client_instance_id = str(claimed.get("instance_id") or "")
+        if getattr(live, "memory_scope", None) == "sandbox":
+            from app.device_gateway.live_fence import fence_sandbox_lives
+
+            await fence_sandbox_lives(except_live=live)
     except VoiceError as exc:
         await websocket.send_json(
             {

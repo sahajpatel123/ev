@@ -27,6 +27,36 @@ class Settings(BaseSettings):
     # Ingestion pipeline
     processing_mode: str = "sync"  # sync | queue
 
+    # Memory OS: Postgres is authority. OpenAI Realtime sessions are disposable.
+    # Default gate is off so live voice latency stays frozen. shadow = measure only.
+    memory_gate: str = "off"  # off | shadow | on
+    memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
+    memory_curator_enabled: bool = True
+    memory_curator_version: str = "1.1"
+    memory_curator_batch_events: int = 8
+    memory_bootstrap_max_tokens: int = 1400
+    memory_prefetch: str = "off"  # off | shadow | on — never injects
+
+    # Cross-platform Device Gateway / PWA. Production Memory OS stays off.
+    cross_platform_enabled: bool = True
+    cross_platform_production_memory: bool = False
+    device_protocol_version: str = "1"
+    pwa_build: str = "2026.08.21.22"
+    phone_audio_backend: str = "webrtc_strict"  # webrtc_strict | webrtc | pcm_ws | encoded | auto
+    phone_asr_model: str = "gpt-4o-transcribe"
+    phone_asr_language: str = "en"
+    phone_input_noise_reduction: str = "near_field"  # near_field | far_field | off
+    pwa_design_version: str = "veil-1"
+    device_access_ttl_seconds: int = 900
+    pairing_ttl_seconds: int = 900
+    conversation_lease_ttl_seconds: int = 45
+    active_conversation_ttl_seconds: int = 3600
+    sandbox_namespace: str = "cross_platform_test"
+    home_station_mode: bool = True
+    home_station_keep_awake_on_ac: bool = True
+    home_station_keep_awake_on_battery: bool = False
+    tailscale_serve_apply: bool = False
+
     # Embeddings
     embedding_provider: str = "hash"  # hash | http
     embedding_base_url: str | None = None

@@ -1178,9 +1178,9 @@ def test_provider_manifest_instructions_are_truthful_and_dynamic() -> None:
     instructions = grok_session_update(
         provider="openai", capability_manifest=manifest
     )["session"]["instructions"]
-    assert "CURRENT LIVE CAPABILITY MANIFEST" in instructions
-    assert "web_search" in instructions
-    assert "Never claim a tool completed" in instructions
+    assert "CURRENT LIVE OPERATOR SHEET" in instructions
+    assert "CAMERA / VISUAL PERCEPTION" in instructions
+    assert "Never claim an action completed" in instructions
 
 
 async def test_failed_tool_result_is_not_rendered_as_evidence() -> None:

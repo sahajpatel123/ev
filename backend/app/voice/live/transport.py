@@ -20,6 +20,11 @@ from fastapi import WebSocket, WebSocketDisconnect
 from app.auth import ActorContext
 from app.config import settings
 from app.db import SessionLocal
+from app.device_gateway.sandbox import is_sandbox_device
+from app.device_gateway.voice import (
+    make_sandbox_pipeline_responder,
+    strip_production_memory_from_manifest,
+)
 from app.voice.contracts import Transcript
 from app.voice.live.behavior import to_speech_style
 from app.voice.live.events import ErrorEvent, LiveEvent, ReplyEvent, TtsChunkEvent
@@ -31,6 +36,7 @@ from app.voice.live.grok_voice import (
 )
 from app.voice.live.layer import (
     build_live_capability_manifest,
+    compact_live_tool_json,
     register_live,
     tool_result_is_successful,
     unregister_live,
@@ -164,6 +170,7 @@ async def serve_live_websocket(
     if on_heartbeat is None:
         on_heartbeat = getattr(live, "on_heartbeat", None)
     await websocket.send_json(live.ready_event().as_dict())
+    live.transport_ws = websocket
     register_live(live)
     if getattr(live, "grok_voice", None) is not None:
         await live.grok_voice.start()
@@ -187,7 +194,7 @@ async def serve_live_websocket(
                     if isinstance(payload, dict):
                         await live.handle_client(payload)
         finally:
-            live.close()
+            live.note_client_gone()
 
     async def tick_loop() -> None:
         last_beat = 0.0
@@ -244,7 +251,16 @@ async def serve_live_websocket(
             if exc is not None and not isinstance(exc, WebSocketDisconnect):
                 raise exc
     finally:
+        sandbox_live = getattr(live, "memory_scope", "owner") == "sandbox"
+        if not sandbox_live:
+            with contextlib.suppress(Exception):
+                await live.drain_durable_voice_memory()
         unregister_live(live)
+        if not sandbox_live:
+            with contextlib.suppress(Exception):
+                from app.voice.live.voice_memory import PERSIST_FLUSH_TIMEOUT_S
+
+                await live.flush_relationship_turns(timeout_s=PERSIST_FLUSH_TIMEOUT_S)
         live.close()
         for task in (recv, tick, send):
             task.cancel()
@@ -285,26 +301,36 @@ async def bind_live_session(
         device_id = row.device_id
         speaker_confidence = row.speaker_confidence
         tts_device_id = str(device_id) if device_id else None
-        try:
-            from app.ev.fleet import resolve_registry_device, tts_playback_device
+        sandbox = False
+        if device_id:
+            from app.models import Device as DeviceRow
 
-            prefer = None
-            resolved = await resolve_registry_device(
-                session, str(device_id) if device_id else None
-            )
-            if resolved is not None:
-                prefer = resolved.id
-                tts_device_id = str(resolved.id)
-            elif device_id:
-                try:
-                    prefer = UUID(str(device_id))
-                except ValueError:
-                    prefer = None
-            target = await tts_playback_device(session, prefer_device_id=prefer)
-            if target is not None:
-                tts_device_id = str(target.id)
-        except Exception:  # noqa: BLE001 - routing metadata must not block live
-            pass
+            try:
+                drow = await session.get(DeviceRow, UUID(str(device_id)))
+            except (ValueError, TypeError):
+                drow = None
+            sandbox = is_sandbox_device(drow)
+        if not sandbox:
+            try:
+                from app.ev.fleet import resolve_registry_device, tts_playback_device
+
+                prefer = None
+                resolved = await resolve_registry_device(
+                    session, str(device_id) if device_id else None
+                )
+                if resolved is not None:
+                    prefer = resolved.id
+                    tts_device_id = str(resolved.id)
+                elif device_id:
+                    try:
+                        prefer = UUID(str(device_id))
+                    except ValueError:
+                        prefer = None
+                target = await tts_playback_device(session, prefer_device_id=prefer)
+                if target is not None:
+                    tts_device_id = str(target.id)
+            except Exception:  # noqa: BLE001 - routing metadata must not block live
+                pass
         await session.commit()
 
     async def on_sleep(_text: str) -> None:
@@ -330,14 +356,21 @@ async def bind_live_session(
     provider = live_realtime_provider() if use_grok else "pipeline"
     if not use_grok:
         transcriber = live_transcriber()
-        respond = make_pipeline_responder(
-            actor=ctx.actor,
-            device_id=device_id,
-            conversation_id=conversation_id,
-            synthesizer=synthesizer,
-            speaker_confidence=speaker_confidence,
-            tts_device_id=tts_device_id,
-        )
+        if sandbox:
+            respond = make_sandbox_pipeline_responder(
+                device_id=str(device_id) if device_id else None,
+                synthesizer=synthesizer,
+                tts_device_id=tts_device_id,
+            )
+        else:
+            respond = make_pipeline_responder(
+                actor=ctx.actor,
+                device_id=device_id,
+                conversation_id=conversation_id,
+                synthesizer=synthesizer,
+                speaker_confidence=speaker_confidence,
+                tts_device_id=tts_device_id,
+            )
 
     async def capability_reply(*, include_refused: bool = False):
         from app.ev.protocols import capability_reply as protocol_reply
@@ -352,6 +385,8 @@ async def bind_live_session(
                 channel="voice" if use_grok else "action",
             )
             await db.commit()
+        if sandbox:
+            return strip_production_memory_from_manifest(payload)
         return payload
 
     async def approved_live_tools():
@@ -362,6 +397,10 @@ async def bind_live_session(
         registry at runtime; each call is still authorized by dispatch.
         """
 
+        if sandbox:
+            from app.device_gateway.sandbox_tools import sandbox_live_tool_specs
+
+            return sandbox_live_tool_specs()
         payload = await capability_reply()
         projection = payload.get("live_tool_projection")
         if not isinstance(projection, list):
@@ -400,7 +439,15 @@ async def bind_live_session(
             tts_device_id=tts_device_id,
             provider=provider,
         )
-    if use_grok:
+    if sandbox:
+        from app.device_gateway.sandbox_tools import sandbox_live_tool_specs
+
+        approved_tool_specs = sandbox_live_tool_specs()
+        if isinstance(capability_manifest, dict):
+            capability_manifest = strip_production_memory_from_manifest(capability_manifest)
+            capability_manifest["origin_device_id"] = str(device_id) if device_id else None
+            capability_manifest["response_device_id"] = str(device_id) if device_id else None
+    elif use_grok:
         try:
             projection = initial_capabilities.get("live_tool_projection")
             approved_tool_specs = (
@@ -411,6 +458,22 @@ async def bind_live_session(
         except Exception:  # noqa: BLE001 - fail closed for remote function exposure
             approved_tool_specs = []
 
+    if not sandbox:
+        try:
+            from app.memory.relationship import attach_relationship_memory
+
+            async with SessionLocal() as memory_db:
+                capability_manifest = await attach_relationship_memory(
+                    memory_db, capability_manifest
+                )
+        except Exception:  # noqa: BLE001 - live audio still starts without the card
+            logger.exception("relationship memory attach failed session=%s", session_id)
+    elif isinstance(capability_manifest, dict):
+        capability_manifest = strip_production_memory_from_manifest(capability_manifest)
+
+    from app.ev.computer_runtime import drop_state
+
+    drop_state(str(session_id))
     live_session = LiveSession(
         session_id=str(session_id),
         conversation_id=str(conversation_id) if conversation_id else None,
@@ -439,27 +502,37 @@ async def bind_live_session(
             )
         )
     live_session.on_heartbeat = on_heartbeat
+    live_session.memory_scope = "sandbox" if sandbox else "owner"
 
     def ensure_pipeline() -> None:
         if live_session._respond is not None:
             return
         synth = get_synthesizer()
-        live_session.attach_intelligence(
-            transcriber=live_transcriber(),
-            synthesizer=synth,
-            respond=make_pipeline_responder(
+        respond_cb = (
+            make_sandbox_pipeline_responder(
+                device_id=str(device_id) if device_id else None,
+                synthesizer=synth,
+                tts_device_id=tts_device_id,
+            )
+            if sandbox
+            else make_pipeline_responder(
                 actor=ctx.actor,
                 device_id=device_id,
                 conversation_id=conversation_id,
                 synthesizer=synth,
                 speaker_confidence=speaker_confidence,
                 tts_device_id=tts_device_id,
-            ),
+            )
+        )
+        live_session.attach_intelligence(
+            transcriber=live_transcriber(),
+            synthesizer=synth,
+            respond=respond_cb,
         )
 
     live_session.ensure_pipeline = ensure_pipeline
     tool_runner = _grok_tool_runner(
-        actor=ctx.actor, device_id=device_id, live=live_session
+        actor=ctx.actor, device_id=device_id, live=live_session, sandbox=sandbox
     )
     live_session.run_live_tool = tool_runner
     if use_grok:
@@ -476,7 +549,7 @@ async def bind_live_session(
     return live_session
 
 
-def _grok_tool_runner(*, actor: str, device_id, live: LiveSession):
+def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool = False):
     """Execute EV life tools when a live model or the pipeline intent resolver asks.
 
     Confirmation never blocks this callback. The audio loop stays alive and
@@ -484,18 +557,82 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession):
     """
 
     async def on_tool(name: str, arguments: dict, call_id: str) -> str:
+        from app.ev.computer_runtime import COMPUTER_TOOLS
         from app.ev.tools import dispatch
+
+        if sandbox or getattr(live, "memory_scope", "owner") == "sandbox":
+            from app.device_gateway.sandbox_tools import is_sandbox_safe_tool
+
+            if not is_sandbox_safe_tool(name):
+                return compact_live_tool_json(
+                    {
+                        "ok": False,
+                        "executed": False,
+                        "verified": False,
+                        "error": "sandbox_tools_blocked",
+                        "spoken": "That capability is not available in sandbox.",
+                    }
+                )
+            if name == "phone_action":
+                from app.device_gateway.mobile_actions.tool import dispatch_phone_action
+
+                grok = getattr(live, "grok_voice", None)
+                transcript = str(getattr(grok, "_last_input_transcript", "") or "").strip()
+                payload = await dispatch_phone_action(
+                    device_id=str(device_id),
+                    role=str(getattr(live, "device_role", None) or "companion"),
+                    instance_id=str(getattr(live, "instance_id", None) or ""),
+                    session_id=live.session_id,
+                    origin=str(getattr(live, "gateway_origin", None) or "http://127.0.0.1:8000"),
+                    arguments=args,
+                    transcript=transcript,
+                    device_label=str(getattr(live, "device_label", None) or "This iPhone"),
+                )
+                return compact_live_tool_json(payload)
 
         # Realtime has already enforced the advertised name/schema boundary.
         # Do not run a second sync policy preview here: it lacks the async
         # provider, device, and delegate-scope context. ``dispatch`` is the
         # canonical authorization/execution boundary and rechecks all of it.
         await live.push_progress(name)
+        args = dict(arguments or {})
+        grok = getattr(live, "grok_voice", None)
+        transcript = str(getattr(grok, "_last_input_transcript", "") or "").strip()
+        if name in COMPUTER_TOOLS:
+            from app.ev.computer_runtime import (
+                allowed_computer_arguments,
+                ensure_state,
+                note_goal,
+            )
+
+            note_goal(ensure_state(live.session_id), transcript or args.get("goal"))
+            args = allowed_computer_arguments(name, args)
+        elif name == "calculate":
+            from app.ev.computer_runtime import state_for
+
+            computer_state = state_for(live.session_id)
+            apps = list(
+                (computer_state.goal.target_apps if computer_state and computer_state.goal else [])
+                or []
+            )
+            if any(str(app).lower() == "calculator" for app in apps):
+                payload = {
+                    "ok": False,
+                    "name": name,
+                    "executed": False,
+                    "verified": False,
+                    "must_continue": True,
+                    "completion_claim_allowed": False,
+                    "error": "use_computer_control",
+                    "spoken": "Use the Calculator app with computer tools, not the calculate function.",
+                    "suggested_fallbacks": ["open_app", "inspect_ui", "ui_action"],
+                }
+                return compact_live_tool_json(payload)
         async with SessionLocal() as db:
             result = await dispatch(
                 db,
                 name,
-                arguments,
+                args,
                 actor=actor,
                 allow_sensitive=True,
                 request_id=call_id,
@@ -505,7 +642,14 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession):
             )
             await db.commit()
         body = result.result if isinstance(result.result, dict) else {}
-        successful = bool(result.ok and tool_result_is_successful(body))
+        if name in COMPUTER_TOOLS:
+            successful = (
+                bool(result.ok)
+                and body.get("ok") is not False
+                and not body.get("degraded")
+            )
+        else:
+            successful = bool(result.ok and tool_result_is_successful(body))
         if result.error == "confirmation_required" or body.get("confirmation_required"):
             hold = dict(body)
             if not hold:
@@ -528,10 +672,18 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession):
             "evidence": body.get("evidence"),
             "spoken": body.get("spoken"),
             "error": result.error or (body.get("error") if not successful else None),
+            "executed": body.get("executed"),
+            "verified": body.get("verified"),
+            "must_continue": body.get("must_continue"),
+            "completion_claim_allowed": body.get("completion_claim_allowed"),
+            "goal": body.get("goal"),
+            "control": body.get("control"),
+            "suggested_fallbacks": body.get("suggested_fallbacks"),
+            "goal_complete": body.get("goal_complete"),
             "confirmation_required": bool(
                 result.error == "confirmation_required" or body.get("confirmation_required")
             ),
         }
-        return json.dumps(payload, default=str)[:4000]
+        return compact_live_tool_json(payload)
 
     return on_tool

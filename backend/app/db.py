@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from contextlib import suppress
 
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import (
@@ -58,6 +59,37 @@ def ensure_schema(connection) -> None:
         for index in table.indexes:
             if index.name and index.name not in existing_indexes:
                 index.create(connection, checkfirst=True)
+    _ensure_memory_os_indexes(connection)
+
+
+def _ensure_memory_os_indexes(connection) -> None:
+    """Postgres FTS/trigram for Memory OS. SQLite tests skip these."""
+
+    if not connection.dialect.name.startswith("postgres"):
+        return
+    statements = (
+        "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+        """
+        CREATE INDEX IF NOT EXISTS ix_events_content_text_trgm
+        ON events USING gin ((content->>'text') gin_trgm_ops)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_events_content_text_fts
+        ON events USING gin (to_tsvector('simple', coalesce(content->>'text', '')))
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_memories_text_trgm
+        ON memories USING gin (text gin_trgm_ops)
+        WHERE is_current AND NOT redacted
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS ix_entities_name_trgm
+        ON entities USING gin (name gin_trgm_ops)
+        """,
+    )
+    for stmt in statements:
+        with suppress(Exception):
+            connection.execute(text(stmt))
 
 
 async def init_db() -> None:

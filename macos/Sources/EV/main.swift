@@ -7,6 +7,10 @@ import SwiftUI
 let arguments = CommandLine.arguments
 if arguments.contains("--smoke-test") {
     exit(EVSmokeTest.run())
+} else if arguments.contains("--mac-control-probe") {
+    exit(MacControlProbe.run())
+} else if arguments.contains("--live-e2e") {
+    exit(MacControlLiveE2E.run())
 } else if arguments.contains("--permissions") {
     exit(EVSmokeTest.runPermissions())
 } else if arguments.contains("--notify-test") {

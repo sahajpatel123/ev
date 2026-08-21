@@ -6,8 +6,10 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app import __version__
 from app.api import (
@@ -35,8 +37,36 @@ from app.api import (
 )
 from app.config import settings
 from app.db import init_db
+from app.device_gateway import api as device_gateway_api
+from app.device_gateway import pwa as device_gateway_pwa
+from app.device_gateway.security import origin_allowed
 
 LOGGER = logging.getLogger("ev.main")
+
+
+class GatewayOriginMiddleware(BaseHTTPMiddleware):
+    """Isolate Device Gateway / PWA from global CORS * + credentials."""
+
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if not (path.startswith("/v1/device-gateway") or path.startswith("/evie")):
+            return await call_next(request)
+        origin = request.headers.get("origin")
+        host = request.headers.get("host")
+        if origin and not origin_allowed(origin, host):
+            return JSONResponse(
+                {"detail": "Origin not allowed"},
+                status_code=403,
+                headers={"X-Error-Code": "origin_denied"},
+            )
+        response = await call_next(request)
+        if origin and origin_allowed(origin, host):
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
+        elif response.headers.get("access-control-allow-origin") == "*":
+            del response.headers["access-control-allow-origin"]
+        return response
 
 
 async def _warmup_tts() -> None:
@@ -67,6 +97,29 @@ async def _restore_companion_prefs() -> None:
 async def lifespan(_: FastAPI):
     await init_db()
     await _restore_companion_prefs()
+    stop = None
+    power_watch = None
+    if settings.environment != "test":
+        from app.device_gateway.power import start_if_needed
+        from app.device_gateway.power import stop as stop_assertion
+
+        start_if_needed(
+            mode_on=bool(settings.home_station_mode),
+            keep_ac=bool(settings.home_station_keep_awake_on_ac),
+            keep_battery=bool(settings.home_station_keep_awake_on_battery),
+        )
+        stop = stop_assertion
+
+        async def _power_watch() -> None:
+            while True:
+                await asyncio.sleep(60)
+                start_if_needed(
+                    mode_on=bool(settings.home_station_mode),
+                    keep_ac=bool(settings.home_station_keep_awake_on_ac),
+                    keep_battery=bool(settings.home_station_keep_awake_on_battery),
+                )
+
+        power_watch = asyncio.create_task(_power_watch(), name="ev-home-station-power")
     warmup = asyncio.create_task(_warmup_tts())
     from app.ev.timers import timer_watch_loop
 
@@ -74,6 +127,10 @@ async def lifespan(_: FastAPI):
     yield
     watch.cancel()
     warmup.cancel()
+    if power_watch is not None:
+        power_watch.cancel()
+    if stop is not None:
+        stop()
 
 
 app = FastAPI(
@@ -89,6 +146,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GatewayOriginMiddleware)
 
 app.include_router(core.router)
 app.include_router(assistant.router)
@@ -111,6 +169,8 @@ app.include_router(ops.router)
 app.include_router(compliance.router)
 app.include_router(tools.router)
 app.include_router(web.router)
+app.include_router(device_gateway_api.router)
+app.include_router(device_gateway_pwa.router)
 
 
 @app.get("/")

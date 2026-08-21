@@ -37,6 +37,9 @@ class Event(Base):
     """Raw, immutable input. Tombstoned, never updated or deleted."""
 
     __tablename__ = "events"
+    __table_args__ = (
+        Index("ix_events_type_occurred", "event_type", "occurred_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
@@ -295,6 +298,11 @@ class Device(Base):
     storage_free_bytes: Mapped[int | None] = mapped_column(Integer)
     bootstrapped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     bootstrapped_spoken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Cross-platform Device Gateway (additive). NULL memory_scope means owner.
+    role: Mapped[str | None] = mapped_column(String(32), index=True)
+    memory_scope: Mapped[str | None] = mapped_column(String(16), index=True)
+    client_version: Mapped[str | None] = mapped_column(String(64))
+    protocol_version: Mapped[str | None] = mapped_column(String(16))
 
     @property
     def push_platform(self) -> str | None:
@@ -303,6 +311,66 @@ class Device(Base):
     @property
     def push_registered(self) -> bool:
         return bool(self.push_token)
+
+
+class DevicePairingToken(Base):
+    """One-time pairing code. Tailnet membership is not Evie device trust."""
+
+    __tablename__ = "device_pairing_tokens"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    role: Mapped[str] = mapped_column(String(32), default="companion")
+    display_name: Mapped[str] = mapped_column(String(128), default="Evie phone")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ConversationLease(Base):
+    """One response-output device at a time. Not Memory OS."""
+
+    __tablename__ = "conversation_leases"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_key: Mapped[str] = mapped_column(String(64), unique=True, default="owner")
+    lease_id: Mapped[str] = mapped_column(String(64), index=True)
+    device_id: Mapped[UUID] = mapped_column(ForeignKey("devices.id"), index=True)
+    instance_id: Mapped[str] = mapped_column(String(64), default="")
+    method: Mapped[str] = mapped_column(String(32), default="manual")
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_activity: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class ActiveConversationState(Base):
+    """Short-lived handoff context. Not production Memory OS."""
+
+    __tablename__ = "active_conversation_states"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_key: Mapped[str] = mapped_column(String(64), unique=True, default="owner")
+    active_device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"))
+    topic: Mapped[str | None] = mapped_column(String(240))
+    turns: Mapped[list] = mapped_column(JSONType, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class SandboxFact(Base):
+    """Isolated cross-platform test memory. Never mixed with Memory OS rows."""
+
+    __tablename__ = "sandbox_facts"
+    __table_args__ = (UniqueConstraint("namespace", "fact_key", name="uq_sandbox_facts_ns_key"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    namespace: Mapped[str] = mapped_column(String(64), index=True, default="cross_platform_test")
+    fact_key: Mapped[str] = mapped_column(String(160), index=True)
+    value: Mapped[str] = mapped_column(Text)
+    source_device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Attachment(Base):
@@ -1284,6 +1352,32 @@ class ApprovedAction(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class MemoryCurationJob(Base):
+    """Postgres outbox for DeepSeek memory curation. Not Redis/RQ ingestion."""
+
+    __tablename__ = "memory_curation_jobs"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    job_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="curate", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    curator_version: Mapped[str] = mapped_column(String(32), default="1")
+    priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    source_event_ids: Mapped[list] = mapped_column(JSONType, default=list)
+    result: Mapped[dict] = mapped_column(JSONType, default=dict)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
     )
 
 

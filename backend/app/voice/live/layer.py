@@ -8,6 +8,7 @@ and the existing protocol sheet, quiet-hours gate, device registry, and
 
 from __future__ import annotations
 
+import json
 import re
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -53,7 +54,8 @@ _RESUME_RE = re.compile(
     re.IGNORECASE,
 )
 _CANCEL_RE = re.compile(
-    r"^(?:please\s+)?(?:cancel that|stop talking|stop speaking|never mind that)\s*[.!]?\s*$",
+    r"^(?:please\s+)?(?:cancel that|stop talking|stop speaking|never mind that|"
+    r"never mind|stop|don'?t click that)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
 
@@ -202,6 +204,131 @@ def tool_result_is_successful(result: dict[str, Any] | None) -> bool:
     if result.get("ok") is False or body.get("ok") is False:
         return False
     return not (body.get("degraded") or body.get("error"))
+
+
+_LIVE_TOOL_JSON_LIMIT = 3500
+_LIVE_RESULT_KEEP = (
+    "ok",
+    "executed",
+    "verified",
+    "spoken",
+    "error",
+    "goal",
+    "app",
+    "compact",
+    "observed",
+    "playlist",
+    "track",
+    "artist",
+    "index",
+    "player_state",
+    "method",
+    "adapter",
+    "dialog_present",
+    "query",
+    "window",
+    "next_hint",
+    "completion_claim_allowed",
+    "must_continue",
+    "matches",
+    "tracks",
+    "playlists",
+    "candidates",
+    "ordinal",
+    "opened",
+    "closed",
+    "activated",
+    "running",
+    "count",
+    "name",
+    "bundle_id",
+    "snapshot_id",
+    "generation",
+    "frame_id",
+    "target",
+    "action",
+    "ui_changed",
+    "failure_reason",
+    "working",
+    "surface_pid",
+    "surface_name",
+    "control",
+    "suggested_fallbacks",
+    "goal_complete",
+    "complete",
+    "goal_progress",
+    "target_found",
+    "semantic_adapter_available",
+    "scrollable_regions",
+    "failure",
+    "failure_class",
+    "url",
+    "title",
+    "display",
+    "body",
+    "path",
+    "keys",
+    "image_delivered",
+    "model_image_delivered",
+)
+
+
+def compact_live_tool_json(payload: dict[str, Any], *, limit: int = _LIVE_TOOL_JSON_LIMIT) -> str:
+    """Serialize a Realtime function output as valid JSON under a hard size cap.
+
+    Never slice a JSON string. A truncated ``{"ok": true, "elements": ...``
+    prefix made the live Music turn look successful while the backend logged
+    ``result=failed``.
+    """
+
+    slim: dict[str, Any] = dict(payload)
+    result = slim.get("result")
+    if isinstance(result, dict):
+        kept = {
+            key: result[key]
+            for key in _LIVE_RESULT_KEEP
+            if key in result and result[key] is not None
+        }
+        apps = result.get("apps")
+        if isinstance(apps, list):
+            kept["apps"] = apps[:16]
+        elements = result.get("elements")
+        if isinstance(elements, list) and "compact" not in kept:
+            kept["compact"] = str(result.get("compact") or "")[:1200]
+        elif isinstance(elements, list) and elements and "elements" not in kept:
+            kept["elements"] = [
+                {k: item.get(k) for k in ("ref", "role", "title", "value") if item.get(k)}
+                for item in elements[:8]
+                if isinstance(item, dict)
+            ]
+        compact = str(kept.get("compact") or "")
+        if len(compact) > 1200:
+            kept["compact"] = compact[:1200] + "\n…"
+        slim["result"] = kept
+        slim.setdefault("goal", result.get("goal"))
+        slim.setdefault("verified", result.get("verified"))
+        slim.setdefault("executed", result.get("executed"))
+        slim.setdefault("must_continue", result.get("must_continue"))
+        slim.setdefault("completion_claim_allowed", result.get("completion_claim_allowed"))
+    blob = json.dumps(slim, default=str, separators=(",", ":"))
+    try:
+        json.loads(blob)
+    except json.JSONDecodeError:
+        blob = ""
+    if blob and len(blob) <= limit:
+        return blob
+    fallback = {
+        "ok": bool(slim.get("ok")),
+        "name": slim.get("name"),
+        "executed": slim.get("executed", slim.get("ok")),
+        "verified": False,
+        "completion_claim_allowed": False,
+        "must_continue": True,
+        "spoken": str(slim.get("spoken") or "")[:280],
+        "error": slim.get("error") or "tool_output_compacted",
+        "goal": slim.get("goal"),
+    }
+    return json.dumps(fallback, default=str, separators=(",", ":"))
 
 
 def tool_result_hud(
@@ -432,6 +559,7 @@ def build_live_capability_manifest(
         "missing_setup": missing_setup,
         "requires_confirmation": requires_confirmation,
         "capability_error": capability_error,
+        "camera": runtime_value("camera") if isinstance(runtime_value("camera"), dict) else {},
     }
 
 

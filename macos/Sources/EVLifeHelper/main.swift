@@ -146,6 +146,7 @@ guard arguments.count >= 2 else {
               call.place --destination <number> [--kind tel|facetime]
               call.check --destination <number> [--kind tel|facetime]
               apps.frontmost
+              apps.list [--query <name>] [--running true]
               apps.activate --bundle-id <id> [--name <name>]
               apps.quit --bundle-id <id>
               open.url --url <https-url>
@@ -337,6 +338,58 @@ case "call.check":
     }
 
 // MARK: - Apps
+
+case "apps.list":
+    let query = (argumentValue("--query") ?? "").lowercased()
+    let runningOnly = (argumentValue("--running") ?? "false").lowercased() == "true"
+    var apps: [[String: Any]] = []
+    var seen = Set<String>()
+    for app in NSWorkspace.shared.runningApplications {
+        guard let bundle = app.bundleIdentifier, app.activationPolicy != .prohibited else { continue }
+        if seen.contains(bundle) { continue }
+        let name = app.localizedName ?? bundle
+        if !query.isEmpty {
+            if !name.lowercased().contains(query) && !bundle.lowercased().contains(query) { continue }
+        }
+        seen.insert(bundle)
+        apps.append([
+            "name": name,
+            "bundle_id": bundle,
+            "running": true,
+            "frontmost": app.isActive,
+            "path": app.bundleURL?.path ?? "",
+        ])
+    }
+    if !runningOnly {
+        for directory in ["/Applications", "/System/Applications"] {
+            guard let contents = try? FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: directory),
+                includingPropertiesForKeys: nil
+            ) else { continue }
+            for url in contents where url.pathExtension == "app" {
+                let bundle = Bundle(url: url)
+                let identifier = bundle?.bundleIdentifier ?? url.deletingPathExtension().lastPathComponent
+                if seen.contains(identifier) { continue }
+                let name = (bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+                    ?? (bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String)
+                    ?? url.deletingPathExtension().lastPathComponent
+                if !query.isEmpty {
+                    if !name.lowercased().contains(query) && !identifier.lowercased().contains(query) {
+                        continue
+                    }
+                }
+                seen.insert(identifier)
+                apps.append([
+                    "name": name,
+                    "bundle_id": identifier,
+                    "running": false,
+                    "frontmost": false,
+                    "path": url.path,
+                ])
+            }
+        }
+    }
+    success(["apps": Array(apps.prefix(40)), "count": min(apps.count, 40)])
 
 case "apps.frontmost":
     let app = NSWorkspace.shared.frontmostApplication

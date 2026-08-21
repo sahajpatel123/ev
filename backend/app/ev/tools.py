@@ -105,7 +105,15 @@ def safe_calculate(expression: str) -> float:
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "search_memory",
-        "description": "Search EV's personal memory (facts, decisions, goals, preferences).",
+        "description": (
+            "Search Evie's persistent owner memory and raw conversation "
+            "history. Call this when the owner asks what you talked about, "
+            "what they decided, what they named something, where you left off, "
+            "what is still open, what changed, what used to be true, or whether "
+            "you remember a fact. Do not guess. Results are an evidence pack: "
+            "prefer exact owner utterances. If evidence is empty, say you "
+            "cannot find a reliable record."
+        ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -124,6 +132,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
                         "pattern",
                         "summary",
                         "lesson",
+                        "open_loop",
+                        "rejection",
+                        "hypothesis",
                     ],
                     "default": None,
                 },
@@ -534,11 +545,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "open_app",
         "description": (
-            "Open or focus an allowlisted Mac app through the life helper. "
-            "When the owner says open Safari, Messages, Mail, Calendar, Notes, "
-            "Music, Chrome, Slack, Maps, Photos, Settings, FaceTime, "
-            "Reminders, or Terminal, call this with that name. "
-            "Do not pass a bundle id. Do not say you cannot open the app."
+            "Open or focus an application on the owner's Mac. Prefer this when "
+            "they name Safari, Notes, Settings, TextEdit, Calculator, Chrome, "
+            "Spotify, or any installed app. Resolve natural names. Verify it is "
+            "running before claiming success. Then continue with inspect_ui / "
+            "ui_action if they asked to do something inside the app."
         ),
         "parameters": {
             "type": "object",
@@ -565,8 +576,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "close_app",
         "description": (
-            "Quit an allowlisted Mac app through the life helper. Same name "
-            "list as open_app. Will not quit Finder or EV."
+            "Quit a Mac app gracefully. Will not quit Finder or EV. If a save "
+            "dialog appears, inspect_ui instead of force quitting."
         ),
         "parameters": {
             "type": "object",
@@ -585,6 +596,282 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "confirmation": "none",
         "target_ownership": "owner",
         "provider": "macos_life",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
+    },
+    {
+        "name": "computer_status",
+        "description": (
+            "Read whether Mac computer control is actually ready right now: "
+            "connected client, Accessibility, screen vision, and the front app. "
+            "Call this when the owner asks if you can control apps."
+        ),
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "computer",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
+    },
+    {
+        "name": "list_apps",
+        "description": (
+            "List running or installed Mac apps. Use to resolve names like "
+            "browser, settings, or code before opening."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string", "maxLength": 80},
+                "running_only": {"type": "boolean"},
+            },
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "computer",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
+    },
+    {
+        "name": "activate_app",
+        "description": (
+            "Bring a running Mac app or its window to the front. Opening is not "
+            "the same as focusing."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "name": {"type": "string", "minLength": 1, "maxLength": 80},
+                "bundle_id": {"type": "string", "maxLength": 200},
+            },
+            "required": ["name"],
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "computer",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
+    },
+    {
+        "name": "inspect_ui",
+        "description": (
+            "Inspect the front Mac app window as compact accessibility UI with "
+            "short-lived element refs (e12_1). Refs are snapshot-scoped and go "
+            "stale after the next inspect. Pass query to search for a "
+            "control by title/label (example: Bluetooth, document, Continue). "
+            "Call this before clicking or typing, and again to verify."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "app": {"type": "string", "maxLength": 80},
+                "name": {"type": "string", "maxLength": 80},
+                "query": {"type": "string", "maxLength": 80},
+                "level": {
+                    "type": "string",
+                    "enum": ["summary", "targeted", "expanded"],
+                },
+            },
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "computer",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
+    },
+    {
+        "name": "ui_action",
+        "description": (
+            "Perform a semantic UI action on a current inspect_ui element ref. "
+            "Actions: press, focus, set_value, type, append, replace, paste, select, increment, "
+            "decrement, expand, collapse, menu, scroll, keyboard, click_at. type inserts "
+            "at the caret and does not overwrite. append adds. replace overwrites. paste "
+            "uses the clipboard then restores it. Prefer "
+            "element refs over coordinates. click_at requires a recent "
+            "screen_look frame_id and normalized 0-1 coordinates."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "element_ref": {"type": "string", "maxLength": 24},
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "press",
+                        "click",
+                        "focus",
+                        "set_value",
+                        "type",
+                        "type_text",
+                        "append",
+                        "replace",
+                        "paste",
+                        "select",
+                        "increment",
+                        "decrement",
+                        "expand",
+                        "collapse",
+                        "scroll",
+                        "keyboard",
+                        "menu",
+                        "click_at",
+                        "confirm",
+                        "cancel",
+                        "raise",
+                    ],
+                },
+                "value": {"type": "string", "maxLength": 4000},
+                "text": {"type": "string", "maxLength": 4000},
+                "keys": {"type": "string", "maxLength": 64},
+                "direction": {"type": "string", "maxLength": 16},
+                "frame_id": {"type": "string", "maxLength": 40},
+                "x_normalized": {"type": "number"},
+                "y_normalized": {"type": "number"},
+            },
+            "required": ["action"],
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "computer",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
+    },
+    {
+        "name": "screen_look",
+        "description": (
+            "Capture the front window (or display) as an image when "
+            "accessibility is insufficient. A screenshot may be added to this "
+            "conversation. Describe only what you can actually see."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": ["active_window", "app", "display"],
+                },
+                "app": {"type": "string", "maxLength": 80},
+            },
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "computer",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
+    },
+    {
+        "name": "app_action",
+        "description": (
+            "Semantic control for a supported Mac app. Prefer this over "
+            "Accessibility clicking for Apple Music: find a playlist, list "
+            "tracks, play a 1-based track index, pause, next, previous, and "
+            "read player state. Preserve ordinals (first=1). Opening Music is "
+            "not completion. Only claim playing when verified is true. If the "
+            "playlist does not exist, report failure; do not invent one. "
+            "Safari: search then navigate to open the first result; verify URL. "
+            "Notes: create/append with the exact text in query or value, then verify. "
+            "Calculator: put the expression in query (generic keyboard path). "
+            "Unknown apps: use inspect_ui, then ui_action or screen_look."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "app": {"type": "string", "maxLength": 80},
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "play",
+                        "play_playlist_track",
+                        "pause",
+                        "next",
+                        "previous",
+                        "status",
+                        "find_playlist",
+                        "list_tracks",
+                        "list_playlists",
+                        "search",
+                        "navigate",
+                        "create",
+                        "append",
+                        "read",
+                        "open_item",
+                        "open_folder",
+                    ],
+                },
+                "playlist": {"type": "string", "maxLength": 120},
+                "index": {"type": "integer", "minimum": -1, "maximum": 500},
+                "query": {"type": "string", "maxLength": 2000},
+                "value": {"type": "string", "maxLength": 4000},
+                "text": {"type": "string", "maxLength": 4000},
+                "track": {"type": "string", "maxLength": 200},
+            },
+            "required": ["action"],
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "computer",
         "evidence": ["source", "timestamp"],
         "idempotency": "natural",
         "cancellation": "not_applicable",
@@ -951,10 +1238,12 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "look",
         "description": (
-            "Take one consented camera frame, or an owner photo, and describe "
-            "visible text, objects, and enrolled people only. Never names "
-            "strangers. Never streams. Call this when the owner asks what you "
-            "see, to look at something in view, or to read a label."
+            "Obtain a current visual observation from the owner's MacBook camera "
+            "when answering requires seeing the physical scene. Call this for "
+            "what am I holding, read this, what color is this, look at me, or "
+            "any question that needs the camera. Do not guess. Do not claim you "
+            "cannot see if this function is listed. Do not pass a permission "
+            "argument. Owner visual perception is already authorized."
         ),
         "parameters": {
             "type": "object",
@@ -972,6 +1261,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "enum": ["auto", "text", "objects", "people"],
                     "default": "auto",
                 },
+                "detail": {
+                    "type": "string",
+                    "enum": ["auto", "low", "high"],
+                    "default": "high",
+                },
             },
         },
         "output": {"type": "object", "required": ["spoken"]},
@@ -983,6 +1277,48 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "confirmation": "none",
         "provider": "vision",
         "fallback": "report unavailable; do not fabricate seeing the room",
+        "evidence": ["source", "timestamp"],
+    },
+    {
+        "name": "observe_camera",
+        "description": (
+            "Watch the owner's MacBook camera for a few seconds when a single "
+            "frame is not enough (an LED changing, motion, turning something). "
+            "Duration is bounded. Do not use this for ordinary one-frame look "
+            "questions."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "duration_seconds": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 8,
+                    "default": 4,
+                },
+                "objective": {"type": "string", "maxLength": 400, "default": None},
+                "strategy": {
+                    "type": "string",
+                    "enum": ["interval", "change"],
+                    "default": "interval",
+                },
+                "detail": {
+                    "type": "string",
+                    "enum": ["auto", "low", "high"],
+                    "default": "low",
+                },
+            },
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": True,
+        "permission": "vision:read",
+        "undoable": False,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "provider": "vision",
+        "fallback": "report unavailable; do not fabricate a live video stream",
         "evidence": ["source", "timestamp"],
     },
     {
@@ -1534,6 +1870,7 @@ async def dispatch(
                         actor=actor,
                         live_session_id=live_session_id,
                         device_id=device_id,
+                        request_id=request_id,
                     )
                     if decision.routed:
                         if isinstance(result, dict) and (
@@ -1755,6 +2092,7 @@ async def _handle(
     actor: str,
     live_session_id: str | None = None,
     device_id=None,
+    request_id: str | None = None,
 ) -> dict:
     fleet = await handle_fleet_tool(session, name, args, actor=actor)
     if fleet is not None:
@@ -1763,26 +2101,15 @@ async def _handle(
         return await _run_execute_command(session, args, actor=actor)
     retriever = Retriever(session)
     if name == "search_memory":
-        memory_hits = await retriever.search(
+        from app.memory.select import explicit_recall_payload
+
+        payload = await explicit_recall_payload(
+            session,
             str(args.get("query", "")),
             k=int(args.get("k", 10)),
-            access="model",
-            memory_types=[args["memory_type"]] if args.get("memory_type") else None,
+            memory_type_hint=str(args["memory_type"]) if args.get("memory_type") else None,
         )
-        return {
-            "count": len(memory_hits),
-            "results": [
-                {
-                    "id": h.memory_id,
-                    "text": h.text,
-                    "memory_type": h.memory_type,
-                    "score": h.score,
-                    "date": h.event_time.isoformat() if h.event_time else None,
-                    "provenance": h.source_event_ids,
-                }
-                for h in memory_hits[: int(args.get("k", 10))]
-            ],
-        }
+        return payload
     if name == "search_decisions":
         decision_hits = await retriever.search(
             str(args.get("query", "")),
@@ -1994,17 +2321,37 @@ async def _handle(
             session, name, args, actor=actor, policy_checked=True
         )
     if name == "open_url":
-        from app.ev.apps import open_url
+        from app.ev.computer import open_url_via_live_or_helper
 
-        return await open_url(session, args, actor=actor)
-    if name == "open_app":
-        from app.ev.apps import open_app
+        return await open_url_via_live_or_helper(
+            session,
+            args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=str(device_id) if device_id else None,
+        )
+    if name in {
+        "open_app",
+        "close_app",
+        "activate_app",
+        "list_apps",
+        "computer_status",
+        "inspect_ui",
+        "ui_action",
+        "screen_look",
+        "app_action",
+    }:
+        from app.ev.computer import handle_computer_tool
 
-        return await open_app(session, args, actor=actor)
-    if name == "close_app":
-        from app.ev.apps import close_app
-
-        return await close_app(session, args, actor=actor)
+        return await handle_computer_tool(
+            session,
+            name,
+            args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=str(device_id) if device_id else None,
+            request_id=request_id,
+        )
     if name == "set_reminder":
         from uuid import uuid4
 
@@ -2211,8 +2558,24 @@ async def _handle(
             prompt=args.get("prompt"),
             attachment_id=args.get("attachment_id"),
             focus=str(args.get("focus") or "auto"),
+            detail=str(args.get("detail") or "high"),
             live_session_id=live_session_id,
             device_id=str(device_id) if device_id else None,
+            request_id=request_id,
+        )
+    if name == "observe_camera":
+        from app.ev.look import observe_camera_with_timeout
+
+        return await observe_camera_with_timeout(
+            session,
+            actor=actor,
+            duration_seconds=args.get("duration_seconds"),
+            objective=args.get("objective"),
+            strategy=str(args.get("strategy") or "interval"),
+            detail=str(args.get("detail") or "low"),
+            live_session_id=live_session_id,
+            device_id=str(device_id) if device_id else None,
+            request_id=request_id,
         )
     if name == "watchlist_add":
         from app.ev.workbench import handle_watchlist_add

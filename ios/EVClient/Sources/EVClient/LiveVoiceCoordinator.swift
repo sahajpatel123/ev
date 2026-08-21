@@ -440,41 +440,99 @@ public final class LiveVoiceCoordinator: ObservableObject {
             }
         case "camera_request":
             let action = (event.action ?? "").lowercased()
+            if action == "observe_stop" {
+#if os(iOS) || os(macOS)
+                CameraManager.shared.cancelObserve()
+#endif
+                break
+            }
+            if action == "observe" {
+                Task { await self.fulfillObserve(event: event) }
+                break
+            }
             if ["capture", "look", "once"].contains(action) {
-                Task { await self.fulfillLookCapture(deviceId: event.deviceId) }
+                Task { await self.fulfillLookCapture(deviceId: event.deviceId, requestId: event.requestId) }
             }
         default:
             break
         }
     }
 
-    private func fulfillLookCapture(deviceId: String?) async {
-        guard let client, let connection else {
+    private func fulfillLookCapture(deviceId: String?, requestId: String?) async {
+        guard let connection else {
             lastError = "Camera look is unavailable until the live session connects."
             return
         }
 #if os(iOS) || os(macOS)
+        let permission = CameraManager.shared.permissionState()
         do {
-            let jpeg = try await CameraFrameCapture.captureJPEG()
-            let uploaded = try await client.attach(
-                filename: "look.jpg",
-                contentType: "image/jpeg",
-                data: jpeg,
-                source: "ios",
-                eventType: "camera.look",
-                privacyLevel: "normal",
-                deviceID: deviceId ?? self.deviceId
-            )
+            let frame = try await CameraManager.shared.captureFrame()
             connection.sendLookFrame(
-                attachmentId: uploaded.attachment.id,
-                deviceId: deviceId ?? self.deviceId
+                requestId: requestId,
+                jpeg: frame.jpeg,
+                width: frame.width,
+                height: frame.height,
+                error: nil,
+                permission: frame.permission,
+                deviceId: deviceId ?? self.deviceId,
+                sequence: 0,
+                last: true,
+                cameraName: frame.cameraName
             )
         } catch {
             lastError = error.localizedDescription
+            let code = (error as? CameraManager.CaptureError)?.code ?? "capture_failed"
             connection.sendLookFrame(
-                attachmentId: "",
-                deviceId: deviceId ?? self.deviceId
+                requestId: requestId,
+                jpeg: nil,
+                width: nil,
+                height: nil,
+                error: code,
+                permission: permission,
+                deviceId: deviceId ?? self.deviceId,
+                last: true
             )
+        }
+#endif
+    }
+
+    private func fulfillObserve(event: LiveVoiceEvent) async {
+        guard let connection else { return }
+#if os(iOS) || os(macOS)
+        let requestId = event.requestId
+        let deviceId = event.deviceId ?? self.deviceId
+        CameraManager.shared.observe(
+            duration: TimeInterval(event.durationMs ?? 4000) / 1000,
+            interval: TimeInterval(event.intervalMs ?? 1500) / 1000,
+            maxFrames: event.maxFrames ?? 5
+        ) { result, index, last in
+            switch result {
+            case .success(let frame):
+                connection.sendLookFrame(
+                    requestId: requestId,
+                    jpeg: frame.jpeg,
+                    width: frame.width,
+                    height: frame.height,
+                    error: nil,
+                    permission: frame.permission,
+                    deviceId: deviceId,
+                    sequence: index,
+                    last: last,
+                    cameraName: frame.cameraName
+                )
+            case .failure(let error):
+                connection.sendLookFrame(
+                    requestId: requestId,
+                    jpeg: nil,
+                    width: nil,
+                    height: nil,
+                    error: (error as? CameraManager.CaptureError)?.code ?? "capture_failed",
+                    permission: CameraManager.shared.permissionState(),
+                    deviceId: deviceId,
+                    sequence: index,
+                    last: true
+                )
+            }
         }
 #endif
     }

@@ -66,6 +66,11 @@ class CameraRequestEvent(LiveEvent):
 
     action: str
     device_id: str | None = None
+    request_id: str | None = None
+    duration_ms: int | None = None
+    interval_ms: int | None = None
+    max_frames: int | None = None
+    detail: str | None = None
 
     def __init__(
         self,
@@ -73,10 +78,57 @@ class CameraRequestEvent(LiveEvent):
         at_ms: int,
         action: str,
         device_id: str | None = None,
+        request_id: str | None = None,
+        duration_ms: int | None = None,
+        interval_ms: int | None = None,
+        max_frames: int | None = None,
+        detail: str | None = None,
     ) -> None:
         super().__init__("camera_request", at_ms)
         self.action = action
         self.device_id = device_id
+        self.request_id = request_id
+        self.duration_ms = duration_ms
+        self.interval_ms = interval_ms
+        self.max_frames = max_frames
+        self.detail = detail
+
+
+@dataclass
+class ComputerRequestEvent(LiveEvent):
+    """Ask the connected Mac client to perform one structured computer action."""
+
+    command: str
+    request_id: str | None = None
+    arguments: dict = field(default_factory=dict)
+    device_id: str | None = None
+
+    def __init__(
+        self,
+        *,
+        at_ms: int,
+        command: str,
+        request_id: str | None = None,
+        arguments: dict | None = None,
+        device_id: str | None = None,
+    ) -> None:
+        super().__init__("computer_request", at_ms)
+        self.command = command
+        self.action = command
+        self.request_id = request_id
+        self.arguments = arguments or {}
+        self.device_id = device_id
+
+
+@dataclass
+class ComputerStateEvent(LiveEvent):
+    """Client-reported Mac control permission and foreground state."""
+
+    computer_state: dict = field(default_factory=dict)
+
+    def __init__(self, *, at_ms: int, computer_state: dict) -> None:
+        super().__init__("computer_state", at_ms)
+        self.computer_state = computer_state
 
 
 @dataclass
@@ -133,6 +185,7 @@ class FinalTranscriptEvent(LiveEvent):
     text: str
     confidence: float = 1.0
     provider: str = "dev"
+    transcript_source: str = "provider"
 
     def __init__(
         self,
@@ -141,11 +194,13 @@ class FinalTranscriptEvent(LiveEvent):
         text: str,
         confidence: float = 1.0,
         provider: str = "dev",
+        transcript_source: str = "provider",
     ) -> None:
         super().__init__("final_transcript", at_ms)
         self.text = text
         self.confidence = confidence
         self.provider = provider
+        self.transcript_source = transcript_source
 
 
 @dataclass
@@ -261,6 +316,26 @@ class LatencyEvent(LiveEvent):
         self.metric = metric
         self.ms = ms
         self.authorized_at_ms = authorized_at_ms
+
+
+@dataclass
+class ConversationMovedEvent(LiveEvent):
+    """This instance no longer owns audible assistant speech."""
+
+    to_device_id: str | None = None
+    reason: str = "lease"
+
+    def __init__(
+        self,
+        *,
+        at_ms: int,
+        to_device_id: str | None = None,
+        reason: str = "lease",
+    ) -> None:
+        super().__init__("conversation_moved", at_ms)
+        self.to_device_id = to_device_id
+        self.reason = reason
+        self.code = "audio_owner_lost"
 
 
 @dataclass

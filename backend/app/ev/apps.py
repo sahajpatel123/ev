@@ -53,6 +53,11 @@ ALLOWED_APPS: dict[str, str] = {
     "arc": "company.thebrowser.Browser",
     "slack": "com.tinyspeck.slackmacgap",
     "spotify": "com.spotify.client",
+    "textedit": "com.apple.TextEdit",
+    "calculator": "com.apple.calculator",
+    "cursor": "com.todesktop.230313mzl4w4u92",
+    "vscode": "com.microsoft.VSCode",
+    "code": "com.microsoft.VSCode",
 }
 
 APP_ALIASES: dict[str, str] = {
@@ -66,6 +71,12 @@ APP_ALIASES: dict[str, str] = {
     "system preferences": "settings",
     "sysprefs": "settings",
     "photos app": "photos",
+    "text edit": "textedit",
+    "text-edit": "textedit",
+    "calc": "calculator",
+    "vs code": "vscode",
+    "visual studio code": "vscode",
+    "browser": "safari",
 }
 
 _NOT_CONNECTED_STEP = (

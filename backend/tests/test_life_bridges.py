@@ -99,6 +99,12 @@ if command == "call.place":
     print(json.dumps({"ok": True, "data": data}))
     sys.exit(0)
 
+if command == "apps.list":
+    print(json.dumps({"ok": True, "data": {"apps": [
+        {"name": "Safari", "bundle_id": "com.apple.Safari", "running": True}],
+        "count": 1}}))
+    sys.exit(0)
+
 if command == "apps.activate":
     print(json.dumps({"ok": True, "data": {
         "bundle_identifier": args.get("--bundle-id"),

@@ -73,6 +73,7 @@ class Retriever:
         memory_types: list[str] | None = None,
         min_score: float = 0.0,
         rerank: bool = True,
+        include_historical: bool = False,
     ) -> list[RetrievedMemory]:
         """Hybrid retrieval with the locked default scoring formula."""
         if not query.strip():
@@ -84,9 +85,10 @@ class Retriever:
         except Exception:
             query_emb = None
 
+        current_filter = [] if include_historical else [Memory.is_current.is_(True)]
         stmt = (
             select(Memory)
-            .where(Memory.is_current.is_(True), Memory.redacted.is_(False))
+            .where(Memory.redacted.is_(False), *current_filter)
             .order_by(Memory.importance.desc())
             .limit(settings.max_retrieval_memories * 4)
         )

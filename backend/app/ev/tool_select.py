@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from app.ev.continuity import classify_memory_intent
 from app.schemas import ToolSelectionResponse
 from app.search.live import is_weather_query, looks_world_knowledge
 
@@ -39,6 +40,7 @@ OPEN_APP_RE = re.compile(
     r"\b(?:open|launch)\s+(?:up\s+)?(?:the\s+)?(?P<name>"
     r"safari|messages|mail|calendar|finder|notes|music|photos|maps|"
     r"facetime|reminders|settings|terminal|chrome|arc|slack|spotify|"
+    r"textedit|text edit|calculator|calc|cursor|vscode|code|"
     r"google chrome|system settings|system preferences|imessage)"
     r"(?:\.app)?\b",
     re.IGNORECASE,
@@ -151,7 +153,16 @@ LIVE_VOICE_TOOLS = frozenset(
         "open_url",
         "open_app",
         "close_app",
+        "activate_app",
+        "list_apps",
+        "computer_status",
+        "inspect_ui",
+        "ui_action",
+        "screen_look",
+        "app_action",
         "look",
+        "observe_camera",
+        "phone_action",
     }
 )
 
@@ -163,14 +174,30 @@ DETERMINISTIC_LIVE_ACTIONS = frozenset({"open_app", "close_app", "open_url"})
 LOOK_RE = re.compile(
     r"\b(?:"
     r"what do you see|"
-    r"what(?:'s| is) (?:that|this|on (?:the |my )?camera|in (?:the )?frame|in front(?: of (?:you|the camera))?)"
-    r"|look at (?:this|that|the camera|me|the (?:label|sign|screen|photo|picture))"
-    r"|take a (?:quick )?look|"
-    r"read (?:this|that|the (?:text|label|sign|screen|menu))"
-    r"|who(?:'s| is) (?:that|this)(?: person)?"
-    r"|identify (?:this|that|what(?:'s| is) this)"
-    r"|use (?:the |your )?camera"
-    r"|can you see (?:this|that|me)"
+    r"what(?:'s| is) (?:that|this|on (?:the |my )?camera|in (?:the )?frame|in front(?: of (?:you|the camera))?|on my desk)|"
+    r"what am i holding|"
+    r"what(?:'s| is) this (?:one|now)|"
+    r"what color is this|"
+    r"look at (?:this|that|the camera|me|my desk|the (?:label|sign|screen|photo|picture))|"
+    r"take a (?:quick )?look|"
+    r"read (?:this|that|the (?:text|label|sign|screen|menu))|"
+    r"can you (?:see|read) (?:this|that|me)|"
+    r"does this look|"
+    r"which (?:port|cable|one)|"
+    r"is this (?:plugged|on|connected|damaged)|"
+    r"who(?:'s| is) (?:that|this)(?: person)?|"
+    r"identify (?:this|that|what(?:'s| is) this)|"
+    r"use (?:the |your )?camera"
+    r")\b",
+    re.IGNORECASE,
+)
+OBSERVE_RE = re.compile(
+    r"\b(?:"
+    r"watch (?:this|that|what i(?:'| a)?m doing)|"
+    r"look while|"
+    r"tell me when|"
+    r"for a few seconds|"
+    r"which direction am i turning"
     r")\b",
     re.IGNORECASE,
 )
@@ -270,6 +297,8 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("where_is", 6, "The owner asked where someone is.")
     if "camera" in lowered and any(p in lowered for p in ("show", "replay", "from ")):
         add("camera_replay", 6, "The owner asked to replay an owner camera.")
+    if OBSERVE_RE.search(message):
+        add("observe_camera", 9, "The owner asked to watch a visual change over time.")
     if _look_intent(message, lowered):
         add("look", 8, "The owner asked the assistant to look at the camera or a photo.")
     if any(p in lowered for p in ("subscribe", "watchlist", "watch for")):
@@ -315,6 +344,8 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_quiet_hours", 6, "The owner is setting quiet hours.")
     if "what just happened" in lowered:
         add("list_callouts", 6, "The owner asked what just happened.")
+    if classify_memory_intent(message) == "explicit_recall":
+        add("search_memory", 9, "The owner asked Evie to recall prior conversations or decisions.")
     add("search_memory", 1, "Default: personal memory lookup.")
 
     best = max(scores, key=lambda item: item[1])
@@ -383,10 +414,13 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         "calculate",
         "list_mail",
         "look",
+        "observe_camera",
     }:
         if name == "calculate":
             return name, {"expression": text}
         if name == "look":
             return name, {"prompt": text[:400], "focus": "auto"}
+        if name == "observe_camera":
+            return name, {"objective": text[:400], "duration_seconds": 4}
         return name, {}
     return None

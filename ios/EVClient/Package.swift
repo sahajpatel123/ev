@@ -29,6 +29,9 @@ let package = Package(
             dependencies: ["EVClientObjC"],
             linkerSettings: [
                 .linkedFramework("AVFoundation"),
+                .linkedFramework("ImageIO"),
+                .linkedFramework("CoreGraphics"),
+                .linkedFramework("UniformTypeIdentifiers"),
             ]
         ),
         .executableTarget(name: "EVClientCheck", dependencies: ["EVClient"]),

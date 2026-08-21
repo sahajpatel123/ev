@@ -31,6 +31,8 @@ def test_fresh_questions_are_self_contained(message: str) -> None:
         "you said the market was up yesterday",
         "about that market thread",
         "and what about the weather you mentioned?",
+        "I think I figured out how I want that memory thing to work.",
+        "I finally fixed that camera problem.",
         "which 8 do not repeat at the end of its answer",
         "continue the earlier conversation",
         "going back to the stock market question",

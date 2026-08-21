@@ -17,6 +17,7 @@ leak an old topic into a new answer.
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 # Phrases that unambiguously point back at earlier turns. Any match marks the
 # message as a continuation that should keep the full context window.
@@ -61,6 +62,88 @@ FOLLOW_UP_PREFIX = re.compile(
 
 MAX_FRAGMENT_CHARS = 60
 
+MemoryIntent = Literal[
+    "continuation",
+    "explicit_recall",
+    "forget",
+    "pin",
+    "fresh",
+]
+
+EXPLICIT_RECALL = re.compile(
+    r"("
+    r"\b(what did (we|i|you) (talk|speak|discuss|say)|"
+    r"what have we (been )?(talking|discussing|working)|"
+    r"what were we (talking|discussing|working)|"
+    r"what have we discussed|"
+    r"do you remember|"
+    r"remind me|"
+    r"what was i working on|"
+    r"what (else )?were we talking about|"
+    r"what have we talked about|"
+    r"what did i (?:originally |first |actually )?(tell|say|call|name|give)|"
+    r"what (name|model|feature|experiment|project) did i|"
+    r"why did i (decide|prefer|choose)|"
+    r"which (one )?(do|did) i prefer|"
+    r"what did i prefer before|"
+    r"when did i (first )?(mention|say|tell)|"
+    r"what (decisions|preference) did we|"
+    r"what(?:'s| is) (?:it|that|this) called|"
+    r"what was that (experiment|project|thing|feature|name)|"
+    r"what(?:'s| is) (?:the )?(?:current |original )?name|"
+    r"where did we leave off|where were we|"
+    r"what(?:'s| is) still (?:open|unresolved|stuck|broken|left)|"
+    r"what (?:are we|were we) still (?:stuck on|working on)|"
+    r"what haven'?t we finished|what was left|"
+    r"what did we (?:solve|fix|finish)|what (?:got|have we) (?:fixed|solved|resolved)|"
+    r"what (?:issue|problem) did we (?:solve|fix)|"
+    r"what changed|how did .{0,40} change|"
+    r"what did we (?:think|believe) (?:before|originally)|"
+    r"what editor (?:do|did) i|what did i use before|"
+    r"what should we (?:work on|do) next)\b"
+    r"|"
+    r"\bover the last (few )?(days|weeks)\b"
+    r")",
+    re.IGNORECASE,
+)
+FORGET_INTENT = re.compile(
+    r"\b(forget (that|this|it)|don't remember that|do not remember that|"
+    r"that was wrong|never mind that memory)\b",
+    re.IGNORECASE,
+)
+PIN_INTENT = re.compile(
+    r"("
+    r"\b(remember this|don't forget (that|this)|do not forget|"
+    r"this is important|from now on)\b"
+    r"|"
+    r"(?:^|[.!?]\s+)(?:please )?remember that\b"
+    r")",
+    re.IGNORECASE,
+)
+HYPOTHETICAL = re.compile(
+    r"\b(imagine (if |that |i )|what if |hypothetically|suppose (i|we)|"
+    r"in a hypothetical)\b",
+    re.IGNORECASE,
+)
+REFERENT_TOPIC = re.compile(
+    r"\b(that|this|the same)\s+(?:\w+\s+){0,3}"
+    r"(memory|camera|orb|project|feature|idea|plan|bug|issue|thing|one|"
+    r"architecture|design|animation|model|voice|look|system|experiment)\b",
+    re.IGNORECASE,
+)
+HISTORICAL_TRUTH = re.compile(
+    r"\b(before|used to|previously|did i prefer before|"
+    r"what did i prefer before|didn't i used to|used to use|"
+    r"originally|at first|the original|first called)\b",
+    re.IGNORECASE,
+)
+CONVERSATION_TIME = re.compile(
+    r"\b(yesterday|today|last night|this week|last week|last month|"
+    r"last year|last (monday|tuesday|wednesday|thursday|friday|saturday|sunday)|"
+    r"over the last (few )?(days|weeks)|in the (last|past)\s+\d+\s+(days|weeks))\b",
+    re.IGNORECASE,
+)
+
 
 def _is_fragment(message: str) -> bool:
     """A short, mostly-pronominal utterance is a follow-up, not a new topic.
@@ -88,7 +171,40 @@ def is_continuation(message: str | None) -> bool:
         return False
     if CONTINUATION_PHRASES.search(text):
         return True
+    if REFERENT_TOPIC.search(text):
+        return True
     return _is_fragment(text)
+
+
+def is_hypothetical(message: str | None) -> bool:
+    return bool(HYPOTHETICAL.search((message or "").strip()))
+
+
+def wants_historical_truth(message: str | None) -> bool:
+    """True when the owner asked for a past truth, not the current one."""
+    return bool(HISTORICAL_TRUTH.search((message or "").strip()))
+
+
+def conversation_time_requested(message: str | None) -> bool:
+    """True when the owner asked about when a conversation happened."""
+    return bool(CONVERSATION_TIME.search((message or "").strip()))
+
+
+def classify_memory_intent(message: str | None) -> MemoryIntent:
+    """Map an utterance onto continuation / recall / fresh (anti-intrusion)."""
+
+    text = (message or "").strip()
+    if not text:
+        return "fresh"
+    if FORGET_INTENT.search(text):
+        return "forget"
+    if PIN_INTENT.search(text):
+        return "pin"
+    if EXPLICIT_RECALL.search(text):
+        return "explicit_recall"
+    if is_continuation(text):
+        return "continuation"
+    return "fresh"
 
 
 def is_self_contained(message: str | None) -> bool:

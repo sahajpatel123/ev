@@ -50,8 +50,18 @@ async def process_event_sync(event_id: UUID) -> list[dict]:
             return []
         writer = MemoryWriter(session, embeddings=get_embedder())
         candidates = Extractor().extract(event)
+        from app.memory.observe import log_memory
+
+        log_memory(
+            "memory.extraction_started",
+            extra={"event_id": str(event.id), "event_type": event.event_type},
+        )
         deltas = await writer.write_all(event, candidates)
         await session.commit()
+        log_memory(
+            "memory.extraction_completed",
+            extra={"event_id": str(event.id), "deltas": len(deltas)},
+        )
         # LLM refinement never blocks ingestion; in sync mode it is invoked
         # explicitly (service/tests), and in queue mode it is a separate job.
         maybe_enqueue_llm_extraction(event_id)

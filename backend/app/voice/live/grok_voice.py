@@ -23,9 +23,19 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
+from uuid import uuid4
 
 from app.config import settings
-from app.ev.personality import identity_block
+from app.ev.camera_runtime import (
+    build_realtime_image_item,
+    log_camera,
+    pop_observations,
+)
+from app.ev.computer_strategy import (
+    REQUIRED_COMPUTER_TOOLS,
+    evaluate_provider_computer_schema,
+    looks_like_computer_task,
+)
 from app.ev.tool_select import LIVE_VOICE_TOOLS
 from app.voice.live.events import (
     ErrorEvent,
@@ -41,13 +51,34 @@ from app.voice.live.layer import (
     spoken_provider_connect_failed,
     spoken_provider_disconnect,
 )
+from app.voice.live.voice_memory import (
+    DRAIN_TIMEOUT_S,
+    PREFIX_BYTES,
+    UserAudioTurn,
+    note_latency_ms,
+    note_pending,
+    note_status,
+    note_transcription_config,
+    transcribe_utterance_pcm,
+)
 
 logger = logging.getLogger("ev.voice.live.grok")
 
 # A process-local fingerprint makes a stale launchd worker visible.  Do not
 # derive this at health-check time: the point is to report the code that was
 # loaded into this process, not whatever happens to be on disk now.
-REALTIME_BRIDGE_VERSION = "ev-realtime-function-tools-v2"
+_COMPUTER_EXECUTION_INSTRUCTIONS = (
+    "The computer goal is not verified. Call a listed computer function now. "
+    "If open_app returned control.preferred=semantic_adapter, call app_action "
+    "with the supported operation — do not inspect dozens of Accessibility "
+    "nodes first. Preserve ordinals. Do not speak successful completion."
+)
+_COMPUTER_SPEECH_INSTRUCTIONS = (
+    "Speak only the truthful outcome from the latest function output. "
+    "Do not claim success unless verified is true. Do not mention budgets, "
+    "tools, or schemas."
+)
+REALTIME_BRIDGE_VERSION = "ev-realtime-computer-v4"
 REALTIME_BRIDGE_SOURCE_FINGERPRINT = hashlib.sha256(
     Path(__file__).read_bytes()
 ).hexdigest()[:16]
@@ -90,6 +121,29 @@ _SPEECH_STARTED_TYPES = frozenset(
     {
         "input_audio_buffer.speech_started",
         "input_audio_buffer.speech_started.delta",
+    }
+)
+_SPEECH_STOPPED_TYPES = frozenset(
+    {
+        "input_audio_buffer.speech_stopped",
+    }
+)
+_AUDIO_COMMITTED_TYPES = frozenset(
+    {
+        "input_audio_buffer.committed",
+    }
+)
+_VOICE_MEMORY_TRACE_TYPES = frozenset(
+    {
+        "input_audio_buffer.speech_started",
+        "input_audio_buffer.speech_stopped",
+        "input_audio_buffer.committed",
+        "conversation.item.created",
+        "conversation.item.done",
+        "conversation.item.input_audio_transcription.completed",
+        "input_audio_transcription.completed",
+        "response.created",
+        "response.done",
     }
 )
 
@@ -282,12 +336,23 @@ def openai_realtime_url(*, model: str | None = None, realtime_url: str | None = 
     return f"{base}?{urlencode({'model': pinned})}"
 
 
+def _sandbox_instruction_suffix(capability_manifest: dict | None) -> str:
+    if not isinstance(capability_manifest, dict):
+        return ""
+    if capability_manifest.get("memory_scope") != "sandbox":
+        return ""
+    from app.device_gateway.sandbox_tools import SANDBOX_LIVE_INSTRUCTIONS
+
+    return "\n" + SANDBOX_LIVE_INSTRUCTIONS
+
+
 def grok_voice_instructions(
     *,
     name: str | None = None,
     description: str | None = None,
     capability_manifest: dict | None = None,
 ) -> str:
+    from app.ev.personality import identity_block
     from app.ev.protocols import spoken_ready_capability_line
 
     ready_line = (
@@ -308,9 +373,8 @@ def grok_voice_instructions(
         "Answer ordinary chat directly. Use a listed EV function when the owner "
         "asks you to act or needs current information (text, call, remind, look "
         "something up, show, timer, open, close, look at the camera). "
-        "When they ask what you see, to look at something in view, or to read "
-        "a label, call look. That takes one consented camera frame; never claim "
-        "you are watching a live stream, and never name a stranger. "
+        "When they ask what you see, to look at something in view, what they "
+        "are holding, or to read a label, call look if it is listed. "
         "When they ask for a timer that should ring, call the listed timer "
         "function first with minutes (1 means one minute) and do not only say "
         "you will set it. "
@@ -324,6 +388,7 @@ def grok_voice_instructions(
         " When asked what you can do, answer in partner language from the live "
         "operator sheet, not with function IDs. Mention the refused list only "
         "when the owner asks what you will not do."
+        + _sandbox_instruction_suffix(capability_manifest)
     )
 
 
@@ -348,29 +413,52 @@ def openai_realtime_instructions(
         "function before answering. This includes setting or starting a timer: "
         "call the matching listed timer function with the requested minutes and "
         "text when applicable. "
-        "This includes opening or closing an allowlisted app or an https link: "
-        "call the matching listed open or close function before speaking. "
-        "When they ask what you see, to look at the camera, or to read text "
-        "in view, call look. That is one consented frame, not a stream. "
+        "This includes opening, closing, inspecting, or operating apps on this "
+        "Mac: call the matching listed computer functions before speaking, and "
+        "keep calling them until the owner's goal is verified or blocked. "
+        "Speech is never execution evidence. Do not say a track is playing, a "
+        "playlist was found, or a click happened unless the function output "
+        "has verified true. "
+        "When they ask what you see, what they are holding, to read something "
+        "in view, what color something is, or whether something looks right, "
+        "and camera look is listed as ready, call look. Do not guess. Do not "
+        "claim you cannot see. The owner does not need to say camera. That is "
+        "one current frame, not a stream. For change over a few seconds, call "
+        "observe_camera. Never invent visual contents if no image is present. "
         "For an owner action, the function call must be the first output item: emit "
         "no spoken audio, acknowledgement, promise, or assistant message before it. "
         "Never answer with a promise, plan, or conversational acknowledgement such "
         "as 'I'll set that' or 'let me do that' without first making the function "
-        "call. Call each matching function at most once for one owner request. "
-        "After its function output arrives, treat that request as handled: do not "
-        "repeat the same function call, and give the short spoken answer from the "
-        "returned result, including a truthful failure if it failed. Treat function "
-        "output as authoritative and only describe an action as complete when EV "
-        "returns a successful result with evidence. "
+        "call. For timers and other single-shot tools, call each matching function "
+        "at most once for one owner request. For computer-control goals you may "
+        "call inspect_ui, ui_action, screen_look, app_action, open_app, activate_app, "
+        "list_apps, and close_app multiple times: observe, act, verify, continue. "
+        "Prefer app_action for Music playlists, tracks, and playback. Preserve "
+        "ordinals: first stays first, second stays second. Do not stop "
+        "after merely opening an app if the owner asked you to do something inside "
+        "it. After a non-computer function output arrives, treat that request as "
+        "handled: do not repeat the same function call, and give the short spoken "
+        "answer from the returned result, including a truthful failure if it failed. "
+        "Treat function output as authoritative. For computer tools, executed "
+        "and verified are different: opening an app is not completion of a "
+        "play/find/type goal. Only claim the owner's requested outcome when "
+        "verified is true. If must_continue is true or completion_claim_allowed "
+        "is false, keep calling computer functions or report the actual "
+        "failure; never say it is playing, sent, or done without a verification "
+        "receipt. "
         "Call only listed functions with their declared parameters; never invent "
-        "a function name or argument. If no listed function matches, say that the "
-        "capability is unavailable and give the setup or policy reason from the "
-        "live manifest; do not fall back to generic chat or claim the action ran. "
+        "a function name or argument. If no exact high-level function matches, "
+        "compose the listed computer-control functions before declaring inability. "
+        "Do not describe manual steps when you can perform them. If a listed "
+        "function is missing because it is unavailable, say the setup or policy "
+        "reason from the live manifest; do not fall back to generic chat or claim "
+        "the action ran. "
         "If a function result requires confirmation, say the hold line and wait "
         "for the owner; do not claim completion. "
         "Do not wait for a wake word — the app is open. Prefer action over essay. "
         "When asked what you can do, use the live operator sheet in partner "
         "language, never raw function IDs. Mention refusals only when asked."
+        + _sandbox_instruction_suffix(capability_manifest)
     )
     if isinstance(capability_manifest, dict):
         instructions += (
@@ -385,7 +473,14 @@ def capability_instructions(manifest: dict | None) -> str:
 
     if not isinstance(manifest, dict):
         return ""
+    if manifest.get("memory_scope") == "sandbox":
+        from app.device_gateway.sandbox_tools import SANDBOX_LIVE_INSTRUCTIONS
+
+        return "\n" + SANDBOX_LIVE_INSTRUCTIONS
+    from app.ev.camera_runtime import camera_model_instructions
+    from app.ev.computer_runtime import computer_model_instructions
     from app.ev.protocols import spoken_operator_sheet
+    from app.memory.relationship import live_memory_instructions
 
     sheet = spoken_operator_sheet(manifest)
     error = str(manifest.get("capability_error") or "").strip()
@@ -395,9 +490,12 @@ def capability_instructions(manifest: dict | None) -> str:
         if error
         else ""
     )
+    camera = camera_model_instructions(manifest.get("camera"))
+    computer = computer_model_instructions(manifest.get("computer_control"))
+    memory = live_memory_instructions(manifest)
     return (
         "\nCURRENT LIVE OPERATOR SHEET (truthful and authoritative):\n"
-        f"{sheet}\nOnly claim capabilities from the 'I can do now' line as ready. "
+        f"{sheet}\n{camera}\n{computer}\n{memory}\nOnly claim capabilities from the 'I can do now' line as ready. "
         "Use partner labels rather than function IDs. Never claim an action "
         "completed without a successful result and evidence."
         + failure
@@ -567,6 +665,7 @@ def grok_session_update(
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm", "rate": 24000},
+                        "transcription": {"model": "gpt-4o-mini-transcribe"},
                         "turn_detection": {
                             "type": "server_vad",
                             "threshold": 0.5,
@@ -698,6 +797,7 @@ class GrokVoiceBridge:
         approved_tool_specs: list[dict] | None = None,
         tool_specs: list[dict] | None = None,
         tool_specs_loader=None,
+        fallback_transcriber=None,
     ) -> None:
         self._on_event = on_event
         self._on_tool = on_tool
@@ -760,6 +860,9 @@ class GrokVoiceBridge:
         self._session_update_metadata: dict[str, Any] = {}
         self._session_ack_metadata: dict[str, Any] = {}
         self._tool_choice: str | None = None
+        self._response_tool_choice_supported = True
+        self._computer_schema_eval: dict[str, Any] = {}
+        self._schema_refresh_attempted = False
         self._function_call_error = False
         self._capability_error: str | None = None
         self._capability_manifest = (
@@ -780,6 +883,17 @@ class GrokVoiceBridge:
         self._response_id: str | None = None
         self._tool_boundary_pending = False
         self._continuation_sent = False
+        self._last_input_transcript = ""
+        self._last_input_transcript_at = 0.0
+        self._owner_turns: dict[str, UserAudioTurn] = {}
+        self._open_turn_id: str | None = None
+        self._pcm_prefix = bytearray()
+        self._durability_draining = False
+        self._provider_session_id: str | None = None
+        self._input_transcription_requested = False
+        self._input_transcription_confirmed = False
+        self._input_transcription_model: str | None = None
+        self._fallback_transcriber = fallback_transcriber
 
     @property
     def function_tools_enabled(self) -> bool:
@@ -835,6 +949,24 @@ class GrokVoiceBridge:
             "provider_mismatch": self._provider_mismatch,
             "function_call_error": self._function_call_error,
             "capability_error": bool(self._capability_error),
+            "provider_session_id": self._provider_session_id,
+            "input_transcription_requested": self._input_transcription_requested,
+            "input_transcription_confirmed": self._input_transcription_confirmed,
+            "input_transcription_model": self._input_transcription_model,
+            "pending_voice_turns": self.pending_voice_turn_count(),
+            "computer_tool_schema_hash": (self._computer_schema_eval or {}).get(
+                "computer_tool_schema_hash"
+            ),
+            "tool_schema_match": (self._computer_schema_eval or {}).get("tool_schema_match"),
+            "provider_tools_confirmed": (self._computer_schema_eval or {}).get(
+                "provider_tools_confirmed"
+            ),
+            "computer_control_ready": (self._computer_schema_eval or {}).get(
+                "computer_control_ready"
+            ),
+            "tool_schema_generation": (self._computer_schema_eval or {}).get(
+                "computer_tool_schema_hash"
+            ),
         }
 
     @property
@@ -862,7 +994,47 @@ class GrokVoiceBridge:
             "provider_mismatch": self._provider_mismatch,
             "function_call_error": self._function_call_error,
             "capability_error": self._capability_error,
+            "provider_session_id": self._provider_session_id,
+            "input_transcription_requested": self._input_transcription_requested,
+            "input_transcription_confirmed": self._input_transcription_confirmed,
+            "input_transcription_model": self._input_transcription_model,
+            "pending_voice_turns": self.pending_voice_turn_count(),
+            "computer_tool_schema_hash": (self._computer_schema_eval or {}).get(
+                "computer_tool_schema_hash"
+            ),
+            "tool_schema_match": (self._computer_schema_eval or {}).get("tool_schema_match"),
+            "provider_tools_confirmed": (self._computer_schema_eval or {}).get(
+                "provider_tools_confirmed"
+            ),
+            "computer_control_ready": (self._computer_schema_eval or {}).get(
+                "computer_control_ready"
+            ),
+            "tool_schema_generation": (self._computer_schema_eval or {}).get(
+                "computer_tool_schema_hash"
+            ),
         }
+
+    def _response_create_for_user_text(self, text: str) -> dict[str, Any]:
+        if looks_like_computer_task(text):
+            return self._response_create_after_tool(must_continue=True, terminal_speech=False)
+        return {"type": "response.create"}
+
+    def _response_create_after_tool(
+        self, *, must_continue: bool, terminal_speech: bool
+    ) -> dict[str, Any]:
+        create: dict[str, Any] = {"type": "response.create"}
+        if must_continue:
+            response: dict[str, Any] = {"instructions": _COMPUTER_EXECUTION_INSTRUCTIONS}
+            if self._response_tool_choice_supported:
+                response["tool_choice"] = "required"
+            create["response"] = response
+            return create
+        if terminal_speech:
+            response = {"instructions": _COMPUTER_SPEECH_INSTRUCTIONS}
+            if self._response_tool_choice_supported:
+                response["tool_choice"] = "none"
+            create["response"] = response
+        return create
 
     async def start(self) -> bool:
         if self._ws is not None:
@@ -961,6 +1133,29 @@ class GrokVoiceBridge:
                 [item for item in session_tools if isinstance(item, dict)]
             ),
         }
+        audio = session_payload.get("audio") if isinstance(session_payload.get("audio"), dict) else {}
+        audio_in = audio.get("input") if isinstance(audio.get("input"), dict) else {}
+        requested_tx = (
+            audio_in.get("transcription")
+            if isinstance(audio_in.get("transcription"), dict)
+            else {}
+        )
+        self._input_transcription_requested = bool(requested_tx)
+        self._input_transcription_model = (
+            requested_tx.get("model") if isinstance(requested_tx, dict) else None
+        )
+        self._session_update_metadata["input_transcription_requested"] = (
+            self._input_transcription_requested
+        )
+        self._session_update_metadata["input_transcription_model"] = (
+            self._input_transcription_model
+        )
+        note_transcription_config(
+            requested=self._input_transcription_requested,
+            provider_confirmed=self._input_transcription_confirmed,
+            model=self._input_transcription_model,
+            provider_session_id=self._provider_session_id,
+        )
         self._upstream_tool_names = ()
         self._upstream_session_ready = False
         self._provider_mismatch = False
@@ -1078,6 +1273,9 @@ class GrokVoiceBridge:
         if self._playback_active:
             self._playback_active = False
             self._playback_since = 0.0
+        self._capture_owner_pcm(pcm)
+        if self._durability_draining:
+            return
         if self._ws is None:
             await self.start()
         if self._ws is None:
@@ -1099,6 +1297,8 @@ class GrokVoiceBridge:
         raw = (text or "").strip()
         if not raw or self._closed:
             return
+        self._last_input_transcript = raw
+        self._last_input_transcript_at = time.monotonic()
         self._discard_queued_audio_events()
         if self._ws is None:
             await self.start()
@@ -1116,7 +1316,7 @@ class GrokVoiceBridge:
             }
         ):
             return
-        await self._send({"type": "response.create"})
+        await self._send(self._response_create_for_user_text(raw))
 
     async def cancel(self) -> None:
         self._out_pcm.clear()
@@ -1170,6 +1370,21 @@ class GrokVoiceBridge:
         await self._send({"type": "response.cancel"})
 
     def close(self) -> None:
+        pending = self._turns_awaiting_transcript()
+        if pending and not self._durability_draining:
+            note_status(
+                "voice_memory.persist_failed",
+                reason="closed_with_pending_transcripts",
+                count=len(pending),
+            )
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(
+                    self._fallback_pending_turns("closed_with_pending"),
+                    name="ev-voice-memory-close-fallback",
+                )
+            except RuntimeError:
+                pass
         self._closed = True
         self._cancel_input_audio_pump()
         task = self._reconnect_task
@@ -1190,6 +1405,162 @@ class GrokVoiceBridge:
                     result = closer()
                     if asyncio.iscoroutine(result):
                         asyncio.create_task(result)
+
+    def pending_voice_turn_count(self) -> int:
+        return len(self._turns_awaiting_transcript())
+
+    def _turns_awaiting_transcript(self) -> list[UserAudioTurn]:
+        return [turn for turn in self._owner_turns.values() if turn.awaiting_transcript()]
+
+    def _capture_owner_pcm(self, pcm: bytes) -> None:
+        if not pcm:
+            return
+        turn = self._owner_turns.get(self._open_turn_id or "")
+        if turn is not None and not turn.transcription_received:
+            turn.append_pcm(pcm)
+            return
+        self._pcm_prefix.extend(pcm)
+        overflow = len(self._pcm_prefix) - PREFIX_BYTES
+        if overflow > 0:
+            del self._pcm_prefix[:overflow]
+
+    def _ensure_open_turn(self) -> UserAudioTurn:
+        existing = self._owner_turns.get(self._open_turn_id or "")
+        if existing is not None and not existing.transcription_received:
+            return existing
+        turn = UserAudioTurn(
+            local_turn_id=uuid4().hex[:16],
+            provider_session_id=self._provider_session_id,
+        )
+        if self._pcm_prefix:
+            turn.append_pcm(bytes(self._pcm_prefix))
+            self._pcm_prefix.clear()
+        self._open_turn_id = turn.local_turn_id
+        self._owner_turns[turn.local_turn_id] = turn
+        note_pending(self.pending_voice_turn_count())
+        return turn
+
+    def _commit_open_turn(self, *, item_id: str | None = None) -> UserAudioTurn:
+        turn = self._ensure_open_turn()
+        if item_id:
+            turn.provider_item_id = item_id
+        turn.audio_committed = True
+        turn.transcription_expected = True
+        if not turn.committed_at:
+            turn.committed_at = time.monotonic()
+        turn.status = "transcription_pending"
+        note_status(
+            "voice_memory.turn_committed",
+            turn=turn.local_turn_id,
+            item_id=turn.provider_item_id,
+        )
+        note_status("voice_memory.transcription_pending", turn=turn.local_turn_id)
+        note_pending(self.pending_voice_turn_count())
+        return turn
+
+    def _bind_item_id(self, item_id: str | None) -> UserAudioTurn | None:
+        if not item_id:
+            return self._owner_turns.get(self._open_turn_id or "")
+        for turn in self._owner_turns.values():
+            if turn.provider_item_id == item_id:
+                return turn
+        turn = self._owner_turns.get(self._open_turn_id or "")
+        if turn is None or turn.transcription_received:
+            turn = self._commit_open_turn(item_id=item_id)
+        else:
+            turn.provider_item_id = item_id
+        return turn
+
+    def _turn_for_item(self, item_id: str | None) -> UserAudioTurn | None:
+        if item_id:
+            for turn in self._owner_turns.values():
+                if turn.provider_item_id == item_id:
+                    return turn
+        pending = self._turns_awaiting_transcript()
+        if pending:
+            return pending[-1]
+        return self._owner_turns.get(self._open_turn_id or "")
+
+    async def drain_voice_memory(self, *, timeout_s: float | None = None) -> dict[str, Any]:
+        """Keep the provider socket open until owner turns are transcribed or fallen back."""
+
+        self._durability_draining = True
+        open_turn = self._owner_turns.get(self._open_turn_id or "")
+        if (
+            open_turn is not None
+            and not open_turn.audio_committed
+            and len(open_turn.pcm) >= 320
+        ):
+            self._commit_open_turn()
+        bound = DRAIN_TIMEOUT_S if timeout_s is None else max(0.05, float(timeout_s))
+        logger.info(
+            "realtime_trace event=voice_memory.drain_start pending=%s timeout_s=%s",
+            self.pending_voice_turn_count(),
+            bound,
+        )
+        deadline = time.monotonic() + bound
+        settle_until = time.monotonic() + min(0.4, bound)
+        while time.monotonic() < settle_until and not self._turns_awaiting_transcript():
+            await asyncio.sleep(0.05)
+        while self._turns_awaiting_transcript() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        leftover = self._turns_awaiting_transcript()
+        if leftover:
+            await self._fallback_pending_turns("transcription_timeout")
+        drained = [turn for turn in self._owner_turns.values() if turn.transcription_received]
+        note_pending(self.pending_voice_turn_count())
+        logger.info(
+            "realtime_trace event=voice_memory.drain_done transcribed=%s leftover=%s",
+            len(drained),
+            self.pending_voice_turn_count(),
+        )
+        return {
+            "pending": self.pending_voice_turn_count(),
+            "transcribed": len(drained),
+            "timeout_s": bound,
+        }
+
+    async def _fallback_pending_turns(self, reason: str) -> None:
+        for turn in list(self._turns_awaiting_transcript()):
+            await self._fallback_turn(turn, reason=reason)
+
+    async def _fallback_turn(self, turn: UserAudioTurn, *, reason: str) -> None:
+        if turn.transcription_received:
+            return
+        note_status(
+            "voice_memory.transcription_timeout",
+            turn=turn.local_turn_id,
+            reason=reason,
+            pcm_bytes=len(turn.pcm),
+        )
+        if not turn.pcm:
+            turn.persist_failed = True
+            turn.status = "persist_failed"
+            note_status("voice_memory.persist_failed", turn=turn.local_turn_id, reason="no_pcm")
+            note_pending(self.pending_voice_turn_count())
+            return
+        note_status("voice_memory.fallback_asr_started", turn=turn.local_turn_id, reason=reason)
+        spoken = await transcribe_utterance_pcm(
+            bytes(turn.pcm),
+            transcriber=self._fallback_transcriber,
+        )
+        if not spoken:
+            turn.persist_failed = True
+            turn.status = "persist_failed"
+            turn.release_pcm()
+            note_status(
+                "voice_memory.persist_failed",
+                turn=turn.local_turn_id,
+                reason="fallback_empty",
+            )
+            note_pending(self.pending_voice_turn_count())
+            return
+        await self._emit_user_transcript(
+            spoken,
+            final=True,
+            item_id=turn.provider_item_id,
+            source="fallback_asr",
+        )
 
     async def _send(self, payload: dict, *, timeout_s: float = 2.0) -> bool:
         ws = self._ws
@@ -1355,7 +1726,9 @@ class GrokVoiceBridge:
         self._audio_accepting = False
         self._in_resampler.reset()
         self._out_resampler.reset()
-        if self._closed or self._failed_permanent:
+        if self._turns_awaiting_transcript():
+            await self._fallback_pending_turns("provider_disconnect")
+        if self._closed or self._failed_permanent or self._durability_draining:
             return
         if not self._disconnect_announced:
             self._disconnect_announced = True
@@ -1370,7 +1743,7 @@ class GrokVoiceBridge:
         self._schedule_reconnect()
 
     def _schedule_reconnect(self) -> None:
-        if self._closed or self._failed_permanent:
+        if self._closed or self._failed_permanent or self._durability_draining:
             return
         if self._reconnect_task is not None and not self._reconnect_task.done():
             return
@@ -1448,6 +1821,118 @@ class GrokVoiceBridge:
             self._capability_error = None
             self._load_tools_from_manifest = False
 
+    async def refresh_live_instructions(self) -> bool:
+        """Push updated capability instructions, and tools if the catalog changed.
+
+        Audio / VAD settings are not resent. A stale tool catalog is not allowed
+        to masquerade as the current build.
+        """
+
+        if self._closed or self._ws is None:
+            return False
+        previous_names = tuple(self.advertised_tool_names)
+        await self._refresh_capability_manifest()
+        await self._refresh_tool_specs()
+        manifest = self._capability_manifest if isinstance(self._capability_manifest, dict) else None
+        if self._provider == "openai":
+            text = openai_realtime_instructions(capability_manifest=manifest) + capability_instructions(
+                manifest
+            )
+        else:
+            text = grok_voice_instructions(capability_manifest=manifest) + capability_instructions(
+                manifest
+            )
+        session_payload: dict[str, Any] = {"instructions": text}
+        new_names = tuple(self.advertised_tool_names)
+        tools_changed = new_names != previous_names or new_names != self._upstream_tool_names
+        if tools_changed:
+            realtime_tools = grok_voice_tools(self._tool_specs)
+            session_payload["tools"] = realtime_tools
+            session_payload["tool_choice"] = "auto" if realtime_tools else "none"
+            self._upstream_session_ready = False
+        sent = await self._send({"type": "session.update", "session": session_payload})
+        logger.warning(
+            "realtime_trace event=session.update.live_refresh provider=%s sent=%s tools_changed=%s tool_names=%s ui_ready=%s",
+            self._provider,
+            sent,
+            tools_changed,
+            list(new_names),
+            (manifest or {}).get("computer_control", {}).get("generic_ui_control_ready")
+            if isinstance(manifest, dict)
+            else None,
+        )
+        return sent
+
+    async def _emit_user_transcript(
+        self,
+        text: str,
+        *,
+        final: bool,
+        item_id: str | None = None,
+        source: str = "provider",
+    ) -> None:
+        spoken = (text or "").strip()
+        if not spoken:
+            return
+        if final:
+            now = time.monotonic()
+            if (
+                spoken == self._last_input_transcript
+                and now - self._last_input_transcript_at < 8.0
+            ):
+                turn = self._turn_for_item(item_id)
+                if turn is not None:
+                    turn.transcription_received = True
+                    turn.release_pcm()
+                    note_pending(self.pending_voice_turn_count())
+                return
+            self._last_input_transcript = spoken
+            self._last_input_transcript_at = now
+            turn = self._turn_for_item(item_id)
+            if turn is None:
+                turn = self._commit_open_turn(item_id=item_id)
+            turn.transcription_received = True
+            turn.transcript_text = spoken
+            turn.transcript_source = source
+            turn.persistence_started = True
+            turn.status = "transcription_received"
+            note_status(
+                "voice_memory.transcription_received",
+                turn=turn.local_turn_id,
+                source=source,
+                chars=len(spoken),
+            )
+            note_latency_ms(
+                None if not turn.committed_at else (now - turn.committed_at) * 1000
+            )
+            turn.release_pcm()
+            note_pending(self.pending_voice_turn_count())
+            logger.info(
+                "realtime_trace event=input_transcript.completed chars=%s fp=%s source=%s",
+                len(spoken),
+                hashlib.sha256(spoken.encode("utf-8")).hexdigest()[:12],
+                source,
+            )
+            await self._on_event(
+                FinalTranscriptEvent(
+                    at_ms=self._now(),
+                    text=spoken,
+                    confidence=1.0,
+                    provider="openai-realtime" if self._provider == "openai" else "grok-voice",
+                    transcript_source=source,
+                )
+            )
+            return
+        await self._on_event(
+            PartialTranscriptEvent(
+                at_ms=self._now(),
+                text=spoken,
+                sequence=0,
+                stable=False,
+                confidence=0.0,
+            )
+        )
+
     async def _handle_upstream(self, event: dict) -> None:
         kind = str(event.get("type") or "")
         if kind == "session.updated":
@@ -1471,6 +1956,22 @@ class GrokVoiceBridge:
                 item["name"]: item.get("schema") for item in acknowledged_schemas
             }
             schema_mismatch = expected_schema_map != acknowledged_schema_map
+            self._computer_schema_eval = evaluate_provider_computer_schema(
+                advertised_tools=self.advertised_function_tools,
+                acknowledged_names=accepted,
+                acknowledged_schemas=acknowledged_schemas,
+            )
+            sandbox_session = (
+                isinstance(self._capability_manifest, dict)
+                and self._capability_manifest.get("memory_scope") == "sandbox"
+            )
+            if sandbox_session:
+                from app.device_gateway.sandbox_tools import note_provider_effective
+
+                note_provider_effective(accepted, self.advertised_function_tools)
+            computer_schema_mismatch = (not sandbox_session) and (
+                not self._computer_schema_eval.get("tool_schema_match")
+            )
             provider_hint = _event_provider_hint(event)
             self._provider_mismatch = bool(
                 malformed_tools
@@ -1487,8 +1988,51 @@ class GrokVoiceBridge:
                 "acknowledged_tool_schemas": acknowledged_schemas,
                 "malformed_tools": malformed_tools,
                 "schema_mismatch": schema_mismatch,
+                "computer_tool_schema_hash": self._computer_schema_eval.get(
+                    "computer_tool_schema_hash"
+                ),
+                "computer_schema_match": self._computer_schema_eval.get("tool_schema_match"),
+                "missing_computer_tools": self._computer_schema_eval.get("missing_tools"),
                 "provider_mismatch": self._provider_mismatch,
             }
+            audio = session.get("audio") if isinstance(session.get("audio"), dict) else {}
+            audio_in = audio.get("input") if isinstance(audio.get("input"), dict) else {}
+            transcription = (
+                audio_in.get("transcription")
+                if isinstance(audio_in.get("transcription"), dict)
+                else {}
+            )
+            self._session_ack_metadata["acknowledged_audio_input_keys"] = sorted(audio_in)
+            self._session_ack_metadata["input_transcription_model"] = transcription.get(
+                "model"
+            ) or transcription.get("language_hint")
+            session_id = session.get("id")
+            if isinstance(session_id, str) and session_id.strip():
+                self._provider_session_id = session_id.strip()
+                self._session_ack_metadata["provider_session_id"] = self._provider_session_id
+            self._input_transcription_confirmed = bool(transcription)
+            if transcription.get("model"):
+                self._input_transcription_model = transcription.get("model")
+            self._session_ack_metadata["input_transcription_requested"] = (
+                self._input_transcription_requested
+            )
+            self._session_ack_metadata["input_transcription_confirmed"] = (
+                self._input_transcription_confirmed
+            )
+            note_transcription_config(
+                requested=self._input_transcription_requested,
+                provider_confirmed=self._input_transcription_confirmed,
+                model=self._input_transcription_model,
+                provider_session_id=self._provider_session_id,
+            )
+            logger.info(
+                "realtime_trace event=input_transcription.ack provider=%s model=%s confirmed=%s keys=%s session=%s",
+                self._provider,
+                self._input_transcription_model,
+                self._input_transcription_confirmed,
+                sorted(audio_in),
+                self._provider_session_id,
+            )
             logger.warning(
                 "realtime_trace event=session.updated.received provider=%s model=%s acknowledged_tool_names=%s acknowledged_tool_schemas=%s malformed_tools=%s mismatch=%s",
                 self._provider,
@@ -1532,12 +2076,31 @@ class GrokVoiceBridge:
                 )
             else:
                 logger.warning(
-                    "realtime_trace event=tools.exposed_not_called provider=%s model=%s acknowledged_tool_names=%s",
+                    "realtime_trace event=tools.exposed_not_called provider=%s model=%s acknowledged_tool_names=%s computer_schema=%s",
                     self._provider,
                     session.get("model") or self._model,
                     list(accepted),
+                    self._computer_schema_eval,
                 )
+            if computer_schema_mismatch and not self._schema_refresh_attempted:
+                advertised_computer = [
+                    name for name in expected if name in REQUIRED_COMPUTER_TOOLS
+                ]
+                if advertised_computer:
+                    self._schema_refresh_attempted = True
+                    logger.warning(
+                        "realtime_trace event=tool_schema.stale_refresh provider=%s missing=%s",
+                        self._provider,
+                        self._computer_schema_eval.get("missing_tools"),
+                    )
+                    await self.refresh_live_instructions()
             return
+        if kind in _VOICE_MEMORY_TRACE_TYPES:
+            logger.info(
+                "realtime_trace event=voice_memory.provider_event type=%s item_id=%s",
+                kind,
+                _event_item_id(event),
+            )
         if kind == "ping":
             await self._send({"type": "pong"})
             return
@@ -1551,6 +2114,13 @@ class GrokVoiceBridge:
                 return
             # User started a turn. Do not send response.cancel — that errors
             # with "no active response" and can kill the next spoken answer.
+            self._ensure_open_turn()
+            return
+        if kind in _SPEECH_STOPPED_TYPES:
+            self._commit_open_turn(item_id=_event_item_id(event))
+            return
+        if kind in _AUDIO_COMMITTED_TYPES:
+            self._commit_open_turn(item_id=_event_item_id(event))
             return
         if kind == "response.created":
             if self._continuation_sent:
@@ -1583,22 +2153,28 @@ class GrokVoiceBridge:
             return
         if kind in _INPUT_TRANSCRIPT_TYPES:
             text = _transcript_text(event)
-            if text:
-                await self._on_event(
-                    FinalTranscriptEvent(
-                        at_ms=self._now(),
-                        text=text,
-                        confidence=1.0,
-                        provider="openai-realtime" if self._provider == "openai" else "grok-voice",
+            item_id = _event_item_id(event)
+            if "completed" in kind:
+                if text:
+                    await self._emit_user_transcript(
+                        text, final=True, item_id=item_id, source="provider"
                     )
-                    if "completed" in kind
-                    else PartialTranscriptEvent(
-                        at_ms=self._now(),
-                        text=text,
-                        sequence=0,
-                        stable=False,
-                        confidence=0.0,
-                    )
+                else:
+                    logger.info("realtime_trace event=input_transcript.empty type=%s", kind)
+            elif text:
+                await self._emit_user_transcript(text, final=False, item_id=item_id)
+            return
+        if kind in {"conversation.item.done", "conversation.item.created"}:
+            item = event.get("item") if isinstance(event.get("item"), dict) else {}
+            item_id = _event_item_id(event) or (
+                str(item.get("id")).strip() if isinstance(item.get("id"), str) else None
+            )
+            if item.get("role") == "user":
+                self._bind_item_id(item_id)
+            nested = _item_user_transcript(item)
+            if nested:
+                await self._emit_user_transcript(
+                    nested, final=True, item_id=item_id, source="provider"
                 )
             return
         if kind in _TRANSCRIPT_DELTA_TYPES:
@@ -1766,6 +2342,13 @@ class GrokVoiceBridge:
                 code,
                 type(message).__name__,
             )
+            combined = f"{code} {message}".lower()
+            if "tool_choice" in combined or "unknown parameter" in combined:
+                self._response_tool_choice_supported = False
+                logger.warning(
+                    "realtime_trace event=response.tool_choice.unsupported provider=%s",
+                    self._provider,
+                )
             if _is_benign_realtime_error(message, code):
                 return
             if code.lower() in {"session_expired", "session_expiration", "session_closed"}:
@@ -1982,25 +2565,68 @@ class GrokVoiceBridge:
         pending_confirmation = _function_output_is_pending(output)
         if pending_confirmation and call_id:
             self._pending_confirmation_calls[call_id] = name
+        if name in {"look", "observe_camera", "screen_look", "ui_action"}:
+            output = await self._deliver_camera_images(name, call_id, output)
         self._pending_tools = max(0, self._pending_tools - 1)
         output_sent = await self._send_function_output(call_id, output)
         try:
             output_payload = json.loads(output)
         except (TypeError, json.JSONDecodeError):
             output_payload = {}
-        output_ok = isinstance(output_payload, dict) and output_payload.get("ok") is True
+        inner = (
+            output_payload.get("result")
+            if isinstance(output_payload, dict)
+            and isinstance(output_payload.get("result"), dict)
+            else {}
+        )
+        output_ok = isinstance(output_payload, dict) and (
+            output_payload.get("ok") is True
+            or output_payload.get("executed") is True
+            or (isinstance(inner, dict) and inner.get("ok") is True)
+        )
+        goal = output_payload.get("goal") if isinstance(output_payload, dict) else None
+        must_continue = bool(
+            isinstance(output_payload, dict)
+            and (
+                output_payload.get("must_continue")
+                or (isinstance(goal, dict) and goal.get("must_continue"))
+                or (isinstance(inner, dict) and inner.get("must_continue"))
+            )
+        )
+        result_label = (
+            "success"
+            if output_ok and not must_continue
+            else "progress"
+            if must_continue or output_ok
+            else "failed"
+        )
         logger.warning(
-            "realtime_trace event=function_call.dispatch provider=%s function_name=%s call_id_fingerprint=%s result=%s output_sent=%s output_bytes=%s confirmation_pending=%s",
+            "realtime_trace event=function_call.dispatch provider=%s function_name=%s call_id_fingerprint=%s result=%s output_sent=%s output_bytes=%s confirmation_pending=%s verified=%s must_continue=%s",
             self._provider,
             name,
             _safe_id_fingerprint(call_id),
-            "success" if output_ok else "failed",
+            result_label,
             output_sent,
             len(output.encode("utf-8")),
             pending_confirmation,
+            bool(isinstance(output_payload, dict) and output_payload.get("verified")),
+            must_continue,
         )
         if output_sent and self._pending_tools == 0:
-            continuation_sent = await self._send({"type": "response.create"})
+            goal_status = goal.get("status") if isinstance(goal, dict) else None
+            terminal_speech = bool(
+                (isinstance(output_payload, dict) and output_payload.get("goal_complete"))
+                or goal_status in {"complete", "failed", "cancelled"}
+                or (
+                    isinstance(output_payload, dict)
+                    and output_payload.get("cancelled")
+                )
+            )
+            create = self._response_create_after_tool(
+                must_continue=must_continue and not terminal_speech,
+                terminal_speech=terminal_speech or (not must_continue),
+            )
+            continuation_sent = await self._send(create)
             if continuation_sent:
                 self._continuation_sent = True
                 self._audio_accepting = True
@@ -2032,10 +2658,110 @@ class GrokVoiceBridge:
             return {}, f"Unknown or unapproved live function '{name}'."
         from app.gateway.validation import validate_arguments
 
-        effective, issues = validate_arguments(arguments, spec.get("parameters") or {})
+        parameters = spec.get("parameters") or {}
+        args = dict(arguments or {})
+        properties = parameters.get("properties") or {}
+        if name in REQUIRED_COMPUTER_TOOLS and properties:
+            args = {key: value for key, value in args.items() if key in properties}
+        effective, issues = validate_arguments(args, parameters)
         if issues:
             return {}, "; ".join(issues)
         return effective, None
+
+    async def _deliver_camera_images(self, name: str, call_id: str, output: str) -> str:
+        """Inject captured JPEGs as Realtime input_image items, then return compact tool JSON.
+
+        Function output stays text-only. Pixels travel on conversation.item.create.
+        """
+
+        observations = pop_observations(call_id)
+        try:
+            payload = json.loads(output) if output else {}
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        body = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+        if not isinstance(body, dict):
+            body = {}
+        delivered = 0
+        for index, observation in enumerate(observations):
+            event_id = f"cam-{call_id}-{index}"
+            item = build_realtime_image_item(
+                observation.jpeg,
+                mime=observation.mime,
+                detail=observation.detail,
+                event_id=event_id,
+                prompt=(
+                "Camera observation from the owner's MacBook."
+                if name == "look"
+                else "Window screenshot from the owner's Mac. Describe only visible UI."
+                if name == "screen_look"
+                else f"Camera observation {index + 1} from a bounded watch."
+            ),
+            )
+            log_camera(
+                "camera.realtime_image_sent",
+                request_id=observation.request_id,
+                extra={
+                    "width": observation.width,
+                    "height": observation.height,
+                    "encoded_bytes": len(observation.jpeg),
+                    "sequence": observation.sequence,
+                    "session_model": self._model,
+                },
+            )
+            sent = await self._send(item, timeout_s=8.0)
+            if sent:
+                delivered += 1
+                log_camera(
+                    "camera.realtime_image_accepted",
+                    request_id=observation.request_id,
+                    extra={"sent": True, "event_id": event_id},
+                )
+            else:
+                log_camera(
+                    "camera.failure",
+                    request_id=observation.request_id,
+                    extra={"error": "realtime_image_send_failed"},
+                )
+        image_ok = delivered > 0
+        compact = {
+            "ok": bool(body.get("ok") and image_ok) if observations else bool(body.get("ok")),
+            "name": name,
+            "spoken": body.get("spoken"),
+            "error": body.get("error") if not image_ok and observations else body.get("error"),
+            "image_delivered": image_ok,
+            "model_image_delivered": image_ok,
+            "frames": delivered,
+            "width": body.get("width"),
+            "height": body.get("height"),
+            "encoded_bytes": body.get("encoded_bytes"),
+            "request_id": body.get("request_id"),
+            "frame_id": body.get("frame_id"),
+            "app": body.get("app"),
+            "window": body.get("window"),
+            "local_ocr": body.get("local_ocr"),
+            "source": body.get("source"),
+        }
+        if observations and not image_ok:
+            compact["ok"] = False
+            compact["spoken"] = (
+                "The camera frame was captured but the live model did not receive "
+                "the image. I did not see anything."
+            )
+            compact["error"] = "realtime_image_rejected"
+        if not observations and name in {"look", "observe_camera", "screen_look"}:
+            compact["image_delivered"] = False
+            compact["model_image_delivered"] = False
+        log_camera(
+            "camera.tool_completed",
+            request_id=str(compact.get("request_id") or call_id),
+            extra={
+                "frames": delivered,
+                "ok": compact.get("ok"),
+                "image_delivered": image_ok,
+            },
+        )
+        return json.dumps(compact, default=str, separators=(",", ":"))
 
     async def _send_function_output(self, call_id: str, output: str) -> bool:
         if not call_id:
@@ -2158,18 +2884,71 @@ def _parse_event(message: Any) -> dict | None:
     return None
 
 
+def _part_transcript(part: object) -> str:
+    if isinstance(part, str) and part.strip():
+        return part.strip()
+    if not isinstance(part, dict):
+        return ""
+    for key in ("transcript", "text"):
+        value = part.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _event_item_id(event: dict) -> str | None:
+    raw = event.get("item_id")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    item = event.get("item")
+    if isinstance(item, dict):
+        item_id = item.get("id")
+        if isinstance(item_id, str) and item_id.strip():
+            return item_id.strip()
+    return None
+
+
+def _item_user_transcript(item: dict) -> str:
+    if item.get("role") != "user":
+        return ""
+    for key in ("transcript", "text"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    raw = item.get("content")
+    if isinstance(raw, list):
+        for part in raw:
+            text = _part_transcript(part)
+            if text:
+                return text
+        return ""
+    return _part_transcript(raw)
+
+
 def _transcript_text(event: dict) -> str:
     for key in ("transcript", "text", "delta"):
         value = event.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    raw_item = event.get("item")
-    item = raw_item if isinstance(raw_item, dict) else {}
-    for key in ("transcript", "text"):
-        value = item.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+    nested = event.get("item")
+    if isinstance(nested, dict):
+        for key in ("transcript", "text"):
+            value = nested.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        content = nested.get("content")
+        if isinstance(content, list):
+            for part in content:
+                text = _part_transcript(part)
+                if text:
+                    return text
+    content = event.get("content")
+    if isinstance(content, list):
+        for part in content:
+            text = _part_transcript(part)
+            if text:
+                return text
+    return _part_transcript(content) if isinstance(content, dict) else ""
 
 
 def _realtime_error_fields(event: dict) -> tuple[str, str]:

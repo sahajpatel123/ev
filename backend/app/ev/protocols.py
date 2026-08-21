@@ -254,15 +254,30 @@ async def protocol_sheet(session: AsyncSession) -> list[Protocol]:
         )
 
     from app.ev.apps import find_macos_life_integration
+    from app.ev.computer_runtime import computer_operator_line, readiness_from_computer_state
+    from app.voice.live.layer import active_lives
 
     apps_row = await find_macos_life_integration(session)
-    if apps_row is not None:
+    lives = active_lives()
+    live = lives[0] if lives else None
+    provider = getattr(getattr(live, "grok_voice", None), "_provider", None) if live else None
+    computer_ready = readiness_from_computer_state(
+        getattr(live, "_computer_state", {}) if live is not None else {},
+        client_connected=live is not None,
+        helper_ready=apps_row is not None,
+        realtime_provider=str(provider or ""),
+        device_id=getattr(live, "device_id", None) if live is not None else None,
+        session_id=getattr(live, "session_id", None) if live is not None else None,
+    )
+    if apps_row is not None or computer_ready.app_lifecycle_ready:
         items.append(
             Protocol(
                 "macos_apps",
                 "Open and close Mac apps",
                 "enabled",
-                "macos_life helper: apps.activate, apps.quit, open.url.",
+                computer_operator_line(computer_ready)
+                if computer_ready.mac_client_connected
+                else "macos_life helper: apps.activate, apps.quit, open.url.",
             )
         )
     else:
@@ -271,9 +286,22 @@ async def protocol_sheet(session: AsyncSession) -> list[Protocol]:
                 "macos_apps",
                 "Open and close Mac apps",
                 "needs_setup",
-                "Connect the macos_life messaging bridge and EVLifeHelper.",
+                "Connect EV.app or the macos_life helper.",
             )
         )
+    if computer_ready.generic_ui_control_ready:
+        computer_status = "enabled"
+        computer_detail = computer_operator_line(computer_ready)
+    elif computer_ready.accessibility_permission == "denied":
+        computer_status = "needs_permission"
+        computer_detail = "Mac control needs Accessibility permission enabled for EV."
+    elif computer_ready.app_lifecycle_ready:
+        computer_status = "needs_setup"
+        computer_detail = computer_operator_line(computer_ready)
+    else:
+        computer_status = "needs_setup"
+        computer_detail = computer_operator_line(computer_ready)
+    items.append(Protocol("computer_control", "Mac computer control", computer_status, computer_detail))
 
     octo = (settings.octoprint_url or "").strip()
     if octo:
@@ -289,14 +317,31 @@ async def protocol_sheet(session: AsyncSession) -> list[Protocol]:
         )
 
     items.append(Protocol("hud", "HUD / lookout", "enabled", "Native glass via present."))
-    items.append(
-        Protocol(
-            "sight",
-            "Camera look and OCR",
-            "enabled",
-            "One consented frame: on-device OCR, object labels, enrolled matches only.",
-        )
+    from app.ev.camera_runtime import camera_operator_line, readiness_from_camera_state
+    from app.voice.live.layer import active_lives
+
+    lives = active_lives()
+    live = lives[0] if lives else None
+    provider = getattr(getattr(live, "grok_voice", None), "_provider", None) if live else None
+    camera_ready = readiness_from_camera_state(
+        getattr(live, "_camera_state", {}) if live is not None else {},
+        client_connected=live is not None,
+        realtime_provider=str(provider or ""),
+        device_id=getattr(live, "device_id", None) if live is not None else None,
+        session_id=getattr(live, "session_id", None) if live is not None else None,
     )
+    if live is not None:
+        camera_ready.last_capture_status = getattr(live, "_last_capture_status", None)
+    if camera_ready.capture_ready and camera_ready.realtime_image_input_ready:
+        sight_status = "enabled"
+        sight_detail = camera_operator_line(camera_ready)
+    elif camera_ready.permission == "denied":
+        sight_status = "needs_permission"
+        sight_detail = "macOS has not granted EV camera access."
+    else:
+        sight_status = "needs_setup"
+        sight_detail = camera_operator_line(camera_ready)
+    items.append(Protocol("sight", "Camera look", sight_status, sight_detail))
 
     wheels_gate = await _gate(session, "training_wheels")
     if profile.training_wheels_completed_at is not None:
@@ -385,9 +430,16 @@ _SPOKEN_CAPABILITY_LABELS = {
     "open_url": "open apps",
     "open_app": "open apps",
     "close_app": "close apps",
+    "activate_app": "open apps",
+    "list_apps": "open apps",
+    "inspect_ui": "Mac control",
+    "ui_action": "Mac control",
+    "screen_look": "Mac control",
+    "app_action": "Mac control",
     "home_status": "home status",
     "home_act": "home actions",
     "look": "camera look",
+    "observe_camera": "camera look",
     "camera_replay": "camera replay",
 }
 
@@ -408,6 +460,7 @@ _SPOKEN_CAPABILITY_ORDER = (
     "contacts",
     "open apps",
     "close apps",
+    "Mac control",
     "home status",
     "calls",
     "home actions",
@@ -478,6 +531,12 @@ def _is_spoken_ready(entry: dict) -> bool:
     for field in ("model_exposed", "realtime_eligible", "executable"):
         if field in entry and entry.get(field) is not True:
             return False
+    if entry.get("name") in {"look", "observe_camera"} and entry.get("capture_ready") is False:
+        return False
+    if entry.get("name") in {"inspect_ui", "ui_action"} and entry.get("generic_ui_control_ready") is False:
+        return False
+    if entry.get("name") == "screen_look" and entry.get("screen_vision_ready") is False:
+        return False
     return bool(_spoken_name(entry))
 
 
@@ -673,6 +732,7 @@ async def capability_reply(
         "capability_diagnostics": runtime.get("diagnostics") or {},
         "session_id": runtime.get("session_id"),
         "projection_timestamp": runtime.get("projection_timestamp"),
+        "camera": runtime.get("camera") or {},
     }
 
 

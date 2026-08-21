@@ -1,0 +1,22 @@
+{
+  "name": "Evie",
+  "short_name": "Evie",
+  "start_url": "/evie/",
+  "scope": "/evie/",
+  "display": "standalone",
+  "background_color": "#f4efe6",
+  "theme_color": "#f4efe6",
+  "icons": [
+    {
+      "src": "/evie/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/evie/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}

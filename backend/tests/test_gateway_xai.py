@@ -235,6 +235,7 @@ def test_openai_session_update_advertises_only_approved_function_tools() -> None
     assert audio["input"]["turn_detection"]["interrupt_response"] is False
     assert audio["output"]["voice"] == "marin"
     assert session["output_modalities"] == ["audio"]
+    assert audio["input"]["transcription"]["model"] == "gpt-4o-mini-transcribe"
 
 
 def test_openai_live_search_is_an_ev_function_not_only_provider_search() -> None:
@@ -420,8 +421,10 @@ async def _acknowledge_session(bridge: GrokVoiceBridge, fake: _FakeRealtime) -> 
         {
             "type": "session.updated",
             "session": {
+                "id": "sess_test",
                 "model": session.get("model"),
                 "tools": session.get("tools", []),
+                "audio": session.get("audio"),
             },
         }
     )
@@ -1026,6 +1029,45 @@ async def test_grok_voice_bridge_appends_pcm_and_emits_wav_chunks() -> None:
     bridge.close()
 
 
+async def test_openai_item_done_nested_transcript_emits_final() -> None:
+    events: list = []
+    fake = _FakeRealtime()
+
+    async def connect(url: str, additional_headers=None):
+        del url, additional_headers
+        return fake
+
+    bridge = GrokVoiceBridge(
+        on_event=lambda event: events.append(event) or asyncio.sleep(0),
+        connect=connect,
+        api_key="sk-test",
+        provider="openai",
+        now_ms=lambda: 10,
+    )
+    await bridge.start()
+    await fake.incoming.put(
+        json.dumps(
+            {
+                "type": "conversation.item.done",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_audio", "transcript": "remember the lantern"}
+                    ],
+                },
+            }
+        )
+    )
+    await _wait_until(
+        lambda: any(
+            isinstance(event, FinalTranscriptEvent) and "lantern" in event.text
+            for event in events
+        )
+    )
+    bridge.close()
+
+
 async def test_openai_realtime_bridge_resamples_and_uses_ga_session() -> None:
     events: list = []
     fake = _FakeRealtime()
@@ -1061,6 +1103,9 @@ async def test_openai_realtime_bridge_resamples_and_uses_ga_session() -> None:
     assert session["type"] == "realtime"
     assert "voice" not in session
     assert session["audio"]["input"]["turn_detection"]["type"] == "server_vad"
+    assert session["audio"]["input"]["transcription"]["model"] == "gpt-4o-mini-transcribe"
+    assert session["audio"]["input"]["turn_detection"]["create_response"] is True
+    assert session["audio"]["input"]["turn_detection"]["interrupt_response"] is False
     assert {tool["name"] for tool in session["tools"]} == {"calculate"}
     assert session["tool_choice"] == "auto"
     assert session["output_modalities"] == ["audio"]

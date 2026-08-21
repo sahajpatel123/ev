@@ -34,6 +34,10 @@ struct MenuBarView: View {
             statusHeader
             Divider()
             captureRow
+            if model.needsComputerAccessibility {
+                Divider()
+                computerAccessibilityBanner
+            }
             Divider()
             chatSection
             if let hud = model.hudCard {
@@ -49,6 +53,31 @@ struct MenuBarView: View {
             }
             Divider()
             footerRow
+        }
+    }
+
+    private var computerAccessibilityBanner: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Mac control needs Accessibility")
+                .font(.caption)
+                .fontWeight(.semibold)
+            Text("I can open and close apps. To click, type, and navigate inside them, add EV in System Settings → Privacy & Security → Accessibility.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Enable Mac Control") {
+                    Task {
+                        _ = await PermissionCenter.request(.accessibility)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                Button("Permissions") {
+                    showPermissions = true
+                }
+                .font(.caption)
+            }
         }
     }
 

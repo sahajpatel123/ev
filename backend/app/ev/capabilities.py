@@ -39,6 +39,14 @@ MANIFEST_SCHEMA_VERSION = "ev.capability-manifest.v1"
 PROVIDER_OVERRIDES: dict[str, str] = {
     "camera_replay": "camera",
     "look": "vision",
+    "observe_camera": "vision",
+    "computer_status": "computer",
+    "list_apps": "computer",
+    "activate_app": "computer",
+    "inspect_ui": "computer",
+    "ui_action": "computer",
+    "screen_look": "computer",
+    "app_action": "computer",
     "drone": "drone",
     "estimate_print": "printer",
     "print_start": "printer",
@@ -52,7 +60,7 @@ PROVIDER_OVERRIDES: dict[str, str] = {
 INTEGRATION_PROVIDERS = frozenset(
     {"calendar", "messaging", "phone", "mail", "contacts", "drone", "tickets"}
 )
-LOCAL_PROVIDERS = frozenset({"local", "open-meteo", "software", "vision"})
+LOCAL_PROVIDERS = frozenset({"local", "open-meteo", "software", "vision", "computer"})
 
 RUNTIME_FIELDS = (
     "name",
@@ -181,6 +189,8 @@ def _fallback(provider: str, spec: Mapping[str, Any]) -> str:
         return "not_connected: configure the approved provider"
     if provider == "macos_life":
         return "not_connected: connect the macOS life helper"
+    if provider == "computer":
+        return "not_connected: connect EV.app for Mac control"
     if provider == "drone":
         return "not_connected: pair an owner drone"
     return "report unavailable; do not fabricate success"
@@ -235,8 +245,12 @@ def _projection_arguments(
         result.setdefault("area", "home")
     elif tool_name == "open_url":
         result.setdefault("url", "https://example.com")
-    elif tool_name in {"open_app", "close_app"}:
+    elif tool_name in {"open_app", "close_app", "activate_app"}:
         result.setdefault("name", "Safari")
+    elif tool_name == "ui_action":
+        result.setdefault("action", "press")
+    elif tool_name == "app_action":
+        result.setdefault("action", "status")
     return result
 
 
@@ -313,7 +327,7 @@ def _provider_state(
 ) -> dict[str, Any]:
     """Resolve current availability for one declared provider."""
 
-    if provider in {"local", "open-meteo", "software", "vision"}:
+    if provider in {"local", "open-meteo", "software", "vision", "computer"}:
         return {
             "availability": "available",
             "reason": "local provider available",
@@ -871,6 +885,65 @@ async def _build_runtime_projection(
             )
         entries.append(entry)
 
+    from app.ev.apps import find_macos_life_integration
+    from app.ev.camera_runtime import readiness_from_camera_state
+    from app.ev.capability_registry import apply_capability_overlays
+    from app.ev.computer_runtime import readiness_from_computer_state
+    from app.voice.live.layer import live_for_device, live_for_session
+
+    live = live_for_session(str(session_id) if session_id else None) or live_for_device(
+        str(bound_device_id or device_id or "") or None
+    )
+    camera_state = dict(getattr(live, "_camera_state", {}) or {}) if live is not None else {}
+    camera_readiness = readiness_from_camera_state(
+        camera_state,
+        client_connected=live is not None,
+        realtime_provider=realtime_provider,
+        device_id=str(bound_device_id or device_id or "") or None,
+        session_id=str(session_id) if session_id else None,
+        connecting_device=bool(bound_device_id or device_id) and live is None,
+    )
+    if live is not None:
+        camera_readiness.last_capture_status = getattr(live, "_last_capture_status", None)
+
+    helper_ready = False
+    try:
+        helper_ready = await find_macos_life_integration(session) is not None
+    except Exception:  # noqa: BLE001 - overlay must not fail the manifest
+        helper_ready = False
+    computer_state = dict(getattr(live, "_computer_state", {}) or {}) if live is not None else {}
+    computer_readiness = readiness_from_computer_state(
+        computer_state,
+        client_connected=live is not None,
+        helper_ready=helper_ready,
+        realtime_provider=realtime_provider,
+        device_id=str(bound_device_id or device_id or "") or None,
+        session_id=str(session_id) if session_id else None,
+        realtime_session_connected=bool(
+            live is not None
+            and getattr(getattr(live, "grok_voice", None), "upstream_session_ready", False)
+        ),
+        provider_tools_confirmed=bool(
+            (getattr(getattr(live, "grok_voice", None), "realtime_diagnostics", {}) or {}).get(
+                "provider_tools_confirmed"
+            )
+        ),
+        tool_schema_match=bool(
+            (getattr(getattr(live, "grok_voice", None), "realtime_diagnostics", {}) or {}).get(
+                "tool_schema_match"
+            )
+        ),
+        computer_tool_schema_hash=(
+            (getattr(getattr(live, "grok_voice", None), "realtime_diagnostics", {}) or {}).get(
+                "computer_tool_schema_hash"
+            )
+        ),
+    )
+    entries = apply_capability_overlays(
+        entries,
+        {"camera": camera_readiness, "computer": computer_readiness},
+    )
+
     all_realtime_tools = approved_realtime_function_tools(entries)
     live_entries = live_tool_projection(entries)
     realtime_tools = approved_realtime_function_tools(live_entries)
@@ -970,6 +1043,8 @@ async def _build_runtime_projection(
         "not_exposed_tool_names": not_exposed_tool_names,
         "capability_error": None,
         "diagnostics": capability_diagnostics,
+        "camera": camera_readiness.as_dict(),
+        "computer_control": computer_readiness.as_dict(),
     }
 
 
@@ -1063,6 +1138,8 @@ async def build_runtime_projection(
             "not_exposed_tool_names": [],
             "capability_error": error,
             "diagnostics": diagnostics,
+            "camera": {},
+            "computer_control": {},
         }
 
 

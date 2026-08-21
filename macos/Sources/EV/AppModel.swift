@@ -52,6 +52,7 @@ final class AppModel: ObservableObject {
     @Published var hudCard: HUDCard?
     @Published var queueCount = 0
     @Published var lastError: String?
+    @Published var needsComputerAccessibility = false
     @Published var isRecording = false
     @Published var isLiveMuted = false
     @Published var isLiveActive = false
