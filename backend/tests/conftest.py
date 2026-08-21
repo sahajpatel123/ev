@@ -8,7 +8,8 @@ if os.environ.get("EV_TEST_USE_LIVE_DB") != "1":
     os.environ["EV_DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP}/test.db"
 os.environ["EV_MASTER_KEY"] = "test-key"
 os.environ["EV_API_KEY"] = "test-key"
-os.environ.setdefault("EV_PROCESSING_MODE", "sync")
+# Force sync: inherited EV_PROCESSING_MODE=queue would enqueue onto owner Redis.
+os.environ["EV_PROCESSING_MODE"] = "sync"
 if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
     # Overwrite inherited shell/env-file provider keys. setdefault leaks the
     # owner's EV_VOICE_LIVE_BRAIN=openai and a live DeepSeek key into unit tests.
@@ -19,6 +20,18 @@ if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
     os.environ["EV_OPENCODE_API_KEY"] = ""
     os.environ["EV_VOICE_LIVE_BRAIN"] = "pipeline"
     os.environ["EV_BRAVE_SEARCH_API_KEY"] = ""
+# Health/queue probes ping Redis; default redis://localhost:6379/0 is the
+# owner instance. Port 9 refuses immediately. Opt in with EV_TEST_USE_LIVE_REDIS=1.
+if os.environ.get("EV_TEST_USE_LIVE_REDIS") != "1":
+    os.environ["EV_REDIS_URL"] = "redis://127.0.0.1:9/15"
+# Blank the helper and disable osascript so tests cannot drive the real Mac.
+# Opt in with EV_TEST_USE_LIVE_MAC=1.
+if os.environ.get("EV_TEST_USE_LIVE_MAC") != "1":
+    os.environ["EV_LIFE_HELPER_PATH"] = ""
+    os.environ["EV_NOTIFY_MACOS_HELPER_PATH"] = ""
+    os.environ["EV_NOTIFY_MACOS_ALLOW_OSASCRIPT"] = "false"
+    os.environ["EV_NOTIFY_BACKEND"] = "console"
+    os.environ["EV_MESSAGING_PROVIDER"] = "local"
 os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
 os.environ.setdefault("EV_EMBEDDING_DIM", "64")
 os.environ["EV_VOICEPRINT_PROVIDER"] = "hash"
