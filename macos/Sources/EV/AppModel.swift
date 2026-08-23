@@ -318,7 +318,25 @@ final class AppModel: ObservableObject {
                 await refreshHealth()
                 return
             }
-            status = .offline
+            // CAPABILITY-HEALTH LAW (P0 2026-08-23): a health-poll failure
+            // must not collapse the whole assistant into OFFLINE. During
+            // long realtime responses the backend can be too busy to answer
+            // /health instantly while the voice WebSocket stays perfectly
+            // alive. Hard-offline only for auth failure or genuine
+            // connection-level transport errors; otherwise record and keep
+            // the current capability state.
+            if isUnauthorized(error) {
+                status = .offline
+            } else if let urlError = error as? URLError,
+                      [URLError.cannotConnectToHost, .cannotFindHost,
+                       .networkConnectionLost, .notConnectedToInternet,
+                       .timedOut].contains(urlError.code) {
+                lastError = "EV backend unreachable — retrying."
+            }
+            liveRuntimeDiagnostics.disconnected(
+                reason: "health poll failed: \(error.localizedDescription)",
+                willReconnect: true
+            )
         }
     }
 

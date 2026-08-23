@@ -70,7 +70,12 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
     private var playedFrames: Int = 0
     private var playbackBeganAt: Date?
     private var referencePCM = Data()
-    private let referenceKeepBytes = 16_000 * 2 * 160 / 1000
+    /// Far-end reference ring for interruption ownership (V3 final): holds
+    /// 4 s of recently ENQUEUED response PCM so delay-aware echo matching has
+    /// a real alignment window. The old 160 ms ring made ownership
+    /// correlation structurally return zero (proven in the V3 diagnostic
+    /// session: corr=0.0 on every partial while Evie's voice dominated mic).
+    private let referenceKeepBytes = 16_000 * 2 * 4000 / 1000
 
     override init() {
         super.init()

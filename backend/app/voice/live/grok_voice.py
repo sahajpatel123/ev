@@ -2192,6 +2192,11 @@ class GrokVoiceBridge:
                 manifest
             )
         session_payload: dict[str, Any] = {"instructions": text}
+        if self._provider == "openai":
+            # GA Realtime requires session.type on EVERY session.update;
+            # omitting it made every tools refresh fail with
+            # missing_required_parameter: 'session.type'.
+            session_payload["type"] = "realtime"
         new_names = tuple(self.advertised_tool_names)
         tools_changed = new_names != previous_names or new_names != self._upstream_tool_names
         if tools_changed:

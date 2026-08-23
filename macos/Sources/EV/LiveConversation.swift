@@ -31,12 +31,71 @@ final class LiveConversation {
     private var audioGraphObservers: [NSObjectProtocol] = []
     private var lastPartialRenderAt = Date.distantPast
     private let partialRenderInterval: TimeInterval = 0.12
+    // SPOKEN INTERRUPTION: CLOSED (2026-08-23). ExplicitInterruptMonitor and
+    // all spoken-detection machinery are DEAD/LEGACY — removed from the
+    // production composition. Deterministic interruption (Escape / Stop
+    // Speaking button) uses stopAssistantSpeech() on the main actor below.
     // OWNER DECISION 2026-08-23 — Listener Presence: CANCELLED (removed from
     // the active product; never re-tune, re-enable, or re-wire). Natural
-    // Barge-In: PAUSED (local detector dewired from the live path).
-    // EVIE_CALM_VOICE golden path: one speech lane, the backend's
-    // authoritative-playback mic gate owns self-echo, and the player reports
-    // physical truth via onPlayingChange -> sendPlayback.
+    // Barge-In: superseded by Interruption V1. EVIE_CALM_VOICE golden path:
+    // one speech lane, the backend's authoritative-playback mic gate owns
+    // self-echo, and the player reports physical truth via
+    // onPlayingChange -> sendPlayback.
+
+    /// STARTUP / OFFLINE LIFECYCLE TRACE (P0 2026-08-23): every milestone
+    /// lands in ~/Library/Logs/EV/startup-trace.jsonl via a background
+    /// writer, so "mic took seconds" resolves to an exact interval
+    /// (ST03→ST14) and every OFFLINE carries its causal reason. Never called
+    /// from an audio render context.
+    /// Launch origin, set on FIRST trace call (race-free): avoids the
+    /// static-let lazy-init ordering hazard that produced wrapped deltas.
+    nonisolated(unsafe) private static var launchMono: UInt64 = 0
+    /// Process-wide one-shot: the FIRST mic PCM frame of this launch. Touched
+    /// only from the audio tap; a benign benign race just logs twice at worst.
+    nonisolated(unsafe) private static var micFirstFrameLogged = false
+    /// Provider readiness for FORWARDING (not for capture): mic runs locally
+    /// from WS-connect; PCM goes upstream only after the provider signals
+    /// ready. Reset on teardown and on provider loss (cancelled-audio law).
+    nonisolated(unsafe) private var providerReadyForForward = false
+    nonisolated(unsafe) private var microphoneStarted = false
+    nonisolated private static func st(_ event: String, _ reason: String = "") {
+        let now = DispatchTime.now().uptimeNanoseconds
+        lockFreeInitLaunch(now)
+        let elapsedMs = Double(now &- launchMono) / 1_000_000
+        var payload: [String: Any] = [
+            "event": event,
+            "elapsed_ms": (elapsedMs * 1000).rounded() / 1000,
+            "reason": reason,
+            "ts_ms": Int(Date().timeIntervalSince1970 * 1000),
+        ]
+        guard JSONSerialization.isValidJSONObject(payload),
+              let line = try? JSONSerialization.data(withJSONObject: payload)
+        else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSTemporaryDirectory())
+            let dir = logs.appendingPathComponent("Logs/EV", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent("startup-trace.jsonl")
+            if !FileManager.default.fileExists(atPath: url.path) {
+                FileManager.default.createFile(atPath: url.path, contents: nil)
+            }
+            if let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                var out = line
+                out.append(0x0A)
+                try? handle.write(contentsOf: out)
+            }
+        }
+    }
+
+    private static let launchInitLock = NSLock()
+    nonisolated private static func lockFreeInitLaunch(_ now: UInt64) {
+        launchInitLock.lock()
+        if launchMono == 0 { launchMono = now }
+        launchInitLock.unlock()
+    }
 
     deinit {
         for observer in cameraLifecycleObservers {
@@ -57,6 +116,13 @@ final class LiveConversation {
                 // The client player owns physical playback truth: this report
                 // is the backend mic gate's authority (speaker ownership law).
                 self.connection?.sendPlayback(active: playing)
+                // INTERRUPTION V1: detection arms only while the speaker is
+                // physically playing (feature off -> monitor is nil).
+                if playing {
+                    self.installEscapeStop()
+                } else {
+                    self.removeEscapeStop()
+                }
                 guard let model = self.model else { return }
                 if playing {
                     model.status = .speaking
@@ -151,6 +217,53 @@ final class LiveConversation {
         guard let model, model.cameraState.isTruthfullyActive else { return }
         connection?.sendCamera(.off, deviceId: model.cameraState.deviceId)
         model.cameraRequestInFlight = true
+    }
+
+    /// DETERMINISTIC STOP (spoken-interruption fallback, 2026-08-23):
+    /// immediately silence assistant audio and cancel the active response.
+    /// Uses the same safe main-thread path as the rest of the lifecycle.
+    func stopAssistantSpeech() {
+        // EXACTLY-ONCE UI CONTRACT: a Stop activation with nothing playing is
+        // a no-op (no duplicate barge_in/cancel controls, no state churn).
+        guard let model, isActive else { return }
+        guard model.status == .speaking || model.player.isPlaying else { return }
+        let playedMs = model.player.playbackSnapshot().playedMs
+        model.player.stop()
+        connection?.sendPlayback(active: false)
+        connection?.sendControl(
+            "barge_in",
+            extra: [
+                "reason": "ui_stop",
+                "audio_played_ms": playedMs,
+                "confidence": 1.0,
+            ]
+        )
+        model.status = .listening
+    }
+
+    /// Escape key = immediate stop while Evie speaks (deterministic fallback
+    /// after spoken interruption was abandoned). Local monitor only; installed
+    /// when speech starts, removed when it ends.
+    private var escapeMonitor: Any?
+
+    private func installEscapeStop() {
+        guard escapeMonitor == nil else { return }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: .keyDown
+        ) { [weak self] event in
+            if event.keyCode == 53, self?.model?.status == .speaking {
+                self?.stopAssistantSpeech()
+                return nil // consumed
+            }
+            return event
+        }
+    }
+
+    private func removeEscapeStop() {
+        if let m = escapeMonitor {
+            NSEvent.removeMonitor(m)
+            escapeMonitor = nil
+        }
     }
 
     func toggleMute() {
@@ -424,6 +537,8 @@ final class LiveConversation {
             } catch {
                 if Task.isCancelled { return }
                 let rendered = modelFormatted(error)
+                Self.st("ST16_UNEXPECTED_DISCONNECT", rendered)
+                Self.st("ST17_RECONNECT_BEGIN", rendered)
                 model.noteLiveDisconnected(reason: rendered, willReconnect: true)
                 model.lastError = rendered
                 model.status = .offline
@@ -447,15 +562,32 @@ final class LiveConversation {
             deviceId = model.config.deviceID
         }
         model.noteLiveConnectionAttempt(deviceID: deviceId)
+        Self.st("ST11_BACKEND_CONNECT_BEGIN")
         let opened = try await model.client.openLiveVoice(deviceId: deviceId)
+        Self.st("ST12_BACKEND_SESSION_OPENED")
         model.noteLiveSessionOpened(sessionID: opened.sessionId, deviceID: deviceId)
         let connection = LiveVoiceConnection(
             baseURL: model.client.baseURL,
             token: model.client.token
         )
         self.connection = connection
+        // INTERRUPTION V1: construct the detector ONLY when the owner enabled
+        // the feature flag. OFF = architecturally absent (no detector, no
+        // recognizer, no callbacks, no stop authority). The executor runs on
+        // interruptControlQueue: local stop first, then playback report,
+        // barge-in control, and preroll forward — never on the audio thread.
         let stream = try await connection.connect(sessionId: opened.sessionId)
+        // STARTUP DECOUPLING (P0 2026-08-23): LOCAL_MIC_READY must not wait
+        // for the remote provider. Capture begins as soon as OUR transport is
+        // up; frames are forwarded only after the provider signals ready.
+        // Provider outage therefore cannot delay or disable the microphone.
+        Self.st("ST12B_WS_CONNECTED_STARTING_MIC_LOCALLY")
+        if !microphoneStarted {
+            microphoneStarted = startMicrophone(on: connection)
+            if microphoneStarted { Self.st("ST06_MIC_STARTED_LOCAL_FIRST") }
+        }
         isActive = true
+        Self.st("ST18_RECONNECT_OK")
         model.noteLiveConnected()
         model.isLiveActive = true
         model.isLiveMuted = false
@@ -464,11 +596,11 @@ final class LiveConversation {
         model.lastError = nil
 
         do {
-            var microphoneStarted = false
             for try await event in stream {
                 if Task.isCancelled { break }
-                if !microphoneStarted, event.type == "ready" {
-                    microphoneStarted = startMicrophone(on: connection)
+                if event.type == "ready", !providerReadyForForward {
+                    providerReadyForForward = true
+                    Self.st("ST14_PROVIDER_READY_FORWARDING_OPEN")
                     connection.sendCameraReadiness(
                         permission: CameraManager.shared.permissionState(),
                         deviceId: deviceId,
@@ -532,11 +664,17 @@ final class LiveConversation {
         do {
             let player = model?.player
             // GOLDEN VOICE PATH (2026-08-23 owner decision): one speech lane,
-            // no experiments in the mic tap. Listener Presence is cancelled;
-            // the local barge-in detector is dewired (paused feature). The
-            // backend's authoritative-playback mic gate owns self-echo.
-            try microphone.start(enqueue: { [weak connection, weak player] data in
+            // no experiments in the mic tap. Listener Presence is cancelled.
+            // The backend's authoritative-playback mic gate owns self-echo.
+            // SPOKEN INTERRUPTION CLOSED: the mic tap feeds exactly two
+            // consumers — the UI meter and (when provider-ready) the provider.
+            try microphone.start(enqueue: { [weak self, weak connection, weak player] data in
+                if !Self.micFirstFrameLogged {
+                    Self.micFirstFrameLogged = true
+                    Self.st("ST07_FIRST_MIC_FRAME")
+                }
                 VoiceLevelMeter.shared.ingestInputPCM16(data)
+                guard self?.providerReadyForForward == true else { return } // local-only until provider ready
                 if player?.shouldMuteCapture == true { return }
                 connection?.enqueuePCM(data)
             })
@@ -659,6 +797,8 @@ final class LiveConversation {
                 break
             }
             if event.code == "realtime_disconnect" {
+                providerReadyForForward = false
+                Self.st("ST16_PROVIDER_LOST_FORWARD_CLOSED", event.text ?? "")
                 model.player.stop()
                 model.noteLiveDisconnected(
                     reason: "Realtime provider disconnected; backend is retrying upstream.",
@@ -929,6 +1069,8 @@ final class LiveConversation {
     private func tearDownChannel() {
         computerStateTask?.cancel()
         computerStateTask = nil
+        removeEscapeStop()
+        providerReadyForForward = false
         model?.player.stop()
         microphone.stop()
         VoiceLevelMeter.shared.resetInput()

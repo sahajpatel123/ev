@@ -23,6 +23,9 @@ if arguments.contains("--smoke-test") {
     exit(EVSmokeTest.runFirstAudioSurvival())
 } else if arguments.contains("--listener-presence-test") {
     exit(EVSmokeTest.runListenerPresenceOverlap())
+} else if arguments.contains("--vp-echo-probe") {
+    let vpOn = arguments.contains("--vp-on")
+    exit(EVSmokeTest.runVPEchoProbe(vpOn))
 } else if arguments.contains("--barge-in-probe") {
     exit(EVSmokeTest.runBargeInProbe())
 } else if arguments.contains("--life-request") {

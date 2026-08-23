@@ -746,6 +746,8 @@ public final class LiveVoiceMicrophone: @unchecked Sendable {
         // Allow reports 0 Hz / 0 ch; installTap on that format aborts.
         engine = AVAudioEngine()
         engine.isAutoShutdownEnabled = false
+
+
         let inputFormat: AVAudioFormat
         do {
             inputFormat = try AVAudioSafe.attachAndPrepare(engine)

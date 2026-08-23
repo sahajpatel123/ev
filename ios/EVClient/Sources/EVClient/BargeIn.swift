@@ -396,6 +396,11 @@ public final class MicPrerollBuffer: @unchecked Sendable {
 /// Combines mic energy, speech-like zero-crossings, persistence, playback
 /// RMS, and a cheap correlation against Evie's own recent PCM. A loud
 /// speaker echo should not confirm; a human "wait" should.
+// ⚠️ DEAD / LEGACY / UNWIRED (2026-08-23 closure) — spoken interruption is
+// CLOSED. This file is retained for historical reference only. It is NOT
+// constructed, attached, or invoked anywhere in production. Do not wire it
+// back without a NEW architecture initiative (see MAC_VOICE_BASELINE.md).
+
 public final class BargeInDetector: @unchecked Sendable {
     public static let sampleRate = 16_000
     public static let frameSamples = 320

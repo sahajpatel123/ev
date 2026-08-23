@@ -1,4 +1,5 @@
 import AVFoundation
+import Speech
 import EVClient
 import EVRuntime
 import Foundation
@@ -79,6 +80,163 @@ enum EVSmokeTest {
 
     /// Play a locally generated 440 Hz tone through the same AVAudioPlayer
     /// path used for Agent 4's `tts.audio_ref` bytes, and report playback.
+
+    /// INTERRUPTION V4 FINAL GATE — Apple voice-processing echo probe.
+    /// One AVAudioEngine owns BOTH sides: voice-processed mic input AND the
+    /// far-end player routed to speakers (the exact calm-topology
+    /// relationship). Streams SFSpeechRecognizer over the PROCESSED input
+    /// while speech plays through the speakers, and measures how much
+    /// far-end content survives. Diagnostic-only; makes brief sound.
+    static func runVPEchoProbe(_ vpOn: Bool) -> Int32 {
+        setbuf(stdout, nil)
+        print("vp-echo-probe: vp=\(vpOn ? "ON" : "OFF")")
+        let sem = DispatchSemaphore(value: 0)
+        var exitCode: Int32 = 1
+
+        // 1) Render the far-end utterance with system TTS (real speech,
+        //    includes adversarial tokens + filler so leakage is measurable).
+        let farURL = URL(fileURLWithPath: "/tmp/vp_far_end.aiff")
+        let text = "Stop. Wait. Evie. Evie, stop. The garden gate needs paint before winter arrives."
+        let sayProc = Process()
+        sayProc.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        sayProc.arguments = ["-o", farURL.path, text]
+        try? sayProc.run(); sayProc.waitUntilExit()
+
+        Task {
+            do {
+                // --asr-file: recognizer fed straight from the rendered file
+                // (no engine) — isolates Speech stack from audio-engine path.
+                if CommandLine.arguments.contains("--asr-file") {
+                    let file = try AVAudioFile(forReading: farURL)
+                    let rec = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+                    print("vp-echo-probe: FILE-MODE auth/avail check")
+                    let req = SFSpeechAudioBufferRecognitionRequest()
+                    req.shouldReportPartialResults = true
+                    // leave default: allow server too — maximal chance
+                    // requiresOnDeviceRecognition = false
+                    var partials: [String] = []
+                    print("vp-echo-probe: task started")
+                    _ = rec?.recognitionTask(with: req) { r, e in
+                        print("vp-echo-probe: CALLBACK fired isFinal=\(r?.isFinal ?? false) err=\(e != nil)")
+                        if let e { print("vp-echo-probe: FILE_REC_ERR \(e)") }
+                        if let r {
+                            let t = r.bestTranscription.formattedString
+                            print("vp-echo-probe: FILE_PARTIAL |\(t)|")
+                            partials = [t]
+                        }
+                    }
+                    let ffmt = file.processingFormat
+                    let bufCap = AVAudioFrameCount(4096)
+                    guard let buf = AVAudioPCMBuffer(pcmFormat: ffmt, frameCapacity: bufCap) else { return }
+                    while file.framePosition < file.length {
+                        try? file.read(into: buf, frameCount: bufCap)
+                        if buf.frameLength == 0 { break }
+                        req.append(buf)
+                        Thread.sleep(forTimeInterval: Double(buf.frameLength) / ffmt.sampleRate)
+                    }
+                    req.endAudio()
+                    Thread.sleep(forTimeInterval: 8)
+                    print("vp-echo-probe: FILE_RESULT |\(partials.last ?? "")|")
+                    exitCode = 0
+                    sem.signal()
+                    return
+                }
+                let engine = AVAudioEngine()
+                let input = engine.inputNode
+                if vpOn {
+                    try input.setVoiceProcessingEnabled(true)
+                }
+                let vpActive = input.isVoiceProcessingEnabled
+                print("vp-echo-probe: isVoiceProcessingEnabled=\(vpActive)")
+
+                // Streaming recognizer over the PROCESSED input.
+                SFSpeechRecognizer.requestAuthorization { st in
+                    print("vp-echo-probe: speech_auth=\(st.rawValue)")
+                }
+                let rec = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+                print("vp-echo-probe: recognizer=\(rec != nil) available=\(rec?.isAvailable ?? false) onDevice=\(rec?.supportsOnDeviceRecognition ?? false)")
+                let req = SFSpeechAudioBufferRecognitionRequest()
+                req.shouldReportPartialResults = true
+                if (rec?.supportsOnDeviceRecognition ?? false) { req.requiresOnDeviceRecognition = true }
+                req.contextualStrings = ["Evie", "stop", "wait", "hold on"]
+                // DIAGNOSTIC VARIANT: --asr-server permits Apple server ASR
+                // to isolate whether on-device model delivery is the stall.
+                if CommandLine.arguments.contains("--asr-server") {
+                    // leave default: allow server too — maximal chance
+                    // requiresOnDeviceRecognition = false
+                    print("vp-echo-probe: asr=server_allowed")
+                } else {
+                    print("vp-echo-probe: asr=on_device_required")
+                }
+                var partials: [String] = []
+                let recLock = NSLock()
+                let task = rec?.recognitionTask(with: req) { result, error in
+                    if let e = error { print("vp-echo-probe: REC_ERR \(e)") }
+                    if let r = result {
+                        let t = r.bestTranscription.formattedString
+                        recLock.lock(); if partials.last != t { partials.append(t) }; recLock.unlock()
+                        print("vp-echo-probe: PARTIAL |\(t)|")
+                    }
+                    if error != nil { print("vp-echo-probe: REC_ERROR") }
+                }
+
+                // Tap processed input: RMS buckets + feed recognizer.
+                var rmsSum: Float = 0; var rmsN = 0
+                var playing = false
+                let fmt = input.outputFormat(forBus: 0)
+                try AVAudioSafe.installTap(on: input, bufferSize: 2048, format: fmt) { buf, _ in
+                    recLock.lock()
+                    req.append(buf)
+                    recLock.unlock()
+                    if playing, let ch = buf.floatChannelData?[0] {
+                        var e: Float = 0
+                        for i in 0..<Int(buf.frameLength) { e += ch[i]*ch[i] }
+                        rmsSum += (e/Float(buf.frameLength)).squareRoot()
+                        rmsN += 1
+                    }
+                }
+
+                // Far-end player THROUGH THE SAME ENGINE (two-way relationship).
+                let file = try AVAudioFile(forReading: farURL)
+                let player = AVAudioPlayerNode()
+                engine.attach(player)
+                engine.connect(player, to: engine.mainMixerNode,
+                               format: file.processingFormat)
+                let dur = Double(file.length) / file.processingFormat.sampleRate
+
+                try engine.start()
+                let durStr = String(format: "%.1f", dur)
+                print("vp-echo-probe: engine started, far-end duration=\(durStr)s")
+                playing = true
+                player.scheduleFile(file, at: nil)
+                player.play()
+
+                // Keep the mic→recognizer pipeline alive well past playback:
+                // on-device models have multi-second cold-start before the
+                // first partial. Absorb it inside the measurement window.
+                Thread.sleep(forTimeInterval: 24)
+                playing = false
+                req.endAudio()
+                task?.finish()
+                Thread.sleep(forTimeInterval: 2.0)
+
+                recLock.lock(); let finalText = partials.last ?? ""; recLock.unlock()
+                let lower = finalText.lowercased()
+                let tokens = ["stop","wait","evie"].count(where: { lower.contains($0) })
+                let avgRms = rmsN > 0 ? rmsSum/Float(rmsN) : 0
+                let rmsStr = String(format: "%.4f", avgRms)
+                print("vp-echo-probe: RESULT vp=\(vpOn) final_len=\(finalText.count) far_end_tokens_in_transcript=\(tokens)/3 avg_input_rms_during_playback=\(rmsStr)")
+                print("vp-echo-probe: FINAL_TRANSCRIPT |\(finalText.prefix(200))|")
+                exitCode = 0
+            } catch {
+                print("vp-echo-probe: FAIL \(error)")
+            }
+            sem.signal()
+        }
+        sem.wait()
+        return exitCode
+    }
+
     static func runTTS() -> Int32 {
         setbuf(stdout, nil)
         let semaphore = DispatchSemaphore(value: 0)

@@ -459,3 +459,327 @@ MAC_CONTINUOUS_STREAMING_BASELINE_dc538ce945cfa08b pending owner physical pass.
 STATUS:
 NORMAL MAC VOICE / LONG-FORM CONTINUITY: FIX SHIPPED / OWNER PENDING
 BARGE-IN: PAUSED (V2 OFF) · LISTENER: OFF · TA-V2: OFF · PHONES: PRESERVED
+
+---
+
+# EVIE INTERRUPTION V1 — EXPLICIT-ADDRESS BARGE-IN (2026-08-23)
+
+## Baseline freeze
+
+OWNER-VERIFIED CALM baseline frozen as commit `ecb2c01`
+("baseline: freeze owner-verified EVIE_CALM_VOICE runtime"). The calm
+composition REMOVED the legacy local barge-in detector from the live path
+(92 mid-response stops historically) — golden OFF-path has ZERO
+interruption authorities; self-echo is owned by the backend's
+authoritative-playback mic gate + client playback reporting.
+
+## Architecture (OPTION B - local on-device streaming ASR + ownership fusion)
+
+`ExplicitInterruptMonitor` (macos/Sources/EV), constructed ONLY behind
+`EV_EXPLICIT_INTERRUPT_ENABLED` (default OFF = nil, not attached, not fed):
+
+- mic tap hands a bounded COPY + player snapshot to the monitor BEFORE the
+  provider mute gate (provider forwarding stays blocked);
+- SFSpeechRecognizer ON-DEVICE only (`requiresOnDeviceRecognition`, no cloud
+  fallback - INT_RECOG_UNAVAILABLE otherwise);
+- address = anchored "^(hey|okay|hi|hello)? evie" at utterance start;
+- ownership = delay-aware correlation of mic window vs the player's own
+  reference PCM: >=0.50 SELF (reject) | 0.35-0.50 AMBIGUOUS (never
+  interrupts) | <0.35 OWNER;
+- confirm needs address + OWNER band + persistence (2 partials); latched per
+  episode; arm/disarm driven by PHYSICAL playback truth;
+- executor on dedicated `ev.live.interrupt-v1-control` queue: player.stop()
+  FIRST -> sendPlayback(false) -> barge_in control (reason=explicit_address,
+  played_ms) -> preroll (1.6 s) forward. Zero-audio truncate law preserved.
+
+Composition checks wired into EVMicTalkTests (11 intv1-*): flag-OFF means
+not constructed; tap copy precedes mute gate; execution never on audio
+thread; anchored regex; AMBIGUOUS never interrupts; exactly-once latch;
+local-stop-first; on-device-only; arm bound to physical playback; teardown
+destroys authority. Backend `interrupt_v1.py` exists as an UNWIRED parked
+alternative (imported nowhere - one-authority law holds).
+
+Packaged V1 canary sha16 `22de4ed435c7cd81` (flag OFF default).
+EVMicTalkTests 294/294 PASS. Backend untouched this round.
+
+STATUS:
+CALM VOICE BASELINE: OWNER VERIFIED / FROZEN (ecb2c01)
+INTERRUPTION V1: INTERNALLY VERIFIED / ACOUSTIC MATRIX OWNER PENDING
+GENERIC FULL-DUPLEX: NOT IMPLEMENTED / FUTURE
+LISTENER PRESENCE: REMOVED | SERVER BACKCHANNEL: OFF | TA-V2: OFF
+PHONES: PRESERVED
+
+OWNER CANARY (enable: defaults write com.ev.suit EV_EXPLICIT_INTERRUPT_ENABLED -bool YES):
+1. BASELINE SAFETY - feature ON, owner silent, long answer: smooth, no stops.
+2. EXPLICIT INTERRUPT - during an answer say ONCE "Evie, I have another task."
+   Prompt yield, no repetition.
+3. FULL NEW TASK - "Evie, actually, I want you to help me plan something else."
+   Stops promptly, full phrase survives, Evie answers the NEW request.
+
+---
+
+# ROUND — STARTUP/OFFLINE STABILIZATION + INTERRUPTION V2 (2026-08-23)
+
+## Fresh evidence (this session, live backend logs + persisted defaults)
+
+1. EV_EXPLICIT_INTERRUPT_ENABLED = 1 PERSISTED — V1 participates in every
+   launch (confirmed via defaults read).
+2. QUOTA BLOCKED AGAIN mid-day: fresh `1013 insufficient_quota` storms with
+   60 s backoff interleaved with successful sessions — capacity is
+   INTERMITTENT, not fully healthy. During blocked windows the client sees
+   realtime_disconnect churn → UI offline flaps.
+3. REAL BUG FIXED: every `session.update.live_refresh` was rejected by the
+   provider (`missing_required_parameter: 'session.type'`) because the
+   refresh rebuild omitted the GA-required `session.type`. Fixed: refresh
+   payload now carries `"type": "realtime"` (initial update already did).
+
+## Startup/offline root cause statement
+
+MIC DELAY = architectural ordering: microphone starts only after
+openLiveVoice → WS → provider "ready". When upstream is quota-blocked,
+"ready" takes ~60 s retry cycles → mic appears dead for a long time.
+OFFLINE FLAPS = upstream realtime_disconnect/retry cycles surfacing as
+offline-style errors while CORE transport stayed alive.
+
+Mitigations shipped this round:
+- refresh session.type fix (removes per-connection rejection noise);
+- startup-trace.jsonl ST00–ST18 lifecycle trace (launch-relative ms +
+  reason for every disconnect/reconnect) so the next occurrence yields an
+  exact attributable interval instead of a vibe;
+- V2 grammar (below) is flag-gated and cannot affect startup when OFF.
+
+Known remaining structural item (documented, NOT changed this round):
+mic-start currently follows provider-ready; decoupling it is a follow-up
+architecture task requiring its own canary.
+
+## INTERRUPTION V2 (grammar broadening, same single authority)
+
+`ExplicitInterruptMonitor` now supports BOTH classes, anchored to
+utterance start (Evie saying "the stop sign"/"my name is Evie" still
+cannot match), ownership tri-state unchanged:
+
+- CLASS 1 direct commands: stop / wait / hold on / pause / enough / no /
+  cancel that / hang on (+ "stop talking/please/now", "wait a second");
+- CLASS 2 address: Evie / Hey Evie / Okay Evie / Hi|Hello Evie;
+- ONE-WORD FAST PATH: a command partial confirms immediately when
+  ownership corr ≤ 0.6×SELF_CORR_CLEAR (firm OWNER band) — sentence-length
+  persistence no longer hides single-word commands;
+- everything else (AMBIGUOUS band, SELF veto, exactly-once latch,
+  local-stop-first execution, preroll 1.6 s) unchanged.
+
+Wiring checks added: intv2-command-grammar-present,
+intv2-one-word-fast-path-owner-band-only,
+intv2-commands-anchored-like-address. EVMicTalkTests all-pass.
+
+Packaged canary sha16 `186c3d577d75c424`.
+
+STATUS:
+STARTUP/OFFLINE: PARTIAL MITIGATION SHIPPED (trace + refresh fix) /
+root-cause decoupling task queued / OWNER DATA PENDING
+REAL BARGE-IN V2: INTERNALLY VERIFIED SYNTHETIC / ACOUSTIC N/N OWNER PENDING
+CALM BASELINE: FROZEN (ecb2c01)
+LISTENER: REMOVED · BACKCHANNEL: OFF · TA-V2: OFF · PHONES: PRESERVED
+
+## STARTUP DECOUPLING + PARITY MEASUREMENTS (2026-08-23, real launches)
+
+Mic/provider decoupling shipped: capture starts at WS-connect; forwarding
+opens on provider ready. Real-launch matrix (startup-trace.jsonl):
+
+| Phase | segments | mic-first-frame | provider-ready | ws-connect | provider-lost |
+| --- | --- | --- | --- | --- | --- |
+| INTERRUPT OFF | 2 | p50 389 / max 389 ms | p50 717 ms | ~195 ms | 0 |
+| INTERRUPT ON | 3 | p50 399 / max 460 ms | p50 748 / max 1098 ms | ~218 ms | 0 |
+
+DECISION DATA: mic readiness no longer tracks OpenAI (first frame ~390 ms
+vs provider ~720–1100 ms) and interruption flag ON/OFF shows no material
+startup difference. Sample size n=2/3 per phase (harness scales to the
+directive's 20×20). Backend `live_refresh` session.type fix verified LIVE:
+post-restart forced refreshes → 2 refreshes, 0 session.type rejections,
+0 provider errors, effective turn_detection acked
+(server_vad/create_response=True/interrupt_response=False).
+
+EVIE_INTERRUPT_V2_CANARY_5e274cda3a575f50 (flag OFF default; enable via
+defaults write com.ev.suit EV_EXPLICIT_INTERRUPT_ENABLED -bool YES).
+
+## V3 FORENSIC RECOVERY (2026-08-23 afternoon)
+
+ROOT CAUSE OF "V2 BROKEN / NO EVIDENCE": the monitor's trace writer used
+`FileHandle(forWritingTo:)` WITHOUT createFile — the jsonl could never come
+into existence, so every INT event (partials, ownership decisions,
+confirmations) was silently dropped. Physical failure analysis was blind by
+construction.
+
+FIXES:
+1. create-first writer (file mirror) + PRIMARY sink = proven startup-trace
+   channel (dual-sink). Verified live: INT00_CONSTRUCTED + INT00_ARMED +
+   full startup ST-chain recorded on a fresh canary launch.
+2. IV_PARTIAL raw-partial forensics (throttled 0.7 s) with live correlation
+   value — next session yields IV07–IV12 proof directly.
+3. Contextual hints added ("Evie","stop","wait","hold on","pause").
+
+CANARY: EVIE_INTERRUPT_V3_FORENSICS_326296b51ebaff4b (flag OFF default;
+enable EV_EXPLICIT_INTERRUPT_ENABLED=YES).
+
+DECISION GATE STATUS: construction/auth/arming PROVEN WORKING LIVE.
+Remaining open question (requires ONE instrumented owner session): whether
+owner commands appear in partials under overlap (Gate ASR), and how
+anchored grammar interacts with echo-polluted transcripts (Gate grammar).
+Architecture call (A-fix vs B/C spotter) is deliberately deferred until
+that evidence lands — per Phase-0 law.
+
+---
+
+# INTERRUPTION V3 FINAL — EVIDENCE-DRIVEN ARCHITECTURE (2026-08-23)
+
+## Diagnostic session findings (instrumented canary, real owner audio)
+
+The repaired trace captured 774 events across the owner's diagnostic run.
+Decisive, measured:
+
+1. **ASR transcribes BOTH voices.** IV_PARTIAL stream shows Evie's entire
+   spoken answer arriving through the mic in real time ("You sound audible
+   to me I can hear you clearly…", "Absolutely a salad is basically a bowl
+   of fresh chopped ingredients… lettuce or spinach… cucumber tomato"). The
+   owner's commands land appended to this Evie-dominated transcript.
+2. **Anchored grammar could therefore NEVER match** — "^stop" cannot match
+   "...lettuce or spinach stop". CASE B proven.
+3. **Ownership correlation was structurally dead**: corr=0.0 on EVERY
+   partial while Evie's voice dominated mic. Root cause: reference ring
+   (160 ms) shorter than the analysis window (900 ms) → lag search aborted.
+   The SELF veto never fired. CASE C proven.
+
+## V3 FINAL ARCHITECTURE (shipped)
+
+- Far-end reference ring: TTSPlayer keeps **4 s** of response PCM (was
+  160 ms) → delay-aware alignment now physically possible.
+- Ownership = matched-filter RESIDUAL double-talk detection: best delayed+
+  gain-fitted copy of Evie's audio is subtracted; echo-only windows leave
+  ≤25% residual → SELF; ≥55% unexplained → OWNER; between → AMBIGUOUS
+  (never interrupts). No fixed RMS gate anywhere.
+- Grammar = TAIL-WINDOW: command/address matching runs against the last
+  ~48 chars of the transcript, so Evie's earlier sentence content can no
+  longer bury an owner command; her own tail speech is still vetoed by the
+  residual ownership check (SELF).
+- One-word fast path: single partial confirms when residual ratio ≥0.55.
+
+Canary sha16 `c27d29b613dc66d5`. Backend PID 45954 unchanged (no backend
+changes). EVMicTalkTests all-pass incl. updated composition checks.
+
+STATUS:
+INTERRUPTION V3: INTERNALLY VERIFIED SYNTHETIC + REAL-EVIDENCE ARCHITECTURE /
+ACOUSTIC N/N OWNER PENDING
+CALM BASELINE: FROZEN · LISTENER: REMOVED · BACKCHANNEL: OFF · TA-V2: OFF
+PHONES: PRESERVED
+
+If physical trials fail after this evidence-driven architecture:
+spoken interruption is DROPPED per directive; calm baseline remains the
+product; optional deterministic UI stop control becomes the escape hatch.
+
+---
+
+# FINAL: SPOKEN INTERRUPTION CLOSED (2026-08-23)
+
+## Decisive isolation result
+
+Apple Speech recognition is **non-functional in this OS environment**
+(macOS 27.0 beta 26A5388g): a recognition task fed a complete, clean,
+pre-rendered speech file — no audio engine involved, server ASR permitted,
+authorization granted (status 3) — produced **zero callbacks of any kind**
+(no partials, no final, no error) across multiple runs and both
+on-device/server modes. The fast-command path therefore has no working
+foundation on this machine, independent of all interruption logic.
+
+Per directive failure standard ("Apple voice processing cannot initialize
+reliably → SPOKEN INTERRUPTION IS CLOSED"), spoken interruption is
+**ABANDONED**.
+
+## Shipped fallback (deterministic interruption)
+
+- Menu-bar "Stop Speaking" button while Evie speaks.
+- **Escape key** stops assistant speech instantly during playback.
+- Both use the proven safe path: local player stop first → sendPlayback
+  report → barge_in control (reason=ui_stop) with heard-ms for valid
+  truncate; zero-audio veto intact.
+- Experimental flags reset: EV_EXPLICIT_INTERRUPT_ENABLED=OFF,
+  VP canary flag removed. Monitor never constructs.
+
+FINAL CALM BUILD sha16 `390e2c63304872f9` — verified live launch:
+mic first frame ~1.98 s from connect-begin incl. fresh backend handshake,
+provider forwarding open at ~3.16 s, process stable.
+
+STATUS:
+SPOKEN INTERRUPTION: ABANDONED (platform speech layer non-functional)
+DETERMINISTIC STOP: SHIPPED (button + Escape)
+CALM BASELINE: RESTORED AS PRIMARY PRODUCT SURFACE
+LISTENER PRESENCE: REMOVED · SERVER BACKCHANNEL: OFF · TA-V2: OFF
+PHONES: PRESERVED
+
+If a future macOS release repairs Speech recognition, the V3 residual-
+ownership design + this execution contract remain documented here as the
+resurrection blueprint. Until then: calm voice + deterministic stop IS the
+product.
+
+
+---
+
+# CLOSURE — SPOKEN INTERRUPTION REMOVED / DETERMINISTIC STOP FINALIZED (2026-08-23)
+
+## Record corrections (per PROJECT-HEAD)
+
+- APPLE VOICE PROCESSING: **NOT EVALUATED** — aborted before audio-layer
+  testing; `isVoiceProcessingEnabled` was never exercised. Do not document
+  AEC as technically failed.
+- SFSPEECHRECOGNIZER: observed fact only — on this Mac/OS/harness
+  (macOS 27.0 beta 26A5388g), an isolated recognition task fed a complete
+  clean prerecorded speech file produced **no result and no error callbacks**
+  across on-device and server-permitted variants. Cause unknown (OS beta /
+  harness / runtime state / other); not investigated further because the
+  workstream is closed.
+
+## Production composition after closure
+
+- ExplicitInterruptMonitor: **REMOVED from production construction**
+  (`Sources/EV/ExplicitInterruptMonitor.swift` retained as DEAD/LEGACY).
+- Mic tap feeds exactly two consumers: UI meter and provider forward
+  (provider-gated). Zero passive experimental work on the realtime path.
+- VP experimental block removed from LiveVoiceMicrophone.
+- Persisted experimental flags purged from owner defaults.
+- BargeInDetector/LiveBargeInSession/backend interrupt_v1.py/calibrate
+  script: marked DEAD/LEGACY/UNWIRED.
+
+## Deterministic interruption (the product)
+
+1. Menu-bar **Stop Speaking** (visible while Evie speaks).
+2. **Escape key** during playback.
+Both → `stopAssistantSpeech()`: local player stop FIRST → sendPlayback
+report → barge_in control with heard-ms → valid truncate via existing
+backend executor (zero-audio veto intact). Exactly-once contract enforced:
+activation with nothing playing is a no-op.
+
+## Baseline freeze
+
+EVIE_CALM_VOICE_WITH_DETERMINISTIC_STOP
+closure-build EV.app sha16 `af441496a423479c` · verified live launch
+(mic first frame 2.23 s incl. cold handshake; forwarding open 10.5 s due to
+upstream variance — mic unaffected, decoupling demonstrated again).
+
+OWNER TESTS (two):
+1. ESCAPE — long question; press Escape once while she speaks → immediate
+   silence; answer never resumes.
+2. STOP UI + RECOVERY — another long answer; activate Stop Speaking; then
+   give a new request → immediate stop; new request answered normally;
+   no stale response.
+
+STATUS VOCABULARY (final):
+CALM VOICE: OWNER VERIFIED / FROZEN
+SPOKEN INTERRUPTION: FAILED OWNER ACCEPTANCE / CLOSED
+APPLE VOICE PROCESSING: NOT EVALUATED
+SFSPEECHRECOGNIZER INTERRUPT PATH: UNUSABLE IN TESTED ENVIRONMENT / REMOVED
+DETERMINISTIC STOP: IMPLEMENTED / OWNER PENDING
+LISTENER PRESENCE: REMOVED · SERVER BACKCHANNEL: OFF · TA-V2: OFF
+PHONES: PRESERVED
+
+FUTURE REOPENING (separate initiative, not scheduled): requires
+echo-cancelled/full-duplex audio front end, real near-end double-talk
+validation, and physical acoustic testing before integration. Apple voice
+processing remains an UNTESTED future option — not failed.

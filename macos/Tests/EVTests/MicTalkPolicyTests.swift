@@ -27,6 +27,10 @@ enum EVMicTalkTests {
         MicrophoneAuthorization.resetForTests()
         AudioInputLease.resetForTests()
 
+        InterruptV1PolicyChecks.run { name, ok, detail in
+            check(name, ok, detail)
+        }
+
         // MARK: Criterion 1 — authorized mic is granted, never off/denied
         let authorized = MicrophoneAuthorization.state(authorizationStatus: .authorized)
         check("authorized-is-granted", authorized == .granted)
@@ -478,28 +482,28 @@ enum EVMicTalkTests {
             check("wired-TTSPlayer-mute-queued-not-node", tts.contains("Do not use `AVAudioPlayerNode.isPlaying`"))
             check("wired-TTSPlayer-playback-reference", tts.contains("playbackSnapshot()"))
             check("wired-TTSPlayer-stop-for-barge-in", tts.contains("stopForBargeIn()"))
-            check("wired-LiveConversation-barge-in-session", live.contains("LiveBargeInSession"))
-            check("wired-LiveConversation-barge-runtime-marker", live.contains("ev-barge-runtime-v2"))
-            check("wired-LiveConversation-barge-trace", live.contains("BargeInTrace.marker()"))
-            check("wired-LiveConversation-listen-while-speaking", live.contains("handleMicFrame"))
-            check("wired-LiveConversation-stop-first", live.contains("stopForBargeIn()"))
+            // OWNER DECISION 2026-08-23: the ungated barge-in detector that
+            // chopped long answers (92 mid-response stops) is REMOVED from
+            // the live path. Interruption V1 (explicit address) replaces it,
+            // constructed only behind EV_EXPLICIT_INTERRUPT_ENABLED.
+            check("wired-LiveConversation-legacy-detector-absent", !live.contains("LiveBargeInSession"))
+            check("wired-LiveConversation-legacy-trace-absent", !live.contains("BargeInTrace.marker()"))
+            check("wired-LiveConversation-listen-while-speaking", live.contains("enqueuePCM(data)"))
+            check("wired-LiveConversation-stop-first", live.contains("player.stop()"))
             // P0 regression 2026-08-21: a synchronous stopForBargeIn() inside
             // the mic-tap interrupt closure deadlocked the engine messenger
             // queue and killed EV.app the moment assistant speech began
             // (EV-2026-08-21-*.ips). The stop must be dispatched onto the
             // barge-in control queue, never run on the tap thread.
-            check("wired-LiveConversation-barge-control-queue", live.contains("ev.live.barge-in-control"))
-            check("wired-LiveConversation-barge-hop", live.contains("controlQueue.async"))
+            // CLOSURE 2026-08-23: spoken interruption removed. Deterministic
+            // Stop runs stopAssistantSpeech() on the main actor (the same
+            // proven-safe context as toggleMute's player.stop).
+            check("wired-LiveConversation-deterministic-stop-main-actor",
+                  live.contains("func stopAssistantSpeech()"))
             check(
                 "wired-LiveConversation-no-render-thread-stop",
-                suffix(live, from: "interrupt: { event in")
-                    .map { body -> Bool in
-                        guard let hopAt = body.range(of: "controlQueue.async") else { return false }
-                        let beforeHop = body[..<hopAt.lowerBound]
-                        return !beforeHop.contains("stopForBargeIn()")
-                            && body.contains("stopForBargeIn()")
-                    } == true,
-                "interrupt closure must hop to the barge-in control queue before touching the player"
+                live.contains("interruptControlQueue") && !live.contains("stopForBargeIn()"),
+                "V1 interruption must hop to the control queue before touching the player"
             )
             let smoke = try read(root.appendingPathComponent("Sources/EV/SmokeTest.swift"))
             check(
@@ -508,7 +512,9 @@ enum EVMicTalkTests {
                     .map { $0.contains("DispatchQueue") } == true,
                 "probe interrupt must not stop the player on the tap thread"
             )
-            check("wired-LiveConversation-preroll-forward", live.contains("event.preroll"))
+            // Preroll forwarding belonged to spoken interruption (closed).
+            // Deterministic Stop intentionally forwards nothing: the owner
+            // speaks AFTER silence, via the normal provider path.
             check("wired-LiveConversation-drain-watchdog", live.contains("noteAssistantAudioComplete()"))
             check("wired-LiveConversation-computer-request", live.contains("case \"computer_request\""))
             check("wired-LiveConversation-mac-control", live.contains("MacControlService.shared.handle"))
@@ -526,9 +532,8 @@ enum EVMicTalkTests {
             // "Yeah." played over Evie's own replies.)
             check(
                 "wired-listener-server-lane-always-down",
-                live.contains("connection.sendControl(\"listener_presence\"")
-                    && !live.contains("if listenerPresence.flags.enabled {"),
-                "server backchannel stand-down must be unconditional on Mac"
+                !live.contains("listener_presence"),
+                "Listener Presence CANCELLED (owner decision): no control, no lane"
             )
             let controllerSource = try read(root.appendingPathComponent("Sources/EV/ListenerPresenceController.swift")) ?? ""
             // A7: a nod can never raise assistantSpeaking — the aux enqueue
@@ -558,8 +563,8 @@ enum EVMicTalkTests {
             )
             check(
                 "wired-listener-normal-response-preempts",
-                live.contains("preemptListenerFeedbackForResponse(reason: \"normal_response_start\")"),
-                "NORMAL_RESPONSE > LISTENER_BACKCHANNEL preemption must be wired on tts_chunk"
+                !live.contains("preemptListenerFeedbackForResponse"),
+                "Listener Presence CANCELLED: no aux lane exists to preempt"
             )
 
             let mic = try read(root.appendingPathComponent("Sources/EV/MicCapture.swift"))

@@ -185,6 +185,14 @@ struct MenuBarView: View {
                     model.toggleTalk()
                 }
                 .font(.caption)
+                // DETERMINISTIC STOP (spoken-interruption fallback):
+                // always-available manual floor-take while Evie speaks.
+                if model.status == .speaking {
+                    Button("Stop Speaking") {
+                        model.live.stopAssistantSpeech()
+                    }
+                    .font(.caption.weight(.semibold))
+                }
                 Button(cameraButtonTitle) {
                     model.toggleCamera()
                 }
