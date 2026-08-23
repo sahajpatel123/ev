@@ -1680,7 +1680,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "life_goal_query",
-        "description": "Query goals. Optional state filter, project filter, or specific goal lookup with steps.",
+        "description": "Query goals. Optional state filter, project filter, or title substring filter.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -1688,6 +1688,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "state": {"type": "string", "enum": ["PLANNED", "ACTIVE", "BLOCKED", "PAUSED", "COMPLETED", "CANCELLED"]},
                 "project": {"type": "string", "maxLength": 256},
                 "goal_id": {"type": "string"},
+                "title": {"type": "string", "maxLength": 512},
+                "title_query": {"type": "string", "maxLength": 512},
+                "query": {"type": "string", "maxLength": 512},
             },
         },
         "output": {"type": "object"},
@@ -1723,15 +1726,16 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "life_commitment_update",
-        "description": "Update a commitment's status (FULFILLED/CANCELLED/MISSED).",
+        "description": "Update a commitment's status (FULFILLED/CANCELLED/MISSED). Reference by id or description substring.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
                 "commitment_id": {"type": "string"},
+                "description": {"type": "string", "maxLength": 2000},
                 "status": {"type": "string", "enum": ["FULFILLED", "CANCELLED", "MISSED"]},
             },
-            "required": ["commitment_id", "status"],
+            "required": ["status"],
         },
         "output": {"type": "object"},
         "sensitive": False,
@@ -1741,6 +1745,28 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "risk_class": "R1",
         "confirmation": "none",
         "target_ownership": "owner",
+        "provider": "local",
+    },
+    {
+        "name": "life_commitment_query",
+        "description": "Query commitments. Optional description substring, project, or status filter. Returns due dates.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string", "maxLength": 512},
+                "description": {"type": "string", "maxLength": 512},
+                "project": {"type": "string", "maxLength": 256},
+                "status": {"type": "string", "enum": ["OPEN", "FULFILLED", "CANCELLED", "MISSED"]},
+                "include_completed": {"type": "boolean", "default": False},
+            },
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "life:read",
+        "risk_class": "R0",
+        "confirmation": "none",
         "provider": "local",
     },
     {

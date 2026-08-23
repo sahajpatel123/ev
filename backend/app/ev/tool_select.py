@@ -138,6 +138,7 @@ LIVE_VOICE_TOOLS = frozenset(
         "life_goal_query",
         "life_commitment_create",
         "life_commitment_update",
+        "life_commitment_query",
         "life_relationship_set",
         "mission_control",
         "search_web",

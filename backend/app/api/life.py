@@ -212,11 +212,24 @@ async def create_commitment(
 
 @router.get("/commitments")
 async def list_commitments(
+    q: str | None = Query(default=None, max_length=512),
+    project: str | None = Query(default=None, max_length=256),
+    status: str | None = Query(default=None),
     open_only: bool = True,
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> list[dict]:
-    return await life.list_commitments(session, actor=ctx.actor, open_only=open_only)
+    commitments = await life.list_commitments(session, actor=ctx.actor, open_only=open_only and status is None)
+    if status and status.upper() in ("OPEN", "FULFILLED", "CANCELLED", "MISSED"):
+        commitments = [c for c in commitments if c["status"] == status.upper()]
+    if project:
+        proj = await life.find_project(session, actor=ctx.actor, query=project)
+        if proj is not None:
+            commitments = [c for c in commitments if c.get("project_id") == str(proj.id)]
+    if q:
+        q_lower = q.lower()
+        commitments = [c for c in commitments if q_lower in c["description"].lower()]
+    return commitments
 
 
 @router.patch("/commitments/{commitment_id}")

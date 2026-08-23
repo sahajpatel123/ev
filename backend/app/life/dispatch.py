@@ -72,9 +72,29 @@ async def handle_life_tool(
         if gid:
             got = await life.get_goal(session, actor=actor, goal_id=gid)
             goals = [got["goal"]] if got.get("ok") else []
-        q = str(args.get("project") or "").lower()
-        if q:
-            goals = [g for g in goals if (g.get("project_id") or "").lower().find(q) >= 0]
+        # Project filter: resolve name/title to canonical project_id (never UUID substring match)
+        project_ref = str(args.get("project") or "").strip()
+        if project_ref:
+            try:
+                from uuid import UUID as _UUID
+                _UUID(project_ref)
+                is_uuid = True
+            except ValueError:
+                is_uuid = False
+            if is_uuid:
+                goals = [g for g in goals if g.get("project_id") == project_ref]
+            else:
+                proj = await life.find_project(session, actor=actor, query=project_ref)
+                if proj is not None:
+                    goals = [g for g in goals if g.get("project_id") == str(proj.id)]
+                else:
+                    # No matching project => no goals in that project (avoid silent wrong-project leakage)
+                    goals = []
+        # Title substring filter for natural queries like "what goals do I have in Personal Fitness"
+        # also handles legacy title_query param some Realtime calls send
+        title_q = str(args.get("title") or args.get("title_query") or args.get("query") or "").strip().lower()
+        if title_q:
+            goals = [g for g in goals if title_q in g.get("title", "").lower()]
         return {"ok": True, "goals": goals}
 
     goal_id = str(args.get("goal_id") or "")
@@ -161,16 +181,41 @@ async def handle_life_tool(
             result["relationships"] = await people.list_relationships(session)
         return result
 
-    # commitment create/update by id/description
+    # commitment create/update/query by id/description
     if name == "life_commitment_create":
         from app.ev.resolve import parse_owner_when
-        due = parse_owner_when(str(args.get("due_at") or "")) if args.get("due_at") else None
+        due_raw = str(args.get("due_at") or "").strip()
+        desc = str(args.get("description") or "")
+        due = parse_owner_when(due_raw) if due_raw else None
+        # Fallback: many Realtime utterances pack time into description
+        # ("Workout session at 7 PM tomorrow") and leave due_at empty.
+        if due is None and desc:
+            due = parse_owner_when(desc)
         return await life.create_commitment(
             session, actor=actor,
-            description=str(args.get("description") or ""),
+            description=desc,
             due_at=due,
             project_ref=args.get("project"),
         )
+    if name == "life_commitment_query":
+        q = str(args.get("query") or args.get("description") or "").strip().lower()
+        project_filter = str(args.get("project") or "").strip().lower()
+        status_filter = str(args.get("status") or "").upper() or None
+        include_completed = bool(args.get("include_completed"))
+        commitments = await life.list_commitments(
+            session, actor=actor, open_only=not include_completed and status_filter is None
+        )
+        if status_filter and status_filter in ("OPEN", "FULFILLED", "CANCELLED", "MISSED"):
+            commitments = [c for c in commitments if c["status"] == status_filter]
+        if project_filter:
+            proj = await life.find_project(session, actor=actor, query=project_filter)
+            if proj is not None:
+                commitments = [c for c in commitments if c.get("project_id") == str(proj.id)]
+            else:
+                commitments = [c for c in commitments if project_filter in (c.get("project_id") or "").lower()]
+        if q:
+            commitments = [c for c in commitments if q in c["description"].lower()]
+        return {"ok": True, "commitments": commitments, "count": len(commitments)}
     if name == "life_commitment_update":
         cid = str(args.get("commitment_id") or "")
         commitments = await life.list_commitments(session, actor=actor, open_only=True)
