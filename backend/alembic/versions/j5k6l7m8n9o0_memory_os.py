@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision = "j5k6l7m8n9o0"
 down_revision = "i4j5k6l7m8n9"
@@ -73,7 +72,6 @@ def upgrade() -> None:
             ON entities USING gin (name gin_trgm_ops)
             """
         )
-    del postgresql
 
 
 def downgrade() -> None:

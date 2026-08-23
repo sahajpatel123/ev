@@ -129,6 +129,17 @@ TEXT_TARGET_RE = re.compile(
 LIVE_VOICE_TOOLS = frozenset(
     {
         "search_memory",
+        "life_project_create",
+        "life_project_update",
+        "life_project_query",
+        "life_goal_create",
+        "life_goal_update",
+        "life_goal_add_step",
+        "life_goal_query",
+        "life_commitment_create",
+        "life_commitment_update",
+        "life_relationship_set",
+        "mission_control",
         "search_web",
         "get_weather",
         "set_reminder",

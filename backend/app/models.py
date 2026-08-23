@@ -303,6 +303,10 @@ class Device(Base):
     memory_scope: Mapped[str | None] = mapped_column(String(16), index=True)
     client_version: Mapped[str | None] = mapped_column(String(64))
     protocol_version: Mapped[str | None] = mapped_column(String(16))
+    # --- G2 EVIE EVERYWHERE (additive): per-device sync cursor over the
+    # canonical event history. Routing hint + resume point, never authority.
+    sync_cursor_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sync_cursor_id: Mapped[UUID | None] = mapped_column(Uuid)
 
     @property
     def push_platform(self) -> str | None:
@@ -2238,3 +2242,109 @@ class HudPush(Base):
     prefer_haptic: Mapped[bool] = mapped_column(Boolean, default=False)
     source: Mapped[str] = mapped_column(String(64), default="tool")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+# ============================================================================
+# EVIE OS G1 — CORE STATE (Projects / Goals / Steps / Commitments)
+# Canonical current-state projections. Durable history lives in `events`.
+# ============================================================================
+
+class Project(Base):
+    """A persistent area of coordinated work. Same schema for every project;
+    importance is expressed through priority, never through special cases."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    actor: Mapped[str] = mapped_column(String(64), index=True, default="master")
+    title: Mapped[str] = mapped_column(String(256), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    # ACTIVE | PAUSED | COMPLETED | ARCHIVED
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    # CRITICAL | HIGH | NORMAL | LOW
+    priority: Mapped[str] = mapped_column(String(16), default="NORMAL", index=True)
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal")
+    source: Mapped[str] = mapped_column(String(32), default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # --- G2 EVIE EVERYWHERE (additive): optimistic-lock revision. Bumped on
+    # every canonical change; clients send expected_version to avoid lost
+    # conflicting writes. 0 for pre-G2 rows.
+    version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class Goal(Base):
+    """An outcome to accomplish. May belong to a Project or stand alone.
+    Operational truth for goal state — memory(type=goal) is recall only."""
+
+    __tablename__ = "goals"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    actor: Mapped[str] = mapped_column(String(64), index=True, default="master")
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    parent_goal_id: Mapped[UUID | None] = mapped_column(ForeignKey("goals.id"), index=True)
+    title: Mapped[str] = mapped_column(String(512), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    # PLANNED | ACTIVE | BLOCKED | PAUSED | COMPLETED | CANCELLED
+    state: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    priority: Mapped[str] = mapped_column(String(16), default="NORMAL", index=True)
+    success_criteria: Mapped[str] = mapped_column(Text, default="")
+    progress_note: Mapped[str] = mapped_column(Text, default="")
+    next_action: Mapped[str] = mapped_column(Text, default="")
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal")
+    source: Mapped[str] = mapped_column(String(32), default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # --- G2 EVIE EVERYWHERE (additive): optimistic-lock revision (see Project).
+    version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class GoalStep(Base):
+    """A concrete subordinate work item. Product state — NOT an execution job
+    (ResearchSession/FleetTask/RoutineRun remain execution substrates)."""
+
+    __tablename__ = "goal_steps"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    goal_id: Mapped[UUID] = mapped_column(ForeignKey("goals.id"), index=True)
+    title: Mapped[str] = mapped_column(String(512))
+    # PENDING | DONE | SKIPPED
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class Commitment(Base):
+    """A promise/obligation. Explicit creation only in G1 — no silent
+    extraction from casual conversation."""
+
+    __tablename__ = "commitments"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    actor: Mapped[str] = mapped_column(String(64), index=True, default="master")
+    description: Mapped[str] = mapped_column(Text)
+    # OPEN | FULFILLED | CANCELLED | MISSED
+    status: Mapped[str] = mapped_column(String(16), default="OPEN", index=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    goal_id: Mapped[UUID | None] = mapped_column(ForeignKey("goals.id"), index=True)
+    entity_id: Mapped[UUID | None] = mapped_column(ForeignKey("entities.id"), index=True)
+    source_event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id"))
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

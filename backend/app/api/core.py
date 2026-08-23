@@ -185,6 +185,7 @@ async def _memory_out(session: AsyncSession, memory: Memory) -> MemoryOut:
 
 @router.get("/health")
 async def health() -> dict:
+    from app.ops.migration_health import migration_parity
     from app.voice.live.grok_voice import (
         GROK_VOICE_TOOL_NAMES,
         REALTIME_BRIDGE_SOURCE_FINGERPRINT,
@@ -198,8 +199,16 @@ async def health() -> dict:
         "openai": "openai-realtime",
         "xai": "grok-voice",
     }.get(live or "", "pipeline")
+
+    from app.db import SessionLocal
+
+    async with SessionLocal() as session:
+        migrations = await migration_parity(session)
+
     return {
-        "status": "ok",
+        # G1.1: schema/migration drift degrades health visibly. Observability
+        # only — this never runs migrations.
+        "status": "ok" if migrations["parity"] == "YES" else "degraded",
         "app": settings.app_name,
         "environment": settings.environment,
         "version": "0.1.0",
@@ -232,6 +241,7 @@ async def health() -> dict:
             "embeddings": settings.embedding_provider,
             "storage": settings.object_store_backend,
         },
+        "migrations": migrations,
         "runtime": {
             "pid": os.getpid(),
             "started_at": PROCESS_STARTED_AT,
@@ -2785,3 +2795,17 @@ async def enrichment_usage_endpoint(
     )
     await session.commit()
     return result
+
+
+@router.get("/migrations/parity")
+async def migrations_parity(
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """G1.1 observability: expected migration head vs actual DB revision.
+
+    Read-only. Mission Control / Self Diagnostics consume this; a mismatch
+    degrades /v1/health but never triggers automatic migrations.
+    """
+    from app.ops.migration_health import migration_parity
+
+    return await migration_parity(session)

@@ -14,6 +14,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app import __version__
 from app.api import (
     assistant,
+    everywhere,
+    life,
     backup,
     companion,
     compliance,
@@ -162,6 +164,8 @@ app.include_router(training.router)
 app.include_router(voice.router)
 app.include_router(ears.router)
 app.include_router(people.router)  # AGENT 7 ROSTER
+app.include_router(life.router)
+app.include_router(everywhere.router)  # G2 Evie Everywhere: one Evie, many devices
 app.include_router(world_model.router)  # AGENT 2 personal world model
 app.include_router(filter.router)
 app.include_router(integrations.router)

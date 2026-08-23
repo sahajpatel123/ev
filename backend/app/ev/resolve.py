@@ -10,11 +10,13 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Generic, Literal, TypeVar
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil import parser as date_parser
 
+from app.config import settings
 from app.utils.text import utcnow
 
 T = TypeVar("T")
@@ -61,6 +63,21 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
 MatchStatus = Literal["unique", "ambiguous", "none"]
+
+
+def owner_tz() -> ZoneInfo:
+    """Owner-local interpretation zone for time language.
+
+    TIMEZONE CONTRACT: owner-local wall clock → canonical aware UTC storage
+    → owner-local presentation. Relative day/clock words ("tomorrow at 7",
+    "tonight") are interpreted in settings.timezone, never server-local or
+    silently UTC. Fail-closed to UTC when unset/invalid.
+    """
+    name = (getattr(settings, "timezone", None) or "").strip()
+    try:
+        return ZoneInfo(name) if name else ZoneInfo("UTC")
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        return ZoneInfo("UTC")
 
 
 @dataclass(frozen=True)
@@ -218,8 +235,9 @@ def parse_instant(value: str | datetime | None) -> datetime | None:
             except (ValueError, TypeError, OverflowError, date_parser.ParserError):
                 return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=utcnow().tzinfo)
-    return parsed
+        # Naive absolute times are owner-local wall clock (contract above).
+        parsed = parsed.replace(tzinfo=owner_tz())
+    return parsed.astimezone(UTC)
 
 
 def starts_close(
@@ -269,6 +287,8 @@ def parse_owner_when(text: str, *, now: datetime | None = None) -> datetime | No
             return clock + timedelta(hours=amount)
         return clock + timedelta(minutes=amount)
 
+    tz = owner_tz()
+    base_local = clock.astimezone(tz)
     shift_days = 0
     if "tomorrow" in lowered:
         shift_days = 1
@@ -278,19 +298,28 @@ def parse_owner_when(text: str, *, now: datetime | None = None) -> datetime | No
         hour = int(clock_match.group("hour"))
         minute = int(clock_match.group("minute") or 0)
         ampm = (clock_match.group("ampm") or "").lower()
-        if tonight and not ampm and hour < 12:
-            hour += 12
-        elif ampm == "pm" and hour < 12:
+        if tonight and not ampm and hour < 12 or ampm == "pm" and hour < 12:
             hour += 12
         elif ampm == "am" and hour == 12:
             hour = 0
         if hour > 23 or minute > 59:
             pass
         else:
-            target = clock.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=shift_days)
-            if target <= clock and shift_days == 0 and (_CLOCK_ONLY_RE.match(raw) or tonight):
-                target += timedelta(days=1)
-            return target
+            target_local = base_local.replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            ) + timedelta(days=shift_days)
+            if target_local <= base_local and shift_days == 0 and (_CLOCK_ONLY_RE.match(raw) or tonight):
+                target_local += timedelta(days=1)
+            return target_local.astimezone(UTC)
+
+    # Date-only relative day words with no explicit clock: one documented
+    # product default — end of that owner-local day (23:59:59 local → UTC).
+    # Never an invented arbitrary clock time, never server-local silently.
+    if tonight or "tomorrow" in lowered or "today" in lowered:
+        end_local = base_local.replace(hour=23, minute=59, second=59, microsecond=0)
+        if "tomorrow" in lowered:
+            end_local += timedelta(days=1)
+        return end_local.astimezone(UTC)
 
     parsed = parse_instant(raw) if any(ch.isdigit() for ch in raw) else None
     if parsed is None:

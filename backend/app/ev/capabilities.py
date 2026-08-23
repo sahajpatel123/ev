@@ -889,6 +889,7 @@ async def _build_runtime_projection(
     from app.ev.camera_runtime import readiness_from_camera_state
     from app.ev.capability_registry import apply_capability_overlays
     from app.ev.computer_runtime import readiness_from_computer_state
+    import app.life.capability  # noqa: F401  # G1: registers life_state projector
     from app.voice.live.layer import live_for_device, live_for_session
 
     live = live_for_session(str(session_id) if session_id else None) or live_for_device(
@@ -939,9 +940,18 @@ async def _build_runtime_projection(
             )
         ),
     )
+    # G1 core state has no external dependency to probe: canonical tables are
+    # the readiness signal. Overlay stamps every life_* / mission_control entry.
+    from app.life.capability import LIFE_TOOLS
+
+    life_readiness = {"ready": True, "tools": sorted(LIFE_TOOLS)}
     entries = apply_capability_overlays(
         entries,
-        {"camera": camera_readiness, "computer": computer_readiness},
+        {
+            "camera": camera_readiness,
+            "computer": computer_readiness,
+            "life_state": life_readiness,
+        },
     )
 
     all_realtime_tools = approved_realtime_function_tools(entries)
