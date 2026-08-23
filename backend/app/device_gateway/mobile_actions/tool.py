@@ -4,23 +4,20 @@ from __future__ import annotations
 
 from typing import Any
 
+from .engine import create_phone_action
 from .registry import advertised_operations
-from .service import create_phone_action
 from .store import handshake_of
 
 MOBILE_ACTION_CONTRACT = (
     "MOBILE ACTION CONTRACT: This iPhone acts through phone_action only. "
     "Never invent a run_shortcut function. Never invent phone numbers. "
-    "Timers, reminders, calls, messages, and directions on this iPhone use "
-    "phone_action, not Mac computer tools. Keep message recipient and body "
-    "separate. For messages, the function asks for confirmation — wait; do not "
-    "claim sent. If the function says requires_user_interaction, tell them to "
-    "tap the card. If it says executed or created, you may confirm that. "
-    "If it only opened system UI, say you opened it — not that the call connected "
-    "or the message sent. If contacts are ambiguous, ask. If permission is "
-    "required, say the iPhone needs that permission. Do not look up a home "
-    "address from memory; ask where to go. Remote control of another iPhone "
-    "is not available."
+    "Timers, reminders, calls, messages, maps, and opening apps use phone_action, "
+    "not Mac tools and not Shortcuts. Keep message recipient and body separate. "
+    "For Apple Messages do not ask Evie are you sure — prepare the composer; "
+    "Apple's Send is the confirmation. For explicit timers and reminders, do not "
+    "ask to confirm. If awaiting confirmation, wait for yes/no. If only system UI "
+    "opened, say you opened or prepared it — never that the call connected or the "
+    "message sent. Remote control of another iPhone is not available."
 )
 
 PHONE_ACTION_DESCRIPTION = (
@@ -65,6 +62,7 @@ def phone_action_parameters(device: Any | None = None) -> dict[str, Any]:
             "confirm_action_id": {"type": "string", "maxLength": 80},
             "list": {"type": "string", "maxLength": 80},
             "location": {"type": "string", "maxLength": 120},
+            "app_id": {"type": "string", "maxLength": 80},
         },
         "required": ["operation"],
     }
@@ -113,17 +111,31 @@ async def dispatch_phone_action(
     transcript: str = "",
     device_label: str = "This iPhone",
 ) -> dict[str, Any]:
-    result = create_phone_action(
+    from .engine import apply_confirmation_utterance
+    from .trust import classify_utterance
+
+    args = arguments if isinstance(arguments, dict) else {}
+    pending = apply_confirmation_utterance(
         device_id=device_id,
-        role=role,
-        instance_id=instance_id,
-        session_id=session_id,
         origin=origin,
-        arguments=arguments if isinstance(arguments, dict) else {},
-        transcript=transcript,
-        device_label=device_label,
-        confirm=bool((arguments or {}).get("confirm_action_id")),
+        text=transcript,
+        session_id=session_id,
     )
+    kind = classify_utterance(transcript)
+    if pending is not None and kind != "unrelated":
+        result = pending
+    else:
+        result = create_phone_action(
+            device_id=device_id,
+            role=role,
+            instance_id=instance_id,
+            session_id=session_id,
+            origin=origin,
+            arguments=args,
+            transcript=transcript,
+            device_label=device_label,
+            confirm=bool(args.get("confirm_action_id")),
+        )
     card = result.get("card")
     if isinstance(card, dict):
         from .service import _push_live

@@ -1,4 +1,4 @@
-.PHONY: install dev test e2e-cli eval lint typecheck doctor verify compose-up compose-down migrate seed postgres-e2e package-macos mac-control-live-e2e mac-control-live-e2e-full mac-control-dev-restart evie-cross-platform-dev evie-home-station evie-cross-platform-ready cross-platform-e2e mobile-voice-e2e mobile-voice-config-diff mobile-actions-e2e
+.PHONY: install dev test e2e-cli eval lint typecheck doctor verify compose-up compose-down migrate seed postgres-e2e package-macos mac-control-live-e2e mac-control-live-e2e-full mac-control-dev-restart evie-cross-platform-dev evie-home-station evie-cross-platform-ready cross-platform-e2e mobile-voice-e2e mobile-voice-config-diff mobile-actions-e2e evie-shell-check
 
 # Backend commands run from backend/ where pydantic looks for ./.env. Load the
 # repo-root .env into the environment first so EV_VAULT_KEY and friends are
@@ -32,7 +32,29 @@ mobile-voice-e2e:
 	cd backend && uv run pytest -q tests/test_mobile_voice_core.py tests/test_phone_audio_architecture.py tests/test_pwa_audio.py tests/test_webrtc_connection.py
 
 mobile-actions-e2e:
-	cd backend && uv run pytest -q tests/test_mobile_actions.py tests/test_phone_audio_architecture.py tests/test_device_gateway.py
+	cd backend && uv run pytest -q tests/test_mobile_actions.py tests/test_mobile_shell.py tests/test_pure_pwa_no_native_shell.py tests/test_phone_audio_architecture.py tests/test_device_gateway.py
+
+evie-shell-check:
+	cd ios/EvieShell && swift run EvieBrokerCheck
+
+pwa-release-manifest:
+	cd backend && uv run python -m app.scripts.gen_release_manifest
+
+ios-ci-check:
+	bash -n scripts/ios/build-evie-ipa.sh && bash -n scripts/ios/verify-release.sh
+	cd backend && uv run pytest -q tests/test_release_portal.py
+	@echo "ios-ci-check OK (no Xcode needed)"
+
+# Full native build — requires macOS with Xcode.app (CI runner or dev Mac).
+ios-canary:
+	CHANNEL=canary ./scripts/ios/build-evie-ipa.sh
+
+ios-release-verify:
+	./scripts/ios/verify-release.sh --ipa $${IPA:-build/ios-release/canary/Evie.ipa} --expect-bundle-id com.ev.evie.shell
+
+# Promote the owner-approved canary artifact to stable WITHOUT rebuilding.
+ios-stable-promote:
+	cd backend && uv run python -m app.scripts.promote_stable $${FROM_BUILD:-}
 
 package-macos:
 	macos/scripts/package.sh

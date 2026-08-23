@@ -31,6 +31,12 @@ final class LiveConversation {
     private var audioGraphObservers: [NSObjectProtocol] = []
     private var lastPartialRenderAt = Date.distantPast
     private let partialRenderInterval: TimeInterval = 0.12
+    // OWNER DECISION 2026-08-23 — Listener Presence: CANCELLED (removed from
+    // the active product; never re-tune, re-enable, or re-wire). Natural
+    // Barge-In: PAUSED (local detector dewired from the live path).
+    // EVIE_CALM_VOICE golden path: one speech lane, the backend's
+    // authoritative-playback mic gate owns self-echo, and the player reports
+    // physical truth via onPlayingChange -> sendPlayback.
 
     deinit {
         for observer in cameraLifecycleObservers {
@@ -48,6 +54,8 @@ final class LiveConversation {
         model.player.onPlayingChange = { [weak self] playing in
             Task { @MainActor in
                 guard let self else { return }
+                // The client player owns physical playback truth: this report
+                // is the backend mic gate's authority (speaker ownership law).
                 self.connection?.sendPlayback(active: playing)
                 guard let model = self.model else { return }
                 if playing {
@@ -523,6 +531,10 @@ final class LiveConversation {
         }
         do {
             let player = model?.player
+            // GOLDEN VOICE PATH (2026-08-23 owner decision): one speech lane,
+            // no experiments in the mic tap. Listener Presence is cancelled;
+            // the local barge-in detector is dewired (paused feature). The
+            // backend's authoritative-playback mic gate owns self-echo.
             try microphone.start(enqueue: { [weak connection, weak player] data in
                 VoiceLevelMeter.shared.ingestInputPCM16(data)
                 if player?.shouldMuteCapture == true { return }

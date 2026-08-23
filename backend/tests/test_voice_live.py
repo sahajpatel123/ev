@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import array
 import asyncio
+import contextlib
 import base64
 
 from app.voice.asr import EchoTranscriber
@@ -333,6 +334,8 @@ async def test_live_session_barge_in_cancels_a_slow_reply() -> None:
 
 
 async def test_backchannel_synthesis_does_not_hold_the_floor() -> None:
+    # OWNER DECISION 2026-08-23: listener cues are CANCELLED. While the owner
+    # holds the floor nothing may be synthesized at all.
     clock = ManualClock(0)
     engine = LiveEngine(clock_ms=clock)
     synth = _BlockingSynthesizer()
@@ -340,19 +343,16 @@ async def test_backchannel_synthesis_does_not_hold_the_floor() -> None:
     await session.handle_client({"type": "speech", "active": True})
     clock.advance(2000)
     await session.tick()
-    await asyncio.wait_for(synth.started.wait(), timeout=1)
-    # While the cue is being synthesized the owner is still holding the floor:
-    # the assistant must not look like it is speaking (that would turn every
-    # subsequent tick into a self-interruption and abort the owner's ASR).
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(synth.started.wait(), timeout=0.3)
+    assert not synth.started.is_set(), "no listener cue may be synthesized"
     assert engine.state.assistant_is_speaking is False
-    assert engine.state.speaking_mode == "none"
-    synth.release.set()
-    await asyncio.sleep(0.05)
+    assert session._backchannel_task is None
     session.close()
 
 
 async def test_backchannel_is_cancelled_at_a_new_turn_boundary() -> None:
-    """A delayed listening cue must not speak after the owner starts a turn."""
+    """CANCELED FEATURE: no listening cue may ever be scheduled to speak."""
 
     clock = ManualClock(0)
     engine = LiveEngine(clock_ms=clock)
@@ -361,13 +361,8 @@ async def test_backchannel_is_cancelled_at_a_new_turn_boundary() -> None:
     await session.handle_client({"type": "speech", "active": True})
     clock.advance(2000)
     await session.tick()
-    await asyncio.wait_for(synth.started.wait(), timeout=1)
-
-    await session.emit(
-        FinalTranscriptEvent(at_ms=session.now(), text="new question", provider="text")
-    )
-    await asyncio.wait_for(synth.cancelled.wait(), timeout=1)
-    assert [event.type for event in session.outbound._queue] == ["final_transcript"]
+    assert session._backchannel_task is None
+    assert not synth.started.is_set()
     session.close()
 
 

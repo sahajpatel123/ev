@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.device_gateway import PWA_BUILD
 import json
 import subprocess
 from pathlib import Path
@@ -209,8 +210,8 @@ def test_status_and_pwa_connection_contract() -> None:
     app_js = (PWA / "app.js").read_text()
     webrtc = (PWA / "webrtc.js").read_text()
     html = (PWA / "index.html").read_text()
-    assert "2026.08.21.22" in app_js
-    assert "2026.08.21.22" in html
+    assert PWA_BUILD in app_js
+    assert PWA_BUILD in html
     assert "Couldn't connect to Evie Voice." in app_js
     assert "Voice connection failed." not in app_js
     assert "Microphone access denied." in app_js

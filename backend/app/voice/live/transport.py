@@ -185,14 +185,14 @@ async def serve_live_websocket(
                 if kind in {"websocket.disconnect", "websocket.close"}:
                     return
                 if "bytes" in message and message["bytes"] is not None:
-                    await live.handle_client(message["bytes"])
+                    await _handle_client_frame(live, message["bytes"])
                 elif "text" in message and message["text"] is not None:
                     try:
                         payload = json.loads(message["text"])
                     except json.JSONDecodeError:
                         continue
                     if isinstance(payload, dict):
-                        await live.handle_client(payload)
+                        await _handle_client_frame(live, payload)
         finally:
             live.note_client_gone()
 
@@ -267,6 +267,39 @@ async def serve_live_websocket(
         await asyncio.gather(recv, tick, send, return_exceptions=True)
         with contextlib.suppress(Exception):
             await websocket.close()
+
+
+async def _handle_client_frame(live: Any, payload: dict | bytes) -> None:
+    """One client frame == one bounded decision tick.
+
+    FAILURE CONTAINMENT LAW: an exception inside an optional feature's
+    handler (a malformed control, a listener-presence message, a tool
+    envelope) must degrade to a rejected frame — it must NEVER propagate out
+    of the ASGI websocket handler, because that terminates the whole voice
+    transport (P0 2026-08-22: a stale _handle_control signature killed every
+    client socket that sent any control).
+    """
+
+    try:
+        await live.handle_client(payload)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "realtime_trace event=client_frame.rejected error_type=%s",
+            type(payload).__name__,
+        )
+        with contextlib.suppress(Exception):
+            from app.voice.live.events import ErrorEvent
+
+            await live.emit(
+                ErrorEvent(
+                    at_ms=getattr(live, "now", lambda: 0)(),
+                    code="control_rejected",
+                    message="That control was rejected; the conversation continues.",
+                    fatal=False,
+                )
+            )
 
 
 async def bind_live_session(
@@ -545,6 +578,8 @@ async def bind_live_session(
             capability_manifest_loader=capability_reply,
             approved_tool_specs=approved_tool_specs,
             tool_specs_loader=approved_live_tools,
+            turn_authority_v2=settings.turn_authority_v2_enabled,
+            long_form_diagnostic=settings.long_form_diagnostic,
         )
     return live_session
 

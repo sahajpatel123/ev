@@ -160,6 +160,16 @@ APP_LAUNCH_REGISTRY: tuple[AppLaunchEntry, ...] = (
         "productivity",
     ),
     AppLaunchEntry(
+        "chrome",
+        "Chrome",
+        ("chrome", "google chrome"),
+        ("https://www.google.com",),
+        (),
+        "https://www.google.com",
+        "universal-link",
+        "productivity",
+    ),
+    AppLaunchEntry(
         "x",
         "X",
         ("x", "twitter"),

@@ -196,9 +196,25 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     /// Send a control to a named mesh node without changing the current
     /// audio owner. Older servers safely ignore the optional target.
     public func sendControl(_ action: String, deviceId: String?) {
+        sendControl(action, deviceId: deviceId, extra: nil)
+    }
+
+    /// Optional extra fields (barge-in timing, etc). Unknown keys are ignored
+    /// by older servers. This is the live socket control path, not UI.
+    public func sendControl(_ action: String, extra: [String: Any]) {
+        sendControl(action, deviceId: nil, extra: extra)
+    }
+
+    public func sendControl(_ action: String, deviceId: String?, extra: [String: Any]?) {
         var payload: [String: Any] = ["type": "control", "action": action]
         if let deviceId, !deviceId.isEmpty {
             payload["device_id"] = deviceId
+        }
+        if let extra {
+            for (key, value) in extra {
+                guard key != "type", key != "action" else { continue }
+                payload[key] = value
+            }
         }
         sendJSON(payload)
     }

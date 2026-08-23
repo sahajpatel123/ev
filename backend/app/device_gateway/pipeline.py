@@ -201,7 +201,29 @@ async def handle_user_text(
             extra={"mac": mac, "action_target_device_id": str(target.id)},
         )
 
-    from .mobile_actions.service import create_phone_action, infer_from_text
+    from .mobile_actions.engine import apply_confirmation_utterance, create_phone_action, infer_from_text
+
+    handled = apply_confirmation_utterance(
+        device_id=str(device.id),
+        origin=origin or "http://127.0.0.1:8000",
+        text=raw,
+    )
+    if handled is not None:
+        reply = str(handled.get("spoken") or "I heard that.")
+        extra = {
+            "phone_action": handled,
+            "action_target_device_id": str(device.id),
+        }
+        return await _finish(
+            session,
+            device=device,
+            target=target,
+            request_id=rid,
+            text=raw,
+            reply=reply,
+            topic=topic,
+            extra=extra,
+        )
 
     inferred = infer_from_text(raw)
     if inferred:

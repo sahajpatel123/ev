@@ -39,6 +39,7 @@ from app.config import settings
 from app.db import init_db
 from app.device_gateway import api as device_gateway_api
 from app.device_gateway import pwa as device_gateway_pwa
+from app.device_gateway import release_portal
 from app.device_gateway.security import origin_allowed
 
 LOGGER = logging.getLogger("ev.main")
@@ -171,6 +172,7 @@ app.include_router(tools.router)
 app.include_router(web.router)
 app.include_router(device_gateway_api.router)
 app.include_router(device_gateway_pwa.router)
+app.include_router(release_portal.router)  # private tailnet-only install portal
 
 
 @app.get("/")

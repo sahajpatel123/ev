@@ -260,6 +260,7 @@ class LiveSession:
         text: str | None,
         *,
         transcript_source: str | None = None,
+        extra_metadata: dict | None = None,
     ) -> None:
         from app.memory.turns import schedule_live_turn
 
@@ -270,6 +271,7 @@ class LiveSession:
             device_id=self.device_id,
             live_session_id=self.session_id,
             transcript_source=transcript_source,
+            extra_metadata=extra_metadata,
         )
 
     async def emit(self, event: LiveEvent) -> None:
@@ -341,7 +343,20 @@ class LiveSession:
                     self._discard_outbound(lambda queued: queued is event, first_only=True)
                     return
         if persist_assistant:
-            self._schedule_relationship_turn("assistant", event.text)
+            extra = None
+            if getattr(event, "interrupted", False):
+                from app.voice.live.barge_in import interrupt_metadata
+
+                extra = interrupt_metadata(
+                    reason=getattr(event, "interruption_reason", None) or "user_barge_in",
+                    provider_response_id=getattr(event, "provider_response_id", None),
+                    audio_played_ms=getattr(event, "audio_played_ms", None),
+                    generated_duration_ms=getattr(event, "generated_duration_ms", None),
+                    generated_text=getattr(event, "generated_text", None) or event.text,
+                )
+            self._schedule_relationship_turn(
+                "assistant", event.text, extra_metadata=extra
+            )
 
     async def _pace_tts(self, event: TtsChunkEvent) -> bool:
         """Release pipeline audio at speaker speed instead of buffering whole replies."""
@@ -645,7 +660,7 @@ class LiveSession:
             await self._handle_computer_result(message)
             return
         if kind == "control":
-            await self._handle_control(str(message.get("action") or ""))
+            await self._handle_control(str(message.get("action") or ""), message)
             return
         if kind == "commit":
             return
@@ -718,16 +733,21 @@ class LiveSession:
             await self._handle_computer_result(message)
             return
         if kind == "control":
-            await self._handle_control(str(message.get("action") or ""))
+            await self._handle_control(str(message.get("action") or ""), message)
             return
         if kind == "commit":
             tick = self.engine.commit()
             await self._apply_tick(tick)
 
-    async def _handle_control(self, action: str) -> None:
+    async def _handle_control(self, action: str, message: dict | None = None) -> None:
         action = action.strip().lower()
         if action == "wake":
             action = "resume"
+        if action == "listener_presence":
+            # OWNER DECISION 2026-08-23: Listener Presence is CANCELLED.
+            # Accepted-and-ignored for old clients so the control can never
+            # affect audio state again.
+            return
         if action == "end":
             self._closed = True
             self._reset_playback_boundary()
@@ -782,6 +802,10 @@ class LiveSession:
             return
         if action in {"barge_in", "cancel"}:
             # Cancel in-flight speech only. Durable jobs keep running.
+            from app.voice.live.barge_in import parse_interrupt_request
+
+            request = parse_interrupt_request(message)
+            reason = "client_cancel" if action == "cancel" else request.reason
             self._reset_playback_boundary()
             self._cancel_respond()
             self._fail_look_futures(LookFrame(request_id="", error="cancelled", last=True))
@@ -794,13 +818,26 @@ class LiveSession:
                 )
             )
             if self.grok_voice is not None:
-                await self.grok_voice.cancel()
+                await self.grok_voice.interrupt_for_user(
+                    reason=reason,
+                    audio_played_ms=request.audio_played_ms,
+                    confidence=request.confidence,
+                    preroll_ms=request.preroll_ms,
+                )
             if self.asr_feed is not None:
                 self.asr_feed.abort()
             self._speech_active = False
             self.engine.note_barge_in()
-            reason = "client_cancel" if action == "cancel" else "client_barge_in"
-            await self.emit(BargeInEvent(at_ms=self.now(), reason=reason))
+            await self.emit(
+                BargeInEvent(
+                    at_ms=self.now(),
+                    reason=reason,
+                    audio_played_ms=request.audio_played_ms,
+                    confidence=request.confidence,
+                    preroll_ms=request.preroll_ms,
+                    provider_response_id=request.provider_response_id,
+                )
+            )
             return
         if action == "commit":
             tick = self.engine.commit()
@@ -1372,13 +1409,8 @@ class LiveSession:
             if self.asr_feed is not None and not self.engine.state.user_is_speaking:
                 self.asr_feed.abort()
                 self._speech_active = False
-        if (
-            tick.backchannel
-            and tick.backchannel.should_backchannel
-            and tick.backchannel.cue
-            and self.engine.state.speaking_mode == "backchannel"
-        ):
-            self._schedule_backchannel(tick.backchannel.cue)
+        # OWNER DECISION 2026-08-23: no server listener speech — the
+        # backchannel lane is dead. tick.backchannel is ignored.
         if tick.decision.action == TURN_RESPOND_NOW:
             await self._start_respond(tick)
 

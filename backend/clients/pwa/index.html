@@ -7,23 +7,20 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Evie">
   <meta name="color-scheme" content="light dark">
+  <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
+       fresh load means a mixed/partial deploy (see release.json contract). -->
+  <meta name="evie-build" content="2026.08.22.23">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.08.21.22">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.08.22.23">
   <title>Evie</title>
 </head>
 <body>
   <div class="field-bg" aria-hidden="true"></div>
   <main class="stage">
-    <header class="identity">
-      <p class="wordmark" id="title">Evie</p>
-      <span class="sr-only">EVIE</span>
-      <p class="status-pill" id="status">Connecting</p>
-    </header>
-
     <section id="welcome" class="sheet welcome" hidden>
       <p class="lead">Pair this phone with Home Station.</p>
       <label class="field">One-time pairing code
@@ -33,7 +30,6 @@
     </section>
 
     <section id="ready-ui" class="presence-surface" hidden>
-      <p class="home-chip" id="home-station">MacBook</p>
       <canvas id="orb" class="presence" width="360" height="360" aria-label="Evie"></canvas>
       <p class="mood" id="mood">Ready</p>
       <p class="user-line" id="user-line"></p>
@@ -64,37 +60,38 @@
     </section>
 
     <nav id="more-rail" class="rail" hidden>
-      <button type="button" data-surface="conversation" id="history-btn">Conversation</button>
       <button type="button" data-surface="devices">Devices</button>
       <button type="button" data-surface="activity">Activity</button>
-      <button type="button" data-surface="privacy" id="settings-btn">Privacy</button>
     </nav>
 
     <section id="conversation-sheet" class="sheet" hidden>
       <h2>Conversation</h2>
       <ol id="history" class="timeline"></ol>
-      <button type="button" class="ghost sheet-close" data-close="conversation-sheet">Close</button>
     </section>
 
     <section id="devices-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="devices-sheet" aria-label="Close">✕</button>
       <h2>Devices</h2>
       <div class="constellation" id="constellation"></div>
-      <button type="button" class="ghost sheet-close" data-close="devices-sheet">Close</button>
     </section>
 
     <section id="activity-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="activity-sheet" aria-label="Close">✕</button>
       <h2>Now</h2>
       <ol id="activity" class="timeline"></ol>
-      <button type="button" class="ghost sheet-close" data-close="activity-sheet">Close</button>
     </section>
 
     <section id="settings-sheet" class="sheet" hidden>
       <h2>Privacy</h2>
       <dl class="meta" id="privacy-meta"></dl>
-      <h3>Mobile Actions</h3>
+      <h3>Autonomy</h3>
+      <p class="quiet">Low-risk actions run after a clear command. Apple Messages and calls use the system’s own confirmation. High-risk actions stay blocked.</p>
+      <h3>Mobile Capabilities</h3>
       <dl class="meta" id="mobile-actions-meta"></dl>
-      <button type="button" id="install-bridge-btn" class="secondary">Install Evie Mobile Bridge</button>
-      <button type="button" id="bridge-ready-btn" class="secondary">I installed the Bridge</button>
+      <div id="legacy-bridge-panel" hidden>
+        <button type="button" id="install-bridge-btn" class="secondary">Install Evie Mobile Bridge</button>
+        <button type="button" id="bridge-ready-btn" class="secondary">I installed the Bridge</button>
+      </div>
       <ol id="mobile-actions-test" class="self-test" hidden></ol>
       <h3>Appearance</h3>
       <div class="segment" id="appearance">
@@ -129,7 +126,6 @@
         <button type="button" id="reset-btn" class="secondary">Reset local Evie client</button>
         <button type="button" id="unpair-btn" class="secondary">Unpair this device</button>
       </details>
-      <button type="button" id="settings-close" class="ghost">Close</button>
     </section>
 
     <section id="camera-sheet" class="sheet lens" hidden>
@@ -146,12 +142,12 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.08.21.22"></script>
-  <script src="/evie/presence.js?v=2026.08.21.22"></script>
-  <script src="/evie/orb.js?v=2026.08.21.22"></script>
-  <script src="/evie/feedback.js?v=2026.08.21.22"></script>
-  <script src="/evie/webrtc.js?v=2026.08.21.22"></script>
-  <script src="/evie/mobile-actions.js?v=2026.08.21.22"></script>
-  <script src="/evie/app.js?v=2026.08.21.22"></script>
+  <script src="/evie/audio.js?v=2026.08.22.23"></script>
+  <script src="/evie/presence.js?v=2026.08.22.23"></script>
+  <script src="/evie/orb.js?v=2026.08.22.23"></script>
+  <script src="/evie/feedback.js?v=2026.08.22.23"></script>
+  <script src="/evie/webrtc.js?v=2026.08.22.23"></script>
+  <script src="/evie/mobile-actions.js?v=2026.08.22.23"></script>
+  <script src="/evie/app.js?v=2026.08.22.23"></script>
 </body>
 </html>

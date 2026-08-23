@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.device_gateway import PWA_BUILD
 from app.device_gateway.sandbox import is_sandbox_device
 from app.device_gateway.voice import strip_production_memory_from_manifest
 from app.main import app
@@ -44,7 +45,7 @@ async def _pair(client: AsyncClient, *, role: str, name: str) -> tuple[dict, Asy
 async def test_pwa_is_installable_and_has_no_provider_secrets(client: AsyncClient) -> None:
     page = await client.get("/evie/")
     assert page.status_code == 200
-    assert "EVIE" in page.text
+    assert "evie" in page.text.lower()  # brand marker, case-robust across UI redesigns
     assert "SANDBOX" in page.text
     assert "Content-Security-Policy" in page.headers
     assert "*" not in (page.headers.get("Access-Control-Allow-Origin") or "")
@@ -65,7 +66,7 @@ async def test_pwa_is_installable_and_has_no_provider_secrets(client: AsyncClien
     assert "eval(" not in js.text
     assert "pcm-worklet" in js.text
     assert "ws_ticket" in js.text or "ticket=" in js.text
-    assert "2026.08.21.22" in js.text
+    assert PWA_BUILD in js.text
     assert "EvieAudioPlaybackEngine" in js.text
     assert "nextPlayTime" in audio.text
     assert "LinearResampler" in audio.text

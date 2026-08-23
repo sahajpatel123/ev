@@ -40,6 +40,10 @@ if ! grep -a -q 'metal-video-quad-v4-presence' "$APP/Contents/MacOS/EV"; then
     echo "ERROR: packaged binary is missing the current orb renderer identity" >&2
     exit 1
 fi
+if ! grep -a -q 'ev-barge-runtime-v2' "$APP/Contents/MacOS/EV"; then
+    echo "ERROR: packaged binary is missing the barge-in runtime marker" >&2
+    exit 1
+fi
 if grep -a -q 'VoiceOrbFallbackView' "$APP/Contents/MacOS/EV"; then
     echo "ERROR: packaged binary still contains the WKWebView orb fallback" >&2
     exit 1

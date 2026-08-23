@@ -530,14 +530,15 @@ def test_engine_commit_forces_response() -> None:
 
 
 def test_engine_backchannels_while_user_holds_floor() -> None:
+    # OWNER DECISION 2026-08-23: listener backchannel cues are CANCELLED.
+    # The engine must never produce one, even with legacy flags left on.
     clock = ManualClock(0)
     engine = LiveEngine(clock_ms=clock)
+    engine.backchannel_enabled = True
     engine.push_speech(True, now_ms=100)
     clock.advance(3000)
     tick = engine.tick(now_ms=3100)
-    assert tick.backchannel is not None
-    assert tick.backchannel.should_backchannel
-    assert engine.state.backchannel_count == 1
+    assert tick.backchannel is None
 
 
 def test_engine_does_not_backchannel_when_disabled() -> None:

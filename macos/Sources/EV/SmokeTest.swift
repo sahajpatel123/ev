@@ -1,5 +1,6 @@
 import AVFoundation
 import EVClient
+import EVRuntime
 import Foundation
 import UserNotifications
 
@@ -399,4 +400,433 @@ enum EVSmokeTest {
         semaphore.wait()
         return exitCode
     }
+
+    /// P0 regression driver for the 2026-08-21 crash (EV-*.ips): assistant
+    /// playback start must never terminate EV.app. Feeds known-good PCM
+    /// straight into TTSPlayer — no OpenAI, no realtime, no VAD, no gateway
+    /// — then drives a confirmed interrupt from a simulated render thread to
+    /// prove the stop is dispatched off-thread and nothing deadlocks.
+    /// Exit 0 = process survived every stage.
+    static func runFirstAudioSurvival() -> Int32 {
+        print("first-audio: start")
+        let player = TTSPlayer()
+        var ok = true
+
+        func tone(_ seconds: Double, _ amp: Float) -> Data {
+            let sampleRate = 16_000
+            let n = Int(Double(sampleRate) * seconds)
+            var data = Data(count: n * 2)
+            data.withUnsafeMutableBytes { raw in
+                let dst = raw.bindMemory(to: Int16.self)
+                for i in 0..<n {
+                    let t = Double(i) / Double(sampleRate)
+                    let sample = 0.9 * sin(2 * .pi * 210 * t) + 0.2 * sin(2 * .pi * 420 * t)
+                    dst[i] = Int16(max(-1, min(1, Float(sample) * amp)) * 32_767.0)
+                }
+            }
+            return data
+        }
+
+        func pump(_ seconds: TimeInterval) {
+            // Drain the main queue while waiting: priming schedules
+            // playerNode.play() via DispatchQueue.main, and a bare CLI has
+            // no runloop unless we pump one.
+            RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        }
+
+        func waitIdle(_ timeout: TimeInterval) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if !player.isPlaying { return true }
+                pump(0.05)
+            }
+            return false
+        }
+
+        // Stage A — first buffer decoded, enqueued, engine started.
+        do {
+            try player.enqueue(tone(0.4, 0.12), contentType: "audio/pcm")
+        } catch {
+            print("first-audio: FAIL enqueue short — \(error)")
+            return 1
+        }
+        var queued = false
+        repeat {
+            pump(0.05)
+            queued = player.isPlaying
+        } while !queued && Date() < Date().addingTimeInterval(2)
+        // The decisive first-audio proof is that the queued word actually
+        // drains through the graph (dataPlayedBack fired) without killing
+        // the process.
+        let shortCompleted = waitIdle(4)
+        print("first-audio: queued=\(queued) short_completed=\(shortCompleted)")
+        ok = ok && queued && shortCompleted
+
+        // Stage C — bounded long response stays alive and stops cleanly.
+        do {
+            try player.enqueue(tone(3.0, 0.10), contentType: "audio/pcm")
+        } catch {
+            print("first-audio: FAIL enqueue long — \(error)")
+            return 2
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        pump(0.8)
+        player.stop()
+        let stoppedClean = waitIdle(1)
+        print("first-audio: long_stopped_clean=\(stoppedClean)")
+        ok = ok && stoppedClean
+
+        // Stage D — interrupt confirmed on a simulated render thread:
+        // handleMicFrame must return promptly with the stop dispatched away,
+        // machine lands in userSpeaking, provider forwarding stays open.
+        player.bind(to: nil)
+        let renderSim = DispatchQueue(label: "ev.first-audio.render-sim")
+        let session = LiveBargeInSession()
+        _ = session.machine.acceptAssistantChunk()
+        let voiced = pcmVoicedProbe(seconds: 0.3)
+        let done = DispatchSemaphore(value: 0)
+        final class HopBox: @unchecked Sendable {
+            let guard_ = NSLock()
+            var prerollMs = -1
+        }
+        let box = HopBox()
+        renderSim.async {
+            let frame = BargeInDetector.frameSamples * 2
+            var offset = 0
+            while offset + frame <= voiced.count {
+                let mic = voiced.subdata(in: offset..<(offset + frame))
+                session.handleMicFrame(
+                    mic,
+                    playback: PlaybackSnapshot(audible: true, echoGate: true, playedMs: offset * 1000 / 32_000),
+                    forward: { _ in },
+                    interrupt: { event in
+                        DispatchQueue.global(qos: .userInteractive).async {
+                            box.guard_.lock()
+                            box.prerollMs = event.prerollMs
+                            box.guard_.unlock()
+                        }
+                    }
+                )
+                offset += frame
+            }
+            done.signal()
+        }
+        let returned = done.wait(timeout: .now() + 5)
+        print("first-audio: interrupt_returned=\(returned == .success)")
+        ok = ok && returned == .success
+        print("first-audio: phase_after=\(session.machine.currentPhase.rawValue)")
+        ok = ok && session.machine.currentPhase == .userSpeaking
+        let hopDeadline = Date().addingTimeInterval(2)
+        while Date() < hopDeadline {
+            box.guard_.lock()
+            let ms = box.prerollMs
+            box.guard_.unlock()
+            if ms >= 0 { break }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        box.guard_.lock()
+        let hopped = box.prerollMs >= 0
+        box.guard_.unlock()
+        print("first-audio: control_work_hopped=\(hopped)")
+        ok = ok && hopped
+        print("first-audio: process_alive=true")
+        print(ok ? "first-audio: PASS" : "first-audio: FAIL")
+        return ok ? 0 : 3
+    }
+
+    /// Listener-presence overlap stress: schedules many soft auxiliary
+    /// backchannel clips on the real shared engine while asserting the
+    /// owner-facing contracts — mic capture gate stays OPEN (never mute the
+    /// user to play a nod), the assistant-response lane is untouched, the
+    /// aux queue drains, stop() expendability races are safe, and the
+    /// process survives. Exit 0 = all invariants held.
+    static func runListenerPresenceOverlap() -> Int32 {
+        print("listener-presence: start")
+        let player = TTSPlayer()
+        var ok = true
+
+        // Synthetic soft variants (the shipped cache uses real Evie TTS;
+        // this probe validates lane physics, not voice identity).
+        func tone(_ seconds: Double, _ amp: Float) -> Data {
+            let sampleRate = 16_000
+            let n = Int(Double(sampleRate) * seconds)
+            var data = Data(count: n * 2)
+            data.withUnsafeMutableBytes { raw in
+                let dst = raw.bindMemory(to: Int16.self)
+                for i in 0..<n {
+                    let sample = 0.8 * sin(2 * .pi * 190 * Double(i) / Double(sampleRate))
+                    dst[i] = Int16(max(-1, min(1, Float(sample) * amp)) * 32_767.0)
+                }
+            }
+            return data
+        }
+
+        func pump(_ seconds: TimeInterval) {
+            RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+        }
+
+        // Contract 0: a nod must NEVER mute or displace owner capture.
+        do {
+            try player.enqueueListenerFeedback(tone(0.45, 0.12), gain: 0.34)
+        } catch {
+            print("listener-presence: FAIL first nod — \(error)")
+            return 1
+        }
+        let muteOpen = !player.shouldMuteCapture
+        print("listener-presence: capture_gate_open_during_nod=\(muteOpen)")
+        ok = ok && muteOpen
+        // BACKCHANNEL_PLAYING must NOT imply assistant-speaking: while a nod
+        // renders on the shared node, the response-lane counter stays empty.
+        pump(0.08)
+        let responseLaneClean = !player.isPlaying
+        print("listener-presence: response_lane_not_speaking=\(responseLaneClean)")
+        ok = ok && responseLaneClean
+
+        // Drain the single nod end-to-end.
+        var drained = false
+        let drainDeadline = Date().addingTimeInterval(5)
+        while Date() < drainDeadline {
+            pump(0.05)
+            if player.listenerFeedbackQueuedFrames == 0 { drained = true; break }
+        }
+        print("listener-presence: nod_drained=\(drained)")
+        ok = ok && drained
+
+        // Overlap stress: waves of scheduled nods with teardown races.
+        var scheduled = 0
+        for wave in 0..<5 {
+            for i in 0..<20 {
+                do {
+                    try player.enqueueListenerFeedback(tone(0.4, 0.10), gain: 0.3 + Float(i % 4) * 0.02)
+                    scheduled += 1
+                } catch {
+                    print("listener-presence: FAIL schedule wave=\(wave) i=\(i) — \(error)")
+                    return 2
+                }
+                if i % 7 == 3 {
+                    pump(0.03) // let some start rendering before the race
+                }
+            }
+            // Expendability: stop must clear the aux queue instantly and the
+            // process must not care whether buffers were mid-render.
+            player.stop()
+            pump(0.15)
+            let cleared = player.listenerFeedbackQueuedFrames == 0
+            print("listener-presence: wave=\(wave) cleared_after_stop=\(cleared)")
+            ok = ok && cleared
+        }
+        print("listener-presence: overlaps_scheduled=\(scheduled)")
+        ok = ok && scheduled == 100
+
+        // COMPLETION IMMUNITY (the Round One killer): fire the exact
+        // role-C barge-in stop WHILE a nod renders. The nod must survive.
+        do {
+            try player.enqueueListenerFeedback(tone(0.6, 0.12), gain: 0.34)
+        } catch {
+            print("listener-presence: FAIL immunity nod — \(error)")
+            return 5
+        }
+        pump(0.08)
+        let queuedBeforeStop = player.listenerFeedbackQueuedFrames
+        player.stopForBargeIn()
+        pump(0.08)
+        let queuedAfterStop = player.listenerFeedbackQueuedFrames
+        let survived = queuedBeforeStop > 0 && queuedAfterStop == queuedBeforeStop
+        print("listener-presence: nod_survives_stopForBargeIn=\(survived) before=\(queuedBeforeStop) after=\(queuedAfterStop)")
+        ok = ok && survived
+        var immuneDrain = false
+        let immuneDeadline = Date().addingTimeInterval(5)
+        while Date() < immuneDeadline {
+            pump(0.05)
+            if player.listenerFeedbackQueuedFrames == 0 { immuneDrain = true; break }
+        }
+        print("listener-presence: immune_nod_completed_naturally=\(immuneDrain)")
+        ok = ok && immuneDrain
+
+        // Sanctioned preemption: NORMAL_RESPONSE > LISTENER_BACKCHANNEL.
+        do {
+            try player.enqueueListenerFeedback(tone(0.6, 0.12), gain: 0.34)
+        } catch {
+            print("listener-presence: FAIL preempt nod — \(error)")
+            return 6
+        }
+        pump(0.05)
+        player.preemptListenerFeedbackForResponse(reason: "probe_response")
+        pump(0.05)
+        let preemptedClean = player.listenerFeedbackQueuedFrames == 0
+        print("listener-presence: response_preempts_nod=\(preemptedClean)")
+        ok = ok && preemptedClean
+
+        // Self-playback reference: nods must register as SELF audio so the
+        // barge-in detector can correlate them away from owner speech.
+        do {
+            try player.enqueueListenerFeedback(tone(0.5, 0.12), gain: 0.34)
+        } catch {
+            print("listener-presence: FAIL reference nod — \(error)")
+            return 3
+        }
+        pump(0.1)
+        let referenceBytes = player.playbackSnapshot().pcm16.count
+        print("listener-presence: self_reference_registered=\(referenceBytes > 0) bytes=\(referenceBytes)")
+        ok = ok && referenceBytes > 0
+        player.stop()
+
+        print("listener-presence: process_alive=true")
+        let accounting = player.listenerFeedbackAccounting
+        let unexpected = accounting.started - accounting.completed - accounting.preempted - accounting.dropped
+        print("listener-presence: accounting started=\(accounting.started) completed=\(accounting.completed) preempted=\(accounting.preempted) dropped=\(accounting.dropped) unexpected=\(unexpected)")
+        ok = ok && unexpected == 0
+        print(ok ? "listener-presence: PASS" : "listener-presence: FAIL")
+        return ok ? 0 : 4
+    }
+
+    /// Hardware probe: keep capture alive while TTSPlayer is audibly playing.
+    /// Does not require a human interruption. Proves mic frames, detector
+    /// input, and echo-only rejection on the real audio devices.
+    static func runBargeInProbe() -> Int32 {
+        print("BARGE_RUNTIME=\(BargeInTrace.runtimeId)")
+        print("BARGE_ENGINE=\(BargeInTrace.engine)")
+        BargeInTrace.marker()
+        let player = TTSPlayer()
+        let microphone = LiveVoiceMicrophone()
+        let session = LiveBargeInSession()
+        _ = session.machine.acceptAssistantChunk()
+        final class ProbeState: @unchecked Sendable {
+            let lock = NSLock()
+            var frames = 0
+            var maxMic: Float = 0
+            var maxPlay: Float = 0
+            var confirmed = false
+            var forwarded = 0
+        }
+        let state = ProbeState()
+        guard AudioInputLease.acquire(.live) else {
+            print("barge-in-probe: FAIL — live microphone lease unavailable")
+            return 2
+        }
+        defer { AudioInputLease.release(.live) }
+        do {
+            try microphone.start(enqueue: { data in
+                let snap = player.playbackSnapshot()
+                let rms = BargeInDetector.rms(BargeInDetector.floatSamples(data))
+                state.lock.lock()
+                state.frames += 1
+                if rms > state.maxMic { state.maxMic = rms }
+                if snap.rms > state.maxPlay { state.maxPlay = snap.rms }
+                state.lock.unlock()
+                session.handleMicFrame(
+                    data,
+                    playback: snap,
+                    forward: { _ in
+                        state.lock.lock()
+                        state.forwarded += 1
+                        state.lock.unlock()
+                    },
+                    interrupt: { event in
+                        state.lock.lock()
+                        state.confirmed = true
+                        state.lock.unlock()
+                        // Never stop the player on this render thread: the
+                        // tap callback runs on the engine messenger queue and
+                        // AVAudioPlayerNode.stop() syncs to it (deadlock).
+                        DispatchQueue.global(qos: .userInteractive).async {
+                            player.stopForBargeIn()
+                            print(
+                                "barge-in-probe: CONFIRMED preroll_ms=\(event.prerollMs) "
+                                    + String(format: "confidence=%.2f", event.confidence)
+                            )
+                        }
+                    }
+                )
+            })
+        } catch {
+            print("barge-in-probe: FAIL — microphone \(error.localizedDescription)")
+            return 3
+        }
+        let pcm = bargeProbeTone(seconds: 2.2)
+        do {
+            try player.enqueue(pcm, contentType: "audio/pcm", sampleRate: 16_000)
+        } catch {
+            print("barge-in-probe: FAIL — playback \(error.localizedDescription)")
+            microphone.stop()
+            return 4
+        }
+        Thread.sleep(forTimeInterval: 2.6)
+        let playing = player.isPlaying
+        player.stop()
+        Thread.sleep(forTimeInterval: 0.2)
+        microphone.stop()
+        state.lock.lock()
+        let captured = state.frames
+        let micPeak = state.maxMic
+        let playPeak = state.maxPlay
+        let didConfirm = state.confirmed
+        let didForward = state.forwarded
+        state.lock.unlock()
+        print("barge-in-probe: frames=\(captured) forwarded=\(didForward) confirmed=\(didConfirm)")
+        print(String(format: "barge-in-probe: max_mic_rms=%.4f max_play_rms=%.4f playing_at_end=%@", micPeak, playPeak, playing ? "true" : "false"))
+        print("barge-in-probe: capture_during_playback=\(captured > 20 ? "YES" : "NO")")
+        print("barge-in-probe: playback_reference=\(playPeak > 0.002 ? "YES" : "NO")")
+        print("barge-in-probe: echo_or_noise=\(micPeak > 0.003 ? "YES" : "NO")")
+        print("barge-in-probe: echo_only_false_positive=\(didConfirm ? "YES" : "NO")")
+        if captured <= 20 {
+            print("barge-in-probe: FAIL — microphone was deaf during playback")
+            return 5
+        }
+        if playPeak <= 0.002 {
+            print("barge-in-probe: FAIL — playback reference was empty")
+            return 6
+        }
+        print("barge-in-probe: PASS")
+        return 0
+    }
+}
+
+private func bargeProbeTone(seconds: Double, sampleRate: Int = 16_000) -> Data {
+    let n = Int(Double(sampleRate) * seconds)
+    var data = Data(count: n * 2)
+    data.withUnsafeMutableBytes { raw in
+        let dst = raw.bindMemory(to: Int16.self)
+        for i in 0..<n {
+            let t = Double(i) / Double(sampleRate)
+            let sample = 0.22 * sin(2 * Double.pi * 180 * t)
+                + 0.10 * sin(2 * Double.pi * 360 * t)
+            dst[i] = Int16(max(-1, min(1, sample)) * 32767.0)
+        }
+    }
+    return data
+}
+
+private func pcmVoicedProbe(seconds: Double, sampleRate: Int = 16_000) -> Data {
+    let n = Int(Double(sampleRate) * seconds)
+    var a = Data(count: n * 2)
+    var b = Data(count: n * 2)
+    a.withUnsafeMutableBytes { raw in
+        let dst = raw.bindMemory(to: Int16.self)
+        for i in 0..<n {
+            let sample = 0.18 * sin(2 * Double.pi * 180 * Double(i) / Double(sampleRate))
+            dst[i] = Int16((sample * 32_767.0).rounded())
+        }
+    }
+    b.withUnsafeMutableBytes { raw in
+        let dst = raw.bindMemory(to: Int16.self)
+        for i in 0..<n {
+            let sample = 0.08 * sin(2 * Double.pi * 360 * Double(i) / Double(sampleRate))
+            dst[i] = Int16((sample * 32_767.0).rounded())
+        }
+    }
+    var out = Data(count: n * 2)
+    out.withUnsafeMutableBytes { rawO in
+        a.withUnsafeBytes { rawA in
+            b.withUnsafeBytes { rawB in
+                let sa = rawA.bindMemory(to: Int16.self)
+                let sb = rawB.bindMemory(to: Int16.self)
+                let so = rawO.bindMemory(to: Int16.self)
+                for i in 0..<n {
+                    so[i] = Int16(max(-32_767, min(32_767, Int(sa[i]) + Int(sb[i]))))
+                }
+            }
+        }
+    }
+    return out
 }

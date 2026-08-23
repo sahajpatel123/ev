@@ -69,6 +69,45 @@ def spoken_provider_disconnect(provider: str | None) -> str:
     return f"{label} disconnected. I'll keep this session and reconnect."
 
 
+def spoken_provider_quota_block(provider: str | None) -> str:
+    """Truthful quota/spend-limit voice line.
+
+    Retrying cannot fix this — the owner must raise the provider spend
+    limit. Never report it as a generic reconnectable disconnect.
+    """
+
+    label = _provider_label(provider)
+    return (
+        f"{label} paused me: the account spend limit is reached. "
+        "Raise the limit and just talk to me again."
+    )
+
+
+def ws_close_fields(exc: BaseException) -> tuple[int | None, str]:
+    """Extract (close_code, close_reason) from a websockets failure, else (None, "")."""
+
+    rcvd = getattr(exc, "rcvd", None)
+    if rcvd is not None:
+        code = getattr(rcvd, "code", None)
+        reason = (getattr(rcvd, "reason", "") or "").strip()
+        try:
+            return int(code) if code is not None else None, reason[:200]
+        except (TypeError, ValueError):
+            return None, reason[:200]
+    return None, ""
+
+
+def is_quota_close(reason: str, exc_text: str = "") -> bool:
+    blob = f"{reason} {exc_text}".lower()
+    return (
+        "insufficient_quota" in blob
+        or "spend_limit" in blob
+        or "spend limit" in blob
+        or "quota_exceeded" in blob
+        or "billing_hard_limit_reached" in blob
+    )
+
+
 def spoken_provider_connect_failed(provider: str | None, detail: str | None = None) -> str:
     label = _provider_label(provider)
     extra = f" {detail}" if detail else ""

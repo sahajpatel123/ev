@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.device_gateway import PWA_BUILD
 import subprocess
 from pathlib import Path
 
@@ -117,8 +118,8 @@ def test_pwa_strict_mode_never_falls_back_in_talk() -> None:
     assert "Speech Recognition Check" in html
     assert "Report misheard phrase" in html
     assert "VOICE HEALTH" in html
-    assert "2026.08.21.22" in app_js
-    assert "2026.08.21.22" in html
+    assert PWA_BUILD in app_js
+    assert PWA_BUILD in html
     assert "sampleRate: 16000" not in webrtc
 
 

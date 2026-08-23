@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "056cd8e5-8979-4606-baab-7551000939c2",
+  "condition": "continue",
+  "command": null,
+  "verification": null,
+  "status": "paused",
+  "createdAt": 1787385435912,
+  "startedAt": 1787385435912,
+  "completedAt": null,
+  "pausedAt": 1787385492386,
+  "resumedAt": null,
+  "turnsEvaluated": 0,
+  "tokensUsed": 0,
+  "lastEvaluation": {
+    "met": false,
+    "blocked": true,
+    "reason": "Session error: MessageAbortedError: Aborted",
+    "confidence": 1,
+    "timestamp": 1787385492386,
+    "evaluatorType": "deterministic"
+  },
+  "evaluationHistory": [],
+  "constraints": {
+    "maxTurns": 20,
+    "maxTimeMinutes": 30,
+    "maxTokens": 100000
+  },
+  "metadata": {
+    "setBy": "user"
+  }
+}

@@ -13,6 +13,7 @@ final class VoiceLevelMeter: @unchecked Sendable {
     private var output: Float = 0
     private var lastInputAt = Date.distantPast
     private var lastOutputAt = Date.distantPast
+    private var listenerPulseUntil = Date.distantPast
 
     private init() {}
 
@@ -22,6 +23,17 @@ final class VoiceLevelMeter: @unchecked Sendable {
 
     func ingestOutputPCM16(_ data: Data) {
         ingest(VoicePresenceMath.normalizeSpeechRMS(VoicePresenceMath.pcm16RMS(data)), input: false)
+    }
+
+    /// A silent "nod": a tiny, brief lift of the listening shimmer. This is
+    /// NOT speech energy — it never reaches the speaking state and fades
+    /// within a second. Visual-only listener feedback channel.
+    func noteListenerPulse(duration: TimeInterval = 0.7) {
+        lock.lock()
+        listenerPulseUntil = Date().addingTimeInterval(duration)
+        input = max(input, 0.14)
+        lastInputAt = Date()
+        lock.unlock()
     }
 
     func resetInput() {

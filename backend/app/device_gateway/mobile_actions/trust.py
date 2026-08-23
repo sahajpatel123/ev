@@ -25,14 +25,8 @@ YES_PHRASES = frozenset(
         "go ahead",
         "sure",
         "correct",
-        "ok",
-        "okay",
-        "confirm",
-        "confirmed",
-        "please do",
-        "do that",
-        "send",
-        "call",
+        "okay send it",
+        "ok send it",
     }
 )
 NO_PHRASES = frozenset(
@@ -67,7 +61,7 @@ _MUTATE_DURATION = re.compile(
     re.I,
 )
 _DRAFT_HOLD = re.compile(
-    r"\b(?:don'?t send(?: it)? yet|not yet|save (?:it )?as a draft|prepare(?: it)? (?:only|first)|don'?t call)\b",
+    r"\b(?:don'?t send(?: it)? yet|not yet|save (?:it )?as a draft|prepare(?: it)? (?:only|first))\b",
     re.I,
 )
 _NEGATION = re.compile(

@@ -19,6 +19,12 @@ if arguments.contains("--smoke-test") {
     exit(EVSmokeTest.runMic())
 } else if arguments.contains("--tts-test") {
     exit(EVSmokeTest.runTTS())
+} else if arguments.contains("--first-audio-test") {
+    exit(EVSmokeTest.runFirstAudioSurvival())
+} else if arguments.contains("--listener-presence-test") {
+    exit(EVSmokeTest.runListenerPresenceOverlap())
+} else if arguments.contains("--barge-in-probe") {
+    exit(EVSmokeTest.runBargeInProbe())
 } else if arguments.contains("--life-request") {
     exit(EVSmokeTest.runLifeRequest())
 } else if arguments.contains("--request-all") {

@@ -217,14 +217,11 @@ class LiveEngine:
             text = decision.last_partial or self.state.last_transcript() or ""
             envelope = self.envelope_for(text)
 
-        if (
-            self.backchannel_enabled
-            and self.state.user_is_speaking
-            and decision.action == TURN_KEEP_LISTENING
-        ):
-            backchannel = self.backchannels.decide(self.state, now_ms=now)
-            if backchannel.should_backchannel and backchannel.cue:
-                self.state.note_backchannel(now_ms=now)
+        # OWNER DECISION 2026-08-23: Listener Presence / server backchannel
+        # cues are CANCELLED product features. The server never emits
+        # "Mhm."/"Yeah."/"Okay." listener speech — one speech authority only:
+        # the normal assistant response. (Legacy BackchannelPolicy code
+        # remains quarantined, unwired.)
 
         self._maybe_state_event(now, events)
         return EngineTick(

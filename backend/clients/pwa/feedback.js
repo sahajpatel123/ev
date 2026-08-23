@@ -32,6 +32,10 @@
   }
 
   function haptic(pattern) {
+    if (window.EvieNativeShell && window.EvieNativeShell.post) {
+      window.EvieNativeShell.post({ type: "haptic", event: "selection" });
+      return true;
+    }
     if (!hapticAvailable()) return false;
     try {
       navigator.vibrate(pattern || 10);

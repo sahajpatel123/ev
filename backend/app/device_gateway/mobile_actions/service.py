@@ -78,6 +78,8 @@ SAFE_COMPLETE_KEYS = frozenset(
         "choices",
         "requires_user_interaction",
         "permission",
+        "system_ui_presented",
+        "timer_kind",
     }
 )
 ALLOWED_RESULTS = frozenset(
@@ -252,8 +254,14 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
     failure = str(row.get("failure") or "")
     result = str((row.get("receipt") or {}).get("result") or row.get("result") or "")
     args = row.get("normalized") if isinstance(row.get("normalized"), dict) else {}
+    if failure == "NATIVE_SHELL_REQUIRED":
+        return "Open Evie as the iPhone app to do that on this phone. The Home Screen page can't run that native action."
+    if failure == "NATIVE_ACTIONS_DISABLED":
+        return "Native iPhone actions are turned off right now. Voice still works."
+    if failure == "APP_UNSUPPORTED":
+        return "I can't open that app directly yet."
     if failure == "BRIDGE_REQUIRED":
-        return "Install Evie Mobile Bridge on this iPhone to do that. It's a one-time Shortcuts setup."
+        return "Open Evie as the iPhone app to do that on this phone."
     if failure == "BRIDGE_UPDATE_REQUIRED":
         return "Mobile Actions needs an update on this iPhone."
     if failure == "HIGH_RISK":
@@ -279,10 +287,14 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
         return f"I couldn't find {args.get('contact_query') or 'that contact'} on this iPhone."
     if failure == "EXPIRED":
         return "That action expired. Ask me again if you still want it."
-    if failure == "CANCELLED" or result == "CANCELLED":
+    if failure == "CANCELLED":
+        return "I won't do that."
+    if result == "CANCELLED":
         return "Cancelled."
+    if row.get("state") == "draft":
+        return "I've prepared it and won't send yet."
     if row.get("state") == "awaiting_confirmation" or pending:
-        if operation == "message_contact":
+        if operation in {"message_contact", "direct_message"}:
             return (
                 f"Send '{args.get('message')}' to {args.get('contact_query') or 'them'}?"
             )
@@ -331,6 +343,24 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
             return "Evie Mobile Bridge is ready."
         return "Done."
     if row.get("state") in {"authorized", "resolved", "executing"}:
+        if row.get("method") == "native_broker":
+            if operation == "create_timer":
+                return "Setting that timer now."
+            if operation == "create_reminder":
+                return "Saving that reminder now."
+            if operation == "create_alarm":
+                return "Setting that alarm now."
+            if operation == "create_calendar_event":
+                return "Adding that to your calendar now."
+            if operation == "message_contact":
+                return f"I've prepared the message for {args.get('contact_query') or 'them'}."
+            if operation == "call_contact":
+                return f"I've opened the call for {args.get('contact_query') or 'them'}."
+            if operation == "open_app":
+                return f"Opening {args.get('display_name') or args.get('app_id') or 'that app'}."
+            if operation == "current_location":
+                return "Checking where you are."
+            return "Running that on this iPhone."
         if operation == "create_timer":
             return "Tap Start timer on this iPhone."
         if operation == "create_reminder":
@@ -732,6 +762,33 @@ def create_phone_action(
     device_label: str = "This iPhone",
     confirm: bool = False,
 ) -> dict[str, Any]:
+    from .engine import create_phone_action as _engine_create
+
+    return _engine_create(
+        device_id=device_id,
+        role=role,
+        instance_id=instance_id,
+        session_id=session_id,
+        origin=origin,
+        arguments=arguments,
+        transcript=transcript,
+        device_label=device_label,
+        confirm=confirm,
+    )
+
+
+def _legacy_create_phone_action_unused(
+    *,
+    device_id: str,
+    role: str,
+    instance_id: str,
+    session_id: str | None,
+    origin: str,
+    arguments: dict[str, Any],
+    transcript: str = "",
+    device_label: str = "This iPhone",
+    confirm: bool = False,
+) -> dict[str, Any]:
     operation = str(arguments.get("operation") or "").strip()
     if reg.is_blocked(operation) or not operation:
         return _fail(operation or "unknown", "HIGH_RISK" if operation else "ACTION_UNAVAILABLE")
@@ -836,6 +893,12 @@ def create_phone_action(
 
 
 def confirm_action(*, action_id: str, device_id: str, origin: str) -> dict[str, Any]:
+    from .engine import confirm_action as _engine_confirm
+
+    return _engine_confirm(action_id=action_id, device_id=device_id, origin=origin)
+
+
+def _legacy_confirm_action_unused(*, action_id: str, device_id: str, origin: str) -> dict[str, Any]:
     row = store.get_action(action_id)
     if row is None or row.get("device_id") != device_id:
         return _fail("unknown", "EXPIRED")
@@ -1016,12 +1079,15 @@ def complete_action(
                 result = "CREATED"
             else:
                 result = "EXECUTED"
+        if str(row.get("operation")) == "message_contact" and result == "SENT":
+            result = "SYSTEM_UI_OPENED"
         verified = bool(clean.get("verified"))
         if result in {"CREATED", "SENT", "SELF_TEST_OK"}:
             verified = True
         if result == "SYSTEM_UI_OPENED":
             verified = False
             clean["requires_user_interaction"] = True
+            clean["system_ui_presented"] = True
     receipt = {
         "result": result,
         "verified": verified,
@@ -1030,6 +1096,7 @@ def complete_action(
         "masked_destination": clean.get("masked_destination"),
         "choices": clean.get("choices") or [],
         "requires_user_interaction": bool(clean.get("requires_user_interaction")),
+        "system_ui_presented": bool(clean.get("system_ui_presented") or result == "SYSTEM_UI_OPENED"),
     }
     updated = store.update_action(
         action_id,
@@ -1047,6 +1114,12 @@ def complete_action(
 
 
 def status_snapshot(*, device_id: str, role: str, display_name: str) -> dict[str, Any]:
+    from .engine import status_snapshot as _engine_status
+
+    return _engine_status(device_id=device_id, role=role, display_name=display_name)
+
+
+def _legacy_status_snapshot_unused(*, device_id: str, role: str, display_name: str) -> dict[str, Any]:
     handshake = store.handshake_of(device_id)
     installed = bool(handshake.get("bridge_installed"))
     compatible = handshake.get("compatible", True) if handshake else True
@@ -1112,6 +1185,12 @@ _TEXT_MAPS = re.compile(
 
 
 def infer_from_text(text: str) -> dict[str, Any] | None:
+    from .engine import infer_from_text as _engine_infer
+
+    return _engine_infer(text)
+
+
+def _legacy_infer_from_text_unused(text: str) -> dict[str, Any] | None:
     raw = (text or "").strip()
     if not raw:
         return None

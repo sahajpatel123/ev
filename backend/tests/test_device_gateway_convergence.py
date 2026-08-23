@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.device_gateway import PWA_BUILD
 from app.voice.live.grok_voice import capability_instructions, grok_voice_instructions
 
 
@@ -9,7 +10,7 @@ def test_pwa_audio_engine_is_single_scheduled_path() -> None:
     from pathlib import Path
 
     app_js = (Path(__file__).resolve().parents[1] / "clients" / "pwa" / "app.js").read_text()
-    assert "2026.08.21.22" in app_js
+    assert PWA_BUILD in app_js
     assert "EvieAudioPlaybackEngine" in app_js
     assert "EvieWebRTC" in app_js
 

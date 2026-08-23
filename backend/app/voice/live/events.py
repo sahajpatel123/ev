@@ -219,10 +219,27 @@ class BargeInEvent(LiveEvent):
     """The user started talking while the assistant was speaking — stop output."""
 
     reason: str = "user_speech"
+    audio_played_ms: int | None = None
+    confidence: float | None = None
+    preroll_ms: int | None = None
+    provider_response_id: str | None = None
 
-    def __init__(self, *, at_ms: int, reason: str = "user_speech") -> None:
+    def __init__(
+        self,
+        *,
+        at_ms: int,
+        reason: str = "user_speech",
+        audio_played_ms: int | None = None,
+        confidence: float | None = None,
+        preroll_ms: int | None = None,
+        provider_response_id: str | None = None,
+    ) -> None:
         super().__init__("barge_in", at_ms)
         self.reason = reason
+        self.audio_played_ms = audio_played_ms
+        self.confidence = confidence
+        self.preroll_ms = preroll_ms
+        self.provider_response_id = provider_response_id
 
 
 @dataclass
@@ -273,6 +290,12 @@ class ReplyEvent(LiveEvent):
     style: dict = field(default_factory=dict)
     device_id: str | None = None
     tts_device_id: str | None = None
+    interrupted: bool = False
+    interruption_reason: str | None = None
+    provider_response_id: str | None = None
+    audio_played_ms: int | None = None
+    generated_duration_ms: int | None = None
+    generated_text: str | None = None
 
     def __init__(
         self,
@@ -285,6 +308,12 @@ class ReplyEvent(LiveEvent):
         style: dict | None = None,
         device_id: str | None = None,
         tts_device_id: str | None = None,
+        interrupted: bool = False,
+        interruption_reason: str | None = None,
+        provider_response_id: str | None = None,
+        audio_played_ms: int | None = None,
+        generated_duration_ms: int | None = None,
+        generated_text: str | None = None,
     ) -> None:
         super().__init__("reply", at_ms)
         self.text = text
@@ -294,6 +323,12 @@ class ReplyEvent(LiveEvent):
         self.style = style or {}
         self.device_id = device_id
         self.tts_device_id = tts_device_id
+        self.interrupted = bool(interrupted)
+        self.interruption_reason = interruption_reason
+        self.provider_response_id = provider_response_id
+        self.audio_played_ms = audio_played_ms
+        self.generated_duration_ms = generated_duration_ms
+        self.generated_text = generated_text
 
 
 @dataclass

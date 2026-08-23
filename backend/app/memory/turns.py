@@ -52,6 +52,7 @@ async def record_conversation_turn(
     actor: str = "owner",
     modality: str | None = None,
     transcript_source: str | None = None,
+    extra_metadata: dict | None = None,
 ) -> Event | None:
     """Persist one spoken or typed turn. Skips empty text and near-duplicate echoes."""
 
@@ -75,6 +76,7 @@ async def record_conversation_turn(
                 "speaker": "assistant" if event_type == "message.assistant" else "owner",
                 "relationship_turn": True,
                 "transcript_source": transcript_source or source,
+                **(extra_metadata or {}),
             },
         )
     )
@@ -133,6 +135,7 @@ def schedule_live_turn(
     device_id: str | None,
     live_session_id: str | None,
     transcript_source: str | None = None,
+    extra_metadata: dict | None = None,
 ) -> None:
     """Fire-and-forget persist so the realtime audio loop never waits on DB."""
 
@@ -151,6 +154,7 @@ def schedule_live_turn(
             device_id=device_id,
             live_session_id=live_session_id,
             transcript_source=transcript_source,
+            extra_metadata=extra_metadata,
         ),
         name="ev-memory-live-turn",
     )
@@ -184,6 +188,7 @@ async def _live_turn_task(
     device_id: str | None,
     live_session_id: str | None,
     transcript_source: str | None = None,
+    extra_metadata: dict | None = None,
 ) -> None:
     from sqlalchemy.exc import OperationalError
 
@@ -210,6 +215,7 @@ async def _live_turn_task(
                     live_session_id=live_session_id,
                     modality="live_realtime",
                     transcript_source=transcript_source,
+                    extra_metadata=extra_metadata,
                 )
                 if event is None:
                     await session.commit()

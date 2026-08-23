@@ -32,12 +32,18 @@ from .camera import get_frame, put_frame
 from .handoff import current_state, state_public
 from .health import snapshot as health_snapshot
 from .lease import claim_lease, heartbeat_lease, lease_belongs, lease_public, release_lease
-from .mobile_actions.routes import gateway_origin, router as mobile_actions_router
-from .mobile_actions.service import status_snapshot as mobile_actions_status
+from .mobile_actions.engine import status_snapshot as mobile_actions_status
+from .mobile_actions.routes import gateway_origin
+from .mobile_actions.routes import router as mobile_actions_router
 from .mobile_voice import fingerprint_report, remember_diag, transcribe_oracle
 from .pipeline import handle_user_text
 from .presence import note as note_presence
 from .protocol import AUDIO_CONTRACT, protocol_compatible
+from .release import (
+    STAGE_VERSION_COMPATIBILITY,
+    current_web_release,
+    evaluate_version_compat,
+)
 from .sandbox import clear_cross_platform_sandbox, is_sandbox_device, memory_scope_of
 from .sandbox_tools import provider_effective_snapshot
 from .security import origin_allowed
@@ -263,7 +269,7 @@ async def pair(
         "memory_scope": "sandbox",
         "environment": "SANDBOX",
         "protocol_version": PROTOCOL_VERSION,
-        "pwa_build": settings.pwa_build,
+        "pwa_build": current_web_release()["web_build"],
         "audio_contract": AUDIO_CONTRACT,
     }
 
@@ -291,11 +297,30 @@ async def hello(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
-    if not protocol_compatible(data.protocol_version):
+    release = current_web_release()
+    compat = evaluate_version_compat(
+        client_build=data.client_build,
+        client_protocol=data.protocol_version,
+        release=release,
+    )
+    if not compat["protocol_supported"]:
+        # Hard gate ONLY for genuine protocol incompatibility. Build skew is
+        # reported as update_recommended below and never blocks auth.
         raise HTTPException(
             status_code=409,
-            detail="Client protocol is incompatible with this Home Station",
-            headers={"X-Error-Code": "protocol_incompatible"},
+            detail={
+                "error_code": "CLIENT_PROTOCOL_UNSUPPORTED",
+                "failed_stage": STAGE_VERSION_COMPATIBILITY,
+                "supported_range": [
+                    compat and release.get("web_protocol_min"),
+                    release.get("web_protocol_max"),
+                ],
+                "latest_web_build": compat["latest_web_build"],
+            },
+            headers={
+                "X-Error-Code": "protocol_incompatible",
+                "X-Evie-Update-Required": "true",
+            },
         )
     device.client_version = (data.client_build or device.client_version or "")[:64] or device.client_version
     device.protocol_version = str(data.protocol_version)[:16]
@@ -311,8 +336,20 @@ async def hello(
         "memory_scope": memory_scope_of(device),
         "home_station": snap.get("home_station"),
         "protocol_version": PROTOCOL_VERSION,
-        "pwa_build": settings.pwa_build,
-        "server_build": settings.pwa_build,
+        # Release identity comes from the generated manifest ON DISK, read at
+        # request time. A stale backend process can no longer advertise an old
+        # build while serving new assets (the 22.21/22.20 outage class).
+        "pwa_build": release["web_build"],
+        "server_build": release["web_build"],
+        "server_release": release["web_build"],
+        "latest_web_build": compat["latest_web_build"],
+        "web_protocol": release["web_protocol"],
+        "web_protocol_min": release["web_protocol_min"],
+        "web_protocol_max": release["web_protocol_max"],
+        "update_required": compat["update_required"],
+        "update_reason": compat["update_reason"],
+        "update_recommended": compat["update_recommended"],
+        "asset_manifest_hash": release.get("asset_manifest_hash"),
         "design_version": getattr(settings, "pwa_design_version", None) or DESIGN_VERSION,
         "audio_contract": AUDIO_CONTRACT,
         "production_memory_enabled": False,
@@ -742,7 +779,7 @@ async def audio_diag_incident(
         "ok": True,
         "captured": True,
         "report": {
-            "pwa_build": settings.pwa_build,
+            "pwa_build": current_web_release()["web_build"],
             "design_version": DESIGN_VERSION,
             "backend": data.backend,
             "underruns": data.underruns,

@@ -11,9 +11,10 @@ from typing import Any
 
 from app.config import settings
 
-from . import PROTOCOL_VERSION, PWA_BUILD
+from . import PROTOCOL_VERSION
 from .power import snapshot as assertion_snapshot
 from .presence import snapshot as presence_snapshot
+from .release import current_web_release
 from .sandbox import production_memory_enabled
 from .sandbox_tools import provider_effective_snapshot
 from .tailscale import probe as tailscale_probe
@@ -82,7 +83,7 @@ def snapshot(*, connected_devices: int | None = None) -> dict[str, Any]:
         "sandbox_memory_ready": True,
         "production_memory_enabled": production_memory_enabled(),
         "protocol_version": PROTOCOL_VERSION,
-        "pwa_build": getattr(settings, "pwa_build", None) or PWA_BUILD,
+        "pwa_build": current_web_release()["web_build"],
         "backend_pid": os.getpid(),
         "bind": "127.0.0.1:8000",
         "backend_localhost_only": True,
@@ -116,7 +117,8 @@ def snapshot(*, connected_devices: int | None = None) -> dict[str, Any]:
             "track": "v1",
             "bridge_name": "Evie Mobile Bridge",
             "protocol": 1,
-            "native_shell": "DEFERRED",
+            "native_shell": "SCAFFOLDED",
+            "native_actions_enabled": bool(getattr(settings, "native_actions_enabled", True)),
             "remote_unattended": False,
         },
         "always_ready_voice": False,

@@ -29,6 +29,7 @@ from app.context.compiler import ContextPlan
 from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
 from app.device_gateway.auth import assert_not_sandbox_production
+from app.device_gateway.release import current_web_release
 from app.ev import alert_radar, conversation, vision
 from app.ev import assistant as assistant_mod
 from app.ev import rollup as rollup_service
@@ -276,7 +277,8 @@ def _device_gateway_health() -> dict:
     return {
         "ready": True,
         "protocol_version": settings.device_protocol_version,
-        "pwa_build": settings.pwa_build,
+        # Served-asset truth, read from disk (see device_gateway.release).
+        "pwa_build": current_web_release()["web_build"],
         "production_memory_enabled": bool(settings.cross_platform_production_memory),
         "health": "/v1/device-gateway/health",
         "pwa": "/evie/",

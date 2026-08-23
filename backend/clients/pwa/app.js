@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.08.21.22";
+const CLIENT_BUILD = "2026.08.22.23";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -349,12 +349,15 @@ function fillDl(id, rows) {
 function fillMobileActions(hello) {
   const ma = (hello && hello.mobile_actions) || {};
   const caps = ma.capabilities || [];
+  const native = !!(window.EvieNativeShell && window.EvieNativeShell.post) || !!ma.native_shell_connected;
   const rows = [
-    ["Bridge", ma.bridge_installed ? "Installed" : "Not installed"],
+    ["Native shell", native ? "Connected" : "Not this page"],
     ["This device", ma.this_device || "This iPhone"],
-    ["Protocol", String(ma.protocol || 1)],
-    ["Version", ma.bridge_version || "—"],
+    ["Broker", ma.broker_version || "—"],
+    ["Actions", ma.native_actions_enabled === false ? "Disabled" : "Enabled"],
   ];
+  const legacy = document.getElementById("legacy-bridge-panel");
+  if (legacy) legacy.hidden = !/legacy_bridge=1/.test(location.search);
   caps.forEach((cap) => {
     rows.push([cap.title || cap.operation, cap.available ? "Ready" : (cap.reason || "Unavailable")]);
   });
@@ -370,7 +373,7 @@ function fillSettings(hello, device) {
     ["Role", prettyRole(device.role) || "—"],
     ["Connection", state.conn],
     ["Home Station", homeLine(hello)],
-    ["PWA build", CLIENT_BUILD],
+    ["PWA build", CLIENT_BUILD + (state.updateAvailable ? " · update available" : "")],
     ["Runtime", (window.EvieMobileVoice && window.EvieMobileVoice.RUNTIME_VERSION) || "—"],
     ["Signaling", hello.signaling_version || "unified-calls-v1"],
     ["Design", DESIGN_VERSION],
@@ -440,6 +443,322 @@ function pushActivity(text) {
 function showSheet(id, on) {
   const el = $(id);
   if (el) el.hidden = !on;
+}
+
+function anySheetOpen() {
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "settings-sheet", "camera-sheet", "welcome"]
+    .some((id) => {
+      const el = $(id);
+      return !!(el && !el.hidden);
+    });
+}
+
+/* Whole-page slide language: when a swipe commits, the presence page glides
+   aside while the destination sheet slides in from the same edge; when the
+   sheet closes, the page glides back home. */
+const STAGE_OUT_CURVE = "cubic-bezier(0.32, 0.72, 0.22, 1)";
+const STAGE_HOME_CURVE = "cubic-bezier(0.16, 1, 0.3, 1)";
+
+function stageSlideAside(direction) {
+  const stage = document.querySelector(".stage");
+  if (!stage) return;
+  stage.style.willChange = "transform, opacity";
+  stage.style.transition =
+    "transform 460ms " + STAGE_OUT_CURVE + ", opacity 400ms " + STAGE_OUT_CURVE;
+  stage.style.transform = "translate3d(" + (direction * 12) + "%,0,0) scale(0.97)";
+  stage.style.opacity = "0.55";
+}
+
+function stageReturn() {
+  const stage = document.querySelector(".stage");
+  if (!stage) return;
+  stage.style.transition =
+    "transform 460ms " + STAGE_HOME_CURVE + ", opacity 360ms " + STAGE_HOME_CURVE;
+  stage.style.transform = "";
+  stage.style.opacity = "";
+  window.setTimeout(() => {
+    stage.style.transition = "";
+    stage.style.willChange = "";
+  }, 480);
+}
+
+/* Horizontal swipe navigation on the presence surface:
+   left → Conversation, right → Privacy. Rubber-bands with the finger,
+   locks to horizontal intent only, never fights vertical scroll,
+   and ignores every interactive region. */
+function initSwipes(openSurface) {
+  const stage = document.querySelector(".stage");
+  if (!stage) return;
+  const OPEN_AT = 72;          /* travel that commits a swipe */
+  const FLICK_VELOCITY = 0.45; /* px/ms — a quick flick commits early */
+  const FLICK_MIN_TRAVEL = 24; /* …but only if it genuinely moved */
+  const MAX_DRAG = 110;        /* visual rubber-band cap */
+  const RUBBER = 0.42;         /* finger→pixel follow ratio */
+  const SETTLE_CURVE = "cubic-bezier(0.16, 1, 0.3, 1)";
+  let startX = 0;
+  let startY = 0;
+  let dx = 0;
+  let lastDx = 0;
+  let lastT = 0;
+  let velocity = 0;
+  let locked = null;
+  let tracking = false;
+  let rafId = 0;
+  let pendingShift = null;
+
+  function interactive(target) {
+    return !!(target && target.closest &&
+      target.closest("button, input, a, textarea, select, form, .sheet, .rail, .scrim"));
+  }
+
+  /* Paint at most once per frame, on the compositor (translate3d). */
+  function paint() {
+    rafId = 0;
+    if (pendingShift === null) return;
+    const eased = pendingShift;
+    stage.style.transform = "translate3d(" + eased.toFixed(1) + "px,0,0)";
+    stage.style.opacity = String(1 - (Math.abs(eased) / MAX_DRAG) * 0.18);
+  }
+
+  function follow(rawDx) {
+    pendingShift = Math.sign(rawDx) * Math.min(Math.abs(rawDx) * RUBBER, MAX_DRAG);
+    if (!rafId) rafId = requestAnimationFrame(paint);
+  }
+
+  function stopPaint() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    pendingShift = null;
+  }
+
+  function settle() {
+    stopPaint();
+    stage.style.transition = "transform 420ms " + SETTLE_CURVE + ", opacity 340ms " + SETTLE_CURVE;
+    stage.style.transform = "";
+    stage.style.opacity = "";
+    window.setTimeout(() => { stage.style.transition = ""; stage.style.willChange = ""; }, 440);
+  }
+
+  function reset() {
+    tracking = false;
+    locked = null;
+    dx = 0;
+    lastDx = 0;
+    lastT = 0;
+    velocity = 0;
+  }
+
+  stage.addEventListener("touchstart", (ev) => {
+    if (ev.touches.length !== 1 || anySheetOpen() || interactive(ev.target)) {
+      tracking = false;
+      return;
+    }
+    const t = ev.touches[0];
+    tracking = true;
+    startX = t.clientX;
+    startY = t.clientY;
+    dx = 0;
+    lastDx = 0;
+    lastT = 0;
+    velocity = 0;
+    locked = null;
+  }, { passive: true });
+
+  stage.addEventListener("touchmove", (ev) => {
+    if (!tracking) return;
+    if (ev.touches.length !== 1) {
+      reset();
+      settle();
+      return;
+    }
+    const t = ev.touches[0];
+    dx = t.clientX - startX;
+    const dy = t.clientY - startY;
+    const now = ev.timeStamp || performance.now();
+    if (lastT) velocity = velocity * 0.6 + ((dx - lastDx) / Math.max(1, now - lastT)) * 0.4;
+    lastDx = dx;
+    lastT = now;
+    if (!locked && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+      locked = Math.abs(dx) > Math.abs(dy) * 1.35 ? "h" : "v";
+      if (locked === "h") stage.style.willChange = "transform, opacity";
+      else tracking = false;
+    }
+    if (locked !== "h") return;
+    if (ev.cancelable) ev.preventDefault();
+    stage.style.transition = "none";
+    follow(dx);
+  }, { passive: false });
+
+  function endGesture() {
+    if (!tracking) return;
+    const horizontal = locked === "h";
+    const travel = dx;
+    const v = velocity;
+    reset();
+    if (!horizontal) return;
+    const flick = Math.abs(v) > FLICK_VELOCITY && Math.abs(travel) >= FLICK_MIN_TRAVEL;
+    const goLeft = travel <= -OPEN_AT || (flick && v < 0);
+    const goRight = travel >= OPEN_AT || (flick && v > 0);
+    if (!goLeft && !goRight) {
+      settle();
+      return;
+    }
+    /* Commit: the page keeps travelling in the swipe direction while the
+       destination sheet slides in from that same edge. */
+    stopPaint();
+    if (goLeft) {
+      stageSlideAside(-1);
+      openSurface("conversation", "from-right");
+    } else {
+      stageSlideAside(1);
+      openSurface("privacy", "from-left");
+    }
+  }
+  stage.addEventListener("touchend", endGesture, { passive: true });
+  stage.addEventListener("touchcancel", endGesture, { passive: true });
+}
+
+/* Swipe-to-close inside the swipe-opened sheets: Conversation returns on a
+   rightward drag, Privacy on a leftward one — mirroring how they opened.
+   Vertical scrolling inside sheets stays native; horizontal drags drag the
+   whole sheet with the finger, with flick-to-commit. */
+function initSheetGestures() {
+  const SHEET_CURVE = "cubic-bezier(0.32, 0.72, 0.22, 1)";
+  const HOME_CURVE = "cubic-bezier(0.16, 1, 0.3, 1)";
+  const CLOSE_AT = 96;
+  const FLICK_VELOCITY = 0.45;
+  const FLICK_MIN_TRAVEL = 24;
+  const configs = [
+    { id: "conversation-sheet", closeDir: 1 },
+    { id: "settings-sheet", closeDir: -1 },
+  ];
+
+  configs.forEach((cfg) => {
+    const sheet = $(cfg.id);
+    if (!sheet) return;
+    let startX = 0;
+    let startY = 0;
+    let dx = 0;
+    let lastDx = 0;
+    let lastT = 0;
+    let velocity = 0;
+    let locked = null;
+    let tracking = false;
+    let rafId = 0;
+    let pendingShift = null;
+    let closing = false;
+
+    function interactive(target) {
+      return !!(target && target.closest &&
+        target.closest("button, input, a, textarea, select"));
+    }
+
+    function paint() {
+      rafId = 0;
+      if (pendingShift === null) return;
+      sheet.style.transform = "translate3d(" + pendingShift.toFixed(1) + "px,0,0)";
+    }
+
+    function follow(rawDx) {
+      const towardClose = rawDx * cfg.closeDir;
+      const travel = towardClose >= 0
+        ? Math.min(towardClose, window.innerWidth * 0.8)
+        : towardClose * 0.16; /* resisting the wrong way feels rubbery */
+      pendingShift = travel * cfg.closeDir;
+      if (!rafId) rafId = requestAnimationFrame(paint);
+    }
+
+    function stopPaint() {
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      pendingShift = null;
+    }
+
+    function clearDragStyles() {
+      sheet.style.transition = "";
+      sheet.style.transform = "";
+      sheet.classList.remove("from-left", "from-right");
+    }
+
+    sheet.addEventListener("touchstart", (ev) => {
+      if (closing || ev.touches.length !== 1 || interactive(ev.target)) {
+        tracking = false;
+        return;
+      }
+      const t = ev.touches[0];
+      tracking = true;
+      startX = t.clientX;
+      startY = t.clientY;
+      dx = 0;
+      lastDx = 0;
+      lastT = 0;
+      velocity = 0;
+      locked = null;
+    }, { passive: true });
+
+    sheet.addEventListener("touchmove", (ev) => {
+      if (!tracking) return;
+      if (ev.touches.length !== 1) {
+        tracking = false;
+        locked = null;
+        stopPaint();
+        sheet.style.transition = "transform 340ms " + HOME_CURVE;
+        sheet.style.transform = "translate3d(0,0,0)";
+        return;
+      }
+      const t = ev.touches[0];
+      dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      const now = ev.timeStamp || performance.now();
+      if (lastT) velocity = velocity * 0.6 + ((dx - lastDx) / Math.max(1, now - lastT)) * 0.4;
+      lastDx = dx;
+      lastT = now;
+      if (!locked && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+        locked = Math.abs(dx) > Math.abs(dy) * 1.35 ? "h" : "v";
+        if (locked === "h") sheet.style.willChange = "transform";
+        else tracking = false; /* vertical scroll stays native */
+      }
+      if (locked !== "h") return;
+      if (ev.cancelable) ev.preventDefault();
+      sheet.style.transition = "none";
+      follow(dx);
+    }, { passive: false });
+
+    function endGesture() {
+      if (!tracking) return;
+      const horizontal = locked === "h";
+      const travel = dx;
+      const v = velocity;
+      tracking = false;
+      locked = null;
+      dx = 0;
+      lastDx = 0;
+      lastT = 0;
+      velocity = 0;
+      stopPaint();
+      if (!horizontal) return;
+      const towardClose = travel * cfg.closeDir;
+      const flickTowardClose = v * cfg.closeDir > FLICK_VELOCITY && Math.abs(travel) >= FLICK_MIN_TRAVEL;
+      if (towardClose > CLOSE_AT || flickTowardClose) {
+        closing = true;
+        stageReturn();
+        sheet.style.transition = "transform 300ms " + SHEET_CURVE;
+        sheet.style.transform = "translate3d(" + (cfg.closeDir * 110) + "%,0,0)";
+        window.setTimeout(() => {
+          showSheet(cfg.id, false);
+          closing = false;
+        }, 290);
+        window.setTimeout(clearDragStyles, 320);
+      } else {
+        sheet.style.transition = "transform 360ms " + HOME_CURVE;
+        sheet.style.transform = "translate3d(0,0,0)";
+        window.setTimeout(() => {
+          sheet.style.transition = "";
+          sheet.style.willChange = "";
+        }, 380);
+      }
+    }
+    sheet.addEventListener("touchend", endGesture, { passive: true });
+    sheet.addEventListener("touchcancel", endGesture, { passive: true });
+  });
 }
 
 function db() {
@@ -518,30 +837,152 @@ async function api(path, opts = {}) {
   return body;
 }
 
+// ---- Boot-stage diagnostics (semantic separation: auth ≠ compatibility) ----
+//   B00 APP_BOOT · B01 ASSET_INTEGRITY · B02 VERSION_COMPATIBILITY
+//   A00 DEVICE_CREDENTIAL · A01 AUTH_REQUEST · A02 AUTHENTICATED
+function bootFail(stage, kind, mood, detail) {
+  let extra = "";
+  try {
+    extra = detail ? " · " + JSON.stringify(detail) : "";
+  } catch (_err) {}
+  state.caption = "FAILED AT " + stage + " · " + kind + extra;
+  setMood(mood || "Evie couldn't start.");
+  setConn("DISCONNECTED");
+  render();
+}
+
+function oneShot(key) {
+  // Returns true the first time a repair is attempted per page session.
+  try {
+    if (sessionStorage.getItem(key)) return false;
+    sessionStorage.setItem(key, "1");
+    return true;
+  } catch (_err) {
+    return true; // storage unavailable: still bounded by caller behavior
+  }
+}
+
+async function updateServiceWorkerOnce() {
+  // Bounded SW update: ask once, reload once. Returns false when the budget
+  // is spent so callers show a terminal error instead of looping.
+  try {
+    if (!navigator.serviceWorker || !navigator.serviceWorker.getRegistration) return false;
+    const reg = await navigator.serviceWorker.getRegistration("/evie/");
+    if (reg && reg.update) await reg.update();
+  } catch (_err) {}
+  if (!oneShot("evie_sw_reload")) return false;
+  setTimeout(() => location.reload(), 500);
+  return true;
+}
+
+async function repairAssetsOnce() {
+  // MIXED_ASSET_BUILD repair: drop every SW cache for this origin, refresh the
+  // registration, and reload exactly once to re-fetch a coherent asset set.
+  try {
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister().catch(() => {})));
+    }
+    if (window.caches && caches.keys) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k).catch(() => {})));
+    }
+  } catch (_err) {}
+  if (!oneShot("evie_asset_repair")) return false;
+  setTimeout(() => location.reload(), 500);
+  return true;
+}
+
+function backgroundUpdateServiceWorker() {
+  // Fire-and-forget: fetches the new SW so it activates on next launch.
+  // Never reloads the current session mid-use.
+  try {
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+      navigator.serviceWorker
+        .getRegistration("/evie/")
+        .then((reg) => reg && reg.update && reg.update())
+        .catch(() => {});
+    }
+  } catch (_err) {}
+}
+
 async function hello() {
   setConn("AUTHENTICATING");
-  const body = await api("/v1/device-gateway/hello", {
-    method: "POST",
-    body: JSON.stringify({
-      protocol_version: PROTOCOL_VERSION,
-      client_build: CLIENT_BUILD,
-      instance_id: state.instanceId,
-      capabilities: ["foreground_voice", "camera", "text"],
-      foreground: !document.hidden,
-    }),
-  });
-  if (body.pwa_build && body.pwa_build !== CLIENT_BUILD) {
-    textOf($("reply"), "Update Evie");
-    if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
-      const reg = await navigator.serviceWorker.getRegistration("/evie/");
-      if (reg) await reg.update();
+  // ---- B01 ASSET_INTEGRITY ----------------------------------------------
+  // Served HTML must belong to the same release as this app.js. A mismatch
+  // means a mixed/partial deploy: repair caches ONCE, then give up with a
+  // terminal error instead of looping.
+  const metaEl = document.querySelector('meta[name="evie-build"]');
+  const metaBuild = (metaEl && metaEl.content) || CLIENT_BUILD;
+  if (metaBuild !== CLIENT_BUILD) {
+    if (!(await repairAssetsOnce())) {
+      return bootFail(
+        "B01",
+        "MIXED_ASSET_BUILD",
+        "Evie update couldn't complete.",
+        { client: CLIENT_BUILD, served_html: metaBuild }
+      );
     }
-    setTimeout(() => location.reload(), 500);
+    return; // repairAssetsOnce scheduled exactly one reload
+  }
+
+  // ---- A01 AUTH_REQUEST -------------------------------------------------
+  let body;
+  try {
+    body = await api("/v1/device-gateway/hello", {
+      method: "POST",
+      body: JSON.stringify({
+        protocol_version: PROTOCOL_VERSION,
+        client_build: CLIENT_BUILD,
+        instance_id: state.instanceId,
+        capabilities: ["foreground_voice", "camera", "text"],
+        foreground: !document.hidden,
+      }),
+    });
+  } catch (err) {
+    // Structured protocol rejection: credentials may be fine; the client is
+    // simply too old for this server. One bounded SW update + reload, then a
+    // terminal, honest message — never an authenticate/reload loop.
+    const code = (err && err.body && err.body.detail && err.body.detail.error_code) || "";
+    if (err.status === 409 || code === "CLIENT_PROTOCOL_UNSUPPORTED") {
+      if (!(await updateServiceWorkerOnce())) {
+        return bootFail("B02", "CLIENT_UPDATE_REQUIRED", "Evie needs an update to connect to this Home Station.", { reason: code || "INCOMPATIBLE_PROTOCOL" });
+      }
+      return; // one reload scheduled
+    }
+    if (err.status === 401 || err.status === 403) {
+      return bootFail("A01", "AUTHENTICATION_FAILED", "Couldn't authenticate this device.", { status: err.status });
+    }
+    throw err;
+  }
+
+  // ---- A02 AUTHENTICATED · B02 VERSION_COMPATIBILITY ---------------------
+  // Build identity is NOT authorization. An older-but-protocol-compatible
+  // client reaches READY and merely learns an update exists.
+  if (body.update_required) {
+    if (!(await updateServiceWorkerOnce())) {
+      return bootFail(
+        "B02",
+        body.update_reason || "CLIENT_UPDATE_REQUIRED",
+        "Evie needs an update to connect to this Home Station.",
+        { latest: body.latest_web_build }
+      );
+    }
     return;
   }
+  if (body.latest_web_build && body.latest_web_build !== CLIENT_BUILD) {
+    // Non-blocking: stay READY now; updated assets activate on next launch.
+    state.updateAvailable = { latest: body.latest_web_build };
+    pushActivity("Update available · server build " + body.latest_web_build);
+    backgroundUpdateServiceWorker();
+  }
+  try {
+    sessionStorage.removeItem("evie_build_reload");
+  } catch (_err) {}
   state.hello = body;
   state.device = body.device;
   state.mediaBackend = body.recommended_backend || "auto";
+  // A12: native capability handshake is optional and must never block READY.
   if (window.EvieMobileActions) {
     window.EvieMobileActions.configure({
       api: api,
@@ -577,6 +1018,9 @@ async function pair() {
   state.accessToken = body.access_token;
   state.device = body.device;
   await saveToken(body.device_token);
+  if (window.EvieNativeShell && window.EvieNativeShell.post) {
+    window.EvieNativeShell.post({ type: "bind_session", token: body.device_token });
+  }
   $("pair-token").value = "";
   await hello();
 }
@@ -907,6 +1351,9 @@ async function startWebRTC(opened) {
       state.lastAsrConfidence = meta && meta.confidence;
       state.userLine = "TRANSCRIPT · " + text;
       pushHistory("user", text);
+      if (window.EvieMobileActions && window.EvieMobileActions.onTranscript) {
+        window.EvieMobileActions.onTranscript(text);
+      }
       render();
     },
     onCaption: (text, done) => {
@@ -1309,20 +1756,30 @@ async function boot() {
   $("more-btn").addEventListener("click", () => {
     $("more-rail").hidden = !$("more-rail").hidden;
   });
-  $("history-btn").addEventListener("click", () => {
-    showSheet("conversation-sheet", true);
+  function openSurface(surface, origin) {
+    const map = {
+      conversation: "conversation-sheet",
+      devices: "devices-sheet",
+      activity: "activity-sheet",
+      privacy: "settings-sheet",
+    };
+    ["conversation-sheet", "devices-sheet", "activity-sheet", "settings-sheet"].forEach((id) => {
+      const on = map[surface] === id;
+      const el = $(id);
+      if (!el) return;
+      el.classList.remove("from-left", "from-right");
+      if (on && origin) el.classList.add(origin);
+      showSheet(id, on);
+    });
     $("more-rail").hidden = true;
-  });
+  }
   document.querySelectorAll("[data-surface]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const surface = btn.getAttribute("data-surface");
-      showSheet("conversation-sheet", surface === "conversation");
-      showSheet("devices-sheet", surface === "devices");
-      showSheet("activity-sheet", surface === "activity");
-      showSheet("settings-sheet", surface === "privacy");
-      $("more-rail").hidden = true;
+      openSurface(btn.getAttribute("data-surface"));
     });
   });
+  initSwipes(openSurface);
+  initSheetGestures();
   document.querySelectorAll(".sheet-close").forEach((btn) => {
     btn.addEventListener("click", () => showSheet(btn.getAttribute("data-close"), false));
   });
@@ -1335,31 +1792,36 @@ async function boot() {
       if (btn) applyAppearance(btn.getAttribute("data-appearance"));
     });
   }
-  $("settings-close").addEventListener("click", () => showSheet("settings-sheet", false));
   $("self-test-btn").addEventListener("click", () => runSelfTest());
-  $("install-bridge-btn").addEventListener("click", () => {
-    if (!window.EvieMobileActions) return;
-    window.EvieMobileActions.installBridge().catch((err) => {
-      state.caption = String(err.message || err);
-      render();
+  const installBridge = $("install-bridge-btn");
+  if (installBridge) {
+    installBridge.addEventListener("click", () => {
+      if (!window.EvieMobileActions) return;
+      window.EvieMobileActions.installBridge().catch((err) => {
+        state.caption = String(err.message || err);
+        render();
+      });
     });
-  });
-  $("bridge-ready-btn").addEventListener("click", () => {
-    if (!window.EvieMobileActions) return;
-    window.EvieMobileActions.markInstalled([
-      "create_timer",
-      "create_reminder",
-      "call_contact",
-      "message_contact",
-      "start_directions",
-      "open_maps",
-      "facetime_contact",
-      "create_alarm",
-      "create_calendar_event",
-      "self_test",
-    ]);
-    window.EvieMobileActions.handshake().then(() => hello()).catch(() => {});
-  });
+  }
+  const bridgeReady = $("bridge-ready-btn");
+  if (bridgeReady) {
+    bridgeReady.addEventListener("click", () => {
+      if (!window.EvieMobileActions) return;
+      window.EvieMobileActions.markInstalled([
+        "create_timer",
+        "create_reminder",
+        "call_contact",
+        "message_contact",
+        "start_directions",
+        "open_maps",
+        "facetime_contact",
+        "create_alarm",
+        "create_calendar_event",
+        "self_test",
+      ]);
+      window.EvieMobileActions.handshake().then(() => hello()).catch(() => {});
+    });
+  }
   $("ma-go").addEventListener("click", () => {
     if (window.EvieMobileActions) window.EvieMobileActions.run();
   });
@@ -1413,6 +1875,9 @@ async function boot() {
   });
   try {
     state.deviceToken = await loadToken();
+    if (state.deviceToken && window.EvieNativeShell && window.EvieNativeShell.post) {
+      window.EvieNativeShell.post({ type: "bind_session", token: state.deviceToken });
+    }
     if (state.deviceToken) await hello();
     else setConn("DISCONNECTED");
   } catch (_err) {

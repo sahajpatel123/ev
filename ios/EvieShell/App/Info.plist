@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>Evie</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Evie</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Evie uses the camera when you ask her to Look.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Evie uses the microphone so you can talk to her.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Evie uses Contacts to find people you ask her to call or message. You can allow only selected contacts.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Evie adds events you ask her to put on your calendar.</string>
+	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
+	<string>Evie adds events you ask her to put on your calendar.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Evie creates reminders you ask for on this iPhone.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Evie creates reminders you ask for on this iPhone.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Evie uses your location when you ask where you are or for directions.</string>
+	<key>NSUserNotificationsUsageDescription</key>
+	<string>Evie can notify you for timers and reminders she created.</string>
+	<key>NSAlarmKitUsageDescription</key>
+	<string>Evie can set timers and alarms you ask for.</string>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>EV_API_URL</key>
+	<string>http://127.0.0.1:8000</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

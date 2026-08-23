@@ -41,7 +41,9 @@ class Settings(BaseSettings):
     cross_platform_enabled: bool = True
     cross_platform_production_memory: bool = False
     device_protocol_version: str = "1"
-    pwa_build: str = "2026.08.21.22"
+    native_actions_enabled: bool = True
+    native_broker_version: str = "1.0.0"
+    pwa_build: str = "2026.08.22.23"
     phone_audio_backend: str = "webrtc_strict"  # webrtc_strict | webrtc | pcm_ws | encoded | auto
     phone_asr_model: str = "gpt-4o-transcribe"
     phone_asr_language: str = "en"
@@ -257,6 +259,15 @@ class Settings(BaseSettings):
     # OpenAI-compatible /audio/speech endpoint.
     # piper = local Piper neural TTS (ONNX voice).
     voice_tts_provider: str = "meta"  # meta | openai_compat | piper
+    # TURN AUTHORITY V2 canary (reversible): VAD becomes a sensor; the
+    # application explicitly creates responses after a logical owner turn
+    # yields (speech_stopped + bounded grace, no continuation).
+    turn_authority_v2_enabled: bool = False
+    # TEST-ONLY diagnostic: per-response instructions that force ONE
+    # uninterrupted long provider response, used solely to recreate the
+    # self-hearing failure envelope in internal verification. Never changes
+    # normal owner conversations. Opt-in, off by default, loudly logged.
+    long_form_diagnostic: bool = False
     voice_tts_base_url: str | None = None
     voice_tts_api_key: str | None = None
     voice_tts_model: str = "gpt-4o-mini-tts"
@@ -329,7 +340,10 @@ class Settings(BaseSettings):
     voice_live_quiet_end_pause_ms: int = 1300
     voice_live_response_cooldown_ms: int = 450
     voice_live_max_pause_ms: int = 2500
-    voice_live_backchannel: bool = True
+    # OWNER DECISION 2026-08-23: server listener backchannel cues are
+    # CANCELLED. Kept only as a quarantined legacy knob; the engine no longer
+    # produces cues regardless of this value.
+    voice_live_backchannel: bool = False
     voice_live_vad_threshold: float = 0.35
     voice_live_asr_partial_ms: int = 160
 

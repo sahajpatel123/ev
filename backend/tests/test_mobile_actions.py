@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+from app.device_gateway import PWA_BUILD
 import json
 from pathlib import Path
 
 from app.device_gateway.mobile_actions import BRIDGE_NAME, BRIDGE_PROTOCOL
 from app.device_gateway.mobile_actions.bridge import build_run_url, unsigned_bytes, workflow_dict
 from app.device_gateway.mobile_actions.registry import BLOCKED_OPERATIONS, CORE_V1_OPERATIONS
+from app.device_gateway.mobile_actions.engine import (
+    confirm_action,
+    create_phone_action,
+    infer_from_text,
+)
 from app.device_gateway.mobile_actions.service import (
     cancel_action,
     claim_action,
     complete_action,
-    confirm_action,
-    create_phone_action,
-    infer_from_text,
     resolve_action,
     sanitize_complete,
 )
@@ -36,7 +39,8 @@ def _handshake(caps=None, installed=True) -> None:
     put_handshake(
         DEVICE,
         {
-            "bridge_installed": installed,
+            "native_shell": installed,
+            "broker_version": "1.0.0",
             "bridge_version": "1.0.0",
             "protocol": 1,
             "timezone": "Asia/Kolkata",
@@ -89,18 +93,19 @@ def test_blocked_operations_never_prepare() -> None:
         assert "won't" in result["spoken"].lower() or "won't" in result["spoken"]
 
 
-def test_timer_canary_requires_bridge_then_prepares() -> None:
+def test_timer_canary_requires_native_then_prepares() -> None:
     missing = _create("create_timer", duration_minutes=2)
     assert missing["ok"] is False
-    assert missing["failure"] == "BRIDGE_REQUIRED"
+    assert missing["failure"] == "NATIVE_SHELL_REQUIRED"
     _handshake()
     ready = _create("create_timer", duration_minutes=2)
     assert ready["ok"] is True
     assert ready["executed"] is False
     assert ready["confirmation_required"] is False
-    assert ready["launch_url"].startswith("shortcuts://")
-    assert BRIDGE_NAME.replace(" ", "%20") in ready["launch_url"] or "Evie" in ready["launch_url"]
-    assert "timer" in ready["spoken"].lower() or "tap" in ready["spoken"].lower()
+    assert ready["method"] == "native_broker"
+    assert ready.get("native_execute") is True
+    assert not ready.get("launch_url")
+    assert "timer" in ready["spoken"].lower() or "setting" in ready["spoken"].lower()
 
 
 def test_maps_layer_a_does_not_need_bridge() -> None:
@@ -117,17 +122,13 @@ def test_home_destination_does_not_query_memory() -> None:
     assert result["failure"] == "HOME_ADDRESS_UNAVAILABLE"
 
 
-def test_message_requires_confirmation_and_preserves_body() -> None:
+def test_message_uses_system_confirmation_not_evie_yes() -> None:
     _handshake()
-    result = _create("message_contact", contact_query="Alex", message="Evie mobile test")
+    result = _create("message_contact", contact_query="Alex", message="Evie native test")
     assert result["ok"] is True
-    assert result["confirmation_required"] is True
-    assert result["launch_url"] is None
-    assert "Alex" in result["spoken"]
-    assert "Evie mobile test" in result["spoken"]
-    confirmed = confirm_action(action_id=result["action_id"], device_id=DEVICE, origin=ORIGIN)
-    assert confirmed["confirmation_required"] is False
-    assert confirmed["launch_url"].startswith("shortcuts://")
+    assert result["confirmation_required"] is False
+    assert result["method"] == "native_broker"
+    assert result.get("native_execute") is True
 
 
 def test_emergency_call_blocked() -> None:
@@ -306,9 +307,10 @@ def test_pwa_has_action_card_and_no_run_shortcut_tool() -> None:
     js = (PWA / "mobile-actions.js").read_text()
     webrtc = (PWA / "webrtc.js").read_text()
     assert "mobile-action-card" in html
-    assert "Evie Mobile Bridge" in html
-    assert "2026.08.21.22" in app
-    assert "shortcuts://" in js
+    assert "legacy-bridge-panel" in html
+    assert "Autonomy" in html
+    assert "EvieNativeShell" in js
+    assert PWA_BUILD in app
     assert "phone_action" in webrtc or "EvieMobileActions" in webrtc
     assert "run_shortcut" not in (PWA / "app.js").read_text()
 
