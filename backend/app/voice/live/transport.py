@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 from uuid import UUID
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -200,6 +201,26 @@ async def serve_live_websocket(
         last_beat = 0.0
         last_mail = 0.0
         last_trust_check = 0.0
+        # Session authority generation captured at bind time; the tick loop
+        # compares against the CURRENT device row (STAGE 8/9).
+        session_auth_revision = None
+        bound_device_id = getattr(live, "device_id", None)
+        if bound_device_id:
+            with contextlib.suppress(Exception):
+                from sqlalchemy import select
+
+                from app.models import Device
+
+                async with SessionLocal() as db:
+                    drow0 = (
+                        await db.execute(
+                            select(Device).where(Device.id == UUID(str(bound_device_id)))
+                        )
+                    ).scalars().first()
+                if drow0 is not None:
+                    session_auth_revision = int(
+                        getattr(drow0, "auth_revision", 1) or 1
+                    )
         while not live._closed:
             await asyncio.sleep(max(0.02, cadence))
             if live.grok_voice is None:
@@ -215,9 +236,10 @@ async def serve_live_websocket(
                     from app.ev.timers import sweep_due_timers
 
                     await sweep_due_timers()
-            # STAGE 16 TRUST LAW: a revoked device must not retain an open
-            # live channel. Bounded check (30s) closes the session with a
-            # fatal, explicit outcome — the socket never outlives trust.
+            # STAGE 16 + PART 8/9 TRUST LAW: bounded recheck of the CURRENT
+            # server authorization state. Revocation OR an auth_revision
+            # change (promotion/revoke) invalidates this socket within one
+            # window; the client reconnects and rebinds to current authority.
             if now - last_trust_check >= 30.0:
                 last_trust_check = now
                 dev_id = getattr(live, "device_id", None)
@@ -233,14 +255,26 @@ async def serve_live_websocket(
                                     select(Device).where(Device.id == UUID(str(dev_id)))
                                 )
                             ).scalars().first()
-                        if drow is not None and drow.revoked_at is not None:
+                        stale_reason: str | None = None
+                        if drow is None or drow.revoked_at is not None:
+                            stale_reason = "device_revoked"
+                        elif (
+                            session_auth_revision is not None
+                            and int(getattr(drow, "auth_revision", 1) or 1)
+                            != session_auth_revision
+                        ):
+                            stale_reason = "auth_revision_changed"
+                        if stale_reason:
                             from app.voice.live.events import ErrorEvent
 
                             await live.emit(
                                 ErrorEvent(
                                     at_ms=live.now(),
-                                    code="device_revoked",
-                                    message="This device was revoked; disconnecting.",
+                                    code=stale_reason,
+                                    message=(
+                                        "This device's authorization changed; "
+                                        "reconnecting with current trust."
+                                    ),
                                     fatal=True,
                                 )
                             )
@@ -650,7 +684,7 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool
                     instance_id=str(getattr(live, "instance_id", None) or ""),
                     session_id=live.session_id,
                     origin=str(getattr(live, "gateway_origin", None) or "http://127.0.0.1:8000"),
-                    arguments=args,
+                    arguments=arguments,
                     transcript=transcript,
                     device_label=str(getattr(live, "device_label", None) or "This iPhone"),
                 )

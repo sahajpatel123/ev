@@ -77,11 +77,14 @@ def create_owner_turn(
     confidence: float | None = None,  # null if not calibrated
     committed_at: datetime | None = None,
     transcription_completed_at: datetime | None = None,
+    turn_id: str | None = None,
 ) -> OwnerTurn:
     # Confidence is NOT hardcoded 1.0; if provider does not report calibrated
     # confidence, we store None (unknown) instead of fake 1.0.
     return OwnerTurn(
-        turn_id=uuid4().hex,
+        # G2 idempotency: a client-supplied stable request id (PWA text path)
+        # becomes the canonical turn id so retries dedupe at the gate.
+        turn_id=turn_id or uuid4().hex,
         live_session_id=live_session_id,
         provider_item_id=provider_item_id,
         owner_id=owner_id,

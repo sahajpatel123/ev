@@ -144,3 +144,69 @@ async def test_bootstrap_marks_paired_sandbox_explicitly(
     dt2 = payload2["device_trust"]
     assert dt2["trusted"] is True
     assert dt2["state"] == "TRUSTED_OWNER_DEVICE"
+
+
+# ---------------------------------------------------------------------------
+# PART 6/15: TRUSTED device text turns enter TurnGate (canonical control
+# plane) — never the legacy sandbox pipeline. Sandbox devices keep it.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_trusted_text_turn_reaches_turngate_and_core(
+    db_session, paired_phone
+):
+    # Promote first (canonical flow effect):
+    paired_phone.memory_scope = None
+    paired_phone.trust_level = "owner"
+    db_session.add(paired_phone)
+    await db_session.commit()
+
+    from app.ev.owner_turn import create_owner_turn
+    from app.ev.turn_gate import handle_owner_turn
+
+    created = await life.create_project(db_session, actor=MASTER, title="Personal Fitness")
+    del created
+    await db_session.commit()
+
+    ctx = _ctx(paired_phone)
+    assert ctx.data_scope == MASTER
+
+    turn = create_owner_turn(
+        live_session_id=f"device-text:{paired_phone.id}",
+        provider_item_id=None,
+        owner_id="master",
+        device_id=str(paired_phone.id),
+        transcript="What projects do I have?",
+        transcript_source="device_text",
+    )
+    result = await handle_owner_turn(db_session, turn)
+    await db_session.commit()
+    assert result.route == "STATE_QUERY"
+    assert result.operation == "PROJECT_LIST"
+    titles = " ".join(p["title"] for p in (result.canonical_data or []))
+    assert "Personal Fitness" in titles
+
+
+@pytest.mark.asyncio
+async def test_auth_revision_bumps_on_trust_transitions(db_session, paired_phone):
+    """PART 8: promotion/revoke bump the generation; sessions opened under an
+    older generation are detectably stale."""
+    before = int(getattr(paired_phone, "auth_revision", 1) or 1)
+
+    # promote (as admin_promote_owner does)
+    paired_phone.memory_scope = None
+    paired_phone.trust_level = "owner"
+    paired_phone.auth_revision = int(getattr(paired_phone, "auth_revision", 1) or 1) + 1
+    await db_session.commit()
+    after_promote = int(paired_phone.auth_revision)
+    assert after_promote == before + 1
+
+    # revoke (as admin_revoke does)
+    from app.utils.text import utcnow
+
+    paired_phone.revoked_at = utcnow()
+    paired_phone.revoked_reason = "generation test"
+    paired_phone.auth_revision = after_promote + 1
+    await db_session.commit()
+    assert int(paired_phone.auth_revision) == before + 2

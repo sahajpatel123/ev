@@ -239,6 +239,23 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
     if m:
         return TurnIntent(route="STATE_QUERY", operation="PROJECT_GET", project_title=m.group(1).strip(" ?\"'").title(), confidence=0.95)
 
+    # STATE_QUERY: explicit project lookup — "find/look up the X project"
+    m = re.search(
+        r"\b(?:find|look\s?up|search\s+for|open|show(?:\s+me)?)\s+(?:the\s+|my\s+)?project\s+(?:called\s+)?['\"]?(.+?)['\"]?\s*\??$",
+        low_stripped,
+    )
+    if m:
+        title = re.sub(
+            r"\s+project$", "", m.group(1).strip(), flags=re.IGNORECASE
+        ).strip(" ?\"'")
+        if title:
+            return TurnIntent(
+                route="STATE_QUERY",
+                operation="PROJECT_GET",
+                project_title=title.title() if title.islower() else title,
+                confidence=0.93,
+            )
+
     # STATE_MUTATION: explicit priority update — owner-natural phrasings:
     #   "set the priority of X to high" / "change X priority to HIGH"
     #   "make X high priority" (single known project) / "set X to high priority"
@@ -284,6 +301,14 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
     # STATE_QUERY: projects list
     if low_stripped in ("what projects do i have", "what projects do i have?", "list projects", "show projects"):
         return TurnIntent(route="STATE_QUERY", operation="PROJECT_LIST", confidence=0.98)
+    if re.search(
+        r"\b(what|which)\s+projects\s+(do|have|did)\s+i\b|"
+        r"^(list|show|name)\s+(my\s+|the\s+)?projects?\b|"
+        r"\bmy\s+projects\b.*\??$|"
+        r"^projects\s*\??$",
+        low_stripped,
+    ):
+        return TurnIntent(route="STATE_QUERY", operation="PROJECT_LIST", confidence=0.93)
     if "what projects" in low:
         return TurnIntent(route="STATE_QUERY", operation="PROJECT_LIST", confidence=0.95)
 

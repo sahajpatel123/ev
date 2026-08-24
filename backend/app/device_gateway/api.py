@@ -445,6 +445,61 @@ async def user_text(
     if device.revoked_at is not None:
         raise HTTPException(status_code=401, detail="Device revoked")
     instance = data.instance_id or "default"
+
+    # G2 ONE-EVIE LAW (PART 6/15/16): a TRUSTED endpoint's text turns are
+    # canonical owner turns. They enter TurnGate → Evie Core — NEVER the
+    # legacy sandbox satellite pipeline. Durable trace events carry device
+    # provenance so phone turns are observable like Mac turns.
+    if not is_sandbox_device(device):
+        from app.ev.owner_turn import create_owner_turn
+        from app.ev.turn_gate import handle_owner_turn
+        from app.everywhere.sync import emit_everywhere_event
+
+        turn = create_owner_turn(
+            live_session_id=f"device-text:{device.id}",
+            provider_item_id=data.request_id or data.idempotency_key,
+            owner_id="master",
+            device_id=str(device.id),
+            transcript=data.text or "",
+            transcript_source="device_text",
+            # Stable id → gate-level dedupe for client retries.
+            turn_id=(f"text-{device.id}-{data.idempotency_key}"
+                     if getattr(data, "idempotency_key", None) else None),
+        )
+        result = await handle_owner_turn(session, turn)
+        await session.commit()
+        reply = result.owner_message or (
+            "Done." if result.ok else f"That didn't complete ({result.error})."
+        )
+        await emit_everywhere_event(
+            session,
+            event_type="message.user",
+            actor_label=f"device:{device.name}",
+            content={"text": (data.text or "")[:2000], "turn_id": turn.turn_id,
+                     "route": result.route, "operation": result.operation},
+            device_id=str(device.id),
+        )
+        await emit_everywhere_event(
+            session,
+            event_type="message.assistant",
+            actor_label="evie",
+            content={"text": reply[:2000], "turn_id": turn.turn_id,
+                     "ok": bool(result.ok), "error_code": result.error},
+            device_id=str(device.id),
+        )
+        await session.commit()
+        return {
+            "reply": reply,
+            "ok": bool(result.ok),
+            "error_code": None if result.ok else result.error,
+            "route": result.route,
+            "operation": result.operation,
+            "needs_clarification": bool(result.needs_clarification),
+            "turn_id": turn.turn_id,
+            "duplicate": bool(getattr(result, "duplicate", False)),
+        }
+
+    instance = instance
     lease = await claim_lease(session, device_id=device.id, instance_id=instance, method="manual")
     note_presence(device.id, instance_id=instance, state="active")
     result = await handle_user_text(
@@ -486,10 +541,25 @@ async def live_open(
         outcome.greeting = None
     backend = resolve_phone_audio_backend(data.media_backend)
     tools = provider_effective_snapshot()
+    trusted_owner = not is_sandbox_device(device)
     payload = {
         "session_id": outcome.session_id,
         "state": outcome.state,
         "live": True,
+        # STAGE 13 SESSION CONTEXT CONTRACT: server-owned binding facts.
+        "session_context": {
+            "device_id": str(device.id),
+            "owner_id": "master" if trusted_owner else f"sandbox:{device.id}",
+            "trust_state": (
+                "TRUSTED_OWNER_DEVICE"
+                if trusted_owner
+                else ("REVOKED" if device.revoked_at is not None else "PAIRED_SANDBOX")
+            ),
+            "scope": "master" if trusted_owner else f"sandbox:{device.id}",
+            "auth_revision": int(getattr(device, "auth_revision", 1) or 1),
+            "turngate_bound": True,
+            "protocol_version": PROTOCOL_VERSION,
+        },
         "memory_scope": memory_scope_of(device),
         "audio_contract": AUDIO_CONTRACT,
         "media_backend": backend,
@@ -860,6 +930,7 @@ async def admin_revoke(
         raise HTTPException(status_code=404, detail="Device not found")
     device.revoked_at = utcnow()
     device.revoked_reason = data.reason[:256]
+    device.auth_revision = int(getattr(device, "auth_revision", 1) or 1) + 1
     await session.commit()
     await close_live_for_device(str(device.id), reason="device_revoked")
     emit("device.revoked", device_id=str(device.id), reason=data.reason[:64])
@@ -891,6 +962,10 @@ async def admin_promote_owner(
     device.memory_scope = None  # owner scope
     device.trust_level = "owner"
     device.paired_at = device.paired_at or utcnow()
+    # STAGE 8: bump the authorization generation. Any session opened under
+    # the previous generation is stale and must rebind (the transport tick
+    # loop enforces this within one 30s window).
+    device.auth_revision = int(getattr(device, "auth_revision", 1) or 1) + 1
 
     from app.everywhere.sync import emit_everywhere_event
 

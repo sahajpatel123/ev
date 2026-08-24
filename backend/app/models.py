@@ -307,6 +307,12 @@ class Device(Base):
     # canonical event history. Routing hint + resume point, never authority.
     sync_cursor_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sync_cursor_id: Mapped[UUID | None] = mapped_column(Uuid)
+    # --- G2 SESSION AUTHORITY (additive): server-owned generation counter.
+    # Bumped on every trust transition; sessions established under an older
+    # generation are invalid and must rebind (promotion AND revocation).
+    auth_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
 
     @property
     def push_platform(self) -> str | None:
