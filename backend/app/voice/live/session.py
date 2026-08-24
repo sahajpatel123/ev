@@ -2012,6 +2012,17 @@ class LiveSession:
         return is_sleep_phrase(text)
 
     async def _end_sleep(self, text: str) -> None:
+        # P0-adjacent diagnostics: log WHY a sleep-stop fired without ever
+        # recording owner words (length + phrase-match only).
+        import logging as _log
+
+        from app.voice.lifecycle import is_sleep_phrase
+
+        _log.getLogger("ev.turn_gate").warning(
+            "realtime_trace event=sleep_stop_triggered text_len=%s exact_phrase=%s",
+            len((text or "").strip()),
+            is_sleep_phrase(text),
+        )
         self._closed = True
         self._reset_playback_boundary()
         unregister_live(self)
