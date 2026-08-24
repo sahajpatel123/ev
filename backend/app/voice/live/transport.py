@@ -258,6 +258,15 @@ async def serve_live_websocket(
                         stale_reason: str | None = None
                         if drow is None or drow.revoked_at is not None:
                             stale_reason = "device_revoked"
+                            # P0 WIPE CLASS (missing row): a MASTER-actor
+                            # session does not depend on any device row —
+                            # shed the stale binding and keep the owner
+                            # channel alive instead of kill-looping.
+                            if drow is None and str(
+                                getattr(live, "memory_scope", "owner")
+                            ) != "sandbox":
+                                live.device_id = None
+                                stale_reason = None
                         elif (
                             session_auth_revision is not None
                             and int(getattr(drow, "auth_revision", 1) or 1)
