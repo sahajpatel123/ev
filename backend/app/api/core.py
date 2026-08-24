@@ -377,6 +377,8 @@ async def _everywhere_health() -> dict:
             summary = await health_summary(session)
         finally:
             await session.close()
+        from app.ev.turn_gate import db_failure_stats
+
         return {
             "trusted_devices": int(total or 0) - int(revoked or 0),
             "revoked_devices": int(revoked or 0),
@@ -385,6 +387,7 @@ async def _everywhere_health() -> dict:
             "last_sync_at": summary.get("last_sync_at"),
             "pending_device_actions": summary.get("pending_device_actions"),
             "failed_device_actions": summary.get("failed_device_actions"),
+            **db_failure_stats(),
             "checked_at": datetime.now(UTC).isoformat(),
         }
     except Exception:  # noqa: BLE001 - health must never raise

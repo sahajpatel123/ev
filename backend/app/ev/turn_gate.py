@@ -6,6 +6,8 @@ Exactly one assistant response per turn, idempotent.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from typing import Any
 
@@ -19,6 +21,67 @@ logger = logging.getLogger("ev.turn_gate")
 
 # In-memory gate state for exactly-once (bounded)
 _GATE_DECISIONS: dict[str, TurnResult] = {}  # turn_id -> TurnResult
+
+# PART 22/23 — transaction observability. Safe counters only; no SQL, no
+# owner content. Health surfaces these so a poisoned executor is visible.
+_DB_FAILURE_STATS: dict[str, Any] = {
+    "owner_turn_db_failures": 0,
+    "owner_turn_rollbacks": 0,
+    "owner_turn_commit_failures": 0,
+    "last_owner_turn_db_failure_at": None,
+    "last_owner_turn_db_failure_code": None,
+}
+
+
+def db_failure_stats() -> dict[str, Any]:
+    return dict(_DB_FAILURE_STATS)
+
+
+def _note_db_failure(code: str) -> None:
+    from app.utils.text import utcnow
+
+    _DB_FAILURE_STATS["owner_turn_db_failures"] = (
+        int(_DB_FAILURE_STATS["owner_turn_db_failures"]) + 1
+    )
+    _DB_FAILURE_STATS["last_owner_turn_db_failure_at"] = (
+        utcnow().isoformat()
+    )
+    _DB_FAILURE_STATS["last_owner_turn_db_failure_code"] = str(code)[:64]
+
+
+_RAW_DB_MARKERS = (
+    "route_failed:",
+    "psycopg",
+    "sqlalchemy",
+    "InFailedSqlTransaction",
+    "PendingRollbackError",
+    "StatementError",
+    "DBAPIError",
+    "current transaction is aborted",
+)
+
+
+def _is_raw_db_failure(result: TurnResult) -> bool:
+    """True when a TurnResult carries raw database internals as its error."""
+    if result.ok:
+        return False
+    blob = str(result.error or "")
+    return any(marker in blob for marker in _RAW_DB_MARKERS)
+
+
+def _canonical_db_failure(error: Exception) -> TurnResult:
+    """PART 17/18: the owner never sees raw database internals."""
+    _note_db_failure(type(error).__name__)
+    return TurnResult(
+        ok=False,
+        route="UNSUPPORTED",
+        operation="UNKNOWN",
+        error="OWNER_TURN_FAILED",
+        owner_message=(
+            "I couldn't complete that because an internal state operation "
+            "failed. Your request was safely cancelled."
+        ),
+    )
 
 
 async def handle_owner_turn(
@@ -51,7 +114,46 @@ async def handle_owner_turn(
         session_id=owner_turn.live_session_id,
     )
     # Bounded context already handled inside controller
-    result = await controller.handle_turn(owner_turn.transcript, turn_id=owner_turn.turn_id)
+    # TRANSACTION OWNERSHIP LAW (PART 4/7/8): one owner turn owns one clear
+    # transaction boundary. Any exception is rolled back IMMEDIATELY and
+    # converted to a canonical failure — the session must be healthy for the
+    # next owner turn, and raw database text must never reach the model.
+    try:
+        result = await controller.handle_turn(owner_turn.transcript, turn_id=owner_turn.turn_id)
+    except Exception as exc:  # noqa: BLE001 - canonical conversion point
+        # (asyncio.CancelledError derives from BaseException and is NOT
+        # swallowed here — cancellation always propagates.)
+        with contextlib.suppress(Exception):
+            await session.rollback()
+            _DB_FAILURE_STATS["owner_turn_rollbacks"] = (
+                int(_DB_FAILURE_STATS["owner_turn_rollbacks"]) + 1
+            )
+        result = _canonical_db_failure(exc)
+
+    # PART 4/8/18: handle_turn converts internal exceptions into
+    # route_failed results whose text may contain RAW DATABASE INTERNALS,
+    # and the underlying transaction may be left ABORTED. Detect either
+    # condition, roll back immediately, and replace with the canonical
+    # owner-safe failure. The session stays healthy for the next turn.
+    if not result.ok and _is_raw_db_failure(result):
+        with contextlib.suppress(Exception):
+            await session.rollback()
+            _DB_FAILURE_STATS["owner_turn_rollbacks"] = (
+                int(_DB_FAILURE_STATS["owner_turn_rollbacks"]) + 1
+            )
+        result = _canonical_db_failure(
+            RuntimeError(str(result.error).split("route_failed:")[-1].strip()[:120])
+        )
+
+    try:
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        with contextlib.suppress(Exception):
+            await session.rollback()
+        _note_db_failure(type(exc).__name__)
+        _DB_FAILURE_STATS["owner_turn_commit_failures"] = (
+            int(_DB_FAILURE_STATS["owner_turn_commit_failures"]) + 1
+        )
 
     # Cache decision for idempotency
     _GATE_DECISIONS[owner_turn.turn_id] = result

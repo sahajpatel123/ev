@@ -353,3 +353,134 @@ async def test_evie_state_query_broker_routes_through_turngate(db_session):
         )
     ).scalar_one()
     assert user_events >= 1, "trusted phone turns must be durably observable"
+
+
+# ---------------------------------------------------------------------------
+# TRANSACTION ISOLATION (PART 14/15): a failed owner turn must roll back and
+# leave a healthy transaction for the next turn in the SAME WebRTC session.
+# Raw database text must never leak into TurnResult or durable events.
+# ---------------------------------------------------------------------------
+
+
+import os
+
+import pytest
+
+
+@pytest.mark.skipif(
+    os.environ.get("EV_TEST_USE_LIVE_DB") != "1",
+    reason=(
+        "InFailedSqlTransaction is PostgreSQL-specific; run with "
+        "EV_TEST_USE_LIVE_DB=1 to exercise real aborted-transaction "
+        "semantics (reads only + rollback; isolated synthetic device)."
+    ),
+)
+@pytest.mark.asyncio
+async def test_failed_turn_rolls_back_and_next_turn_succeeds(
+    db_session, monkeypatch
+):
+    from app.ev import turn_controller
+    from app.ev.owner_turn import create_owner_turn
+    from app.ev.turn_gate import db_failure_stats, handle_owner_turn
+
+    d = Device(
+        name="Tx Isolation Phone",
+        token_hash="tx-iso-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.flush()
+    did = str(d.id)  # capture before any commit expires the instance
+    await life.create_project(db_session, actor=MASTER, title="Personal Fitness")
+    await db_session.commit()
+
+    # TURN A: force a GENUINE first-statement DB failure directly in the
+    # project query path (no silent wrappers in between).
+    from sqlalchemy import text as _text
+
+    import app.life.service as life_service
+
+    original_list = life_service.list_projects
+
+    async def poisoned_list(session, *, actor, active_only=True):
+        print("POISON-FIRED")
+        await session.execute(_text("select 1 + 'not-an-int'"))
+        return await original_list(session, actor=actor, active_only=active_only)
+
+    monkeypatch.setattr(life_service, "list_projects", poisoned_list)
+    turn_a = create_owner_turn(
+        live_session_id="tx-iso",
+        provider_item_id=None,
+        owner_id=MASTER,
+        device_id=did,
+        transcript="What projects do I have?",
+        transcript_source="device_text",
+    )
+    res_a = await handle_owner_turn(db_session, turn_a)
+    assert res_a.ok is False
+    assert "InFailedSqlTransaction" not in str(res_a.error)
+    assert "OWNER_TURN_FAILED" in str(res_a.error)
+    await db_session.rollback()
+    monkeypatch.setattr(life_service, "list_projects", original_list)
+
+    # TURN B: SAME WebRTC session/device — must run on a healthy transaction.
+    turn_b = create_owner_turn(
+        live_session_id="tx-iso",
+        provider_item_id=None,
+        owner_id=MASTER,
+        device_id=did,
+        transcript="What projects do I have?",
+        transcript_source="device_text",
+    )
+    res_b = await handle_owner_turn(db_session, turn_b)
+    assert res_b.ok is True, res_b.error
+    assert res_b.route == "STATE_QUERY"
+    assert res_b.operation == "PROJECT_LIST"
+    titles = [p["title"] for p in (res_b.canonical_data or [])]
+    assert "Personal Fitness" in titles
+
+
+@pytest.mark.asyncio
+async def test_non_uuid_turn_id_does_not_poison_transaction(db_session):
+    """The exact physical failure: device-text turn ids are not Event UUIDs;
+    resolution must skip cleanly instead of aborting the transaction."""
+    from app.ev.owner_turn import create_owner_turn
+    from app.ev.turn_gate import handle_owner_turn
+
+    turn = create_owner_turn(
+        live_session_id="nonuuid-test",
+        provider_item_id=None,
+        owner_id=MASTER,
+        device_id=None,
+        transcript="What projects do I have?",
+        transcript_source="device_text",
+        turn_id="text-6168e987-dd7c-4fef-a01c-2c2e04cf78d5-call_pLlTAiy05bZZZ",
+    )
+    assert len(turn.turn_id) > 20  # previously triggered the raw session.get
+    res = await handle_owner_turn(db_session, turn)
+    assert res.ok is True
+    assert res.route == "STATE_QUERY"
+    assert res.operation == "PROJECT_LIST"
+
+
+@pytest.mark.asyncio
+async def test_raw_db_text_never_reaches_owner_message(db_session):
+    from app.device_gateway.pipeline import run_trusted_device_turn
+
+    d = Device(
+        name="Sanitize Phone",
+        token_hash="sanitize-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+    result = await run_trusted_device_turn(
+        db_session, device=d, text="What projects do I have?"
+    )
+    blob = str(result)
+    for banned in ("psycopg", "SQLAlchemy", "InFailedSqlTransaction", "SELECT"):
+        assert banned.lower() not in blob.lower(), f"raw internals leaked: {banned}"

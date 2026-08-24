@@ -390,11 +390,42 @@ async def run_trusted_device_turn(
             f"text-{device.id}-{idempotency_key}" if idempotency_key else None
         ),
     )
-    result = await handle_owner_turn(session, turn)
-    await session.commit()
+    # PART 7/18: rollback guarantee + sanitized canonical failure. Raw
+    # database text must never reach the model or the durable trace.
+    try:
+        result = await handle_owner_turn(session, turn)
+        await session.commit()
+    except Exception:  # noqa: BLE001 - canonical conversion point
+        from contextlib import suppress
+
+        with suppress(Exception):
+            await session.rollback()
+        result = None
+    if result is None:
+        return {
+            "reply": (
+                "I couldn't complete that because an internal state "
+                "operation failed. Your request was safely cancelled."
+            ),
+            "ok": False,
+            "error_code": "DATABASE_TEMPORARY_FAILURE",
+            "retryable": True,
+            "route": "UNSUPPORTED",
+            "operation": "UNKNOWN",
+            "needs_clarification": False,
+            "turn_id": turn.turn_id,
+        }
     reply = result.owner_message or (
-        "Done." if result.ok else f"That didn't complete ({result.error})."
+        "Done." if result.ok else "That didn't complete."
     )
+    # PART 18 ERROR SANITIZATION: structured codes pass through; anything
+    # carrying a raw exception (route_failed: ...) becomes a safe canonical
+    # failure with no internals.
+    error_code = result.error if not result.ok else None
+    if error_code and any(
+        ch in str(error_code) for ch in ("(", ":", "`")
+    ):
+        error_code = "OWNER_TURN_FAILED"
     await emit_everywhere_event(
         session,
         event_type="message.user",
@@ -415,7 +446,7 @@ async def run_trusted_device_turn(
             "text": reply[:2000],
             "turn_id": turn.turn_id,
             "ok": bool(result.ok),
-            "error_code": result.error,
+            "error_code": error_code,
         },
         device_id=str(device.id),
     )
@@ -423,7 +454,7 @@ async def run_trusted_device_turn(
     return {
         "reply": reply,
         "ok": bool(result.ok),
-        "error_code": None if result.ok else result.error,
+        "error_code": error_code if result.ok is False else None,
         "route": result.route,
         "operation": result.operation,
         "needs_clarification": bool(result.needs_clarification),

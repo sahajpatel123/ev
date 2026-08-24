@@ -9,8 +9,10 @@ Flow:
 
 from __future__ import annotations
 
+import contextlib
 import re
 import time
+from uuid import UUID
 from typing import Any
 
 from sqlalchemy import select
@@ -121,21 +123,27 @@ class TurnController:
             )
 
     async def _resolve_turn_transcript(self, turn_id: str) -> str | None:
-        """Resolve turn_id to canonical transcript from durable Event or voice_memory.
-        
-        Currently looks up Event with metadata live_session_id or transcript_source.
-        If not found, returns None and caller falls back to owner_turn string.
-        """
-        # Try Event table: message.user events with that id or content
-        try:
+        """Resolve turn_id to a canonical transcript Event when it IS one.
 
+        TRANSACTION POISONING LAW: a failed statement aborts the whole
+        Postgres transaction. A non-UUID turn id (device-text ids are not
+        Event PKs) must be rejected BEFORE touching the database, and any
+        unexpected lookup failure must roll the session back so this owner
+        turn can still complete on a healthy transaction.
+        """
+        try:
+            tid = UUID(turn_id)
+        except (ValueError, AttributeError, TypeError):
+            return None
+        try:
             from app.models import Event
-            # turn_id may be Event.id or provider item_id
-            row = await self.session.get(Event, turn_id) if len(turn_id) > 20 else None
-            if row is None:
-                # Canonical transcript lookup by provider item id is not yet
-                # indexed; fall through and let caller use the literal text.
-                return None
+
+            row = await self.session.get(Event, tid)
+            return None  # transcript resolution is not indexed yet; row unused
+        except Exception:
+            with contextlib.suppress(Exception):
+                await self.session.rollback()
+            return None
         except Exception:
             pass
         return None
