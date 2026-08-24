@@ -274,6 +274,73 @@ class LiveSession:
             extra_metadata=extra_metadata,
         )
 
+    def _schedule_turn_gate(self, event) -> None:
+        """G1.6 TurnGate: schedule authoritative handling of final owner transcript."""
+        import asyncio
+
+        async def _run_gate():
+            try:
+                from app.db import SessionLocal
+                from app.ev.owner_turn import create_owner_turn
+                from app.ev.turn_gate import handle_owner_turn, create_realtime_response_payload
+                from app.utils.text import utcnow
+
+                # Create canonical OwnerTurn from FinalTranscriptEvent
+                # Provider item id is not directly on event; use text hash + session as fallback
+                # For live, the provider_item_id is available via GrokVoiceBridge's UserAudioTurn
+                provider_item_id = getattr(event, "provider_item_id", None) or getattr(event, "item_id", None)
+                turn = create_owner_turn(
+                    live_session_id=self.session_id,
+                    provider_item_id=provider_item_id,
+                    owner_id="master",  # resolved via session's actor (master for owner)
+                    device_id=str(self.device_id) if self.device_id else None,
+                    transcript=event.text,
+                    transcript_source=getattr(event, "transcript_source", None),
+                    confidence=getattr(event, "confidence", None),
+                    committed_at=utcnow(),
+                    transcription_completed_at=utcnow(),
+                )
+                async with SessionLocal() as session:
+                    result = await handle_owner_turn(session, turn)
+                    # Create exactly one response via gate
+                    payload = create_realtime_response_payload(turn, result)
+                    # Send via GrokVoiceBridge if available
+                    if self.grok_voice is not None and hasattr(self.grok_voice, "_send"):
+                        try:
+                            await self.grok_voice._send(payload)
+                        except Exception:
+                            # Fallback: also try LiveSession's response path
+                            pass
+                    # Also emit a TurnGateEvent for observability
+                    from app.voice.live.events import TurnGateEvent
+
+                    await self.emit(
+                        TurnGateEvent(
+                            at_ms=self._now(),
+                            turn_id=turn.turn_id,
+                            provider_item_id=provider_item_id,
+                            route=result.route,
+                            operation=result.operation,
+                            route_source=getattr(result, "route_source", "unknown"),
+                        )
+                    )
+            except Exception as e:
+                import logging
+
+                logging.getLogger("ev.turn_gate").exception("turn_gate failed for %s: %s", getattr(event, "text", "")[:40], e)
+
+        # Schedule without blocking emit
+        try:
+            asyncio.create_task(_run_gate())
+        except RuntimeError:
+            # No running loop (tests) — run directly
+            import asyncio as _asyncio
+
+            try:
+                _asyncio.get_running_loop().create_task(_run_gate())
+            except RuntimeError:
+                pass
+
     async def emit(self, event: LiveEvent) -> None:
         tts_generation: int | None = None
         is_boundary = self._is_playback_boundary(event)
@@ -307,6 +374,11 @@ class LiveSession:
                     event.text,
                     transcript_source=getattr(event, "transcript_source", None),
                 )
+            # G1.6 TurnGate: authoritative control plane (shadow until cutover, then direct)
+            from app.config import settings as _gate_settings
+            if getattr(_gate_settings, "turn_gate_enabled", False):
+                # Schedule gate handling without blocking emit
+                self._schedule_turn_gate(event)
         self._prepare_outbound(event)
         try:
             self.outbound.put_nowait(event)

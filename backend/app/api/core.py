@@ -265,7 +265,14 @@ async def health() -> dict:
                 if live == "xai"
                 else None
             ),
-            "realtime_allowlist": list(GROK_VOICE_TOOL_NAMES),
+            "realtime_allowlist": sorted(
+                (lambda lst: lst - {
+                    "life_project_create", "life_project_update", "life_project_query",
+                    "life_goal_create", "life_goal_update", "life_goal_add_step", "life_goal_query",
+                    "life_commitment_create", "life_commitment_update", "life_commitment_query",
+                    "life_relationship_set", "mission_control", "evie_turn",
+                } if getattr(settings, "turn_gate_enabled", False) else lst)(set(GROK_VOICE_TOOL_NAMES))
+            ),
             "camera": _camera_health(),
             "memory": await _memory_health(),
             "device_gateway": _device_gateway_health(),

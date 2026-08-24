@@ -972,6 +972,28 @@ async def _build_runtime_projection(
     all_realtime_tools = approved_realtime_function_tools(entries)
     live_entries = live_tool_projection(entries)
     realtime_tools = approved_realtime_function_tools(live_entries)
+    # G1.6 cutover: TurnGate owns life-state, Realtime must not have direct state tools
+    if getattr(settings, "turn_gate_enabled", False):
+        gate_excluded = {
+            "life_project_create", "life_project_update", "life_project_query",
+            "life_goal_create", "life_goal_update", "life_goal_add_step", "life_goal_query",
+            "life_commitment_create", "life_commitment_update", "life_commitment_query",
+            "life_relationship_set", "mission_control", "evie_turn",
+        }
+        live_entries = [e for e in live_entries if e.get("name") not in gate_excluded]
+        realtime_tools = [t for t in realtime_tools if t.get("name") not in gate_excluded]
+        all_realtime_tools = [t for t in all_realtime_tools if t.get("name") not in gate_excluded]
+    # G1.6 cutover: TurnGate owns life-state, Realtime must not have direct state tools
+    if getattr(settings, "turn_gate_enabled", False):
+        gate_excluded = {
+            "life_project_create", "life_project_update", "life_project_query",
+            "life_goal_create", "life_goal_update", "life_goal_add_step", "life_goal_query",
+            "life_commitment_create", "life_commitment_update", "life_commitment_query",
+            "life_relationship_set", "mission_control", "evie_turn",
+        }
+        live_entries = [e for e in live_entries if e.get("name") not in gate_excluded]
+        realtime_tools = [t for t in realtime_tools if t.get("name") not in gate_excluded]
+        all_realtime_tools = [t for t in all_realtime_tools if t.get("name") not in gate_excluded]
     providers = {
         provider: {
             "provider": provider,

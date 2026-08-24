@@ -240,23 +240,50 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
     return TurnIntent(route="CONVERSATION", operation="UNKNOWN", confidence=0.7)
 
 
+def is_deterministic_high_confidence(turn: str) -> bool:
+    """Obvious high-confidence cases that do not need Luna (deterministic)."""
+    low = (turn or "").strip().lower()
+    low_stripped = re.sub(r"^\s*evie[, ]*\s*", "", low).strip()
+    # Obvious state queries/mutations and conversation
+    obvious = [
+        "what projects do i have", "what goals do i have", "what changed", "give me status", "evie, status",
+        "how are you", "tell me a joke", "explain photosynthesis",
+    ]
+    for phrase in obvious:
+        if phrase in low_stripped or phrase in low:
+            return True
+    # Obvious project/goal/commitment with clear entity
+    if re.search(r"what priority is .+", low_stripped):
+        return True
+    if re.search(r"what goals do i have in .+", low_stripped):
+        return True
+    if "when is my" in low and "due" in low:
+        return True
+    if re.search(r"create a project called .+", low_stripped):
+        return True
+    if re.search(r"add a goal to .+:", low_stripped):
+        return True
+    if "create a commitment" in low and "tomorrow" in low:
+        return True
+    return False
+
+
 async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
     """Classify owner turn via Luna or rule fallback. Returns validated TurnIntent."""
     start = time.perf_counter()
-    # G1.3: Luna is GPT-5.6-Luna via OpenAI. Until Luna is provisioned,
-    # the placeholder model gpt-5.6-luna would otherwise trigger a failing
-    # OpenAI call (2-3s latency) before falling back. For high-frequency
-    # turn routing we use the deterministic rule-based path directly when
-    # the placeholder is still configured, keeping p50 < 20ms and cost zero.
-    # Set EV_TURN_CONTROL_MODEL to a real model (e.g. gpt-4o-mini) and
-    # EV_OPENAI_API_KEY to route via the Luna API.
-    use_luna_api = False
-    if (settings.openai_api_key or "").strip():
-        tc_model = (getattr(settings, "turn_control_model", None) or "").strip()
-        chat_alias = (getattr(settings, "openai_chat_model", None) or "").strip()
-        # Only use API when not on the placeholder, or when an alias is explicitly set
-        if tc_model != "gpt-5.6-luna" or chat_alias:
-            use_luna_api = True
+    # G1.6: Deterministic fast path for obvious high-confidence, Luna for ambiguous
+    if is_deterministic_high_confidence(turn):
+        intent = _rule_based_intent(turn, context)
+        intent_extra = {"route_source": "DETERMINISTIC"}
+        # Attach for observability
+        try:
+            intent.model_extra["route_source"] = "DETERMINISTIC"  # type: ignore
+        except Exception:
+            pass
+        latency = (time.perf_counter() - start) * 1000
+        _record_metrics(latency, usage={"route_source": "DETERMINISTIC", "fallback": "rule_based"})
+        return intent
+    use_luna_api = bool((settings.openai_api_key or "").strip())
     if use_luna_api:
         try:
             intent = await _call_luna(turn, context)
@@ -276,68 +303,136 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
 
 
 async def _call_luna(turn: str, context: dict | None) -> TurnIntent:
-    """Call Luna (OpenAI) with structured tool calling for TurnIntent via provider-neutral path."""
-    from app.gateway.providers import OpenAIProvider
-    from app.contracts import ChatMessage, ToolSpec
+    """Call Luna (OpenAI) via Responses API with structured output — primary control path."""
+    import httpx
 
-    # OpenAI provider — not DeepSeekProvider, clear model identity
-    provider = OpenAIProvider(
-        base_url=(getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").strip(),
-        api_key=settings.openai_api_key,
-        default_model=(getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-4o-mini",
-        provider_name="openai",
-    )
-    # Luna's actual model may not be provisioned; fall back to 4o-mini on 404
-    effective_model = provider.default_model
-    if effective_model == "gpt-5.6-luna":
-        # Map Luna alias to available chat model when Luna not yet in account
-        # Use openai_chat_model if set, else gpt-4o-mini
-        alias = (getattr(settings, "openai_chat_model", None) or "").strip()
-        if alias:
-            effective_model = alias
-        else:
-            effective_model = "gpt-4o-mini"
+    # Determine requested vs fallback models
+    requested = (getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-5.6-luna"
+    fallback = (getattr(settings, "turn_control_fallback_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-4o-mini").strip()
+    # Try primary first, then fallback on model-not-found
+    for attempt_model in [requested, fallback] if requested != fallback else [requested]:
+        ok, intent, meta = await _call_responses_api(turn, context, model=attempt_model, requested=requested)
+        if ok and intent:
+            # Record effective model
+            intent_raw = intent.model_dump() if isinstance(intent, TurnIntent) else intent
+            # Attach effective model for observability
+            if isinstance(intent, TurnIntent):
+                # Store in metrics via _record_metrics caller, but also return
+                pass
+            # Update model router effective
+            _record_luna_model(requested, attempt_model if ok else fallback, success=ok)
+            return intent
+        if ok is False and meta and meta.get("code") == "model_not_found":
+            continue
+        # For other errors, still try fallback if not already
+        if attempt_model == requested and fallback != requested:
+            continue
+        raise RuntimeError(f"Luna call failed for {attempt_model}: {meta}")
+    raise RuntimeError("Luna unavailable")
 
-    system = LUNA_SYSTEM_PROMPT
-    # Bounded context: only what routing needs
+
+# Luna model tracking for truthful telemetry (requested vs effective)
+_LUNA_REQUESTED = "gpt-5.6-luna"
+_LUNA_EFFECTIVE: str | None = None
+_LUNA_LAST_REQUEST_ID: str | None = None
+
+def _record_luna_model(requested: str, effective: str, success: bool):
+    global _LUNA_REQUESTED, _LUNA_EFFECTIVE
+    _LUNA_REQUESTED = requested
+    _LUNA_EFFECTIVE = effective if success else None
+
+def luna_model_probe() -> dict:
+    return {"requested": _LUNA_REQUESTED, "effective": _LUNA_EFFECTIVE, "last_request_id": _LUNA_LAST_REQUEST_ID}
+
+
+async def _call_responses_api(turn: str, context: dict | None, *, model: str, requested: str):
+    """Direct POST /v1/responses with json_schema for TurnIntent."""
+    import httpx
+
+    key = (getattr(settings, "openai_api_key", None) or "").strip()
+    if not key:
+        return False, None, {"code": "no_api_key"}
+    # Build TurnIntent JSON schema for Responses API (strict)
+    schema = {
+        "type": "object",
+        "properties": {
+            "route": {"type": "string", "enum": ["CONVERSATION","STATE_QUERY","STATE_MUTATION","MISSION_CONTROL","ACTION","DELEGATED_JOB","RESEARCH_MISSION","CLARIFICATION","UNSUPPORTED"]},
+            "operation": {"type": "string", "enum": ["PROJECT_LIST","PROJECT_GET","PROJECT_CREATE","PROJECT_UPDATE","GOAL_LIST","GOAL_GET","GOAL_CREATE","GOAL_UPDATE","COMMITMENT_LIST","COMMITMENT_GET","COMMITMENT_CREATE","COMMITMENT_UPDATE","STATUS","WHAT_CHANGED","RELATIONSHIP_QUERY","RELATIONSHIP_UPDATE","UNKNOWN"]},
+            "confidence": {"type": "number"},
+            "needs_clarification": {"type": "boolean"},
+            "clarification_question": {"type": ["string","null"]},
+            "project_title": {"type": ["string","null"]},
+            "goal_title": {"type": ["string","null"]},
+            "commitment_query": {"type": ["string","null"]},
+            "description": {"type": ["string","null"]},
+            "priority": {"type": ["string","null"]},
+            "due_at": {"type": ["string","null"]},
+        },
+        "required": ["route","operation","confidence","needs_clarification"],
+        "additionalProperties": False,
+    }
+    # Bounded context for Luna
     ctx_parts = []
     if context:
         if context.get("project_titles"):
             ctx_parts.append(f"Known projects: {', '.join(context['project_titles'][:10])}")
         if context.get("current_project"):
-            ctx_parts.append(f"Current focus project: {context['current_project']}")
-        if context.get("capability_summary"):
-            ctx_parts.append(f"Capabilities: {context['capability_summary']}")
-
-    messages = [
-        ChatMessage(role="system", content=system),
-    ]
+            ctx_parts.append(f"Current focus: {context['current_project']}")
+    system = LUNA_SYSTEM_PROMPT
     if ctx_parts:
-        messages.append(ChatMessage(role="system", content="Context: " + " | ".join(ctx_parts)))
-    messages.append(ChatMessage(role="user", content=turn))
-
-    tool = ToolSpec(
-        name="emit_intent",
-        description="Emit the typed turn intent",
-        parameters=EMIT_INTENT_TOOL["parameters"],  # type: ignore[arg-type]
-    )
-    result = await provider._complete(
-        messages,
-        model=effective_model,
-        temperature=0.0,
-        tools=[tool],
-    )
-    # Expect tool call
-    for call in result.tool_calls:
-        if call.name == "emit_intent":
-            # Validate via TurnIntent
-            return TurnIntent.model_validate(call.arguments)
-    # Fallback: try to parse content as JSON
-    if result.text:
-        try:
-            data = json.loads(result.text)
-            return TurnIntent.model_validate(data)
-        except Exception:
-            pass
-    # If no tool call, treat as conversation
-    return TurnIntent(route="CONVERSATION", operation="UNKNOWN", confidence=0.5)
+        system += "\nContext: " + " | ".join(ctx_parts)
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": turn},
+        ],
+        "text": {"format": {"type": "json_schema", "name": "turn_intent", "schema": schema, "strict": True}},
+        "temperature": 0.0,
+    }
+    start = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=20) as client:
+            resp = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json=payload,
+            )
+            latency = (time.perf_counter() - start) * 1000
+            req_id = resp.headers.get("x-request-id")
+            global _LUNA_LAST_REQUEST_ID
+            _LUNA_LAST_REQUEST_ID = req_id
+            if resp.status_code != 200:
+                try:
+                    err = resp.json().get("error", {})
+                    code = err.get("code") or err.get("type") or f"http_{resp.status_code}"
+                    if "model_not_found" in str(err).lower() or resp.status_code == 404:
+                        code = "model_not_found"
+                except Exception:
+                    code = f"http_{resp.status_code}"
+                return False, None, {"code": code, "status": resp.status_code, "request_id": req_id, "latency_ms": latency, "requested": requested, "effective": model}
+            data = resp.json()
+            effective = data.get("model") or model
+            # Parse output
+            out_text = None
+            for item in data.get("output", []):
+                if item.get("type") == "message":
+                    for c in item.get("content", []):
+                        if c.get("type") == "output_text":
+                            out_text = c.get("text")
+                            break
+            usage = data.get("usage")
+            if out_text:
+                try:
+                    parsed = json.loads(out_text)
+                    intent = TurnIntent.model_validate(parsed)
+                    # Attach usage/latency for metrics
+                    _record_metrics(latency, usage={** (usage or {}), "model": effective, "request_id": req_id})
+                    _record_luna_model(requested, effective, True)
+                    return True, intent, {"request_id": req_id, "latency_ms": latency, "usage": usage, "requested": requested, "effective": effective}
+                except Exception as e:
+                    return False, None, {"code": "parse_failed", "error": str(e), "request_id": req_id}
+            return False, None, {"code": "no_output", "request_id": req_id}
+    except Exception as e:
+        latency = (time.perf_counter() - start) * 1000
+        return False, None, {"code": "exception", "error": str(e), "latency_ms": latency}

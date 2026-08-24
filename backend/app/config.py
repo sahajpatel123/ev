@@ -381,11 +381,11 @@ class Settings(BaseSettings):
     # OpenAI Realtime voice for spoken output (marin is the natural default).
     openai_realtime_voice: str = "marin"
     openai_realtime_url: str = "wss://api.openai.com/v1/realtime"
-    # G1.3 Turn Control Plane: Luna (GPT-5.6 Luna) via OpenAI text/Responses
-    # structured outputs.  Falls back to gpt-4o-mini when Luna is not yet
-    # provisioned; the routing contract is identical.
+    # G1.3/G1.5 Turn Control Plane: Luna (GPT-5.6 Luna) via OpenAI Responses
+    # structured outputs.  Primary is Luna, fallback is explicit.
     turn_control_provider: str = "openai"
     turn_control_model: str = "gpt-5.6-luna"
+    turn_control_fallback_model: str = "gpt-4o-mini"
     openai_chat_model: str | None = None  # alias for turn_control_model when set
 
     # Intelligence filter: optional provider-backed critic (staged trust).

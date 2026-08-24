@@ -696,15 +696,15 @@ def grok_session_update(
     realtime_tools = grok_voice_tools(selected_tools)
     if kind == "openai":
         voice = (settings.openai_realtime_voice or "marin").strip() or "marin"
+        gate = bool(getattr(settings, "turn_gate_enabled", False))
         turn_detection = {
             "type": "server_vad",
             "threshold": 0.5,
             "prefix_padding_ms": 200,
             "silence_duration_ms": 400,
             "interrupt_response": False,
-            # V2 CANARY: VAD stays a sensor. The application owns
-            # response.create; the provider never answers on its own.
-            "create_response": not turn_authority_v2,
+            # G1.6 TurnGate: VAD is sensor only, backend owns response.
+            "create_response": not (turn_authority_v2 or gate),
         }
         return {
             "type": "session.update",
