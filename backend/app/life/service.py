@@ -63,14 +63,20 @@ async def _emit(
     device_id: str | None = None,
     privacy_level: str = PRIVACY_DEFAULT,
     command_id: str | None = None,
+    command_key: str | None = None,
 ) -> None:
     """Append one canonical durable domain event (same transaction).
 
     G2 ONE-EVIE idempotency law: when a cross-device command carries a
     ``command_id``, its hash is stored on the emitted event (unique column).
     Retries/replays of the same command resolve against this ledger and must
-    produce exactly ONE canonical mutation.
+    produce exactly ONE canonical mutation. ``command_key`` lets multi-shape
+    operations (one command, several possible event subtypes) pin ONE stable
+    ledger identity.
     """
+    key = command_key or (
+        f"{event_type}:{command_id}" if command_id else None
+    )
     session.add(
         Event(
             source=EVENT_SOURCE,
@@ -80,27 +86,25 @@ async def _emit(
             privacy_level=privacy_level,
             sha256=_sha({"t": event_type, **content}),
             occurred_at=utcnow(),
-            idempotency_key_hash=(
-                sha256_hex(f"{event_type}:{command_id}")
-                if command_id
-                else None
-            ),
+            idempotency_key_hash=sha256_hex(key) if key else None,
         )
     )
 
 
 async def _replay_by_command(
-    session: AsyncSession, *, event_type: str, command_id: str | None
+    session: AsyncSession, *, event_type: str | None = None, command_id: str | None = None, key: str | None = None
 ) -> Event | None:
-    """Return the prior canonical event for a retried command_id, if any."""
-    if not command_id:
-        return None
+    """Return the prior canonical event for a retried command, if any."""
+    if key is None:
+        if not command_id or not event_type:
+            return None
+        key = f"{event_type}:{command_id}"
     from sqlalchemy import select
 
     row = (
         await session.execute(
             select(Event).where(
-                Event.idempotency_key_hash == sha256_hex(f"{event_type}:{command_id}"),
+                Event.idempotency_key_hash == sha256_hex(key),
                 Event.tombstoned_at.is_(None),
             )
         )
@@ -257,11 +261,24 @@ async def update_project(
     description: str | None = None,
     device_id: str | None = None,
     expected_version: int | None = None,
+    command_id: str | None = None,
 ) -> dict:
     origin_actor, actor = actor, _scope(actor)
     row = await session.get(Project, UUID(project_id))
     if row is None or row.actor != actor:
         return {"ok": False, "error": "not_found"}
+    # G2 idempotency law: a retried update command resolves to the original
+    # canonical outcome (same event ledger as creates/cancels). The key is
+    # subtype-independent because one update may emit different subtypes.
+    prior = await _replay_by_command(
+        session, key=f"project.update:{command_id}" if command_id else None
+    )
+    if prior is not None:
+        return {
+            "ok": True,
+            "project": _public_project(row),
+            "duplicate": True,
+        }
     # G2 Phase 6 — version/conflict law. Never last-write-wins silently for
     # consequential edits; stale writers get the current canonical state back.
     if expected_version is not None and int(expected_version) != int(getattr(row, "version", 0) or 0):
@@ -304,6 +321,7 @@ async def update_project(
         actor=origin_actor,
         content={"project_id": str(row.id), **changes},
         device_id=device_id,
+        command_key=f"project.update:{command_id}" if command_id else None,
     )
     row.version = int(getattr(row, "version", 0) or 0) + 1
     return {"ok": True, "project": _public_project(row), "changes": changes}
@@ -437,11 +455,19 @@ async def update_goal(
     title: str | None = None,
     device_id: str | None = None,
     expected_version: int | None = None,
+    command_id: str | None = None,
 ) -> dict:
     origin_actor, actor = actor, _scope(actor)
     row = await session.get(Goal, _uuid(goal_id))
     if row is None or row.actor != actor:
         return {"ok": False, "error": "not_found"}
+    # G2 idempotency law (subtype-independent ledger key — one update may
+    # emit updated/blocked/completed/... subtypes).
+    prior = await _replay_by_command(
+        session, key=f"goal.update:{command_id}" if command_id else None
+    )
+    if prior is not None:
+        return {"ok": True, "goal": _public_goal(row), "duplicate": True}
     # G2 Phase 6 — version/conflict law (see update_project).
     if expected_version is not None and int(expected_version) != int(getattr(row, "version", 0) or 0):
         return {
@@ -499,6 +525,7 @@ async def update_goal(
         actor=origin_actor,
         content={"goal_id": str(row.id), **changes},
         device_id=device_id,
+        command_key=f"goal.update:{command_id}" if command_id else None,
     )
     row.version = int(getattr(row, "version", 0) or 0) + 1
     return {"ok": True, "goal": _public_goal(row), "changes": changes}
@@ -572,11 +599,20 @@ async def create_commitment(
     privacy_level: str = PRIVACY_DEFAULT,
     source_event_id=None,
     device_id: str | None = None,
+    command_id: str | None = None,
 ) -> dict:
     origin_actor, actor = actor, _scope(actor)
     description = (description or "").strip()
     if not description:
         return {"ok": False, "error": "missing_description"}
+    prior = await _replay_by_command(
+        session, event_type="commitment.created", command_id=command_id
+    )
+    if prior is not None:
+        prior_id = (prior.content or {}).get("commitment_id")
+        row0 = await session.get(Commitment, _uuid(prior_id)) if prior_id else None
+        if row0 is not None:
+            return {"ok": True, "commitment": _public_commitment(row0), "duplicate": True}
     project_id = None
     if project_ref:
         proj = await find_project(session, actor=actor, query=project_ref)
@@ -604,6 +640,7 @@ async def create_commitment(
         },
         device_id=device_id,
         privacy_level=privacy_level,
+        command_id=command_id,
     )
     return {"ok": True, "commitment": _public_commitment(row)}
 

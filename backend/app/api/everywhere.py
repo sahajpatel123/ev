@@ -31,6 +31,188 @@ class CapabilityResolveRequest(BaseModel):
     constraints: dict = Field(default_factory=dict)
 
 
+class CommandEnvelope(BaseModel):
+    """ONE typed cross-device command contract (G2 Stage 3).
+
+    Identity is DERIVED from authentication — client-supplied owner/device
+    fields are accepted as metadata only and never grant authority.
+    """
+
+    command_id: str = Field(min_length=8, max_length=128)
+    operation: str = Field(min_length=3, max_length=64)
+    arguments: dict = Field(default_factory=dict)
+    expected_entity_version: int | None = Field(default=None, ge=0)
+    correlation_id: str | None = Field(default=None, max_length=128)
+    # Metadata at most (never authority):
+    claimed_owner_id: str | None = Field(default=None, max_length=64)
+    claimed_device_id: str | None = Field(default=None, max_length=64)
+
+
+_ALLOWED_OPERATIONS = {
+    "project.create",
+    "project.update",
+    "goal.create",
+    "goal.update",
+    "commitment.create",
+    "commitment.cancel",
+}
+
+
+def _outcome(
+    *,
+    command_id: str,
+    operation: str,
+    result: dict,
+    entity_type: str,
+) -> dict:
+    """Canonical command outcome (Stage 4): SUCCESS / REPLAYED / CONFLICT /
+    NOT_FOUND / VALIDATION are all structured truth, never generic false."""
+    entity_key = f"{entity_type}_id"
+    entity = result.get(entity_type) or {}
+    out: dict = {
+        "command_id": command_id,
+        "ok": bool(result.get("ok")),
+        "operation": operation,
+        "entity_type": entity_type,
+        "entity_id": (entity.get("id") if isinstance(entity, dict) else None)
+        or result.get("entity_id")
+        or (result.get("arguments") or {}).get(entity_key),
+        "new_version": entity.get("version") if isinstance(entity, dict) else None,
+        "duplicate": bool(result.get("duplicate")),
+        "unchanged": bool(result.get("unchanged")),
+        "canonical_data": entity if isinstance(entity, dict) else None,
+        "error_code": None if result.get("ok") else (result.get("error") or "failed"),
+        "conflict": result.get("conflict"),
+    }
+    return out
+
+
+@router.post("/commands")
+async def commands(
+    body: CommandEnvelope,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """Single authoritative mutation entry point for trusted endpoints.
+
+    Scope/identity come from auth (ctx.data_scope); device provenance is
+    recorded server-side; every operation is durably idempotent by
+    command_id; version conflicts return structured recovery data.
+    """
+    op = body.operation.strip().lower()
+    if op not in _ALLOWED_OPERATIONS:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "UNKNOWN_OPERATION",
+                "allowed": sorted(_ALLOWED_OPERATIONS),
+            },
+        )
+    args = body.arguments or {}
+    scope = ctx.data_scope
+    device_id = str(ctx.device_id) if ctx.device_id else None
+
+    def _need(*keys: str) -> dict:
+        missing = [k for k in keys if not (args.get(k) or "").strip()]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail={"error_code": "VALIDATION", "missing": missing},
+            )
+        return args
+
+    from app.everywhere.sync import current_cursor
+
+    if op == "project.create":
+        a = _need("title")
+        result = await life.create_project(
+            session, actor=scope, title=a["title"],
+            priority=a.get("priority") or "NORMAL",
+            description=a.get("description") or "",
+            device_id=device_id, command_id=body.command_id,
+        )
+        out = _outcome(command_id=body.command_id, operation=op, result=result, entity_type="project")
+    elif op == "project.update":
+        a = _need("project_id")
+        result = await life.update_project(
+            session, actor=scope, project_id=a["project_id"],
+            status=a.get("status"), priority=a.get("priority"),
+            title=a.get("title"), description=a.get("description"),
+            expected_version=body.expected_entity_version,
+            device_id=device_id, command_id=body.command_id,
+        )
+        out = _outcome(command_id=body.command_id, operation=op, result=result, entity_type="project")
+        if result.get("error") == "not_found":
+            out["error_code"] = "NOT_FOUND"
+    elif op == "goal.create":
+        a = _need("title")
+        result = await life.create_goal(
+            session, actor=scope, title=a["title"],
+            project_ref=a.get("project_ref") or a.get("project_id"),
+            priority=a.get("priority") or "NORMAL",
+            success_criteria=a.get("success_criteria") or "",
+            device_id=device_id, command_id=body.command_id,
+        )
+        out = _outcome(command_id=body.command_id, operation=op, result=result, entity_type="goal")
+    elif op == "goal.update":
+        a = _need("goal_id")
+        result = await life.update_goal(
+            session, actor=scope, goal_id=a["goal_id"],
+            state=a.get("state"), priority=a.get("priority"),
+            progress_note=a.get("progress_note"), next_action=a.get("next_action"),
+            title=a.get("title"),
+            expected_version=body.expected_entity_version,
+            device_id=device_id, command_id=body.command_id,
+        )
+        out = _outcome(command_id=body.command_id, operation=op, result=result, entity_type="goal")
+        if result.get("error") == "not_found":
+            out["error_code"] = "NOT_FOUND"
+    elif op == "commitment.create":
+        a = _need("description")
+        due_raw = a.get("due_at")
+        due = None
+        if due_raw:
+            from datetime import datetime as _dt
+
+            try:
+                due = _dt.fromisoformat(str(due_raw).replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error_code": "VALIDATION", "missing": [], "bad_fields": ["due_at"]},
+                ) from None
+        result = await life.create_commitment(
+            session, actor=scope, description=a["description"], due_at=due,
+            project_ref=a.get("project_ref"), goal_id=a.get("goal_id"),
+            device_id=device_id, command_id=body.command_id,
+        )
+        out = _outcome(command_id=body.command_id, operation=op, result=result, entity_type="commitment")
+    elif op == "commitment.cancel":
+        a = _need("commitment_id")
+        result = await life.update_commitment(
+            session, actor=scope, commitment_id=a["commitment_id"],
+            status="CANCELLED", device_id=device_id, command_id=body.command_id,
+        )
+        out = _outcome(command_id=body.command_id, operation=op, result=result, entity_type="commitment")
+        if result.get("error") == "not_found":
+            out["error_code"] = "NOT_FOUND"
+    else:  # pragma: no cover
+        raise HTTPException(status_code=422, detail={"error_code": "UNKNOWN_OPERATION"})
+
+    await session.commit()
+    try:
+        cur = await current_cursor(session)
+    except Exception:
+        cur = None
+    out["server_cursor"] = cur
+    out["correlation_id"] = body.correlation_id
+    out["device_id"] = device_id
+    return out
+
+
+from app.life import service as life  # noqa: E402  (canonical mutation authority)
+
+
 @router.get("/bootstrap")
 async def bootstrap(
     session: AsyncSession = Depends(get_session),

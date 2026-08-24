@@ -324,14 +324,22 @@ async def hello(
         )
     device.client_version = (data.client_build or device.client_version or "")[:64] or device.client_version
     device.protocol_version = str(data.protocol_version)[:16]
+    ignored_capabilities: list[str] = []
     if data.capabilities:
-        device.capabilities = list(data.capabilities)
+        from app.everywhere.capabilities import validate_capabilities
+
+        accepted, ignored = validate_capabilities(data.capabilities)
+        # STAGE 19: unknown capability names are IGNORED, never projected.
+        if accepted:
+            device.capabilities = accepted
+        ignored_capabilities = ignored
     note_presence(device.id, instance_id=data.instance_id, state="ready" if data.foreground else "background")
     await session.commit()
     snap = health_snapshot()
     return {
         "ok": True,
         "device": _device_public(device),
+        "ignored_capabilities": ignored_capabilities,
         "environment": "SANDBOX" if is_sandbox_device(device) else "OWNER",
         "memory_scope": memory_scope_of(device),
         "home_station": snap.get("home_station"),

@@ -33,6 +33,36 @@ from app.utils.text import utcnow
 
 from .devices import presence_state
 
+# STAGE 19 LAW: advertisements are BOUNDED and TYPED. A client may only
+# declare these endpoint capability bases; anything else is ignored (never
+# projected into the executable universe) and counted for diagnostics.
+KNOWN_CAPABILITY_BASES = frozenset(
+    {
+        "foreground_voice",
+        "camera",
+        "text",
+        "notification",
+        "microphone",
+        "screen_look",
+        "computer_control",
+        "location",
+        "speaker_audio",
+        "clipboard",
+    }
+)
+
+
+def validate_capabilities(raw: list[str] | None) -> tuple[list[str], list[str]]:
+    """Split a client capability advertisement into (accepted, ignored)."""
+    accepted: list[str] = []
+    ignored: list[str] = []
+    for c in raw or []:
+        name = str(c).strip().lower()
+        if not name:
+            continue
+        (accepted if name in KNOWN_CAPABILITY_BASES else ignored).append(name[:64])
+    return accepted[:32], ignored[:32]
+
 
 @dataclass(frozen=True)
 class RoutedDevice:

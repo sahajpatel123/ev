@@ -176,6 +176,12 @@ async def _advance_device_cursor(session: AsyncSession, ctx: ActorContext, curso
 
 
 async def bootstrap(session: AsyncSession, ctx: ActorContext) -> dict:
+    # STAGE 9 CONSISTENCY LAW: capture the cursor HIGH-WATER MARK FIRST, then
+    # read entities. Any mutation committing after the mark is guaranteed to
+    # appear in changes(cursor=mark), so a concurrent write can never vanish
+    # between snapshot and delta. (A write landing mid-read may appear in
+    # BOTH — clients apply deltas idempotently by event id.)
+    start_cursor = await current_cursor(session, owner_trusted=True)
     scope = owner_scope(ctx.actor, device=ctx.device)
     situation = await life.situation_snapshot(session, actor=scope)
     projects = await life.list_projects(session, actor=scope, active_only=True)
@@ -195,12 +201,11 @@ async def bootstrap(session: AsyncSession, ctx: ActorContext) -> dict:
     notifications = await recent_notifications(session, limit=20) if owner_scope_caller else []
     devices = await list_devices(session) if owner_scope_caller else []
     universe = await capability_universe(session)
-    cursor = await current_cursor(session, owner_trusted=True)
 
     return {
         "owner": CANONICAL_OWNER if owner_scope_caller else scope,
         "generated_at": utcnow().isoformat(),
-        "cursor": cursor,
+        "cursor": start_cursor,
         "projects": projects[:50],
         "goals": (goals_active + goals_blocked)[:100],
         "open_commitments": commitments[:50],

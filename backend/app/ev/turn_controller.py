@@ -108,6 +108,7 @@ class TurnController:
             )
 
         # Route to Evie Core
+        self._turn_id = turn_id
         try:
             result = await self._route_intent(intent, canonical_turn)
             result.latency_ms = (time.perf_counter() - start) * 1000
@@ -307,7 +308,14 @@ class TurnController:
                 # Extract title better: for "create a project called X", description is X
                 if not title or len(title) < 2:
                     return TurnResult(ok=False, route=route, operation=op, error="missing_title")
-                res = await life.create_project(self.session, actor=self.actor, title=title, priority=intent.priority or "NORMAL", device_id=self.device_id)
+                if title.islower() or title.isupper():
+                    title = title.title()
+                res = await life.create_project(
+                    self.session, actor=self.actor, title=title,
+                    priority=intent.priority or "NORMAL",
+                    device_id=self.device_id,
+                    command_id=f"turn:{self._turn_id}" if getattr(self, "_turn_id", None) else None,
+                )
                 ok = res.get("ok")
                 return TurnResult(ok=bool(ok), route=route, operation=op, canonical_data=res.get("project"), owner_message=res.get("spoken") or (f"Created project {title}." if ok else f"Failed: {res.get('error')}"), error=None if ok else res.get("error"))
             if op == "PROJECT_UPDATE":
@@ -316,7 +324,11 @@ class TurnController:
                 proj = await life.find_project(self.session, actor=self.actor, query=title) if title else None
                 if not proj:
                     return TurnResult(ok=False, route=route, operation=op, error="not_found", needs_clarification=True, clarification_question="Which project?")
-                res = await life.update_project(self.session, actor=self.actor, project_id=str(proj.id), priority=intent.priority, device_id=self.device_id)
+                res = await life.update_project(
+                    self.session, actor=self.actor, project_id=str(proj.id),
+                    priority=intent.priority, device_id=self.device_id,
+                    command_id=f"turn:{self._turn_id}" if getattr(self, "_turn_id", None) else None,
+                )
                 ok = res.get("ok")
                 return TurnResult(ok=bool(ok), route=route, operation=op, canonical_data=res.get("project"), owner_message=res.get("spoken") or str(res), error=None if ok else res.get("error"))
 
@@ -350,7 +362,11 @@ class TurnController:
             if op == "GOAL_CREATE":
                 title = intent.goal_title or intent.description or ""
                 proj_ref = intent.project_title
-                res = await life.create_goal(self.session, actor=self.actor, title=title, project_ref=proj_ref, priority=intent.priority or "NORMAL", device_id=self.device_id)
+                res = await life.create_goal(
+                    self.session, actor=self.actor, title=title, project_ref=proj_ref,
+                    priority=intent.priority or "NORMAL", device_id=self.device_id,
+                    command_id=f"turn:{self._turn_id}" if getattr(self, "_turn_id", None) else None,
+                )
                 ok = res.get("ok")
                 return TurnResult(ok=bool(ok), route=route, operation=op, canonical_data=res.get("goal"), owner_message=f"Created goal: {title}." if ok else str(res.get("error")), error=None if ok else res.get("error"))
             if op == "GOAL_UPDATE":
@@ -415,7 +431,11 @@ class TurnController:
                 due = parse_owner_when(due_str) if due_str else None
                 if due is None and desc:
                     due = parse_owner_when(desc)
-                res = await life.create_commitment(self.session, actor=self.actor, description=desc, due_at=due, project_ref=intent.project_title, device_id=self.device_id)
+                res = await life.create_commitment(
+                    self.session, actor=self.actor, description=desc, due_at=due,
+                    project_ref=intent.project_title, device_id=self.device_id,
+                    command_id=f"turn:{self._turn_id}" if getattr(self, "_turn_id", None) else None,
+                )
                 ok = res.get("ok")
                 cm = res.get("commitment", {})
                 # Post-write verification: the row must be readable as OPEN.
@@ -440,7 +460,7 @@ class TurnController:
                             break
                 if not cid:
                     return TurnResult(ok=False, route=route, operation=op, error="not_found")
-                res = await life.update_commitment(self.session, actor=self.actor, commitment_id=cid, status=intent.status or "FULFILLED", device_id=self.device_id)
+                res = await life.update_commitment(self.session, actor=self.actor, commitment_id=cid, status=intent.status or "FULFILLED", device_id=self.device_id, command_id=f"turn:{self._turn_id}" if getattr(self, "_turn_id", None) else None)
                 return TurnResult(ok=bool(res.get("ok")), route=route, operation=op, canonical_data=res.get("commitment"), error=res.get("error"))
             if op == "COMMITMENT_CANCEL":
                 # "Delete my X commitment" == semantic CANCEL. Row + history are
@@ -554,6 +574,7 @@ class TurnController:
                 res = await life.update_commitment(
                     self.session, actor=self.actor, commitment_id=target["id"],
                     status="CANCELLED", device_id=self.device_id,
+                    command_id=f"turn:{self._turn_id}" if getattr(self, "_turn_id", None) else None,
                 )
                 ok = bool(res.get("ok"))
                 # Post-write verification: the cancelled commitment must no

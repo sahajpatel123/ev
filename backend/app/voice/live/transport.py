@@ -199,6 +199,7 @@ async def serve_live_websocket(
     async def tick_loop() -> None:
         last_beat = 0.0
         last_mail = 0.0
+        last_trust_check = 0.0
         while not live._closed:
             await asyncio.sleep(max(0.02, cadence))
             if live.grok_voice is None:
@@ -214,6 +215,36 @@ async def serve_live_websocket(
                     from app.ev.timers import sweep_due_timers
 
                     await sweep_due_timers()
+            # STAGE 16 TRUST LAW: a revoked device must not retain an open
+            # live channel. Bounded check (30s) closes the session with a
+            # fatal, explicit outcome — the socket never outlives trust.
+            if now - last_trust_check >= 30.0:
+                last_trust_check = now
+                dev_id = getattr(live, "device_id", None)
+                if dev_id:
+                    with contextlib.suppress(Exception):
+                        from sqlalchemy import select
+
+                        from app.models import Device
+
+                        async with SessionLocal() as db:
+                            drow = (
+                                await db.execute(
+                                    select(Device).where(Device.id == UUID(str(dev_id)))
+                                )
+                            ).scalars().first()
+                        if drow is not None and drow.revoked_at is not None:
+                            from app.voice.live.events import ErrorEvent
+
+                            await live.emit(
+                                ErrorEvent(
+                                    at_ms=live.now(),
+                                    code="device_revoked",
+                                    message="This device was revoked; disconnecting.",
+                                    fatal=True,
+                                )
+                            )
+                            return
             if on_heartbeat is not None and now - last_beat >= 30.0:
                 last_beat = now
                 with contextlib.suppress(Exception):

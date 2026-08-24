@@ -222,18 +222,64 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
     if "give me status" in low:
         return TurnIntent(route="MISSION_CONTROL", operation="STATUS", confidence=0.98)
 
-    # STATE_QUERY: priority
+    # STATE_QUERY: priority — accepts "what priority is X", "what's the
+    # priority of X" AND the owner-natural "what is the priority of X".
     m = re.search(r"what\s+priority\s+is\s+(.+?)\??$", low_stripped)
-    if m or ("priority" in low and "personal fitness" in low):
+    if m or (
+        "priority" in low
+        and "personal fitness" in low
+        and low_stripped.startswith(("what", "how", "is", "tell"))
+    ):
         proj = m.group(1).strip().title() if m else "Personal Fitness"
         # Handle "what's the priority of fitness" variant
         if "fitness" in proj.lower():
             proj = "Personal Fitness" if "personal" in low else proj
         return TurnIntent(route="STATE_QUERY", operation="PROJECT_GET", project_title=proj.strip(" ?\"'"), confidence=0.95)
-    if re.search(r"what'?s\s+the\s+priority\s+of\s+(.+)", low_stripped):
-        m2 = re.search(r"what'?s\s+the\s+priority\s+of\s+(.+)", low_stripped)
-        if m2:
-            return TurnIntent(route="STATE_QUERY", operation="PROJECT_GET", project_title=m2.group(1).strip(" ?\"'").title(), confidence=0.9)
+    m = re.search(r"what(?:'s|\s+is)\s+the\s+priority\s+of\s+(.+?)\??$", low_stripped)
+    if m:
+        return TurnIntent(route="STATE_QUERY", operation="PROJECT_GET", project_title=m.group(1).strip(" ?\"'").title(), confidence=0.95)
+
+    # STATE_MUTATION: explicit priority update — owner-natural phrasings:
+    #   "set the priority of X to high" / "change X priority to HIGH"
+    #   "make X high priority" (single known project) / "set X to high priority"
+    m = re.search(
+        r"(?:set|put|change|update|switch|make)\s+(?:the\s+)?priority\s+(?:of|for)\s+(.+?)\s+to\s+(critical|high|normal|low)\b",
+        low_stripped,
+    )
+    if not m:
+        m = re.search(
+            r"(?:set|put|change|update|switch)\s+(.+?)\s+(?:priority\s+)?to\s+(critical|high|normal|low)\s+priority\b",
+            low_stripped,
+        )
+    if not m:
+        m = re.search(
+            r"(?:make|mark)\s+(.+?)\s+(?:a\s+|an\s+)?(critical|high|normal|low)\s+priority\b",
+            low_stripped,
+        )
+    if not m:
+        m = re.search(
+            r"(?:make|mark)\s+the\s+priority\s+of\s+(.+?)\s+(critical|high|normal|low)\b",
+            low_stripped,
+        )
+    if m:
+        title = m.group(1).strip(" ?\"'")
+        level = m.group(2).upper()
+        title = re.sub(r"^(?:the|my|project)\s+", "", title, flags=re.IGNORECASE).strip()
+        # Pronoun-only project reference without context: ask, never guess.
+        if not title or title.lower() in ("that", "this", "it"):
+            return TurnIntent(
+                route="CLARIFICATION", operation="UNKNOWN",
+                needs_clarification=True,
+                clarification_question="Which project?",
+                confidence=0.9,
+            )
+        return TurnIntent(
+            route="STATE_MUTATION",
+            operation="PROJECT_UPDATE",
+            project_title=title.title() if title.islower() else title,
+            priority=level,
+            confidence=0.94,
+        )
 
     # STATE_QUERY: projects list
     if low_stripped in ("what projects do i have", "what projects do i have?", "list projects", "show projects"):
@@ -433,6 +479,10 @@ def is_deterministic_high_confidence(turn: str) -> bool:
             return True
     # Obvious project/goal/commitment with clear entity
     if re.search(r"what priority is .+", low_stripped):
+        return True
+    if re.search(r"what(?:'s|\s+is)\s+the\s+priority\s+of\s+.+", low_stripped):
+        return True
+    if re.search(r"(?:set|put|change|update|switch|make)\b.{0,40}\bpriority\b", low_stripped) and "priority" in low_stripped:
         return True
     if re.search(r"what goals do i have in .+", low_stripped):
         return True
