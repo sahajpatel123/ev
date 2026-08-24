@@ -74,18 +74,41 @@ EMIT_INTENT_TOOL = {
 }
 
 # Simple in-memory metrics for health/cost (G1.3)
-_LUNA_METRICS = {"count": 0, "total_latency_ms": 0.0, "errors": 0, "last_latency_ms": 0.0, "last_usage": None}
+_LUNA_METRICS: dict = {
+    "count": 0,
+    "total_latency_ms": 0.0,
+    "errors": 0,
+    "last_latency_ms": 0.0,
+    "last_usage": None,
+    # G1.11 cost routing telemetry
+    "total_owner_turns": 0,
+    "deterministic_turns": 0,
+    "luna_turns": 0,
+    "fallback_model_turns": 0,
+    "deepseek_delegations": 0,
+    "conversation_turns": 0,
+}
 
 def luna_metrics_snapshot() -> dict:
     c = int(_LUNA_METRICS["count"] or 0)  # type: ignore[arg-type]
     total = float(_LUNA_METRICS["total_latency_ms"] or 0)  # type: ignore[arg-type]
     avg = (total / c) if c else 0
+    total_turns = int(_LUNA_METRICS["total_owner_turns"] or 0)  # type: ignore[arg-type]
+    luna_n = int(_LUNA_METRICS["luna_turns"] or 0)  # type: ignore[arg-type]
     return {
         "count": c,
         "avg_latency_ms": round(avg, 1),
         "last_latency_ms": _LUNA_METRICS["last_latency_ms"],
         "errors": _LUNA_METRICS["errors"],
         "last_usage": _LUNA_METRICS["last_usage"],
+        # Cost-routing counters (G1.11): Luna must be the MINORITY path.
+        "total_owner_turns": total_turns,
+        "deterministic_turns": int(_LUNA_METRICS["deterministic_turns"] or 0),  # type: ignore[arg-type]
+        "luna_turns": luna_n,
+        "fallback_model_turns": int(_LUNA_METRICS["fallback_model_turns"] or 0),  # type: ignore[arg-type]
+        "deepseek_delegations": int(_LUNA_METRICS["deepseek_delegations"] or 0),  # type: ignore[arg-type]
+        "conversation_turns": int(_LUNA_METRICS["conversation_turns"] or 0),  # type: ignore[arg-type]
+        "luna_invocation_rate": round(luna_n / total_turns, 4) if total_turns else 0.0,
     }
 
 def _record_metrics(latency_ms: float, usage: dict | None = None, error: bool = False):
@@ -96,6 +119,22 @@ def _record_metrics(latency_ms: float, usage: dict | None = None, error: bool = 
         _LUNA_METRICS["last_usage"] = usage
     if error:
         _LUNA_METRICS["errors"] = int(_LUNA_METRICS["errors"] or 0) + 1  # type: ignore[arg-type]
+
+
+def record_route_source(route_source: str) -> None:
+    """Record one classified owner turn by its route source (G1.11)."""
+    m = _LUNA_METRICS
+    m["total_owner_turns"] = int(m["total_owner_turns"] or 0) + 1  # type: ignore[arg-type]
+    key = {
+        "DETERMINISTIC": "deterministic_turns",
+        "LUNA": "luna_turns",
+        "GPT4O_MINI_FALLBACK": "fallback_model_turns",
+    }.get(route_source)
+    if key:
+        m[key] = int(m[key] or 0) + 1  # type: ignore[arg-type]
+    if route_source == "DETERMINISTIC":
+        # conversation turns counted separately at controller level when known
+        pass
 
 
 def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
@@ -182,16 +221,10 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
         due = None
         if "tomorrow at" in low:
             m = re.search(r"tomorrow at\s+([0-9: ]+(?:am|pm)?)", low)
-            if m:
-                due = f"tomorrow at {m.group(1).strip()}"
-            else:
-                due = "tomorrow at 7 PM"
+            due = f"tomorrow at {m.group(1).strip()}" if m else "tomorrow at 7 PM"
         elif "tomorrow" in low:
             due = "tomorrow at 7 PM"
         # commitment description: look for "to ..." or quoted
-        desc_m = re.search(r"to\s+(.+?)(?:\s+for\s+tomorrow|\s+tomorrow|$)", t)
-        # Actually t is original case, use low for extraction but preserve case
-        orig_low = low
         # Try to extract quoted or after "to"
         m2 = re.search(r"create a commitment for (.+?) to (.+)", low_stripped)
         if m2:
@@ -263,35 +296,35 @@ def is_deterministic_high_confidence(turn: str) -> bool:
         return True
     if re.search(r"add a goal to .+:", low_stripped):
         return True
-    if "create a commitment" in low and "tomorrow" in low:
-        return True
-    return False
+    return "create a commitment" in low and "tomorrow" in low
 
 
 async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
     """Classify owner turn via Luna or rule fallback. Returns validated TurnIntent."""
     start = time.perf_counter()
-    # G1.6: Deterministic fast path for obvious high-confidence, Luna for ambiguous
+    # G1.11 cost routing: deterministic first, Luna only for ambiguity.
     if is_deterministic_high_confidence(turn):
         intent = _rule_based_intent(turn, context)
-        intent_extra = {"route_source": "DETERMINISTIC"}
-        # Attach for observability
-        try:
-            intent.model_extra["route_source"] = "DETERMINISTIC"  # type: ignore
-        except Exception:
-            pass
         latency = (time.perf_counter() - start) * 1000
         _record_metrics(latency, usage={"route_source": "DETERMINISTIC", "fallback": "rule_based"})
+        record_route_source("DETERMINISTIC")
         return intent
     use_luna_api = bool((settings.openai_api_key or "").strip())
     if use_luna_api:
         try:
             intent = await _call_luna(turn, context)
             latency = (time.perf_counter() - start) * 1000
-            _record_metrics(latency, usage={"model": intent.get("model") if isinstance(intent, dict) else None})
+            effective = luna_model_probe().get("effective") or ""
             if isinstance(intent, TurnIntent):
+                source = "LUNA" if "luna" in (effective or "").lower() else "GPT4O_MINI_FALLBACK"
+                _record_metrics(latency, usage={"model": effective, "route_source": source})
+                record_route_source(source)
                 return intent
-            return TurnIntent.model_validate(intent)
+            validated = TurnIntent.model_validate(intent)
+            source = "LUNA" if "luna" in (effective or "").lower() else "GPT4O_MINI_FALLBACK"
+            _record_metrics(latency, usage={"model": effective, "route_source": source})
+            record_route_source(source)
+            return validated
         except Exception:
             _record_metrics((time.perf_counter() - start) * 1000, error=True)
             pass
@@ -299,12 +332,12 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
     intent = _rule_based_intent(turn, context)
     latency = (time.perf_counter() - start) * 1000
     _record_metrics(latency, usage={"fallback": "rule_based"})
+    record_route_source("DETERMINISTIC")
     return intent
 
 
 async def _call_luna(turn: str, context: dict | None) -> TurnIntent:
     """Call Luna (OpenAI) via Responses API with structured output — primary control path."""
-    import httpx
 
     # Determine requested vs fallback models
     requested = (getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-5.6-luna"
@@ -313,14 +346,7 @@ async def _call_luna(turn: str, context: dict | None) -> TurnIntent:
     for attempt_model in [requested, fallback] if requested != fallback else [requested]:
         ok, intent, meta = await _call_responses_api(turn, context, model=attempt_model, requested=requested)
         if ok and intent:
-            # Record effective model
-            intent_raw = intent.model_dump() if isinstance(intent, TurnIntent) else intent
-            # Attach effective model for observability
-            if isinstance(intent, TurnIntent):
-                # Store in metrics via _record_metrics caller, but also return
-                pass
-            # Update model router effective
-            _record_luna_model(requested, attempt_model if ok else fallback, success=ok)
+            _record_luna_model(requested, attempt_model, success=True)
             return intent
         if ok is False and meta and meta.get("code") == "model_not_found":
             continue
@@ -388,7 +414,8 @@ async def _call_responses_api(turn: str, context: dict | None, *, model: str, re
             {"role": "user", "content": turn},
         ],
         "text": {"format": {"type": "json_schema", "name": "turn_intent", "schema": schema, "strict": True}},
-        "temperature": 0.0,
+        # G1.11 cost law: Luna is a router, not a thinker. Lowest effort.
+        "reasoning": {"effort": "low"},
     }
     start = time.perf_counter()
     try:

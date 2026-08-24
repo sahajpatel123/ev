@@ -282,7 +282,10 @@ class LiveSession:
             try:
                 from app.db import SessionLocal
                 from app.ev.owner_turn import create_owner_turn
-                from app.ev.turn_gate import handle_owner_turn, create_realtime_response_payload
+                from app.ev.turn_gate import (
+                    create_realtime_response_payload,
+                    handle_owner_turn,
+                )
                 from app.utils.text import utcnow
 
                 # Create canonical OwnerTurn from FinalTranscriptEvent
@@ -306,23 +309,18 @@ class LiveSession:
                     payload = create_realtime_response_payload(turn, result)
                     # Send via GrokVoiceBridge if available
                     if self.grok_voice is not None and hasattr(self.grok_voice, "_send"):
-                        try:
+                        with contextlib.suppress(Exception):
                             await self.grok_voice._send(payload)
-                        except Exception:
-                            # Fallback: also try LiveSession's response path
-                            pass
-                    # Also emit a TurnGateEvent for observability
-                    from app.voice.live.events import TurnGateEvent
+                    # Observability trace (no custom provider event — GA-safe)
+                    import logging as _log
 
-                    await self.emit(
-                        TurnGateEvent(
-                            at_ms=self._now(),
-                            turn_id=turn.turn_id,
-                            provider_item_id=provider_item_id,
-                            route=result.route,
-                            operation=result.operation,
-                            route_source=getattr(result, "route_source", "unknown"),
-                        )
+                    _log.getLogger("ev.turn_gate").warning(
+                        "turn_gate response.create turn_id=%s route=%s op=%s ok=%s keys=%s",
+                        turn.turn_id,
+                        result.route,
+                        result.operation,
+                        result.ok,
+                        sorted((payload.get("response") or {}).keys()),
                     )
             except Exception as e:
                 import logging
@@ -333,13 +331,8 @@ class LiveSession:
         try:
             asyncio.create_task(_run_gate())
         except RuntimeError:
-            # No running loop (tests) — run directly
-            import asyncio as _asyncio
-
-            try:
-                _asyncio.get_running_loop().create_task(_run_gate())
-            except RuntimeError:
-                pass
+            with contextlib.suppress(RuntimeError):
+                asyncio.get_running_loop().create_task(_run_gate())
 
     async def emit(self, event: LiveEvent) -> None:
         tts_generation: int | None = None
