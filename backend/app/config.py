@@ -263,6 +263,9 @@ class Settings(BaseSettings):
     # application explicitly creates responses after a logical owner turn
     # yields (speech_stopped + bounded grace, no continuation).
     turn_authority_v2_enabled: bool = False
+    # G1.4 Authoritative Turn Gate — backend owns response creation.
+    # Every final owner turn passes through TurnGate; provider VAD is sensor only.
+    turn_gate_enabled: bool = False
     # TEST-ONLY diagnostic: per-response instructions that force ONE
     # uninterrupted long provider response, used solely to recreate the
     # self-hearing failure envelope in internal verification. Never changes

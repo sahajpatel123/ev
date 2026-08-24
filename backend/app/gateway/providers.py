@@ -160,10 +160,10 @@ class MockProvider(StreamingChatProvider):
         return [self.model]
 
 
-class DeepSeekProvider(StreamingChatProvider):
-    """DeepSeek via the OpenAI-compatible chat completions API."""
+class OpenAICompatibleProvider(StreamingChatProvider):
+    """Provider-neutral OpenAI-compatible chat completions (shared protocol)."""
 
-    name = "deepseek"
+    name = "openai-compatible"
     supports_media = True
     supports_tools = True
 
@@ -173,10 +173,13 @@ class DeepSeekProvider(StreamingChatProvider):
         base_url: str,
         api_key: str | None,
         default_model: str,
+        provider_name: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
+        if provider_name:
+            self.name = provider_name
 
     def _headers(self) -> dict:
         if not self.api_key:
@@ -184,13 +187,22 @@ class DeepSeekProvider(StreamingChatProvider):
         return {"Authorization": f"Bearer {self.api_key}"}
 
     def _thinking_payload(self) -> dict | None:
+        return None
+
+
+class DeepSeekProvider(OpenAICompatibleProvider):
+    """DeepSeek via the OpenAI-compatible chat completions API."""
+
+    name = "deepseek"
+    supports_media = True
+    supports_tools = True
+
+    def _thinking_payload(self) -> dict | None:
         """Official V4 thinking toggle. Voice stays non-thinking for latency.
 
         Local OpenAI-compatible servers (Ollama) must not receive this field.
         """
 
-        if self.name != "deepseek":
-            return None
         return {"type": "enabled" if settings.deepseek_thinking else "disabled"}
 
     def _message_payload(self, message: ChatMessage) -> dict:
@@ -495,6 +507,17 @@ class LocalModelProvider(DeepSeekProvider):
         )
 
 
+class OpenAIProvider(DeepSeekProvider):
+    """OpenAI chat completions (GPT-5.6 Luna) via https://api.openai.com/v1."""
+
+    name = "openai"
+    supports_media = True
+    supports_tools = True
+
+    def _thinking_payload(self) -> dict | None:
+        return None
+
+
 class XAIProvider(DeepSeekProvider):
     """Official xAI chat completions (Grok 4.6). OpenAI-compatible.
 
@@ -528,11 +551,12 @@ def _local_factory() -> LocalModelProvider:
     return LocalModelProvider()
 
 
-def _openai_factory() -> DeepSeekProvider:
-    return DeepSeekProvider(
+def _openai_factory() -> OpenAIProvider:
+    return OpenAIProvider(
         base_url=(getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/"),
         api_key=settings.openai_api_key,
         default_model=(getattr(settings, "turn_control_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-4o-mini").strip() or "gpt-4o-mini",
+        provider_name="openai",
     )
 
 

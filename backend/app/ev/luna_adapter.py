@@ -276,15 +276,16 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
 
 
 async def _call_luna(turn: str, context: dict | None) -> TurnIntent:
-    """Call Luna (OpenAI) with structured tool calling for TurnIntent."""
+    """Call Luna (OpenAI) with structured tool calling for TurnIntent via provider-neutral path."""
+    from app.gateway.providers import OpenAIProvider
     from app.contracts import ChatMessage, ToolSpec
-    from app.gateway.providers import DeepSeekProvider
 
-    # Reuse OpenAI-compatible provider pointed at api.openai.com
-    provider = DeepSeekProvider(
+    # OpenAI provider — not DeepSeekProvider, clear model identity
+    provider = OpenAIProvider(
         base_url=(getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").strip(),
         api_key=settings.openai_api_key,
         default_model=(getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-4o-mini",
+        provider_name="openai",
     )
     # Luna's actual model may not be provisioned; fall back to 4o-mini on 404
     effective_model = provider.default_model

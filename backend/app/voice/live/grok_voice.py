@@ -2276,7 +2276,7 @@ class GrokVoiceBridge:
                 FinalTranscriptEvent(
                     at_ms=self._now(),
                     text=spoken,
-                    confidence=1.0,
+                    confidence=None,  # not_reported — provider does not report calibrated confidence
                     provider="openai-realtime" if self._provider == "openai" else "grok-voice",
                     transcript_source=source,
                 )
