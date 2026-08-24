@@ -303,6 +303,12 @@ class LiveSession:
                     committed_at=utcnow(),
                     transcription_completed_at=utcnow(),
                 )
+                note_owner_turn = getattr(self.grok_voice, "note_owner_turn", None)
+                if callable(note_owner_turn):
+                    note_owner_turn(turn_id=turn.turn_id)
+                note_turn_gate = getattr(self.grok_voice, "note_turn_gate", None)
+                if callable(note_turn_gate):
+                    note_turn_gate(turn_id=turn.turn_id)
                 async with SessionLocal() as session:
                     result = await handle_owner_turn(session, turn)
                     # G1.11 repair: the live voice path OWNS its transaction.
@@ -310,6 +316,9 @@ class LiveSession:
                     # ROLLED BACK every voice mutation while TurnResult still
                     # reported ok=true (owner-proven commitment failure).
                     await session.commit()
+                    note_turn_result = getattr(self.grok_voice, "note_turn_result", None)
+                    if callable(note_turn_result):
+                        note_turn_result(ok=bool(result.ok))
                     # Create exactly one response via gate
                     payload = create_realtime_response_payload(turn, result)
                     # Send via GrokVoiceBridge if available

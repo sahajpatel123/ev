@@ -277,6 +277,33 @@ async def health() -> dict:
             "memory": await _memory_health(),
             "device_gateway": _device_gateway_health(),
         },
+        "voice": _voice_health(),
+    }
+
+
+def _voice_health() -> dict:
+    """Expose live voice boundaries without audio, transcript, or secret data."""
+
+    from app.voice.live.layer import active_lives
+
+    lives = active_lives()
+    live = lives[0] if lives else None
+    bridge = getattr(live, "grok_voice", None) if live is not None else None
+    snapshot_fn = getattr(bridge, "voice_health_snapshot", None)
+    snapshot = snapshot_fn() if callable(snapshot_fn) else {}
+    conversation_id = getattr(live, "conversation_id", None) if live else None
+    session_id = getattr(live, "session_id", None) if live else None
+    return {
+        "client_socket_connected": live is not None,
+        "native_client_connected": live is not None,
+        "live_session_count": len(lives),
+        "live_session_id_fingerprint": sha256_hex(str(session_id))[:12]
+        if session_id
+        else None,
+        "conversation_id_fingerprint": sha256_hex(str(conversation_id))[:12]
+        if conversation_id
+        else None,
+        **snapshot,
     }
 
 

@@ -57,7 +57,11 @@ final class LiveConversation {
     /// from WS-connect; PCM goes upstream only after the provider signals
     /// ready. Reset on teardown and on provider loss (cancelled-audio law).
     nonisolated(unsafe) private var providerReadyForForward = false
-    nonisolated(unsafe) private var microphoneStarted = false
+    /// Mirrors the actual native capture lifecycle. It must be cleared any
+    /// time ``microphone.stop()`` runs; otherwise a reconnect can reopen the
+    /// backend/provider channel while incorrectly believing the old tap is
+    /// still alive.
+    private var microphoneStarted = false
     nonisolated private static func st(_ event: String, _ reason: String = "") {
         let now = DispatchTime.now().uptimeNanoseconds
         lockFreeInitLaunch(now)
@@ -621,6 +625,7 @@ final class LiveConversation {
                         model.isLiveMuted = true
                         model.player.stop()
                         microphone.stop()
+                        microphoneStarted = false
                         VoiceLevelMeter.shared.resetInput()
                         model.player.bind(to: nil)
                         model.noteLiveMuted()
@@ -655,6 +660,7 @@ final class LiveConversation {
     @discardableResult
     private func startMicrophone(on connection: LiveVoiceConnection) -> Bool {
         microphone.stop()
+        microphoneStarted = false
         // Stop capture before changing the playback graph (-10867 safety).
         model?.player.bind(to: nil)
         guard AudioInputLease.acquire(.live) else {
@@ -680,6 +686,7 @@ final class LiveConversation {
             })
             isMuted = false
             model?.isLiveMuted = false
+            microphoneStarted = true
             return true
         } catch {
             // Keep the live lease so Talk cannot start a second engine.
@@ -689,6 +696,7 @@ final class LiveConversation {
             } else {
                 model?.noteMicrophoneCaptureFailed(error.localizedDescription)
             }
+            microphoneStarted = false
             return false
         }
     }
@@ -1073,6 +1081,7 @@ final class LiveConversation {
         providerReadyForForward = false
         model?.player.stop()
         microphone.stop()
+        microphoneStarted = false
         VoiceLevelMeter.shared.resetInput()
         model?.player.bind(to: nil)
         AudioInputLease.release(.live)

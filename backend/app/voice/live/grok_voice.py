@@ -20,6 +20,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
@@ -257,6 +258,12 @@ def _safe_id_fingerprint(value: Any) -> str | None:
     if not raw:
         return None
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def _voice_health_timestamp() -> str:
+    """Return a wall-clock timestamp for safe live-pipeline diagnostics."""
+
+    return datetime.now(UTC).isoformat()
 
 
 def _tool_schema_metadata(tool: dict) -> dict:
@@ -963,6 +970,52 @@ class GrokVoiceBridge:
         self._input_transcription_confirmed = False
         self._input_transcription_model: str | None = None
         self._fallback_transcriber = fallback_transcriber
+        # Metadata-only counters for the production voice health surface.
+        # These describe pipeline boundaries, never audio content or secrets.
+        self._voice_health: dict[str, Any] = {
+            "mic_frames_received": 0,
+            "mic_bytes_received": 0,
+            "mic_frames_queued": 0,
+            "mic_bytes_queued": 0,
+            "mic_frames_forwarded": 0,
+            "mic_bytes_forwarded": 0,
+            "mic_frames_withheld": 0,
+            "mic_bytes_withheld": 0,
+            "mic_frames_send_failed": 0,
+            "input_audio_overwrites": 0,
+            "speech_started": 0,
+            "speech_stopped": 0,
+            "transcription_completed": 0,
+            "final_transcript_emitted": 0,
+            "owner_turns_constructed": 0,
+            "turn_gate_invoked": 0,
+            "turn_gate_ok": 0,
+            "turn_gate_failed": 0,
+            "response_create_sent": 0,
+            "provider_responses_created": 0,
+            "provider_responses_done": 0,
+            "provider_audio_chunks": 0,
+            "provider_audio_bytes": 0,
+            "last_mic_frame_at": None,
+            "last_mic_forwarded_at": None,
+            "last_mic_withheld_at": None,
+            "last_speech_started_at": None,
+            "last_speech_stopped_at": None,
+            "last_transcript_at": None,
+            "last_final_transcript_at": None,
+            "last_owner_turn_at": None,
+            "last_turn_gate_at": None,
+            "last_turn_result_at": None,
+            "last_response_create_at": None,
+            "last_provider_response_at": None,
+            "last_provider_audio_at": None,
+            "last_playback_at": None,
+            "last_session_accepted_at": None,
+            "last_withheld_reason": None,
+            "last_voice_error": None,
+            "last_voice_error_at": None,
+            "voice_task_error": None,
+        }
 
     @property
     def function_tools_enabled(self) -> bool:
@@ -1003,6 +1056,76 @@ class GrokVoiceBridge:
     def session_ack_metadata(self) -> dict:
         return dict(self._session_ack_metadata)
 
+    def _health_increment(self, key: str, amount: int = 1, *, timestamp: str | None = None) -> None:
+        self._voice_health[key] = int(self._voice_health.get(key, 0)) + amount
+        if timestamp is not None:
+            self._voice_health[timestamp] = _voice_health_timestamp()
+
+    def _health_withhold(self, reason: str, pcm_bytes: int) -> None:
+        now = _voice_health_timestamp()
+        self._voice_health["mic_frames_withheld"] += 1
+        self._voice_health["mic_bytes_withheld"] += max(0, int(pcm_bytes))
+        self._voice_health["last_mic_withheld_at"] = now
+        self._voice_health["last_withheld_reason"] = reason
+
+    def _health_error(self, error_type: str, *, task: str | None = None) -> None:
+        now = _voice_health_timestamp()
+        value = str(error_type or "unknown")[:120]
+        self._voice_health["last_voice_error"] = value
+        self._voice_health["last_voice_error_at"] = now
+        if task:
+            self._voice_health["voice_task_error"] = {
+                "task": str(task)[:80],
+                "error_type": value,
+                "at": now,
+            }
+
+    def note_owner_turn(self, *, turn_id: str | None = None) -> None:
+        """Record a canonical OwnerTurn/TurnGate boundary without its text."""
+
+        self._health_increment("owner_turns_constructed", timestamp="last_owner_turn_at")
+        self._voice_health["last_owner_turn_fingerprint"] = _safe_id_fingerprint(turn_id)
+
+    def note_turn_gate(self, *, turn_id: str | None = None, ok: bool | None = None) -> None:
+        """Record TurnGate invocation/result metadata for health diagnostics."""
+
+        self._health_increment("turn_gate_invoked", timestamp="last_turn_gate_at")
+        self._voice_health["last_turn_id_fingerprint"] = _safe_id_fingerprint(turn_id)
+        if ok is not None:
+            self.note_turn_result(ok=ok)
+
+    def note_turn_result(self, *, ok: bool) -> None:
+        """Record the result of the already-counted TurnGate invocation."""
+
+        self._health_increment("turn_gate_ok" if ok else "turn_gate_failed")
+        self._voice_health["last_turn_result_at"] = _voice_health_timestamp()
+
+    def voice_health_snapshot(self) -> dict[str, Any]:
+        """Return safe, boundary-level facts for ``/v1/health``."""
+
+        snapshot = dict(self._voice_health)
+        snapshot.update(
+            {
+                "client_socket_connected": self._ws is not None,
+                "realtime_session_accepted": self._upstream_session_ready,
+                "provider": self._provider,
+                "model": self._model,
+                "provider_session_id_fingerprint": _safe_id_fingerprint(
+                    self._provider_session_id
+                ),
+                "input_transcription_requested": self._input_transcription_requested,
+                "input_transcription_confirmed": self._input_transcription_confirmed,
+                "input_transcription_model": self._input_transcription_model,
+                "input_audio_pending": self._input_audio_pending is not None,
+                "self_hearing_gate_closed": bool(
+                    self._playback_blocks_mic() and not self._user_input_open
+                ),
+                "playback_active": self._playback_active,
+                "pending_voice_turns": self.pending_voice_turn_count(),
+            }
+        )
+        return snapshot
+
     @property
     def realtime_diagnostics(self) -> dict:
         """Metadata-only bridge state suitable for health/state surfaces."""
@@ -1023,6 +1146,7 @@ class GrokVoiceBridge:
             "input_transcription_confirmed": self._input_transcription_confirmed,
             "input_transcription_model": self._input_transcription_model,
             "pending_voice_turns": self.pending_voice_turn_count(),
+            "voice_health": self.voice_health_snapshot(),
             "computer_tool_schema_hash": (self._computer_schema_eval or {}).get(
                 "computer_tool_schema_hash"
             ),
@@ -1068,6 +1192,7 @@ class GrokVoiceBridge:
             "input_transcription_confirmed": self._input_transcription_confirmed,
             "input_transcription_model": self._input_transcription_model,
             "pending_voice_turns": self.pending_voice_turn_count(),
+            "voice_health": self.voice_health_snapshot(),
             "computer_tool_schema_hash": (self._computer_schema_eval or {}).get(
                 "computer_tool_schema_hash"
             ),
@@ -1157,6 +1282,7 @@ class GrokVoiceBridge:
             self._ws = await self._connect(url, additional_headers=headers)
         except Exception as exc:  # noqa: BLE001 - keep EV LIVE alive and retry
             self._failed = False
+            self._health_error(type(exc).__name__)
             logger.error(
                 "realtime_trace event=connect.failed provider=%s error_type=%s",
                 self._provider,
@@ -1297,6 +1423,8 @@ class GrokVoiceBridge:
 
         was = self._playback_active
         self._playback_active = bool(active)
+        if was != self._playback_active:
+            self._voice_health["last_playback_at"] = _voice_health_timestamp()
         if self._playback_active:
             self._user_input_open = False
             if not was:
@@ -1334,6 +1462,9 @@ class GrokVoiceBridge:
     async def append_pcm(self, pcm: bytes) -> None:
         if not pcm or self._closed:
             return
+        pcm_bytes = len(pcm)
+        self._health_increment("mic_frames_received", timestamp="last_mic_frame_at")
+        self._voice_health["mic_bytes_received"] += pcm_bytes
         if self._playback_blocks_mic() and not self._user_input_open:
             if not self._mic_gate_logged:
                 logger.warning(
@@ -1344,6 +1475,7 @@ class GrokVoiceBridge:
                     self._playback_active,
                 )
                 self._mic_gate_logged = True
+            self._health_withhold("self_hearing_gate", pcm_bytes)
             return
         if self._mic_gate_logged:
             logger.warning(
@@ -1356,22 +1488,29 @@ class GrokVoiceBridge:
             self._playback_since = 0.0
         self._capture_owner_pcm(pcm)
         if self._durability_draining:
+            self._health_withhold("durability_draining", pcm_bytes)
             return
         if self._ws is None:
             await self.start()
         if self._ws is None:
+            self._health_withhold("provider_disconnected", pcm_bytes)
             return
         if self._upstream_rate != 16000:
             pcm = self._in_resampler.feed(pcm)
             if not pcm:
+                self._health_withhold("resampler_buffering", pcm_bytes)
                 return
         # A slow provider write must never make the server stop reading the
         # client's microphone/control socket. Keep only the newest unsent
         # frame; stale mic audio is worse than a bounded drop under pressure.
+        if self._input_audio_pending is not None:
+            self._health_increment("input_audio_overwrites")
         self._input_audio_pending = {
             "type": "input_audio_buffer.append",
             "audio": base64.b64encode(pcm).decode("ascii"),
         }
+        self._health_increment("mic_frames_queued")
+        self._voice_health["mic_bytes_queued"] += len(pcm)
         self._input_audio_wakeup.set()
 
     async def send_text(self, text: str) -> None:
@@ -1532,10 +1671,18 @@ class GrokVoiceBridge:
         if self._ws is None or not self._assistant_item_id:
             return
         played = max(0, int(audio_played_ms or 0))
-        if played == 0 and not self._turn_audio_bytes:
+        available_ms = int(self._turn_audio_bytes / 32)
+        if available_ms <= 0 and played == 0:
             # Nothing was generated or delivered on this item: truncating a
             # zero-audio item is a provider protocol error, not a no-op.
             return
+        if available_ms > 0 and played > available_ms:
+            logger.warning(
+                "realtime_trace event=barge_in.truncate_clamped requested_ms=%s available_ms=%s",
+                played,
+                available_ms,
+            )
+            played = available_ms
         await self._send(
             {
                 "type": "conversation.item.truncate",
@@ -1797,23 +1944,47 @@ class GrokVoiceBridge:
             raise
         except Exception as exc:  # noqa: BLE001 - recover a dropped LIVE socket
             logger.debug("Grok Voice send failed", exc_info=True)
+            self._health_error(type(exc).__name__)
             await self._note_disconnect(exc, ws=ws)
             return False
+        if payload.get("type") == "response.create":
+            self._health_increment("response_create_sent", timestamp="last_response_create_at")
         return True
 
     async def _input_audio_loop(self) -> None:
         """Send at most one newest microphone frame at a time."""
 
-        while not self._closed:
-            await self._input_audio_wakeup.wait()
+        try:
             while not self._closed:
-                self._input_audio_wakeup.clear()
-                payload = self._input_audio_pending
-                self._input_audio_pending = None
-                if payload is None:
-                    break
-                if not await self._send(payload, timeout_s=0.4) and self._ws is None:
-                    return
+                await self._input_audio_wakeup.wait()
+                while not self._closed:
+                    self._input_audio_wakeup.clear()
+                    payload = self._input_audio_pending
+                    self._input_audio_pending = None
+                    if payload is None:
+                        break
+                    audio = payload.get("audio") if isinstance(payload, dict) else None
+                    audio_bytes = len(base64.b64decode(audio)) if audio else 0
+                    sent = await self._send(payload, timeout_s=0.4)
+                    if sent:
+                        self._health_increment(
+                            "mic_frames_forwarded", timestamp="last_mic_forwarded_at"
+                        )
+                        self._voice_health["mic_bytes_forwarded"] += audio_bytes
+                    else:
+                        self._health_increment("mic_frames_send_failed")
+                        if self._ws is None:
+                            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - surface a dead audio pump
+            self._health_error(type(exc).__name__, task="input_audio")
+            logger.error(
+                "realtime_trace event=voice_task.error task=input_audio error_type=%s",
+                type(exc).__name__,
+            )
+            if not self._closed:
+                await self._note_disconnect(exc)
 
     def _cancel_input_audio_pump(self) -> None:
         task = self._input_audio_task
@@ -2272,6 +2443,9 @@ class GrokVoiceBridge:
                 hashlib.sha256(spoken.encode("utf-8")).hexdigest()[:12],
                 source,
             )
+            self._health_increment(
+                "final_transcript_emitted", timestamp="last_final_transcript_at"
+            )
             await self._on_event(
                 FinalTranscriptEvent(
                     at_ms=self._now(),
@@ -2294,6 +2468,18 @@ class GrokVoiceBridge:
 
     async def _handle_upstream(self, event: dict) -> None:
         kind = str(event.get("type") or "")
+        if kind in _SPEECH_STARTED_TYPES:
+            self._health_increment("speech_started", timestamp="last_speech_started_at")
+        elif kind in _SPEECH_STOPPED_TYPES:
+            self._health_increment("speech_stopped", timestamp="last_speech_stopped_at")
+        elif kind in _INPUT_TRANSCRIPT_TYPES and "completed" in kind:
+            self._health_increment("transcription_completed", timestamp="last_transcript_at")
+        elif kind == "response.created":
+            self._health_increment(
+                "provider_responses_created", timestamp="last_provider_response_at"
+            )
+        elif kind == "response.done":
+            self._health_increment("provider_responses_done")
         if self._output_is_stale(event) and (
             kind in _AUDIO_DELTA_TYPES
             or kind in _TRANSCRIPT_DELTA_TYPES
@@ -2318,6 +2504,7 @@ class GrokVoiceBridge:
             )
             self._upstream_tool_names = accepted
             self._upstream_session_ready = True
+            self._voice_health["last_session_accepted_at"] = _voice_health_timestamp()
             expected = self.advertised_tool_names
             expected_schemas = self.advertised_tool_metadata
             acknowledged_schemas = _tool_schema_metadata_list(function_tools)
@@ -2748,6 +2935,7 @@ class GrokVoiceBridge:
             return
         if kind == "error":
             message, code = _realtime_error_fields(event)
+            self._health_error(code or kind)
             logger.error(
                 "realtime_trace event=provider.error provider=%s code=%s message=%s",
                 self._provider,
@@ -2850,6 +3038,8 @@ class GrokVoiceBridge:
         self._turn_audio_bytes += len(pcm)
         self._turn_audio_chunks += 1
         self._last_audio_emit_at = time.monotonic()
+        self._health_increment("provider_audio_chunks", timestamp="last_provider_audio_at")
+        self._voice_health["provider_audio_bytes"] += len(pcm)
         if _audio_cv_trace_enabled():
             # CV04/CV05 — chunk emitted toward the client (post-pacer).
             logger.warning(

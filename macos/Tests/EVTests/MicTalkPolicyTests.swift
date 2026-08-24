@@ -600,6 +600,7 @@ enum EVMicTalkTests {
                 root.deletingLastPathComponent()
                     .appendingPathComponent("ios/EVClient/Sources/EVClient/LiveVoice.swift")
             )
+            let liveConversation = try read(root.appendingPathComponent("Sources/EV/LiveConversation.swift"))
             check("wired-LiveVoiceMicrophone-tapInstalled", liveMic.contains("tapInstalled"))
             check("wired-LiveVoice-computer-result", liveMic.contains("sendComputerResult("))
             check("wired-LiveVoice-computer-state", liveMic.contains("sendComputerState("))
@@ -622,6 +623,12 @@ enum EVMicTalkTests {
             check("wired-LiveVoiceMicrophone-no-input-mixer", !liveMic.contains("keepAlive"))
             check("wired-LiveVoiceMicrophone-no-config-observer", !liveMic.contains("AVAudioEngineConfigurationChange"))
             check("wired-LiveVoiceMicrophone-tap-nodatanow", liveMic.contains(".noDataNow"))
+            check(
+                "wired-live-reconnect-restarts-microphone",
+                liveConversation.contains("microphone.stop()\n        microphoneStarted = false")
+                    && liveConversation.contains("microphoneStarted = true\n            return true"),
+                "a channel teardown must clear the capture latch before reconnect"
+            )
             let api = try read(
                 root.deletingLastPathComponent()
                     .appendingPathComponent("ios/EVClient/Sources/EVClient/EVAPIClient.swift")

@@ -9,13 +9,20 @@ Flow:
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev.luna_adapter import classify_intent
 from app.ev.turn_intent import TurnIntent, TurnResult
+
+
+def _normalize_commitment_reference(value: str | None) -> str:
+    """Normalize owner references for exact-first commitment resolution."""
+    return " ".join(re.findall(r"[a-z0-9]+", (value or "").casefold()))
 
 
 class TurnController:
@@ -86,6 +93,35 @@ class TurnController:
         except Exception:
             pass
         return None
+
+    async def _recent_owner_context_texts(self) -> list[str]:
+        """Read recent owner text for pronoun-only cancel resolution.
+
+        This is deliberately a bounded, same-live-session read.  It gives
+        ``delete it`` the preceding canonical commitment reference without
+        involving a model or making an arbitrary choice across sessions.
+        """
+        if not self.session_id:
+            return []
+        from app.models import Event
+
+        rows = (
+            await self.session.execute(
+                select(Event)
+                .where(Event.event_type == "message.user")
+                .order_by(Event.occurred_at.desc())
+                .limit(40)
+            )
+        ).scalars().all()
+        texts: list[str] = []
+        for row in rows:
+            metadata = row.metadata_ or {}
+            if metadata.get("live_session_id") != self.session_id:
+                continue
+            text = (row.content or {}).get("text")
+            if text:
+                texts.append(str(text))
+        return texts
 
     async def _build_luna_context(self) -> dict:
         """Bounded context for Luna — not full memory."""
@@ -351,14 +387,57 @@ class TurnController:
                 # "Delete my X commitment" == semantic CANCEL. Row + history are
                 # preserved; only status transitions OPEN -> CANCELLED.
                 from app.life.service import list_commitments
-                commitments = await list_commitments(self.session, actor=self.actor, open_only=True)
-                q = (intent.commitment_query or "").lower().strip()
-                matches = [c for c in commitments if not q or q in c["description"].lower()]
-                if not matches:
-                    return TurnResult(
-                        ok=False, route=route, operation=op, error="not_found",
-                        owner_message=f"I couldn't find an open commitment{' matching ' + q if q else ''}.",
-                    )
+                commitments = await list_commitments(self.session, actor=self.actor, open_only=False)
+                raw_query = (intent.commitment_query or "").strip()
+                q = _normalize_commitment_reference(raw_query)
+                open_commitments = [c for c in commitments if c.get("status") == "OPEN"]
+                historical_scope = commitments
+
+                # Pronoun-only requests can use the immediately preceding
+                # owner commitment reference in this live session.  This is
+                # what makes the physical ``delete it`` turn resolvable while
+                # keeping an unrelated OPEN row out of the target set.
+                contextual_matches: list[dict] = []
+                if not q:
+                    context_texts = await self._recent_owner_context_texts()
+                    normalized_context = [
+                        _normalize_commitment_reference(text) for text in context_texts
+                    ]
+                    contextual_matches = [
+                        c for c in commitments
+                        if (
+                            _normalize_commitment_reference(c.get("description"))
+                            and any(
+                                _normalize_commitment_reference(c.get("description")) in text
+                                for text in normalized_context
+                            )
+                        )
+                    ]
+                    if contextual_matches:
+                        historical_scope = contextual_matches
+
+                # Exact normalized matches win over broader substring matches.
+                # This is important when a short reference also appears in a
+                # longer commitment name: never let the longer row steal an
+                # exact owner request.
+                if q:
+                    exact_matches = [
+                        c for c in open_commitments
+                        if _normalize_commitment_reference(c.get("description")) == q
+                    ]
+                    matches = exact_matches or [
+                        c for c in open_commitments
+                        if q in _normalize_commitment_reference(c.get("description"))
+                    ]
+                elif contextual_matches:
+                    matches = [
+                        c for c in contextual_matches if c.get("status") == "OPEN"
+                    ]
+                else:
+                    # A pronoun-only request is resolved from the active set;
+                    # multiple active candidates must be clarified.
+                    matches = open_commitments
+
                 if len(matches) > 1:
                     # Multiple open commitments match: ASK. Never guess which
                     # one the owner means (project-head law).
@@ -369,6 +448,49 @@ class TurnController:
                         clarification_question=f"Which commitment? I found: {names}.",
                         owner_message=f"Which commitment? I found: {names}.",
                         canonical_data=matches,
+                    )
+
+                if len(matches) == 0:
+                    # A matching historical row is truthful idempotent state,
+                    # not a missing capability.  If there are several such
+                    # rows, preserve the no-arbitrary-choice rule.
+                    historical_matches = [
+                        c for c in historical_scope
+                        if c.get("status") == "CANCELLED"
+                        and (not q or q in _normalize_commitment_reference(c.get("description")))
+                    ]
+                    if len(historical_matches) > 1:
+                        historical_names = {
+                            _normalize_commitment_reference(c.get("description"))
+                            for c in historical_matches
+                        }
+                        if len(historical_names) == 1:
+                            return TurnResult(
+                                ok=True, route=route, operation=op,
+                                canonical_data=historical_matches[0],
+                                owner_message="That commitment was already cancelled.",
+                            )
+                        names = "; ".join(c["description"][:40] for c in historical_matches[:3])
+                        return TurnResult(
+                            ok=True, route="CLARIFICATION", operation=op,
+                            needs_clarification=True,
+                            clarification_question=f"Which cancelled commitment? I found: {names}.",
+                            owner_message=f"Which cancelled commitment? I found: {names}.",
+                            canonical_data=historical_matches,
+                        )
+                    if len(historical_matches) == 1:
+                        return TurnResult(
+                            ok=True, route=route, operation=op,
+                            canonical_data=historical_matches[0],
+                            owner_message="That commitment was already cancelled.",
+                        )
+                    return TurnResult(
+                        ok=False, route=route, operation=op, error="not_found",
+                        owner_message=(
+                            "I couldn't find an open commitment"
+                            + (f" matching {raw_query}" if raw_query else "")
+                            + "."
+                        ),
                     )
                 target = matches[0]
                 res = await life.update_commitment(

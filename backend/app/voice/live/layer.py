@@ -639,9 +639,18 @@ def register_live(live: LiveSession) -> None:
 def unregister_live(live: LiveSession) -> None:
     session_id = getattr(live, "session_id", None)
     if session_id:
-        _BY_SESSION.pop(str(session_id), None)
+        # Reconnects can briefly overlap while an older WebSocket is being
+        # torn down.  An old cleanup must not unregister the newer live
+        # session that now owns the same durable session id.
+        key = str(session_id)
+        if _BY_SESSION.get(key) is live:
+            _BY_SESSION.pop(key, None)
     device_id = getattr(live, "device_id", None)
-    if device_id and _DEVICE_TO_SESSION.get(str(device_id)) == str(session_id):
+    if (
+        device_id
+        and _DEVICE_TO_SESSION.get(str(device_id)) == str(session_id)
+        and _BY_SESSION.get(str(session_id)) is None
+    ):
         _DEVICE_TO_SESSION.pop(str(device_id), None)
 
 

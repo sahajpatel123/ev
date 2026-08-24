@@ -121,6 +121,23 @@ def test_generated_audio_truncates_at_delivered_boundary() -> None:
     asyncio.run(run())
 
 
+def test_truncate_clamps_stale_client_playback_duration() -> None:
+    async def run() -> None:
+        import json
+
+        b = _bridge()
+        ws = FakeWS()
+        b._ws = ws
+        b._assistant_item_id = "item-stale-clock"
+        # 512,000 bytes = 16,000 ms of 16 kHz mono PCM.
+        b._turn_audio_bytes = 512_000
+        await b._truncate_assistant_item(97_079)
+        payload = json.loads(ws.sent[0])
+        assert payload["audio_end_ms"] == 16_000
+
+    asyncio.run(run())
+
+
 def test_quota_notifies_once_and_floors_backoff() -> None:
     async def run() -> None:
         events: list = []

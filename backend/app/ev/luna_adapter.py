@@ -55,7 +55,7 @@ EMIT_INTENT_TOOL = {
         "additionalProperties": False,
         "properties": {
             "route": {"type": "string", "enum": ["CONVERSATION","STATE_QUERY","STATE_MUTATION","MISSION_CONTROL","ACTION","DELEGATED_JOB","RESEARCH_MISSION","CLARIFICATION","UNSUPPORTED"]},
-            "operation": {"type": "string", "enum": ["PROJECT_LIST","PROJECT_GET","PROJECT_CREATE","PROJECT_UPDATE","GOAL_LIST","GOAL_GET","GOAL_CREATE","GOAL_UPDATE","COMMITMENT_LIST","COMMITMENT_GET","COMMITMENT_CREATE","COMMITMENT_UPDATE","STATUS","WHAT_CHANGED","RELATIONSHIP_QUERY","RELATIONSHIP_UPDATE","UNKNOWN"]},
+            "operation": {"type": "string", "enum": ["PROJECT_LIST","PROJECT_GET","PROJECT_CREATE","PROJECT_UPDATE","GOAL_LIST","GOAL_GET","GOAL_CREATE","GOAL_UPDATE","COMMITMENT_LIST","COMMITMENT_GET","COMMITMENT_CREATE","COMMITMENT_UPDATE","COMMITMENT_CANCEL","STATUS","WHAT_CHANGED","RELATIONSHIP_QUERY","RELATIONSHIP_UPDATE","UNKNOWN"]},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "needs_clarification": {"type": "boolean"},
             "clarification_question": {"type": ["string","null"]},
@@ -136,6 +136,41 @@ def record_route_source(route_source: str) -> None:
     if route_source == "DETERMINISTIC":
         # conversation turns counted separately at controller level when known
         pass
+
+
+_CANCEL_LANGUAGE_RE = re.compile(r"\b(?:delete|remove|cancel|get rid of)\b", re.IGNORECASE)
+_CANCEL_META_RE = re.compile(r"\b(?:what|why|how|explain|mean|means|useful)\b", re.IGNORECASE)
+
+
+def _has_commitment_cancel_language(turn: str) -> bool:
+    """Return whether a turn explicitly asks to cancel a commitment.
+
+    Pronoun references are included so ``delete it`` enters the state
+    control plane and can be resolved or clarified by Core.  Meta questions
+    are still deterministic conversation, not mutations; the caller handles
+    that distinction after this predicate.
+    """
+    low = (turn or "").strip().lower()
+    if not _CANCEL_LANGUAGE_RE.search(low):
+        return False
+    return "commitment" in low or bool(re.search(r"\b(?:it|that|this)\b", low))
+
+
+def _commitment_cancel_query(turn: str) -> str:
+    """Extract a human commitment reference without requiring exact syntax."""
+    match = _CANCEL_LANGUAGE_RE.search(turn or "")
+    if not match:
+        return ""
+    reference = (turn or "")[match.end():].strip()
+    reference = re.sub(r"^(?:my|the|this)\s+", "", reference, flags=re.IGNORECASE)
+    reference = reference.strip(" \t\r\n\"'")
+    reference = re.sub(r"[.!?,;:]+$", "", reference).strip(" \t\r\n\"'")
+    # A trailing generic noun is part of the owner's grammar, not the name.
+    # Keep embedded occurrences (e.g. ``Final Commitment Proof``) intact.
+    reference = re.sub(r"\s+commitment$", "", reference, flags=re.IGNORECASE).strip()
+    if reference.casefold().split(maxsplit=1)[0:1] in [["it"], ["that"], ["this"]]:
+        return ""
+    return reference
 
 
 def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
@@ -264,23 +299,12 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
         return TurnIntent(route="STATE_MUTATION", operation="COMMITMENT_CREATE", description=desc, due_at=due, commitment_query=desc, confidence=0.93 if desc else 0.7)
 
     # STATE_MUTATION: commitment cancel/delete (semantic cancel, history preserved)
-    m = re.search(r"\b(delete|remove|cancel|get rid of)\b", low_stripped)
-    if m and "commitment" in low_stripped:
-        # Extract reference: explicit quoted fragment wins, then known
-        # keywords, then words directly after the verb.
-        q = ""
-        mq = re.search(r"['\"](.+?)['\"]", low_stripped)
-        if mq:
-            q = mq.group(1).strip()
-        if not q:
-            for kw in ("workout", "gym", "call", "meeting", "review", "appointment", "luna"):
-                if kw in low_stripped:
-                    q = kw
-                    break
-        if not q:
-            mq2 = re.search(r"(?:delete|remove|cancel|get rid of)\s+(?:my\s+|the\s+|this\s+)?(.+?)\s+commitment", low_stripped)
-            if mq2 and mq2.group(1).strip() not in ("my", "the", "this"):
-                q = mq2.group(1).strip()
+    if _has_commitment_cancel_language(low_stripped):
+        # A question about cancellation is conversation, while an explicit
+        # cancellation request is a deterministic state mutation.
+        if _CANCEL_META_RE.search(low_stripped):
+            return TurnIntent(route="CONVERSATION", operation="UNKNOWN", confidence=0.99)
+        q = _commitment_cancel_query(turn)
         return TurnIntent(
             route="STATE_MUTATION", operation="COMMITMENT_CANCEL",
             commitment_query=q, confidence=0.92,
@@ -332,6 +356,7 @@ def is_deterministic_high_confidence(turn: str) -> bool:
     obvious = [
         "what projects do i have", "what goals do i have", "what changed", "give me status", "evie, status",
         "how are you", "tell me a joke", "explain photosynthesis",
+        "what does cancelled mean",
     ]
     for phrase in obvious:
         if phrase in low_stripped or phrase in low:
@@ -349,8 +374,10 @@ def is_deterministic_high_confidence(turn: str) -> bool:
         return True
     if "create a commitment" in low and "tomorrow" in low:
         return True
-    # Commitment cancel/delete semantics (deterministic; preserves history)
-    if re.search(r"\b(delete|remove|cancel|get rid of)\b.{0,40}\bcommitment\b", low_stripped):
+    # Commitment cancel/delete semantics (deterministic; preserves history).
+    # This includes pronoun references so an explicit ``delete it`` cannot
+    # fall through to Luna or generic conversation.
+    if _has_commitment_cancel_language(low_stripped):
         return True
     return "create a commitment" in low and "tomorrow" in low
 
@@ -476,7 +503,7 @@ async def _call_responses_api(turn: str, context: dict | None, *, model: str, re
         "type": "object",
         "properties": {
             "route": {"type": "string", "enum": ["CONVERSATION","STATE_QUERY","STATE_MUTATION","MISSION_CONTROL","ACTION","DELEGATED_JOB","RESEARCH_MISSION","CLARIFICATION","UNSUPPORTED"]},
-            "operation": {"type": "string", "enum": ["PROJECT_LIST","PROJECT_GET","PROJECT_CREATE","PROJECT_UPDATE","GOAL_LIST","GOAL_GET","GOAL_CREATE","GOAL_UPDATE","COMMITMENT_LIST","COMMITMENT_GET","COMMITMENT_CREATE","COMMITMENT_UPDATE","STATUS","WHAT_CHANGED","RELATIONSHIP_QUERY","RELATIONSHIP_UPDATE","UNKNOWN"]},
+            "operation": {"type": "string", "enum": ["PROJECT_LIST","PROJECT_GET","PROJECT_CREATE","PROJECT_UPDATE","GOAL_LIST","GOAL_GET","GOAL_CREATE","GOAL_UPDATE","COMMITMENT_LIST","COMMITMENT_GET","COMMITMENT_CREATE","COMMITMENT_UPDATE","COMMITMENT_CANCEL","STATUS","WHAT_CHANGED","RELATIONSHIP_QUERY","RELATIONSHIP_UPDATE","UNKNOWN"]},
             "confidence": {"type": "number"},
             "needs_clarification": {"type": "boolean"},
             "clarification_question": {"type": ["string","null"]},
