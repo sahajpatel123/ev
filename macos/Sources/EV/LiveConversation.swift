@@ -567,37 +567,48 @@ final class LiveConversation {
         }
         model.noteLiveConnectionAttempt(deviceID: deviceId)
         Self.st("ST11_BACKEND_CONNECT_BEGIN")
-        let opened = try await model.client.openLiveVoice(deviceId: deviceId)
-        Self.st("ST12_BACKEND_SESSION_OPENED")
-        model.noteLiveSessionOpened(sessionID: opened.sessionId, deviceID: deviceId)
-        let connection = LiveVoiceConnection(
-            baseURL: model.client.baseURL,
-            token: model.client.token
-        )
-        self.connection = connection
-        // INTERRUPTION V1: construct the detector ONLY when the owner enabled
-        // the feature flag. OFF = architecturally absent (no detector, no
-        // recognizer, no callbacks, no stop authority). The executor runs on
-        // interruptControlQueue: local stop first, then playback report,
-        // barge-in control, and preroll forward — never on the audio thread.
-        let stream = try await connection.connect(sessionId: opened.sessionId)
-        // STARTUP DECOUPLING (P0 2026-08-23): LOCAL_MIC_READY must not wait
-        // for the remote provider. Capture begins as soon as OUR transport is
-        // up; frames are forwarded only after the provider signals ready.
-        // Provider outage therefore cannot delay or disable the microphone.
-        Self.st("ST12B_WS_CONNECTED_STARTING_MIC_LOCALLY")
-        if !microphoneStarted {
-            microphoneStarted = startMicrophone(on: connection)
-            if microphoneStarted { Self.st("ST06_MIC_STARTED_LOCAL_FIRST") }
-        }
-        isActive = true
-        Self.st("ST18_RECONNECT_OK")
-        model.noteLiveConnected()
-        model.isLiveActive = true
-        model.isLiveMuted = false
-        model.isLivePaused = false
-        model.status = .listening
-        model.lastError = nil
+        // STALL FORENSICS: every phase boundary is traced so a silent hang
+        // (e.g. an unawaited socket close racing the open POST) resolves to
+        // an exact phase instead of "no ST11 after ST16".
+        var phase = "ST11"
+        do {
+            defer { Self.st("ST19_CONNECT_ONCE_EXIT", phase) }
+            let opened = try await model.client.openLiveVoice(deviceId: deviceId)
+            phase = "ST12"
+            Self.st("ST12_BACKEND_SESSION_OPENED")
+            model.noteLiveSessionOpened(sessionID: opened.sessionId, deviceID: deviceId)
+            let connection = LiveVoiceConnection(
+                baseURL: model.client.baseURL,
+                token: model.client.token
+            )
+            self.connection = connection
+            phase = "ST12B_WS_CONNECT"
+            // INTERRUPTION V1: construct the detector ONLY when the owner enabled
+            // the feature flag. OFF = architecturally absent (no detector, no
+            // recognizer, no callbacks, no stop authority). The executor runs on
+            // interruptControlQueue: local stop first, then playback report,
+            // barge-in control, and preroll forward — never on the audio thread.
+            let stream = try await connection.connect(sessionId: opened.sessionId)
+            phase = "ST12B_MIC_START"
+            // STARTUP DECOUPLING (P0 2026-08-23): LOCAL_MIC_READY must not wait
+            // for the remote provider. Capture begins as soon as OUR transport is
+            // up; frames are forwarded only after the provider signals ready.
+            // Provider outage therefore cannot delay or disable the microphone.
+            Self.st("ST12B_WS_CONNECTED_STARTING_MIC_LOCALLY")
+            if !microphoneStarted {
+                microphoneStarted = startMicrophone(on: connection)
+                if microphoneStarted { Self.st("ST06_MIC_STARTED_LOCAL_FIRST") }
+            }
+            phase = "ST18_OK"
+            isActive = true
+            Self.st("ST18_RECONNECT_OK")
+            model.noteLiveConnected()
+            model.isLiveActive = true
+            model.isLiveMuted = false
+            model.isLivePaused = false
+            model.status = .listening
+            model.lastError = nil
+            phase = "CONSUME_EVENTS"
 
         do {
             for try await event in stream {
@@ -662,6 +673,7 @@ final class LiveConversation {
         }
         if !stayMuted, !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 400_000_000)
+        }
         }
     }
 
