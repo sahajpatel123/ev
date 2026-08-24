@@ -201,6 +201,13 @@ def _check_origin(request: Request) -> None:
 
 
 def _device_public(device: Device) -> dict:
+    # PART 20 consistency: same explicit auth-state categories everywhere.
+    from app.everywhere.devices import public_device
+
+    return public_device(device)
+
+
+def _device_public_legacy(device: Device) -> dict:
     return {
         "device_id": str(device.id),
         "display_name": device.name,
