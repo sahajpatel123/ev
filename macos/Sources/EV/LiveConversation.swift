@@ -636,6 +636,14 @@ final class LiveConversation {
         } catch is CancellationError {
             tearDownChannel()
             throw CancellationError()
+        } catch {
+            // A transport error (server restart close-frame, socket reset)
+            // must NEVER kill the reconnect task — that left Evie deaf until
+            // a manual relaunch. Treat it like any other channel loss: tear
+            // down and let the loop reconnect.
+            let rendered = modelFormatted(error)
+            Self.st("ST16_UNEXPECTED_DISCONNECT", rendered)
+            tearDownChannel()
         }
         tearDownChannel()
         isActive = false
