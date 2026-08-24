@@ -531,12 +531,17 @@ final class LiveConversation {
         }
         while !Task.isCancelled {
             if stayMuted {
+                // Visible mute-state law: a muted loop must never look like
+                // a hung reconnect from the outside.
+                Self.st("ST21_LOOP_MUTED_HOLD", "stayMuted")
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 continue
             }
+            Self.st("ST20_LOOP_ITERATE")
             do {
                 try await connectOnce()
             } catch is CancellationError {
+                Self.st("ST22_LOOP_CANCELLED", "cancellation")
                 return
             } catch {
                 if Task.isCancelled { return }
@@ -552,6 +557,7 @@ final class LiveConversation {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
             }
         }
+        Self.st("ST22_LOOP_CANCELLED", "while-exit")
     }
 
     private func connectOnce() async throws {
