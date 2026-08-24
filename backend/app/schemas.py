@@ -438,6 +438,18 @@ class BackupRestoreRequest(BaseModel):
     passphrase: str = Field(min_length=8, max_length=512)
     mode: Literal["merge", "wipe"] = "merge"
     confirm_wipe: bool = False
+    # P0 CONTAINMENT: single-use destructive-maintenance confirmation token
+    # minted by POST /v1/backup/restore/prepare. Required for restore.
+    restore_confirmation: str | None = Field(default=None, max_length=128)
+
+
+class BackupPrepareOut(BaseModel):
+    confirmation_token: str
+    operation: str
+    environment: str
+    database_fingerprint: str
+    expires_in_seconds: int
+    single_use: bool
 
 
 class BackupRestoreOut(BaseModel):

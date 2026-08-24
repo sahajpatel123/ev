@@ -480,3 +480,5 @@ async def test_raw_db_text_never_reaches_owner_message(db_session):
     blob = str(result)
     for banned in ("psycopg", "SQLAlchemy", "InFailedSqlTransaction", "SELECT"):
         assert banned.lower() not in blob.lower(), f"raw internals leaked: {banned}"
+
+

@@ -272,3 +272,47 @@ def test_canary_phrases_route_deterministically():
     getp = _rule_based_intent("What is the priority of G2 Cross Device Canary?")
     assert getp.route == "STATE_QUERY"
     assert getp.operation == "PROJECT_GET"
+
+
+# ---------------------------------------------------------------------------
+# P0 CONTAINMENT: destructive restore requires the maintenance confirmation
+# contract. Master bearer alone is refused.
+# ---------------------------------------------------------------------------
+
+
+def test_destructive_gate_requires_confirmation():
+    from app.ops.destructive_maintenance import (
+        DestructiveOperationError,
+        verify_destructive_confirmation,
+    )
+
+    class _FakeSession:
+        pass
+
+    try:
+        verify_destructive_confirmation(
+            _FakeSession(), token=None, operation="backup.restore", target="x"
+        )
+        raised = None
+    except DestructiveOperationError as exc:
+        raised = exc
+    assert raised is not None and raised.code == "CONFIRMATION_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_restore_endpoint_rejects_without_confirmation(api_client, monkeypatch):
+    from app.config import settings
+
+    client, _ = api_client
+    r = await client.post(
+        "/v1/backup/restore",
+        json={
+            "path": "/tmp/nope.evbackup",
+            "passphrase": "whatever-passphrase",
+            "mode": "wipe",
+            "confirm_wipe": True,
+        },
+        headers={"Authorization": f"Bearer {settings.master_key}"},
+    )
+    assert r.status_code == 403
+    assert r.json()["detail"]["error_code"] == "CONFIRMATION_REQUIRED"

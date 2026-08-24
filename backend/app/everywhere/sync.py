@@ -66,6 +66,23 @@ def _visible_filters(*, owner_trusted: bool) -> list[Any]:
     return filters
 
 
+# ---------------------------------------------------------------------------
+# STATE EPOCH (P0 Phase 13-15): canonical history lineage identity.
+#
+# The epoch is derived from the EARLIEST surviving canonical event id. A
+# destructive restore/reseed replaces history, so the earliest id changes;
+# every cursor embeds the epoch it was minted under, and any cursor from a
+# different epoch is rejected with EPOCH_MISMATCH -> fresh bootstrap instead
+# of silently continuing across a broken lineage.
+# ---------------------------------------------------------------------------
+
+
+async def state_epoch(session: AsyncSession) -> str | None:
+    stmt = select(Event.id).order_by(Event.occurred_at.asc(), Event.id.asc()).limit(1)
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    return str(row) if row is not None else None
+
+
 def _type_prefix_or(filters: list[Any]) -> list[Any]:
     from sqlalchemy import or_
 
@@ -83,27 +100,50 @@ async def current_cursor(session: AsyncSession, *, owner_trusted: bool = True) -
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         return None
-    return {"at": row.occurred_at.isoformat(), "id": str(row.id)}
+    epoch = await state_epoch(session)
+    return {
+        "epoch": epoch,
+        "at": row.occurred_at.isoformat(),
+        "id": str(row.id),
+    }
 
 
-def parse_cursor(raw: str | None) -> tuple[datetime, UUID] | None | str:
-    """Parse an opaque cursor. Returns (at, id), None (no cursor), or 'invalid'."""
+def format_cursor(event: Event, epoch: str | None = None) -> str:
+    if epoch:
+        return f"{epoch}|{event.occurred_at.isoformat()}|{event.id}"
+    return f"{event.occurred_at.isoformat()}|{event.id}"
+
+
+def parse_cursor(raw: str | None) -> tuple[str | None, datetime, UUID] | None | str:
+    """Parse an opaque cursor.
+
+    Returns (epoch, at, id), (None, at, id) for legacy pre-epoch cursors,
+    None when absent, or 'invalid' when malformed.
+    """
     if not raw:
         return None
+    parts = raw.split("|")
     try:
-        at_raw, id_raw = raw.split("|", 1)
-        at = datetime.fromisoformat(at_raw.replace("Z", "+00:00"))
-        if at.tzinfo is None:
-            from datetime import UTC
-
-            at = at.replace(tzinfo=UTC)
-        return at, UUID(id_raw)
+        if len(parts) == 3:
+            epoch, at_raw, id_raw = parts
+            at = _parse_iso(at_raw)
+            return (epoch, at, UUID(id_raw))
+        if len(parts) == 2:
+            at_raw, id_raw = parts
+            at = _parse_iso(at_raw)
+            return (None, at, UUID(id_raw))
     except (ValueError, TypeError):
-        return "invalid"
+        pass
+    return "invalid"
 
 
-def format_cursor(event: Event) -> str:
-    return f"{event.occurred_at.isoformat()}|{event.id}"
+def _parse_iso(value: str) -> datetime:
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        from datetime import UTC
+
+        dt = dt.replace(tzinfo=UTC)
+    return dt
 
 
 async def changes(
@@ -118,10 +158,26 @@ async def changes(
     parsed = parse_cursor(cursor)
     if parsed == "invalid":
         return {"ok": False, "error": "CURSOR_INVALID", "reset_required": True}
+
+    # STATE EPOCH LAW (P0 Phase 13/14): a cursor minted under a different
+    # canonical history lineage can never be continued. Old-epoch and legacy
+    # pre-epoch cursors get an explicit reset so clients rebuild from the
+    # current lineage instead of silently mixing histories.
+    current_epoch = await state_epoch(session)
+    if parsed is not None:
+        cursor_epoch = parsed[0]
+        if cursor_epoch != current_epoch:
+            return {
+                "ok": False,
+                "error": "STATE_EPOCH_MISMATCH",
+                "reset_required": True,
+                "expected_epoch": current_epoch,
+            }
+
     owner_trusted = bool(ctx.is_master or (ctx.device is not None and ctx.device.trust_level == "owner"))
     filters = _type_prefix_or(_visible_filters(owner_trusted=owner_trusted))
     if parsed is not None:
-        at, eid = parsed
+        _, at, eid = parsed
         if utcnow() - at > timedelta(days=CURSOR_MAX_AGE_DAYS):
             return {"ok": False, "error": "CURSOR_TOO_OLD", "reset_required": True}
         filters.append(tuple_(Event.occurred_at, Event.id) > tuple_(at, eid))
@@ -135,7 +191,7 @@ async def changes(
     has_more = len(rows) > limit
     rows = rows[:limit]
     events = [_public_event(e) for e in rows]
-    next_cursor = format_cursor(rows[-1]) if rows else cursor
+    next_cursor = format_cursor(rows[-1], epoch=current_epoch) if rows else cursor
     await _advance_device_cursor(session, ctx, next_cursor)
     return {
         "ok": True,
@@ -143,6 +199,7 @@ async def changes(
         "events": events,
         "next_cursor": next_cursor,
         "has_more": has_more,
+        "epoch": current_epoch,
     }
 
 
@@ -164,7 +221,7 @@ async def _advance_device_cursor(session: AsyncSession, ctx: ActorContext, curso
     parsed = parse_cursor(cursor)
     if parsed is None or parsed == "invalid":
         return
-    at, eid = parsed
+    _, at, eid = parsed
     device: Device = ctx.device
     device.sync_cursor_at = at
     device.sync_cursor_id = eid
