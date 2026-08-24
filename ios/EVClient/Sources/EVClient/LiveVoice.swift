@@ -122,6 +122,13 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     private let session: URLSession
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
+    /// Bounded dead-link detection: unanswered protocol pings. A backend
+    /// that vanishes without a clean close must NEVER leave this client
+    /// hanging forever on receive() (observed 2026-08-24 after a backend
+    /// restart): two missed pongs terminate the stream so the normal
+    /// reconnect loop owns recovery.
+    private var pingTask: Task<Void, Never>?
+    private var missedPongs = 0
     private var streamContinuation: AsyncThrowingStream<LiveVoiceEvent, Error>.Continuation?
     private var senderTask: Task<Void, Never>?
     private var senderContinuation: AsyncStream<Void>.Continuation?
@@ -179,7 +186,52 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         receiveTask = Task.detached(priority: .userInitiated) { [weak self] in
             await self?.receiveLoop(task, generation: receiveGeneration)
         }
+        startPingWatchdog(for: task, generation: receiveGeneration)
         return stream
+    }
+
+    /// Bounded keepalive: ping every 15s; two consecutive unanswered pongs
+    /// (~30s) declare the link dead and hand recovery to the reconnect loop.
+    private func startPingWatchdog(for task: URLSessionWebSocketTask, generation: Int) {
+        pingTask?.cancel()
+        lock.lock()
+        missedPongs = 0
+        lock.unlock()
+        pingTask = Task.detached(priority: .utility) { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard let self, self.isCurrent(task, generation: generation) else { return }
+                let strikes = self.registerPingSent()
+                if strikes >= 2 {
+                    self.failDeadLink(task, generation: generation)
+                    return
+                }
+                task.sendPing { [weak self] _ in
+                    self?.clearMissedPongs()
+                }
+            }
+        }
+    }
+
+    private func registerPingSent() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        missedPongs += 1
+        return missedPongs
+    }
+
+    private func clearMissedPongs() {
+        lock.lock()
+        missedPongs = 0
+        lock.unlock()
+    }
+
+    /// Dead link: cancel the blocked receive and tear the socket down so the
+    /// LiveConversation loop performs its normal bounded reconnect.
+    private func failDeadLink(_ task: URLSessionWebSocketTask, generation: Int) {
+        guard isCurrent(task, generation: generation) else { return }
+        receiveTask?.cancel()
+        task.cancel(with: .goingAway, reason: nil)
     }
 
     /// Keep only the newest unsent PCM frame. A microphone callback must never
@@ -348,6 +400,8 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     public func close() {
         receiveTask?.cancel()
         receiveTask = nil
+        pingTask?.cancel()
+        pingTask = nil
         lock.lock()
         sendGeneration += 1
         let task = socket
