@@ -314,9 +314,9 @@ def test_sandbox_phone_webrtc_session_unchanged():
 async def test_evie_state_query_broker_routes_through_turngate(db_session):
     """The broker executes OwnerTurn -> TurnGate -> Core and returns the
     canonical spoken answer — durable events included."""
-    from app.device_gateway.pipeline import run_trusted_device_turn
     from sqlalchemy import func, select
 
+    from app.device_gateway.pipeline import run_trusted_device_turn
     from app.models import Event
 
     d = Device(
@@ -336,11 +336,8 @@ async def test_evie_state_query_broker_routes_through_turngate(db_session):
     await db_session.commit()
     assert result["ok"] is True
     assert result["route"] == "STATE_QUERY"
-    titles = " ".join(
-        p.get("title", "") for p in (result.get("canonical_data") or [])
-    ) if isinstance(result.get("canonical_data"), list) else ""
-    # PROJECT_LIST owner_message lists projects:
-    assert "Personal Fitness" in (result.get("reply") or "") or "Broker Visible" in titles or True
+    # PROJECT_LIST owner_message lists the owner's projects:
+    assert "project" in (result.get("reply") or "").lower()
 
     user_events = (
         await db_session.execute(
@@ -379,9 +376,8 @@ import pytest
 async def test_failed_turn_rolls_back_and_next_turn_succeeds(
     db_session, monkeypatch
 ):
-    from app.ev import turn_controller
     from app.ev.owner_turn import create_owner_turn
-    from app.ev.turn_gate import db_failure_stats, handle_owner_turn
+    from app.ev.turn_gate import handle_owner_turn
 
     d = Device(
         name="Tx Isolation Phone",
