@@ -7,6 +7,7 @@ between the phone and OpenAI. Tools, look, lease, and sandbox stay on Device Gat
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -16,13 +17,14 @@ from uuid import UUID
 
 import httpx
 from fastapi import HTTPException
+from sqlalchemy import select
 
 from app.config import settings
+from app.device_gateway.mobile_actions.tool import MOBILE_ACTION_CONTRACT
 from app.device_gateway.mobile_voice import (
     MOBILE_ASR_LEXICON,
     MOBILE_CONVERSATION_CONTRACT,
 )
-from app.device_gateway.mobile_actions.tool import MOBILE_ACTION_CONTRACT
 from app.device_gateway.sandbox import is_sandbox_device, memory_scope_of
 from app.device_gateway.sandbox_tools import sandbox_live_tool_specs
 from app.device_gateway.voice import strip_production_memory_from_manifest
@@ -32,7 +34,12 @@ from app.voice.live.grok_voice import (
     grok_voice_tools,
     openai_realtime_instructions,
 )
-from app.voice.live.layer import live_for_session, register_live, unregister_live
+from app.voice.live.layer import (
+    compact_live_tool_json,
+    live_for_session,
+    register_live,
+    unregister_live,
+)
 from app.voice.live.session import LiveSession
 from app.voice.live.transport import _grok_tool_runner
 
@@ -93,24 +100,84 @@ def resolve_phone_audio_backend(requested: str | None = None) -> str:
     return "pcm_ws"
 
 
-def phone_webrtc_session(*, device: Device | None = None) -> dict[str, Any]:
-    """GA Realtime session for the phone. WebRTC carries audio; tools stay sandboxed."""
+_OWNER_STATE_CHANNEL_CONTRACT = (
+    "OWNER STATE CHANNEL: Projects, goals, commitments, and mission-control "
+    "questions are answered by Evie Core. When the owner asks about their "
+    "projects, goals, commitments, status, or what changed, call "
+    "evie_state_query with their exact words, then speak ONLY the canonical "
+    "result it returns. Never claim you lack access to this data — the "
+    "canonical result is authoritative."
+)
 
-    specs = sandbox_live_tool_specs(device=device)
-    tools = grok_voice_tools(specs)
-    manifest = strip_production_memory_from_manifest({"memory_scope": "sandbox"})
-    if device is not None:
-        manifest["origin_device_id"] = str(device.id)
-        manifest["response_device_id"] = str(device.id)
-        manifest["device_role"] = device.role
-    instructions = (
-        openai_realtime_instructions(capability_manifest=manifest)
-        + capability_instructions(manifest)
-        + "\n"
-        + MOBILE_CONVERSATION_CONTRACT
-        + "\n"
-        + MOBILE_ACTION_CONTRACT
-    )
+
+def _evie_state_query_spec() -> dict[str, Any]:
+    return {
+        "name": "evie_state_query",
+        "description": (
+            "Authoritative Evie Core lookup for the owner's projects, goals, "
+            "commitments, status, or recent changes. Pass the owner's exact "
+            "words. Returns the canonical answer to speak."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query_text": {
+                    "type": "string",
+                    "description": "The owner's request in their own words.",
+                }
+            },
+            "required": ["query_text"],
+        },
+    }
+
+
+def phone_webrtc_session(*, device: Device | None = None) -> dict[str, Any]:
+    """GA Realtime session for the phone.
+
+    SANDBOX devices: tools stay sandboxed (legacy satellite behavior).
+    TRUSTED OWNER devices: OWNER instructions + the single canonical broker
+    tool `evie_state_query`, which executes OwnerTurn -> TurnGate -> Core
+    server-side. Life-state authority NEVER becomes a model-local tool; the
+    model only verbalizes the canonical result (G1 law, PART 7).
+    """
+    from app.device_gateway.sandbox import is_sandbox_device
+
+    trusted_owner = device is not None and not is_sandbox_device(device)
+
+    if trusted_owner:
+        manifest: dict[str, Any] = {"memory_scope": "owner"}
+        if device is not None:
+            manifest["origin_device_id"] = str(device.id)
+            manifest["response_device_id"] = str(device.id)
+            manifest["device_role"] = device.role
+        # Scoped broker tool (trusted phone sessions only): deliberately NOT
+        # routed through the global allowlist so the G1 realtime surface
+        # stays frozen; this is a single canonical TurnGate entry point.
+        tools = [_evie_state_query_spec() | {"type": "function"}]
+        instructions = (
+            openai_realtime_instructions(capability_manifest=manifest)
+            + capability_instructions(manifest)
+            + "\n"
+            + MOBILE_CONVERSATION_CONTRACT
+            + "\n"
+            + _OWNER_STATE_CHANNEL_CONTRACT
+        )
+    else:
+        specs = sandbox_live_tool_specs(device=device)
+        tools = grok_voice_tools(specs)
+        manifest = strip_production_memory_from_manifest({"memory_scope": "sandbox"})
+        if device is not None:
+            manifest["origin_device_id"] = str(device.id)
+            manifest["response_device_id"] = str(device.id)
+            manifest["device_role"] = device.role
+        instructions = (
+            openai_realtime_instructions(capability_manifest=manifest)
+            + capability_instructions(manifest)
+            + "\n"
+            + MOBILE_CONVERSATION_CONTRACT
+            + "\n"
+            + MOBILE_ACTION_CONTRACT
+        )
     voice = (settings.openai_realtime_voice or "marin").strip() or "marin"
     model = (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip()
     asr_model = (getattr(settings, "phone_asr_model", None) or "gpt-4o-transcribe").strip()
@@ -450,8 +517,35 @@ def attach_phone_control_live(
 ) -> LiveSession:
     existing = live_for_session(session_id)
     if existing is not None:
-        return existing
-    manifest = strip_production_memory_from_manifest({"memory_scope": "sandbox"})
+        # G2 SANDBOX-ESCAPE LAW: a cached LiveSession whose authorization
+        # state no longer matches the CURRENT device row must never be
+        # reused. The pre-promotion session carried a sandbox capability
+        # manifest indefinitely — the exact physical failure of 2026-08-25.
+        # Rebind (tear down + rebuild) on any trust/scope/revision change.
+        current_revision = int(getattr(device, "auth_revision", 1) or 1)
+        bound_revision = int(getattr(existing, "auth_revision", current_revision) or current_revision)
+        manifest_scope = str(
+            (getattr(existing, "_capability_manifest", None) or {}).get("memory_scope")
+            or getattr(existing, "memory_scope", "")
+            or ""
+        )
+        device_scope_now = memory_scope_of(device)
+        scope_changed = manifest_scope != device_scope_now and not (
+            manifest_scope == "owner" and device_scope_now == "owner"
+        )
+        if bound_revision != current_revision or scope_changed:
+            with contextlib.suppress(Exception):
+                existing.close()
+            unregister_live(existing)
+        else:
+            return existing
+    device_scope_now = memory_scope_of(device)
+    if device_scope_now == "sandbox":
+        manifest = strip_production_memory_from_manifest(
+            {"memory_scope": "sandbox"}
+        )
+    else:
+        manifest = {"memory_scope": "owner"}
     manifest["origin_device_id"] = str(device.id)
     manifest["response_device_id"] = str(device.id)
     live = LiveSession(
@@ -461,6 +555,7 @@ def attach_phone_control_live(
         capability_manifest=manifest,
     )
     live.memory_scope = "sandbox" if is_sandbox_device(device) else memory_scope_of(device)
+    live.auth_revision = int(getattr(device, "auth_revision", 1) or 1)
     live.device_role = device.role or "companion"
     live.device_label = (
         "Primary iPhone"
@@ -526,6 +621,57 @@ async def run_phone_tool(
     if live is None or live.run_live_tool is None:
         raise HTTPException(status_code=409, detail="Live tools are not attached.")
     args = arguments if isinstance(arguments, dict) else {}
+    # G2 ONE-EVIE broker: trusted-owner state questions execute through the
+    # canonical control plane (OwnerTurn -> TurnGate -> Core). This is NOT a
+    # model-local life tool — the model only verbalizes the canonical result.
+    if name == "evie_state_query":
+        from app.db import SessionLocal
+        from app.models import Device as DeviceRow
+
+        if getattr(live, "memory_scope", "owner") == "sandbox":
+            return compact_live_tool_json(
+                {
+                    "ok": False,
+                    "error_code": "DEVICE_NOT_TRUSTED",
+                    "spoken": (
+                        "This phone is paired, but it hasn't been trusted for "
+                        "access to your Evie data yet."
+                    ),
+                }
+            )
+        async with SessionLocal() as db:
+            drow = (
+                await db.execute(
+                    select(DeviceRow).where(DeviceRow.id == UUID(str(live.device_id)))
+                )
+            ).scalars().first()
+            if drow is None or drow.revoked_at is not None:
+                return compact_live_tool_json(
+                    {
+                        "ok": False,
+                        "error_code": "DEVICE_REVOKED",
+                        "spoken": "This device is no longer trusted.",
+                    }
+                )
+            from .pipeline import run_trusted_device_turn
+
+            result = await run_trusted_device_turn(
+                db,
+                device=drow,
+                text=str((args or {}).get("query_text") or ""),
+                idempotency_key=call_id,
+            )
+        spoken = result.get("reply") or (
+            "Done." if result.get("ok") else "That didn't complete."
+        )
+        return compact_live_tool_json(
+            {
+                **result,
+                "spoken": spoken,
+                "executed": bool(result.get("ok")),
+                "verified": bool(result.get("ok")),
+            }
+        )
     if name == "phone_action":
         from app.device_gateway.mobile_actions.tool import dispatch_phone_action
 

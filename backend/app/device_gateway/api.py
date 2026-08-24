@@ -17,6 +17,7 @@ from app.auth import require_master
 from app.config import settings
 from app.db import get_session
 from app.models import Device
+from app.runtime_identity import runtime_git_sha
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
 
@@ -343,10 +344,25 @@ async def hello(
     note_presence(device.id, instance_id=data.instance_id, state="ready" if data.foreground else "background")
     await session.commit()
     snap = health_snapshot()
+    trusted_owner_hello = not is_sandbox_device(device)
     return {
         "ok": True,
         "device": _device_public(device),
         "ignored_capabilities": ignored_capabilities,
+        "backend_sha": runtime_git_sha(),
+        "session_context": {
+            "device_id": str(device.id),
+            "owner_id": "master" if trusted_owner_hello else f"sandbox:{device.id}",
+            "trust_state": (
+                "TRUSTED_OWNER_DEVICE"
+                if trusted_owner_hello
+                else ("REVOKED" if device.revoked_at is not None else "PAIRED_SANDBOX")
+            ),
+            "scope": "master" if trusted_owner_hello else f"sandbox:{device.id}",
+            "auth_revision": int(getattr(device, "auth_revision", 1) or 1),
+            "turngate_bound": True,
+            "protocol_version": PROTOCOL_VERSION,
+        },
         "environment": "SANDBOX" if is_sandbox_device(device) else "OWNER",
         "memory_scope": memory_scope_of(device),
         "home_station": snap.get("home_station"),
@@ -451,55 +467,17 @@ async def user_text(
     # legacy sandbox satellite pipeline. Durable trace events carry device
     # provenance so phone turns are observable like Mac turns.
     if not is_sandbox_device(device):
-        from app.ev.owner_turn import create_owner_turn
-        from app.ev.turn_gate import handle_owner_turn
-        from app.everywhere.sync import emit_everywhere_event
+        from app.device_gateway.pipeline import run_trusted_device_turn
 
-        turn = create_owner_turn(
-            live_session_id=f"device-text:{device.id}",
-            provider_item_id=data.request_id or data.idempotency_key,
-            owner_id="master",
-            device_id=str(device.id),
-            transcript=data.text or "",
-            transcript_source="device_text",
-            # Stable id → gate-level dedupe for client retries.
-            turn_id=(f"text-{device.id}-{data.idempotency_key}"
-                     if getattr(data, "idempotency_key", None) else None),
-        )
-        result = await handle_owner_turn(session, turn)
-        await session.commit()
-        reply = result.owner_message or (
-            "Done." if result.ok else f"That didn't complete ({result.error})."
-        )
-        await emit_everywhere_event(
+        result = await run_trusted_device_turn(
             session,
-            event_type="message.user",
-            actor_label=f"device:{device.name}",
-            content={"text": (data.text or "")[:2000], "turn_id": turn.turn_id,
-                     "route": result.route, "operation": result.operation},
-            device_id=str(device.id),
-        )
-        await emit_everywhere_event(
-            session,
-            event_type="message.assistant",
-            actor_label="evie",
-            content={"text": reply[:2000], "turn_id": turn.turn_id,
-                     "ok": bool(result.ok), "error_code": result.error},
-            device_id=str(device.id),
+            device=device,
+            text=data.text or "",
+            idempotency_key=getattr(data, "idempotency_key", None),
         )
         await session.commit()
-        return {
-            "reply": reply,
-            "ok": bool(result.ok),
-            "error_code": None if result.ok else result.error,
-            "route": result.route,
-            "operation": result.operation,
-            "needs_clarification": bool(result.needs_clarification),
-            "turn_id": turn.turn_id,
-            "duplicate": bool(getattr(result, "duplicate", False)),
-        }
+        return result
 
-    instance = instance
     lease = await claim_lease(session, device_id=device.id, instance_id=instance, method="manual")
     note_presence(device.id, instance_id=instance, state="active")
     result = await handle_user_text(

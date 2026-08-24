@@ -201,7 +201,11 @@ async def handle_user_text(
             extra={"mac": mac, "action_target_device_id": str(target.id)},
         )
 
-    from .mobile_actions.engine import apply_confirmation_utterance, create_phone_action, infer_from_text
+    from .mobile_actions.engine import (
+        apply_confirmation_utterance,
+        create_phone_action,
+        infer_from_text,
+    )
 
     handled = apply_confirmation_utterance(
         device_id=str(device.id),
@@ -337,3 +341,92 @@ async def _finish(
     if extra:
         payload.update(extra)
     return payload
+
+
+# ---------------------------------------------------------------------------
+# G2 ONE-EVIE: canonical owner-turn execution for TRUSTED endpoints.
+# Shared by POST /device-gateway/text and the owner broker tool
+# (evie_state_query) used by trusted WebRTC realtime sessions.
+# Every turn: OwnerTurn -> TurnGate -> Evie Core -> durable trace events.
+# ---------------------------------------------------------------------------
+
+
+async def run_trusted_device_turn(
+    session: AsyncSession,
+    *,
+    device: Device,
+    text: str,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    from app.ev.owner_turn import create_owner_turn
+    from app.ev.turn_gate import handle_owner_turn
+    from app.everywhere.owner import owner_scope
+    from app.everywhere.sync import emit_everywhere_event
+
+    # Server-derived scope; a paired-sandbox device never reaches here via
+    # the broker, but the guard keeps the law explicit (fail closed).
+    ctx_scope = owner_scope(f"device:{device.name}", device=device)
+    if ctx_scope == "master" and (
+        str(getattr(device, "memory_scope", "") or "").lower() == "sandbox"
+        or device.revoked_at is not None
+    ):
+        return {
+            "reply": "This device's access changed; reconnect to continue.",
+            "ok": False,
+            "error_code": "AUTH_REFRESH_REQUIRED",
+            "route": "UNSUPPORTED",
+            "operation": "UNKNOWN",
+            "turn_id": None,
+        }
+
+    turn = create_owner_turn(
+        live_session_id=f"device-text:{device.id}",
+        provider_item_id=idempotency_key,
+        owner_id="master",
+        device_id=str(device.id),
+        transcript=text or "",
+        transcript_source="device_text",
+        turn_id=(
+            f"text-{device.id}-{idempotency_key}" if idempotency_key else None
+        ),
+    )
+    result = await handle_owner_turn(session, turn)
+    await session.commit()
+    reply = result.owner_message or (
+        "Done." if result.ok else f"That didn't complete ({result.error})."
+    )
+    await emit_everywhere_event(
+        session,
+        event_type="message.user",
+        actor_label=f"device:{device.name}",
+        content={
+            "text": (text or "")[:2000],
+            "turn_id": turn.turn_id,
+            "route": result.route,
+            "operation": result.operation,
+        },
+        device_id=str(device.id),
+    )
+    await emit_everywhere_event(
+        session,
+        event_type="message.assistant",
+        actor_label="evie",
+        content={
+            "text": reply[:2000],
+            "turn_id": turn.turn_id,
+            "ok": bool(result.ok),
+            "error_code": result.error,
+        },
+        device_id=str(device.id),
+    )
+    await session.commit()
+    return {
+        "reply": reply,
+        "ok": bool(result.ok),
+        "error_code": None if result.ok else result.error,
+        "route": result.route,
+        "operation": result.operation,
+        "needs_clarification": bool(result.needs_clarification),
+        "turn_id": turn.turn_id,
+        "duplicate": bool(getattr(result, "duplicate", False)),
+    }

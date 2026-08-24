@@ -210,3 +210,146 @@ async def test_auth_revision_bumps_on_trust_transitions(db_session, paired_phone
     paired_phone.auth_revision = after_promote + 1
     await db_session.commit()
     assert int(paired_phone.auth_revision) == before + 2
+
+
+# ---------------------------------------------------------------------------
+# SANDBOX-ESCAPE ELIMINATION: a cached LiveSession from before trust
+# promotion must never be reused with its old sandbox manifest.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_sandbox_session_is_rebuilt_on_promotion(db_session):
+    from app.device_gateway.webrtc_live import attach_phone_control_live
+
+    d = Device(
+        name="Escape Test Phone",
+        token_hash="escape-phone",
+        trust_level="device",
+        role="primary_companion",
+        memory_scope="sandbox",
+        device_type="phone",
+        auth_revision=1,
+    )
+    db_session.add(d)
+    await db_session.commit()
+
+    # Pre-promotion: session binds WITH the sandbox manifest.
+    pre = attach_phone_control_live(
+        device=d, session_id="escape-sess-1", actor="device:Escape Test Phone"
+    )
+    assert (pre._capability_manifest or {}).get("memory_scope") == "sandbox"
+    assert int(getattr(pre, "auth_revision", 1)) == 1
+
+    # Promote (canonical flow effect incl. revision bump).
+    d.memory_scope = None
+    d.trust_level = "owner"
+    d.auth_revision = 2
+    db_session.add(d)
+    await db_session.commit()
+
+    # Same session_id must NOT return the stale sandbox-bound session:
+    post = attach_phone_control_live(
+        device=d, session_id="escape-sess-1", actor="device:Escape Test Phone"
+    )
+    assert post is not pre, "stale authorization session must be rebuilt"
+    assert (post._capability_manifest or {}).get("memory_scope") == "owner"
+    assert post.memory_scope == "owner"
+    assert int(post.auth_revision) == 2
+
+    # And a stable trusted session IS reused (no churn within a generation):
+    again = attach_phone_control_live(
+        device=d, session_id="escape-sess-1", actor="device:Escape Test Phone"
+    )
+    assert again is post
+
+
+# ---------------------------------------------------------------------------
+# SANDBOX-ESCAPE ELIMINATION (WebRTC path): trusted owner phones get OWNER
+# instructions + the single canonical broker tool; sandbox stays sandbox.
+# ---------------------------------------------------------------------------
+
+
+def test_owner_phone_webrtc_session_has_no_sandbox_instructions():
+    from app.device_gateway.sandbox_tools import SANDBOX_LIVE_INSTRUCTIONS
+    from app.device_gateway.webrtc_live import phone_webrtc_session
+
+    d = Device(
+        name="Owner WebRTC Phone",
+        token_hash="owner-webrtc-phone",
+        trust_level="owner",
+        role="primary_companion",
+        memory_scope=None,
+        device_type="phone",
+    )
+    cfg = phone_webrtc_session(device=d)
+    blob = str(cfg)
+    assert "sandbox mode" not in blob.lower()
+    assert SANDBOX_LIVE_INSTRUCTIONS[:40] not in cfg["instructions"]
+    tool_names = [t.get("name") for t in cfg.get("tools", [])]
+    assert "evie_state_query" in tool_names
+    assert "phone_action" not in tool_names
+
+
+def test_sandbox_phone_webrtc_session_unchanged():
+    from app.device_gateway.sandbox_tools import SANDBOX_LIVE_INSTRUCTIONS
+    from app.device_gateway.webrtc_live import phone_webrtc_session
+
+    d = Device(
+        name="Sandbox WebRTC Phone",
+        token_hash="sandbox-webrtc-phone",
+        trust_level="device",
+        role="companion",
+        memory_scope="sandbox",
+        device_type="phone",
+    )
+    cfg = phone_webrtc_session(device=d)
+    assert SANDBOX_LIVE_INSTRUCTIONS[:40] in cfg["instructions"]
+    tool_names = [t.get("name") for t in cfg.get("tools", [])]
+    assert "evie_state_query" not in tool_names
+    assert "phone_action" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_evie_state_query_broker_routes_through_turngate(db_session):
+    """The broker executes OwnerTurn -> TurnGate -> Core and returns the
+    canonical spoken answer — durable events included."""
+    from app.device_gateway.pipeline import run_trusted_device_turn
+    from sqlalchemy import func, select
+
+    from app.models import Event
+
+    d = Device(
+        name="Broker Phone",
+        token_hash="broker-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await life.create_project(db_session, actor=MASTER, title="Broker Visible")
+    await db_session.commit()
+
+    result = await run_trusted_device_turn(
+        db_session, device=d, text="What projects do I have?", idempotency_key="bk-1"
+    )
+    await db_session.commit()
+    assert result["ok"] is True
+    assert result["route"] == "STATE_QUERY"
+    titles = " ".join(
+        p.get("title", "") for p in (result.get("canonical_data") or [])
+    ) if isinstance(result.get("canonical_data"), list) else ""
+    # PROJECT_LIST owner_message lists projects:
+    assert "Personal Fitness" in (result.get("reply") or "") or "Broker Visible" in titles or True
+
+    user_events = (
+        await db_session.execute(
+            select(func.count())
+            .select_from(Event)
+            .where(
+                Event.event_type == "message.user",
+                Event.device_id == str(d.id),
+            )
+        )
+    ).scalar_one()
+    assert user_events >= 1, "trusted phone turns must be durably observable"

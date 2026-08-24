@@ -175,6 +175,20 @@ app.include_router(compliance.router)
 app.include_router(tools.router)
 app.include_router(web.router)
 app.include_router(device_gateway_api.router)
+
+
+@app.middleware("http")
+async def _gateway_correlation_and_cache_policy(request, call_next):
+    """G2 PART 10/13: gateway responses correlate to the running build and
+    authorization-bearing responses are never stale-cached as authority."""
+    if request.url.path.startswith("/v1/device-gateway"):
+        from app.runtime_identity import runtime_git_sha
+
+        response = await call_next(request)
+        response.headers["X-Evie-Backend-Sha"] = runtime_git_sha() or "unknown"
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    return await call_next(request)
 app.include_router(device_gateway_pwa.router)
 app.include_router(release_portal.router)  # private tailnet-only install portal
 
