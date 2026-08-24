@@ -128,6 +128,7 @@ TEXT_TARGET_RE = re.compile(
 # `look` is a one-shot observation, not an NVR replay.
 LIVE_VOICE_TOOLS = frozenset(
     {
+        "evie_turn",
         "search_memory",
         "life_project_create",
         "life_project_update",

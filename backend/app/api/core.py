@@ -185,6 +185,9 @@ async def _memory_out(session: AsyncSession, memory: Memory) -> MemoryOut:
 
 @router.get("/health")
 async def health() -> dict:
+    from app.ev.luna_adapter import luna_metrics_snapshot
+    from app.ev.manager_adapter import DeepSeekManagerAdapter
+    from app.ev.model_router import health_snapshot as model_health
     from app.ops.migration_health import migration_parity
     from app.voice.live.grok_voice import (
         GROK_VOICE_TOOL_NAMES,
@@ -240,6 +243,11 @@ async def health() -> dict:
             "live": live_label,
             "embeddings": settings.embedding_provider,
             "storage": settings.object_store_backend,
+        },
+        "models": {
+            **model_health(),
+            "turn_control_metrics": luna_metrics_snapshot(),
+            "manager": DeepSeekManagerAdapter().health(),
         },
         "migrations": migrations,
         "runtime": {

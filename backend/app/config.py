@@ -373,10 +373,17 @@ class Settings(BaseSettings):
     # EV_XAI_API_KEY is set; openai / xai = force; pipeline = local ASR+chat+TTS.
     voice_live_brain: str = "auto"
     openai_api_key: str | None = None
+    openai_base_url: str = "https://api.openai.com/v1"
     openai_realtime_model: str = "gpt-realtime-2.1-mini"
     # OpenAI Realtime voice for spoken output (marin is the natural default).
     openai_realtime_voice: str = "marin"
     openai_realtime_url: str = "wss://api.openai.com/v1/realtime"
+    # G1.3 Turn Control Plane: Luna (GPT-5.6 Luna) via OpenAI text/Responses
+    # structured outputs.  Falls back to gpt-4o-mini when Luna is not yet
+    # provisioned; the routing contract is identical.
+    turn_control_provider: str = "openai"
+    turn_control_model: str = "gpt-5.6-luna"
+    openai_chat_model: str | None = None  # alias for turn_control_model when set
 
     # Intelligence filter: optional provider-backed critic (staged trust).
     filter_critic_enabled: bool = False

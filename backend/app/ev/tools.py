@@ -1811,6 +1811,29 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "confirmation": "none",
         "provider": "local",
     },
+    {
+        "name": "evie_turn",
+        "description": "Evie's high-level turn controller (G1.3). Call this for EVERY owner turn that may involve projects, goals, commitments, status, what-changed, or any canonical state. Luna interprets, Evie Core owns truth. Use the canonical owner transcript text; do NOT paraphrase.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "owner_turn": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "Canonical owner transcript text (owner speech only, final)"},
+                "turn_id": {"type": "string", "maxLength": 128, "description": "Optional canonical turn ID referencing durable transcript"},
+                "session_id": {"type": "string", "maxLength": 128},
+            },
+            "required": ["owner_turn"],
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "life:state",
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+    },
     *FLEET_TOOL_SPECS,
 ]
 
@@ -2626,6 +2649,32 @@ async def _handle(
             device_id=str(device_id) if device_id else None,
             request_id=request_id,
         )
+    if name == "evie_turn":
+        from app.ev.turn_controller import TurnController
+
+        controller = TurnController(
+            session, actor=actor, device_id=str(device_id) if device_id else None, session_id=live_session_id
+        )
+        owner_turn = str(args.get("owner_turn") or "").strip()
+        if not owner_turn and not args.get("turn_id"):
+            return {"ok": False, "error": "missing_owner_turn", "spoken": "I didn't catch that."}
+        turn_id = str(args.get("turn_id") or "").strip() or None
+        result = await controller.handle_turn(owner_turn or "", turn_id=turn_id)
+        return {
+            "ok": result.ok,
+            "route": result.route,
+            "operation": result.operation,
+            "canonical_data": result.canonical_data,
+            "entity_refs": result.entity_refs,
+            "owner_message": result.owner_message,
+            "spoken": result.owner_message or (result.clarification_question if result.needs_clarification else "") or (result.error or ""),
+            "needs_clarification": result.needs_clarification,
+            "clarification_question": result.clarification_question,
+            "error": result.error,
+            "approval_required": result.approval_required,
+            "latency_ms": result.latency_ms,
+            "turn_result": result.model_dump(),
+        }
     if name.startswith("life_") or name == "mission_control":
         from app.life.dispatch import handle_life_tool
 

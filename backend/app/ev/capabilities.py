@@ -890,6 +890,7 @@ async def _build_runtime_projection(
     from app.ev.capability_registry import apply_capability_overlays
     from app.ev.computer_runtime import readiness_from_computer_state
     import app.life.capability  # noqa: F401  # G1: registers life_state projector
+    import app.ev.turn_capability  # noqa: F401  # G1.3: registers evie.turn_controller/state/manager
     from app.voice.live.layer import live_for_device, live_for_session
 
     live = live_for_session(str(session_id) if session_id else None) or live_for_device(
@@ -943,14 +944,28 @@ async def _build_runtime_projection(
     # G1 core state has no external dependency to probe: canonical tables are
     # the readiness signal. Overlay stamps every life_* / mission_control entry.
     from app.life.capability import LIFE_TOOLS
+    from app.ev.turn_capability import TURN_TOOLS as TURN_CTRL_TOOLS, STATE_TOOLS as EVIE_STATE_TOOLS, MANAGER_TOOLS
 
     life_readiness = {"ready": True, "tools": sorted(LIFE_TOOLS)}
+    # G1.3 Turn Controller / State / Manager
+    from app.ev.model_router import manager_model_info, turn_control_model_info
+
+    turn_info = turn_control_model_info()
+    # Turn controller is always ready via rule fallback; availability tracked in health
+    turn_readiness = {"ready": True, "tools": sorted(TURN_CTRL_TOOLS), "available": turn_info.available}
+    state_readiness = {"ready": True, "tools": sorted(EVIE_STATE_TOOLS)}
+    mgr = manager_model_info()
+    manager_status = "scaffolded" if mgr.available else "not_active"
+    manager_readiness = {"ready": manager_status in ("scaffolded", "available"), "tools": sorted(MANAGER_TOOLS), "status": manager_status}
     entries = apply_capability_overlays(
         entries,
         {
             "camera": camera_readiness,
             "computer": computer_readiness,
             "life_state": life_readiness,
+            "evie.turn_controller": turn_readiness,
+            "evie.state": state_readiness,
+            "evie.manager": manager_readiness,
         },
     )
 

@@ -528,6 +528,14 @@ def _local_factory() -> LocalModelProvider:
     return LocalModelProvider()
 
 
+def _openai_factory() -> DeepSeekProvider:
+    return DeepSeekProvider(
+        base_url=(getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/"),
+        api_key=settings.openai_api_key,
+        default_model=(getattr(settings, "turn_control_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-4o-mini").strip() or "gpt-4o-mini",
+    )
+
+
 # Provider registry: model swap is a configuration change (EV_CHAT_PROVIDER).
 PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
     "echo": EchoProvider,
@@ -535,6 +543,7 @@ PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
     "deepseek": _deepseek_factory,
     "xai": _xai_factory,
     "local": _local_factory,
+    "openai": _openai_factory,
 }
 
 
