@@ -859,6 +859,57 @@ async def admin_revoke(
     return {"ok": True, "device": _device_public(device)}
 
 
+@router.post("/admin/promote-owner")
+async def admin_promote_owner(
+    data: RevokeRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+    _master: str = Depends(require_master),
+) -> dict:
+    """Canonical TRUST PROMOTION (G2 PART 4-9): PAIRED_SANDBOX → TRUSTED_OWNER.
+
+    The master key IS the owner approval factor. Promotion flips the device's
+    canonical scope to the owner namespace and closes its live sessions so
+    the next reconnect binds OWNER tools/instructions — stale sandbox
+    sessions must never persist after a trust transition (symmetric with
+    revocation; one authorization state model, no bypasses).
+    """
+    _check_origin(request)
+    device = await session.get(Device, data.device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    if device.revoked_at is not None:
+        raise HTTPException(status_code=409, detail="Device is revoked; un-revoke first")
+    was_sandbox = is_sandbox_device(device)
+    device.memory_scope = None  # owner scope
+    device.trust_level = "owner"
+    device.paired_at = device.paired_at or utcnow()
+
+    from app.everywhere.sync import emit_everywhere_event
+
+    await emit_everywhere_event(
+        session,
+        event_type="device.trust_promoted",
+        actor_label="master",
+        content={
+            "device_id": str(device.id),
+            "display_name": device.name,
+            "previous_scope": "sandbox" if was_sandbox else "owner",
+        },
+        privacy_level="normal",
+    )
+    await session.commit()
+    # Stale-session law: the open socket must re-bind to its new authority.
+    await close_live_for_device(str(device.id), reason="trust_promoted")
+    emit("device.trust_promoted", device_id=str(device.id))
+    return {
+        "ok": True,
+        "device": _device_public(device),
+        "scope_resolved": "master",
+        "reconnect_required": True,
+    }
+
+
 @router.get("/devices")
 async def list_gateway_devices(
     request: Request,

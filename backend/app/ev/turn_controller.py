@@ -231,6 +231,23 @@ class TurnController:
 
         route, op = intent.route, intent.operation
 
+        # G2 TRUST CONTRACT (PART 15): a paired-but-not-trusted endpoint has
+        # NO owner state. Never answer with a silently empty namespace —
+        # return the canonical reason so the model verbalizes truth instead
+        # of inventing security explanations.
+        if self.actor.startswith("sandbox:"):
+            return TurnResult(
+                ok=False,
+                route=route,
+                operation=op,
+                error="DEVICE_NOT_TRUSTED",
+                owner_message=(
+                    "This phone is paired, but it hasn't been trusted for "
+                    "access to your Evie data yet. Trust it from your Mac and "
+                    "I'll reconnect."
+                ),
+            )
+
         # CAPABILITY_QUERY: self-knowledge comes from canonical capability
         # truth (registry + controller bindings), NEVER from what the current
         # voice model happens to see as direct tools.

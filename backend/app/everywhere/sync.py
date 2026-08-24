@@ -205,6 +205,23 @@ async def bootstrap(session: AsyncSession, ctx: ActorContext) -> dict:
     return {
         "owner": CANONICAL_OWNER if owner_scope_caller else scope,
         "generated_at": utcnow().isoformat(),
+        # STAGE 14 / PART 21: explicit auth-state categories — a paired
+        # sandbox endpoint must SEE that it is not yet trusted, never infer
+        # it from an empty project list.
+        "device_trust": {
+            "authenticated": True,
+            "trusted": owner_scope_caller,
+            "scope_resolved": scope,
+            "state": (
+                "TRUSTED_OWNER_DEVICE" if owner_scope_caller else "PAIRED_SANDBOX"
+            ),
+            "canonical_message": (
+                None
+                if owner_scope_caller
+                else "This phone is paired, but it hasn't been trusted for access to your Evie data yet."
+            ),
+            "required_action": None if owner_scope_caller else "trust_device_from_mac",
+        },
         "cursor": start_cursor,
         "projects": projects[:50],
         "goals": (goals_active + goals_blocked)[:100],

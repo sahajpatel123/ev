@@ -55,6 +55,11 @@ def presence_state(device: Device) -> str:
 
 
 def public_device(device: Device) -> dict:
+    from app.everywhere.owner import owner_scope
+
+    scope = owner_scope(f"device:{device.name}", device=device)
+    is_sandbox = str(getattr(device, "memory_scope", "") or "").lower() == "sandbox"
+    trusted_owner = device.revoked_at is None and not is_sandbox
     return {
         "device_id": str(device.id),
         "display_name": device.name,
@@ -63,7 +68,16 @@ def public_device(device: Device) -> dict:
         "role": device.role or "companion",
         "platform": device.platform,
         "client_version": device.client_version,
-        "trust_state": "revoked" if device.revoked_at is not None else device.trust_level,
+        "protocol_version": getattr(device, "protocol_version", None),
+        # PART 20: explicit auth-state categories per physical endpoint.
+        "trust_state": (
+            "revoked" if device.revoked_at is not None
+            else ("TRUSTED_OWNER_DEVICE" if trusted_owner else "PAIRED_SANDBOX")
+        ),
+        "owner_scope_resolved": scope,
+        "bootstrap_allowed": True,
+        "life_read_allowed": scope == "master",
+        "life_write_allowed": scope == "master",
         "memory_scope": getattr(device, "memory_scope", None),
         "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
         "presence_state": presence_state(device),
@@ -91,7 +105,8 @@ async def health_summary(session: AsyncSession) -> dict:
         for d in devices
         if d["presence_state"] in ("OFFLINE", "DEGRADED")
     ]
-    from sqlalchemy import func, select as _select
+    from sqlalchemy import func
+    from sqlalchemy import select as _select
 
     from app.everywhere.approvals import PENDING_STATES
     from app.models import ApprovedAction, LifeOutboundAction, Notification
