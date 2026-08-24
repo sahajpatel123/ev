@@ -75,20 +75,14 @@ class TurnController:
         """
         # Try Event table: message.user events with that id or content
         try:
-            from sqlalchemy import select
 
             from app.models import Event
             # turn_id may be Event.id or provider item_id
             row = await self.session.get(Event, turn_id) if len(turn_id) > 20 else None
-            # Actually try by content lookup - but UUID check first
             if row is None:
-                # Try provider_item_id in metadata
-                result = await self.session.execute(
-                    select(Event).where(
-                        Event.source == "events"  # dummy, will not match
-                    ).limit(1)
-                )
-                pass
+                # Canonical transcript lookup by provider item id is not yet
+                # indexed; fall through and let caller use the literal text.
+                return None
         except Exception:
             pass
         return None
@@ -296,9 +290,26 @@ class TurnController:
                     proj = await life.find_project(self.session, actor=self.actor, query=intent.project_title)
                     if proj:
                         commitments = [c for c in commitments if c.get("project_id") == str(proj.id)]
-                msg = f"You have {len(commitments)} commitment(s)" + (f" matching {q}" if q else "") + (": " + "; ".join(c["description"][:60] for c in commitments[:2]) if commitments else ".")
-                if commitments and commitments[0].get("due_at"):
-                    msg += f" Due {commitments[0]['due_at']}"
+                # Read-after-cancel law: a CANCELLED match must never be
+                # presented as an active/open commitment.
+                if q and len(commitments) == 1 and commitments[0].get("status") == "CANCELLED":
+                    c = commitments[0]
+                    return TurnResult(
+                        ok=True, route=route, operation=op, canonical_data=commitments,
+                        owner_message="That commitment was cancelled.",
+                    )
+                open_ones = [c for c in commitments if c.get("status") == "OPEN"]
+                cancelled_n = len(commitments) - len(open_ones)
+                msg = f"You have {len(open_ones)} open commitment(s)" + (f" matching {q}" if q else "")
+                if open_ones:
+                    msg += ": " + "; ".join(c["description"][:60] for c in open_ones[:2])
+                    if open_ones[0].get("due_at"):
+                        msg += f". Due {open_ones[0]['due_at']}"
+                    msg += "."
+                elif q:
+                    msg += "."
+                if cancelled_n:
+                    msg += f" ({cancelled_n} matching commitment(s) were cancelled.)"
                 return TurnResult(ok=True, route=route, operation=op, canonical_data=commitments, owner_message=msg)
             if op == "COMMITMENT_CREATE":
                 desc = intent.description or intent.commitment_query or owner_turn
@@ -312,8 +323,15 @@ class TurnController:
                 res = await life.create_commitment(self.session, actor=self.actor, description=desc, due_at=due, project_ref=intent.project_title, device_id=self.device_id)
                 ok = res.get("ok")
                 cm = res.get("commitment", {})
+                # Post-write verification: the row must be readable as OPEN.
+                verified = False
+                if ok and cm.get("id"):
+                    open_now = await life.list_commitments(self.session, actor=self.actor, open_only=True)
+                    verified = any(c["id"] == cm["id"] for c in open_now)
+                    if not verified:
+                        return TurnResult(ok=False, route=route, operation=op, error="verification_failed")
                 due_msg = f" due {cm.get('due_at')}" if cm.get("due_at") else ""
-                return TurnResult(ok=bool(ok), route=route, operation=op, canonical_data=cm, owner_message=f"Saved commitment: {desc}{due_msg}." if ok else str(res.get("error")), error=None if ok else res.get("error"))
+                return TurnResult(ok=bool(ok and verified), route=route, operation=op, canonical_data=cm, owner_message=f"Saved commitment: {desc}{due_msg}." if ok else str(res.get("error")), error=None if ok else res.get("error"))
             if op == "COMMITMENT_UPDATE":
                 # Find by commitment_query or description
                 q = intent.commitment_query or intent.description or ""
@@ -329,5 +347,49 @@ class TurnController:
                     return TurnResult(ok=False, route=route, operation=op, error="not_found")
                 res = await life.update_commitment(self.session, actor=self.actor, commitment_id=cid, status=intent.status or "FULFILLED", device_id=self.device_id)
                 return TurnResult(ok=bool(res.get("ok")), route=route, operation=op, canonical_data=res.get("commitment"), error=res.get("error"))
+            if op == "COMMITMENT_CANCEL":
+                # "Delete my X commitment" == semantic CANCEL. Row + history are
+                # preserved; only status transitions OPEN -> CANCELLED.
+                from app.life.service import list_commitments
+                commitments = await list_commitments(self.session, actor=self.actor, open_only=True)
+                q = (intent.commitment_query or "").lower().strip()
+                matches = [c for c in commitments if not q or q in c["description"].lower()]
+                if not matches:
+                    return TurnResult(
+                        ok=False, route=route, operation=op, error="not_found",
+                        owner_message=f"I couldn't find an open commitment{' matching ' + q if q else ''}.",
+                    )
+                if len(matches) > 1:
+                    # Multiple open commitments match: ASK. Never guess which
+                    # one the owner means (project-head law).
+                    names = "; ".join(c["description"][:40] for c in matches[:3])
+                    return TurnResult(
+                        ok=True, route="CLARIFICATION", operation=op,
+                        needs_clarification=True,
+                        clarification_question=f"Which commitment? I found: {names}.",
+                        owner_message=f"Which commitment? I found: {names}.",
+                        canonical_data=matches,
+                    )
+                target = matches[0]
+                res = await life.update_commitment(
+                    self.session, actor=self.actor, commitment_id=target["id"],
+                    status="CANCELLED", device_id=self.device_id,
+                )
+                ok = bool(res.get("ok"))
+                # Post-write verification: the cancelled commitment must no
+                # longer appear among OPEN commitments.
+                open_after = await life.list_commitments(self.session, actor=self.actor, open_only=True)
+                verified = all(c["id"] != target["id"] for c in open_after)
+                if ok and not verified:
+                    return TurnResult(ok=False, route=route, operation=op, error="verification_failed")
+                return TurnResult(
+                    ok=ok, route=route, operation=op,
+                    canonical_data=res.get("commitment"),
+                    owner_message=(
+                        f"Cancelled your commitment: {target['description'][:60]}."
+                        if ok and verified else str(res.get("error") or "cancel_failed")
+                    ),
+                    error=None if ok else res.get("error"),
+                )
 
         return TurnResult(ok=False, route=route, operation=op, error="not_implemented", owner_message="That operation isn't implemented yet.")

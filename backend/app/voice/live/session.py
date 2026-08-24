@@ -305,6 +305,11 @@ class LiveSession:
                 )
                 async with SessionLocal() as session:
                     result = await handle_owner_turn(session, turn)
+                    # G1.11 repair: the live voice path OWNS its transaction.
+                    # Services only flush; without this commit the context exit
+                    # ROLLED BACK every voice mutation while TurnResult still
+                    # reported ok=true (owner-proven commitment failure).
+                    await session.commit()
                     # Create exactly one response via gate
                     payload = create_realtime_response_payload(turn, result)
                     # Send via GrokVoiceBridge if available

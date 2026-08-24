@@ -28,7 +28,7 @@ Routes:
 - CLARIFICATION: ambiguous, need question
 - UNSUPPORTED: not supported
 
-Operations for STATE_*: PROJECT_LIST, PROJECT_GET, PROJECT_CREATE, PROJECT_UPDATE, GOAL_LIST, GOAL_GET, GOAL_CREATE, GOAL_UPDATE, COMMITMENT_LIST, COMMITMENT_GET, COMMITMENT_CREATE, COMMITMENT_UPDATE, STATUS, WHAT_CHANGED, RELATIONSHIP_QUERY, RELATIONSHIP_UPDATE
+Operations for STATE_*: PROJECT_LIST, PROJECT_GET, PROJECT_CREATE, PROJECT_UPDATE, GOAL_LIST, GOAL_GET, GOAL_CREATE, GOAL_UPDATE, COMMITMENT_LIST, COMMITMENT_GET, COMMITMENT_CREATE, COMMITMENT_UPDATE, COMMITMENT_CANCEL, STATUS, WHAT_CHANGED, RELATIONSHIP_QUERY, RELATIONSHIP_UPDATE
 
 Rules:
 - Use human references (Personal Fitness, workout), never UUIDs.
@@ -38,6 +38,7 @@ Rules:
 - For "Evie, status" -> MISSION_CONTROL STATUS
 - For "what changed" -> MISSION_CONTROL WHAT_CHANGED
 - For "create a project called X" -> STATE_MUTATION PROJECT_CREATE with description=X
+- For "delete/remove/cancel my X commitment" -> STATE_MUTATION COMMITMENT_CANCEL with commitment_query=X (cancel preserves history; never hard-delete)
 - For ambiguous "make it high priority" without clear project -> CLARIFICATION
 - For "research ..." -> DELEGATED_JOB or RESEARCH_MISSION
 - For "how are you", "joke" -> CONVERSATION
@@ -187,11 +188,16 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
 
     # STATE_QUERY: commitments due
     if ("when is" in low and "due" in low) or ("when is my" in low and "commitment" in low) or ("workout" in low and "due" in low) or ("workout commitment" in low and "when" in low):
-        q = "workout"
-        if "luna" in low:
-            q = "luna"
-        elif "workout" in low:
+        # Extract the subject between "my"/"the" and "commitment"; fall back to
+        # quoted fragment; empty q means list all open commitments.
+        q = ""
+        mq = re.search(r"(?:my|the)\s+(?:'|\")?(.+?)(?:'|\")?\s+commitment", low_stripped)
+        if mq and mq.group(1).strip() not in ("next", "first"):
+            q = mq.group(1).strip()
+        elif "workout" in low_stripped:
             q = "workout"
+        else:
+            q = ""
         return TurnIntent(route="STATE_QUERY", operation="COMMITMENT_LIST", commitment_query=q, confidence=0.95)
 
     # STATE_MUTATION: project create
@@ -240,6 +246,30 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
             elif "workout" in low:
                 desc = "Workout session at 7 PM tomorrow" if "workout" in desc else desc
         return TurnIntent(route="STATE_MUTATION", operation="COMMITMENT_CREATE", description=desc, due_at=due, commitment_query=desc, confidence=0.93)
+
+    # STATE_MUTATION: commitment cancel/delete (semantic cancel, history preserved)
+    m = re.search(r"\b(delete|remove|cancel|get rid of)\b", low_stripped)
+    if m and "commitment" in low_stripped:
+        # Extract reference: explicit quoted fragment wins, then known
+        # keywords, then words directly after the verb.
+        q = ""
+        mq = re.search(r"['\"](.+?)['\"]", low_stripped)
+        if mq:
+            q = mq.group(1).strip()
+        if not q:
+            for kw in ("workout", "gym", "call", "meeting", "review", "appointment", "luna"):
+                if kw in low_stripped:
+                    q = kw
+                    break
+        if not q:
+            mq2 = re.search(r"(?:delete|remove|cancel|get rid of)\s+(?:my\s+|the\s+|this\s+)?(.+?)\s+commitment", low_stripped)
+            if mq2 and mq2.group(1).strip() not in ("my", "the", "this"):
+                q = mq2.group(1).strip()
+        return TurnIntent(
+            route="STATE_MUTATION", operation="COMMITMENT_CANCEL",
+            commitment_query=q, confidence=0.92,
+            description=t.strip(),
+        )
 
     # CLARIFICATION: ambiguous priority
     if low_stripped in ("make the project high priority", "make it high priority", "make that high priority", "fix this project"):
@@ -295,6 +325,11 @@ def is_deterministic_high_confidence(turn: str) -> bool:
     if re.search(r"create a project called .+", low_stripped):
         return True
     if re.search(r"add a goal to .+:", low_stripped):
+        return True
+    if "create a commitment" in low and "tomorrow" in low:
+        return True
+    # Commitment cancel/delete semantics (deterministic; preserves history)
+    if re.search(r"\b(delete|remove|cancel|get rid of)\b.{0,40}\bcommitment\b", low_stripped):
         return True
     return "create a commitment" in low and "tomorrow" in low
 
