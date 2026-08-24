@@ -30,8 +30,9 @@ async def resume_context(
     actor: str,
     device_name: str | None = None,
     thread_id: str | None = None,
+    device=None,
 ) -> dict:
-    scope = owner_scope(actor)
+    scope = owner_scope(actor, device=device)
     thread: ConversationThread | None = None
     if thread_id:
         try:

@@ -183,18 +183,22 @@ async def bootstrap(session: AsyncSession, ctx: ActorContext) -> dict:
     goals_blocked = await life.list_goals(session, actor=scope, state="BLOCKED")
     commitments = await life.list_commitments(session, actor=scope, open_only=True)
 
+    owner_scope_caller = scope == CANONICAL_OWNER
+
     from app.everywhere.approvals import pending_approvals
     from app.everywhere.capabilities import capability_universe
     from app.everywhere.devices import list_devices
 
-    approvals = await pending_approvals(session, limit=20)
-    notifications = await recent_notifications(session, limit=20)
-    devices = await list_devices(session)
+    # Owner-only surfaces: sandbox endpoints never see the owner's approval
+    # queue, notifications, or the device roster (server-side enforcement).
+    approvals = await pending_approvals(session, limit=20) if owner_scope_caller else []
+    notifications = await recent_notifications(session, limit=20) if owner_scope_caller else []
+    devices = await list_devices(session) if owner_scope_caller else []
     universe = await capability_universe(session)
     cursor = await current_cursor(session, owner_trusted=True)
 
     return {
-        "owner": CANONICAL_OWNER,
+        "owner": CANONICAL_OWNER if owner_scope_caller else scope,
         "generated_at": utcnow().isoformat(),
         "cursor": cursor,
         "projects": projects[:50],

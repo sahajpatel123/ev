@@ -81,7 +81,7 @@ async def create_project(
 ) -> dict:
     result = await life.create_project(
         session,
-        actor=ctx.actor,
+        actor=ctx.data_scope,
         title=body.title,
         priority=body.priority,
         description=body.description,
@@ -98,7 +98,7 @@ async def list_projects(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> list[dict]:
-    return await life.list_projects(session, actor=ctx.actor, active_only=active_only)
+    return await life.list_projects(session, actor=ctx.data_scope, active_only=active_only)
 
 
 @router.patch("/projects/{project_id}")
@@ -109,7 +109,7 @@ async def update_project(
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
     result = await life.update_project(
-        session, actor=ctx.actor, project_id=project_id,
+        session, actor=ctx.data_scope, project_id=project_id,
         status=body.status, priority=body.priority,
         title=body.title, description=body.description,
         device_id=str(ctx.device_id) if ctx.device_id else None,
@@ -127,7 +127,7 @@ async def create_goal(
 ) -> dict:
     result = await life.create_goal(
         session,
-        actor=ctx.actor,
+        actor=ctx.data_scope,
         title=body.title,
         project_ref=body.project,
         parent_goal_id=body.parent_goal_id,
@@ -147,7 +147,7 @@ async def list_goals(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> list[dict]:
-    return await life.list_goals(session, actor=ctx.actor, state=state, project_id=project_id)
+    return await life.list_goals(session, actor=ctx.data_scope, state=state, project_id=project_id)
 
 
 @router.get("/goals/{goal_id}")
@@ -156,7 +156,7 @@ async def get_goal(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
-    return await life.get_goal(session, actor=ctx.actor, goal_id=goal_id)
+    return await life.get_goal(session, actor=ctx.data_scope, goal_id=goal_id)
 
 
 @router.patch("/goals/{goal_id}")
@@ -167,7 +167,7 @@ async def update_goal(
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
     result = await life.update_goal(
-        session, actor=ctx.actor, goal_id=goal_id,
+        session, actor=ctx.data_scope, goal_id=goal_id,
         state=body.state, progress_note=body.progress_note,
         next_action=body.next_action, blocked_reason=body.blocked_reason,
         priority=body.priority, title=body.title,
@@ -185,7 +185,7 @@ async def add_step(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
-    result = await life.add_step(session, actor=ctx.actor, goal_id=goal_id, title=body.title)
+    result = await life.add_step(session, actor=ctx.data_scope, goal_id=goal_id, title=body.title)
     await session.commit()
     return result
 
@@ -198,7 +198,7 @@ async def create_commitment(
 ) -> dict:
     result = await life.create_commitment(
         session,
-        actor=ctx.actor,
+        actor=ctx.data_scope,
         description=body.description,
         due_at=body.due_at,
         project_ref=body.project,
@@ -219,11 +219,11 @@ async def list_commitments(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> list[dict]:
-    commitments = await life.list_commitments(session, actor=ctx.actor, open_only=open_only and status is None)
+    commitments = await life.list_commitments(session, actor=ctx.data_scope, open_only=open_only and status is None)
     if status and status.upper() in ("OPEN", "FULFILLED", "CANCELLED", "MISSED"):
         commitments = [c for c in commitments if c["status"] == status.upper()]
     if project:
-        proj = await life.find_project(session, actor=ctx.actor, query=project)
+        proj = await life.find_project(session, actor=ctx.data_scope, query=project)
         if proj is not None:
             commitments = [c for c in commitments if c.get("project_id") == str(proj.id)]
     if q:
@@ -241,7 +241,7 @@ async def update_commitment(
 ) -> dict:
     result = await life.update_commitment(
         session,
-        actor=ctx.actor,
+        actor=ctx.data_scope,
         commitment_id=commitment_id,
         status=body.status,
         device_id=str(ctx.device_id) if ctx.device_id else None,
@@ -255,7 +255,7 @@ async def situation(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
-    snap = await snapshot(session, actor=ctx.actor)
+    snap = await snapshot(session, actor=ctx.data_scope)
     return {"snapshot": snap, "summary": summarize(snap)}
 
 
@@ -267,10 +267,10 @@ async def changes(
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
     if since is None:
-        since = await life.last_checkpoint(session, actor=ctx.actor)
+        since = await life.last_checkpoint(session, actor=ctx.data_scope)
     if since is None:
         since = datetime.now().astimezone() - timedelta(hours=24)
-    events = await life.changes_since(session, actor=ctx.actor, since=since, limit=limit)
+    events = await life.changes_since(session, actor=ctx.data_scope, since=since, limit=limit)
     return {
         "count": len(events),
         "since": since.isoformat(),
@@ -302,7 +302,7 @@ async def put_relationship(
 ) -> dict:
     result = await people.set_relationship(
         session,
-        actor=ctx.actor,
+        actor=ctx.data_scope,
         person_name=body.person,
         relation=body.relation,
         note=body.note,
@@ -322,7 +322,7 @@ async def checkpoint(
 ) -> dict:
     """Advance the owner's Mission Control 'last checked' cursor to now."""
     at = await life.checkpoint(
-        session, actor=ctx.actor,
+        session, actor=ctx.data_scope,
         device_id=str(ctx.device_id) if ctx.device_id else None,
     )
     await session.commit()
@@ -334,5 +334,5 @@ async def last_checkpoint(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
-    at = await life.last_checkpoint(session, actor=ctx.actor)
+    at = await life.last_checkpoint(session, actor=ctx.data_scope)
     return {"ok": True, "checked_at": at.isoformat() if at else None}

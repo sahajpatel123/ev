@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.everywhere.owner import owner_scope
 from app.models import Commitment, DecisionOutcome, Event, Goal, GoalStep, Project
-from app.utils.text import utcnow
+from app.utils.text import sha256_hex, utcnow
 
 PRIORITIES = ("CRITICAL", "HIGH", "NORMAL", "LOW")
 PRIORITY_RANK = {"CRITICAL": 0, "HIGH": 1, "NORMAL": 2, "LOW": 3}
@@ -62,8 +62,15 @@ async def _emit(
     content: dict,
     device_id: str | None = None,
     privacy_level: str = PRIVACY_DEFAULT,
+    command_id: str | None = None,
 ) -> None:
-    """Append one canonical durable domain event (same transaction)."""
+    """Append one canonical durable domain event (same transaction).
+
+    G2 ONE-EVIE idempotency law: when a cross-device command carries a
+    ``command_id``, its hash is stored on the emitted event (unique column).
+    Retries/replays of the same command resolve against this ledger and must
+    produce exactly ONE canonical mutation.
+    """
     session.add(
         Event(
             source=EVENT_SOURCE,
@@ -73,8 +80,32 @@ async def _emit(
             privacy_level=privacy_level,
             sha256=_sha({"t": event_type, **content}),
             occurred_at=utcnow(),
+            idempotency_key_hash=(
+                sha256_hex(f"{event_type}:{command_id}")
+                if command_id
+                else None
+            ),
         )
     )
+
+
+async def _replay_by_command(
+    session: AsyncSession, *, event_type: str, command_id: str | None
+) -> Event | None:
+    """Return the prior canonical event for a retried command_id, if any."""
+    if not command_id:
+        return None
+    from sqlalchemy import select
+
+    row = (
+        await session.execute(
+            select(Event).where(
+                Event.idempotency_key_hash == sha256_hex(f"{event_type}:{command_id}"),
+                Event.tombstoned_at.is_(None),
+            )
+        )
+    ).scalars().first()
+    return row
 
 
 def _public_project(row: Project) -> dict:
@@ -134,12 +165,20 @@ async def create_project(
     description: str = "",
     privacy_level: str = PRIVACY_DEFAULT,
     device_id: str | None = None,
+    command_id: str | None = None,
 ) -> dict:
     origin_actor, actor = actor, _scope(actor)
     title = title.strip()
     priority = (priority or "NORMAL").upper()
     if not title:
         return {"ok": False, "error": "missing_title"}
+    # G2 idempotency law: a retried command resolves to the original result.
+    prior = await _replay_by_command(session, event_type="project.created", command_id=command_id)
+    if prior is not None:
+        prior_id = (prior.content or {}).get("project_id")
+        row = await session.get(Project, UUID(prior_id)) if prior_id else None
+        if row is not None:
+            return {"ok": True, "project": _public_project(row), "duplicate": True}
     if priority not in PRIORITIES:
         priority = "NORMAL"
     row = Project(
@@ -164,6 +203,7 @@ async def create_project(
         },
         device_id=device_id,
         privacy_level=privacy_level,
+        command_id=command_id,
     )
     return {"ok": True, "project": _public_project(row), "spoken": f"Project {title} created."}
 
@@ -285,11 +325,18 @@ async def create_goal(
     success_criteria: str = "",
     privacy_level: str = PRIVACY_DEFAULT,
     device_id: str | None = None,
+    command_id: str | None = None,
 ) -> dict:
     origin_actor, actor = actor, _scope(actor)
     title = title.strip()
     if not title:
         return {"ok": False, "error": "missing_title"}
+    prior = await _replay_by_command(session, event_type="goal.created", command_id=command_id)
+    if prior is not None:
+        prior_id = (prior.content or {}).get("goal_id")
+        row0 = await session.get(Goal, UUID(prior_id)) if prior_id else None
+        if row0 is not None:
+            return {"ok": True, "goal": _public_goal(row0), "duplicate": True}
     project_id: UUID | None = None
     if project_ref:
         ref = project_ref.strip()
@@ -330,6 +377,7 @@ async def create_goal(
         },
         device_id=device_id,
         privacy_level=privacy_level,
+        command_id=command_id,
     )
     return {"ok": True, "goal": _public_goal(row)}
 
@@ -567,6 +615,7 @@ async def update_commitment(
     commitment_id: str,
     status: str,
     device_id: str | None = None,
+    command_id: str | None = None,
 ) -> dict:
     origin_actor, actor = actor, _scope(actor)
     row = await session.get(Commitment, _uuid(commitment_id))
@@ -575,6 +624,12 @@ async def update_commitment(
     status = status.upper()
     if status not in COMMITMENT_STATUSES:
         return {"ok": False, "error": "bad_status"}
+    event_type = f"commitment.{status.lower()}"
+    # G2 idempotency law: a retried cancel/complete command resolves to the
+    # original canonical outcome even from a different device.
+    prior = await _replay_by_command(session, event_type=event_type, command_id=command_id)
+    if prior is not None:
+        return {"ok": True, "commitment": _public_commitment(row), "duplicate": True}
     if row.status == status:
         # G2 Phase 6 idempotency law: re-complete / re-cancel is a safe no-op,
         # never a duplicate canonical transition.
@@ -584,10 +639,11 @@ async def update_commitment(
         row.fulfilled_at = utcnow()
     await _emit(
         session,
-        event_type=f"commitment.{status.lower()}",
+        event_type=event_type,
         actor=origin_actor,
         content={"commitment_id": str(row.id), "description": row.description},
         device_id=device_id,
+        command_id=command_id,
     )
     return {"ok": True, "commitment": _public_commitment(row)}
 

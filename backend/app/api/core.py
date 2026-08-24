@@ -300,6 +300,7 @@ async def health() -> dict:
             "camera": _camera_health(),
             "memory": await _memory_health(),
             "device_gateway": _device_gateway_health(),
+            "everywhere": await _everywhere_health(),
         },
         "voice": _voice_health(),
         "capability_authority": capability_diagnostics(),
@@ -350,8 +351,47 @@ def _camera_health() -> dict:
     return ready.as_dict()
 
 
-def _device_gateway_health() -> dict:
-    return {
+async def _everywhere_health() -> dict:
+    """G2 device fabric: bounded, content-free diagnostics (trusted devices,
+    presence, sync cursors/lag, revocations). No owner content crosses."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import func, select
+
+    from app.db import get_session
+    from app.everywhere.devices import health_summary
+    from app.models import Device
+
+    try:
+        session_gen = get_session()
+        session = await anext(session_gen)
+        try:
+            total = (
+                await session.execute(select(func.count()).select_from(Device))
+            ).scalar_one()
+            revoked = (
+                await session.execute(
+                    select(func.count()).select_from(Device).where(Device.revoked_at.is_not(None))
+                )
+            ).scalar_one()
+            summary = await health_summary(session)
+        finally:
+            await session.close()
+        return {
+            "trusted_devices": int(total or 0) - int(revoked or 0),
+            "revoked_devices": int(revoked or 0),
+            "online_devices": int(summary.get("devices_online") or 0),
+            "offline_or_degraded": int(summary.get("devices_offline_or_degraded") or 0),
+            "last_sync_at": summary.get("last_sync_at"),
+            "pending_device_actions": summary.get("pending_device_actions"),
+            "failed_device_actions": summary.get("failed_device_actions"),
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
+    except Exception:  # noqa: BLE001 - health must never raise
+        return {"available": False}
+
+
+def _device_gateway_health() -> dict:    return {
         "ready": True,
         "protocol_version": settings.device_protocol_version,
         # Served-asset truth, read from disk (see device_gateway.release).

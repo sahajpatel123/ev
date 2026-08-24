@@ -20,8 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor_context
-from app.auth import ActorContext
+from app.auth import ActorContext, require_actor_context
 from app.db import get_session
 
 router = APIRouter(prefix="/v1/everywhere", tags=["evie-everywhere"])
@@ -134,6 +133,10 @@ async def approvals_pending(
     """
     from app.everywhere.approvals import pending_approvals
 
+    # Approvals are OWNER decisions: a sandbox-scope endpoint never sees the
+    # owner's pending queue (server-side trust enforcement, not UI hiding).
+    if ctx.data_scope != "master":
+        return {"ok": True, "count": 0, "approvals": []}
     del ctx
     rows = await pending_approvals(session, limit=limit)
     await session.commit()
@@ -161,9 +164,9 @@ async def notifications_ack(
 ) -> dict:
     """Acknowledge via the EXISTING notification authority; emits one canonical
     event so other devices see the ack on their next delta."""
+    from app.everywhere.sync import emit_everywhere_event
     from app.notify.service import acknowledge_notification
     from app.utils.text import utcnow
-    from app.everywhere.sync import emit_everywhere_event
 
     try:
         row = await acknowledge_notification(
@@ -232,4 +235,5 @@ async def conversation_resume_context(
         actor=ctx.actor,
         device_name=ctx.device.name if ctx.device else None,
         thread_id=thread_id,
+        device=ctx.device,
     )

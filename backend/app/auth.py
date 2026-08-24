@@ -27,6 +27,19 @@ class ActorContext:
     def is_device(self) -> bool:
         return self.device_id is not None
 
+    @property
+    def data_scope(self) -> str:
+        """Canonical data scope for THIS caller (G2 ONE-EVIE law).
+
+        Owner identity is device-independent: any non-sandbox trusted device
+        resolves to the SAME canonical owner scope, while gateway-paired
+        sandbox devices stay isolated regardless of which surface they call.
+        Services must receive this scope — never the raw provenance actor.
+        """
+        from app.everywhere.owner import owner_scope
+
+        return owner_scope(self.actor, device=self.device)
+
 
 async def require_auth(authorization: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
