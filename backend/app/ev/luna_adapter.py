@@ -138,8 +138,34 @@ def record_route_source(route_source: str) -> None:
         pass
 
 
-_CANCEL_LANGUAGE_RE = re.compile(r"\b(?:delete|remove|cancel|get rid of)\b", re.IGNORECASE)
+_CANCEL_LANGUAGE_RE = re.compile(
+    r"\b(?:delete|deleted|remove|removed|cancel|cancelled|canceled|"
+    r"cancelling|canceling|get rid of)\b",
+    re.IGNORECASE,
+)
+# Generic plural family words are capability subjects, not row references.
+_GENERIC_FAMILY_REFS = frozenset(
+    {"commitments", "goals", "projects", "reminders"}
+)
 _CANCEL_META_RE = re.compile(r"\b(?:what|why|how|explain|mean|means|useful)\b", re.IGNORECASE)
+# Leading connectives / determiners / repeated verbs that belong to the
+# owner's grammar ("can you cancel or delete the X") rather than to the
+# reference itself. Stripped iteratively after the LAST cancel verb.
+_CANCEL_REFERENCE_PREFIX_RE = re.compile(
+    r"^(?:and|or|then|also|just|please|now|kindly|maybe|delete|remove|cancel|"
+    r"get\s+rid\s+of|my|the|a|an|evie(?:'s)?)\b[\s,:;-]*",
+    re.IGNORECASE,
+)
+# Bare-ability questions ("Can you cancel commitments?") ask about Evie's
+# capability truth; they are never mutations of a specific row.
+_ABILITY_QUESTION_RE = re.compile(
+    r"^\s*(?:hey\s+)?(?:evie[, ]*\s*)?(?:can|could)\s+you\b|\bdo you support\b|"
+    r"\bare you able to\b|\bwhat can you do\b",
+    re.IGNORECASE,
+)
+_CAPABILITY_SUBJECT_RE = re.compile(
+    r"\b(commitments?|goals?|projects?|reminders?)\b", re.IGNORECASE
+)
 
 
 def _has_commitment_cancel_language(turn: str) -> bool:
@@ -157,12 +183,21 @@ def _has_commitment_cancel_language(turn: str) -> bool:
 
 
 def _commitment_cancel_query(turn: str) -> str:
-    """Extract a human commitment reference without requiring exact syntax."""
-    match = _CANCEL_LANGUAGE_RE.search(turn or "")
-    if not match:
+    """Extract a human commitment reference without requiring exact syntax.
+
+    Uses the LAST cancel verb so ``can you cancel or delete the X`` resolves
+    against what follows ``delete`` instead of swallowing the second verb
+    into the reference. Leading connectives/determiners/repeated verbs are
+    stripped iteratively.
+    """
+    matches = list(_CANCEL_LANGUAGE_RE.finditer(turn or ""))
+    if not matches:
         return ""
-    reference = (turn or "")[match.end():].strip()
-    reference = re.sub(r"^(?:my|the|this)\s+", "", reference, flags=re.IGNORECASE)
+    reference = (turn or "")[matches[-1].end():].strip()
+    prev = None
+    while prev != reference:
+        prev = reference
+        reference = _CANCEL_REFERENCE_PREFIX_RE.sub("", reference).strip()
     reference = reference.strip(" \t\r\n\"'")
     reference = re.sub(r"[.!?,;:]+$", "", reference).strip(" \t\r\n\"'")
     # A trailing generic noun is part of the owner's grammar, not the name.
@@ -305,11 +340,46 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
         if _CANCEL_META_RE.search(low_stripped):
             return TurnIntent(route="CONVERSATION", operation="UNKNOWN", confidence=0.99)
         q = _commitment_cancel_query(turn)
+        # Conceptual/abstract references ("Could cancelling commitments be a
+        # bad habit?") ask about the concept, not a row — deterministic
+        # conversation, never a mutation.
+        if q and re.search(
+            r"\b(?:habit|good idea|bad idea|worth it|make sense)\b|"
+            r"\bbe\s+(?:a\s+)?(?:good|bad|useful|normal|healthy)\b",
+            q,
+            re.IGNORECASE,
+        ):
+            return TurnIntent(route="CONVERSATION", operation="UNKNOWN", confidence=0.97)
+        # Bare-ability question ("Can you cancel commitments?") or a generic
+        # family reference with an ability frame is a capability-truth query:
+        # never a mutation, and never model self-assessment of what Evie
+        # can do.
+        generic_ref = q.strip().casefold() in _GENERIC_FAMILY_REFS
+        if (not q or generic_ref) and _ABILITY_QUESTION_RE.search(low_stripped):
+            subject_match = _CAPABILITY_SUBJECT_RE.search(low_stripped)
+            subject = subject_match.group(1).lower() if subject_match else ""
+            return TurnIntent(
+                route="STATE_QUERY",
+                operation="CAPABILITY_QUERY",
+                capability_subject=subject,
+                confidence=0.95,
+            )
         return TurnIntent(
             route="STATE_MUTATION", operation="COMMITMENT_CANCEL",
             commitment_query=q, confidence=0.92,
             description=t.strip(),
         )
+
+    # Capability self-knowledge: "What can you do with commitments?"
+    if _ABILITY_QUESTION_RE.search(low_stripped) and "what can you do" in low_stripped:
+        subject_match = _CAPABILITY_SUBJECT_RE.search(low_stripped)
+        if subject_match:
+            return TurnIntent(
+                route="STATE_QUERY",
+                operation="CAPABILITY_QUERY",
+                capability_subject=subject_match.group(1).lower(),
+                confidence=0.95,
+            )
 
     # CLARIFICATION: ambiguous priority
     if low_stripped in ("make the project high priority", "make it high priority", "make that high priority", "fix this project"):
@@ -378,6 +448,9 @@ def is_deterministic_high_confidence(turn: str) -> bool:
     # This includes pronoun references so an explicit ``delete it`` cannot
     # fall through to Luna or generic conversation.
     if _has_commitment_cancel_language(low_stripped):
+        return True
+    # Capability self-knowledge is deterministic (canonical registry truth).
+    if _ABILITY_QUESTION_RE.search(low_stripped) and "commitment" in low:
         return True
     return "create a commitment" in low and "tomorrow" in low
 

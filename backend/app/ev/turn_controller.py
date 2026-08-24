@@ -25,6 +25,51 @@ def _normalize_commitment_reference(value: str | None) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", (value or "").casefold()))
 
 
+def _resolve_reference_candidates(
+    rows: list[dict], raw_query: str
+) -> tuple[int, list[dict]]:
+    """Deterministic tiered reference resolution (capability law: the model's
+    tool visibility never decides the match; Core text truth does).
+
+    Tier 1: normalized equality — an exact name match always wins.
+    Tier 2: contiguous substring of the stored description.
+    Tier 3: every reference token present AND the description is not much
+            larger than the reference (coverage >= 0.6) — this recovers
+            owner paraphrases like ``G1 commitment proof`` for a row named
+            ``G1 final commitment proof`` without letting a long unrelated
+            description steal the match.
+
+    Returns (tier, matches). Empty query -> (0, rows).
+    """
+    q = _normalize_commitment_reference(raw_query)
+    if not q:
+        return 0, rows
+    q_tokens = frozenset(q.split())
+    exact = [c for c in rows if _normalize_commitment_reference(c.get("description")) == q]
+    if exact:
+        return 1, exact
+    substring = [
+        c for c in rows if q in _normalize_commitment_reference(c.get("description"))
+    ]
+    if substring:
+        return 2, substring
+    scored: list[tuple[float, str, dict]] = []
+    for c in rows:
+        desc_tokens = _normalize_commitment_reference(c.get("description")).split()
+        if not desc_tokens or not q_tokens.issubset(set(desc_tokens)):
+            continue
+        coverage = len(q_tokens) / len(desc_tokens)
+        if coverage >= 0.6:
+            scored.append((coverage, str(c.get("id")), c))
+    if scored:
+        best = max(s[0] for s in scored)
+        winners = [c for cov, _, c in scored if abs(cov - best) < 1e-9]
+        if len(winners) == 1:
+            return 3, winners
+        return 3, [c for c in rows if any(c is w for w in winners)]
+    return 4, []
+
+
 class TurnController:
     """Backend service — model-independent above the adapter layer."""
 
@@ -184,6 +229,20 @@ class TurnController:
         from app.life.situation import snapshot, summarize
 
         route, op = intent.route, intent.operation
+
+        # CAPABILITY_QUERY: self-knowledge comes from canonical capability
+        # truth (registry + controller bindings), NEVER from what the current
+        # voice model happens to see as direct tools.
+        if op == "CAPABILITY_QUERY":
+            from app.ev.capability_registry import semantic_capability_answer
+
+            subject = (intent.capability_subject or "").strip().lower()
+            answer = semantic_capability_answer(subject)
+            return TurnResult(
+                ok=True, route=route, operation=op,
+                canonical_data=answer,
+                owner_message=answer["spoken"],
+            )
 
         # MISSION_CONTROL
         if route == "MISSION_CONTROL" or op in ("STATUS", "WHAT_CHANGED"):
@@ -416,19 +475,15 @@ class TurnController:
                     if contextual_matches:
                         historical_scope = contextual_matches
 
-                # Exact normalized matches win over broader substring matches.
-                # This is important when a short reference also appears in a
-                # longer commitment name: never let the longer row steal an
-                # exact owner request.
-                if q:
-                    exact_matches = [
-                        c for c in open_commitments
-                        if _normalize_commitment_reference(c.get("description")) == q
-                    ]
-                    matches = exact_matches or [
-                        c for c in open_commitments
-                        if q in _normalize_commitment_reference(c.get("description"))
-                    ]
+                # Exact normalized matches win over broader substring and
+                # token-overlap matches. This is important when a short
+                # reference also appears in a longer commitment name: never
+                # let the longer row steal an exact owner request.
+                tier, open_matches = _resolve_reference_candidates(
+                    open_commitments, raw_query
+                )
+                if raw_query:
+                    matches = open_matches
                 elif contextual_matches:
                     matches = [
                         c for c in contextual_matches if c.get("status") == "OPEN"
@@ -454,11 +509,14 @@ class TurnController:
                     # A matching historical row is truthful idempotent state,
                     # not a missing capability.  If there are several such
                     # rows, preserve the no-arbitrary-choice rule.
-                    historical_matches = [
+                    historical_rows = [
                         c for c in historical_scope
                         if c.get("status") == "CANCELLED"
-                        and (not q or q in _normalize_commitment_reference(c.get("description")))
                     ]
+                    _h_tier, historical_matches = (
+                        (0, historical_rows) if not q
+                        else _resolve_reference_candidates(historical_rows, raw_query)
+                    )
                     if len(historical_matches) > 1:
                         historical_names = {
                             _normalize_commitment_reference(c.get("description"))
@@ -507,6 +565,13 @@ class TurnController:
                 return TurnResult(
                     ok=ok, route=route, operation=op,
                     canonical_data=res.get("commitment"),
+                    entity_refs=[{
+                        "entity_type": "commitment",
+                        "entity_id": str(target["id"]),
+                        "display_name": target.get("description", ""),
+                        "operation": op,
+                        "result": "CANCELLED" if ok and verified else "FAILED",
+                    }],
                     owner_message=(
                         f"Cancelled your commitment: {target['description'][:60]}."
                         if ok and verified else str(res.get("error") or "cancel_failed")

@@ -98,14 +98,25 @@ def create_realtime_response_payload(owner_turn: OwnerTurn, turn_result: TurnRes
         q = turn_result.clarification_question or turn_result.owner_message or "Which one?"
         return _envelope(f"Ask the user for clarification: {q}")
 
-    # Failure path: honest report, never a false success claim.
+    # Failure path: the OWNER hears the canonical Core reason. Realtime may
+    # reword it naturally, but it may NEVER convert a Core execution failure
+    # into a claim about Evie's abilities ("I can't cancel commitments") —
+    # capability self-assessment by the model is forbidden (capability law).
     if not turn_result.ok:
-        msg = turn_result.error or "I couldn't do that."
+        canonical = (turn_result.owner_message or "").strip() or (
+            f"I couldn't complete that ({turn_result.error})."
+        )
         return _envelope(
-            f"The previous request failed: {msg}. Tell the user what happened and what they can try next. Do not claim success."
+            "Evie attempted this action in her backend and it did not succeed. "
+            f"Canonical result: \"{canonical}\" "
+            "Say exactly this meaning; you may reword lightly. "
+            "NEVER claim Evie lacks the ability, lacks a tool, or cannot "
+            "handle this kind of request. Cite only the given reason."
         )
 
-    # State/action success: voice the authoritative facts only.
+    # State/action success: voice the authoritative facts only. The action
+    # ALREADY happened in Evie's backend — the model must not re-interpret
+    # success as inability or hedge about capability.
     facts = ""
     if turn_result.canonical_data:
         import json
@@ -116,7 +127,8 @@ def create_realtime_response_payload(owner_turn: OwnerTurn, turn_result: TurnRes
             facts = str(turn_result.canonical_data)[:2000]
     msg = turn_result.owner_message or ""
     return _envelope(
-        f"Answer using ONLY these canonical facts; do not contradict them and do not call other tools for this: {msg} Facts: {facts}"
+        f"Answer using ONLY these canonical facts; do not contradict them and do not call other tools for this: {msg} Facts: {facts} "
+        "The action already succeeded in Evie's backend — never claim she cannot perform it."
     )
 
 

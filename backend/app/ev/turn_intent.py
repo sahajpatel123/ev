@@ -41,6 +41,7 @@ Operation = Literal[
     "WHAT_CHANGED",
     "RELATIONSHIP_QUERY",
     "RELATIONSHIP_UPDATE",
+    "CAPABILITY_QUERY",
     "UNKNOWN",
 ]
 
@@ -63,6 +64,10 @@ class TurnIntent(BaseModel):
     status: str | None = Field(default=None)
     person: str | None = Field(default=None)
     relation: str | None = Field(default=None)
+    capability_subject: str | None = Field(
+        default=None,
+        description="Entity family for CAPABILITY_QUERY, e.g. commitments",
+    )
     raw_arguments: dict[str, Any] = Field(default_factory=dict, description="Passthrough for future ops")
 
 

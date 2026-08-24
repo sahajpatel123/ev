@@ -128,6 +128,28 @@ PROCESS_STARTED_AT = datetime.now(UTC).isoformat()
 router = APIRouter(prefix="/v1")
 
 
+def _runtime_git_sha() -> str | None:
+    """Best-effort HEAD SHA captured once at import (health truth, Part 19:
+    the runtime must provably serve a known commit)."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        sha = (out.stdout or "").strip()
+        return sha or None
+    except Exception:
+        return None
+
+
+RUNTIME_GIT_SHA = _runtime_git_sha()
+
+
 def _event_ref(event: Event) -> EventRef:
     return EventRef(
         id=event.id,
@@ -185,6 +207,7 @@ async def _memory_out(session: AsyncSession, memory: Memory) -> MemoryOut:
 
 @router.get("/health")
 async def health() -> dict:
+    from app.ev.capability_registry import capability_diagnostics
     from app.ev.luna_adapter import luna_metrics_snapshot
     from app.ev.manager_adapter import DeepSeekManagerAdapter
     from app.ev.model_router import health_snapshot as model_health
@@ -250,6 +273,7 @@ async def health() -> dict:
             "manager": DeepSeekManagerAdapter().health(),
         },
         "migrations": migrations,
+        "git": {"sha": RUNTIME_GIT_SHA},
         "runtime": {
             "pid": os.getpid(),
             "started_at": PROCESS_STARTED_AT,
@@ -278,6 +302,7 @@ async def health() -> dict:
             "device_gateway": _device_gateway_health(),
         },
         "voice": _voice_health(),
+        "capability_authority": capability_diagnostics(),
     }
 
 
