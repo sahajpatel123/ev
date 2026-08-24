@@ -271,6 +271,9 @@ def parse_owner_when(text: str, *, now: datetime | None = None) -> datetime | No
     raw = (text or "").strip()
     if not raw:
         return None
+    # Normalize dotted "p.m."/"a.m." so the clock regex sees pm/am
+    # (owner-proven failure: "tomorrow at 7 p.m." parsed as 7 AM).
+    raw = re.sub(r"\b([ap])\.m\.", r"\1m", raw, flags=re.IGNORECASE)
     lowered = raw.lower()
     relative = _IN_RE.search(raw)
     if relative:

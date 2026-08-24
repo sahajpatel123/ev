@@ -222,30 +222,46 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
         return TurnIntent(route="STATE_MUTATION", operation="GOAL_CREATE", description=desc, confidence=0.85)
 
     # STATE_MUTATION: commitment create
-    if "create a commitment" in low or ("commitment" in low and "tomorrow" in low):
+    if re.search(r"\b(create|add|set|save|make|schedule)\b.{0,30}\bcommitment\b", low) or (
+        "commitment" in low and "tomorrow" in low and not re.search(r"\b(what|why|how|explain|mean|useful)\b", low)
+    ):
         # Extract due and description
         due = None
-        if "tomorrow at" in low:
-            m = re.search(r"tomorrow at\s+([0-9: ]+(?:am|pm)?)", low)
-            due = f"tomorrow at {m.group(1).strip()}" if m else "tomorrow at 7 PM"
-        elif "tomorrow" in low:
-            due = "tomorrow at 7 PM"
-        # commitment description: look for "to ..." or quoted
-        # Try to extract quoted or after "to"
-        m2 = re.search(r"create a commitment for (.+?) to (.+)", low_stripped)
-        if m2:
-            # e.g., for tomorrow at 7 PM to test Luna
-            desc = m2.group(2).strip()
-            due = m2.group(1).strip()
+        if "tomorrow at" in low or "tomorrow" in low:
+            # Normalize dotted a.m./p.m. so the clock regex sees am/pm.
+            normalized = re.sub(r"\b([ap])\.m\.", r"\1m", low)
+            m = re.search(r"tomorrow\s+(?:at\s+)?([0-9]{1,2}(?::[0-9]{2})?\s*(?:am|pm)?)", normalized)
+            due = f"tomorrow at {m.group(1).strip()}" if m else "tomorrow"
         else:
-            m2 = re.search(r"commitment.*?to\s+(.+)", low_stripped)
-            desc = m2.group(1).strip(" ?\"'") if m2 else "workout"
-            if "test luna" in low:
-                desc = "test Luna"
-                due = "tomorrow at 7 PM"
-            elif "workout" in low:
-                desc = "Workout session at 7 PM tomorrow" if "workout" in desc else desc
-        return TurnIntent(route="STATE_MUTATION", operation="COMMITMENT_CREATE", description=desc, due_at=due, commitment_query=desc, confidence=0.93)
+            due = None
+        # Description/title extraction — intent family, not one sentence:
+        #   "... called X" / "... named X" / quoted X / "to <verb> ..." / "for X"
+        desc = ""
+        mq = re.search(r"(?:called|named)\s+['\"]?(.+?)['\"]?\s*(?:for|tomorrow|today|tonight|on|at|\.|\?|$)", low_stripped)
+        if not mq:
+            mq = re.search(r"(?:called|named)\s+['\"]?(.+?)['\"]?\s*$", low_stripped)
+        if mq and mq.group(1).strip():
+            desc = mq.group(1).strip()
+        if not desc:
+            mq = re.search(r"['\"](.+?)['\"]", low_stripped)
+            if mq:
+                desc = mq.group(1).strip()
+        if not desc:
+            mq = re.search(r"commitment\s+to\s+(?:do\s+)?(?:my\s+)?(.+?)(?:\s+(?:tomorrow|today|tonight)\b.*)?$", low_stripped)
+            if mq and mq.group(1).strip():
+                desc = mq.group(1).strip()
+        if not desc or desc.lower() in ("tomorrow", "today", "tonight"):
+            # "for <day>" is a date, not a subject; try the "to <do X>" tail.
+            mq = re.search(r"\bto\s+(?:do\s+)?(?:my\s+)?(.+?)\s+(?:tomorrow|today|tonight|at)\b.*$", low_stripped)
+            if mq and mq.group(1).strip():
+                desc = mq.group(1).strip()
+        if not desc:
+            # Last resort: known keywords; never invent an unrelated default.
+            for kw in ("workout", "gym", "call mom", "review", "appointment"):
+                if kw in low_stripped:
+                    desc = kw
+                    break
+        return TurnIntent(route="STATE_MUTATION", operation="COMMITMENT_CREATE", description=desc, due_at=due, commitment_query=desc, confidence=0.93 if desc else 0.7)
 
     # STATE_MUTATION: commitment cancel/delete (semantic cancel, history preserved)
     m = re.search(r"\b(delete|remove|cancel|get rid of)\b", low_stripped)
@@ -295,10 +311,15 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
     if low_stripped in ("how are you", "how are you?", "tell me a joke", "tell me a joke?") or "how are you" in low or "joke" in low_stripped:
         return TurnIntent(route="CONVERSATION", operation="UNKNOWN", confidence=0.99)
 
-    # Default: if contains project/goal keywords but not matched, treat as conversation or unsupported
-    if any(k in low for k in ["project", "goal", "commitment", "priority", "status", "changed"]):
-        # Fallback to STATE_QUERY list
-        return TurnIntent(route="STATE_QUERY", operation="PROJECT_LIST", confidence=0.6)
+    # STATE-INTENT GUARD: entity + CRUD verb without interrogative framing
+    # must never silently become CONVERSATION (capability-hallucination guard).
+    if has_explicit_state_intent(t):
+        return TurnIntent(
+            route="CLARIFICATION", operation="UNKNOWN",
+            needs_clarification=True,
+            clarification_question="I understood you want to change something — could you rephrase what I should create or update?",
+            confidence=0.6,
+        )
 
     return TurnIntent(route="CONVERSATION", operation="UNKNOWN", confidence=0.7)
 
@@ -334,6 +355,29 @@ def is_deterministic_high_confidence(turn: str) -> bool:
     return "create a commitment" in low and "tomorrow" in low
 
 
+def has_explicit_state_intent(turn: str) -> bool:
+    """STATE-INTENT GUARD (G1.11): an utterance containing a canonical entity
+    plus an obvious CRUD verb can NEVER be classified as generic CONVERSATION.
+
+    If deterministic extraction resolves it, fine; if not, it must go to
+    Luna or clarification — never escape the state control plane. This is the
+    capability-hallucination guard: Realtime must not answer 'I can't create
+    commitments' for a turn that explicitly asks Evie Core to create one.
+    """
+    low = (turn or "").lower()
+    entities = ("project", "goal", "commitment", "relationship")
+    crud = (
+        "create", "add", "set", "save", "make", "schedule",
+        "update", "change", "pause", "complete", "block",
+        "delete", "remove", "cancel", "get rid of",
+    )
+    has_entity = any(e in low for e in entities)
+    has_crud = any(re.search(rf"\b{v}\b", low) for v in crud)
+    # Interrogative/meta frames about the system are NOT mutations.
+    meta = bool(re.search(r"\b(what|why|how|explain|mean|means|useful)\b", low))
+    return bool(has_entity and has_crud and not meta)
+
+
 async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
     """Classify owner turn via Luna or rule fallback. Returns validated TurnIntent."""
     start = time.perf_counter()
@@ -365,6 +409,20 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
             pass
     # Deterministic fallback — also used in tests
     intent = _rule_based_intent(turn, context)
+    # STATE-INTENT GUARD: if explicit state intent escaped deterministic
+    # extraction AND Luna was unavailable/failed, do NOT silently downgrade a
+    # mutation to CONVERSATION. Route to CLARIFICATION so the gate asks
+    # instead of Realtime hallucinating capability limits.
+    if (
+        intent.route == "CONVERSATION"
+        and has_explicit_state_intent(turn)
+    ):
+        return TurnIntent(
+            route="CLARIFICATION", operation="UNKNOWN",
+            needs_clarification=True,
+            clarification_question="I understood you want to change something — could you rephrase what I should create or update?",
+            confidence=0.6,
+        )
     latency = (time.perf_counter() - start) * 1000
     _record_metrics(latency, usage={"fallback": "rule_based"})
     record_route_source("DETERMINISTIC")
