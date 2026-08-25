@@ -24,3 +24,4 @@ backend/eval/previous-run.json
 # Owner memory mirrors are private/local and rebuildable. Never commit them.
 /memory/
 backend/memory/
+WORKSPACE_GUIDE.md
