@@ -48,6 +48,10 @@ KNOWN_CAPABILITY_BASES = frozenset(
         "location",
         "speaker_audio",
         "clipboard",
+        # G2 routed capability advertising (B3: filtered truth, not invented)
+        "device_echo",
+        "mac_notify",
+        "mac_echo",
     }
 )
 
@@ -98,6 +102,24 @@ def _base_capabilities(device: Device) -> list[dict]:
                 "evidence": "push" if device.push_token else "poll",
             }
         )
+    # G2 routed capabilities: derived from trust, not fabricated. Only trusted
+    # devices get routed execution surfaces (B3: advertisement filtered, registry canonical).
+    if str(getattr(device, "memory_scope", "") or "").lower() != "sandbox":
+        # device.echo is generic heartbeat/capability proof for ANY trusted endpoint
+        out.append({"id": "device.echo", "state": "AVAILABLE", "evidence": "trusted_device"})
+        out.append({"id": "device.ping", "state": "AVAILABLE", "evidence": "trusted_device"})
+    # Mac-specific surfaces: home_station or mac desktop with computer_control
+    is_mac = (
+        role == "home_station"
+        or (device.device_type or "").lower() in {"desktop", "mac", "macos"}
+        or "computer_control" in caps
+        or "mac_notify" in caps
+        or "mac_echo" in caps
+    )
+    if is_mac and str(getattr(device, "memory_scope", "") or "").lower() != "sandbox":
+        out.append({"id": "mac.notify", "state": "AVAILABLE", "evidence": "mac_role"})
+        out.append({"id": "mac.echo", "state": "AVAILABLE", "evidence": "mac_role"})
+        out.append({"id": "computer.open_calculator", "state": "AVAILABLE", "evidence": "computer_control"})
     return out
 
 

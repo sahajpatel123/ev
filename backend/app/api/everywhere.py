@@ -419,3 +419,328 @@ async def conversation_resume_context(
         thread_id=thread_id,
         device=ctx.device,
     )
+
+
+# ---------------------------------------------------------------------------
+# G2 B — Device-routed capability actions (one broker, deterministic routing)
+# ---------------------------------------------------------------------------
+
+
+class DeviceActionRouteRequest(BaseModel):
+    action_id: str = Field(min_length=4, max_length=128)
+    capability: str = Field(min_length=2, max_length=128)
+    arguments: dict = Field(default_factory=dict)
+
+
+class DeviceActionCompleteRequest(BaseModel):
+    result: dict | None = None
+    error: str | None = None
+    error_code: str | None = None
+    success: bool = True
+
+
+@router.post("/device-actions/route")
+async def device_action_route(
+    body: DeviceActionRouteRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """Deterministic routing: source -> target via CapabilityRegistry+presence."""
+    from app.everywhere.device_actions import create_routed_action
+    from app.everywhere.owner import CANONICAL_OWNER
+
+    if ctx.device is None:
+        raise HTTPException(status_code=401, detail={"error_code": "DEVICE_NOT_TRUSTED", "message": "Device auth required"})
+    # Server-owned scope; sandbox devices cannot route owner actions
+    if ctx.data_scope != CANONICAL_OWNER:
+        raise HTTPException(status_code=403, detail={"error_code": "DEVICE_NOT_TRUSTED", "message": "Sandbox device cannot route"})
+    result = await create_routed_action(
+        session,
+        requesting_device=ctx.device,
+        capability=body.capability,
+        arguments=body.arguments,
+        action_id=body.action_id,
+        owner_scope=ctx.data_scope,
+    )
+    if result.get("ok") is not True and result.get("error_code") in {"DEVICE_REVOKED", "DEVICE_NOT_TRUSTED"}:
+        status = 401 if result["error_code"] == "DEVICE_REVOKED" else 403
+        raise HTTPException(status_code=status, detail={"error_code": result["error_code"], "message": result.get("message")})
+    if result.get("ok") is not True and result.get("error_code") == "CAPABILITY_UNAVAILABLE":
+        raise HTTPException(status_code=422, detail={"error_code": "CAPABILITY_UNAVAILABLE", "capability": body.capability})
+    if result.get("ok") is not True and result.get("error_code") == "TARGET_DEVICE_OFFLINE":
+        # Queue case is handled as ok True with queued flag; this is hard no-target
+        raise HTTPException(status_code=409, detail={"error_code": "TARGET_DEVICE_OFFLINE", "capability": body.capability})
+    status_code = result.get("status") or "ROUTED"
+    # Surface QUEUED as 202 but keep payload truthful
+    await session.commit()
+    return {"ok": True, **result}
+
+
+@router.get("/device-actions/pending")
+async def device_action_pending(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from sqlalchemy import select as _select
+
+    from app.everywhere.device_actions import list_pending_for_target
+    from app.models import DeviceRoutedAction
+
+    if ctx.device is None:
+        # Master key diagnostics: return all pending routed actions
+        if ctx.is_master:
+            rows = (await session.execute(_select(DeviceRoutedAction).where(DeviceRoutedAction.status.in_(["ROUTED", "QUEUED"])))).scalars().all()
+            from app.everywhere.device_actions import _public_action
+
+            pending_all = [_public_action(r) for r in rows]
+            return {"ok": True, "count": len(pending_all), "actions": pending_all}
+        raise HTTPException(status_code=401, detail={"error_code": "DEVICE_NOT_TRUSTED"})
+    if ctx.device.revoked_at is not None:
+        raise HTTPException(status_code=401, detail={"error_code": "DEVICE_REVOKED", "message": "Device revoked"})
+    pending = await list_pending_for_target(session, target_device=ctx.device)
+    await session.commit()
+    return {"ok": True, "count": len(pending), "actions": pending}
+
+
+@router.get("/device-actions/{action_id}")
+async def device_action_get(
+    action_id: str,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from app.everywhere.device_actions import get_action
+
+    row = await get_action(session, action_id, owner_scope=ctx.data_scope)
+    if row is None:
+        raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"})
+    # Only requesting or target device or master may see
+    allowed = {str(ctx.device.id) if ctx.device else "", str(row.requesting_device_id), str(row.target_device_id)}
+    if ctx.data_scope != "master" and str(ctx.device.id) not in allowed:
+        raise HTTPException(status_code=403, detail={"error_code": "DEVICE_NOT_TRUSTED"})
+    from app.everywhere.device_actions import _public_action
+
+    return {"ok": True, **_public_action(row)}
+
+
+@router.post("/device-actions/{action_id}/claim")
+async def device_action_claim(
+    action_id: str,
+    target_device_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from sqlalchemy import select as _select
+
+    from app.everywhere.device_actions import claim_action
+    from app.models import Device
+
+    # Master may claim on behalf of a target device (e.g., Mac simulation)
+    claiming = ctx.device
+    if claiming is None and ctx.is_master and target_device_id:
+        row = await session.get(Device, target_device_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"})
+        claiming = row
+    if claiming is None:
+        raise HTTPException(status_code=401, detail={"error_code": "DEVICE_NOT_TRUSTED"})
+    result = await claim_action(session, action_id=action_id, claiming_device=claiming, owner_scope=ctx.data_scope if not ctx.is_master else "master")
+    if result.get("ok") is not True:
+        code = result.get("error_code") or "FAILED"
+        status = 403 if code in {"WRONG_TARGET", "DEVICE_REVOKED"} else 409 if code == "ACTION_EXPIRED" else 404 if code == "NOT_FOUND" else 400
+        raise HTTPException(status_code=status, detail={"error_code": code, "message": result.get("message")})
+    await session.commit()
+    return {"ok": True, **result}
+
+
+@router.post("/device-actions/{action_id}/complete")
+async def device_action_complete(
+    action_id: str,
+    body: DeviceActionCompleteRequest,
+    target_device_id: str | None = None,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from sqlalchemy import select as _select
+
+    from app.everywhere.device_actions import complete_action
+    from app.models import Device
+
+    completing = ctx.device
+    if completing is None and ctx.is_master and target_device_id:
+        row = await session.get(Device, target_device_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"})
+        completing = row
+    if completing is None:
+        raise HTTPException(status_code=401, detail={"error_code": "DEVICE_NOT_TRUSTED"})
+    result = await complete_action(
+        session,
+        action_id=action_id,
+        completing_device=completing,
+        result=body.result,
+        error=body.error,
+        error_code=body.error_code,
+        success=body.success,
+        owner_scope=ctx.data_scope if not ctx.is_master else "master",
+    )
+    if result.get("ok") is not True:
+        code = result.get("error_code") or "FAILED"
+        status = 403 if code in {"WRONG_TARGET", "DEVICE_REVOKED"} else 404 if code == "NOT_FOUND" else 400
+        raise HTTPException(status_code=status, detail={"error_code": code, "message": result.get("message")})
+    await session.commit()
+    return {"ok": True, **result}
+
+
+# ---------------------------------------------------------------------------
+# G2 C — Bounded context handoff
+# ---------------------------------------------------------------------------
+
+
+class ContextFocusRequest(BaseModel):
+    focused_type: str | None = Field(default=None, max_length=32)
+    focused_id: str | None = Field(default=None, max_length=128)
+    focused_title: str | None = Field(default=None, max_length=256)
+    focused_project_id: str | None = Field(default=None, max_length=128)
+    focused_project_title: str | None = Field(default=None, max_length=256)
+    focused_goal_id: str | None = Field(default=None, max_length=128)
+    current_task: str | None = Field(default=None, max_length=256)
+    recent_refs: list[dict] | None = None
+
+
+@router.post("/context/focus")
+async def context_focus(
+    body: ContextFocusRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from app.everywhere.handoff_context import set_context
+
+    if ctx.device is None:
+        raise HTTPException(status_code=401, detail={"error_code": "DEVICE_NOT_TRUSTED"})
+    result = await set_context(
+        session,
+        source_device=ctx.device,
+        focused_type=body.focused_type,
+        focused_id=body.focused_id,
+        focused_title=body.focused_title,
+        focused_project_id=body.focused_project_id,
+        focused_project_title=body.focused_project_title,
+        focused_goal_id=body.focused_goal_id,
+        current_task=body.current_task,
+        recent_refs=body.recent_refs,
+    )
+    if result.get("ok") is not True:
+        raise HTTPException(status_code=403, detail=result)
+    await session.commit()
+    return {"ok": True, **result}
+
+
+@router.get("/context")
+async def context_get(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    from app.everywhere.handoff_context import get_context, public_context
+
+    if ctx.data_scope != "master":
+        raise HTTPException(status_code=403, detail={"error_code": "DEVICE_NOT_TRUSTED", "message": "Sandbox has no owner context"})
+    if ctx.device and ctx.device.revoked_at is not None:
+        raise HTTPException(status_code=401, detail={"error_code": "DEVICE_REVOKED"})
+    row = await get_context(session)
+    pub = public_context(row)
+    if pub is None:
+        return {"ok": True, "context": None, "expired": True}
+    return {"ok": True, "context": pub}
+
+
+@router.post("/context/resolve")
+async def context_resolve(
+    body: dict,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """Resolve pronoun query via bounded context; used by TurnGate."""
+    from app.everywhere.handoff_context import resolve_pronoun
+
+    text = str(body.get("text") or body.get("query") or "")
+    result = await resolve_pronoun(session, text=text, requesting_device=ctx.device)
+    if result.get("ok") is not True and result.get("error_code") == "DEVICE_NOT_TRUSTED":
+        raise HTTPException(status_code=403, detail=result)
+    if result.get("ok") is True and result.get("resolved"):
+        # C7: reread canonical entity before answering
+        try:
+            from app.life import service as life
+
+            pid = result.get("focused_id")
+            if result.get("focused_type") == "project" and pid:
+                proj = await life.list_projects(session, actor=ctx.data_scope)
+                match = next((p for p in proj if p["id"] == pid), None)
+                if match:
+                    return {"ok": True, "resolved": True, "entity": match, "canonical": True, "source": "core"}
+                # fallback: try by title
+                title = result.get("focused_title") or ""
+                from app.life.service import find_project
+
+                found = await find_project(session, actor=ctx.data_scope, query=title) if title else None
+                if found:
+                    return {"ok": True, "resolved": True, "entity": {"id": str(found.id), "title": found.title, "priority": found.priority, "status": found.status}, "canonical": True}
+        except Exception:
+            pass
+    return result
+
+
+# ---------------------------------------------------------------------------
+# G2 D2/D3 — Fabric diagnostics & health
+# ---------------------------------------------------------------------------
+
+
+@router.get("/diagnostics")
+async def diagnostics(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """Lightweight diagnostics for one device + fabric (D2)."""
+    from app.everywhere.capabilities import capability_universe
+    from app.everywhere.devices import health_summary
+
+    del ctx
+    hs = await health_summary(session)
+    universe = await capability_universe(session)
+    # State epoch + cursor + context revision
+    from app.everywhere.sync import current_cursor, state_epoch
+    from sqlalchemy import select as _select
+
+    from app.models import DeviceRoutedAction
+
+    epoch = await state_epoch(session)
+    cursor = await current_cursor(session)
+    # pending routed actions count
+    pending_cnt = (
+        await session.execute(_select(DeviceRoutedAction).where(DeviceRoutedAction.status.in_(["ROUTED", "QUEUED"])))
+    ).scalars().all()
+    # last canonical owner turn: last Event with device provenance
+    from app.models import Event
+
+    last_turn = (
+        await session.execute(_select(Event).where(Event.event_type.in_(["message.user", "project.created", "goal.created"])).order_by(Event.occurred_at.desc()).limit(1))
+    ).scalar_one_or_none()
+    ctx_rev = None
+    try:
+        from app.everywhere.handoff_context import get_context, public_context
+
+        row = await get_context(session)
+        pub = public_context(row)
+        if pub:
+            ctx_rev = pub["version"]
+    except Exception:
+        ctx_rev = None
+    return {
+        "ok": True,
+        "state_epoch": epoch,
+        "cursor": cursor,
+        "capabilities": {"revision": universe["revision"], "count": len(universe["capabilities"])},
+        "pending_routed_actions": len(pending_cnt),
+        "context_revision": ctx_rev,
+        "last_canonical_turn_at": last_turn.occurred_at.isoformat() if last_turn else None,
+        "health": hs,
+    }

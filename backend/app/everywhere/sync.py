@@ -324,6 +324,38 @@ async def bootstrap(session: AsyncSession, ctx: ActorContext) -> dict:
     devices = await list_devices(session) if owner_scope_caller else []
     universe = await capability_universe(session)
 
+    # G2 D1: ONE BOOTSTRAP CONTRACT — add server-owned identity, epoch, cursor, capability + context revision
+    epoch = await state_epoch(session)
+    # Build v2 cursor string for bootstrap convenience
+    cursor_str: str | None = None
+    if start_cursor and start_cursor.get("epoch") and start_cursor.get("stream_seq") is not None:
+        cursor_str = format_v2_cursor(start_cursor["epoch"], int(start_cursor["stream_seq"]))
+    elif start_cursor:
+        cursor_str = f"{start_cursor.get('at')}|{start_cursor.get('id')}" if start_cursor.get("at") else None
+
+    # Bounded context revision (if trusted)
+    context_rev: dict | None = None
+    if owner_scope_caller:
+        try:
+            from app.everywhere.handoff_context import get_context, public_context
+
+            ctx_row = await get_context(session)
+            pub = public_context(ctx_row)
+            if pub:
+                context_rev = {"version": pub["version"], "updated_at": pub["updated_at"], "expires_at": pub["expires_at"], "focused_title": pub.get("focused_title")}
+        except Exception:
+            context_rev = None
+
+    # Pending routed actions for this device (if trusted)
+    pending_actions: list[dict] = []
+    if owner_scope_caller and ctx.device is not None:
+        try:
+            from app.everywhere.device_actions import list_pending_for_target
+
+            pending_actions = await list_pending_for_target(session, target_device=ctx.device)
+        except Exception:
+            pending_actions = []
+
     return {
         "owner": CANONICAL_OWNER if owner_scope_caller else scope,
         "generated_at": utcnow().isoformat(),
@@ -344,7 +376,21 @@ async def bootstrap(session: AsyncSession, ctx: ActorContext) -> dict:
             ),
             "required_action": None if owner_scope_caller else "trust_device_from_mac",
         },
+        # G2 D1 additions
+        "device_identity": {
+            "device_id": str(ctx.device.id) if ctx.device else None,
+            "display_name": ctx.device.name if ctx.device else None,
+            "trust_state": "TRUSTED_OWNER_DEVICE" if owner_scope_caller else "PAIRED_SANDBOX",
+            "auth_revision": int(getattr(ctx.device, "auth_revision", 1) or 1) if ctx.device else None,
+            "presence_state": None,  # filled by device roster if needed
+        },
+        "state_epoch": epoch,
+        "sync_cursor": start_cursor,
+        "sync_cursor_str": cursor_str,
         "cursor": start_cursor,
+        "cursor_str": cursor_str,
+        "context": context_rev,
+        "pending_device_actions": pending_actions[:5],
         "projects": projects[:50],
         "goals": (goals_active + goals_blocked)[:100],
         "open_commitments": commitments[:50],

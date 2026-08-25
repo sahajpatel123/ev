@@ -351,6 +351,29 @@ async def _finish(
 # ---------------------------------------------------------------------------
 
 
+_ROUTED_PING = re.compile(r"\bping\b.*\bmac\b|\bmac\b.*\bping\b|\becho\b.*\bmac\b|\bmac\b.*\becho\b", re.I)
+_ROUTED_NOTIFY = re.compile(r"\bnotify\b.*\bmac\b|\bmac\b.*\bnotify\b|\bnotification\b.*\bmac\b|\bnotify\b.*\bhome\b", re.I)
+
+
+def _detect_routed_capability(text: str) -> tuple[str, dict] | None:
+    raw = (text or "").strip()
+    low = raw.lower()
+    # Notify capability has priority over ping (more specific)
+    if _ROUTED_NOTIFY.search(raw):
+        # Extract message after notify/colon
+        m = re.search(r"notify[^:]*[:\-]\s*(.+)$", raw, re.I)
+        msg = (m.group(1) if m else raw)[:280]
+        # If raw is just "notify my mac" without message, keep generic
+        title = "Evie"
+        body = msg if len(msg) > 5 else "G2 cross-device notification"
+        return "mac.notify", {"title": title, "body": body, "text": raw}
+    if _ROUTED_PING.search(raw):
+        m = re.search(r"ping[^:]*[:\-]\s*(.+)$", raw, re.I)
+        msg = (m.group(1) if m else raw)[:200]
+        return "device.echo", {"text": raw, "message": msg or raw, "payload": msg or "ping"}
+    return None
+
+
 async def run_trusted_device_turn(
     session: AsyncSession,
     *,
@@ -364,7 +387,11 @@ async def run_trusted_device_turn(
     When the provider reports the entity currently under discussion and the
     owner's words are a bare field follow-up ("what is the priority level?"),
     the query is deterministically rewritten to name that entity. No
-    cross-device context architecture — this is one session's focus."""
+    cross-device context architecture — this is one session's focus.
+
+    G2: also checks deterministic cross-device capability routing (B1) and
+    bounded context pronoun resolution (C2) before TurnGate.
+    """
 
     from app.ev.owner_turn import create_owner_turn
     from app.ev.turn_gate import handle_owner_turn
@@ -404,6 +431,122 @@ async def run_trusted_device_turn(
             effective_text = f"What is the status of {focus_title}?"
         elif "due" in lowered:
             effective_text = f"When is {focus_title} due?"
+
+    # G2 B — deterministic cross-device capability routing (model does NOT decide executor)
+    routed = _detect_routed_capability(effective_text)
+    if routed is not None:
+        cap, args = routed
+        try:
+            from app.everywhere.device_actions import create_routed_action
+
+            # Stable idempotency for voice turn: reuse provider item / idempotency key if given
+            broker_id = (idempotency_key or "")[:64] or uuid4().hex[:16]
+            # action_id must be stable per turn to avoid duplicate side effects on retry
+            action_id = f"voice-{device.id}-{broker_id}"[:80]
+            broker = await create_routed_action(
+                session,
+                requesting_device=device,
+                capability=cap,
+                arguments=args,
+                action_id=action_id,
+                owner_scope=ctx_scope,
+            )
+            await session.commit()
+        except Exception as exc:  # noqa: BLE001 - broker failure is truthful
+            await session.rollback()
+            return {
+                "reply": "I couldn't route that to the other device. Try again.",
+                "ok": False,
+                "error_code": "CAPABILITY_UNAVAILABLE",
+                "route": "DEVICE_ACTION",
+                "operation": cap,
+                "turn_id": None,
+            }
+        # Surface broker truth: queued vs routed vs failed (never fake success)
+        if broker.get("ok") is True:
+            status = broker.get("status") or "ROUTED"
+            if status in {"QUEUED", "ROUTED"}:
+                if broker.get("queued") or status == "QUEUED":
+                    reply = f"I've queued that for your Mac ({cap}). It will run when the Mac is online."
+                else:
+                    reply = f"I've sent that to your Mac ({cap})."
+                # Emit durable trace for observability
+                try:
+                    await emit_everywhere_event(
+                        session,
+                        event_type="device.action.routed",
+                        actor_label=f"device:{device.name}",
+                        content={"capability": cap, "action_id": broker.get("action_id"), "target": broker.get("target_device_id"), "status": status},
+                        device_id=str(device.id),
+                    )
+                    await session.commit()
+                except Exception:
+                    pass
+                return {
+                    "reply": reply,
+                    "ok": True,
+                    "route": "DEVICE_ACTION",
+                    "operation": cap,
+                    "broker": broker,
+                    "turn_id": None,
+                }
+        # Broker returned soft error (offline, capability unavailable)
+        err = broker.get("error_code") or "CAPABILITY_UNAVAILABLE"
+        if err == "TARGET_DEVICE_OFFLINE":
+            return {
+                "reply": "Your Mac is offline right now, so I queued that. It will run when the Mac comes back online.",
+                "ok": False,
+                "error_code": "TARGET_DEVICE_OFFLINE",
+                "route": "DEVICE_ACTION",
+                "operation": cap,
+                "broker": broker,
+                "turn_id": None,
+            }
+        return {
+            "reply": broker.get("message") or "I couldn't complete that capability on the other device.",
+            "ok": False,
+            "error_code": err,
+            "route": "DEVICE_ACTION",
+            "operation": cap,
+            "broker": broker,
+            "turn_id": None,
+        }
+
+    # G2 C — bounded cross-device context pronoun resolution (pronoun -> focused entity)
+    if focus_title is None and __import__("re").search(r"\b(priority|status|due|state)\b", effective_text, __import__("re").IGNORECASE):
+        # Only attempt cross-device resolve when same-session focus didn't already rewrite
+        # and text looks like a pronoun follow-up without explicit title
+        low = effective_text.lower()
+        has_pronoun = bool(__import__("re").search(r"\bits\b|\bit\b|\bthat\b|\bthis\b", low))
+        has_title = False
+        # Quick check: if effective_text already contains a known project word, don't rewrite
+        # (prevents stealing explicit titles)
+        try:
+            from app.everywhere.handoff_context import resolve_pronoun as _resolve
+
+            if has_pronoun or "its priority" in low:
+                res = await _resolve(session, text=effective_text, requesting_device=device)
+                if res.get("ok") and res.get("resolved"):
+                    title = res.get("focused_title") or ""
+                    # Rewrite into canonical PROJECT_GET form and reread Core (C7)
+                    if "priority" in low and title and title.lower() not in low:
+                        effective_text = f"What is the priority of {title}?"
+                    elif ("status" in low or "state" in low) and title and title.lower() not in low:
+                        effective_text = f"What is the status of {title}?"
+                    elif "due" in low and title and title.lower() not in low:
+                        effective_text = f"When is {title} due?"
+                elif res.get("clarify"):
+                    return {
+                        "reply": res.get("message") or "Which one did you mean?",
+                        "ok": False,
+                        "error_code": "AMBIGUOUS_CONTEXT",
+                        "route": "UNSUPPORTED",
+                        "operation": "UNKNOWN",
+                        "needs_clarification": True,
+                        "turn_id": None,
+                    }
+        except Exception:
+            pass
     turn = create_owner_turn(
         live_session_id=f"device-text:{device.id}",
         provider_item_id=idempotency_key,
@@ -489,6 +632,36 @@ async def run_trusted_device_turn(
         device_id=str(device.id),
     )
     await session.commit()
+    # G2 C — update bounded context on successful entity focus (auto handoff)
+    try:
+        if result.ok and result.operation in {"PROJECT_GET", "PROJECT_CREATE", "PROJECT_UPDATE", "PROJECT_LIST"}:
+            data = result.canonical_data
+            # PROJECT_LIST returns list; take first if filtered, else top_focus
+            title = None
+            pid = None
+            if isinstance(data, dict) and data.get("title"):
+                title = data.get("title")
+                pid = data.get("id")
+            elif isinstance(data, list) and data:
+                # If list filtered to one, that's focus
+                if len(data) == 1:
+                    title = data[0].get("title")
+                    pid = data[0].get("id")
+            if title and pid:
+                from app.everywhere.handoff_context import set_context
+
+                await set_context(
+                    session,
+                    source_device=device,
+                    focused_type="project",
+                    focused_id=str(pid),
+                    focused_title=str(title),
+                    focused_project_id=str(pid),
+                    focused_project_title=str(title),
+                )
+                await session.commit()
+    except Exception:
+        pass
     return {
         "reply": reply,
         "ok": bool(result.ok),

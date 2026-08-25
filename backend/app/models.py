@@ -417,6 +417,79 @@ class ActiveConversationState(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
 
 
+# --------------------------------------------------------------------------- #
+# G2 — Device fabric: cross-device capability routing + bounded context handoff
+# --------------------------------------------------------------------------- #
+
+
+class DeviceRoutedAction(Base):
+    """Canonical cross-device action broker (G2 B5-B11).
+
+    One row is ONE canonical request: requesting device -> target device
+    via deterministic resolver. Idempotent by (owner_scope, action_id).
+    Queued rows survive client restart/transport reconnect; side effect
+    occurs once (claimed guard). Revoked targets never execute.
+    """
+
+    __tablename__ = "device_routed_actions"
+    __table_args__ = (
+        UniqueConstraint("owner_scope", "action_id", name="uq_device_routed_action_scope_id"),
+        Index("ix_device_routed_actions_target_status", "target_device_id", "status"),
+        Index("ix_device_routed_actions_requesting", "requesting_device_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    action_id: Mapped[str] = mapped_column(String(128), index=True)
+    owner_scope: Mapped[str] = mapped_column(String(64), index=True, default="master")
+    requesting_device_id: Mapped[UUID] = mapped_column(ForeignKey("devices.id"), index=True)
+    target_device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"), index=True)
+    capability: Mapped[str] = mapped_column(String(128), index=True)
+    arguments: Mapped[dict] = mapped_column(JSONType, default=dict)
+    # REQUESTED | ROUTED | QUEUED | EXECUTING | SUCCEEDED | FAILED | CANCELLED | EXPIRED
+    status: Mapped[str] = mapped_column(String(16), default="REQUESTED", index=True)
+    risk_class: Mapped[str | None] = mapped_column(String(8))
+    confirmation_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    result: Mapped[dict | None] = mapped_column(JSONType)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class OwnerHandoffContext(Base):
+    """Bounded semantic context that follows the owner across trusted devices.
+
+    Lightweight + derived, centrally mediated with version + TTL. NOT the
+    full GPT conversation or provider hidden state. Used only to resolve
+    pronouns like "its" to the recently focused entity; canonical facts
+    are always reread from Evie Core.
+    """
+
+    __tablename__ = "owner_handoff_contexts"
+    __table_args__ = (UniqueConstraint("owner_key", name="uq_owner_handoff_owner"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_key: Mapped[str] = mapped_column(String(64), unique=True, default="owner")
+    # Focused entity (one primary focus): project | goal | commitment | task
+    focused_type: Mapped[str | None] = mapped_column(String(32))
+    focused_id: Mapped[str | None] = mapped_column(String(128))
+    focused_title: Mapped[str | None] = mapped_column(String(256))
+    # Extended bounded refs
+    focused_project_id: Mapped[str | None] = mapped_column(String(128))
+    focused_project_title: Mapped[str | None] = mapped_column(String(256))
+    focused_goal_id: Mapped[str | None] = mapped_column(String(128))
+    current_task: Mapped[str | None] = mapped_column(String(256))
+    recent_refs: Mapped[list] = mapped_column(JSONType, default=list)
+    source_device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class SandboxFact(Base):
     """Isolated cross-platform test memory. Never mixed with Memory OS rows."""
 
