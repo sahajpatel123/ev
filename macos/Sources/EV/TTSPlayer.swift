@@ -52,14 +52,18 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
     private var auxPreemptedFrames = 0
     private var auxDroppedFrames = 0
 
-    // Hold ~100 ms of converted audio before the first play() so a normal
-    // network gap does not become an audible hole. Cap the wait so the
-    // first word is not late.
+    // Hold ~180 ms of converted audio before the first play() so normal
+    // Realtime jitter (40-120 ms delta cadence) does not become an audible
+    // underrun. Cap the wait to keep first-word latency low.
     private let streamPrimeDelay: TimeInterval = 0.02
-    private let minStartSeconds: TimeInterval = 0.10
+    private let minStartSeconds: TimeInterval = 0.18
     private let primeRetryDelay: TimeInterval = 0.01
-    private let maxPrimeWait: TimeInterval = 0.12
+    private let maxPrimeWait: TimeInterval = 0.22
     private var streamPrimeDeadline = Date.distantPast
+    // Minimal playback observability (no PCM): underrun + queue depth.
+    private var underrunCount = 0
+    private var scheduledBufferCount = 0
+    private var lastEnqueueSampleRate: Double = 16_000
     // Connect the player at 48 kHz, the usual Mac HAL rate. Scheduling 16 kHz
     // buffers on that graph (or returning the 16 kHz source when conversion
     // fails) plays the reply at the wrong speed. Convert with one streaming
@@ -379,6 +383,8 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
         var droppedFrames = 0
         lock.lock()
         streamGeneration += 1
+        scheduledBufferCount = 0
+        underrunCount = 0
         pendingBuffers = 0
         pendingFrames = 0
         droppedFrames = auxPendingFrames
@@ -419,6 +425,8 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
         var droppedFrames = 0
         lock.lock()
         streamGeneration += 1
+        scheduledBufferCount = 0
+        underrunCount = 0
         pendingBuffers = 0
         pendingFrames = 0
         droppedFrames = auxPendingFrames
@@ -634,14 +642,27 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
         }
         guard let buffer = playbackBuffer(from: pcm, sourceRate: sampleRate) else { return }
         let frameCount = Int(buffer.frameLength)
+        let wasPlaying = playerNode.isPlaying
+        let prevPending: Int
         lock.lock()
+        prevPending = pendingBuffers
         pendingBuffers += 1
         pendingFrames += frameCount
+        scheduledBufferCount += 1
+        lastEnqueueSampleRate = sampleRate
         if playbackBeganAt == nil {
             playbackBeganAt = Date()
         }
         let generation = streamGeneration
         lock.unlock()
+        // Underrun: we were mid-response (had scheduled before) but queue had drained to 0 and node stopped.
+        if !wasPlaying, prevPending == 0, scheduledBufferCount > 1 {
+            lock.lock()
+            underrunCount += 1
+            lock.unlock()
+            // Minimal playback observability: count only; detailed trace via
+            // queue depth behavior already visible in pendingFrames/metrics.
+        }
         notifyPlaying(true)
         playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             guard let self else { return }
@@ -780,6 +801,8 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
         playerNode.reset()
         lock.lock()
         streamGeneration += 1
+        scheduledBufferCount = 0
+        underrunCount = 0
         let had = pendingBuffers > 0
         pendingBuffers = 0
         pendingFrames = 0
