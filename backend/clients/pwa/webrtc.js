@@ -561,6 +561,7 @@
     this.pc = new RTCPeerConnection();
     this.metrics.peerConnections = 1;
     this.diag.pass("M04");
+    this._iceRestarted = false;
     this.pc.onconnectionstatechange = function () {
       if (!stillThis()) return;
       self.metrics.ice = self.pc.connectionState;
@@ -568,7 +569,13 @@
       if (self.pc.connectionState === "connecting" || self.pc.iceConnectionState === "checking") {
         self.diag.pass("M13");
       }
-      if (self.pc.connectionState === "failed") self._setRuntime("FAILED");
+      if (self.pc.connectionState === "failed") {
+        if (!self._iceRestarted) {
+          self._iceRestarted = true;
+          try { self.pc.restartIce(); return; } catch (_e) {}
+        }
+        self._setRuntime("FAILED");
+      }
       self.onHealth(self.snapshot());
     };
     this.pc.oniceconnectionstatechange = function () {

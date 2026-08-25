@@ -48,6 +48,7 @@ const state = {
   instanceId: sessionStorage.getItem("evie_instance") || crypto.randomUUID(),
   talking: false,
   _talkInflight: false,
+  _recoverInflight: false,
   audioLeader: false,
   ws: null,
   webrtc: null,
@@ -1352,12 +1353,36 @@ async function startWebRTC(opened) {
       if (label === "speaking") setMood("Speaking");
       if (label === "moved") loseAudio("conversation_moved");
       if (label === "mic_ended") {
+        // Bounded mic reacquisition: if iOS policy allows, one auto-recover
+        // without extra Talk press; otherwise surface truthful gesture need.
+        if (state.talking && !state._recoverInflight) {
+          state._recoverInflight = true;
+          setMood("Reconnecting");
+          setConn("RECONNECTING");
+          setTimeout(async () => {
+            try { await stopTalk(); await talk(); } catch (_e) {} finally { state._recoverInflight = false; }
+          }, 600);
+          return;
+        }
         setMood("Voice unavailable");
         state.caption = "Microphone ended.";
       }
       if (label === "audio_blocked") {
         setMood("Voice connected — tap to enable audio");
         state.caption = "Voice connected — tap to enable audio";
+      }
+      if (label === "failed") {
+        // Automatic bounded recovery for established READY session that
+        // dropped. Single generation, no Talk press required unless iOS
+        // demands a new gesture (handled as mic_ended above).
+        if (state.talking && !state._recoverInflight && !state._talkInflight) {
+          state._recoverInflight = true;
+          setMood("Reconnecting");
+          setConn("RECONNECTING");
+          setTimeout(async () => {
+            try { await stopTalk(); await talk(); } catch (_e) {} finally { state._recoverInflight = false; }
+          }, 800);
+        }
       }
     },
     onTranscript: (text, meta) => {
