@@ -56,6 +56,7 @@ from app.models import (
     RuntimeEvent,
     RuntimeHeartbeat,
     RuntimeSession,
+    VoiceAttemptLog,
     VoiceSession,
 )
 from app.services.rebuild import rebuild_derived_state
@@ -287,6 +288,12 @@ def load_backup(path: str, passphrase: str) -> dict:
     )
 
 
+async def _delete_voice_replay_nonces(session: AsyncSession) -> None:
+    from sqlalchemy import text as _text
+
+    await session.execute(_text("DELETE FROM voice_replay_nonces WHERE session_id IS NOT NULL"))
+
+
 async def _wipe_data_tables(session: AsyncSession) -> None:
     """Delete the personal-data layer and its dependent operational rows."""
     # Operational rows that reference devices/events/memories first.
@@ -295,6 +302,11 @@ async def _wipe_data_tables(session: AsyncSession) -> None:
     await session.execute(delete(ApprovedAction))
     await session.execute(delete(PasskeyCredential))
     await session.execute(delete(ReVerificationProof))
+    # Additional voice_session FK children (re-verification tickets,
+    # attempt log, replay nonces) must clear before their parent.
+    await session.execute(delete(ReVerificationProof))
+    await session.execute(delete(VoiceAttemptLog))
+    await session.execute(_delete_voice_replay_nonces(session))
     await session.execute(delete(VoiceSession))
     await session.execute(delete(RuntimeHeartbeat))
     await session.execute(delete(RuntimeSession))
