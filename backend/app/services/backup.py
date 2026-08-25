@@ -330,6 +330,7 @@ async def _wipe_data_tables(session: AsyncSession) -> None:
     await session.execute(update(MakerProject).values(goal_memory_id=None))
 
     # Derived layer.
+    await session.execute(delete(Conflict))
     await session.execute(delete(MemoryEntity))
     await session.execute(delete(MemoryEvent))
     await session.execute(delete(EntityRelationship))

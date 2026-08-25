@@ -4,6 +4,46 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _load_production_secret_overlay() -> None:
+    """P0.1 MASTER SECRET ISOLATION (PART 31-35).
+
+    Production secrets live OUTSIDE the repository in
+    ``~/.ev/secrets/production.env`` (chmod 0600). They are injected into
+    the process environment here, BEFORE pydantic reads .env, so that:
+
+    - runtime services keep working with no secret in the repo;
+    - general development agents reading the repository .env can no longer
+      obtain the production master credential.
+
+    Keys already present in os.environ win (explicit operator override).
+    """
+    import os as _os
+    from pathlib import Path as _Path
+
+    overlay = _Path(
+        _os.environ.get("EV_SECRETS_FILE", "~/.ev/secrets/production.env")
+    ).expanduser()
+    try:
+        if not overlay.exists():
+            return
+        for line in overlay.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in _os.environ:
+                _os.environ[key] = value
+    except Exception:
+        # Never crash configuration on secret-overlay problems; explicit
+        # env vars and .env still apply.
+        pass
+
+
+_load_production_secret_overlay()
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="EV_", env_file=".env", extra="ignore")
 
