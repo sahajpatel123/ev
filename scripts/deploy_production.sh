@@ -36,10 +36,11 @@ if dirty: fail(400, "DEPLOY_REFUSED: working tree dirty.")
 # deploy must run the core shield that protects G1 + Voice + G2.1.
 # If the shield fails, do not deploy — the new change is blocked.
 print("Running frozen-contract core shield (G1/Voice/G2.1)...", file=sys.stderr)
-uv_bin = os.path.expanduser("~/.local/bin/uv")
-if not os.path.exists(uv_bin):
-    uv_bin = "uv"
-r = subprocess.run([uv_bin, "run", "pytest", "backend/tests/test_regression_golden.py", "-q"], cwd=EVIE)
+# Use the backend venv's pytest directly to avoid uv tool-resolution races in deploy context.
+r = subprocess.run(
+    [f"{EVIE}/backend/.venv/bin/python", "-m", "pytest", "backend/tests/test_regression_golden.py", "-q"],
+    cwd=EVIE,
+)
 if r.returncode != 0:
     fail(500, "DEPLOY_REFUSED: frozen-contract core shield FAILED — new change would regress an owner-verified capability")
 
