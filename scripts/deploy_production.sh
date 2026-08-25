@@ -24,7 +24,8 @@ except BlockingIOError:
 def git(*a): return subprocess.run(["git", "-C", EVIE, *a], capture_output=True, text=True)
 
 local = git("rev-parse", "HEAD").stdout.strip()
-dirty = git("status", "--porcelain").stdout.strip()
+# Untracked files (other agents' scratch) do not block deploys.
+dirty = git("status", "--porcelain", "--untracked-files=no").stdout.strip()
 subprocess.run(["git", "-C", EVIE, "fetch", "origin", "main"], capture_output=True)
 remote = git("rev-parse", "origin/main").stdout.strip()
 
