@@ -295,18 +295,26 @@ async def _delete_voice_replay_nonces(session: AsyncSession) -> None:
 
 
 async def _wipe_data_tables(session: AsyncSession) -> None:
-    """Delete the personal-data layer and its dependent operational rows."""
+    """Delete the personal-data layer and its dependent operational rows.
+
+    FK-ORDER ROBUSTNESS (P0 INC-20260825): after the explicit historical
+    deletes, a CATALOG-DRIVEN sweep purges ANY table still holding rows
+    that reference the wiped roots (events/devices/memories/projects/
+    goals/commitments/...), deepest-first. No child table can be forgotten
+    again — the original failure was exactly such a forgotten child
+    (voice_attempt_log → voice_sessions, then memory_curation_jobs →
+    events).
+    """
     # Operational rows that reference devices/events/memories first.
     await session.execute(delete(RuntimeEvent))
     await session.execute(delete(RoutineRun))
     await session.execute(delete(ApprovedAction))
     await session.execute(delete(PasskeyCredential))
     await session.execute(delete(ReVerificationProof))
-    # Additional voice_session FK children (re-verification tickets,
-    # attempt log, replay nonces) must clear before their parent.
-    await session.execute(delete(ReVerificationProof))
+    # FK children of voice_sessions MUST be deleted before voice_sessions
+    # itself (P0 INC-20260825: ForeignKeyViolation aborted the wipe mid-way,
+    # leaving a half-deleted database).
     await session.execute(delete(VoiceAttemptLog))
-    await _delete_voice_replay_nonces(session)
     await session.execute(delete(VoiceSession))
     await session.execute(delete(RuntimeHeartbeat))
     await session.execute(delete(RuntimeSession))
@@ -324,10 +332,68 @@ async def _wipe_data_tables(session: AsyncSession) -> None:
     # Derived layer.
     await session.execute(delete(MemoryEntity))
     await session.execute(delete(MemoryEvent))
-    await session.execute(delete(Conflict))
     await session.execute(delete(EntityRelationship))
     await session.execute(delete(Memory))
     await session.execute(delete(Entity))
+
+    # 2) CATALOG-DRIVEN SWEEP: purge ANY remaining table whose rows still
+    # reference a wiped root (events/devices/memories/projects/goals/
+    # commitments/attachments/notifications/sandbox_facts), deepest-first.
+    from sqlalchemy import text as _text
+
+    roots = [
+        "events",
+        "devices",
+        "memories",
+        "projects",
+        "goals",
+        "commitments",
+        "attachments",
+        "notifications",
+        "sandbox_facts",
+    ]
+    for _ in range(8):
+        pending = (
+            await session.execute(
+                _text(
+                    """
+                    select distinct tc.table_name as child,
+                                    ccu.table_name as parent
+                    from information_schema.table_constraints tc
+                    join information_schema.key_column_usage kcu
+                      on tc.constraint_name = kcu.constraint_name
+                     and tc.table_schema = kcu.table_schema
+                    join information_schema.constraint_column_usage ccu
+                      on ccu.constraint_name = tc.constraint_name
+                     and ccu.table_schema = tc.table_schema
+                    where tc.constraint_type = 'FOREIGN KEY'
+                      and tc.table_schema = 'public'
+                      and ccu.table_schema = 'public'
+                      and ccu.table_name = any(:roots)
+                      and tc.table_name <> ccu.table_name
+                    """
+                ),
+                {"roots": roots},
+            )
+        ).fetchall()
+        if not pending:
+            break
+        children = sorted({r.child for r in pending})
+        progressed = False
+        for child in children:
+            try:
+                await session.execute(_text(f'DELETE FROM "{child}"'))
+                if child not in roots:
+                    roots.append(child)
+                progressed = True
+            except Exception:
+                await session.rollback()
+
+    # 3) The canonical roots themselves.
+    await session.execute(delete(Attachment))
+    await session.execute(delete(AccessLog))
+    await session.execute(delete(Device))
+    await session.execute(delete(Event))
 
     # Primary stores.
     await session.execute(delete(Attachment))
