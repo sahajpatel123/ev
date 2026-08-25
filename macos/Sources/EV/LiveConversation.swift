@@ -272,45 +272,32 @@ final class LiveConversation {
 
     func toggleMute() {
         if isMuted {
-            let stale = mutedAt.map { Date().timeIntervalSince($0) >= 20 } ?? false
+            // MUTE LAW (P0 voice reliability): mute/unmute is USER MUTE STATE only.
+            // It must not rebuild the provider session or repair the audio engine.
+            // Low-level failures are handled automatically by the lifecycle.
             mutedAt = nil
             isMuted = false
             stayMuted = false
             model?.isLiveMuted = false
             model?.lastError = nil
-            if stale || connection == nil || !isActive {
-                // A long mute can outlive the WebSocket or its upstream
-                // realtime session. Restart the normal connection loop instead
-                // of requiring the owner to quit and relaunch EV.
-                tearDownChannel()
-                isActive = false
-                model?.isLiveActive = false
-                model?.noteLiveDisconnected(
-                    reason: "Mute exceeded the live-session recovery window; reconnecting.",
-                    willReconnect: true
-                )
-                if loopTask == nil {
-                    start()
-                }
-                return
+            // If the transport is gone, let the single runLoop reconnect — do
+            // not create a second loop here. Just resume capture if possible.
+            if let connection, isActive, !microphoneStarted {
+                _ = startMicrophone(on: connection)
+                if microphoneStarted { connection.sendControl("resume") }
+            } else if let connection, isActive {
+                connection.sendControl("resume")
             }
-            if let connection, isActive {
-                if startMicrophone(on: connection) {
-                    model?.noteLiveConnected()
-                    connection.sendControl("resume")
-                }
-            }
+            // Stale-session case is handled by runLoop's normal reconnect;
+            // no tearDownChannel/start() here.
             return
         }
+        // Mute = suppress input only.
         isMuted = true
-        stayMuted = true
+        // stayMuted remains false — runLoop stays scheduled so unmute is instant.
+        // Only explicit user mute; the loop's ST21 hold is for listening_stopped.
         mutedAt = Date()
         model?.isLiveMuted = true
-        model?.player.stop()
-        microphone.stop()
-        VoiceLevelMeter.shared.resetInput()
-        // Detaching a node from a running AVAudioEngine can abort macOS.
-        model?.player.bind(to: nil)
         connection?.sendControl("mute")
         model?.status = .listening
         model?.noteLiveMuted()
@@ -531,8 +518,6 @@ final class LiveConversation {
         }
         while !Task.isCancelled {
             if stayMuted {
-                // Visible mute-state law: a muted loop must never look like
-                // a hung reconnect from the outside.
                 Self.st("ST21_LOOP_MUTED_HOLD", "stayMuted")
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 continue
@@ -554,7 +539,9 @@ final class LiveConversation {
                 isActive = false
                 model.isLiveActive = false
                 tearDownChannel()
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                // Single bounded backoff authority (was 1.5s here + 0.4s in
+                // connectOnce tail = 1.9s stacked). Now only runLoop backs off.
+                try? await Task.sleep(nanoseconds: 900_000_000)
             }
         }
         Self.st("ST22_LOOP_CANCELLED", "while-exit")
@@ -612,8 +599,15 @@ final class LiveConversation {
             model.isLiveActive = true
             model.isLiveMuted = false
             model.isLivePaused = false
-            model.status = .listening
-            model.lastError = nil
+            // UI readiness law: don't claim LISTENING while provider not ready.
+            // Show CONNECTING until ST14, then LISTENING.
+            model.status = providerReadyForForward ? .listening : .offline
+            if !providerReadyForForward {
+                model.lastError = nil
+                // Will flip to listening at ST14.
+            } else {
+                model.lastError = nil
+            }
             phase = "CONSUME_EVENTS"
 
         do {
@@ -677,54 +671,101 @@ final class LiveConversation {
                 willReconnect: true
             )
         }
-        if !stayMuted, !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 400_000_000)
-        }
+        // Reconnect backoff is owned solely by runLoop (900ms); no extra
+        // sleep here to avoid stacking 0.4s + 0.9/1.5s.
         }
     }
 
     @discardableResult
     private func startMicrophone(on connection: LiveVoiceConnection) -> Bool {
-        microphone.stop()
-        microphoneStarted = false
-        // Stop capture before changing the playback graph (-10867 safety).
-        model?.player.bind(to: nil)
-        guard AudioInputLease.acquire(.live) else {
-            model?.noteMicrophoneCaptureFailed("already in use")
-            return false
-        }
-        do {
-            let player = model?.player
-            // GOLDEN VOICE PATH (2026-08-23 owner decision): one speech lane,
-            // no experiments in the mic tap. Listener Presence is cancelled.
-            // The backend's authoritative-playback mic gate owns self-echo.
-            // SPOKEN INTERRUPTION CLOSED: the mic tap feeds exactly two
-            // consumers — the UI meter and (when provider-ready) the provider.
-            try microphone.start(enqueue: { [weak self, weak connection, weak player] data in
-                if !Self.micFirstFrameLogged {
-                    Self.micFirstFrameLogged = true
-                    Self.st("ST07_FIRST_MIC_FRAME")
-                }
-                VoiceLevelMeter.shared.ingestInputPCM16(data)
-                guard self?.providerReadyForForward == true else { return } // local-only until provider ready
-                if player?.shouldMuteCapture == true { return }
-                connection?.enqueuePCM(data)
-            })
-            isMuted = false
-            model?.isLiveMuted = false
-            microphoneStarted = true
-            return true
-        } catch {
-            // Keep the live lease so Talk cannot start a second engine.
-            let ns = error as NSError
-            if ns.code == -10867 {
-                model?.noteMicrophoneCaptureFailed("audio device was busy — unmute again")
-            } else {
-                model?.noteMicrophoneCaptureFailed(error.localizedDescription)
-            }
+        return startMicrophone(on: connection, retryBudget: 1)
+    }
+
+    @discardableResult
+    private func startMicrophone(on connection: LiveVoiceConnection, retryBudget: Int) -> Bool {
+        // FIX 1: bounded retry with ghost-lease elimination (P0 voice reliability).
+        // Hardware format 0Hz/0ch or -10867 no longer leaves a ghost .live lease.
+        for attempt in 0...retryBudget {
+            microphone.stop()
             microphoneStarted = false
-            return false
+            // Stop capture before changing the playback graph (-10867 safety).
+            model?.player.bind(to: nil)
+            guard AudioInputLease.acquire(.live) else {
+                model?.noteMicrophoneCaptureFailed("already in use")
+                return false
+            }
+            // Pre-flight hardware validation: don't build a graph that is
+            // guaranteed to throw -10867. Treat 0Hz as a transient TCC/device
+            // settling state and retry with a fresh engine.
+            do {
+                let hwFormat: AVAudioFormat
+                do {
+                    hwFormat = try ObjCException.attachAndPrepare(microphone.engine)
+                } catch {
+                    throw error
+                }
+                if hwFormat.sampleRate <= 0 || hwFormat.channelCount == 0 {
+                    throw NSError(domain: "EVAudio", code: -10867, userInfo: [NSLocalizedDescriptionKey: "microphone input format unavailable (0 Hz)"])
+                }
+            } catch {
+                // Validation threw — release lease before retry so next
+                // fresh engine can acquire it.
+                AudioInputLease.release(.live)
+                if attempt < retryBudget {
+                    Self.st("ST06_RETRY", "hwFormat 0Hz attempt \(attempt)")
+                    Thread.sleep(forTimeInterval: 0.35)
+                    continue
+                }
+                let ns = error as NSError
+                Self.st("ST06_FAILED", "hwFormat 0Hz terminal \(ns.code)")
+                model?.noteMicrophoneCaptureFailed("Microphone unavailable — check Permissions")
+                microphoneStarted = false
+                return false
+            }
+            do {
+                let player = model?.player
+                // GOLDEN VOICE PATH (2026-08-23 owner decision): one speech lane,
+                // no experiments in the mic tap. Listener Presence is cancelled.
+                // The backend's authoritative-playback mic gate owns self-echo.
+                // SPOKEN INTERRUPTION CLOSED: the mic tap feeds exactly two
+                // consumers — the UI meter and (when provider-ready) the provider.
+                try microphone.start(enqueue: { [weak self, weak connection, weak player] data in
+                    if !Self.micFirstFrameLogged {
+                        Self.micFirstFrameLogged = true
+                        Self.st("ST07_FIRST_MIC_FRAME")
+                    }
+                    VoiceLevelMeter.shared.ingestInputPCM16(data)
+                    guard self?.providerReadyForForward == true else { return } // local-only until provider ready
+                    if player?.shouldMuteCapture == true { return }
+                    connection?.enqueuePCM(data)
+                })
+                isMuted = false
+                model?.isLiveMuted = false
+                microphoneStarted = true
+                if attempt > 0 { Self.st("ST06_RETRY_OK", "attempt \(attempt)") }
+                return true
+            } catch {
+                // FIX 1 LAW: failed start must NOT leave ghost .live lease.
+                AudioInputLease.release(.live)
+                microphone.stop()
+                microphoneStarted = false
+                let ns = error as NSError
+                let isTCCRetryable = ns.code == -10867 || ns.localizedDescription.contains("0 Hz") || ns.localizedDescription.contains("unavailable")
+                if isTCCRetryable, attempt < retryBudget {
+                    Self.st("ST06_RETRY", "start failed \(ns.code) attempt \(attempt)")
+                    Thread.sleep(forTimeInterval: 0.35)
+                    continue
+                }
+                Self.st("ST06_FAILED", "terminal \(ns.code) \(ns.localizedDescription.prefix(80))")
+                if ns.code == -10867 {
+                    model?.noteMicrophoneCaptureFailed("Microphone temporarily busy — retrying")
+                } else {
+                    model?.noteMicrophoneCaptureFailed(error.localizedDescription)
+                }
+                return false
+            }
         }
+        return false
     }
 
     private func handle(_ event: LiveVoiceEvent) async {

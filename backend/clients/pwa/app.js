@@ -47,6 +47,7 @@ const state = {
   hello: null,
   instanceId: sessionStorage.getItem("evie_instance") || crypto.randomUUID(),
   talking: false,
+  _talkInflight: false,
   audioLeader: false,
   ws: null,
   webrtc: null,
@@ -107,6 +108,7 @@ function setConn(next) {
   else if (next === "RECONNECTING") state.ui = "RECONNECTING";
   else if (next === "CONNECTING" || next === "AUTHENTICATING") state.ui = "CONNECTING";
   else if (next === "ACTIVE" && state.talking) state.ui = "LISTENING";
+  else if (next === "ACTIVE") state.ui = "CONNECTING";
   else if (next === "READY") state.ui = "READY";
   else if (next === "DISCONNECTED" && !state.deviceToken) state.ui = "UNPAIRED";
   render();
@@ -192,7 +194,7 @@ function render() {
   const online = state.conn === "READY" || state.conn === "ACTIVE";
   const offline = state.conn === "DISCONNECTED" || state.conn === "OFFLINE";
   textOf($("status"), offline && unpaired ? "Pair this device" : (online ? "Private" : state.conn));
-  $("talk").disabled = !online || state.ui === "OFFLINE";
+  $("talk").disabled = state._talkInflight || !online || state.ui === "OFFLINE" || state.ui === "CONNECTING";
   $("talk").textContent = state.talking ? "Stop" : "Talk";
   $("talk").setAttribute("aria-label", state.talking ? "Stop talking" : "Talk to Evie");
   const hello = state.hello || {};
@@ -1242,6 +1244,7 @@ async function handleCameraRequest(msg) {
 }
 
 async function talk() {
+  if (state._talkInflight) return;
   if (state.talking) {
     if (state.webrtc && state.webrtc.playBlocked) {
       try {
@@ -1257,61 +1260,72 @@ async function talk() {
     await stopTalk();
     return;
   }
-  if (window.EvieFeedback) window.EvieFeedback.emit("conversationStart", $("talk"));
-  claimAudioLeader();
-  setConn("ACTIVE");
-  setMood("Connecting microphone…");
-  $("talk").textContent = "Stop";
-  const opened = await api("/v1/device-gateway/live/open", {
-    method: "POST",
-    body: JSON.stringify({
-      instance_id: state.instanceId,
-      method: "manual",
-      media_backend: "webrtc_strict",
-    }),
-  });
-  state.sessionId = opened.session_id;
-  const want = opened.media_backend || "webrtc_strict";
-  const strict = opened.strict_webrtc === true || want === "webrtc_strict" || !opened.ws_ticket;
-  if ((want === "webrtc" || want === "webrtc_strict") && window.RTCPeerConnection && window.EvieWebRTC) {
-    try {
-      setMood("Connecting voice…");
-      await startWebRTC(opened);
-      return;
-    } catch (err) {
-      const diag = (err && err.diag) || (state.webrtc && state.webrtc.diag && state.webrtc.diag.snapshot());
-      state.connectionDiag = diag || {
-        failed_stage: err && err.failed_stage,
-        error_message: String(err && err.message || err),
-        http_status: err && (err.provider_status || err.status),
-      };
-      if (err && err.audio_blocked) {
-        state.talking = true;
-        state.caption = "Voice connected — tap to enable audio";
-        setMood("Voice connected — tap to enable audio");
-        render();
+  state._talkInflight = true;
+  render();
+  try {
+    if (window.EvieFeedback) window.EvieFeedback.emit("conversationStart", $("talk"));
+    claimAudioLeader();
+    setConn("ACTIVE");
+    setMood("Connecting microphone…");
+    $("talk").textContent = "Stop";
+    const opened = await api("/v1/device-gateway/live/open", {
+      method: "POST",
+      body: JSON.stringify({
+        instance_id: state.instanceId,
+        method: "manual",
+        media_backend: "webrtc_strict",
+      }),
+    });
+    state.sessionId = opened.session_id;
+    const want = opened.media_backend || "webrtc_strict";
+    const strict = opened.strict_webrtc === true || want === "webrtc_strict" || !opened.ws_ticket;
+    if ((want === "webrtc" || want === "webrtc_strict") && window.RTCPeerConnection && window.EvieWebRTC) {
+      try {
+        setMood("Connecting voice…");
+        await startWebRTC(opened);
+        return;
+      } catch (err) {
+        const diag = (err && err.diag) || (state.webrtc && state.webrtc.diag && state.webrtc.diag.snapshot());
+        state.connectionDiag = diag || {
+          failed_stage: err && err.failed_stage,
+          error_message: String(err && err.message || err),
+          http_status: err && (err.provider_status || err.status),
+        };
+        if (err && err.audio_blocked) {
+          state.talking = true;
+          state.caption = "Voice connected — tap to enable audio";
+          setMood("Voice connected — tap to enable audio");
+          render();
+          return;
+        }
+        if (state.webrtc) {
+          state.webrtc.stop();
+          state.webrtc = null;
+        }
+        const stage = (diag && diag.failed_stage) || (err && err.failed_stage) || "";
+        const msgLower = String(err && err.message || "").toLowerCase();
+        if (stage === "M02") state.caption = "Microphone access denied.";
+        else if (stage === "M14" || stage === "M15") state.caption = "Network connection failed.";
+        else if (msgLower.includes("mic") && msgLower.includes("ended")) state.caption = "Microphone ended.";
+        else if (msgLower.includes("auth") || msgLower.includes("revoked") || String(diag && diag.error_message || "").toLowerCase().includes("revoked")) state.caption = "Session expired — reconnecting.";
+        else if (stage === "M09" || stage === "M10") state.caption = "Couldn't connect to Evie Voice.";
+        else state.caption = "Couldn't connect to Evie Voice.";
+        setMood(stage === "M14" || stage === "M15" ? "Reconnecting" : "Voice unavailable");
+        await stopTalk();
         return;
       }
-      if (state.webrtc) {
-        state.webrtc.stop();
-        state.webrtc = null;
-      }
-      const stage = (diag && diag.failed_stage) || (err && err.failed_stage) || "";
-      if (stage === "M02") state.caption = "Microphone access denied.";
-      else if (stage === "M09" || stage === "M10") state.caption = "Couldn't connect to Evie Voice.";
-      else state.caption = "Couldn't connect to Evie Voice.";
+    }
+    if (strict) {
+      state.caption = "Couldn't connect to Evie Voice.";
       setMood("Voice unavailable");
       await stopTalk();
       return;
     }
+    await startPcm(opened);
+  } finally {
+    state._talkInflight = false;
+    render();
   }
-  if (strict) {
-    state.caption = "Couldn't connect to Evie Voice.";
-    setMood("Voice unavailable");
-    await stopTalk();
-    return;
-  }
-  await startPcm(opened);
 }
 
 async function startWebRTC(opened) {

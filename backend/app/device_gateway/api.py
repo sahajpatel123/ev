@@ -505,10 +505,6 @@ async def live_open(
 
     _check_origin(request)
     await claim_lease(session, device_id=device.id, instance_id=data.instance_id, method="manual")
-    if is_sandbox_device(device):
-        from .live_fence import fence_sandbox_lives
-
-        await fence_sandbox_lives()
     runtime = VoiceRuntime(session, master_key=settings.master_key, actor=f"device:{device.name}")
     try:
         outcome = await runtime.open_live_session(device_id=str(device.id))
@@ -553,14 +549,20 @@ async def live_open(
         "output_sample_rate": data.output_sample_rate,
         "mobile_voice_status": "OWNER FAILURE / CONNECTION CONVERGENCE",
     }
+    new_live = None
     if backend in WEBRTC_BACKENDS:
-        attach_phone_control_live(
+        new_live = attach_phone_control_live(
             device=device,
             session_id=str(outcome.session_id),
             actor=f"device:{device.name}",
             instance_id=data.instance_id,
             gateway_origin=gateway_origin(request),
         )
+        # Fence stale sandbox companions but never the just-created authoritative session.
+        if is_sandbox_device(device):
+            from .live_fence import fence_sandbox_lives
+
+            await fence_sandbox_lives(except_live=new_live)
         payload["sdp_path"] = "/v1/device-gateway/live/webrtc/sdp"
         payload["client_secret_path"] = "/v1/device-gateway/live/webrtc/client-secret"
         payload["control_events_path"] = "/v1/device-gateway/live/events"

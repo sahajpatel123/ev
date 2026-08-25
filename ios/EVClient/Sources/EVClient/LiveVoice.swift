@@ -190,8 +190,8 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         return stream
     }
 
-    /// Bounded keepalive: ping every 15s; two consecutive unanswered pongs
-    /// (~30s) declare the link dead and hand recovery to the reconnect loop.
+    /// Bounded keepalive: ping every 5s; 3 strikes (~15s) for half-open.
+    /// Explicit receive() failure still reconnects immediately (no ping wait).
     private func startPingWatchdog(for task: URLSessionWebSocketTask, generation: Int) {
         pingTask?.cancel()
         lock.lock()
@@ -199,10 +199,10 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         lock.unlock()
         pingTask = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard let self, self.isCurrent(task, generation: generation) else { return }
                 let strikes = self.registerPingSent()
-                if strikes >= 2 {
+                if strikes >= 3 {
                     self.failDeadLink(task, generation: generation)
                     return
                 }
