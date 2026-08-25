@@ -1,5 +1,20 @@
 import os
+import sys
 import tempfile
+
+# P0 CLOSURE GUARD (PART 8): test runs must never mutate production owner
+# state. Live-DB opt-in is refused against a production environment unless
+# an operator explicitly allows it for that single invocation.
+if (
+    os.environ.get("EV_TEST_USE_LIVE_DB") == "1"
+    and os.environ.get("EV_ENV", "").strip().lower() == "production"
+    and os.environ.get("EV_ALLOW_PROD_TESTS", "") != "1"
+):
+    sys.exit(
+        "REFUSING TO RUN TESTS AGAINST PRODUCTION. "
+        "Unset EV_TEST_USE_LIVE_DB (isolated DB) or set EV_ALLOW_PROD_TESTS=1 "
+        "for this one invocation."
+    )
 
 _TMP = tempfile.mkdtemp(prefix="ev-tests-")
 # Never inherit the owner's live DATABASE_URL. pytest drop_all would wipe
