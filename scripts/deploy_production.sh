@@ -32,6 +32,14 @@ remote = git("rev-parse", "origin/main").stdout.strip()
 if local != remote: fail(400, f"DEPLOY_REFUSED: local HEAD {local[:10]} != origin/main {remote[:10]} (push first).")
 if dirty: fail(400, "DEPLOY_REFUSED: working tree dirty.")
 
+# FROZEN-CONTRACT REGRESSION GATE (P0/P1 permanent law): every production
+# deploy must run the core shield that protects G1 + Voice + G2.1.
+# If the shield fails, do not deploy — the new change is blocked.
+print("Running frozen-contract core shield (G1/Voice/G2.1)...", file=sys.stderr)
+r = subprocess.run(["uv", "run", "pytest", "backend/tests/test_regression_golden.py", "-q"], cwd=EVIE)
+if r.returncode != 0:
+    fail(500, "DEPLOY_REFUSED: frozen-contract core shield FAILED — new change would regress an owner-verified capability")
+
 subprocess.run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/ev.api"], capture_output=True)
 
 expected = local[:10]; health_sha = None; got = False
