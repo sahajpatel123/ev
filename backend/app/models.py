@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -33,6 +34,7 @@ EmbeddingType = Vector(EMBEDDING_DIM).with_variant(JSON, "sqlite")
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 
+
 class Event(Base):
     """Raw, immutable input. Tombstoned, never updated or deleted."""
 
@@ -55,6 +57,53 @@ class Event(Base):
     idempotency_key_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tombstone_reason: Mapped[str | None] = mapped_column(String(512))
+    # G2 P0.2 STREAM ORDER LAW: server-owned delivery position inside the
+    # current StateEpoch lineage. occurred_at answers "when it happened";
+    # stream_seq answers "when it entered this stream". Assigned by the DB
+    # sequence (migration p2q3r4s5t6u7); immutable once issued; never
+    # derived from occurred_at or client input.
+    stream_seq: Mapped[int | None] = mapped_column(
+        BigInteger(), unique=True, index=True
+    )
+
+
+class EventStreamPosition(Base):
+    """Durable monotonic allocator for EVENT STREAM ORDER (P0.2 PART 2).
+
+    Single-row counter incremented inside each inserting transaction.
+    Row-level locking serializes concurrent writers -> positions are unique
+    and monotonic. Transaction rollback removes both the Event and its
+    counter increment together (no permanent gaps, no stale locks).
+    """
+
+    __tablename__ = "event_stream_position"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    last_seq: Mapped[int] = mapped_column(BigInteger(), nullable=False)
+
+
+from sqlalchemy import event as _sa_event
+
+
+def _assign_event_stream_seq(mapper, connection, target) -> None:
+    if getattr(target, "stream_seq", None) is not None:
+        return
+    connection.execute(
+        text(
+            "INSERT INTO event_stream_position (id, last_seq) VALUES (1, 1) "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+    )
+    row = connection.execute(
+        text(
+            "UPDATE event_stream_position SET last_seq = last_seq + 1 "
+            "WHERE id = 1 RETURNING last_seq"
+        )
+    ).scalar_one()
+    target.stream_seq = int(row)
+
+
+_sa_event.listen(Event.__mapper__, "before_insert", _assign_event_stream_seq)
 
 
 class Entity(Base):

@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import delete, inspect, select, update
+from sqlalchemy import delete, inspect, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -294,6 +294,10 @@ async def _delete_voice_replay_nonces(session: AsyncSession) -> None:
     await session.execute(_text("DELETE FROM voice_replay_nonces WHERE session_id IS NOT NULL"))
 
 
+def bind_dialect_is_postgresql(session) -> bool:
+    return session.bind is not None and session.bind.dialect.name == 'postgresql'
+
+
 async def _wipe_data_tables(session: AsyncSession) -> None:
     """Delete the personal-data layer and its dependent operational rows.
 
@@ -380,15 +384,15 @@ async def _wipe_data_tables(session: AsyncSession) -> None:
         if not pending:
             break
         children = sorted({r.child for r in pending})
-        progressed = False
         for child in children:
             try:
                 await session.execute(_text(f'DELETE FROM "{child}"'))
                 if child not in roots:
                     roots.append(child)
-                progressed = True
             except Exception:
                 await session.rollback()
+                # Child could not be purged this round; a later sweep
+                # iteration retries it (bounded by the outer loop).
 
     # 3) The canonical roots themselves.
     await session.execute(delete(Attachment))
@@ -563,6 +567,15 @@ async def restore_backup(
     # is impossible; if the restore fails, no rotation is advertised.
     from app.ops.state_epoch import rotate_epoch
 
+    # P0.2: replayed rows carry their original stream_seq values; re-align
+    # the allocator past them so future events cannot collide.
+    if bind_dialect_is_postgresql(session):
+        await session.execute(
+            text(
+                "SELECT setval('events_stream_seq_seq', "
+                "COALESCE((SELECT MAX(stream_seq) FROM events), 0) + 1, false)"
+            )
+        )
     new_epoch = await rotate_epoch(
         session,
         reason=(

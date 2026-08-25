@@ -51,6 +51,8 @@ VISIBLE_SOURCES: tuple[str, ...] = ("life", SOURCE)
 
 SENSITIVE = "sensitive"
 
+CURSOR_VERSION = "v2"
+
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 200
 
@@ -78,6 +80,15 @@ def _visible_filters(*, owner_trusted: bool) -> list[Any]:
 #
 # Every cursor embeds the epoch it was minted under; a cursor from any other
 # lineage is rejected with STATE_EPOCH_MISMATCH -> fresh bootstrap.
+#
+# P0.2 STREAM ORDER LAW: occurred_at = WHEN the semantic event happened.
+# events.stream_seq = WHEN it entered THIS canonical delivery stream
+# (server-assigned monotonic position, immutable, never client-controlled,
+# never derived from occurred_at). Incremental delivery is ordered and
+# cursor-ed by stream_seq so late-arriving / recovered historical events
+# can never fall behind an already-issued cursor. Cursor shape v2:
+#   "v2|{epoch}|{stream_seq}"
+# Legacy shapes are rejected with CURSOR_FORMAT_UPGRADE resets.
 # ---------------------------------------------------------------------------
 
 
@@ -94,48 +105,61 @@ def _type_prefix_or(filters: list[Any]) -> list[Any]:
 
 
 async def current_cursor(session: AsyncSession, *, owner_trusted: bool = True) -> dict | None:
-    """Latest visible event — the cursor a fresh client should start from."""
+    """High-water cursor (P0.2): newest visible event by STREAM ORDER.
+
+    Captured before snapshot reads per the no-loss bootstrap law."""
     stmt = (
         select(Event)
         .where(*_type_prefix_or(_visible_filters(owner_trusted=owner_trusted)))
-        .order_by(Event.occurred_at.desc(), Event.id.desc())
+        .order_by(Event.stream_seq.desc().nulls_last(), Event.id.desc())
         .limit(1)
     )
     row = (await session.execute(stmt)).scalar_one_or_none()
     if row is None:
         return None
     epoch = await state_epoch(session)
+    seq = int(getattr(row, "stream_seq", 0) or 0)
+    if seq <= 0:
+        return {
+            "epoch": epoch,
+            "stream_seq": None,
+            "at": row.occurred_at.isoformat(),
+            "id": str(row.id),
+            "legacy": True,
+        }
     return {
         "epoch": epoch,
+        "stream_seq": seq,
         "at": row.occurred_at.isoformat(),
         "id": str(row.id),
     }
 
 
-def format_cursor(event: Event, epoch: str | None = None) -> str:
-    if epoch:
-        return f"{epoch}|{event.occurred_at.isoformat()}|{event.id}"
-    return f"{event.occurred_at.isoformat()}|{event.id}"
+def format_v2_cursor(epoch: str, seq: int) -> str:
+    return f"{CURSOR_VERSION}|{epoch}|{seq}"
 
 
-def parse_cursor(raw: str | None) -> tuple[str | None, datetime, UUID] | None | str:
-    """Parse an opaque cursor.
+def parse_cursor(raw: str | None) -> dict | str:
+    """Parse a sync cursor with explicit versioning.
 
-    Returns (epoch, at, id), (None, at, id) for legacy pre-epoch cursors,
-    None when absent, or 'invalid' when malformed.
+    {"kind":"none"} | {"kind":"invalid"} |
+    {"kind":"legacy","at","id"}                       pre-P0.2 two-part
+    {"kind":"v1","epoch","at","id"}                   P0 epoch+time shape
+    {"kind":"v2","epoch","seq"}                       P0.2 stream position
     """
     if not raw:
-        return None
+        return {"kind": "none"}
     parts = raw.split("|")
     try:
+        if len(parts) == 3 and parts[0] == CURSOR_VERSION:
+            return {"kind": "v2", "epoch": parts[1], "seq": int(parts[2])}
         if len(parts) == 3:
             epoch, at_raw, id_raw = parts
             at = _parse_iso(at_raw)
-            return (epoch, at, UUID(id_raw))
+            return {"kind": "v1", "epoch": epoch, "at": at, "id": UUID(id_raw)}
         if len(parts) == 2:
-            at_raw, id_raw = parts
-            at = _parse_iso(at_raw)
-            return (None, at, UUID(id_raw))
+            at = _parse_iso(parts[0])
+            return {"kind": "legacy", "at": at, "id": UUID(parts[1])}
     except (ValueError, TypeError):
         pass
     return "invalid"
@@ -157,45 +181,74 @@ async def changes(
     cursor: str | None = None,
     limit: int = DEFAULT_PAGE_LIMIT,
 ) -> dict:
-    """Bounded delta after a cursor, ascending, relevance+privacy filtered."""
+    """Bounded delta after a cursor.
+
+    P0.2 STREAM ORDER LAW: delivery is ordered and cursor-ed by
+    events.stream_seq (server-assigned ingestion position inside the
+    lineage), never by occurred_at — so late-arriving / recovered history
+    with old semantic timestamps is always delivered after the cursor that
+    predates its import. Legacy/v1 cursors cannot be continued after the
+    stream-order migration and receive CURSOR_FORMAT_UPGRADE.
+    """
     limit = max(1, min(int(limit or DEFAULT_PAGE_LIMIT), MAX_PAGE_LIMIT))
     parsed = parse_cursor(cursor)
-    if parsed == "invalid":
+    if parsed == "invalid" or parsed["kind"] == "invalid":
         return {"ok": False, "error": "CURSOR_INVALID", "reset_required": True}
 
-    # STATE EPOCH LAW (P0 Phase 13/14): a cursor minted under a different
-    # canonical history lineage can never be continued. Old-epoch and legacy
-    # pre-epoch cursors get an explicit reset so clients rebuild from the
-    # current lineage instead of silently mixing histories.
+    # STATE EPOCH LAW: foreign-lineage cursors can never be continued.
     current_epoch = await state_epoch(session)
-    if parsed is not None:
-        cursor_epoch = parsed[0]
-        if cursor_epoch != current_epoch:
-            return {
-                "ok": False,
-                "error": "STATE_EPOCH_MISMATCH",
-                "reset_required": True,
-                "expected_epoch": current_epoch,
-            }
+
+    if parsed["kind"] in {"legacy", "v1"}:
+        return {
+            "ok": False,
+            "error": "CURSOR_FORMAT_UPGRADE",
+            "reset_required": True,
+            "expected_cursor_version": CURSOR_VERSION,
+            "expected_epoch": current_epoch,
+        }
+    if parsed["kind"] == "v2" and parsed["epoch"] != current_epoch:
+        return {
+            "ok": False,
+            "error": "STATE_EPOCH_MISMATCH",
+            "reset_required": True,
+            "expected_epoch": current_epoch,
+        }
 
     owner_trusted = bool(ctx.is_master or (ctx.device is not None and ctx.device.trust_level == "owner"))
     filters = _type_prefix_or(_visible_filters(owner_trusted=owner_trusted))
-    if parsed is not None:
-        _, at, eid = parsed
-        if utcnow() - at > timedelta(days=CURSOR_MAX_AGE_DAYS):
-            return {"ok": False, "error": "CURSOR_TOO_OLD", "reset_required": True}
-        filters.append(tuple_(Event.occurred_at, Event.id) > tuple_(at, eid))
+
+    cursor_seq: int | None = None
+    if parsed["kind"] == "v2":
+        cursor_seq = int(parsed["seq"])
+        filters.append(Event.stream_seq > cursor_seq)
+    elif parsed is not None and parsed.get("kind") == "none":
+        pass  # no cursor -> full visible stream (bounded)
+    else:
+        cursor_seq = None
+
     stmt: Select = (
         select(Event)
         .where(*filters)
-        .order_by(Event.occurred_at.asc(), Event.id.asc())
+        .order_by(Event.stream_seq.asc().nulls_last(), Event.id.asc())
         .limit(limit + 1)
     )
     rows = (await session.execute(stmt)).scalars().all()
     has_more = len(rows) > limit
     rows = rows[:limit]
     events = [_public_event(e) for e in rows]
-    next_cursor = format_cursor(rows[-1], epoch=current_epoch) if rows else cursor
+    last = rows[-1] if rows else None
+    if last is not None and int(getattr(last, "stream_seq", 0) or 0) > 0:
+        next_cursor = format_v2_cursor(current_epoch, int(last.stream_seq))
+    elif rows:
+        # Pre-migration rows without positions: fall back to the caller's
+        # cursor so nothing is silently marked delivered.
+        next_cursor = cursor or format_v2_cursor(current_epoch, 0)
+    else:
+        next_cursor = (
+            format_v2_cursor(current_epoch, cursor_seq)
+            if cursor_seq is not None
+            else cursor
+        )
     await _advance_device_cursor(session, ctx, next_cursor)
     return {
         "ok": True,
@@ -204,6 +257,7 @@ async def changes(
         "next_cursor": next_cursor,
         "has_more": has_more,
         "epoch": current_epoch,
+        "cursor_version": CURSOR_VERSION,
     }
 
 
@@ -213,6 +267,7 @@ def _public_event(e: Event) -> dict:
         "type": e.event_type,
         "source": e.source,
         "at": e.occurred_at.isoformat(),
+        "stream_seq": getattr(e, "stream_seq", None),
         "device_id": e.device_id,
         "privacy_level": e.privacy_level,
         "content": e.content or {},
@@ -220,12 +275,18 @@ def _public_event(e: Event) -> dict:
 
 
 async def _advance_device_cursor(session: AsyncSession, ctx: ActorContext, cursor: str | None) -> None:
+    """Advisory telemetry only (PART 17 law): the CLIENT-supplied cursor is
+    resume truth. v2 cursors carry no wall-clock component, so the legacy
+    sync_cursor_at column is left untouched for them."""
     if ctx.device is None or not cursor:
         return
     parsed = parse_cursor(cursor)
-    if parsed is None or parsed == "invalid":
+    if parsed is None or parsed == "invalid" or parsed.get("kind") == "v2":
         return
-    _, at, eid = parsed
+    at = parsed.get("at")
+    eid = parsed.get("id")
+    if at is None or eid is None:
+        return
     device: Device = ctx.device
     device.sync_cursor_at = at
     device.sync_cursor_id = eid

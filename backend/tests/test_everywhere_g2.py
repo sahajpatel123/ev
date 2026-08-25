@@ -225,20 +225,29 @@ async def test_cursor_invalid_and_too_old_fallbacks(db_session: AsyncSession):
         MASTER_CTX,
         cursor=f"{old_at.isoformat()}|00000000-0000-0000-0000-000000000000",
     )
-    assert stale["error"] == "STATE_EPOCH_MISMATCH" and stale["reset_required"]
+    assert stale["error"] == "CURSOR_FORMAT_UPGRADE" and stale["reset_required"]
 
-    # A CURRENT-epoch cursor with a too-old timestamp still gets CURSOR_TOO_OLD.
+    # P0.2 LAW: in v2 cursors, stream_seq owns delivery order — wall-clock
+    # age is irrelevant. A current-lineage v2 cursor with a small seq is
+    # simply an old POSITION and must replay everything after it.
     epoch = await state_epoch(db_session)
     assert epoch is not None
-    ancient_same_epoch = await changes(
+    from app.everywhere.sync import format_v2_cursor
+
+    v2_ancient = await changes(
         db_session,
         MASTER_CTX,
-        cursor=f"{epoch}|{old_at.isoformat()}|00000000-0000-0000-0000-000000000000",
+        cursor=format_v2_cursor(epoch, 0),
+        limit=200,
     )
-    assert (
-        ancient_same_epoch["error"] == "CURSOR_TOO_OLD"
-        and ancient_same_epoch["reset_required"]
+    assert v2_ancient["ok"] is True
+    # And a foreign-lineage v2 cursor is refused outright.
+    foreign = await changes(
+        db_session,
+        MASTER_CTX,
+        cursor=format_v2_cursor("00000000-aaaa-bbbb-cccc-dddddddddddd", 5),
     )
+    assert foreign["error"] == "STATE_EPOCH_MISMATCH" and foreign["reset_required"]
 
 
 async def test_bootstrap_snapshot_shape(db_session: AsyncSession):
