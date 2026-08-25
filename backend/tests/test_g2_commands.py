@@ -316,3 +316,87 @@ async def test_restore_endpoint_rejects_without_confirmation(api_client, monkeyp
     )
     assert r.status_code == 403
     assert r.json()["detail"]["error_code"] == "CONFIRMATION_REQUIRED"
+
+
+# ---------------------------------------------------------------------------
+# P0.1 FIELD-READ CONTRACT (PART 16 test matrix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_field_read_matrix(db_session):
+    from app.device_gateway.pipeline import run_trusted_device_turn
+
+    d = Device(
+        name="Field Read Phone",
+        token_hash="field-read-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    created = await life.create_project(
+        db_session, actor=MASTER, title="G2.1 Continuity Canary", priority="NORMAL"
+    )
+    await db_session.commit()
+    pid = created["project"]["id"]
+
+    async def ask(text, focus=None):
+        return await run_trusted_device_turn(
+            db_session, device=d, text=text, focus_title=focus
+        )
+
+    # TEST A — list includes the canary.
+    r = await ask("What projects do I have?")
+    assert r["ok"] and "Continuity Canary" in (r.get("reply") or "")
+
+    # TEST B — explicit field read → NORMAL present.
+    r = await ask("What is the priority of G2.1 Continuity Canary?")
+    assert r["ok"] and r["route"] == "STATE_QUERY"
+    assert "normal" in (r.get("reply") or "").lower()
+
+    # TEST C — same-session possessive follow-up via focus resolution.
+    r = await ask("What is its priority?", focus="G2.1 Continuity Canary")
+    assert r["ok"] and r["route"] == "STATE_QUERY"
+    assert "normal" in (r.get("reply") or "").lower()
+
+    # TEST D — bare "priority level" follow-up via focus resolution.
+    r = await ask("What is the priority level?", focus="G2.1 Continuity Canary")
+    assert r["ok"] and "normal" in (r.get("reply") or "").lower()
+
+    # TEST E — nonexistent project → canonical not-found, never done.
+    r = await ask("What is the priority of Ghost Project XYZ?")
+    assert r["ok"] is False or "couldn't" in (r.get("reply") or "").lower() or r.get("error_code")
+
+    # No mutation occurred.
+    row = await life.get_project(db_session, actor=MASTER, project_id=pid)
+    assert row["project"]["priority"] == "NORMAL"
+    assert int(row["project"]["version"]) == int(created["project"]["version"])
+
+
+def test_broker_spec_includes_entity_name():
+    from app.device_gateway.webrtc_live import _evie_state_query_spec
+
+    props = _evie_state_query_spec()["parameters"]["properties"]
+    assert "entity_name" in props
+    assert "query_text" in props
+
+
+@pytest.mark.asyncio
+async def test_conversational_never_returns_done(db_session):
+    """PART 6 LAW: a STATE broker must not answer conversational turns with
+    "Done." — Core asserts no canonical state; the provider converses."""
+    from app.device_gateway.pipeline import run_trusted_device_turn
+
+    d = Device(
+        name="Conv Phone", token_hash="conv-phone", trust_level="owner",
+        memory_scope=None, device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+    r = await run_trusted_device_turn(
+        db_session, device=d, text="Tell me a joke"
+    )
+    assert r.get("conversational") is True
+    assert r.get("reply") is None
+    assert (r.get("reply") or "") != "Done."

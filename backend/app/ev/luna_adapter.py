@@ -239,6 +239,20 @@ def _rule_based_intent(turn: str, context: dict | None = None) -> TurnIntent:
     if m:
         return TurnIntent(route="STATE_QUERY", operation="PROJECT_GET", project_title=m.group(1).strip(" ?\"'").title(), confidence=0.95)
 
+    # Bare priority follow-up with no resolvable entity: structured
+    # clarification, never generic conversation (PART 8/10).
+    if re.search(
+        r"^what(?:'s|\s+is)(?:\s+(?:its|the|his|her))?\s*"
+        r"(?:priority(?:\s+level)?|status)\s*(?:of\s+[a-z0-9 ]+)?\?*$",
+        low_stripped,
+    ):
+        return TurnIntent(
+            route="CLARIFICATION", operation="UNKNOWN",
+            needs_clarification=True,
+            clarification_question="Which project?",
+            confidence=0.9,
+        )
+
     # STATE_QUERY: explicit project lookup — "find/look up the X project"
     m = re.search(
         r"\b(?:find|look\s?up|search\s+for|open|show(?:\s+me)?)\s+(?:the\s+|my\s+)?project\s+(?:called\s+)?['\"]?(.+?)['\"]?\s*\??$",

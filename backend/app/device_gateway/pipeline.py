@@ -357,7 +357,15 @@ async def run_trusted_device_turn(
     device: Device,
     text: str,
     idempotency_key: str | None = None,
+    focus_title: str | None = None,
 ) -> dict[str, Any]:
+    """focus_title: SAME-SESSION bounded entity focus (P0.1 PART 7).
+
+    When the provider reports the entity currently under discussion and the
+    owner's words are a bare field follow-up ("what is the priority level?"),
+    the query is deterministically rewritten to name that entity. No
+    cross-device context architecture — this is one session's focus."""
+
     from app.ev.owner_turn import create_owner_turn
     from app.ev.turn_gate import handle_owner_turn
     from app.everywhere.owner import owner_scope
@@ -379,12 +387,29 @@ async def run_trusted_device_turn(
             "turn_id": None,
         }
 
+    effective_text = text or ""
+    if (
+        focus_title
+        and focus_title not in effective_text
+        and __import__("re").search(
+            r"\b(priority|status|due|state)\b", effective_text, __import__("re").IGNORECASE
+        )
+    ):
+        # Bare field follow-up about the focused entity: rewrite into a
+        # canonical form the deterministic router resolves (PROJECT_GET).
+        lowered = effective_text.lower()
+        if "priority" in lowered:
+            effective_text = f"What is the priority of {focus_title}?"
+        elif "status" in lowered or "state" in lowered:
+            effective_text = f"What is the status of {focus_title}?"
+        elif "due" in lowered:
+            effective_text = f"When is {focus_title} due?"
     turn = create_owner_turn(
         live_session_id=f"device-text:{device.id}",
         provider_item_id=idempotency_key,
         owner_id="master",
         device_id=str(device.id),
-        transcript=text or "",
+        transcript=effective_text,
         transcript_source="device_text",
         turn_id=(
             f"text-{device.id}-{idempotency_key}" if idempotency_key else None
@@ -413,6 +438,19 @@ async def run_trusted_device_turn(
             "route": "UNSUPPORTED",
             "operation": "UNKNOWN",
             "needs_clarification": False,
+            "turn_id": turn.turn_id,
+        }
+    if result.route == "CONVERSATION":
+        # P0.1 PART 6 LAW: a STATE broker must never answer a conversational
+        # turn with "Done." Signal the provider to answer from its own
+        # conversation; Core asserted there is no canonical state here.
+        return {
+            "ok": True,
+            "conversational": True,
+            "reply": None,
+            "error_code": None,
+            "route": "CONVERSATION",
+            "operation": "UNKNOWN",
             "turn_id": turn.turn_id,
         }
     reply = result.owner_message or (

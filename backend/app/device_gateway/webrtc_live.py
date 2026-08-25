@@ -124,7 +124,14 @@ def _evie_state_query_spec() -> dict[str, Any]:
                 "query_text": {
                     "type": "string",
                     "description": "The owner's request in their own words.",
-                }
+                },
+                "entity_name": {
+                    "type": "string",
+                    "description": (
+                        "Name of the project/goal/commitment under discussion "
+                        "when the owner uses a pronoun or omits the name."
+                    ),
+                },
             },
             "required": ["query_text"],
         },
@@ -655,11 +662,26 @@ async def run_phone_tool(
                 )
             from .pipeline import run_trusted_device_turn
 
+            a = args or {}
             result = await run_trusted_device_turn(
                 db,
                 device=drow,
-                text=str((args or {}).get("query_text") or ""),
+                text=str(a.get("query_text") or ""),
                 idempotency_key=call_id,
+                focus_title=a.get("entity_name"),
+            )
+        if result.get("conversational"):
+            # PART 6/11: hand back to the provider's own conversation.
+            return compact_live_tool_json(
+                {
+                    "ok": True,
+                    "conversational": True,
+                    "spoken": "",
+                    "hint": (
+                        "No canonical state matched; answer the owner "
+                        "conversationally yourself."
+                    ),
+                }
             )
         spoken = result.get("reply") or (
             "Done." if result.get("ok") else "That didn't complete."
