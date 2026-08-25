@@ -26,7 +26,13 @@ from app.everywhere.continuity import resume_context
 from app.everywhere.devices import health_summary
 from app.everywhere.mission_control import status as mc_status
 from app.everywhere.owner import CANONICAL_OWNER, owner_scope
-from app.everywhere.sync import bootstrap, changes, current_cursor, emit_everywhere_event
+from app.everywhere.sync import (
+    bootstrap,
+    changes,
+    current_cursor,
+    emit_everywhere_event,
+    state_epoch,
+)
 from app.life import service as life
 from app.models import (
     ApprovedAction,
@@ -211,11 +217,28 @@ async def test_cursor_invalid_and_too_old_fallbacks(db_session: AsyncSession):
     bad = await changes(db_session, MASTER_CTX, cursor="garbage", limit=10)
     assert bad["error"] == "CURSOR_INVALID" and bad["reset_required"]
 
+    # P0 STATE EPOCH LAW: a legacy pre-epoch cursor belongs to an unknown
+    # lineage and must reset (supersedes the old CURSOR_TOO_OLD check).
     old_at = utcnow() - timedelta(days=60)
     stale = await changes(
-        db_session, MASTER_CTX, cursor=f"{old_at.isoformat()}|00000000-0000-0000-0000-000000000000"
+        db_session,
+        MASTER_CTX,
+        cursor=f"{old_at.isoformat()}|00000000-0000-0000-0000-000000000000",
     )
-    assert stale["error"] == "CURSOR_TOO_OLD" and stale["reset_required"]
+    assert stale["error"] == "STATE_EPOCH_MISMATCH" and stale["reset_required"]
+
+    # A CURRENT-epoch cursor with a too-old timestamp still gets CURSOR_TOO_OLD.
+    epoch = await state_epoch(db_session)
+    assert epoch is not None
+    ancient_same_epoch = await changes(
+        db_session,
+        MASTER_CTX,
+        cursor=f"{epoch}|{old_at.isoformat()}|00000000-0000-0000-0000-000000000000",
+    )
+    assert (
+        ancient_same_epoch["error"] == "CURSOR_TOO_OLD"
+        and ancient_same_epoch["reset_required"]
+    )
 
 
 async def test_bootstrap_snapshot_shape(db_session: AsyncSession):

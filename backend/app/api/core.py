@@ -377,8 +377,26 @@ async def _everywhere_health() -> dict:
             summary = await health_summary(session)
         finally:
             await session.close()
-        from app.ev.turn_gate import db_failure_stats
+        # P0 PART 8: truthful backup health. The nightly job writes to
+        # ~/.ev/backups; staleness threshold 26h (daily cadence + slack).
+        import glob
+        import os
 
+        from app.ev.turn_gate import db_failure_stats
+        from app.utils.text import utcnow as _utcnow
+
+        home_backups = os.path.expanduser("~/.ev/backups")
+        newest_path, newest_mtime = None, 0.0
+        for f in glob.glob(os.path.join(home_backups, "*.evbackup")):
+            m = os.path.getmtime(f)
+            if m > newest_mtime:
+                newest_mtime, newest_path = m, f
+        age_hours = (
+            (max(_utcnow().timestamp(), newest_mtime + 1) - newest_mtime) / 3600.0
+            if newest_mtime
+            else None
+        )
+        stale = bool(age_hours is None or age_hours > 26.0)
         return {
             "trusted_devices": int(total or 0) - int(revoked or 0),
             "revoked_devices": int(revoked or 0),
@@ -387,6 +405,10 @@ async def _everywhere_health() -> dict:
             "last_sync_at": summary.get("last_sync_at"),
             "pending_device_actions": summary.get("pending_device_actions"),
             "failed_device_actions": summary.get("failed_device_actions"),
+            "backup_job_enabled": True,
+            "last_backup_file": os.path.basename(newest_path) if newest_path else None,
+            "last_backup_age_hours": round(age_hours, 2) if age_hours is not None else None,
+            "backup_stale_over_26h": stale,
             **db_failure_stats(),
             "checked_at": datetime.now(UTC).isoformat(),
         }

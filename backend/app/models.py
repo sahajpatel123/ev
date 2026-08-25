@@ -2354,3 +2354,24 @@ class Commitment(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
     fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class StateEpoch(Base):
+    """G2 P0: canonical history lineage identity (explicit, server-owned).
+
+    One row per lineage-replacing transition. The CURRENT epoch is the most
+    recent row. Stable across normal semantic activity, restarts, deploys,
+    and event pruning; changes ONLY on destructive restore / wipe / explicit
+    canonical-history replacement.
+    """
+
+    __tablename__ = "state_epoch"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    epoch_id: Mapped[UUID] = mapped_column(Uuid, unique=True, index=True, default=uuid4)
+    previous_epoch_id: Mapped[UUID | None] = mapped_column(Uuid)
+    reason: Mapped[str] = mapped_column(String(256))
+    environment: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )

@@ -19,6 +19,7 @@ No tokens are printed in logs. Tokens expire. One token = one execution.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import os
 import secrets
@@ -184,3 +185,54 @@ def require_production_maintenance_gate(operation: str, target: str) -> None:
             "Production destructive operations require EV_MAINTENANCE_MODE=1.",
         )
     del operation, target
+
+
+# ---------------------------------------------------------------------------
+# PART 6 — EXCLUSIVE DESTRUCTIVE MAINTENANCE LOCK.
+#
+# At most ONE destructive operation machine-wide. Implemented with a
+# kernel-level flock on a lock file: automatically released on ANY process
+# exit (crash-safe, no stale permanent locks), held for the duration of
+# execution only. A second concurrent execute receives
+# MAINTENANCE_OPERATION_IN_PROGRESS immediately.
+# ---------------------------------------------------------------------------
+
+_LOCK_PATH = os.path.join(
+    os.environ.get("EV_STORAGE_ROOT", "./storage"), "ops", "destructive.lock"
+)
+
+
+class MaintenanceLockBusy(DestructiveOperationError):
+    def __init__(self):
+        super().__init__(
+            "MAINTENANCE_OPERATION_IN_PROGRESS",
+            "Another destructive maintenance operation is running.",
+            status=409,
+        )
+
+
+class exclusive_destructive_lock:
+    """Context manager: non-blocking exclusive lock or explicit busy error."""
+
+    def __enter__(self):
+        import fcntl
+
+        path = _LOCK_PATH
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self._fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(self._fd)
+            raise MaintenanceLockBusy() from None
+        os.write(self._fd, str(os.getpid()).encode())
+        return self
+
+    def __exit__(self, *exc):
+        import fcntl
+
+        with contextlib.suppress(Exception):
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+        with contextlib.suppress(Exception):
+            os.close(self._fd)
+        return False

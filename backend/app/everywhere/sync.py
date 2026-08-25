@@ -67,20 +67,24 @@ def _visible_filters(*, owner_trusted: bool) -> list[Any]:
 
 
 # ---------------------------------------------------------------------------
-# STATE EPOCH (P0 Phase 13-15): canonical history lineage identity.
+# STATE EPOCH (P0): explicit server-owned lineage identity.
 #
-# The epoch is derived from the EARLIEST surviving canonical event id. A
-# destructive restore/reseed replaces history, so the earliest id changes;
-# every cursor embeds the epoch it was minted under, and any cursor from a
-# different epoch is rejected with EPOCH_MISMATCH -> fresh bootstrap instead
-# of silently continuing across a broken lineage.
+# Backed by the ``state_epoch`` table (app.ops.state_epoch). The epoch is a
+# random opaque id representing the canonical DATABASE/HISTORY LINEAGE. It
+# is stable through normal semantic activity, restarts, deploys, migrations,
+# and event pruning. It changes ONLY on lineage-replacing operations
+# (destructive restore / wipe / explicit replacement), which rotate it in
+# the same transaction as the replacing write.
+#
+# Every cursor embeds the epoch it was minted under; a cursor from any other
+# lineage is rejected with STATE_EPOCH_MISMATCH -> fresh bootstrap.
 # ---------------------------------------------------------------------------
 
 
 async def state_epoch(session: AsyncSession) -> str | None:
-    stmt = select(Event.id).order_by(Event.occurred_at.asc(), Event.id.asc()).limit(1)
-    row = (await session.execute(stmt)).scalar_one_or_none()
-    return str(row) if row is not None else None
+    from app.ops.state_epoch import ensure_current_epoch
+
+    return await ensure_current_epoch(session)
 
 
 def _type_prefix_or(filters: list[Any]) -> list[Any]:

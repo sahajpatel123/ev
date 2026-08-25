@@ -150,17 +150,20 @@ async def restore_backup_endpoint(
         )
     except DestructiveOperationError as exc:
         raise HTTPException(status_code=exc.status, detail={"error_code": exc.code, "message": exc.message}) from None
-    try:
-        result = await restore_backup(
-            session,
-            path=data.path,
-            passphrase=data.passphrase,
-            mode=data.mode,
-            confirm_wipe=data.confirm_wipe,
-            actor=actor,
-        )
-    except BackupError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+    from app.ops.destructive_maintenance import exclusive_destructive_lock
+
+    with exclusive_destructive_lock():
+        try:
+            result = await restore_backup(
+                session,
+                path=data.path,
+                passphrase=data.passphrase,
+                mode=data.mode,
+                confirm_wipe=data.confirm_wipe,
+                actor=actor,
+            )
+        except BackupError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
     await log_access(
         session,
         actor=actor,

@@ -184,6 +184,12 @@ async def create_backup(
     payload = await _collect_payload(session)
     plaintext = _canonical_plaintext(payload)
     ciphertext, salt = encrypt_payload(payload, master_key=passphrase)
+    # P0 PART 3: backups carry lineage metadata (explicit STATE_EPOCH +
+    # environment). The epoch recorded here is the SOURCE lineage at backup
+    # time; a later restore still rotates to a NEW active epoch.
+    from app.ops.state_epoch import envelope_metadata, get_current_epoch_id
+
+    source_epoch = await get_current_epoch_id(session)
     envelope = {
         "schema": BACKUP_SCHEMA,
         "created_at": utcnow().isoformat(),
@@ -191,6 +197,10 @@ async def create_backup(
         "salt": salt,
         "plaintext_sha256": hashlib.sha256(plaintext).hexdigest(),
         "counts": payload["counts"],
+        **envelope_metadata(
+            source_epoch,
+            __import__("os").environ.get("EV_ENV"),
+        ),
     }
     path = Path(destination) if destination else _default_backup_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -469,9 +479,21 @@ async def restore_backup(
         actor=actor,
         reason=f"backup:restore:{mode}",
     )
+    # P0 STATE EPOCH LAW: a lineage-replacing restore rotates the epoch in
+    # the SAME transaction as the replacing write. 'new state + old epoch'
+    # is impossible; if the restore fails, no rotation is advertised.
+    from app.ops.state_epoch import rotate_epoch
+
+    new_epoch = await rotate_epoch(
+        session,
+        reason=(
+            f"backup.restore:{mode}:{Path(path).name}"
+        ),
+    )
     return {
         "mode": mode,
         "restored_at": utcnow().isoformat(),
+        "new_state_epoch": new_epoch,
         "events_restored": events_restored,
         "events_skipped": max(0, len(payload.get("events", [])) - events_restored),
         "attachments_restored": attachments_restored,
