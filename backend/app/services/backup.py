@@ -306,7 +306,7 @@ async def _wipe_data_tables(session: AsyncSession) -> None:
     # attempt log, replay nonces) must clear before their parent.
     await session.execute(delete(ReVerificationProof))
     await session.execute(delete(VoiceAttemptLog))
-    await session.execute(_delete_voice_replay_nonces(session))
+    await _delete_voice_replay_nonces(session)
     await session.execute(delete(VoiceSession))
     await session.execute(delete(RuntimeHeartbeat))
     await session.execute(delete(RuntimeSession))
