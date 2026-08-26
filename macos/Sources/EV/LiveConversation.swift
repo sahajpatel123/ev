@@ -118,6 +118,7 @@ final class LiveConversation {
 
     func attach(_ model: AppModel) {
         self.model = model
+        Task { await PlaybackCoordinator.shared.setPlayer(model.player) }
         installCameraLifecycleObservers()
         installAudioGraphObservers()
         model.player.onPlayingChange = { [weak self] playing in
@@ -1123,27 +1124,18 @@ final class LiveConversation {
     private func playAudio(_ event: LiveVoiceEvent) async {
         guard let model else { return }
         if let b64 = event.audioB64, let data = Data(base64Encoded: b64), !data.isEmpty {
-            do {
-                try model.player.enqueue(
-                    data,
-                    contentType: event.contentType,
-                    sampleRate: event.sampleRate ?? 16_000
-                )
-            } catch {
-                model.lastError = "TTS playback failed: \(error.localizedDescription)"
-                model.player.recover()
-                if model.status == .speaking {
-                    model.status = .listening
-                }
-            }
+            // HOT PATH OFF MAINACTOR: dedicated playback actor owns jitter buffer
+            // and output graph, so network cadence and G2 work cannot starve it.
+            await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: Double(event.sampleRate ?? 16_000))
             return
         }
         if let ref = event.audioRef, !ref.isEmpty {
             do {
                 let data = try await model.client.voiceAudio(ref: ref)
-                try model.player.enqueue(data)
+                await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
             } catch {
                 model.lastError = "TTS playback failed: \(error.localizedDescription)"
+                // Keep using the same player for UI; coordinator and model share it
                 model.player.recover()
                 if model.status == .speaking {
                     model.status = .listening

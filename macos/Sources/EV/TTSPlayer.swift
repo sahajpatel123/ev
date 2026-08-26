@@ -67,6 +67,12 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
     // Minimal playback observability (no PCM): underrun + queue depth.
     private var underrunCount = 0
     private var scheduledBufferCount = 0
+
+    var pendingFramesPublic: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingFrames
+    }
     private var lastEnqueueSampleRate: Double = 16_000
     // Connect the player at 48 kHz, the usual Mac HAL rate. Scheduling 16 kHz
     // buffers on that graph (or returning the 16 kHz source when conversion
