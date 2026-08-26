@@ -129,6 +129,13 @@ async def _collect_payload(session: AsyncSession) -> dict:
     attachments = await rows(Attachment)
     devices = await rows(Device)
     access_log = await rows(AccessLog)
+    # G1 + G2 life state + consent (P1.1 privacy regression: these must survive restore)
+    from app.models import Commitment, ConsentRecord, Goal, Project
+
+    projects = await rows(Project)
+    goals = await rows(Goal)
+    commitments = await rows(Commitment)
+    consent_records = await rows(ConsentRecord)
     store = get_object_store()
     attachment_blobs: list[dict] = []
     for attachment in attachments:
@@ -150,6 +157,10 @@ async def _collect_payload(session: AsyncSession) -> dict:
         "attachments": attachment_blobs,
         "devices": [_row_dict(d) for d in devices],
         "access_log": [_row_dict(a) for a in access_log],
+        "projects": [_row_dict(p) for p in projects],
+        "goals": [_row_dict(g) for g in goals],
+        "commitments": [_row_dict(c) for c in commitments],
+        "consent_records": [_row_dict(c) for c in consent_records],
         "counts": {
             "events": len(events),
             "memories": len(memories),
@@ -159,6 +170,10 @@ async def _collect_payload(session: AsyncSession) -> dict:
             "attachments": len(attachments),
             "devices": len(devices),
             "access_log": len(access_log),
+            "projects": len(projects),
+            "goals": len(goals),
+            "commitments": len(commitments),
+            "consent_records": len(consent_records),
         },
     }
     return payload
@@ -340,6 +355,14 @@ async def _wipe_data_tables(session: AsyncSession) -> None:
     await session.execute(delete(EntityRelationship))
     await session.execute(delete(Memory))
     await session.execute(delete(Entity))
+    # G1 life state + consent (must be wiped with events; not derived memories)
+    from app.models import Commitment, ConsentRecord, Goal, GoalStep, Project
+
+    await session.execute(delete(GoalStep))
+    await session.execute(delete(Commitment))
+    await session.execute(delete(Goal))
+    await session.execute(delete(Project))
+    await session.execute(delete(ConsentRecord))
 
     # 2) CATALOG-DRIVEN SWEEP: purge ANY remaining table whose rows still
     # reference a wiped root (events/devices/memories/projects/goals/
@@ -497,6 +520,119 @@ async def restore_backup(
         existing_ids.add(device_id)
         devices_restored += 1
 
+    # G1 life + consent (P1.1: must survive wipe/merge, backward compat with old backups)
+    from app.models import Commitment, ConsentRecord, Goal, Project
+
+    existing_project_ids = {str(row[0]) for row in (await session.execute(select(Project.id))).all()}
+    projects_restored = 0
+    for data in payload.get("projects", []):
+        pid = str(data["id"])
+        if pid in existing_project_ids:
+            continue
+        session.add(
+            Project(
+                id=UUID(pid),
+                actor=str(data.get("actor") or "master"),
+                title=str(data.get("title") or "restored"),
+                description=str(data.get("description") or ""),
+                status=str(data.get("status") or "ACTIVE"),
+                priority=str(data.get("priority") or "NORMAL"),
+                privacy_level=str(data.get("privacy_level") or "normal"),
+                source=str(data.get("source") or "owner"),
+                created_at=_parse_dt(data.get("created_at")) or utcnow(),
+                updated_at=_parse_dt(data.get("updated_at")) or utcnow(),
+                archived_at=_parse_dt(data.get("archived_at")),
+                version=int(data.get("version") or 0),
+            )
+        )
+        existing_project_ids.add(pid)
+        projects_restored += 1
+    # Goals: defer FK check, set project_id to None if parent missing (merge safety)
+    existing_goal_ids = {str(row[0]) for row in (await session.execute(select(Goal.id))).all()}
+    goals_restored = 0
+    for data in payload.get("goals", []):
+        gid = str(data["id"])
+        if gid in existing_goal_ids:
+            continue
+        pid = data.get("project_id")
+        if pid and str(pid) not in existing_project_ids:
+            pid = None
+        session.add(
+            Goal(
+                id=UUID(gid),
+                actor=str(data.get("actor") or "master"),
+                project_id=UUID(str(pid)) if pid else None,
+                parent_goal_id=UUID(str(data["parent_goal_id"])) if data.get("parent_goal_id") else None,
+                title=str(data.get("title") or "restored"),
+                description=str(data.get("description") or ""),
+                state=str(data.get("state") or "ACTIVE"),
+                priority=str(data.get("priority") or "NORMAL"),
+                success_criteria=str(data.get("success_criteria") or ""),
+                progress_note=str(data.get("progress_note") or ""),
+                next_action=str(data.get("next_action") or ""),
+                privacy_level=str(data.get("privacy_level") or "normal"),
+                source=str(data.get("source") or "owner"),
+                created_at=_parse_dt(data.get("created_at")) or utcnow(),
+                updated_at=_parse_dt(data.get("updated_at")) or utcnow(),
+                version=int(data.get("version") or 0),
+            )
+        )
+        existing_goal_ids.add(gid)
+        goals_restored += 1
+    existing_commitment_ids = {str(row[0]) for row in (await session.execute(select(Commitment.id))).all()}
+    commitments_restored = 0
+    for data in payload.get("commitments", []):
+        cid = str(data["id"])
+        if cid in existing_commitment_ids:
+            continue
+        session.add(
+            Commitment(
+                id=UUID(cid),
+                actor=str(data.get("actor") or "master"),
+                description=str(data.get("description") or "restored"),
+                status=str(data.get("status") or "OPEN"),
+                due_at=_parse_dt(data.get("due_at")),
+                project_id=UUID(str(data["project_id"])) if data.get("project_id") and str(data["project_id"]) in existing_project_ids else None,
+                goal_id=UUID(str(data["goal_id"])) if data.get("goal_id") and str(data["goal_id"]) in existing_goal_ids else None,
+                privacy_level=str(data.get("privacy_level") or "normal"),
+                source=str(data.get("source") or "owner"),
+                created_at=_parse_dt(data.get("created_at")) or utcnow(),
+                updated_at=_parse_dt(data.get("updated_at")) or utcnow(),
+            )
+        )
+        existing_commitment_ids.add(cid)
+        commitments_restored += 1
+    existing_consent_ids = {str(row[0]) for row in (await session.execute(select(ConsentRecord.id))).all()}
+    consents_restored = 0
+    # Track-based dedupe: don't duplicate active track
+    active_tracks = {row.track for row in (await session.execute(select(ConsentRecord).where(ConsentRecord.revoked_at.is_(None)))).scalars().all()}
+    for data in payload.get("consent_records", []):
+        cid = str(data["id"])
+        track = str(data.get("track") or "")
+        if cid in existing_consent_ids:
+            continue
+        if track in active_tracks and not data.get("revoked_at"):
+            # Already have active consent for this track — skip duplicate
+            continue
+        session.add(
+            ConsentRecord(
+                id=UUID(cid),
+                track=track,
+                granted_at=_parse_dt(data.get("granted_at")) or utcnow(),
+                revoked_at=_parse_dt(data.get("revoked_at")),
+                revoked_reason=data.get("revoked_reason"),
+                consent_version=str(data.get("consent_version") or "1.0"),
+                purpose=str(data.get("purpose") or "personalize EV to the owner"),
+                scope=data.get("scope") or {},
+                source=str(data.get("source") or "privacy_center"),
+                created_at=_parse_dt(data.get("created_at")) or utcnow(),
+            )
+        )
+        existing_consent_ids.add(cid)
+        if not data.get("revoked_at"):
+            active_tracks.add(track)
+        consents_restored += 1
+
     existing_attachment_ids = {
         str(row[0])
         for row in (await session.execute(select(Attachment.id))).all()
@@ -591,6 +727,10 @@ async def restore_backup(
         "attachments_restored": attachments_restored,
         "blobs_restored": restored_blobs,
         "devices_restored": devices_restored,
+        "projects_restored": projects_restored,
+        "goals_restored": goals_restored,
+        "commitments_restored": commitments_restored,
+        "consents_restored": consents_restored,
         "access_log_restored": access_restored,
         "backup_counts": payload.get("counts") or {},
         "rebuild": rebuild,
