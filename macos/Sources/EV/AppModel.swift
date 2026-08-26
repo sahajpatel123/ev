@@ -812,7 +812,8 @@ final class AppModel: ObservableObject {
     func pollRoutedActions() async {
         // Playback is latency-critical: never poll or post notifications while
         // the assistant is speaking, to avoid MainActor or audio graph churn.
-        if model?.status == .speaking || model?.player.isPlaying == true {
+        // Check both the legacy TTSPlayer and the new dedicated coordinator.
+        if model?.status == .speaking || model?.player.isPlaying == true || await PlaybackCoordinator.shared.isPlaying {
             return
         }
         // Mac is the executor for mac.notify / device.echo targeting this Mac.

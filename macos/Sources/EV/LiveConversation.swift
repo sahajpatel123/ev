@@ -210,19 +210,15 @@ final class LiveConversation {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.recoverMicrophoneAfterGraphChange()
+                Task { await self?.recoverMicrophoneAfterGraphChange() }
             }
         )
     }
 
-    private func recoverMicrophoneAfterGraphChange() {
+    private func recoverMicrophoneAfterGraphChange() async {
         guard isActive, !isMuted, let connection else { return }
-        // Never churn the audio graph while assistant speech is playing —
-        // a route change during TTS would glitch the very audio the owner
-        // is hearing. Defer recovery until playback completes.
-        if model?.status == .speaking || model?.player.isPlaying == true {
-            return
-        }
+        if model?.status == .speaking { return }
+        if await PlaybackCoordinator.shared.isPlaying { return }
         do {
             try microphone.recover()
         } catch {
@@ -1127,12 +1123,19 @@ final class LiveConversation {
             // HOT PATH OFF MAINACTOR: dedicated playback actor owns jitter buffer
             // and output graph, so network cadence and G2 work cannot starve it.
             await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: Double(event.sampleRate ?? 16_000))
+            // UI status must reflect coordinator, not legacy player
+            if model.status != .speaking {
+                model.status = .speaking
+            }
             return
         }
         if let ref = event.audioRef, !ref.isEmpty {
             do {
                 let data = try await model.client.voiceAudio(ref: ref)
                 await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
+                if model.status != .speaking {
+                    model.status = .speaking
+                }
             } catch {
                 model.lastError = "TTS playback failed: \(error.localizedDescription)"
                 // Keep using the same player for UI; coordinator and model share it
@@ -1163,6 +1166,7 @@ final class LiveConversation {
         removeEscapeStop()
         providerReadyForForward = false
         model?.player.stop()
+        Task { await PlaybackCoordinator.shared.stop() }
         microphone.stop()
         microphoneStarted = false
         VoiceLevelMeter.shared.resetInput()
