@@ -810,6 +810,11 @@ final class AppModel: ObservableObject {
     // MARK: - G2 Routed Actions (Mac executor)
 
     func pollRoutedActions() async {
+        // Playback is latency-critical: never poll or post notifications while
+        // the assistant is speaking, to avoid MainActor or audio graph churn.
+        if model?.status == .speaking || model?.player.isPlaying == true {
+            return
+        }
         // Mac is the executor for mac.notify / device.echo targeting this Mac.
         // Master key can list all pending (D2 diagnostics path); filter to this host.
         guard let registryId = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID"),

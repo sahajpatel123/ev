@@ -55,10 +55,14 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
     // Hold ~180 ms of converted audio before the first play() so normal
     // Realtime jitter (40-120 ms delta cadence) does not become an audible
     // underrun. Cap the wait to keep first-word latency low.
+    // Adaptive: if underruns occur, modestly raise the target.
     private let streamPrimeDelay: TimeInterval = 0.02
-    private let minStartSeconds: TimeInterval = 0.18
+    private var minStartSeconds: TimeInterval = 0.18
     private let primeRetryDelay: TimeInterval = 0.01
-    private let maxPrimeWait: TimeInterval = 0.22
+    private var maxPrimeWait: TimeInterval = 0.22
+    private let adaptiveStep: TimeInterval = 0.02
+    private let adaptiveMax: TimeInterval = 0.30
+    private let adaptiveMaxWait: TimeInterval = 0.35
     private var streamPrimeDeadline = Date.distantPast
     // Minimal playback observability (no PCM): underrun + queue depth.
     private var underrunCount = 0
@@ -659,6 +663,11 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
         if !wasPlaying, prevPending == 0, scheduledBufferCount > 1 {
             lock.lock()
             underrunCount += 1
+            // Adaptive: modestly raise prebuffer if we underran.
+            if minStartSeconds < adaptiveMax {
+                minStartSeconds = min(adaptiveMax, minStartSeconds + adaptiveStep)
+                maxPrimeWait = min(adaptiveMaxWait, maxPrimeWait + adaptiveStep)
+            }
             lock.unlock()
             // Minimal playback observability: count only; detailed trace via
             // queue depth behavior already visible in pendingFrames/metrics.
@@ -674,8 +683,17 @@ final class TTSPlayer: NSObject, AVAudioPlayerDelegate {
             self.pendingBuffers = max(0, self.pendingBuffers - 1)
             self.pendingFrames = max(0, self.pendingFrames - frameCount)
             self.playedFrames += frameCount
+            let wasInResponse = self.playbackBeganAt != nil
             let idle = self.pendingBuffers == 0
             if idle {
+                // Mid-stream underrun: queue drained while we were still in a response.
+                if wasInResponse, self.scheduledBufferCount > 1 {
+                    self.underrunCount += 1
+                    if self.minStartSeconds < self.adaptiveMax {
+                        self.minStartSeconds = min(self.adaptiveMax, self.minStartSeconds + self.adaptiveStep)
+                        self.maxPrimeWait = min(self.adaptiveMaxWait, self.maxPrimeWait + self.adaptiveStep)
+                    }
+                }
                 self.captureMuteUntil = Date().addingTimeInterval(self.captureEchoTail)
                 self.playbackBeganAt = nil
                 self.drainWatchdog?.cancel()

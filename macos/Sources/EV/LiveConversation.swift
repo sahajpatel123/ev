@@ -62,6 +62,12 @@ final class LiveConversation {
     /// backend/provider channel while incorrectly believing the old tap is
     /// still alive.
     private var microphoneStarted = false
+    /// ONE APP VOICE INTERACTION HAS ONE AUTHORITATIVE ACTIVE GENERATION.
+    /// Every connectOnce increments this; stale generation callbacks must not
+    /// mutate the new generation's state (providerReady, player, etc).
+    private var generation = 0
+    /// Watchdog for provably broken session: speech accepted but no response.
+    private var responseWatchdog: Task<Void, Never>?
     nonisolated private static func st(_ event: String, _ reason: String = "") {
         let now = DispatchTime.now().uptimeNanoseconds
         lockFreeInitLaunch(now)
@@ -210,6 +216,12 @@ final class LiveConversation {
 
     private func recoverMicrophoneAfterGraphChange() {
         guard isActive, !isMuted, let connection else { return }
+        // Never churn the audio graph while assistant speech is playing —
+        // a route change during TTS would glitch the very audio the owner
+        // is hearing. Defer recovery until playback completes.
+        if model?.status == .speaking || model?.player.isPlaying == true {
+            return
+        }
         do {
             try microphone.recover()
         } catch {
@@ -549,6 +561,8 @@ final class LiveConversation {
 
     private func connectOnce() async throws {
         guard let model else { return }
+        generation += 1
+        let myGen = generation
         model.resetLiveDiagnostics()
         lastPartialRenderAt = .distantPast
         let registry = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID")
@@ -613,7 +627,8 @@ final class LiveConversation {
         do {
             for try await event in stream {
                 if Task.isCancelled { break }
-                if event.type == "ready", !providerReadyForForward {
+                guard generation == myGen else { break }
+                if event.type == "ready", generation == myGen, !providerReadyForForward {
                     providerReadyForForward = true
                     Self.st("ST14_PROVIDER_READY_FORWARDING_OPEN")
                     connection.sendCameraReadiness(
@@ -627,7 +642,8 @@ final class LiveConversation {
                     )
                     startComputerStateWatch(deviceId: deviceId)
                 }
-                await handle(event)
+                guard generation == myGen else { break }
+                await handle(event, for: myGen)
                 if event.fatal {
                     // Fatal is a channel close, never a process quit.
                     if event.code == "listening_stopped" {
@@ -645,7 +661,7 @@ final class LiveConversation {
                 }
             }
         } catch is CancellationError {
-            tearDownChannel()
+            tearDownChannel(for: myGen)
             throw CancellationError()
         } catch {
             // A transport error (server restart close-frame, socket reset)
@@ -654,9 +670,9 @@ final class LiveConversation {
             // down and let the loop reconnect.
             let rendered = modelFormatted(error)
             Self.st("ST16_UNEXPECTED_DISCONNECT", rendered)
-            tearDownChannel()
+            tearDownChannel(for: myGen)
         }
-        tearDownChannel()
+        tearDownChannel(for: myGen)
         isActive = false
         model.isLiveActive = false
         model.cameraState = .unknown
@@ -768,7 +784,8 @@ final class LiveConversation {
         return false
     }
 
-    private func handle(_ event: LiveVoiceEvent) async {
+    private func handle(_ event: LiveVoiceEvent, for gen: Int? = nil) async {
+        if let gen, gen != generation { return }
         guard let model else { return }
         applyLiveDiagnostics(from: event)
         if let camera = event.cameraState {
@@ -828,10 +845,13 @@ final class LiveConversation {
                     AppModel.ChatMessage(id: id, role: "assistant", text: "", streaming: true)
                 )
                 model.status = .thinking
+                startResponseWatchdog(for: generation)
             }
         case "backchannel":
+            cancelResponseWatchdog()
             await playAudio(event)
         case "tts_chunk":
+            cancelResponseWatchdog()
             model.lastError = nil
             if let text = event.text, !text.isEmpty, let id = assistantID,
                let index = model.messages.firstIndex(where: { $0.id == id }),
@@ -840,6 +860,7 @@ final class LiveConversation {
             }
             await playAudio(event)
         case "reply":
+            cancelResponseWatchdog()
             model.lastError = nil
             if let text = event.text {
                 if let id = assistantID, let index = model.messages.firstIndex(where: { $0.id == id }) {
@@ -1141,7 +1162,10 @@ final class LiveConversation {
             || blob.contains("active response in progress")
     }
 
-    private func tearDownChannel() {
+    private func tearDownChannel(for gen: Int? = nil) {
+        if let gen, gen != generation { return }
+        responseWatchdog?.cancel()
+        responseWatchdog = nil
         computerStateTask?.cancel()
         computerStateTask = nil
         removeEscapeStop()
@@ -1154,6 +1178,25 @@ final class LiveConversation {
         AudioInputLease.release(.live)
         connection?.close()
         connection = nil
+    }
+
+    private func startResponseWatchdog(for gen: Int) {
+        responseWatchdog?.cancel()
+        responseWatchdog = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            guard !Task.isCancelled else { return }
+            guard let self, self.generation == gen else { return }
+            // Provably broken: thinking with no audio started
+            if self.model?.status == .thinking, !(self.model?.player.isPlaying ?? false) {
+                Self.st("WDOG_NO_RESPONSE", "10s no response after final_transcript gen \(gen)")
+                self.tearDownChannel(for: gen)
+            }
+        }
+    }
+
+    private func cancelResponseWatchdog() {
+        responseWatchdog?.cancel()
+        responseWatchdog = nil
     }
 
     private func modelFormatted(_ error: Error) -> String {
