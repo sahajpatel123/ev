@@ -356,66 +356,72 @@ async def _wipe_data_tables(session: AsyncSession) -> None:
     await session.execute(delete(Memory))
     await session.execute(delete(Entity))
     # G1 life state + consent (must be wiped with events; not derived memories)
-    from app.models import Commitment, ConsentRecord, Goal, GoalStep, Project
+    from app.models import Commitment, ConsentRecord, DeviceRoutedAction, Goal, GoalStep, OwnerHandoffContext, Project
 
     await session.execute(delete(GoalStep))
     await session.execute(delete(Commitment))
     await session.execute(delete(Goal))
     await session.execute(delete(Project))
     await session.execute(delete(ConsentRecord))
+    with contextlib.suppress(Exception):
+        await session.execute(delete(DeviceRoutedAction))
+    with contextlib.suppress(Exception):
+        await session.execute(delete(OwnerHandoffContext))
 
     # 2) CATALOG-DRIVEN SWEEP: purge ANY remaining table whose rows still
     # reference a wiped root (events/devices/memories/projects/goals/
     # commitments/attachments/notifications/sandbox_facts), deepest-first.
-    from sqlalchemy import text as _text
+    # Postgres only — sqlite has no information_schema.
+    if bind_dialect_is_postgresql(session):
+        from sqlalchemy import text as _text
 
-    roots = [
-        "events",
-        "devices",
-        "memories",
-        "projects",
-        "goals",
-        "commitments",
-        "attachments",
-        "notifications",
-        "sandbox_facts",
-    ]
-    for _ in range(8):
-        pending = (
-            await session.execute(
-                _text(
-                    """
-                    select distinct tc.table_name as child,
-                                    ccu.table_name as parent
-                    from information_schema.table_constraints tc
-                    join information_schema.key_column_usage kcu
-                      on tc.constraint_name = kcu.constraint_name
-                     and tc.table_schema = kcu.table_schema
-                    join information_schema.constraint_column_usage ccu
-                      on ccu.constraint_name = tc.constraint_name
-                     and ccu.table_schema = tc.table_schema
-                    where tc.constraint_type = 'FOREIGN KEY'
-                      and tc.table_schema = 'public'
-                      and ccu.table_schema = 'public'
-                      and ccu.table_name = any(:roots)
-                      and tc.table_name <> ccu.table_name
-                    """
-                ),
-                {"roots": roots},
-            )
-        ).fetchall()
-        if not pending:
-            break
-        children = sorted({r.child for r in pending})
-        for child in children:
-            try:
-                await session.execute(_text(f'DELETE FROM "{child}"'))
-                if child not in roots:
-                    roots.append(child)
-            except Exception:
-                await session.rollback()
-                # Child could not be purged this round; a later sweep
-                # iteration retries it (bounded by the outer loop).
+        roots = [
+            "events",
+            "devices",
+            "memories",
+            "projects",
+            "goals",
+            "commitments",
+            "attachments",
+            "notifications",
+            "sandbox_facts",
+        ]
+        for _ in range(8):
+            pending = (
+                await session.execute(
+                    _text(
+                        """
+                        select distinct tc.table_name as child,
+                                        ccu.table_name as parent
+                        from information_schema.table_constraints tc
+                        join information_schema.key_column_usage kcu
+                          on tc.constraint_name = kcu.constraint_name
+                         and tc.table_schema = kcu.table_schema
+                        join information_schema.constraint_column_usage ccu
+                          on ccu.constraint_name = tc.constraint_name
+                         and ccu.table_schema = tc.table_schema
+                        where tc.constraint_type = 'FOREIGN KEY'
+                          and tc.table_schema = 'public'
+                          and ccu.table_schema = 'public'
+                          and ccu.table_name = any(:roots)
+                          and tc.table_name <> ccu.table_name
+                        """
+                    ),
+                    {"roots": roots},
+                )
+            ).fetchall()
+            if not pending:
+                break
+            children = sorted({r.child for r in pending})
+            for child in children:
+                try:
+                    await session.execute(_text(f'DELETE FROM "{child}"'))
+                    if child not in roots:
+                        roots.append(child)
+                except Exception:
+                    await session.rollback()
+                    # Child could not be purged this round; a later sweep
+                    # iteration retries it (bounded by the outer loop).
 
     # 3) The canonical roots themselves.
     await session.execute(delete(Attachment))

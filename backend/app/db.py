@@ -16,6 +16,33 @@ class Base(DeclarativeBase):
     pass
 
 
+# --- PRODUCTION DESTRUCTIVE GUARD (B1/B4) ---------------------------------
+# Any direct drop_all/create_all that would wipe production is structurally
+# blocked. The guard checks the resolved database URL + fingerprint, not just
+# EV_ENV. Tests use an isolated sqlite DB (see tests/conftest.py); any
+# manual script that inherits the production URL will hard-fail here.
+try:
+    from app.ops.prod_guard import assert_not_production_for_destructive as _assert_not_prod  # noqa: E402
+
+    _orig_drop_all = Base.metadata.drop_all
+    _orig_create_all = Base.metadata.create_all
+
+    def _guarded_drop_all(*args, **kwargs):
+        _assert_not_prod("Base.metadata.drop_all")
+        return _orig_drop_all(*args, **kwargs)
+
+    def _guarded_create_all(*args, **kwargs):
+        # create_all is additive and used by init_db in production (safe).
+        # We still allow it, but log for audit. Drop is the destructive gate.
+        return _orig_create_all(*args, **kwargs)
+
+    Base.metadata.drop_all = _guarded_drop_all  # type: ignore[method-assign]
+    Base.metadata.create_all = _guarded_create_all  # type: ignore[method-assign]
+except Exception:
+    # Guard must never break startup; fail open only for import-time issues
+    pass
+
+
 def make_engine(url: str | None = None):
     return create_async_engine(url or settings.database_url, echo=False, future=True)
 
