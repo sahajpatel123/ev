@@ -68,6 +68,11 @@ final class LiveConversation {
     private var generation = 0
     /// Watchdog for provably broken session: speech accepted but no response.
     private var responseWatchdog: Task<Void, Never>?
+    // INGRESS-1: dedicated ordered audio channel — one producer, one consumer, no Task per chunk, no MainActor PCM work
+    private enum PendingAudio: Sendable { case b64(String, Double); case ref(String, EVAPIClient) }
+    private var audioIngestContinuation: AsyncStream<PendingAudio>.Continuation?
+    private var audioIngestTask: Task<Void, Never>?
+    private static let traceLock = NSLock()
     nonisolated private static func st(_ event: String, _ reason: String = "") {
         let now = DispatchTime.now().uptimeNanoseconds
         lockFreeInitLaunch(now)
@@ -82,6 +87,8 @@ final class LiveConversation {
               let line = try? JSONSerialization.data(withJSONObject: payload)
         else { return }
         DispatchQueue.global(qos: .utility).async {
+            traceLock.lock()
+            defer { traceLock.unlock() }
             let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
                 ?? URL(fileURLWithPath: NSTemporaryDirectory())
             let dir = logs.appendingPathComponent("Logs/EV", isDirectory: true)
@@ -114,6 +121,7 @@ final class LiveConversation {
         for observer in audioGraphObservers {
             NotificationCenter.default.removeObserver(observer)
         }
+        teardownAudioIngest()
     }
 
     func attach(_ model: AppModel) {
@@ -121,6 +129,7 @@ final class LiveConversation {
         Task { await PlaybackCoordinator.shared.setPlayer(model.player) }
         installCameraLifecycleObservers()
         installAudioGraphObservers()
+        setupAudioIngest()
         model.player.onPlayingChange = { [weak self] playing in
             Task { @MainActor in
                 guard let self else { return }
@@ -236,6 +245,31 @@ final class LiveConversation {
         } catch {
             _ = startMicrophone(on: connection)
         }
+    }
+
+    private func setupAudioIngest() {
+        guard audioIngestTask == nil else { return }
+        let (stream, continuation) = AsyncStream<PendingAudio>.makeStream(bufferingPolicy: .unbounded)
+        audioIngestContinuation = continuation
+        audioIngestTask = Task.detached(priority: .userInitiated) {
+            for await pending in stream {
+                switch pending {
+                case .b64(let b64, let sr):
+                    await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr)
+                case .ref(let ref, let client):
+                    if let data = try? await client.voiceAudio(ref: ref) {
+                        await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
+                    }
+                }
+            }
+        }
+    }
+
+    private func teardownAudioIngest() {
+        audioIngestContinuation?.finish()
+        audioIngestContinuation = nil
+        audioIngestTask?.cancel()
+        audioIngestTask = nil
     }
 
     private func stopCameraForSleepOrShutdown() {
@@ -611,9 +645,14 @@ final class LiveConversation {
             // up; frames are forwarded only after the provider signals ready.
             // Provider outage therefore cannot delay or disable the microphone.
             Self.st("ST12B_WS_CONNECTED_STARTING_MIC_LOCALLY")
-            if !microphoneStarted {
-                microphoneStarted = startMicrophone(on: connection)
-                if microphoneStarted { Self.st("ST06_MIC_STARTED_LOCAL_FIRST") }
+            let wasStarted = microphoneStarted
+            microphoneStarted = startMicrophone(on: connection)
+            if microphoneStarted {
+                if wasStarted {
+                    Self.st("ST06_MIC_REBOUND_KEEP_ALIVE", "gen \(myGen)")
+                } else {
+                    Self.st("ST06_MIC_STARTED_LOCAL_FIRST")
+                }
             }
             phase = "ST18_OK"
             isActive = true
@@ -707,11 +746,32 @@ final class LiveConversation {
         return startMicrophone(on: connection, retryBudget: 1)
     }
 
+    private func micEnqueue(for connection: LiveVoiceConnection) -> @Sendable (Data) -> Void {
+        return { [weak self, weak connection] data in
+            if !Self.micFirstFrameLogged {
+                Self.micFirstFrameLogged = true
+                Self.st("ST07_FIRST_MIC_FRAME")
+            }
+            // Tag planes: MIC_INPUT_PCM (owner) vs ASSISTANT_TTS_PCM (playback)
+            // Never allow ambiguous "audio".
+            VoiceLevelMeter.shared.ingestInputPCM16(data)
+            guard self?.providerReadyForForward == true else { return } // local-only until provider ready
+            // SH-3 HARD HALF-DUPLEX GATE: while assistant PCM is physically audible (ring buffered + tail),
+            // do NOT forward mic PCM to provider. Mic remains RUNNING for level meter, but gate is closed.
+            // Uses physical playback truth, not UI status.
+            if PlaybackCoordinator.shouldGateMic() { return }
+            connection?.enqueuePCM(data)
+        }
+    }
+
     @discardableResult
     private func startMicrophone(on connection: LiveVoiceConnection, retryBudget: Int) -> Bool {
         // MIC STATE MACHINE LAW: RUNNING -> STARTING without STOP is illegal.
-        // If already RUNNING with healthy engine and lease, be idempotent.
+        // If already RUNNING with healthy engine and lease, be idempotent
+        // but refresh forwarding destination to the new connection (keep-mic-alive
+        // must not leave the tap pointing at a closed socket).
         if microphoneStarted, microphone.isRunning, AudioInputLease.currentOwner() == .live {
+            microphone.updateEnqueue(micEnqueue(for: connection))
             return true
         }
         // FIX 1: bounded retry with ghost-lease elimination (P0 voice reliability).
@@ -754,22 +814,12 @@ final class LiveConversation {
                 return false
             }
             do {
-                let player = model?.player
                 // GOLDEN VOICE PATH (2026-08-23 owner decision): one speech lane,
                 // no experiments in the mic tap. Listener Presence is cancelled.
                 // The backend's authoritative-playback mic gate owns self-echo.
                 // SPOKEN INTERRUPTION CLOSED: the mic tap feeds exactly two
                 // consumers — the UI meter and (when provider-ready) the provider.
-                try microphone.start(enqueue: { [weak self, weak connection, weak player] data in
-                    if !Self.micFirstFrameLogged {
-                        Self.micFirstFrameLogged = true
-                        Self.st("ST07_FIRST_MIC_FRAME")
-                    }
-                    VoiceLevelMeter.shared.ingestInputPCM16(data)
-                    guard self?.providerReadyForForward == true else { return } // local-only until provider ready
-                    if player?.shouldMuteCapture == true { return }
-                    connection?.enqueuePCM(data)
-                })
+                try microphone.start(enqueue: micEnqueue(for: connection))
                 isMuted = false
                 model?.isLiveMuted = false
                 microphoneStarted = true
@@ -864,17 +914,13 @@ final class LiveConversation {
             }
         case "backchannel":
             cancelResponseWatchdog()
-            // AUDIO PLANE FIX: single ordered producer — handle loop is the sole authority.
-            // No per-delta Task explosion. Each chunk is awaited sequentially on the
-            // PlaybackCoordinator actor, preserving order, bounding concurrency to 1,
-            // and eliminating unbounded Task creation for long responses.
+            // INGRESS-1: dedicated ordered audio channel — no per-delta Task, no MainActor PCM work.
+            // Audio payload is yielded to single long-lived producer; UI/control stays on MainActor.
             if let b64 = event.audioB64, !b64.isEmpty {
                 let sr = Double(event.sampleRate ?? 16_000)
-                await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr)
+                audioIngestContinuation?.yield(.b64(b64, sr))
             } else if let ref = event.audioRef, !ref.isEmpty {
-                if let data = try? await model.client.voiceAudio(ref: ref) {
-                    await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
-                }
+                audioIngestContinuation?.yield(.ref(ref, model.client))
             }
         case "tts_chunk":
             cancelResponseWatchdog()
@@ -886,11 +932,9 @@ final class LiveConversation {
             }
             if let b64 = event.audioB64, !b64.isEmpty {
                 let sr = Double(event.sampleRate ?? 16_000)
-                await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr)
+                audioIngestContinuation?.yield(.b64(b64, sr))
             } else if let ref = event.audioRef, !ref.isEmpty {
-                if let data = try? await model.client.voiceAudio(ref: ref) {
-                    await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
-                }
+                audioIngestContinuation?.yield(.ref(ref, model.client))
             }
         case "reply":
             cancelResponseWatchdog()

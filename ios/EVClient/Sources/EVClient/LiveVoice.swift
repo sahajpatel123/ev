@@ -757,6 +757,14 @@ public final class LiveVoiceMicrophone: @unchecked Sendable {
     private var starting = false
     private var tapInstalled = false
     private var enqueue: (@Sendable (Data) -> Void)?
+    // Keep-mic-alive reconnect must refresh forwarding destination without
+    // rebuilding the engine. The tap captures this stored closure, not the
+    // outer start() param, so an update is visible to the running tap.
+    public func updateEnqueue(_ new: @escaping @Sendable (Data) -> Void) {
+        lock.lock()
+        enqueue = new
+        lock.unlock()
+    }
 
     public init() {}
 
@@ -839,14 +847,21 @@ public final class LiveVoiceMicrophone: @unchecked Sendable {
         self.converter = converter
 
         let ratio = sampleRate / max(hwFormat.sampleRate, 1)
+        // Capture outputFormat for the tap; engine rate is fixed until next rebuild.
+        let tapOutputFormat = outputFormat
         do {
             try AVAudioSafe.installTap(on: input, bufferSize: 1024, format: hwFormat) { [weak self] buffer, _ in
                 guard let self else { return }
+                // Snapshot running state, converter, and current enqueue without
+                // holding the lock across the converter or the enqueue call.
                 self.lock.lock()
-                defer { self.lock.unlock() }
-                guard self.running, let converter = self.converter else { return }
+                guard self.running, let converter = self.converter, let callback = self.enqueue else {
+                    self.lock.unlock()
+                    return
+                }
+                self.lock.unlock()
                 let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * ratio)) + 1
-                guard let converted = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
+                guard let converted = AVAudioPCMBuffer(pcmFormat: tapOutputFormat, frameCapacity: capacity) else {
                     return
                 }
                 var conversionError: NSError?
@@ -866,7 +881,7 @@ public final class LiveVoiceMicrophone: @unchecked Sendable {
                     return
                 }
                 let data = Data(bytes: channel, count: Int(converted.frameLength) * MemoryLayout<Int16>.size)
-                enqueue(data)
+                callback(data)
             }
         } catch {
             self.converter = nil

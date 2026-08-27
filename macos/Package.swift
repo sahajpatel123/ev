@@ -18,6 +18,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../ios/EVClient"),
+        .package(url: "https://github.com/apple/swift-atomics.git", from: "1.2.0"),
     ],
     targets: [
         .target(
@@ -45,6 +46,7 @@ let package = Package(
                 "EVRuntime",
                 .product(name: "EVClient", package: "EVClient"),
                 .product(name: "EVUI", package: "EVClient"),
+                .product(name: "Atomics", package: "swift-atomics"),
             ],
             path: "Sources/EV",
             linkerSettings: [
