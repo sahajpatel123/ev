@@ -850,7 +850,19 @@ final class LiveConversation {
             }
         case "backchannel":
             cancelResponseWatchdog()
-            await playAudio(event)
+            // AUDIO PLANE: dispatch directly off MainActor, no UI wait
+            if let b64 = event.audioB64, !b64.isEmpty {
+                let sr = Double(event.sampleRate ?? 16_000)
+                Task(priority: .userInitiated) { await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr) }
+            } else if let ref = event.audioRef, !ref.isEmpty {
+                let client = model.client
+                let refCopy = ref
+                Task.detached(priority: .userInitiated) {
+                    if let data = try? await client.voiceAudio(ref: refCopy) {
+                        await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
+                    }
+                }
+            }
         case "tts_chunk":
             cancelResponseWatchdog()
             model.lastError = nil
@@ -859,7 +871,18 @@ final class LiveConversation {
                model.messages[index].text.isEmpty {
                 model.messages[index].text = text
             }
-            await playAudio(event)
+            if let b64 = event.audioB64, !b64.isEmpty {
+                let sr = Double(event.sampleRate ?? 16_000)
+                Task(priority: .userInitiated) { await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr) }
+            } else if let ref = event.audioRef, !ref.isEmpty {
+                let client = model.client
+                let refCopy = ref
+                Task.detached(priority: .userInitiated) {
+                    if let data = try? await client.voiceAudio(ref: refCopy) {
+                        await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
+                    }
+                }
+            }
         case "reply":
             cancelResponseWatchdog()
             model.lastError = nil
