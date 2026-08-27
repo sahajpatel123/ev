@@ -103,6 +103,8 @@ final class AppModel: ObservableObject {
     private var micAuthObserver: NSObjectProtocol?
 
     init() {
+        // Force BuildInfo linkage so binary hash changes with git SHA / audio arch
+        print(BuildInfo.gitSHA, BuildInfo.audioArchitecture, BuildInfo.buildTimestamp)
         let config = AppConfig()
         self.config = config
         client = EVAPIClient(baseURL: config.baseURL, token: config.apiKey)
@@ -226,7 +228,6 @@ final class AppModel: ObservableObject {
         await syncQueue()
         await updateQueueCount()
         await refreshConversation()
-        await pollRoutedActions()
     }
 
     func refresh() async {
@@ -805,115 +806,6 @@ final class AppModel: ObservableObject {
             // A transient sync failure is not evidence that devices vanished.
             // Keep the last confirmed snapshot and let the next heartbeat retry.
         }
-    }
-
-    // MARK: - G2 Routed Actions (Mac executor)
-
-    func pollRoutedActions() async {
-        // Playback is latency-critical: never poll or post notifications while
-        // the assistant is speaking, to avoid MainActor or audio graph churn.
-        // Check both the legacy TTSPlayer and the new dedicated coordinator.
-        if model?.status == .speaking || model?.player.isPlaying == true || await PlaybackCoordinator.shared.isPlaying {
-            return
-        }
-        // Mac is the executor for mac.notify / device.echo targeting this Mac.
-        // Master key can list all pending (D2 diagnostics path); filter to this host.
-        guard let registryId = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID"),
-              !registryId.isEmpty else { return }
-        do {
-            let pending = try await fetchRoutedPending()
-            for action in pending where action.targetId == registryId {
-                // Claim
-                let claimed = try await claimRoutedAction(actionId: action.id, targetId: registryId)
-                if !claimed { continue }
-                // Execute per capability
-                var result: [String: Any] = [:]
-                var success = true
-                switch action.capability {
-                case "mac.notify":
-                    let title = action.arguments["title"] as? String ?? "Evie"
-                    let body = action.arguments["body"] as? String ?? action.arguments["text"] as? String ?? "G2 notification"
-                    await MainActor.run {
-                        NotificationBridge.shared.post(title: title, body: body, identifier: action.id)
-                    }
-                    result = ["notified": true, "title": title, "body": body, "device": config.deviceID]
-                case "device.echo", "device.ping", "mac.echo":
-                    let payload = action.arguments["message"] as? String ?? action.arguments["payload"] as? String ?? "pong"
-                    result = ["echo": payload, "device": config.deviceID, "target": registryId]
-                case "computer.open_calculator", "computer.close_calculator":
-                    // Delegate to existing helper via tool path is not needed; just acknowledge
-                    result = ["executed": true, "capability": action.capability]
-                default:
-                    success = false
-                    result = ["error": "unknown capability"]
-                // Complete
-                try await completeRoutedAction(actionId: action.id, targetId: registryId, result: result, success: success)
-            }
-        } catch {
-            // Poll failures are non-fatal; next tick retries
-        }
-    }
-
-    private struct RoutedAction {
-        let id: String
-        let actionId: String
-        let capability: String
-        let arguments: [String: Any]
-        let targetId: String?
-    }
-
-    private func fetchRoutedPending() async throws -> [RoutedAction] {
-        var req = URLRequest(url: client.baseURL.appendingPathComponent("v1/everywhere/device-actions/pending"))
-        req.httpMethod = "GET"
-        req.setValue("Bearer \(client.token)", forHTTPHeaderField: "Authorization")
-        req.timeoutInterval = 8
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            throw EVAPIError.httpStatus((resp as? HTTPURLResponse)?.statusCode ?? 0, String(data: data, encoding: .utf8) ?? "")
-        }
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        let list = json?["actions"] as? [[String: Any]] ?? []
-        return list.compactMap { dict in
-            guard let id = dict["id"] as? String,
-                  let actionId = dict["action_id"] as? String,
-                  let cap = dict["capability"] as? String else { return nil }
-            let args = dict["arguments"] as? [String: Any] ?? [:]
-            let target = dict["target_device_id"] as? String
-            return RoutedAction(id: id, actionId: actionId, capability: cap, arguments: args, targetId: target)
-        }
-    }
-
-    private func claimRoutedAction(actionId: String, targetId: String) async throws -> Bool {
-        var comps = URLComponents(url: client.baseURL.appendingPathComponent("v1/everywhere/device-actions/\(actionId)/claim"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "target_device_id", value: targetId)]
-        var req = URLRequest(url: comps.url!)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(client.token)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = Data("{}".utf8)
-        req.timeoutInterval = 8
-        let (_, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { return false }
-        return http.statusCode == 200
-    }
-
-    private func completeRoutedAction(actionId: String, targetId: String, result: [String: Any], success: Bool) async throws {
-        struct Body: Encodable {
-            let result: [String: String]?
-            let success: Bool
-        }
-        // Convert result values to strings for JSON transport
-        let strResult = result.mapValues { String(describing: $0) }
-        let body = Body(result: strResult, success: success)
-        var comps = URLComponents(url: client.baseURL.appendingPathComponent("v1/everywhere/device-actions/\(actionId)/complete"), resolvingAgainstBaseURL: false)!
-        comps.queryItems = [URLQueryItem(name: "target_device_id", value: targetId)]
-        var req = URLRequest(url: comps.url!)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(client.token)", forHTTPHeaderField: "Authorization")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONEncoder().encode(body)
-        req.timeoutInterval = 8
-        _ = try await URLSession.shared.data(for: req)
     }
 
     func refreshHUD(force: Bool = false) async {

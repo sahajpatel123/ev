@@ -107,7 +107,7 @@ actor PlaybackCoordinator {
     private var _isPlaying = false
 
     init() {
-        let capacityFrames = Int(48000 * 3.0) // 3s at 48k
+        let capacityFrames = 48000 * 3 // 3s at 48k
         ring = RingBuffer(capacityFrames: capacityFrames)
         // Output format: query actual HAL after engine start, fallback to 48k mono
         let fmt = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
@@ -187,7 +187,9 @@ actor PlaybackCoordinator {
             outStatus.pointee = .haveData
             return inBuf
         }
-        guard status != .error, let converted = outBuf, converted.frameLength > 0 else { return }
+        guard status != .error else { return }
+        let converted: AVAudioPCMBuffer = outBuf
+        guard converted.frameLength > 0 else { return }
         let framesOut = Int(converted.frameLength)
         convertedFrames += framesOut
         // Write Float32 to ring
