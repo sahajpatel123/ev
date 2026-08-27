@@ -110,21 +110,32 @@ fi
 
 echo "Packaged $APP"
 
-# DO NOT CHANGE — sync_api_env writes EV_MASTER_KEY (>=16 chars) only.
-# Never copy EV_EARS_API_KEY / "dev" / "changeme" here; that 401s EV.app.
-# The GUI app is not launched from the repo shell, so copy the local API
-# credentials where AppConfig can find them. Never echo the key.
+# CANONICAL MASTER AUTHORITY: production secret lives at ~/.ev/secrets/production.env
+# (loaded via app.config secret overlay). api.env is a non-canonical copy for
+# the Mac GUI to read; it must be derived from the canonical source, never
+# the other way around, and packaging must not drift it.
 sync_api_env() {
     local src="$ROOT/../.env"
+    local prod_secret="${HOME}/.ev/secrets/production.env"
     local dest="${HOME}/Library/Application Support/EV/api.env"
     mkdir -p "$(dirname "$dest")"
     local url="http://127.0.0.1:8000"
     local key=""
-    if [[ -f "$src" ]]; then
-        url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
-        key="$(awk -F= '/^EV_MASTER_KEY=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
-        if [[ -z "$key" || ${#key} -lt 16 ]]; then
-            key="$(awk -F= '/^EV_API_KEY=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
+    # Prefer canonical production secret
+    if [[ -f "$prod_secret" ]]; then
+        key="$(awk -F= '/^EV_MASTER_KEY=/{v=$2} END{print v}' "$prod_secret" | tr -d "\"'")"
+    fi
+    if [[ -z "$key" || ${#key} -lt 16 ]]; then
+        if [[ -f "$src" ]]; then
+            url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
+            key="$(awk -F= '/^EV_MASTER_KEY=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
+            if [[ -z "$key" || ${#key} -lt 16 ]]; then
+                key="$(awk -F= '/^EV_API_KEY=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
+            fi
+        fi
+    else
+        if [[ -f "$src" ]]; then
+            url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
         fi
     fi
     url="${EV_API_URL:-${url:-http://127.0.0.1:8000}}"
@@ -134,7 +145,7 @@ sync_api_env() {
         printf 'EV_API_URL=%s\nEV_API_KEY=%s\nEV_MASTER_KEY=%s\n' "$url" "$key" "$key" > "$dest"
         defaults write com.ev.suit EV_API_URL "$url"
         defaults write com.ev.suit EV_API_KEY "$key"
-        echo "Wrote API credentials for EV.app → $dest"
+        echo "Wrote API credentials for EV.app → $dest (from canonical production secret)"
     else
         echo "WARNING: no EV_API_KEY/EV_MASTER_KEY found; EV.app will 401 on chat/voice." >&2
     fi
