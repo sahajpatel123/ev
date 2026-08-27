@@ -1,27 +1,29 @@
 import AVFoundation
 import Foundation
-import Synchronization
+import os.lock
 
 /// True continuous playback: network producer → ring → hardware-clocked SourceNode.
 /// All hot-path PCM flows off MainActor on this actor's executor.
-/// Render callback is true lock-free SPSC: no mutex, no trylock, no allocation.
+/// Render callback uses trylock SPSC pattern (non-blocking) compatible with macOS 14.
 actor PlaybackCoordinator {
     static let shared = PlaybackCoordinator()
     nonisolated(unsafe) static var isPlayingSync = false
 
-    // MARK: Ring buffer — true lock-free SPSC
-    // Producer owns writeIndex, consumer owns readIndex.
-    // All atomics, no locks, no blocking, no allocation in render.
+    // MARK: Ring buffer — SPSC with trylock (macOS 14 compatible)
+    // Producer owns write path, consumer (render thread) uses trylock and never blocks.
+    // This preserves the bounded 3s ring and hardware-clocked SourceNode while
+    // remaining compatible with macOS 14 deployment target.
     private final class RingBuffer: @unchecked Sendable {
         let capacity: Int // frames
         let ptr: UnsafeMutablePointer<Float>
-        let writeIndex = Atomic<Int>(0)
-        let readIndex = Atomic<Int>(0)
-        // Diagnostic counters (also lock-free)
-        let underrunFrames = Atomic<Int>(0)
-        let overrunCount = Atomic<Int>(0)
-        let totalWrites = Atomic<Int>(0)
-        let totalReads = Atomic<Int>(0)
+        var writeIndex: Int = 0
+        var readIndex: Int = 0
+        var available: Int = 0
+        var lock = os_unfair_lock()
+        var underrunFrames: Int = 0
+        var overrunCount: Int = 0
+        var totalWrites: Int = 0
+        var totalReads: Int = 0
 
         init(capacityFrames: Int) {
             capacity = capacityFrames
@@ -31,75 +33,67 @@ actor PlaybackCoordinator {
         deinit { ptr.deallocate() }
 
         // Producer: SPSC write, single producer only (PlaybackCoordinator actor)
-        // Returns frames written or 0 if would overrun (counts overrun, does not droppartial)
+        // Returns frames written or 0 if would overrun (counts overrun)
         func write(_ src: UnsafePointer<Float>, frames: Int) -> Int {
-            let w = writeIndex.load(ordering: .relaxed)
-            let r = readIndex.load(ordering: .acquiring)
-            let available = w - r
-            let free = capacity - available
-            if frames > free {
-                overrunCount.wrappingIncrement(ordering: .relaxed)
+            os_unfair_lock_lock(&lock)
+            defer { os_unfair_lock_unlock(&lock) }
+            if available + frames > capacity {
+                overrunCount += 1
                 return 0
             }
-            let wMod = w % capacity
-            let firstPart = min(frames, capacity - wMod)
-            ptr.advanced(by: wMod).update(from: src, count: firstPart)
+            let firstPart = min(frames, capacity - writeIndex)
+            ptr.advanced(by: writeIndex).update(from: src, count: firstPart)
             if frames > firstPart {
                 ptr.update(from: src.advanced(by: firstPart), count: frames - firstPart)
             }
-            // Release: make buffer writes visible before index update
-            writeIndex.store(w + frames, ordering: .releasing)
-            totalWrites.wrappingIncrement(by: frames, ordering: .relaxed)
+            writeIndex = (writeIndex + frames) % capacity
+            available += frames
+            totalWrites += frames
             return frames
         }
 
-        // Consumer: lock-free, called from hardware render thread (single consumer)
-        // Copies min(available, frames), zero-fills tail if underrun, advances readIndex by copied
-        // Returns frames copied (0..frames). Never blocks, never locks.
+        // Consumer: trylock, called from hardware render thread (single consumer)
+        // Copies min(available, frames), advances by copied, returns copied.
+        // Caller zero-fills tail if underrun. Never blocks.
         func read(into dst: UnsafeMutablePointer<Float>, frames: Int) -> Int {
-            let r = readIndex.load(ordering: .relaxed)
-            let w = writeIndex.load(ordering: .acquiring)
-            let available = w - r
+            if !os_unfair_lock_trylock(&lock) { return 0 }
+            defer { os_unfair_lock_unlock(&lock) }
             let toCopy = min(available, frames)
             if toCopy > 0 {
-                let rMod = r % capacity
-                let firstPart = min(toCopy, capacity - rMod)
-                dst.update(from: ptr.advanced(by: rMod), count: firstPart)
+                let firstPart = min(toCopy, capacity - readIndex)
+                dst.update(from: ptr.advanced(by: readIndex), count: firstPart)
                 if toCopy > firstPart {
                     dst.advanced(by: firstPart).update(from: ptr, count: toCopy - firstPart)
                 }
-                readIndex.store(r + toCopy, ordering: .releasing)
-                totalReads.wrappingIncrement(by: toCopy, ordering: .relaxed)
+                readIndex = (readIndex + toCopy) % capacity
+                available -= toCopy
+                totalReads += toCopy
             }
             if toCopy < frames {
-                // True underrun: ring had fewer than requested
-                underrunFrames.wrappingIncrement(by: frames - toCopy, ordering: .relaxed)
-                // Caller will zero-fill remaining tail
+                underrunFrames += (frames - toCopy)
             }
             return toCopy
         }
 
         func clear() {
-            // Only called when no render in flight and no producer active (stop)
-            // Reset indices with release/acquire to ensure visibility
-            readIndex.store(0, ordering: .releasing)
-            writeIndex.store(0, ordering: .releasing)
-            // Counters are not cleared here; they are cumulative for diagnostics
-            // Underrun/overrun counters are intentionally not reset on clear to preserve history
-            // But we do need to zero the buffer for safety (not required for correctness)
+            os_unfair_lock_lock(&lock)
+            writeIndex = 0
+            readIndex = 0
+            available = 0
+            os_unfair_lock_unlock(&lock)
         }
 
         var bufferedFrames: Int {
-            let w = writeIndex.load(ordering: .acquiring)
-            let r = readIndex.load(ordering: .acquiring)
-            return w - r
+            os_unfair_lock_lock(&lock)
+            defer { os_unfair_lock_unlock(&lock) }
+            return available
         }
 
         // For diagnostics outside render
         var snapshot: (available: Int, underruns: Int, overruns: Int, writes: Int, reads: Int) {
-            let w = writeIndex.load(ordering: .acquiring)
-            let r = readIndex.load(ordering: .acquiring)
-            return (w - r, underrunFrames.load(ordering: .relaxed), overrunCount.load(ordering: .relaxed), totalWrites.load(ordering: .relaxed), totalReads.load(ordering: .relaxed))
+            os_unfair_lock_lock(&lock)
+            defer { os_unfair_lock_unlock(&lock) }
+            return (available, underrunFrames, overrunCount, totalWrites, totalReads)
         }
     }
 
@@ -132,23 +126,22 @@ actor PlaybackCoordinator {
     private var _isPlaying = false
 
     // Deadline and memory-pressure diagnostics (outside render, sampled)
-    private let memoryPressureSource: DispatchSourceMemoryPressure?
+    private var memoryPressureSource: DispatchSourceMemoryPressure? = nil
     private var lastPressure: DispatchSource.MemoryPressureEvent = .normal
 
     init() {
         let capacityFrames = 48000 * 3 // 3s at 48k
-        ring = RingBuffer(capacityFrames: capacityFrames)
+        let ringBuffer = RingBuffer(capacityFrames: capacityFrames)
+        ring = ringBuffer
         // Output format: try actual HAL rate, fallback 48k mono
         var fmt = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 1)!
         // Pre-create source with 48k; after engine start we will not renegotiate mid-stream
         outputFormat = fmt
-        sourceNode = AVAudioSourceNode(format: fmt) { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
-            guard let self else { return noErr }
+        sourceNode = AVAudioSourceNode(format: fmt) { [ringBuffer] _, _, frameCount, audioBufferList -> OSStatus in
             let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
             guard let buf = ablPointer.first, let dst = buf.mData?.assumingMemoryBound(to: Float.self) else { return noErr }
-            let ring = self.ring!
-            // Lock-free SPSC read: copy min(available, requested), zero-fill tail if underrun
-            // No locks, no allocation, no Foundation, no MainActor — just atomics and memcpy
+            let ring = ringBuffer
+            // SPSC read with trylock (macOS 14) : copy min(available, requested), zero-fill tail
             let framesRead = ring.read(into: dst, frames: Int(frameCount))
             if framesRead < Int(frameCount) {
                 let remaining = Int(frameCount) - framesRead
@@ -172,9 +165,8 @@ actor PlaybackCoordinator {
         // Memory pressure: trim non-audio caches, never ring/engine/mic
         let mp = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global(qos: .utility))
         mp.setEventHandler { [weak self] in
-            guard let self else { return }
             let event = mp.data
-            self.lastPressure = event
+            Task { await self?.updatePressure(event) }
         }
         mp.resume()
         memoryPressureSource = mp
@@ -215,6 +207,10 @@ actor PlaybackCoordinator {
         if !engine.isRunning {
             try? engine.start()
         }
+    }
+
+    private func updatePressure(_ event: DispatchSource.MemoryPressureEvent) {
+        lastPressure = event
     }
 
     // MARK: Public API
@@ -326,7 +322,7 @@ actor PlaybackCoordinator {
     }
 
     // For external health snapshot (called off render, 1 Hz)
-    nonisolated func lockFreeStats() -> (available: Int, underruns: Int, overruns: Int) {
+    func lockFreeStats() -> (available: Int, underruns: Int, overruns: Int) {
         let s = ring.snapshot
         return (s.available, s.underruns, s.overruns)
     }

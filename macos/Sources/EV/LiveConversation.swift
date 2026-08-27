@@ -165,6 +165,7 @@ final class LiveConversation {
         loopTask?.cancel()
         loopTask = nil
         tearDownChannel()
+        fullTeardownCapture()
         isActive = false
         model?.isLiveActive = false
         model?.isLivePaused = false
@@ -209,13 +210,20 @@ final class LiveConversation {
                 forName: .AVAudioEngineConfigurationChange,
                 object: nil,
                 queue: .main
-            ) { [weak self] _ in
-                self?.recoverMicrophoneAfterGraphChange()
+            ) { [weak self] notification in
+                self?.recoverMicrophoneAfterGraphChange(notification)
             }
         )
     }
 
-    private func recoverMicrophoneAfterGraphChange() {
+    private func recoverMicrophoneAfterGraphChange(_ notification: Notification) {
+        // STRICT ENGINE OWNERSHIP: microphone may react ONLY to its own input engine.
+        // Output engine (PlaybackCoordinator) posts the same notification name with
+        // object == its output engine. With object:nil at registration, we must
+        // filter by identity here. Without this, output graph changes spuriously
+        // restart the input graph, creating a cyclic feedback loop.
+        guard let changed = notification.object as? AVAudioEngine else { return }
+        guard changed === microphone.engine else { return }
         guard isActive, !isMuted, let connection else { return }
         // Never churn the audio graph while assistant speech is playing —
         // a route change during TTS would glitch the very audio the owner
@@ -654,6 +662,7 @@ final class LiveConversation {
                         model.player.stop()
                         microphone.stop()
                         microphoneStarted = false
+                        AudioInputLease.release(.live)
                         VoiceLevelMeter.shared.resetInput()
                         model.player.bind(to: nil)
                         model.noteLiveMuted()
@@ -700,6 +709,11 @@ final class LiveConversation {
 
     @discardableResult
     private func startMicrophone(on connection: LiveVoiceConnection, retryBudget: Int) -> Bool {
+        // MIC STATE MACHINE LAW: RUNNING -> STARTING without STOP is illegal.
+        // If already RUNNING with healthy engine and lease, be idempotent.
+        if microphoneStarted, microphone.isRunning, AudioInputLease.currentOwner() == .live {
+            return true
+        }
         // FIX 1: bounded retry with ghost-lease elimination (P0 voice reliability).
         // Hardware format 0Hz/0ch or -10867 no longer leaves a ghost .live lease.
         for attempt in 0...retryBudget {
@@ -850,17 +864,16 @@ final class LiveConversation {
             }
         case "backchannel":
             cancelResponseWatchdog()
-            // AUDIO PLANE: dispatch directly off MainActor, no UI wait
+            // AUDIO PLANE FIX: single ordered producer — handle loop is the sole authority.
+            // No per-delta Task explosion. Each chunk is awaited sequentially on the
+            // PlaybackCoordinator actor, preserving order, bounding concurrency to 1,
+            // and eliminating unbounded Task creation for long responses.
             if let b64 = event.audioB64, !b64.isEmpty {
                 let sr = Double(event.sampleRate ?? 16_000)
-                Task(priority: .userInitiated) { await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr) }
+                await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr)
             } else if let ref = event.audioRef, !ref.isEmpty {
-                let client = model.client
-                let refCopy = ref
-                Task.detached(priority: .userInitiated) {
-                    if let data = try? await client.voiceAudio(ref: refCopy) {
-                        await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
-                    }
+                if let data = try? await model.client.voiceAudio(ref: ref) {
+                    await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
                 }
             }
         case "tts_chunk":
@@ -873,14 +886,10 @@ final class LiveConversation {
             }
             if let b64 = event.audioB64, !b64.isEmpty {
                 let sr = Double(event.sampleRate ?? 16_000)
-                Task(priority: .userInitiated) { await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr) }
+                await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr)
             } else if let ref = event.audioRef, !ref.isEmpty {
-                let client = model.client
-                let refCopy = ref
-                Task.detached(priority: .userInitiated) {
-                    if let data = try? await client.voiceAudio(ref: refCopy) {
-                        await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
-                    }
+                if let data = try? await model.client.voiceAudio(ref: ref) {
+                    await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
                 }
             }
         case "reply":
@@ -1184,15 +1193,27 @@ final class LiveConversation {
         computerStateTask?.cancel()
         computerStateTask = nil
         removeEscapeStop()
+        // RECONNECT LAW: keep local mic engine alive across transient provider/
+        // WebSocket reconnects. Only gate forwarding. Physical graph teardown
+        // happens only on explicit stop or proven engine failure. This prevents
+        // WebSocket reconnect from thrashing the AVAudioEngine.
         providerReadyForForward = false
         model?.player.stop()
+        // Keep capture alive — do not touch microphone engine or AudioInputLease.
+        // The next connectOnce will reuse the existing running engine via
+        // idempotent startMicrophone (checks microphone.isRunning).
+        VoiceLevelMeter.shared.resetInput()
+        model?.player.bind(to: nil)
+        connection?.close()
+        connection = nil
+    }
+
+    private func fullTeardownCapture() {
         microphone.stop()
         microphoneStarted = false
         VoiceLevelMeter.shared.resetInput()
         model?.player.bind(to: nil)
         AudioInputLease.release(.live)
-        connection?.close()
-        connection = nil
     }
 
     private func startResponseWatchdog(for gen: Int) {

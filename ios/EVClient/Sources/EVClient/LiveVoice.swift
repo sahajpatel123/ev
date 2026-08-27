@@ -760,6 +760,12 @@ public final class LiveVoiceMicrophone: @unchecked Sendable {
 
     public init() {}
 
+    public var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running && engine.isRunning
+    }
+
     /// Starts capture and forwards each converted frame to the live socket.
     public func start(
         enqueue: @escaping @Sendable (Data) -> Void,
