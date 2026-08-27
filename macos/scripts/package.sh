@@ -123,43 +123,36 @@ fi
 echo "Packaged $APP"
 
 # CANONICAL MASTER AUTHORITY: production secret lives at ~/.ev/secrets/production.env
-# (loaded via app.config secret overlay). api.env is a non-canonical copy for
-# the Mac GUI to read; it must be derived from the canonical source, never
-# the other way around, and packaging must not drift it.
+# (loaded via app.config secret overlay). api.env is SAFE LOCAL CONFIG ONLY
+# and MUST NOT contain EV_MASTER_KEY or device secrets. Device tokens live
+# in Keychain (com.ev.suit), not in files that package.sh could overwrite.
+# Normal EV.app startup uses Keychain device token, not master.
 sync_api_env() {
-    local src="$ROOT/../.env"
-    local prod_secret="${HOME}/.ev/secrets/production.env"
     local dest="${HOME}/Library/Application Support/EV/api.env"
     mkdir -p "$(dirname "$dest")"
     local url="http://127.0.0.1:8000"
-    local key=""
-    # Prefer canonical production secret
-    if [[ -f "$prod_secret" ]]; then
-        key="$(awk -F= '/^EV_MASTER_KEY=/{v=$2} END{print v}' "$prod_secret" | tr -d "\"'")"
-    fi
-    if [[ -z "$key" || ${#key} -lt 16 ]]; then
-        if [[ -f "$src" ]]; then
-            url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
-            key="$(awk -F= '/^EV_MASTER_KEY=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
-            if [[ -z "$key" || ${#key} -lt 16 ]]; then
-                key="$(awk -F= '/^EV_API_KEY=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
-            fi
-        fi
-    else
-        if [[ -f "$src" ]]; then
-            url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
+    local src="$ROOT/../.env"
+    if [[ -f "$src" ]]; then
+        local src_url
+        src_url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
+        if [[ -n "$src_url" ]]; then
+            url="$src_url"
         fi
     fi
-    url="${EV_API_URL:-${url:-http://127.0.0.1:8000}}"
-    key="${EV_MASTER_KEY:-${EV_API_KEY:-$key}}"
-    if [[ -n "$key" && "$key" != "dev" && ${#key} -ge 16 ]]; then
-        umask 077
-        printf 'EV_API_URL=%s\nEV_API_KEY=%s\nEV_MASTER_KEY=%s\n' "$url" "$key" "$key" > "$dest"
-        defaults write com.ev.suit EV_API_URL "$url"
-        defaults write com.ev.suit EV_API_KEY "$key"
-        echo "Wrote API credentials for EV.app → $dest (from canonical production secret)"
-    else
-        echo "WARNING: no EV_API_KEY/EV_MASTER_KEY found; EV.app will 401 on chat/voice." >&2
+    url="${EV_API_URL:-$url}"
+    umask 077
+    printf 'EV_API_URL=%s\n' "$url" > "$dest"
+    # Keep legacy cleanup: remove any master/device secrets that may have
+    # drifted into api.env or UserDefaults. Device token stays in Keychain.
+    if grep -q "EV_MASTER_KEY" "$dest" 2>/dev/null || grep -q "EV_API_KEY" "$dest" 2>/dev/null; then
+        # File was just overwritten without keys, so nothing to do; but if an old
+        # file existed with keys, it is now replaced. Log for visibility.
+        true
     fi
+    # Do NOT write EV_MASTER_KEY or EV_API_KEY to api.env or defaults.
+    # Clean any legacy UserDefaults master that would be mistaken for device cred.
+    defaults delete com.ev.suit EV_API_KEY 2>/dev/null || true
+    defaults write com.ev.suit EV_API_URL "$url" 2>/dev/null || true
+    echo "Wrote safe API URL for EV.app → $dest (master/device secrets NOT written; device token in Keychain com.ev.suit)"
 }
 sync_api_env

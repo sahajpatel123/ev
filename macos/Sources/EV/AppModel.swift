@@ -178,7 +178,7 @@ final class AppModel: ObservableObject {
         started = true
         _ = reloadAPICredentials()
         if config.usesPlaceholderKey {
-            lastError = "API key is still the placeholder “dev”. EV.app now reads EV_MASTER_KEY from ~/Library/Application Support/EV/api.env, ~/.ev/env, or the repo .env. Rebuild the app after packaging so Talk and chat authenticate."
+            lastError = "DEVICE_CREDENTIAL_MISSING: No device token in Keychain. This Mac's trusted device record exists but local credential is missing — repair required (no master-key copy needed)."
         }
         live.attach(self)
         VoiceOrbOverlay.shared.attach(self)
@@ -264,6 +264,11 @@ final class AppModel: ObservableObject {
         let defaults = UserDefaults.standard
         if let stored = defaults.string(forKey: "EV_REGISTRY_DEVICE_ID"),
            UUID(uuidString: stored) != nil {
+            // If we have a stored ID but no Keychain token, the device is
+            // trusted but local credential is missing — do not create duplicate.
+            // Repair will be handled via manual DB reissue or future token refresh.
+            // Return existing ID and let bootstrap attempt device auth; if it
+            // fails with DEVICE_TOKEN_INVALID, AppModel will surface repair.
             return stored
         }
         let created = try await client.createDevice(
@@ -272,6 +277,10 @@ final class AppModel: ObservableObject {
             deviceType: "mac"
         )
         defaults.set(created.device.id, forKey: "EV_REGISTRY_DEVICE_ID")
+        // Persist the one-time bearer token durably in Keychain (survives rebuild)
+        _ = DeviceCredentialStore.save(token: created.token, for: created.device.id)
+        // Switch client to the new device token immediately
+        _ = reloadAPICredentials()
         return created.device.id
     }
 
@@ -1396,7 +1405,23 @@ final class AppModel: ObservableObject {
     }
 
     private func authFailureMessage(_ body: String) -> String {
-        let detail = body.isEmpty ? "invalid or revoked device token" : body
-        return "API rejected this Mac’s key (\(detail)). EV.app must use the same EV_MASTER_KEY as the API — package.sh writes it to ~/Library/Application Support/EV/api.env."
+        let detail = body.isEmpty ? "DEVICE_TOKEN_INVALID" : body
+        if detail.contains("DEVICE_REVOKED") {
+            return "DEVICE_REVOKED: This Mac's device was revoked. Re-pair required."
+        }
+        if detail.contains("DEVICE_AUTH_REVISION_STALE") {
+            return "DEVICE_AUTH_REVISION_STALE: Credential revision stale — refreshing session."
+        }
+        if detail.contains("DEVICE_TOKEN_INVALID") {
+            return "DEVICE_TOKEN_INVALID: This Mac's device token is invalid. Attempting local repair."
+        }
+        if detail.contains("MASTER_KEY_INVALID") {
+            return "MASTER_KEY_INVALID: Administrative master mismatch — device auth does not use master key."
+        }
+        if detail.contains("CREDENTIAL_MISSING") {
+            return "DEVICE_CREDENTIAL_MISSING: No device credential — local Keychain missing or not paired."
+        }
+        // Legacy fallback without master-key hint
+        return "API rejected this Mac's device credential (\(detail)). Device auth failed."
     }
 }

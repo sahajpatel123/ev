@@ -33,14 +33,6 @@ struct AppConfig {
         baseURLSource = urlSelection.source
         baseURL = URL(string: urlString) ?? URL(string: "http://127.0.0.1:8000")!
 
-        // DO NOT CHANGE — see EVAuth/APIAuthKey.swift
-        let resolvedKey = APIAuthKey.resolve(
-            environment: environment,
-            fileValues: fileValues,
-            defaultsKey: defaults.string(forKey: "EV_API_KEY")
-        )
-        apiKey = resolvedKey
-
         let hostName = (Host.current().localizedName ?? "Mac")
             .lowercased()
             .replacingOccurrences(of: " ", with: "-")
@@ -49,6 +41,38 @@ struct AppConfig {
             ?? defaults.string(forKey: "EV_DEVICE_ID")
             ?? fileValues["EV_DEVICE_ID"]
             ?? "mac-\(hostName)"
+
+        // PRIMARY: durable device token from Keychain (survives rebuild, not in Git)
+        // Normal EV.app startup MUST use this, not EV_MASTER_KEY.
+        if let registryID = defaults.string(forKey: "EV_REGISTRY_DEVICE_ID"),
+           let token = DeviceCredentialStore.load(for: registryID),
+           APIAuthKey.isUsable(token) {
+            apiKey = token
+            // Keep URL and deviceID persisted, but do NOT persist token to UserDefaults
+            // (Keychain is the authority). Clean legacy UserDefaults master if stale.
+            defaults.set(urlString, forKey: "EV_API_URL")
+            defaults.set(deviceID, forKey: "EV_DEVICE_ID")
+            // If UserDefaults still holds a master-length value that is not the device token,
+            // keep it for now but it will not be used (Keychain wins). Do not overwrite Keychain.
+            return
+        }
+        // Also try Keychain for the computed deviceID (pre-registry case)
+        if let token = DeviceCredentialStore.load(for: deviceID),
+           APIAuthKey.isUsable(token) {
+            apiKey = token
+            defaults.set(urlString, forKey: "EV_API_URL")
+            defaults.set(deviceID, forKey: "EV_DEVICE_ID")
+            return
+        }
+
+        // FALLBACK: legacy master-key path (only for first pairing or repair)
+        // This will be deprecated once all trusted devices have Keychain tokens.
+        let resolvedKey = APIAuthKey.resolve(
+            environment: environment,
+            fileValues: fileValues,
+            defaultsKey: defaults.string(forKey: "EV_API_KEY")
+        )
+        apiKey = resolvedKey
 
         if APIAuthKey.isUsable(resolvedKey) {
             defaults.set(resolvedKey, forKey: "EV_API_KEY")

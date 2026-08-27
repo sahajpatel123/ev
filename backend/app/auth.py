@@ -43,10 +43,24 @@ class ActorContext:
 
 async def require_auth(authorization: str | None = Header(default=None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="CREDENTIAL_MISSING: Missing bearer token",
+            headers={"X-Error-Code": "CREDENTIAL_MISSING"},
+        )
     token = authorization.removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="CREDENTIAL_MISSING: Empty bearer token",
+            headers={"X-Error-Code": "CREDENTIAL_MISSING"},
+        )
     if not secrets.compare_digest(token, settings.master_key):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid master key")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="MASTER_KEY_INVALID: Invalid master key",
+            headers={"X-Error-Code": "MASTER_KEY_INVALID"},
+        )
     return token
 
 
@@ -58,14 +72,23 @@ async def require_master(authorization: str | None = Header(default=None)) -> st
     exclusive to the user-held master key.
     """
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="CREDENTIAL_MISSING: Missing bearer token",
+            headers={"X-Error-Code": "CREDENTIAL_MISSING"},
+        )
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty bearer token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="CREDENTIAL_MISSING: Empty bearer token",
+            headers={"X-Error-Code": "CREDENTIAL_MISSING"},
+        )
     if not secrets.compare_digest(token, settings.master_key):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Master key required for this operation",
+            detail="MASTER_KEY_INVALID: Master key required for this operation",
+            headers={"X-Error-Code": "MASTER_KEY_INVALID"},
         )
     return "master"
 
@@ -75,27 +98,45 @@ async def _resolve_actor(
     session: AsyncSession = Depends(get_session),
 ) -> tuple[str, Device | None]:
     if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="CREDENTIAL_MISSING: Missing bearer token",
+            headers={"X-Error-Code": "CREDENTIAL_MISSING"},
+        )
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty bearer token")
-    # DO NOT CHANGE — master key is accepted as a Bearer token. The Mac menu
-    # bar authenticates with EV_MASTER_KEY (not EV_EARS_API_KEY). Removing
-    # this branch makes EV.app 401 as "Invalid or revoked device token".
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="CREDENTIAL_MISSING: Empty bearer token",
+            headers={"X-Error-Code": "CREDENTIAL_MISSING"},
+        )
+    # Master is still accepted for administrative paths, but normal device
+    # flow no longer depends on it. Keep this branch for recovery/rotation.
     if secrets.compare_digest(token, settings.master_key):
         return "master", None
     token_hash = sha256_hex(token)
-    result = await session.execute(
-        select(Device).where(
-            Device.token_hash == token_hash,
-            Device.revoked_at.is_(None),
-        )
+    # Check any device with this hash, including revoked, to distinguish
+    # DEVICE_REVOKED vs DEVICE_TOKEN_INVALID.
+    result_any = await session.execute(
+        select(Device).where(Device.token_hash == token_hash)
     )
-    device = result.scalar_one_or_none()
-    if device is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or revoked device token")
-    device.last_seen_at = utcnow()
-    return f"device:{device.name}", device
+    device_any = result_any.scalar_one_or_none()
+    if device_any is None:
+        # Neither master nor device — distinguish from master-only failure.
+        # Keep legacy phrase for backwards compat but prefix with code.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="DEVICE_TOKEN_INVALID: Invalid device token (master mismatch)",
+            headers={"X-Error-Code": "DEVICE_TOKEN_INVALID", "X-Master-Mismatch": "true"},
+        )
+    if device_any.revoked_at is not None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="DEVICE_REVOKED: Device revoked",
+            headers={"X-Error-Code": "DEVICE_REVOKED"},
+        )
+    device_any.last_seen_at = utcnow()
+    return f"device:{device_any.name}", device_any
 
 
 async def require_actor(
