@@ -77,6 +77,8 @@ async def memory_router_probe(
 
     if mode == "off" or classification.level <= 0 or classification.is_current_state_guard:
         out["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
+        if scope != "owner" and mode != "off":
+            out["scope_denied"] = True
         return out
 
     envelope = await route_turn(

@@ -158,19 +158,20 @@ async def handle_owner_turn(
             int(_DB_FAILURE_STATS["owner_turn_commit_failures"]) + 1
         )
 
+    # F1 shadow memory: attach turn-scoped recalled history when the memory
+    # gate is ON and the turn qualitatively deserves history. Runs AFTER the
+    # transaction boundary; read-only; never touches mutation routes; the
+    # envelope is exactly-once per turn and never persisted. Attach BEFORE
+    # the idempotency cache so a retried turn returns the identical payload.
+    with contextlib.suppress(Exception):
+        result = await _maybe_attach_shadow_context(session, owner_turn, result)
+
     # Cache decision for idempotency
     _GATE_DECISIONS[owner_turn.turn_id] = result
     # Bounded cache
     if len(_GATE_DECISIONS) > 500:
         oldest = next(iter(_GATE_DECISIONS))
         del _GATE_DECISIONS[oldest]
-
-    # F1 shadow memory: attach turn-scoped recalled history when the memory
-    # gate is ON and the turn qualitatively deserves history. Runs AFTER the
-    # transaction boundary; read-only; never touches mutation routes; the
-    # envelope is exactly-once per turn and never persisted.
-    with contextlib.suppress(Exception):
-        result = await _maybe_attach_shadow_context(session, owner_turn, result)
 
     logger.warning(
         "turn_gate decision turn_id=%s provider_item=%s route=%s op=%s ok=%s latency=%.1fms",
