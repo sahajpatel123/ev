@@ -87,3 +87,7 @@ class TurnResult(BaseModel):
     # For latency/cost tracking
     latency_ms: float | None = None
     luna_usage: dict[str, Any] | None = None
+    # F1 shadow memory: turn-scoped recalled history for the response layer.
+    # Historical context ONLY — never canonical truth, never persisted. The
+    # block is pre-labeled ([EVIE_RECALLED_HISTORY]) and expires with the turn.
+    shadow_context: dict[str, Any] | None = None

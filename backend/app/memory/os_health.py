@@ -106,6 +106,95 @@ def note_prefetch(*, ms: float | None = None, hit: bool = False, trigger: str | 
         _PREFETCH["triggers"] += 1
 
 
+# F1 shadow-memory telemetry: bounded metadata only, never owner content.
+_SHADOW = {
+    "turns_classified": 0,
+    "retrievals": 0,
+    "injections": 0,
+    "zero_retrieval_turns": 0,
+    "scope_denials": 0,
+    "shadow_builds": 0,
+    "expired_envelopes": 0,
+    "last_intent": None,
+    "last_level": None,
+}
+_SHADOW_CLASSIFY_MS: deque[float] = deque(maxlen=256)
+_SHADOW_RETRIEVAL_MS: deque[float] = deque(maxlen=256)
+_SHADOW_CONTEXT_MS: deque[float] = deque(maxlen=256)
+_SHADOW_TOKENS: deque[int] = deque(maxlen=256)
+
+
+def note_shadow_turn(intent: str, level: int) -> None:
+    _SHADOW["turns_classified"] += 1
+    _SHADOW["last_intent"] = str(intent)[:40]
+    _SHADOW["last_level"] = int(level)
+
+
+def note_shadow_classified(ms: float, intent: str, level: int) -> None:
+    _SHADOW_CLASSIFY_MS.append(max(0.0, float(ms)))
+    _SHADOW["last_intent"] = str(intent)[:40]
+    _SHADOW["last_level"] = int(level)
+
+
+def note_shadow_retrieval(ms: float, items: int, tokens: int) -> None:
+    _SHADOW_RETRIEVAL_MS.append(max(0.0, float(ms)))
+    _SHADOW_TOKENS.append(max(0, int(tokens)))
+    _SHADOW["retrievals"] += 1
+
+
+def note_context_build(ms: float) -> None:
+    _SHADOW_CONTEXT_MS.append(max(0.0, float(ms)))
+
+
+def note_shadow_injected(tokens: int) -> None:
+    _SHADOW["injections"] += 1
+    _SHADOW_TOKENS.append(max(0, int(tokens)))
+
+
+def note_zero_retrieval_turn() -> None:
+    _SHADOW["zero_retrieval_turns"] += 1
+
+
+def note_scope_denial(scope: str) -> None:
+    _SHADOW["scope_denials"] += 1
+
+
+def note_shadow_expired() -> None:
+    _SHADOW["expired_envelopes"] += 1
+
+
+def note_shadow_build() -> None:
+    _SHADOW["shadow_builds"] += 1
+
+
+def shadow_health_snapshot() -> dict[str, Any]:
+    classify = list(_SHADOW_CLASSIFY_MS)
+    retrieval = list(_SHADOW_RETRIEVAL_MS)
+    context = list(_SHADOW_CONTEXT_MS)
+    tokens = list(_SHADOW_TOKENS)
+    return {
+        "mode_counts": {
+            "turns_classified": _SHADOW["turns_classified"],
+            "retrievals": _SHADOW["retrievals"],
+            "injections": _SHADOW["injections"],
+            "zero_retrieval_turns": _SHADOW["zero_retrieval_turns"],
+            "scope_denials": _SHADOW["scope_denials"],
+            "shadow_builds": _SHADOW["shadow_builds"],
+            "expired_envelopes": _SHADOW["expired_envelopes"],
+        },
+        "last_intent": _SHADOW["last_intent"],
+        "last_level": _SHADOW["last_level"],
+        "classify_p50_ms": _percentile(classify, 50),
+        "classify_p95_ms": _percentile(classify, 95),
+        "retrieval_p50_ms": _percentile(retrieval, 50),
+        "retrieval_p95_ms": _percentile(retrieval, 95),
+        "context_build_p50_ms": _percentile(context, 50),
+        "context_build_p95_ms": _percentile(context, 95),
+        "shadow_tokens_avg": round(sum(tokens) / len(tokens), 1) if tokens else None,
+        "shadow_tokens_max": max(tokens) if tokens else None,
+    }
+
+
 def snapshot() -> dict[str, Any]:
     samples = list(_GATE_MS)
     return {
@@ -130,4 +219,5 @@ def snapshot() -> dict[str, Any]:
         "prefetch_ms": _PREFETCH["last_ms"],
         "prefetch_hits": _PREFETCH["hits"],
         "prefetch_triggers": _PREFETCH["triggers"],
+        "shadow": shadow_health_snapshot(),
     }

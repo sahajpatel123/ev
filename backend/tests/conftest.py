@@ -118,6 +118,13 @@ def reset_mutable_settings() -> Iterator[None]:
     settings.memory_curator_enabled = True
     settings.memory_prefetch = os.environ.get("EV_MEMORY_PREFETCH", "off")
     settings.cross_platform_production_memory = False
+    # Live-session registry is process-global (voice.live.layer). One test
+    # registering a fake live session must not leak "mac client connected"
+    # into later projection/protocol tests (pre-existing pollution found by
+    # F1 runs: test_g2_trust_lifecycle -> test_apps_life live-sheet).
+    from app.voice.live.layer import reset_live_registry
+
+    reset_live_registry()
     from app.memory.bootstrap import reset_bootstrap_cache
     from app.memory.prefetch import reset_prefetch
 

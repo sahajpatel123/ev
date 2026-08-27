@@ -74,12 +74,31 @@ class Retriever:
         min_score: float = 0.0,
         rerank: bool = True,
         include_historical: bool = False,
+        weight_overrides: dict[str, float] | None = None,
     ) -> list[RetrievedMemory]:
-        """Hybrid retrieval with the locked default scoring formula."""
+        """Hybrid retrieval with the locked default scoring formula.
+
+        ``weight_overrides`` are MULTIPLIERS on the locked component weights
+        (e.g. ``{"recency": 1.6}``), renormalized to sum 1 — used only by
+        intent-specific retrieval (memory/intent.py). ``None`` keeps the
+        locked formula byte-for-byte. The default formula remains law.
+        """
         if not query.strip():
             return []
         query_tokens = simple_tokens(query)
         query_entities = {e.name.lower() for e in extract_entities_from_text(query)}
+        if weight_overrides:
+            merged = {
+                key: value
+                * float(weight_overrides.get(key, 1.0))
+                for key, value in SCORE_WEIGHTS.items()
+            }
+            total = sum(merged.values())
+            effective_weights = (
+                {key: value / total for key, value in merged.items()} if total > 0 else dict(SCORE_WEIGHTS)
+            )
+        else:
+            effective_weights = SCORE_WEIGHTS
         try:
             query_emb = (await self.embeddings.embed([query]))[0]
         except Exception:
@@ -200,7 +219,7 @@ class Retriever:
                 "embedding_comparable": 1.0 if comparable else 0.0,
                 "embedding_degraded": 1.0 if self.embedding_degraded else 0.0,
             }
-            score = sum(SCORE_WEIGHTS[k] * components[k] for k in SCORE_WEIGHTS)
+            score = sum(effective_weights[k] * components[k] for k in effective_weights)
             if score < min_score:
                 continue
             scored.append(

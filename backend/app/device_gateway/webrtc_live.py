@@ -672,15 +672,24 @@ async def run_phone_tool(
             )
         if result.get("conversational"):
             # PART 6/11: hand back to the provider's own conversation.
+            # F1: turn-scoped recalled history, clearly labeled and bound to
+            # this tool result only — never session-persistent.
+            history = str(result.get("recalled_history") or "").strip()
+            hint = "No canonical state matched; answer the owner conversationally yourself."
+            if history:
+                hint = (
+                    f"{hint}\n{history}\n"
+                    "The bracketed history above is read-only background for "
+                    "THIS turn only: use it if the owner's question refers to "
+                    "the past, otherwise ignore it. Current canonical state "
+                    "always outranks recalled history."
+                )
             return compact_live_tool_json(
                 {
                     "ok": True,
                     "conversational": True,
                     "spoken": "",
-                    "hint": (
-                        "No canonical state matched; answer the owner "
-                        "conversationally yourself."
-                    ),
+                    "hint": hint,
                 }
             )
         spoken = result.get("reply") or (

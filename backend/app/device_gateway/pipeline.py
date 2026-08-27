@@ -587,6 +587,8 @@ async def run_trusted_device_turn(
         # P0.1 PART 6 LAW: a STATE broker must never answer a conversational
         # turn with "Done." Signal the provider to answer from its own
         # conversation; Core asserted there is no canonical state here.
+        # F1: turn-scoped recalled history rides along (labeled, expiring).
+        shadow = result.shadow_context if isinstance(result.shadow_context, dict) else None
         return {
             "ok": True,
             "conversational": True,
@@ -595,6 +597,7 @@ async def run_trusted_device_turn(
             "route": "CONVERSATION",
             "operation": "UNKNOWN",
             "turn_id": turn.turn_id,
+            "recalled_history": str((shadow or {}).get("block") or "").strip() or None,
         }
     reply = result.owner_message or (
         "Done." if result.ok else "That didn't complete."

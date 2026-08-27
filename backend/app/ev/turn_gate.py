@@ -10,6 +10,7 @@ import contextlib
 import logging
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev.owner_turn import OwnerTurn, is_consumed, mark_consumed
@@ -117,6 +118,9 @@ async def handle_owner_turn(
     # transaction boundary. Any exception is rolled back IMMEDIATELY and
     # converted to a canonical failure — the session must be healthy for the
     # next owner turn, and raw database text must never reach the model.
+    # (F1 shadow-memory attachment runs after this boundary below; it may only
+    # DOWNGRADE a read-only historical question from STATE_QUERY to
+    # CONVERSATION. It never mutates canonical state.)
     try:
         result = await controller.handle_turn(owner_turn.transcript, turn_id=owner_turn.turn_id)
     except Exception as exc:  # noqa: BLE001 - canonical conversion point
@@ -161,6 +165,13 @@ async def handle_owner_turn(
         oldest = next(iter(_GATE_DECISIONS))
         del _GATE_DECISIONS[oldest]
 
+    # F1 shadow memory: attach turn-scoped recalled history when the memory
+    # gate is ON and the turn qualitatively deserves history. Runs AFTER the
+    # transaction boundary; read-only; never touches mutation routes; the
+    # envelope is exactly-once per turn and never persisted.
+    with contextlib.suppress(Exception):
+        result = await _maybe_attach_shadow_context(session, owner_turn, result)
+
     logger.warning(
         "turn_gate decision turn_id=%s provider_item=%s route=%s op=%s ok=%s latency=%.1fms",
         owner_turn.turn_id,
@@ -171,6 +182,114 @@ async def handle_owner_turn(
         result.latency_ms or 0,
     )
     return result
+
+
+async def _owner_memory_scope(session: AsyncSession, owner_turn: OwnerTurn) -> str:
+    """Server-derived memory scope for the turn's device (fail closed)."""
+
+    if not owner_turn.device_id:
+        return "owner"
+    try:
+        from uuid import UUID as _UUID
+
+        from app.models import Device
+
+        device_id = (
+            owner_turn.device_id
+            if isinstance(owner_turn.device_id, _UUID)
+            else _UUID(str(owner_turn.device_id))
+        )
+        row = (
+            await session.execute(select(Device).where(Device.id == device_id))
+        ).scalars().first()
+        if row is None or row.revoked_at is not None:
+            return "untrusted"
+        return str(getattr(row, "memory_scope", "") or "owner").strip().lower() or "owner"
+    except Exception:  # noqa: BLE001 - scope resolution must fail closed
+        return "untrusted"
+
+
+async def _maybe_attach_shadow_context(
+    session: AsyncSession,
+    owner_turn: OwnerTurn,
+    result: TurnResult,
+) -> TurnResult:
+    """Attach [EVIE_RECALLED_HISTORY] to conversation turns when gate=ON.
+
+    Rules (F0+F1 directive):
+      - OFF: zero work. SHADOW: route_turn measures only; nothing attaches.
+      - ON + CONVERSATION: attach recalled history for this turn.
+      - ON + STATE_QUERY + historical-truth question ("what WAS the priority
+        originally?"): downgrade to CONVERSATION and answer from history —
+        never present retrieved memory as current canonical state.
+      - ON + STATE_QUERY (current-state): NO history; canonical answer stands.
+    """
+
+    from app.memory.foundation import LEVEL_TOKEN_BUDGETS
+    from app.memory.intent import classify_retrieval
+    from app.memory.shadow import mark_injected, memory_gate_mode, route_turn
+
+    mode = memory_gate_mode()
+    if mode == "off":
+        return result
+    if result.route not in {"CONVERSATION", "STATE_QUERY"}:
+        return result
+
+    classification = classify_retrieval(owner_turn.transcript)
+    if classification.is_current_state_guard and not classification.historical_truth:
+        return result
+
+    memory_scope = await _owner_memory_scope(session, owner_turn)
+    envelope = await route_turn(
+        session,
+        query=owner_turn.transcript,
+        turn_id=owner_turn.turn_id,
+        live_session_id=owner_turn.live_session_id,
+        memory_scope=memory_scope,
+        classification=classification,
+    )
+    if envelope is None or envelope.injected or envelope.expired:
+        return result
+    if mode == "shadow":
+        return result
+
+    downgrade = (
+        result.route == "STATE_QUERY"
+        and result.ok
+        and classification.historical_truth
+        and bool(envelope.items)
+    )
+    if result.route == "STATE_QUERY" and not downgrade:
+        return result
+    if not downgrade and result.route != "CONVERSATION":
+        return result
+
+    if not mark_injected(envelope):
+        return result
+    block = envelope.render(
+        budget_tokens=LEVEL_TOKEN_BUDGETS.get(envelope.level, 300)
+    )
+    if not block:
+        return result
+    shadow_payload = {
+        "block": block,
+        "intent": envelope.retrieval_intent.value,
+        "level": envelope.level,
+        "tokens": envelope.token_count,
+        "fingerprint": envelope.query_fingerprint,
+        "turn_scoped": True,
+    }
+    if downgrade:
+        return result.model_copy(
+            update={
+                "route": "CONVERSATION",
+                "operation": "UNKNOWN",
+                "canonical_data": None,
+                "owner_message": None,
+                "shadow_context": shadow_payload,
+            }
+        )
+    return result.model_copy(update={"shadow_context": shadow_payload})
 
 
 def create_realtime_response_payload(owner_turn: OwnerTurn, turn_result: TurnResult) -> dict[str, Any]:
@@ -191,8 +310,20 @@ def create_realtime_response_payload(owner_turn: OwnerTurn, turn_result: TurnRes
         }
 
     # Conversation: let Realtime answer the committed owner item naturally.
+    # F1: turn-scoped recalled history rides along, clearly labeled as
+    # historical background — never as canonical state or owner instruction.
     if turn_result.route == "CONVERSATION":
-        return _envelope("Respond naturally to the user's conversational turn.")
+        instructions = "Respond naturally to the user's conversational turn."
+        shadow = turn_result.shadow_context if isinstance(turn_result.shadow_context, dict) else None
+        block = str((shadow or {}).get("block") or "").strip()
+        if block:
+            instructions = (
+                f"{instructions}\n{block}\n"
+                "The bracketed history above is background only: use it if the "
+                "user's turn refers to the past, otherwise ignore it. Current "
+                "canonical state always outranks it."
+            )
+        return _envelope(instructions)
 
     # Clarification: ask exactly one question, no state mutation occurred.
     if turn_result.needs_clarification or turn_result.route == "CLARIFICATION":
