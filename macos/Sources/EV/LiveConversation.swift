@@ -70,8 +70,8 @@ final class LiveConversation {
     private var responseWatchdog: Task<Void, Never>?
     // INGRESS-1: dedicated ordered audio channel — one producer, one consumer, no Task per chunk, no MainActor PCM work
     private enum PendingAudio: Sendable { case b64(String, Double); case ref(String, EVAPIClient) }
-    private var audioIngestContinuation: AsyncStream<PendingAudio>.Continuation?
-    private var audioIngestTask: Task<Void, Never>?
+    nonisolated(unsafe) private var audioIngestContinuation: AsyncStream<PendingAudio>.Continuation?
+    nonisolated(unsafe) private var audioIngestTask: Task<Void, Never>?
     private static let traceLock = NSLock()
     nonisolated private static func st(_ event: String, _ reason: String = "") {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -265,7 +265,7 @@ final class LiveConversation {
         }
     }
 
-    private func teardownAudioIngest() {
+    nonisolated private func teardownAudioIngest() {
         audioIngestContinuation?.finish()
         audioIngestContinuation = nil
         audioIngestTask?.cancel()
