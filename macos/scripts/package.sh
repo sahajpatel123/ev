@@ -26,7 +26,7 @@ plutil -replace EVGitSHA -string "$GIT_SHA" "$ROOT/Resources/Info.plist" 2>/dev/
 plutil -replace EVAudioArchitecture -string "$AUDIO_ARCH" "$ROOT/Resources/Info.plist" 2>/dev/null || plutil -insert EVAudioArchitecture -string "$AUDIO_ARCH" "$ROOT/Resources/Info.plist" 2>/dev/null || true
 plutil -replace EVBuildTimestamp -string "$BUILD_TS" "$ROOT/Resources/Info.plist" 2>/dev/null || plutil -insert EVBuildTimestamp -string "$BUILD_TS" "$ROOT/Resources/Info.plist" 2>/dev/null || true
 
-swift build -c release --product EV
+swift build -c release
 
 # SwiftPM now puts release products in an arch-specific directory
 BIN_DIR="$(swift build -c release --show-bin-path 2>/dev/null || echo "$ROOT/.build/release")"
@@ -43,6 +43,18 @@ if [[ ! -f "$BIN" ]]; then
     BIN="$ROOT/.build/arm64-apple-macosx/release/EV"
     HELPER="$ROOT/.build/arm64-apple-macosx/release/EVNotificationHelper"
     LIFE_HELPER="$ROOT/.build/arm64-apple-macosx/release/EVLifeHelper"
+fi
+if [[ ! -f "$BIN" ]]; then
+    echo "ERROR: EV binary not found at $BIN" >&2
+    exit 1
+fi
+if [[ ! -f "$HELPER" ]]; then
+    echo "ERROR: EVNotificationHelper not found at $HELPER (build with --product EVNotificationHelper)" >&2
+    exit 1
+fi
+if [[ ! -f "$LIFE_HELPER" ]]; then
+    echo "ERROR: EVLifeHelper not found at $LIFE_HELPER" >&2
+    exit 1
 fi
 APP="$ROOT/build/EV.app"
 
