@@ -179,7 +179,6 @@ async def handle_computer_tool(
     device_id: str | None = None,
     request_id: str | None = None,
 ) -> dict:
-    del actor
     arguments = dict(args or {})
     live = _live(live_session_id, str(device_id) if device_id else None)
     state = ensure_state(getattr(live, "session_id", None) or live_session_id)
@@ -195,6 +194,50 @@ async def handle_computer_tool(
             blocked, state, name=name, executed=False, verified=False, request_id=request_id
         )
     started = time.monotonic()
+    # F2 executor adapter (flag: off | shadow | on). ON routes adapted tools
+    # through the internal executor (observe→act→verify contract); on any
+    # executor failure the legacy path below takes over (recorded fallback).
+    # SHADOW only plans/validates/risks — mutations always run via the legacy
+    # path so nothing can ever double-click or double-type.
+    from app.ev.computer_executor import (
+        EXECUTOR_TOOLS,
+        execute_tool_via_executor,
+        executor_mode,
+        shadow_validate_tool,
+    )
+
+    _exec_mode = executor_mode()
+    if name in EXECUTOR_TOOLS and _exec_mode != "off":
+        if _exec_mode == "on":
+            exec_result = await execute_tool_via_executor(
+                name, arguments, live=live, actor=actor
+            )
+            if exec_result is not None and exec_result.raw.get("ok"):
+                raw = exec_result.raw
+                if name == "screen_look":
+                    shaped = _shape_screen(raw, call_id=request_id, state=state)
+                elif name in {"inspect_ui", "ui_action"}:
+                    shaped = _shape_ui(
+                        name, arguments, raw, state=state, call_id=request_id
+                    )
+                else:
+                    shaped = _shape_lifecycle(
+                        name, arguments, raw, source="computer_executor"
+                    )
+                shaped = stamp_computer_receipt(
+                    shaped,
+                    state,
+                    name=name,
+                    executed=exec_result.executed,
+                    verified=exec_result.verified,
+                    request_id=request_id,
+                )
+                _record(state, name, arguments, shaped, started, request_id=request_id)
+                return shaped
+            # Executor failed/unavailable → legacy path handles richer error
+            # shaping and helper fallbacks; the miss is in executor diagnostics.
+        else:
+            await shadow_validate_tool(name, arguments, live=live, actor=actor)
     if name == "app_action":
         if live is None:
             missing = _unavailable(

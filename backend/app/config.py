@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     # Memory OS: Postgres is authority. OpenAI Realtime sessions are disposable.
     # Default gate is off so live voice latency stays frozen. shadow = measure only.
     memory_gate: str = "off"  # off | shadow | on
+    # F2 computer executor: off | shadow | on. off = legacy paths only.
+    # shadow = plan/validate/risk only (mutations never double-execute).
+    # on = existing tool names route through the internal executor.
+    computer_executor_v2: str = "off"
     memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
     memory_curator_enabled: bool = True
     memory_curator_version: str = "1.1"
