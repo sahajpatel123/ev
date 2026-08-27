@@ -118,9 +118,47 @@ enum DeviceCredentialStore {
             cacheLock.lock()
             cache[acct] = token
             cacheLock.unlock()
-            // Do NOT attempt to re-save to Keychain here if it would prompt;
-            // caller can decide to re-establish later via explicit save (e.g., after auth success).
-            // For now, return file token silently and keep Keychain recreation for explicit repair flow.
+            // Opportunistically re-establish Keychain silently from file.
+            // This runs in EV.app's process, so the new item will be created BY EV.app
+            // with EV.app's designated requirement (com.ev.suit + leaf 142...), making future
+            // silent reads succeed without prompt and fixing the underlying item.
+            // SecItemAdd for creation does not prompt; it just writes.
+            DispatchQueue.global(qos: .utility).async {
+                // Only if silent read still fails (item missing or would prompt)
+                let stillMissing: Bool = {
+                    let q: [String: Any] = [
+                        kSecClass as String: kSecClassGenericPassword,
+                        kSecAttrService as String: service,
+                        kSecAttrAccount as String: account,
+                        kSecReturnData as String: true,
+                        kSecMatchLimit as String: kSecMatchLimitOne,
+                        kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+                    ]
+                    var it: CFTypeRef?
+                    let st = SecItemCopyMatching(q as CFDictionary, &it)
+                    return st != errSecSuccess
+                }()
+                if stillMissing {
+                    let data = Data(token.utf8)
+                    for svc in [service, legacyService, legacyService2] {
+                        let dq: [String: Any] = [
+                            kSecClass as String: kSecClassGenericPassword,
+                            kSecAttrService as String: svc,
+                            kSecAttrAccount as String: account,
+                        ]
+                        SecItemDelete(dq as CFDictionary)
+                    }
+                    let add: [String: Any] = [
+                        kSecClass as String: kSecClassGenericPassword,
+                        kSecAttrService as String: service,
+                        kSecAttrAccount as String: account,
+                        kSecValueData as String: data,
+                        kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+                        kSecAttrSynchronizable as String: false,
+                    ]
+                    SecItemAdd(add as CFDictionary, nil)
+                }
+            }
             return token
         }
         return nil
