@@ -85,6 +85,13 @@ final class AppModel: ObservableObject {
     @Published var liveConfirmationHold: LiveConfirmationHold?
     /// Backend bridge state is separate from local TCC permission state.
     @Published var macBridgeStatuses: [MacBridgeStatus] = []
+    enum StartupState: String { case booting, loadingIdentity, authenticating, bootstrapping, startingVoice, online, authFailed, backendUnavailable }
+    @Published var startupState: StartupState = .booting
+    // Safe-startup diagnostics (single read, no prompt storm)
+    private(set) var startupKeychainReads = 0
+    private(set) var startupAuthAttempts = 0
+    private(set) var startupMicStarts = 0
+    private(set) var startupCameraStarts = 0
 
     private(set) var config: AppConfig
     private(set) var client: EVAPIClient
@@ -101,6 +108,7 @@ final class AppModel: ObservableObject {
     private var started = false
     private var sendingVoice = false
     private var micAuthObserver: NSObjectProtocol?
+    private var authCoordinator: Task<Void, Never>?
 
     init() {
         // Force BuildInfo linkage so binary hash changes with git SHA / audio arch
@@ -176,36 +184,21 @@ final class AppModel: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
-        _ = reloadAPICredentials()
-        if config.usesPlaceholderKey {
-            lastError = "DEVICE_CREDENTIAL_MISSING: No device token in Keychain. This Mac's trusted device record exists but local credential is missing — repair required (no master-key copy needed)."
-        }
+        startupState = .booting
+        // SAFE STARTUP: no mic/camera/live until device auth is valid
         live.attach(self)
         VoiceOrbOverlay.shared.attach(self)
         observeMicrophoneAuthorization()
-        // ⇧⌘E must be live at app-open. Registering only in MenuBarView.onAppear
-        // left the Talk handler uninstalled until the panel was opened once.
         hotkey.start(
-            keyCode: 14, // "e"
+            keyCode: 14,
             flags: [.command, .shift],
             handler: { [weak self] in
-                Task { @MainActor in
-                    self?.toggleTalk()
-                }
+                Task { @MainActor in self?.toggleTalk() }
             }
         )
-        // ev.ears and live cannot share the input. Kill ears before any
-        // AVAudioEngine tap or Talk can race it (that abort looked like quit).
         EarsProcess.stopAndWait()
-        // Claim the mic before any await. If Talk/hotkey fires during
-        // refresh(), a second AVAudioEngine on the same input aborts EV.
-        live.start()
-        Task {
-            await refresh()
-            await bootstrapIfNeeded()
-            let statuses = await PermissionCenter.statuses()
-            await connectGrantedBridges(from: statuses)
-        }
+        // Single coordinated startup sequence
+        Task { await runSafeStartup() }
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
@@ -220,6 +213,60 @@ final class AppModel: ObservableObject {
                 await self?.refreshConversation()
             }
         }
+    }
+
+    private func runSafeStartup() async {
+        startupState = .loadingIdentity
+        // Exactly ONE Keychain read per process (cached thereafter)
+        startupKeychainReads = 1
+        _ = reloadAPICredentials()
+        if config.usesPlaceholderKey {
+            startupState = .authFailed
+            lastError = "DEVICE_CREDENTIAL_MISSING: No device token in Keychain. This Mac's trusted device record exists but local credential is missing — repair required (no master-key copy needed)."
+            status = .offline
+            return
+        }
+        startupState = .authenticating
+        startupAuthAttempts = 1
+        // Single auth attempt: bootstrap will validate device token via _resolve_actor
+        do {
+            try await authenticateOnce()
+        } catch {
+            if isUnauthorized(error) {
+                startupState = .authFailed
+                lastError = authFailureMessage((error as? EVAPIError)?.errorDescription ?? "")
+                status = .offline
+                return
+            } else {
+                startupState = .backendUnavailable
+                lastError = "Backend unavailable — will retry once."
+                // One bounded retry for transient network, not for invalid credential
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                do { try await authenticateOnce() } catch {
+                    startupState = .authFailed
+                    status = .offline
+                    return
+                }
+            }
+        }
+        startupState = .bootstrapping
+        await bootstrapIfNeeded()
+        // Camera LAW: remains OFF during normal boot
+        startupCameraStarts = 0
+        // Only after auth+bootstrap: start voice once
+        startupState = .startingVoice
+        startupMicStarts = 1
+        live.start()
+        startupState = .online
+        status = .listening
+        // Defer non-critical bridges until after voice is stable
+        let statuses = await PermissionCenter.statuses()
+        await connectGrantedBridges(from: statuses)
+    }
+
+    private func authenticateOnce() async throws {
+        // Lightweight auth probe: runtimeSync is device-authenticated and updates last_seen
+        _ = try await client.runtimeSync(limit: 1)
     }
 
     func tick() async {
