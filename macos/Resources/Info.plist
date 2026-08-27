@@ -34,9 +34,9 @@
 	<key>EVAudioArchitecture</key>
 	<string>mac-source-ring-v1</string>
 	<key>EVBuildTimestamp</key>
-	<string>20260827T123230Z</string>
+	<string>20260827T123822Z</string>
 	<key>EVGitSHA</key>
-	<string>daa11e2bfd068efb199bc74727f1ba0a2c829953</string>
+	<string>9ed53bb1176c165d13d728b9a891dcc6d84486ce</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
 	<key>LSMinimumSystemVersion</key>
