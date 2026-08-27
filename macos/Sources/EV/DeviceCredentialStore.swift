@@ -20,9 +20,19 @@ import CryptoKit
 // Items that predate this policy were created by foreign tools (swift/security
 // CLI) with legacy ACL + partition lists; reading them blocks on a
 // SecurityAgent password dialog even with kSecUseAuthenticationUIFail. Such
-// items are detected by metadata only (never read), then deleted and recreated
-// cleanly using the 0600 file mirror — one-time self-heal, zero user
-// interaction. Reads happen ONCE per process; everything else uses the cache.
+// items are never read: a UIFail-guarded probe returns
+// errSecInteractionNotAllowed instead, and only THEN is the item deleted and
+// recreated from the 0600 mirror — evidence-based, one-time, zero user
+// interaction.
+//
+// WARNING (proven live, macOS 26): kSecAttrAccessible set at SecItemAdd time
+// is NOT surfaced in SecItemCopyMatching attribute dictionaries for generic
+// passwords. Never infer item "cleanliness" from metadata shape — it made
+// earlier versions delete and re-add a healthy item on every launch.
+//
+// Steady-state normal launch: ONE attributes query (legacy sweep), ONE guarded
+// data read (health probe), ZERO keychain writes, zero dialogs; the 0600
+// mirror is the hot-path token source and everything is cached per process.
 enum DeviceCredentialStore {
     static let service = "com.ev.suit.device-auth"
     static let legacyService = "com.ev.suit"
@@ -77,14 +87,24 @@ enum DeviceCredentialStore {
         return out as? [String: Any]
     }
 
-    // Clean items carry an explicit kSecAttrAccessible; legacy foreign-ACL items
-    // do not. Only clean items are safe to read without risking a dialog.
-    private static func isClean(_ meta: [String: Any]) -> Bool {
-        meta[kSecAttrAccessible as String] != nil
+    // CLEANLINESS IS NOT DETECTABLE BY METADATA SHAPE on the macOS file
+    // keychain: kSecAttrAccessible set at SecItemAdd time is NOT returned in
+    // the SecItemCopyMatching attribute dictionary (verified live: keys are
+    // acct/cdat/class/labl/mdat/svce only). Any delete-and-recreate heuristic
+    // based on that absence rewrites a healthy item on EVERY launch. The
+    // trustworthy signal is behavior: a UIFail-guarded data read that returns
+    // errSecInteractionNotAllowed proves the item's ACL distrusts us; anything
+    // else never touches writes.
+
+    private enum SilentReadOutcome {
+        case ok(String)      // readable silently; token populated
+        case notFound        // no item for this exact service+account
+        case unreadable      // exists but ACL demands user interaction (poisoned)
     }
 
-    // Silent read with UI forbidden. Counted for startup diagnostics.
-    private static func silentRead(account: String, service svc: String) -> String? {
+    // Single guarded data read (kSecUseAuthenticationUIFail): CANNOT spawn a
+    // SecurityAgent dialog — macOS fails fast with errSecInteractionNotAllowed.
+    private static func silentRead(account: String, service svc: String) -> SilentReadOutcome {
         cacheLock.lock()
         keychainReads += 1
         cacheLock.unlock()
@@ -98,9 +118,15 @@ enum DeviceCredentialStore {
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data,
-              let token = String(data: data, encoding: .utf8), !token.isEmpty else { return nil }
-        return token
+        if status == errSecSuccess, let data = item as? Data,
+           let token = String(data: data, encoding: .utf8), !token.isEmpty {
+            return .ok(token)
+        }
+        if status == errSecItemNotFound {
+            return .notFound
+        }
+        NSLog("[EV-CRED] silent keychain read blocked status=\(status) service=\(svc)")
+        return .unreadable
     }
 
     // /usr/bin/security can delete legacy foreign-ACL items that SecItemDelete
@@ -121,7 +147,7 @@ enum DeviceCredentialStore {
         }
     }
 
-    // MARK: - One-time self-heal (never reads legacy item data, never prompts)
+    // MARK: - One-time self-heal (exactly one guarded data read; never prompts)
 
     private static func healIfNeeded(for deviceID: String) {
         cacheLock.lock()
@@ -131,31 +157,53 @@ enum DeviceCredentialStore {
         if already { return }
 
         let acct = account(for: deviceID)
-        // Legacy services: never read; if any item lingers, drop it silently.
+        // Historical service names: never read; if any item lingers, drop it
+        // silently (metadata query only decides existence).
         for legacy in [legacyService, legacyService2] where metadata(account: acct, service: legacy) != nil {
             NSLog("[EV-CRED] removing legacy keychain item service=\(legacy)")
             _ = cliDelete(account: acct, service: legacy)
         }
-        guard let meta = metadata(account: acct, service: service) else { return }
-        if isClean(meta) { return }
-        // Legacy foreign-created canonical item: reading it would block on a
-        // SecurityAgent dialog. Replace it from the 0600 mirror without any
-        // user interaction.
-        NSLog("[EV-CRED] healing legacy keychain item for \(acct) (no prompt)")
-        guard let token = loadFromFile(for: deviceID) else {
-            NSLog("[EV-CRED] heal skipped: no local mirror token; credential must be re-paired")
-            return
+        switch silentRead(account: acct, service: service) {
+        case .ok(let token):
+            // Healthy item created by EV.app (default ACL trusts our stable
+            // designated requirement). Cache and keep the 0600 mirror fresh;
+            // NO keychain writes in steady state.
+            cacheLock.lock()
+            cache[acct] = token
+            cacheLock.unlock()
+            if loadFromFile(for: deviceID) == nil {
+                saveToFile(token: token, for: deviceID)
+            }
+        case .notFound:
+            // Canonical item absent: provision ONCE from the mirror so the
+            // credential stays durably keychain-backed. Created by EV.app
+            // itself → silent for all future launches and rebuilds.
+            if let token = loadFromFile(for: deviceID) {
+                NSLog("[EV-CRED] provisioning clean canonical keychain item for \(acct)")
+                _ = save(token: token, for: deviceID)
+            } else {
+                NSLog("[EV-CRED] canonical keychain item missing and no local mirror; credential must be re-paired")
+            }
+        case .unreadable:
+            // Item exists but its ACL demands user interaction — a foreign/
+            // poisoned artifact. Reading it is forbidden (it would prompt);
+            // replace it one time via security CLI delete + EV.app re-add from
+            // the mirror. Zero user interaction throughout.
+            guard let token = loadFromFile(for: deviceID) else {
+                NSLog("[EV-CRED] unreadable foreign-ACL item has no local mirror; credential must be re-paired")
+                return
+            }
+            NSLog("[EV-CRED] replacing unreadable (foreign ACL) keychain item for \(acct)")
+            SecItemDelete([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: acct,
+            ] as CFDictionary)
+            if metadata(account: acct, service: service) != nil {
+                _ = cliDelete(account: acct, service: service)
+            }
+            _ = save(token: token, for: deviceID)
         }
-        let dq: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: acct,
-        ]
-        SecItemDelete(dq as CFDictionary) // fast-fails on legacy items; harmless
-        if metadata(account: acct, service: service) != nil {
-            _ = cliDelete(account: acct, service: service)
-        }
-        _ = save(token: token, for: deviceID)
     }
 
     // MARK: - Public API
@@ -214,28 +262,24 @@ enum DeviceCredentialStore {
             return cached
         }
         cacheLock.unlock()
+        // One-time per process heal: exactly ONE UIFail-guarded data read that
+        // (a) validates the canonical item is silently readable, (b) provisions
+        // it from the 0600 mirror when absent, or (c) one-time replaces a
+        // poisoned foreign-ACL item. Zero prompts by construction.
         healIfNeeded(for: deviceID)
-        // Exactly one silent Keychain read per process per account.
-        if let token = silentRead(account: acct, service: service) {
-            cacheLock.lock()
-            cache[acct] = token
-            cacheLock.unlock()
-            return token
-        }
-        // K-3 mirror fallback (read-only here; never a prompt).
+        // K3 PRIMARY: 0600 mirror is the hot path — silent on every launch.
+        // File value is authoritative if both exist.
         if let token = loadFromFile(for: deviceID) {
-            if metadata(account: acct, service: service) == nil, UUID(uuidString: deviceID) != nil {
-                // One-time rematerialization of the canonical item, created by
-                // EV.app itself so future launches read it silently. Only for
-                // registry UUID accounts — never creates duplicate accounts.
-                if save(token: token, for: deviceID) { return token }
-            }
             cacheLock.lock()
             cache[acct] = token
             cacheLock.unlock()
             return token
         }
-        return nil
+        // Mirror lost: whatever heal cached from the canonical item applies.
+        cacheLock.lock()
+        let healed = cache[acct]
+        cacheLock.unlock()
+        return healed
     }
 
     @discardableResult
