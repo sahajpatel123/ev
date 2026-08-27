@@ -90,6 +90,8 @@ def _restore_gate():
         ("What meetings do I have tomorrow?", RetrievalIntent.CURRENT_STATE_QUERY),
         ("What reminders are active?", RetrievalIntent.CURRENT_STATE_QUERY),
         ("What is my current goal?", RetrievalIntent.CURRENT_STATE_QUERY),
+        ("What is Canary's priority?", RetrievalIntent.CURRENT_STATE_QUERY),
+        ("What is the orchestrator's status?", RetrievalIntent.CURRENT_STATE_QUERY),
         ("What did we decide about IIT?", RetrievalIntent.DECISION),
         ("Which model did I choose for the orchestrator?", RetrievalIntent.DECISION),
         ("What do I usually like for breakfast?", RetrievalIntent.CURRENT_PREFERENCE),

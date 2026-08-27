@@ -40,6 +40,7 @@ CURRENT_STATE_PATTERNS = re.compile(
     r"\b(?:"
     r"what(?:'s| is) (?:the |my |our )?(?:current |active |present )?"
     r"(?:priority|priorities|status|state)\b"
+    r"|what(?:'s| is) (?:the |my |our )?[a-z][\w'-]{2,40}(?:'s)? (?:current |active )?(?:priority|status|state)\b"
     r"|what (?:meetings?|events?|calls?|appointments?) (?:do i have|are on|are coming|do we have)"
     r"|what(?:'s| is) (?:on my calendar|my schedule|coming up)"
     r"|what (?:reminders?|alarms?|timers?) (?:are |do i have |have i got )?(?:active|set|pending|due|running)"
