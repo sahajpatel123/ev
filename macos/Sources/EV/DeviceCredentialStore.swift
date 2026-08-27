@@ -4,25 +4,42 @@ import Security
 import CryptoKit
 #endif
 
-// DURABLE DEVICE CREDENTIAL — Keychain, survives rebuild/update, not in Git/bundle
-// Service: com.ev.suit.device-auth (canonical), Account: device:<UUID>, Value: device bearer token
+// ZERO-PROMPT DEVICE CREDENTIAL STORE (K-1 canonical, macOS)
+//
+// Service: com.ev.suit.device-auth, Account: device:<UUID>, Value: device bearer token.
 // Normal EV.app startup uses this, NOT EV_MASTER_KEY.
-// LAW: read ONCE per process start, then cached. Helpers must not read.
+//
+// Policy (owner law): normal launch must NEVER show a Keychain password prompt.
+// The canonical item is created ONLY by the EV.app process itself via plain
+// SecItemAdd: class generic-password, accessible AfterFirstUnlockThisDeviceOnly,
+// synchronizable false, NO SecAccessControl, NO legacy SecAccess, no interactive
+// flags. macOS then grants silent read access to EV's stable designated
+// requirement (identifier "com.ev.suit" + "EV Code Signing" certificate), which
+// survives rebuilds re-signed by scripts/signing.sh.
+//
+// Items that predate this policy were created by foreign tools (swift/security
+// CLI) with legacy ACL + partition lists; reading them blocks on a
+// SecurityAgent password dialog even with kSecUseAuthenticationUIFail. Such
+// items are detected by metadata only (never read), then deleted and recreated
+// cleanly using the 0600 file mirror — one-time self-heal, zero user
+// interaction. Reads happen ONCE per process; everything else uses the cache.
 enum DeviceCredentialStore {
     static let service = "com.ev.suit.device-auth"
     static let legacyService = "com.ev.suit"
     static let legacyService2 = "com.ev.suit.device-token"
-    // In-memory cache: 1 read per process, no prompt storm
+
     private static var cache: [String: String] = [:]
     private static let cacheLock = NSLock()
+    private static var keychainReads = 0
+    private static var healDone = false
 
     private static func account(for deviceID: String) -> String {
-        // Normalize: store as device:<uuid> to avoid collisions
         if deviceID.hasPrefix("device:") { return deviceID }
         return "device:\(deviceID)"
     }
 
-    // K-3 fallback: app-local 0600 file, used only if Keychain is inherently unreliable for self-signed
+    // MARK: - K-3 mirror: app-local 0600 file (scoped device token only, never master)
+
     private static var supportDir: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("EV", isDirectory: true) ?? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("EV")
@@ -43,12 +60,112 @@ enum DeviceCredentialStore {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.count >= 16 ? trimmed : nil
     }
+
+    // MARK: - Keychain primitives
+
+    // Metadata-only query: never touches secret data, never prompts.
+    private static func metadata(account: String, service svc: String) -> [String: Any]? {
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: svc,
+            kSecAttrAccount as String: account,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnAttributes as String: true,
+        ]
+        var out: CFTypeRef?
+        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess else { return nil }
+        return out as? [String: Any]
+    }
+
+    // Clean items carry an explicit kSecAttrAccessible; legacy foreign-ACL items
+    // do not. Only clean items are safe to read without risking a dialog.
+    private static func isClean(_ meta: [String: Any]) -> Bool {
+        meta[kSecAttrAccessible as String] != nil
+    }
+
+    // Silent read with UI forbidden. Counted for startup diagnostics.
+    private static func silentRead(account: String, service svc: String) -> String? {
+        cacheLock.lock()
+        keychainReads += 1
+        cacheLock.unlock()
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: svc,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
+        ]
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &item)
+        guard status == errSecSuccess, let data = item as? Data,
+              let token = String(data: data, encoding: .utf8), !token.isEmpty else { return nil }
+        return token
+    }
+
+    // /usr/bin/security can delete legacy foreign-ACL items that SecItemDelete
+    // from EV.app cannot touch (it fast-fails with -25244 and never prompts).
+    @discardableResult
+    private static func cliDelete(account: String, service svc: String) -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["delete-generic-password", "-s", svc, "-a", account]
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        do {
+            try p.run()
+            p.waitUntilExit()
+            return p.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+
+    // MARK: - One-time self-heal (never reads legacy item data, never prompts)
+
+    private static func healIfNeeded(for deviceID: String) {
+        cacheLock.lock()
+        let already = healDone
+        healDone = true
+        cacheLock.unlock()
+        if already { return }
+
+        let acct = account(for: deviceID)
+        // Legacy services: never read; if any item lingers, drop it silently.
+        for legacy in [legacyService, legacyService2] where metadata(account: acct, service: legacy) != nil {
+            NSLog("[EV-CRED] removing legacy keychain item service=\(legacy)")
+            _ = cliDelete(account: acct, service: legacy)
+        }
+        guard let meta = metadata(account: acct, service: service) else { return }
+        if isClean(meta) { return }
+        // Legacy foreign-created canonical item: reading it would block on a
+        // SecurityAgent dialog. Replace it from the 0600 mirror without any
+        // user interaction.
+        NSLog("[EV-CRED] healing legacy keychain item for \(acct) (no prompt)")
+        guard let token = loadFromFile(for: deviceID) else {
+            NSLog("[EV-CRED] heal skipped: no local mirror token; credential must be re-paired")
+            return
+        }
+        let dq: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: acct,
+        ]
+        SecItemDelete(dq as CFDictionary) // fast-fails on legacy items; harmless
+        if metadata(account: acct, service: service) != nil {
+            _ = cliDelete(account: acct, service: service)
+        }
+        _ = save(token: token, for: deviceID)
+    }
+
+    // MARK: - Public API
+
     @discardableResult
     static func save(token: String, for deviceID: String) -> Bool {
         guard !token.isEmpty, token.count >= 16 else { return false }
         let acct = account(for: deviceID)
         let data = Data(token.utf8)
-        // Delete existing first for idempotency (all services)
+        // Idempotent sweep of this exact account across all historical services.
         for svc in [service, legacyService, legacyService2] {
             let dq: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
@@ -57,11 +174,13 @@ enum DeviceCredentialStore {
             ]
             SecItemDelete(dq as CFDictionary)
         }
-        // K1 CLEAN: no SecAccess, no SecAccessControl, no userPresence/biometry.
-        // Use AfterFirstUnlockThisDeviceOnly, synchronizable false, ThisDeviceOnly.
-        // For self-signed stable cert, default ACL trusts creator (EV.app with leaf 142...).
-        // Must be created BY EV.app itself (not swift) to be silent for EV.app.
-        let addQuery: [String: Any] = [
+        if metadata(account: acct, service: service) != nil {
+            _ = cliDelete(account: acct, service: service)
+        }
+        // Clean canonical item: created by EV.app, bound to EV's stable
+        // designated requirement. No SecAccessControl, no legacy SecAccess,
+        // no interactive flags: reads are silent and survive rebuilds.
+        var addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: acct,
@@ -69,17 +188,22 @@ enum DeviceCredentialStore {
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecAttrSynchronizable as String: false,
         ]
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
-        // Always mirror to 0600 file for K-3 fallback (scoped device token only, never master)
+        var status = SecItemAdd(addQuery as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            _ = cliDelete(account: acct, service: service)
+            status = SecItemAdd(addQuery as CFDictionary, nil)
+        }
+        // Mirror is kept regardless, as the repair source of last resort.
         saveToFile(token: token, for: deviceID)
         if status == errSecSuccess {
             cacheLock.lock()
             cache[acct] = token
             cacheLock.unlock()
+            NSLog("[EV-CRED] canonical item saved clean for \(acct)")
             return true
         }
-        // If Keychain failed but file succeeded, still consider saved (fallback)
-        return FileManager.default.fileExists(atPath: fileURL(for: deviceID).path)
+        NSLog("[EV-CRED] keychain save failed status=\(status); 0600 mirror retained")
+        return false
     }
 
     static func load(for deviceID: String) -> String? {
@@ -90,100 +214,28 @@ enum DeviceCredentialStore {
             return cached
         }
         cacheLock.unlock()
-        // Primary: Keychain canonical — silent only, no UI. If it would prompt, fallback to file.
-        if let token = load(account: acct, service: service) {
+        healIfNeeded(for: deviceID)
+        // Exactly one silent Keychain read per process per account.
+        if let token = silentRead(account: acct, service: service) {
             cacheLock.lock()
             cache[acct] = token
             cacheLock.unlock()
-            // Keep file mirror in sync
-            saveToFile(token: token, for: deviceID)
             return token
         }
-        // Fallback legacy services (migration, one-time) — also silent only
-        for svc in [legacyService, legacyService2] {
-            if let token = load(account: acct, service: svc) {
-                // Migrate to canonical: delete legacy, save canonical cleanly (K1)
-                let dq: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: svc,
-                    kSecAttrAccount as String: acct,
-                ]
-                SecItemDelete(dq as CFDictionary)
-                _ = save(token: token, for: deviceID)
-                return token
-            }
-        }
-        // K-3 fallback: file (0600) if Keychain unavailable or would prompt — SILENT, no UI
+        // K-3 mirror fallback (read-only here; never a prompt).
         if let token = loadFromFile(for: deviceID) {
+            if metadata(account: acct, service: service) == nil, UUID(uuidString: deviceID) != nil {
+                // One-time rematerialization of the canonical item, created by
+                // EV.app itself so future launches read it silently. Only for
+                // registry UUID accounts — never creates duplicate accounts.
+                if save(token: token, for: deviceID) { return token }
+            }
             cacheLock.lock()
             cache[acct] = token
             cacheLock.unlock()
-            // Opportunistically re-establish Keychain silently from file.
-            // This runs in EV.app's process, so the new item will be created BY EV.app
-            // with EV.app's designated requirement (com.ev.suit + leaf 142...), making future
-            // silent reads succeed without prompt and fixing the underlying item.
-            // SecItemAdd for creation does not prompt; it just writes.
-            DispatchQueue.global(qos: .utility).async {
-                // Only if silent read still fails (item missing or would prompt)
-                let stillMissing: Bool = {
-                    let q: [String: Any] = [
-                        kSecClass as String: kSecClassGenericPassword,
-                        kSecAttrService as String: service,
-                        kSecAttrAccount as String: account,
-                        kSecReturnData as String: true,
-                        kSecMatchLimit as String: kSecMatchLimitOne,
-                        kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
-                    ]
-                    var it: CFTypeRef?
-                    let st = SecItemCopyMatching(q as CFDictionary, &it)
-                    return st != errSecSuccess
-                }()
-                if stillMissing {
-                    let data = Data(token.utf8)
-                    for svc in [service, legacyService, legacyService2] {
-                        let dq: [String: Any] = [
-                            kSecClass as String: kSecClassGenericPassword,
-                            kSecAttrService as String: svc,
-                            kSecAttrAccount as String: account,
-                        ]
-                        SecItemDelete(dq as CFDictionary)
-                    }
-                    let add: [String: Any] = [
-                        kSecClass as String: kSecClassGenericPassword,
-                        kSecAttrService as String: service,
-                        kSecAttrAccount as String: account,
-                        kSecValueData as String: data,
-                        kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-                        kSecAttrSynchronizable as String: false,
-                    ]
-                    SecItemAdd(add as CFDictionary, nil)
-                }
-            }
             return token
         }
         return nil
-    }
-
-    private static func load(account: String, service: String) -> String? {
-        // Silent only — if it would prompt, return nil and let caller fallback to file.
-        // NEVER prompt during normal startup. Underlying item must be fixed to be silent.
-        let silentQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(silentQuery as CFDictionary, &item)
-        if status == errSecInteractionNotAllowed {
-            // Would have prompted — treat as missing and fallback to file, do not prompt.
-            return nil
-        }
-        guard status == errSecSuccess, let data = item as? Data, let token = String(data: data, encoding: .utf8),
-              !token.isEmpty else { return nil }
-        return token
     }
 
     @discardableResult
@@ -199,14 +251,16 @@ enum DeviceCredentialStore {
                 kSecAttrService as String: svc,
                 kSecAttrAccount as String: acct,
             ]
-            let s = SecItemDelete(q as CFDictionary)
-            if s == errSecSuccess { ok = true }
+            if SecItemDelete(q as CFDictionary) == errSecSuccess { ok = true }
+        }
+        if metadata(account: acct, service: service) != nil {
+            if cliDelete(account: acct, service: service) { ok = true }
         }
         try? FileManager.default.removeItem(at: fileURL(for: deviceID))
         return ok
     }
 
-    // For diagnostics: fingerprint without value (uses cache, no extra Keychain read if already cached)
+    // Diagnostics: fingerprint without value (cache-first, no extra reads).
     static func fingerprint(for deviceID: String) -> String? {
         guard let token = load(for: deviceID) else { return nil }
         let data = Data(token.utf8)
@@ -222,10 +276,10 @@ enum DeviceCredentialStore {
         return load(for: deviceID) != nil
     }
 
-    // For startup diagnostics: how many Keychain reads this process has done
+    // Startup diagnostics: actual SecItemCopyMatching(data) calls this process.
     static var readsInThisProcess: Int {
         cacheLock.lock()
         defer { cacheLock.unlock() }
-        return cache.count // approximate; real count tracked via call site
+        return keychainReads
     }
 }
