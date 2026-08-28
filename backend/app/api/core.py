@@ -516,6 +516,7 @@ async def _memory_health() -> dict:
         # F1.1 profiling telemetry (bounded metadata only).
         "retrieval_stages": os_part.get("retrieval_stages"),
         "memory_epoch": os_part.get("memory_epoch"),
+        "f5": os_part.get("f5"),
         "memory_gate_p50_ms": os_part.get("memory_gate_p50_ms"),
         "memory_gate_p95_ms": os_part.get("memory_gate_p95_ms"),
         "bootstrap_version": os_part.get("bootstrap_version"),
