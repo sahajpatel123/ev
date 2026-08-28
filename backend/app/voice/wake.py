@@ -323,10 +323,17 @@ class OpenWakeWordEngine:
     def _load_model(self):
         if self._loaded:
             return self._model
+        # Derive verifier key from model file stem (e.g., wake-openwakeword) so it matches Model's internal name.
+        # The old hardcoded "evie" only works when the model file is named evie.onnx; the canonical path is wake-openwakeword.onnx.
+        def _verifier_key() -> str:
+            if not self.model_path:
+                return "evie"
+            return Path(self.model_path).stem
+
         if self._model_factory is not None:
             kwargs = {"wakeword_models": [self.model_path]}
             if self.verifier_path:
-                kwargs["custom_verifier_models"] = {"evie": self.verifier_path}
+                kwargs["custom_verifier_models"] = {_verifier_key(): self.verifier_path}
                 kwargs["custom_verifier_threshold"] = self.verifier_threshold
             self._model = self._model_factory(**kwargs)
             self._loaded = True
@@ -348,7 +355,7 @@ class OpenWakeWordEngine:
                 ) from exc
             kwargs: dict = {"wakeword_models": [self.model_path]}
             if self.verifier_path:
-                kwargs["custom_verifier_models"] = {"evie": self.verifier_path}
+                kwargs["custom_verifier_models"] = {_verifier_key(): self.verifier_path}
                 kwargs["custom_verifier_threshold"] = self.verifier_threshold
             self._model = Model(**kwargs)
         self._loaded = True
