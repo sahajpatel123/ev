@@ -29,7 +29,7 @@ from datetime import UTC, timedelta
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -347,7 +347,10 @@ async def _suggested_items(session: AsyncSession, now, horizon_end) -> list[Pros
                 # F5 (§12): momentum draws from DURABLE classes only — the
                 # noisy observation class was the old pipeline's permissive
                 # catch-all; candidate scoring stops future noise at write.
-                Memory.memory_type.in_(("decision", "summary", "goal")),
+                # Auto-generated episode summaries carry chatter; they must
+                # clear a higher importance bar than owner-stated rows.
+                or_(Memory.memory_type.in_(("decision", "goal")),
+                    (Memory.memory_type == "summary") & (Memory.importance >= 0.7)),
                 Memory.importance >= 0.55,
                 Memory.event_time >= since.replace(tzinfo=None) if since.tzinfo is None else Memory.event_time >= since,
             )
