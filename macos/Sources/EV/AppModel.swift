@@ -258,12 +258,24 @@ final class AppModel: ObservableObject {
         await bootstrapIfNeeded()
         // Camera LAW: remains OFF during normal boot
         startupCameraStarts = 0
-        // Only after auth+bootstrap: start voice once
-        startupState = .startingVoice
-        startupMicStarts = 1
-        live.start()
-        startupState = .online
-        status = .listening
+        // WAKE IDLE LAW: when always-available wake is SHADOW/ON, idle is local EARS only.
+        // Do NOT open Realtime/mic at startup; ev.ears owns mic idle, Realtime only after accepted wake.
+        let wakeMode = config.alwaysAvailableWake
+        if wakeMode == "SHADOW" || wakeMode == "ON" {
+            startupState = .online
+            status = .listening // EARS LISTENING local-only, not LIVE
+            // Ensure background ears is alive, but do not start live.
+            EarsProcess.ensureRunning()
+            startupMicStarts = 0
+            NSLog("EV wake idle local-only mode=\(wakeMode) — live not started at boot")
+        } else {
+            // Legacy OFF: always-live at app open
+            startupState = .startingVoice
+            startupMicStarts = 1
+            live.start()
+            startupState = .online
+            status = .listening
+        }
         // Defer non-critical bridges until after voice is stable
         let statuses = await PermissionCenter.statuses()
         await connectGrantedBridges(from: statuses)

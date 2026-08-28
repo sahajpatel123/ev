@@ -1576,6 +1576,48 @@ class VoiceRuntime:
                     tts=utterance.tts,
                 )
 
+        # SHADOW: local-only scoring, never create VoiceSession, never open Realtime.
+        # Do NOT call handle_wake (which creates DB wake event + VoiceSession). Just score locally.
+        if is_shadow:
+            try:
+                # Local KWS score only, no DB session, no provider.
+                detection = await self.wake_engine.detect(
+                    audio_ref=audio_ref,
+                    device_id=device_id,
+                    frames=frames,
+                    text_hint=text_hint,
+                )
+                # Fallback confidence from ears if engine gave 0 but ears had high confidence
+                conf = detection.confidence if detection.triggered else float(wake_confidence or 0.0)
+                would_accept = detection.triggered or conf >= (settings.ears_wake_threshold or 0.5)
+                # Directed check for bounded metadata
+                from app.wake.directed import DirectedSpeechChecker
+
+                _chk = DirectedSpeechChecker()
+                _dir = _chk.is_directed((detection.details.get("transcript") or text_hint or "evie"), asr_confidence=conf)
+                await self._log(
+                    "wake",
+                    "shadow_scored",
+                    device_id=device_id,
+                    reason="shadow_cascade_local_only",
+                    would_accept=would_accept,
+                    confidence=conf,
+                    directed=_dir.directed,
+                    diagnostics=_dir.diagnostics,
+                    wake_confidence=conf,
+                    shadow=True,
+                )
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.debug("shadow scoring failed: %s", exc)
+                would_accept = False
+                conf = 0.0
+            return EarsIngestOutcome(
+                accepted=False,
+                message="shadow_scored",
+                state=VoiceState.IDLE,
+                listening=False,
+                transcript=text_hint[:80] if text_hint else None,
+            )
         wake = await self.handle_wake(
             device_id=device_id,
             audio_ref=audio_ref,
@@ -1594,40 +1636,6 @@ class VoiceRuntime:
                 transcript=wake.transcript,
                 reply=wake.reply,
                 tts=wake.tts,
-            )
-        # SHADOW: never hand off, only score/log bounded diagnostics.
-        if is_shadow:
-            try:
-                from app.wake.directed import DirectedSpeechChecker
-
-                _chk = DirectedSpeechChecker()
-                _dir = _chk.is_directed((wake.transcript or text_hint or "evie"), asr_confidence=wake_confidence)
-                await self._log(
-                    "wake",
-                    "shadow_scored",
-                    device_id=device_id,
-                    reason="shadow_cascade",
-                    directed=_dir.directed,
-                    diagnostics=_dir.diagnostics,
-                    wake_confidence=wake_confidence,
-                    shadow=True,
-                )
-            except Exception:
-                pass
-            # SHADOW: end speculative session immediately, no handoff, no commit.
-            try:
-                row = await self._get_session(wake.session_id)
-                row.state = VoiceState.ENDED
-                row.ended_at = utcnow()
-                row.end_reason = "shadow_no_handoff"
-            except Exception:
-                pass
-            return EarsIngestOutcome(
-                accepted=False,
-                message="shadow_scored",
-                state=VoiceState.ENDED,
-                listening=False,
-                transcript=wake.transcript,
             )
         # WAKE W3: directed-speech / false-trigger check — before meaningful action.
         # Acoustic + transcript + semantic evidence; cancel silently if not directed

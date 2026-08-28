@@ -87,6 +87,17 @@ struct AppConfig {
         !APIAuthKey.isUsable(apiKey)
     }
 
+    /// Production wake gate OFF | SHADOW | ON. OFF = no always-on mic, SHADOW = local KWS only, ON = local KWS + accepted-wake handoff.
+    /// Sources: env, UserDefaults, then dotenv, default OFF.
+    var alwaysAvailableWake: String {
+        let env = ProcessInfo.processInfo.environment["EV_ALWAYS_AVAILABLE_WAKE"]
+        if let env, !env.isEmpty { return env.uppercased() }
+        if let v = UserDefaults.standard.string(forKey: "EV_ALWAYS_AVAILABLE_WAKE"), !v.isEmpty { return v.uppercased() }
+        let fileValues = Self.loadDotEnv()
+        if let v = fileValues["EV_ALWAYS_AVAILABLE_WAKE"], !v.isEmpty { return v.uppercased() }
+        return "OFF"
+    }
+
     static func isUsableAPIKey(_ value: String) -> Bool {
         APIAuthKey.isUsable(value)
     }
