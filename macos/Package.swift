@@ -38,7 +38,6 @@ let package = Package(
             name: "EVRuntime",
             dependencies: [
                 "EVRuntimeObjC",
-                .product(name: "Atomics", package: "swift-atomics"),
             ],
             path: "Sources/EVRuntime"
         ),
@@ -85,14 +84,6 @@ let package = Package(
             name: "EVLifeHelper",
             dependencies: [],
             path: "Sources/EVLifeHelper"
-        ),
-        .executableTarget(
-            name: "EVAudioHarness",
-            dependencies: [
-                "EVRuntime",
-                .product(name: "Atomics", package: "swift-atomics"),
-            ],
-            path: "Sources/EVAudioHarness"
         ),
     ]
 )

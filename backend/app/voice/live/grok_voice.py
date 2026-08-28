@@ -3033,6 +3033,7 @@ class GrokVoiceBridge:
             duration_ms=int((len(pcm) / 2) / 16.0),
             sample_rate=16000,
             provider="openai-realtime" if self._provider == "openai" else "grok-voice",
+            provider_response_id=self._response_id,
         )
         self._chunk_index += 1
         self._turn_audio_bytes += len(pcm)

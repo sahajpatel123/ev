@@ -254,6 +254,7 @@ class TtsChunkEvent(LiveEvent):
     duration_ms: int | None = None
     sample_rate: int | None = None
     provider: str = "dev"
+    provider_response_id: str | None = None
 
     def __init__(
         self,
@@ -267,6 +268,7 @@ class TtsChunkEvent(LiveEvent):
         duration_ms: int | None = None,
         sample_rate: int | None = None,
         provider: str = "dev",
+        provider_response_id: str | None = None,
     ) -> None:
         super().__init__("tts_chunk", at_ms)
         self.index = index
@@ -277,6 +279,7 @@ class TtsChunkEvent(LiveEvent):
         self.duration_ms = duration_ms
         self.sample_rate = sample_rate
         self.provider = provider
+        self.provider_response_id = provider_response_id
 
 
 @dataclass

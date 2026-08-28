@@ -68,10 +68,9 @@ final class LiveConversation {
     private var generation = 0
     /// Watchdog for provably broken session: speech accepted but no response.
     private var responseWatchdog: Task<Void, Never>?
-    // INGRESS-1: dedicated ordered audio channel — one producer, one consumer, no Task per chunk, no MainActor PCM work
-    private enum PendingAudio: Sendable { case b64(String, Double); case ref(String, EVAPIClient) }
-    nonisolated(unsafe) private var audioIngestContinuation: AsyncStream<PendingAudio>.Continuation?
-    nonisolated(unsafe) private var audioIngestTask: Task<Void, Never>?
+    private var playbackResponseID: String?
+    private var playbackProviderResponseID: String?
+    nonisolated(unsafe) private weak var playbackPlayer: TTSPlayer?
     private static let traceLock = NSLock()
     nonisolated private static func st(_ event: String, _ reason: String = "") {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -121,15 +120,13 @@ final class LiveConversation {
         for observer in audioGraphObservers {
             NotificationCenter.default.removeObserver(observer)
         }
-        teardownAudioIngest()
     }
 
     func attach(_ model: AppModel) {
         self.model = model
-        Task { await PlaybackCoordinator.shared.setPlayer(model.player) }
+        playbackPlayer = model.player
         installCameraLifecycleObservers()
         installAudioGraphObservers()
-        setupAudioIngest()
         model.player.onPlayingChange = { [weak self] playing in
             Task { @MainActor in
                 guard let self else { return }
@@ -227,7 +224,7 @@ final class LiveConversation {
 
     private func recoverMicrophoneAfterGraphChange(_ notification: Notification) {
         // STRICT ENGINE OWNERSHIP: microphone may react ONLY to its own input engine.
-        // Output engine (PlaybackCoordinator) posts the same notification name with
+        // Output engine (TTSPlayer) posts the same notification name with
         // object == its output engine. With object:nil at registration, we must
         // filter by identity here. Without this, output graph changes spuriously
         // restart the input graph, creating a cyclic feedback loop.
@@ -245,31 +242,6 @@ final class LiveConversation {
         } catch {
             _ = startMicrophone(on: connection)
         }
-    }
-
-    private func setupAudioIngest() {
-        guard audioIngestTask == nil else { return }
-        let (stream, continuation) = AsyncStream<PendingAudio>.makeStream(bufferingPolicy: .unbounded)
-        audioIngestContinuation = continuation
-        audioIngestTask = Task.detached(priority: .userInitiated) {
-            for await pending in stream {
-                switch pending {
-                case .b64(let b64, let sr):
-                    await PlaybackCoordinator.shared.enqueue(b64: b64, sampleRate: sr)
-                case .ref(let ref, let client):
-                    if let data = try? await client.voiceAudio(ref: ref) {
-                        await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
-                    }
-                }
-            }
-        }
-    }
-
-    nonisolated private func teardownAudioIngest() {
-        audioIngestContinuation?.finish()
-        audioIngestContinuation = nil
-        audioIngestTask?.cancel()
-        audioIngestTask = nil
     }
 
     private func stopCameraForSleepOrShutdown() {
@@ -756,10 +728,10 @@ final class LiveConversation {
             // Never allow ambiguous "audio".
             VoiceLevelMeter.shared.ingestInputPCM16(data)
             guard self?.providerReadyForForward == true else { return } // local-only until provider ready
-            // SH-3 HARD HALF-DUPLEX GATE: while assistant PCM is physically audible (ring buffered + tail),
+            // SH-3 HARD HALF-DUPLEX GATE: while assistant PCM is physically audible (scheduled + tail),
             // do NOT forward mic PCM to provider. Mic remains RUNNING for level meter, but gate is closed.
             // Uses physical playback truth, not UI status.
-            if PlaybackCoordinator.shouldGateMic() { return }
+            if self?.playbackPlayer?.shouldMuteCapture == true { return }
             connection?.enqueuePCM(data)
         }
     }
@@ -820,6 +792,7 @@ final class LiveConversation {
                 // SPOKEN INTERRUPTION CLOSED: the mic tap feeds exactly two
                 // consumers — the UI meter and (when provider-ready) the provider.
                 try microphone.start(enqueue: micEnqueue(for: connection))
+                model?.player.beginVoiceSession()
                 isMuted = false
                 model?.isLiveMuted = false
                 microphoneStarted = true
@@ -906,6 +879,10 @@ final class LiveConversation {
                 )
                 let id = UUID().uuidString
                 assistantID = id
+                let responseID = event.providerResponseId ?? "local-\(generation)-\(id)"
+                playbackResponseID = responseID
+                playbackProviderResponseID = event.providerResponseId
+                model.player.beginResponse(responseID)
                 model.messages.append(
                     AppModel.ChatMessage(id: id, role: "assistant", text: "", streaming: true)
                 )
@@ -914,14 +891,7 @@ final class LiveConversation {
             }
         case "backchannel":
             cancelResponseWatchdog()
-            // INGRESS-1: dedicated ordered audio channel — no per-delta Task, no MainActor PCM work.
-            // Audio payload is yielded to single long-lived producer; UI/control stays on MainActor.
-            if let b64 = event.audioB64, !b64.isEmpty {
-                let sr = Double(event.sampleRate ?? 16_000)
-                audioIngestContinuation?.yield(.b64(b64, sr))
-            } else if let ref = event.audioRef, !ref.isEmpty {
-                audioIngestContinuation?.yield(.ref(ref, model.client))
-            }
+            // Listener/backchannel audio is disabled: one response lane only.
         case "tts_chunk":
             cancelResponseWatchdog()
             model.lastError = nil
@@ -930,11 +900,38 @@ final class LiveConversation {
                model.messages[index].text.isEmpty {
                 model.messages[index].text = text
             }
+            guard var responseID = playbackResponseID else { break }
+            if let providerID = event.providerResponseId, !providerID.isEmpty {
+                if let acceptedProvider = playbackProviderResponseID, acceptedProvider != providerID {
+                    break
+                }
+                if playbackProviderResponseID == nil {
+                    model.player.cancelResponse(responseID)
+                    responseID = providerID
+                    playbackResponseID = providerID
+                    playbackProviderResponseID = providerID
+                    model.player.beginResponse(providerID)
+                }
+            }
             if let b64 = event.audioB64, !b64.isEmpty {
-                let sr = Double(event.sampleRate ?? 16_000)
-                audioIngestContinuation?.yield(.b64(b64, sr))
+                model.player.enqueueBase64PCM(
+                    b64,
+                    contentType: event.contentType,
+                    sampleRate: Double(event.sampleRate ?? 16_000),
+                    responseID: responseID
+                )
             } else if let ref = event.audioRef, !ref.isEmpty {
-                audioIngestContinuation?.yield(.ref(ref, model.client))
+                do {
+                    let data = try await model.client.voiceAudio(ref: ref)
+                    model.player.enqueuePCM(
+                        data,
+                        contentType: event.contentType,
+                        sampleRate: Double(event.sampleRate ?? 16_000),
+                        responseID: responseID
+                    )
+                } catch {
+                    model.lastError = "TTS download failed: \(error.localizedDescription)"
+                }
             }
         case "reply":
             cancelResponseWatchdog()
@@ -950,13 +947,17 @@ final class LiveConversation {
                 }
             }
             assistantID = nil
-            model.player.noteAssistantAudioComplete()
+            if let responseID = playbackResponseID {
+                model.player.finishResponse(responseID)
+            }
             if !model.player.isPlaying {
                 model.status = .listening
                 connection?.sendPlayback(active: false)
             }
         case "barge_in":
-            model.player.stop()
+            model.player.cancelResponse(playbackResponseID)
+            playbackResponseID = nil
+            playbackProviderResponseID = nil
             connection?.sendPlayback(active: false)
             model.status = .listening
         case "hud":
@@ -1197,29 +1198,6 @@ final class LiveConversation {
         }
     }
 
-    private func playAudio(_ event: LiveVoiceEvent) async {
-        guard let model else { return }
-        if let b64 = event.audioB64, let data = Data(base64Encoded: b64), !data.isEmpty {
-            // HOT PATH OFF MAINACTOR: dedicated playback actor owns jitter buffer
-            // and output graph, so network cadence and G2 work cannot starve it.
-            await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: Double(event.sampleRate ?? 16_000))
-            return
-        }
-        if let ref = event.audioRef, !ref.isEmpty {
-            do {
-                let data = try await model.client.voiceAudio(ref: ref)
-                await PlaybackCoordinator.shared.enqueue(pcm: data, sampleRate: 48_000)
-            } catch {
-                model.lastError = "TTS playback failed: \(error.localizedDescription)"
-                // Keep using the same player for UI; coordinator and model share it
-                model.player.recover()
-                if model.status == .speaking {
-                    model.status = .listening
-                }
-            }
-        }
-    }
-
     private static func isBenignRealtimeError(_ message: String) -> Bool {
         let blob = message.lowercased()
         return blob.contains("no active response")
@@ -1242,12 +1220,13 @@ final class LiveConversation {
         // happens only on explicit stop or proven engine failure. This prevents
         // WebSocket reconnect from thrashing the AVAudioEngine.
         providerReadyForForward = false
-        model?.player.stop()
+        model?.player.cancelResponse(playbackResponseID)
+        playbackResponseID = nil
+        playbackProviderResponseID = nil
         // Keep capture alive — do not touch microphone engine or AudioInputLease.
         // The next connectOnce will reuse the existing running engine via
         // idempotent startMicrophone (checks microphone.isRunning).
         VoiceLevelMeter.shared.resetInput()
-        model?.player.bind(to: nil)
         connection?.close()
         connection = nil
     }
@@ -1256,7 +1235,7 @@ final class LiveConversation {
         microphone.stop()
         microphoneStarted = false
         VoiceLevelMeter.shared.resetInput()
-        model?.player.bind(to: nil)
+        model?.player.endVoiceSession()
         AudioInputLease.release(.live)
     }
 
