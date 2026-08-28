@@ -261,6 +261,7 @@ final class AppModel: ObservableObject {
         // WAKE IDLE LAW: when always-available wake is SHADOW/ON, idle is local EARS only.
         // Do NOT open Realtime/mic at startup; ev.ears owns mic idle, Realtime only after accepted wake.
         let wakeMode = config.alwaysAvailableWake
+        NSLog("EV wakeMode=\(wakeMode) at startup, config.alwaysAvailableWake=\(config.alwaysAvailableWake)")
         if wakeMode == "SHADOW" || wakeMode == "ON" {
             startupState = .online
             status = .listening // EARS LISTENING local-only, not LIVE
@@ -275,6 +276,7 @@ final class AppModel: ObservableObject {
             live.start()
             startupState = .online
             status = .listening
+            NSLog("EV wake legacy OFF — live started at boot")
         }
         // Defer non-critical bridges until after voice is stable
         let statuses = await PermissionCenter.statuses()
@@ -1143,6 +1145,12 @@ final class AppModel: ObservableObject {
         guard MicrophoneAuthorization.current() == .granted else { return }
         if lastError?.localizedCaseInsensitiveContains("microphone permission") == true {
             lastError = nil
+        }
+        // WAKE IDLE LAW: do not start live when wake is SHADOW/ON (EARS LISTENING local-only)
+        let wakeMode = config.alwaysAvailableWake
+        if wakeMode == "SHADOW" || wakeMode == "ON" {
+            NSLog("EV wake idle local-only — mic auth granted but live not started (mode=\(wakeMode))")
+            return
         }
         if !live.isRunning {
             live.start()

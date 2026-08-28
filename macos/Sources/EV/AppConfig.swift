@@ -93,7 +93,7 @@ struct AppConfig {
         let env = ProcessInfo.processInfo.environment["EV_ALWAYS_AVAILABLE_WAKE"]
         if let env, !env.isEmpty { return env.uppercased() }
         if let v = UserDefaults.standard.string(forKey: "EV_ALWAYS_AVAILABLE_WAKE"), !v.isEmpty { return v.uppercased() }
-        let fileValues = Self.loadDotEnv()
+        let fileValues = Self.loadDotEnv(fileManager: FileManager.default)
         if let v = fileValues["EV_ALWAYS_AVAILABLE_WAKE"], !v.isEmpty { return v.uppercased() }
         return "OFF"
     }
