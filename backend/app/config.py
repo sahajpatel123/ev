@@ -225,7 +225,7 @@ class Settings(BaseSettings):
     # VAD (Silero ONNX when present; energy/ZCR heuristic otherwise).
     ears_vad_model_path: str | None = None
     ears_vad_threshold: float = 0.5
-    ears_vad_pre_roll_s: float = 0.4
+    ears_vad_pre_roll_s: float = 1.0  # WAKE W1: target pre-roll ~1-2s from real wake timing (was 0.4)
     ears_vad_post_roll_s: float = 0.6
     ears_vad_min_speech_s: float = 0.12
     ears_max_segment_s: float = 60.0  # utterance cap → bounded memory
@@ -235,9 +235,9 @@ class Settings(BaseSettings):
     ears_http_timeout_s: float = 45.0
     # Idle wake spotting: keep a short rolling clip so "Hey EVIE" is not split,
     # and skip room-tone so Whisper is free when the name is actually spoken.
-    # Idle wake spotting: a short rolling clip so "Evie" is scored quickly
-    # instead of blocking a 2.5–60 s Whisper job that swallows repeats.
-    ears_wake_chunk_s: float = 1.2
+    # WAKE W1: wake_chunk 1.5s + pre-roll 1.0s gives ~1-2s useful pre-roll on
+    # accepted wake (ring 10s provides the history; stable mic never restarted per wake).
+    ears_wake_chunk_s: float = 1.5
     ears_idle_min_rms: float = 140.0
     ears_idle_min_peak: int = 600
 
@@ -272,6 +272,11 @@ class Settings(BaseSettings):
     # false; the HF token is used only for the selected recording.
     ears_diarize_consent: bool = False
     ears_diarize_hf_token: str | None = None
+
+    # WAKE FOUNDATION V1 — production gate OFF | SHADOW | ON.
+    # OFF: ears not waking (rollback), SHADOW: cascade evaluates/logs bounded score
+    # metadata but does not initiate live conversation, ON: accepted wake handoff.
+    always_available_wake: str = "OFF"  # OFF | SHADOW | ON
 
     # Paths for the acceptance-gate datasets (human-provided, owner-consented).
     ears_data_wake_dir: str | None = None

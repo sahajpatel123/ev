@@ -209,9 +209,11 @@ public final class LiveVoiceConnection: @unchecked Sendable {
                 guard let self, self.isCurrent(task, generation: generation) else { return }
                 let strikes = self.registerPingSent()
                 if strikes >= 3 {
+                    NSLog("EV_WS ping strikes=\(strikes) — declaring dead link")
                     self.failDeadLink(task, generation: generation)
                     return
                 }
+                NSLog("EV_WS ping sent strikes=\(strikes)")
                 task.sendPing { [weak self] _ in
                     self?.clearMissedPongs()
                 }
@@ -228,6 +230,7 @@ public final class LiveVoiceConnection: @unchecked Sendable {
 
     private func clearMissedPongs() {
         lock.lock()
+        if missedPongs != 0 { NSLog("EV_WS pong ok") }
         missedPongs = 0
         lock.unlock()
     }
@@ -236,6 +239,7 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     /// LiveConversation loop performs its normal bounded reconnect.
     private func failDeadLink(_ task: URLSessionWebSocketTask, generation: Int) {
         guard isCurrent(task, generation: generation) else { return }
+        NSLog("EV_WS dead-link teardown begin")
         receiveTask?.cancel()
         task.cancel(with: .goingAway, reason: nil)
     }
@@ -404,6 +408,7 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     }
 
     public func close() {
+        NSLog("EV_WS close() called — callers: \(Thread.callStackSymbols.prefix(6).joined(separator: " | "))")
         receiveTask?.cancel()
         receiveTask = nil
         pingTask?.cancel()
@@ -507,6 +512,7 @@ public final class LiveVoiceConnection: @unchecked Sendable {
                     do {
                         try await task.send(message)
                     } catch {
+                        NSLog("EV_WS sender FAILED: \(error)")
                         return
                     }
                 }
@@ -561,8 +567,10 @@ public final class LiveVoiceConnection: @unchecked Sendable {
             }
             streamContinuation?.finish()
         } catch is CancellationError {
+            NSLog("EV_WS receive cancelled")
             streamContinuation?.finish()
         } catch {
+            NSLog("EV_WS receive FAILED: \(error)")
             streamContinuation?.finish(throwing: error)
         }
     }

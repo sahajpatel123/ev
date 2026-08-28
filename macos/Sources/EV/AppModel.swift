@@ -196,7 +196,12 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.toggleTalk() }
             }
         )
-        EarsProcess.stopAndWait()
+        // WAKE W1: ev.ears is the always-on mic owner (launchd KeepAlive+RunAtLoad true).
+        // EV.app surrenders the mic while idle — only an accepted wake's
+        // Realtime handoff may acquire the input. Keep the kill for the brief
+        // handoff window (LiveConversation.start) but do not kill at launch
+        // when the idle path is local-only; ensure ears is alive instead.
+        EarsProcess.ensureRunning()
         // Single coordinated startup sequence
         Task { await runSafeStartup() }
         heartbeatTask = Task { [weak self] in

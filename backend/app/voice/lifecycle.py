@@ -1418,7 +1418,21 @@ class VoiceRuntime:
         text_hint: str | None = None,
         defer_command: bool = False,
     ) -> EarsIngestOutcome:
-        """Always-on mic path: wake if idle, otherwise owner-only follow-up."""
+        """Always-on mic path: wake if idle, otherwise owner-only follow-up.
+
+        Production gate EV_ALWAYS_AVAILABLE_WAKE: OFF (no wake), SHADOW (score
+        and log bounded diagnostics only, never initiate live), ON (real handoff).
+        """
+        # Feature-flag gate (§36) — must be first so OFF/SHADOW never opens a session.
+        gate = (settings.always_available_wake or "OFF").strip().upper()
+        if gate == "OFF":
+            # Also respect explicit owner disable: ears_consent false already above.
+            return EarsIngestOutcome(
+                accepted=False,
+                message="wake_disabled_off",
+                listening=False,
+            )
+        is_shadow = gate == "SHADOW"
 
         if not consent:
             return EarsIngestOutcome(
@@ -1581,6 +1595,141 @@ class VoiceRuntime:
                 reply=wake.reply,
                 tts=wake.tts,
             )
+        # SHADOW: never hand off, only score/log bounded diagnostics.
+        if is_shadow:
+            try:
+                from app.wake.directed import DirectedSpeechChecker
+
+                _chk = DirectedSpeechChecker()
+                _dir = _chk.is_directed((wake.transcript or text_hint or "evie"), asr_confidence=wake_confidence)
+                await self._log(
+                    "wake",
+                    "shadow_scored",
+                    device_id=device_id,
+                    reason="shadow_cascade",
+                    directed=_dir.directed,
+                    diagnostics=_dir.diagnostics,
+                    wake_confidence=wake_confidence,
+                    shadow=True,
+                )
+            except Exception:
+                pass
+            # SHADOW: end speculative session immediately, no handoff, no commit.
+            try:
+                row = await self._get_session(wake.session_id)
+                row.state = VoiceState.ENDED
+                row.ended_at = utcnow()
+                row.end_reason = "shadow_no_handoff"
+            except Exception:
+                pass
+            return EarsIngestOutcome(
+                accepted=False,
+                message="shadow_scored",
+                state=VoiceState.ENDED,
+                listening=False,
+                transcript=wake.transcript,
+            )
+        # WAKE W3: directed-speech / false-trigger check — before meaningful action.
+        # Acoustic + transcript + semantic evidence; cancel silently if not directed
+        # or not owner, bounded diagnostics only, do not announce.
+        try:
+            from app.wake.directed import DirectedSpeechChecker
+
+            checker = DirectedSpeechChecker()
+            heard_text = (wake.transcript or text_hint or "").strip()
+            # For an accepted wake the detector already trusted the confidence;
+            # still verify directedness from the full utterance text.
+            directed = checker.is_directed(
+                heard_text or "evie",
+                asr_confidence=wake_confidence,
+            )
+            # Also run fast speaker confidence if we have audio (wake stage fast)
+            # is already done in handle_wake; full-utterance recheck happens via
+            # addressivity_gate below with accumulated command PCM.
+            if not directed.directed and heard_text:
+                # "Evie is..." / "Did you see Evie yesterday?" → not directed.
+                row = await self._get_session(wake.session_id)
+                row.state = VoiceState.ENDED
+                row.ended_at = utcnow()
+                row.end_reason = f"not_directed:{directed.reason}"
+                await self._log(
+                    "wake",
+                    "rejected",
+                    session_id=row.id,
+                    device_id=device_id,
+                    reason=directed.reason,
+                    diagnostics=directed.diagnostics,
+                    transcript=heard_text[:80],
+                )
+                return EarsIngestOutcome(
+                    accepted=False,
+                    message="not_directed",
+                    state=VoiceState.ENDED,
+                    listening=False,
+                    transcript=heard_text[:80],
+                )
+        except Exception as exc:  # noqa: BLE001 - directed must never crash wake
+            LOGGER.debug("directed check skipped: %s", exc)
+        # WAKE W4: device arbitration groundwork — ONE device wins.
+        # Deterministic factors: wake confidence, conversation continuity,
+        # availability, nearby context. Reuse ConversationLease.
+        try:
+            from app.device_gateway.lease import current_lease
+            from app.wake.arbitration import WakeArbitration, WakeCandidate
+
+            lease = await current_lease(self.session)
+            # Current device candidate for this wake
+            candidate = WakeCandidate(
+                device_id=device_id,
+                confidence=float(wake_confidence or 0.0),
+                has_active_session=False,
+                last_activity=utcnow(),
+            )
+            arb = WakeArbitration()
+            # Build a two-element candidate set when a lease holder exists
+            # (holder's confidence approximated from lease recency).
+            other_candidates: list[WakeCandidate] = [candidate]
+            lease_dict = None
+            if lease is not None:
+                lease_dict = {
+                    "device_id": str(lease.device_id),
+                    "instance_id": lease.instance_id,
+                }
+                holder_conf = 0.5  # unknown remote confidence → neutral
+                # If lease holder is not this device, add it as competing candidate
+                if str(lease.device_id) != device_id:
+                    other_candidates.append(
+                        WakeCandidate(
+                            device_id=str(lease.device_id),
+                            confidence=holder_conf,
+                            has_active_session=True,
+                            last_activity=lease.last_activity,
+                        )
+                    )
+            winner = arb.pick_winner(other_candidates, current_lease=lease_dict)
+            if winner and winner.winner_device_id != device_id:
+                row = await self._get_session(wake.session_id)
+                row.state = VoiceState.ENDED
+                row.ended_at = utcnow()
+                row.end_reason = f"arbitration_lost_to_{winner.winner_device_id[:8]}"
+                await self._log(
+                    "wake",
+                    "rejected",
+                    session_id=row.id,
+                    device_id=device_id,
+                    reason=winner.reason,
+                    winner=winner.winner_device_id,
+                    confidence=wake_confidence,
+                )
+                return EarsIngestOutcome(
+                    accepted=False,
+                    message="arbitration_lost",
+                    state=VoiceState.ENDED,
+                    listening=False,
+                    transcript=wake.transcript,
+                )
+        except Exception as exc:  # noqa: BLE001 - arbitration must not crash wake
+            LOGGER.debug("arbitration skipped: %s", exc)
         listening = wake.state in ACTIVE_STATES and wake.state != VoiceState.VERIFYING
         transcript = None
         reply = None

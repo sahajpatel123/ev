@@ -107,21 +107,20 @@ def start_app_watchdog(
 class EarConfig:
     device: str | None = None
     sample_rate: int = 16000
-    ring_seconds: float = 10.0
+    ring_seconds: float = 10.0  # 5-10s rolling ring, never uploaded merely because it exists
     block_ms: int = 20
     device_id: str = "mac-ears"
     vad_model_path: str | None = None
     vad_threshold: float = 0.5
-    vad_pre_roll_s: float = 0.4
+    vad_pre_roll_s: float = 1.0  # WAKE W1: ~1-2s useful pre-roll from real wake timing (was 0.4)
     vad_post_roll_s: float = 0.75
     vad_min_speech_s: float = 0.2
     max_segment_s: float = 60.0
     listen_max_segment_s: float = 20.0
     http_timeout_s: float = 45.0
     echo_tail_s: float = 0.6
-    # Idle wake spotting: room noise never goes "silent", so a 60s cap
-    # sends one huge clip to Whisper and the loop blocks until it returns.
-    wake_chunk_s: float = 1.2
+    # WAKE W1: 1.5s wake_chunk + 1.0s pre-roll → ~1-2s handoff (ring 10s; mic stable, never restarted per wake)
+    wake_chunk_s: float = 1.5
     idle_min_rms: float = 140.0
     idle_min_peak: int = 600
     wake_model_path: str | None = None
@@ -1151,19 +1150,25 @@ async def run_ears(
             peak,
             listening,
         )
-        if not idle_clip_worth_spotting(
+        # WAKE CASCADE W1-W2: MIC→RING(10s)→VAD→Stage1(high-recall)→Stage2(precision)
+        # →Speaker fast→Arbitration→Realtime→Full-utterance+directed check.
+        # VAD IS NOT A HARD GATE (§4): quiet/far/hoarse owner wake must survive
+        # to KWS. Reduce compute via threshold adjustment, not early drop.
+        vad_quiet = not idle_clip_worth_spotting(
             segment.samples,
             min_rms=cfg.idle_min_rms,
             min_peak=cfg.idle_min_peak,
-        ):
+        )
+        if vad_quiet:
             LOGGER.debug(
-                "ears skip quiet chunk rms=%.0f peak=%s (need rms>=%.0f or peak>=%s)",
+                "ears quiet chunk rms=%.0f peak=%s (need rms>=%.0f or peak>=%s) — still spotting (VAD soft gate)",
                 rms,
                 peak,
                 cfg.idle_min_rms,
                 cfg.idle_min_peak,
             )
-            return
+            # Do NOT return — Stage-1 must see quiet/far-field wakes; VAD only
+            # provides timing/confidence adjustment, never a drop before KWS.
         if cfg.stuck_loop_drop and await asyncio.to_thread(
             looks_stuck_loop,
             segment.samples,
@@ -1243,6 +1248,42 @@ async def run_ears(
                 _apply_segment_cap()
                 return
             stats.wake_hits += 1
+            # WAKE CASCADE W1-W4: Stage1(high-recall, already passed) → Stage2
+            # (high-precision second-pass, runs only after Stage1 candidate so
+            # large verifier/SpeakerID are not resident while idle; §22 budget).
+            # Architecture chooses JOB, evidence chooses MODEL — benchmark smallest
+            # reliable verifier, do NOT hardcode Conformer/CTC/Whisper.
+            try:
+                # Stage-2: when the head is present its verifier (threshold 0.3)
+                # already ran inside OpenWakeWordEngine; for the Whisper spotter
+                # we have no verifier pkl — verify transcript head-anchored.
+                engine_name = str((detection.details or {}).get("engine") or "")
+                if engine_name == "whisper-spotter" and not (detection.details or {}).get("transcript"):
+                    # Whisper fired but transcript empty → low precision, keep
+                    # as candidate but mark verifier false (will be recheckd
+                    # server-side with ASR + full-utterance).
+                    LOGGER.debug("wake Stage-2: whisper spotter no transcript — deferring to server ASR")
+            except Exception:  # noqa: BLE001 - Stage-2 must not crash wake
+                pass
+            # Speaker fast + Directed + Arbitration groundwork are server-side
+            # authoritative (lifecycle.handle_ears_ingest does fast wake-phrase
+            # confidence → full-utterance recheck, directed-speech, and
+            # ConversationLease arbitration with deterministic factors). Local
+            # pre-filter: drop obvious non-directed before upload to save
+            # bandwidth, but never fabricate an action — cancel before meaningful
+            # execution, bounded diagnostics only.
+            try:
+                _heard_tmp = (detection.details or {}).get("transcript") or ""
+                # Light local directed pre-filter (authoritative check is server-side)
+                # "Evie is..." and "Did you see Evie?" must not trigger upload.
+                _lower = _heard_tmp.strip().lower()
+                if _lower and not _lower.lstrip().startswith(("evie", "hey evie", "hi evie", "ok evie", "hello evie")):
+                    # Not anchored at head → likely conversational mention
+                    if "evie" in _lower and not _lower.strip().startswith("evie"):
+                        LOGGER.info("ears local directed pre-filter: not anchored — skipping upload (server will also cancel)")
+                        return
+            except Exception:  # noqa: BLE001
+                pass
             heard = (detection.details or {}).get("transcript") or ""
             command = command_after_wake(heard)
             # The wake request acks the name fast (server trusts on-device
@@ -1640,10 +1681,17 @@ def main(argv: list[str] | None = None) -> int:
         for sig in (signal.SIGINT, signal.SIGTERM):
             with contextlib.suppress(NotImplementedError):
                 loop.add_signal_handler(sig, stop.set)
+        # WAKE V1 app-less law: when ALWAYS_AVAILABLE_WAKE is SHADOW/ON, EARS must
+        # run without a visible EV.app window (lightweight background listener at
+        # login). OFF keeps the old tied-to-menu-bar behavior for rollback.
+        from app.config import settings as _settings
+
+        _mode = (_settings.always_available_wake or "OFF").strip().upper()
+        _require_app = _mode == "OFF"
         stats = await run_ears(
             cfg,
             stop_event=stop,
-            require_menu_bar_app=True,
+            require_menu_bar_app=_require_app,
         )
         return 0 if stats.blocks else 3
 

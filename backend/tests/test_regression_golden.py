@@ -91,7 +91,10 @@ def test_golden_voice_startup_invariants():
     repo = _pl.Path(__file__).resolve().parents[2]
     lc = (repo / "macos/Sources/EV/LiveConversation.swift").read_text()
     tts = (repo / "macos/Sources/EV/TTSPlayer.swift").read_text()
-    assert "scheduledBufferCount = 0" in tts and "underrunCount = 0" in tts, "TearDown must reset playback counters"
+    # Continuity repair 033d808 renamed counters but preserved the contract:
+    # teardown must reset playback accounting (no stale lead/gaps after a response).
+    assert "pendingBuffers = 0" in tts and "pendingFrames = 0" in tts, "TearDown must reset playback counters"
+    assert "underrunEvents = 0" in tts, "TearDown must reset underrun accounting"
     # Ghost lease: failure path must release
     assert lc.count("AudioInputLease.release(.live)") >= 2, "lease must be released on failure paths"
     # Bounded retry: 0...retryBudget with retryBudget=1
@@ -124,12 +127,19 @@ def test_golden_voice_playback_buffer():
     import pathlib as _pl
     repo = _pl.Path(__file__).resolve().parents[2]
     tts = (repo / "macos/Sources/EV/TTSPlayer.swift").read_text()
-    assert "minStartSeconds: TimeInterval = 0.18" in tts
-    assert "maxPrimeWait: TimeInterval = 0.22" in tts
-    assert "underrunCount" in tts
-    assert "scheduledBufferCount" in tts
+    # Continuity repair 033d808 replaced minStartSeconds/maxPrimeWait with
+    # duration-based aggregationMs/targetLeadMs/hardCeilingMs — contract is
+    # controlled lead, not a huge delay, and bounded buffering.
+    assert "aggregationMs = 160" in tts
+    assert "startupPrebufferMs = 280" in tts
+    assert "targetLeadMs = 500" in tts
+    assert "hardCeilingMs = 1500" in tts
+    assert "underrunEvents" in tts
+    assert "pendingBuffers" in tts
     # No per-chunk engine restart
     assert tts.count("try engine.start()") <= 2  # ensureEngine only, not per-chunk
+    # Dropped audio only at hard ceiling, never in normal jitter absorption
+    assert "overflowEvents" in tts and "droppedFrames" in tts
 
 
 # ---------------------------------------------------------------------------

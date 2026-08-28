@@ -3,10 +3,11 @@ import Foundation
 
 /// launchd job for the always-on ears process.
 ///
-/// While EV.app is open the menu-bar client owns the microphone for the
-/// full-duplex live channel. Starting `ev.ears` at the same time fights
-/// for the same input device, so the app stops that job on launch and
-/// does not restart it on quit.
+/// WAKE FOUNDATION W1: ev.ears is the ONE always-on mic owner (launchd
+/// KeepAlive+RunAtLoad true). EV.app surrenders the microphone while idle
+/// and only acquires it for an accepted wake's Realtime handoff; it must
+/// never fight ev.ears for the device. The old "kill on launch, dead on
+/// quit" law is inverted.
 enum EarsProcess {
     private static var domain: String { "gui/\(getuid())/ev.ears" }
 
@@ -18,8 +19,25 @@ enum EarsProcess {
 
     /// Synchronous kill so live / Talk never start a second tap on a
     /// device `ev.ears` still holds (that abort looked like a quit).
+    /// Retained for the brief Realtime handoff window only — idle EV.app
+    /// must NOT call this (see ensureRunningForIdle).
     static func stopAndWait() {
         _ = runLaunchctl(["kill", "SIGKILL", domain])
+    }
+
+    /// Ensure the always-on listener is running (idle path local-only).
+    /// Used when EV.app surrenders the mic or on quit so there is ONE
+    /// mic owner. KeepAlive=true will restart after kill; this kickstart
+    /// guarantees it is alive immediately without waiting for throttle.
+    static func ensureRunning() {
+        _ = runLaunchctl(["kickstart", "-k", domain])
+    }
+
+    /// Non-blocking variant for quit handlers.
+    static func ensureRunningAsync() {
+        Task.detached(priority: .utility) {
+            ensureRunning()
+        }
     }
 
     @discardableResult

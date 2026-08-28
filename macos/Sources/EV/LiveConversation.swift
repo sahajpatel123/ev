@@ -154,6 +154,9 @@ final class LiveConversation {
         guard loopTask == nil else { return }
         stayMuted = false
         isMuted = false
+        // WAKE W1: brief handoff window only — ev.ears owns the mic while
+        // idle; this kill is the accepted-wake acquisition, not a launch kill.
+        // When live stops, ev.ears must be ensured again (see stop()).
         EarsProcess.stopAndWait()
         loopTask = Task { [weak self] in
             await self?.runLoop()
@@ -178,6 +181,10 @@ final class LiveConversation {
         model?.cameraRequestInFlight = false
         model?.cameraState = .unknown
         model?.noteLiveStopped()
+        // WAKE W1: surrender mic back to the always-on ears owner when Realtime
+        // is not needed (idle local-only). KeepAlive ensures restart, but kick
+        // immediately so wake is available without throttle delay.
+        EarsProcess.ensureRunningAsync()
     }
 
     /// Close only the current channel after AppConfig changes. The live loop

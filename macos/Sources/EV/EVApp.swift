@@ -49,9 +49,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         installAppMenu()
         installStatusItemMenu()
-        // In-app live owns the microphone. ev.ears is a wake-word front end
-        // and must not share the same input device while EV.app is open.
-        EarsProcess.stopAndWait()
+        // WAKE W1: ev.ears is the always-on listener (KeepAlive+RunAtLoad true,
+        // local ring → Stage-1 KWS → accepted-wake handoff with 1-2s pre-roll,
+        // stable mic, idle local-only). EV.app surrenders the mic while idle.
+        EarsProcess.ensureRunning()
         installPressureGuard()
         // Orb windows created during AppModel.start are held until this
         // point: switching to accessory above would otherwise hide them.
@@ -72,7 +73,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let reply = TerminatePolicy.reply()
         if reply == .terminateNow {
-            EarsProcess.stopAndWait()
+            // WAKE W1: quit must NOT leave mic orphaned dead. KeepAlive=true
+            // restarts ev.ears, but ensure it is kickstarted immediately so
+            // there is ONE always-on owner after EV.app exits.
+            EarsProcess.ensureRunning()
         }
         return reply
     }
