@@ -80,6 +80,8 @@ PHASE0_CAPABILITIES = frozenset(
 # Phase 3/4 life I/O and the one physical light actuator.
 ROUTED_CAPABILITIES = frozenset(
     {
+        "computer",
+        "recall",
         "get_weather",
         "search_web",
         "web_search",
@@ -137,7 +139,7 @@ INDEPENDENT_FACTORS = frozenset(
 VOICE_FACTORS = frozenset({"voice", "voice_wake", "speaker_verified"})
 OWNER_ACTORS = frozenset({"master", "voice", "owner"})
 OWNER_AUTO_PERCEPTION = frozenset(
-    {"look", "observe_camera", "computer_status", "list_apps", "inspect_ui", "screen_look"}
+    {"look", "observe_camera", "computer_status", "list_apps", "inspect_ui", "screen_look", "recall"}
 )
 
 R3_TTL_SECONDS = 120

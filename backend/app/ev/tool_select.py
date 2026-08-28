@@ -176,7 +176,17 @@ LIVE_VOICE_TOOLS = frozenset(
         "look",
         "observe_camera",
         "phone_action",
+        # F4 reduced-surface brokers (projection-filtered by EV_MODEL_SURFACE_V2).
+        "recall",
+        "computer",
     }
+)
+
+# F4 target model-facing surface (transitional): the six names the realtime
+# model sees when EV_MODEL_SURFACE_V2=on. Everything else becomes an internal
+# implementation detail behind Core / Memory / Capability Router / Executor.
+F4_TARGET_SURFACE = frozenset(
+    {"evie_turn", "recall", "computer", "look", "observe_camera", "phone_action"}
 )
 
 # Realtime models often refuse Mac open/close in speech even when the

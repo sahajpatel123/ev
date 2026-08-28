@@ -104,6 +104,65 @@ def safe_calculate(expression: str) -> float:
 
 TOOL_SPECS: list[dict[str, Any]] = [
     {
+        # F4: explicit deep-history escape hatch over the F0+F1 retrieval
+        # stack. Same substrate as search_memory; different model surface.
+        "name": "recall",
+        "description": (
+            "Recall the owner's history: past conversations, decisions, "
+            "preferences, names, and what was left unfinished. Use when the "
+            "owner asks about the past or something previously said. Returns "
+            "an evidence pack with provenance; if empty, say no reliable "
+            "record was found."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "detail": {
+                    "type": "string",
+                    "enum": ["brief", "expanded", "source"],
+                    "default": "expanded",
+                },
+            },
+            "required": ["query"],
+        },
+        "output": {"type": "object", "required": ["count", "results"]},
+        "sensitive": False,
+        "read_only": True,
+        "risk_class": "R0",
+        "permission": "memory:read",
+        "undoable": False,
+    },
+    {
+        # F4: goal-level computer surface. The backend routes the goal
+        # (semantic path, planner, executor); the model never picks
+        # implementation details or assigns risk.
+        "name": "computer",
+        "description": (
+            "Perform a goal on this Mac: open, close, or switch apps, open a "
+            "URL, or operate app UI when no dedicated capability applies. "
+            "State the goal in plain words. Do not use for memory, personal "
+            "history, project or commitment questions, weather, messages, or "
+            "timers — those have their own paths."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "goal": {"type": "string", "minLength": 1, "maxLength": 500},
+                "target_app": {"type": "string", "maxLength": 80},
+            },
+            "required": ["goal"],
+        },
+        "output": {"type": "object", "required": ["ok"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "computer:control",
+        "undoable": False,
+    },
+    {
         "name": "search_memory",
         "description": (
             "Search Evie's persistent owner memory and raw conversation "
@@ -2473,6 +2532,109 @@ async def _run_execute_command(session: AsyncSession, args: dict, *, actor: str)
     return result
 
 
+async def _run_computer_goal(
+    session: AsyncSession,
+    args: dict,
+    *,
+    actor: str,
+    live_session_id: str | None,
+    device_id=None,
+    request_id: str | None = None,
+) -> dict:
+    """F4 `computer` tool: goal in, verified result out.
+
+    The model states the GOAL; this handler routes it through the Capability
+    Router (semantic path first, F2 executor fallback, planner for multi-step).
+    Memory and canonical-state questions are REFUSED with a redirect so the
+    `computer` surface never becomes an opaque do-anything (§6 law).
+    """
+
+    from app.ev.capability_router import RouteKind, goal_from_transcript, route_action
+
+    goal_text = str(args.get("goal") or "").strip()
+    if not goal_text:
+        return {"ok": False, "error": "missing_goal", "spoken": "What should I do on the Mac?"}
+    goal = goal_from_transcript(
+        goal_text,
+        actor=actor,
+        turn_id=str(live_session_id or request_id or "") or None,
+    )
+    if args.get("target_app") and not goal.arguments.get("name"):
+        goal.arguments["name"] = str(args["target_app"])
+    route = await route_action(goal, session=session)
+
+    if route.route_kind == RouteKind.MEMORY:
+        return {
+            "ok": False,
+            "error": "not_a_computer_goal",
+            "redirect": "recall",
+            "spoken": "That's a memory question — let me recall it properly.",
+        }
+    if route.route_kind == RouteKind.CORE:
+        return {
+            "ok": False,
+            "error": "not_a_computer_goal",
+            "redirect": "evie_turn",
+            "spoken": "That's about your projects or commitments — handling it through your real state.",
+        }
+
+    # Execute the routed capability through the normal authorized pipeline.
+    capability = route.capability
+    inner_args = dict(goal.arguments)
+    if goal.semantic_intent is None:
+        # Unknown plane for a computer-surfaced goal: keep it in the computer
+        # family rather than guessing a domain.
+        from app.ev.computer_executor import executor_mode
+
+        if executor_mode() == "off":
+            return {
+                "ok": False,
+                "error": "computer_executor_disabled",
+                "spoken": "Mac computer control is not enabled right now.",
+            }
+        from app.ev.computer import handle_computer_tool
+
+        return await handle_computer_tool(
+            session,
+            "ui_action" if any(word in goal_text.lower() for word in ("click", "type", "press", "scroll")) else "open_app",
+            {**inner_args, "goal": goal_text},
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+        )
+    if capability in {"open_app", "close_app", "activate_app", "list_apps", "computer_status", "ui_action", "app_action"}:
+        from app.ev.computer import handle_computer_tool
+
+        inner_args.setdefault("goal", goal_text)
+        return await handle_computer_tool(
+            session, capability, inner_args,
+            actor=actor, live_session_id=live_session_id, device_id=device_id,
+        )
+    from app.voice.live.layer import live_for_device, live_for_session
+
+    live = live_for_session(str(live_session_id) if live_session_id else None) or (
+        live_for_device(str(device_id)) if device_id else None
+    )
+    if live is None and capability in {
+        "open_app", "close_app", "activate_app", "open_url", "list_apps",
+        "inspect_ui", "screen_look", "computer_status", "app_action",
+    }:
+        return await handle_computer_tool(
+            session, capability, inner_args,
+            actor=actor, live_session_id=live_session_id, device_id=device_id,
+        )
+    return await dispatch(
+        session,
+        capability,
+        inner_args,
+        actor=actor,
+        live_session_id=live_session_id,
+        device_id=device_id,
+        request_id=f"computer-{goal_text[:24]}",
+        audit_endpoint="POST /v1/gateway/tools(computer)",
+    )
+
+
 async def _handle(
     session: AsyncSession,
     name: str,
@@ -2488,6 +2650,23 @@ async def _handle(
         return fleet
     if name == "execute_command":
         return await _run_execute_command(session, args, actor=actor)
+    if name == "recall":
+        # F4: deep-history escape hatch over the proven F0+F1 retrieval stack.
+        from app.memory.select import explicit_recall_payload
+
+        detail = str(args.get("detail") or "expanded")
+        k = {"brief": 4, "expanded": 10, "source": 14}.get(detail, 10)
+        return await explicit_recall_payload(
+            session,
+            str(args.get("query", "")),
+            k=k,
+        )
+    if name == "computer":
+        return await _run_computer_goal(
+            session, args, actor=actor,
+            live_session_id=live_session_id, device_id=device_id,
+            request_id=request_id,
+        )
     retriever = Retriever(session)
     if name == "search_memory":
         from app.memory.select import explicit_recall_payload

@@ -678,6 +678,28 @@ async def _authorization_state(
     }
 
 
+def model_surface_mode() -> str:
+    """F4 surface control: legacy (48) | shadow (48 + record) | on (reduced)."""
+
+    from app.config import settings
+
+    return (getattr(settings, "model_surface_v2", "legacy") or "legacy").strip().lower()
+
+
+def f4_surface_filter(names: list[str]) -> list[str]:
+    """Apply the F4 model-surface reduction to one projected name list.
+
+    legacy/shadow: unchanged. on: only the target surface survives. The
+    filter NEVER widens a surface and NEVER deletes implementations.
+    """
+
+    if model_surface_mode() != "on":
+        return names
+    from app.ev.tool_select import F4_TARGET_SURFACE
+
+    return [name for name in names if name in F4_TARGET_SURFACE]
+
+
 def live_tool_projection(
     projection: Mapping[str, Any] | Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -701,6 +723,9 @@ def live_tool_projection(
             continue
         name = str(raw.get("name") or "").strip()
         if name not in LIVE_VOICE_TOOLS:
+            continue
+        # F4 model-surface reduction (single choke point for every consumer).
+        if f4_surface_filter([name]) != [name]:
             continue
         if raw.get("availability") != "available":
             continue
@@ -885,12 +910,12 @@ async def _build_runtime_projection(
             )
         entries.append(entry)
 
+    import app.ev.turn_capability  # noqa: F401  # G1.3: registers evie.turn_controller/state/manager
+    import app.life.capability  # noqa: F401  # G1: registers life_state projector
     from app.ev.apps import find_macos_life_integration
     from app.ev.camera_runtime import readiness_from_camera_state
     from app.ev.capability_registry import apply_capability_overlays
     from app.ev.computer_runtime import readiness_from_computer_state
-    import app.life.capability  # noqa: F401  # G1: registers life_state projector
-    import app.ev.turn_capability  # noqa: F401  # G1.3: registers evie.turn_controller/state/manager
     from app.voice.live.layer import live_for_device, live_for_session
 
     live = live_for_session(str(session_id) if session_id else None) or live_for_device(
@@ -943,8 +968,10 @@ async def _build_runtime_projection(
     )
     # G1 core state has no external dependency to probe: canonical tables are
     # the readiness signal. Overlay stamps every life_* / mission_control entry.
+    from app.ev.turn_capability import MANAGER_TOOLS
+    from app.ev.turn_capability import STATE_TOOLS as EVIE_STATE_TOOLS
+    from app.ev.turn_capability import TURN_TOOLS as TURN_CTRL_TOOLS
     from app.life.capability import LIFE_TOOLS
-    from app.ev.turn_capability import TURN_TOOLS as TURN_CTRL_TOOLS, STATE_TOOLS as EVIE_STATE_TOOLS, MANAGER_TOOLS
 
     life_readiness = {"ready": True, "tools": sorted(LIFE_TOOLS)}
     # G1.3 Turn Controller / State / Manager

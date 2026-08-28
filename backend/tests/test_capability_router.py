@@ -112,15 +112,24 @@ async def test_app_navigation_prefers_helper_then_generic(db_session) -> None:
     session = LiveSession(session_id="f3-generic", device_id="mac", backchannel_enabled=False)
     register_live(session)
     try:
-        # No macos_life helper in the test DB -> generic computer route.
+        # With a live session, app navigation routes SEMANTIC (the executor-
+        # backed native path) — the F2 executor owns verification.
         route = await route_action(
             _goal("Turn on the obscure preference inside FooApp", semantic_intent="open_app"),
             session=db_session,
         )
-        assert route.route_kind == RouteKind.GENERIC_COMPUTER
-        assert route.executor_family == "navigate"
-        assert route.rationale_code == Rationale.GENERIC_UI_REQUIRED
+        assert route.route_kind == RouteKind.SEMANTIC
+        assert route.capability == "open_app"
         assert route.verification_contract == "observe_after_expected_effect"
+
+        # A truly unknown app-action intent (no live, no helper) -> honest
+        # unavailable rather than invented capability.
+        reset_live_registry()
+        route = await route_action(
+            _goal("Turn on the obscure preference inside FooApp", semantic_intent="open_app"),
+            session=db_session,
+        )
+        assert route.route_kind == RouteKind.UNAVAILABLE
 
         # With a helper integration present -> semantic route wins.
         async def fake_helper(_session):
@@ -130,6 +139,20 @@ async def test_app_navigation_prefers_helper_then_generic(db_session) -> None:
             route = await route_action(
                 _goal("Open Calculator", semantic_intent="open_app"), session=db_session
             )
+        async def fake_helper(_session):
+            return object()
+
+        with patch("app.ev.apps.find_macos_life_integration", fake_helper):
+            reset_live_registry()
+            session2 = LiveSession(session_id="f3-generic-2", device_id="mac", backchannel_enabled=False)
+            register_live(session2)
+            try:
+                route = await route_action(
+                    _goal("Open Calculator", semantic_intent="open_app"), session=db_session
+                )
+            finally:
+                session2.close()
+                reset_live_registry()
         assert route.route_kind == RouteKind.SEMANTIC
         assert route.rationale_code == Rationale.SEMANTIC_ADAPTER_AVAILABLE
     finally:
