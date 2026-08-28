@@ -118,6 +118,17 @@ def reset_mutable_settings() -> Iterator[None]:
     settings.memory_curator_enabled = True
     settings.memory_prefetch = os.environ.get("EV_MEMORY_PREFETCH", "off")
     settings.cross_platform_production_memory = False
+    # F2/F3/F4/F5 feature flags: tests are hermetic — operator secrets files
+    # (production.env) must not flip test-environment behavior. Env vars still
+    # win for explicit opt-in.
+    # NOTE: literal defaults — the operator secrets file is injected into
+    # os.environ at config import and would otherwise leak production flag
+    # values (e.g. EV_MODEL_SURFACE_V2=on) into the test process.
+    settings.computer_executor_v2 = "off"
+    settings.capability_router_v2 = "off"
+    settings.model_surface_v2 = "legacy"
+    settings.memory_scoring_v2 = "off"
+    settings.prospective_context_v1 = "off"
     # Live-session registry is process-global (voice.live.layer). One test
     # registering a fake live session must not leak "mac client connected"
     # into later projection/protocol tests (pre-existing pollution found by
