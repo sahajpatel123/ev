@@ -350,3 +350,95 @@ def test_f5_flags_do_not_change_model_surface() -> None:
     assert "recall" in LIVE_VOICE_TOOLS and "computer" in LIVE_VOICE_TOOLS
     assert "prospective_context" not in LIVE_VOICE_TOOLS
     assert "prospective" not in LIVE_VOICE_TOOLS
+
+
+# ---------------------------------------------------------------------------
+# F5.1: legacy eligibility (read-time calibration, §3-§8)
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_eligibility_classes() -> None:
+    from app.memory.candidates import Eligibility, legacy_eligibility
+
+    def row(**kw):
+        base = {
+            "memory_type": "observation", "importance": 0.5, "confidence": 0.7,
+            "source_type": "inferred", "privacy_level": "normal", "text": "x",
+            "is_current": True,
+        }
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    # Legacy noisy observation -> excluded from automatic context.
+    assert legacy_eligibility(row()) == Eligibility.LOW_VALUE_AUTO_EXCLUDE
+    # Explicit owner-stated durable classes survive.
+    assert legacy_eligibility(row(memory_type="decision", importance=0.9)) == Eligibility.KEEP_HIGH_VALUE
+    assert legacy_eligibility(row(memory_type="preference", importance=0.7)) == Eligibility.KEEP_NORMAL
+    # Episode summaries need the high bar for automatic use.
+    assert legacy_eligibility(row(memory_type="summary", importance=0.6)) == Eligibility.PROSPECTIVE_EXCLUDE
+    assert legacy_eligibility(row(memory_type="summary", importance=0.75)) == Eligibility.KEEP_NORMAL
+    # Superseded rows never enter current contexts (as_of still reaches them).
+    assert legacy_eligibility(row(is_current=False, memory_type="decision", importance=0.95)) == Eligibility.SUPERSEDED
+    # Secrets fail closed regardless of anything else.
+    assert legacy_eligibility(row(text="my api key is sk-abcdef1234567890abcdef", memory_type="decision", importance=0.95)) == Eligibility.SENSITIVE_EXCLUDE
+
+
+def test_automatic_filter_drops_low_value_keeps_durable() -> None:
+    from app.memory.candidates import Eligibility, filter_memories_for_automatic, legacy_eligibility
+
+    rows = [
+        SimpleNamespace(memory_type="observation", importance=0.4, confidence=0.7,
+                        source_type="inferred", privacy_level="normal", text="noise",
+                        is_current=True),
+        SimpleNamespace(memory_type="decision", importance=0.9, confidence=0.9,
+                        source_type="explicit", privacy_level="normal", text="durable",
+                        is_current=True),
+    ]
+    settings.memory_scoring_v2 = "on"
+    kept = filter_memories_for_automatic(rows)
+    assert len(kept) == 1 and kept[0].text == "durable"
+    settings.memory_scoring_v2 = "off"
+    # Legacy read behavior keeps everything (eligibility is a v2 feature).
+    assert len(filter_memories_for_automatic(rows)) == 2
+    settings.memory_scoring_v2 = "on"
+    assert legacy_eligibility(rows[0]) == Eligibility.LOW_VALUE_AUTO_EXCLUDE
+
+
+@pytest.mark.asyncio
+async def test_shadow_envelope_excludes_low_value_legacy(db_session: AsyncSession) -> None:
+    """§7: low-value observations never enter automatic shadow context."""
+
+    def mem(**kw):
+        now = utcnow()
+        base = {
+            "memory_type": "observation", "text": "", "payload": {},
+            "importance": 0.5, "confidence": 0.7, "source_type": "inferred",
+            "privacy_level": "normal", "event_time": now, "valid_from": now,
+            "is_current": True, "fingerprint": fingerprint({"seed": uuid4().hex}),
+            "embedding": None, "embedding_model_version": None,
+        }
+        base.update(kw)
+        return Memory(**base)
+
+    db_session.add(mem(
+        text="Observed: random short chatter snippet.", memory_type="observation",
+        importance=0.35, confidence=0.6, source_type="inferred",
+    ))
+    db_session.add(mem(
+        text="We decided the foundation uses truth-labeled prospective context.",
+        memory_type="decision", importance=0.9, confidence=0.9, source_type="explicit",
+    ))
+    await db_session.commit()
+    settings.memory_gate = "on"
+    from app.memory.shadow import route_turn
+
+    settings.memory_scoring_v2 = "on"
+    envelope = await route_turn(
+        db_session, query="What did we decide about the prospective context?",
+        turn_id=f"elig-{uuid4().hex}",
+    )
+    assert envelope is not None
+    texts = " ".join(i.text for i in envelope.items)
+    assert "random short chatter" not in texts
+    assert "truth-labeled prospective context" in texts
+    settings.memory_scoring_v2 = "off"

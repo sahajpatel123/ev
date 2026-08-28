@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import require_master
 from app.db import get_session
+from app.models import Memory
 from app.ops.metrics import collect_metrics_with_warnings
 
 router = APIRouter(prefix="/v1/ops", tags=["ops"])
@@ -74,6 +76,32 @@ async def memory_router_probe(
         "shadow_tokens": 0,
         "item_refs": [],
     }
+
+    if (body or {}).get("dry_run_legacy"):
+        # F5.1 dry-run: classify CURRENT memory rows without changing them.
+        # Bounded counts only — no memory text in the response or logs.
+        from collections import Counter
+
+        from app.memory.candidates import legacy_eligibility
+
+        limit = min(int((body or {}).get("limit") or 1200), 2000)
+        rows = (
+            await session.execute(
+                select(Memory).where(Memory.is_current.is_(True)).limit(limit)
+            )
+        ).scalars().all()
+        counts = Counter()
+        by_type: dict[str, Counter] = {}
+        for row in rows:
+            elig = legacy_eligibility(row)
+            counts[elig.value] += 1
+            by_type.setdefault(row.memory_type, Counter())[elig.value] += 1
+        out["legacy_dry_run"] = {
+            "total": len(rows),
+            "counts": dict(counts),
+            "by_type": {k: dict(v) for k, v in sorted(by_type.items())},
+        }
+        return out
 
     if (body or {}).get("prospective"):
         from app.memory.prospective import (

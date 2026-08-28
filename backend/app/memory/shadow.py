@@ -18,6 +18,7 @@ import hashlib
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -204,21 +205,40 @@ async def _search_memories(
     )
 
 
-def _items_from_memories(hits: list) -> list[ShadowItem]:
-    return [
-        ShadowItem(
-            text=hit.text[:400],
-            memory_type=hit.memory_type,
-            score=float(hit.score),
-            confidence=float(hit.confidence) if hit.confidence is not None else None,
-            importance=float(hit.importance) if hit.importance is not None else None,
-            event_time=hit.event_time,
-            source_type=hit.source_type,
-            ref=hit.memory_id,
-            kind="memory",
+def _items_from_memories(hits: list) -> list:
+    # F5.1: automatic shadow context carries only eligible legacy rows
+    # (read-time calibration; explicit recall paths are unaffected — §8).
+    from app.memory.candidates import Eligibility, legacy_eligibility
+
+    out = []
+    for hit in hits:
+        elig = legacy_eligibility(
+            SimpleNamespace(
+                memory_type=hit.memory_type,
+                importance=hit.importance,
+                confidence=hit.confidence,
+                source_type=hit.source_type,
+                privacy_level=hit.privacy_level,
+                text=hit.text,
+                is_current=True,
+            )
         )
-        for hit in hits
-    ]
+        if elig not in {Eligibility.KEEP_HIGH_VALUE, Eligibility.KEEP_NORMAL}:
+            continue
+        out.append(
+            ShadowItem(
+                text=hit.text[:400],
+                memory_type=hit.memory_type,
+                score=float(hit.score),
+                confidence=float(hit.confidence) if hit.confidence is not None else None,
+                importance=float(hit.importance) if hit.importance is not None else None,
+                event_time=hit.event_time,
+                source_type=hit.source_type,
+                ref=hit.memory_id,
+                kind="memory",
+            )
+        )
+    return out
 
 
 async def _bootstrap_item() -> ShadowItem | None:

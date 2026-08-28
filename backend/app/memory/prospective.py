@@ -358,7 +358,11 @@ async def _suggested_items(session: AsyncSession, now, horizon_end) -> list[Pros
             .limit(14)
         )
     ).scalars().all()
+    from app.memory.candidates import Eligibility, legacy_eligibility
+
     for row in memories:
+        if legacy_eligibility(row) not in {Eligibility.KEEP_HIGH_VALUE, Eligibility.KEEP_NORMAL}:
+            continue
         text = (row.text or "")[:140]
         if not text:
             continue

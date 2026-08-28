@@ -233,6 +233,93 @@ def evaluate_candidate(event: Any, candidate: Any) -> CandidateDecision:
     )
 
 
+# ---------------------------------------------------------------------------
+# F5.1 legacy-memory eligibility (read-time calibration — §6 preference)
+#
+# NOT erasure: the event store and Memory rows are untouched. This is a
+# deterministic, bounded, epoch-aware, rebuildable READ-TIME boundary that
+# decides which LEGACY rows may enter AUTOMATIC context (shadow memory /
+# prospective suggestions). Explicit deep history (recall / search_memory /
+# as_of retrieval) is NOT affected — §8 keeps history reachable.
+# ---------------------------------------------------------------------------
+
+
+class Eligibility(StrEnum):
+    KEEP_HIGH_VALUE = "keep_high_value"
+    KEEP_NORMAL = "keep_normal"
+    LOW_VALUE_AUTO_EXCLUDE = "low_value_auto_exclude"
+    PROSPECTIVE_EXCLUDE = "prospective_exclude"
+    ASSISTANT_SPECULATION = "assistant_speculation"
+    SENSITIVE_EXCLUDE = "sensitive_exclude"
+    SUPERSEDED = "superseded"
+    DUPLICATE = "duplicate"
+
+
+def legacy_eligibility(memory: Any, *, automatic: bool = True) -> Eligibility:
+    """Deterministic read-time eligibility for one Memory row.
+
+    ``automatic=True`` = candidate for AUTOMATIC context (shadow/prospective).
+    The classification never deletes anything; explicit history retrieval is
+    unaffected (§8).
+    """
+
+    memory_type = str(getattr(memory, "memory_type", "") or "observation")
+    importance = float(getattr(memory, "importance", 0.5) or 0.5)
+    confidence = float(getattr(memory, "confidence", 0.8) or 0.8)
+    source_type = str(getattr(memory, "source_type", "") or "inferred")
+    privacy = str(getattr(memory, "privacy_level", "") or "normal")
+    text = str(getattr(memory, "text", "") or "")
+
+    if not getattr(memory, "is_current", True):
+        return Eligibility.SUPERSEDED
+    if privacy in {"never_send_to_model", "sensitive"}:
+        return Eligibility.SENSITIVE_EXCLUDE
+    if SECRET_PATTERNS.search(text):
+        return Eligibility.SENSITIVE_EXCLUDE
+
+    # Durable owner-stated classes are always eligible.
+    if memory_type in {"decision", "preference", "goal"}:
+        return (Eligibility.KEEP_HIGH_VALUE if importance >= 0.8 else Eligibility.KEEP_NORMAL)
+    if memory_type in {"fact", "lesson"} and importance >= 0.55:
+        return Eligibility.KEEP_NORMAL
+
+    # Episode summaries: high bar for automatic context (chatter residue).
+    if memory_type == "summary":
+        if importance >= 0.7:
+            return Eligibility.KEEP_NORMAL
+        return (Eligibility.PROSPECTIVE_EXCLUDE if automatic else Eligibility.KEEP_NORMAL)
+
+    # Observation/episodic: the legacy permissive catch-all — strong filter.
+    if memory_type in {"observation", "episodic"}:
+        if source_type == "explicit" and importance >= 0.7 and confidence >= 0.7:
+            return Eligibility.KEEP_NORMAL
+        if importance >= 0.6 and confidence >= 0.6:
+            return Eligibility.KEEP_NORMAL
+        return Eligibility.LOW_VALUE_AUTO_EXCLUDE
+
+    # Weak inferred material: never automatic, never prospective.
+    if source_type == "inferred" and confidence < 0.5:
+        return Eligibility.LOW_VALUE_AUTO_EXCLUDE
+
+    return Eligibility.KEEP_NORMAL
+
+
+def filter_memories_for_automatic(memories: list) -> list:
+    """Read-time gate for AUTOMATIC context builders (shadow/prospective)."""
+
+    if scoring_mode() == "off":
+        # Scoring off = pre-F5 read behavior; eligibility still guards
+        # secrets/superseded (SQL already handles those) — pass through.
+        return memories
+    return [
+        m for m in memories
+        if legacy_eligibility(m) in {
+            Eligibility.KEEP_HIGH_VALUE,
+            Eligibility.KEEP_NORMAL,
+        }
+    ]
+
+
 def filter_candidates(event: Any, candidates: list) -> tuple[list, list[CandidateDecision]]:
     """Pipeline stage: decisions for all candidates under the current mode.
 
