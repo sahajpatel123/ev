@@ -57,6 +57,24 @@ async def memory_router_probe(
     started = time.perf_counter()
     classification = classify_retrieval(query)
 
+    out: dict = {
+        "ok": True,
+        "mode": mode,
+        "turn_id": turn_id,
+        "query_fingerprint": None,
+        "intent": classification.intent.value,
+        "level": classification.level,
+        "current_state_guard": classification.is_current_state_guard,
+        "historical_truth": classification.historical_truth,
+        "retrieval_triggered": False,
+        "scope_denied": False,
+        "retrieval_ms": None,
+        "candidates": 0,
+        "selected": 0,
+        "shadow_tokens": 0,
+        "item_refs": [],
+    }
+
     if (body or {}).get("prospective"):
         from app.memory.prospective import (
             is_prospective_question,
@@ -82,24 +100,6 @@ async def memory_router_probe(
         }
         return out
 
-
-    out: dict = {
-        "ok": True,
-        "mode": mode,
-        "turn_id": turn_id,
-        "query_fingerprint": None,
-        "intent": classification.intent.value,
-        "level": classification.level,
-        "current_state_guard": classification.is_current_state_guard,
-        "historical_truth": classification.historical_truth,
-        "retrieval_triggered": False,
-        "scope_denied": False,
-        "retrieval_ms": None,
-        "candidates": 0,
-        "selected": 0,
-        "shadow_tokens": 0,
-        "item_refs": [],
-    }
 
     if mode == "off" or classification.level <= 0 or classification.is_current_state_guard:
         out["total_ms"] = round((time.perf_counter() - started) * 1000, 2)
