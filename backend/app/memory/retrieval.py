@@ -315,10 +315,37 @@ class Retriever:
 
         t0 = _time.perf_counter()
         scored: list[RetrievedMemory] = []
+        # F1.1: vectorized semantic cosine for the candidate batch (identical
+        # math; removes the per-row Python loop from the hot path).
+        semantic_vec: dict = {}
+        try:
+            import numpy as _np
+
+            if query_emb is not None and memories:
+                qv = _np.asarray(query_emb, dtype=_np.float64)
+                qnorm = _np.linalg.norm(qv) or 1.0
+                vecs, ids = [], []
+                for m in memories:
+                    comparable = (
+                        m.embedding_model_version is None
+                        or m.embedding_model_version == self.embedding_model_version
+                    )
+                    if m.embedding and comparable:
+                        vecs.append(m.embedding)
+                        ids.append(m.id)
+                if vecs:
+                    mat = _np.asarray(vecs, dtype=_np.float64)
+                    norms = _np.linalg.norm(mat, axis=1)
+                    norms[norms == 0] = 1.0
+                    dots = mat @ qv
+                    cos = _np.clip(dots / (norms * qnorm), 0.0, 1.0)
+                    semantic_vec = dict(zip(ids, cos.tolist(), strict=False))
+        except Exception:  # noqa: BLE001 - vectorization is an optimization only
+            semantic_vec = {}
         for m in memories:
             mem_version = m.embedding_model_version
             comparable = mem_version is None or mem_version == self.embedding_model_version
-            semantic_raw = raw_semantics.get(m.id, 0.0)
+            semantic_raw = semantic_vec.get(m.id, raw_semantics.get(m.id, 0.0))
             semantic = (
                 (semantic_raw - semantic_min) / semantic_span
                 if settings.semantic_normalize and semantic_span > 1e-9
