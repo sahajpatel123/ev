@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     # shadow = plan/validate/risk only (mutations never double-execute).
     # on = existing tool names route through the internal executor.
     computer_executor_v2: str = "off"
+    # F3 capability router: off | shadow | on. off = direct legacy routing.
+    capability_router_v2: str = "off"
     memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
     memory_curator_enabled: bool = True
     memory_curator_version: str = "1.1"

@@ -1968,6 +1968,14 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
     return f"Sent to {target} via {channel}{time_part}."
 
 
+def _ROUTER_SET() -> frozenset[str]:
+    """Lazy router set import (avoids cycles at module import time)."""
+
+    from app.ev.capability_router import ROUTER_TOOLS
+
+    return ROUTER_TOOLS
+
+
 async def dispatch(
     session: AsyncSession,
     name: str,
@@ -2159,6 +2167,41 @@ async def dispatch(
                 status = "rejected"
                 error = "Invalid arguments: " + "; ".join(issues)
             else:
+                # F3 capability router (flag: off | shadow | on). SHADOW only
+                # predicts + records; legacy stays authoritative. ON adds a
+                # fenced generic-computer fallback for app navigation when the
+                # semantic path failed BEFORE any dispatch.
+                router_outcome: dict | None = None
+                _router_mode = "off"
+                if name in _ROUTER_SET():
+                    from app.ev.capability_router import (
+                        ActionGoal,
+                        Rationale,
+                        RouteKind,
+                        note_route_outcome,
+                        route_action,
+                        router_mode,
+                    )
+
+                    _router_mode = router_mode()
+                    if _router_mode != "off":
+                        goal = ActionGoal(
+                            goal=str(effective.get("goal") or effective.get("name") or effective.get("query") or name),
+                            owner_turn_id=str(live_session_id or request_id or ""),
+                            actor=actor,
+                            device_scope="owner" if actor in {"master", "owner"} else str(actor),
+                            target=name,
+                            arguments=dict(effective),
+                        )
+                        route = await route_action(goal, session=session)
+                        router_outcome = {
+                            "route": route,
+                            "goal": goal,
+                            "fallback": None,
+                        }
+                        if _router_mode == "shadow":
+                            # Predict-only; legacy executes as always.
+                            pass
                 try:
                     result = await _handle(
                         session,
@@ -2169,6 +2212,55 @@ async def dispatch(
                         device_id=device_id,
                         request_id=request_id,
                     )
+                    if _router_mode == "on" and router_outcome is not None:
+                        route = router_outcome["route"]
+                        degraded = isinstance(result, dict) and (
+                            result.get("degraded") or result.get("error") == "not_connected"
+                        )
+                        if (
+                            route.route_kind == RouteKind.GENERIC_COMPUTER
+                            or (degraded and route.rationale_code == Rationale.SEMANTIC_ADAPTER_AVAILABLE
+                                and name in {"open_app", "activate_app"})
+                        ) and degraded:
+                            # Semantic path failed BEFORE dispatch (not_connected):
+                            # fenced generic-computer fallback is legal.
+                            from app.ev.computer_executor import execute_tool_via_executor
+                            from app.voice.live.layer import live_for_device, live_for_session
+
+                            live = live_for_session(str(live_session_id) if live_session_id else None) or (
+                                live_for_device(str(device_id)) if device_id else None
+                            )
+                            exec_result = await execute_tool_via_executor(
+                                name, effective, live=live, actor=actor,
+                            ) if live is not None else None
+                            if exec_result is not None and exec_result.raw.get("ok"):
+                                from app.ev.computer import _shape_lifecycle, stamp_computer_receipt
+
+                                shaped = _shape_lifecycle(
+                                    name, effective, exec_result.raw, source="capability_router"
+                                )
+                                shaped = stamp_computer_receipt(
+                                    shaped, None, name=name,
+                                    executed=exec_result.executed,
+                                    verified=exec_result.verified,
+                                    request_id=request_id,
+                                )
+                                result = shaped
+                                router_outcome["fallback"] = "before_dispatch"
+                            elif exec_result is not None:
+                                router_outcome["fallback"] = (
+                                    "before_dispatch" if exec_result.fallback_allowed else "forbidden"
+                                )
+                    if router_outcome is not None:
+                        from app.ev.capability_router import note_route_outcome
+
+                        note_route_outcome(
+                            execution_id=str(request_id or ""),
+                            attempted=bool(isinstance(result, dict) and result.get("executed")),
+                            verified=bool(isinstance(result, dict) and result.get("verified")),
+                            error=str((result or {}).get("error")) if isinstance(result, dict) else None,
+                            fallback=router_outcome.get("fallback"),
+                        )
                     if decision.routed:
                         if isinstance(result, dict) and (
                             result.get("degraded") or result.get("error") == "not_connected"
