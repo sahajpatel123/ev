@@ -15,7 +15,9 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private static let sourceBytesPerSample = 2
     private static let sourceBytesPerFrame = sourceChannels * sourceBytesPerSample
     private static let aggregationMs = 160
-    private static let maxQueuedMs = 480
+    private static let startupPrebufferMs = 280
+    private static let targetLeadMs = 500
+    private static let hardCeilingMs = 1500
     private static let echoTail: TimeInterval = 0.25
 
     private let audioQueue = DispatchQueue(label: "com.ev.audio.playback", qos: .userInitiated)
@@ -36,6 +38,7 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private var streamGeneration = 0
     private var activeResponseID: String?
     private var responseFinished = false
+    private var playerStarted = false
     private var sourceRate: Double?
     private var partialFrameBytes = Data()
     private var aggregatePCM = Data()
@@ -45,13 +48,30 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private var pendingFrames = 0
     private var reportedPlaying = false
 
-    // Minimal counters only.
+    // Minimal per-response counters (directive §9). All touched on the serial
+    // audio queue only. Frame counts are source-rate frames; lead and age are
+    // duration-based so 16k→48k conversion ratios never distort them.
     private var receivedPCMBytes = 0
-    private var scheduledFrames = 0
-    private var playedFrames = 0
-    private var underrunCount = 0
+    private var pcmReceivedFrames = 0
+    private var pcmScheduledFrames = 0
+    private var pcmPlayedFrames = 0
+    private var overflowEvents = 0
+    private var droppedFrames = 0
+    private var underrunEvents = 0
     private var invalidOrIncompleteFrameCount = 0
-    private var droppedOverflowFrames = 0
+    private var sequenceGapCount = 0
+    private var minScheduledLeadMs = Int.max
+    private var maxScheduledLeadMs = 0
+    private var maxQueueAgeMs = 0
+    private var lastSequence: Int?
+    private var responseSummaryLogged = false
+    private var overflowLogged = false
+    private var lastCompletionAt = Date()
+    private var engineRestartCount = 0
+    private var stallRestartStreak = 0
+    private var stallWatchdog: DispatchSourceTimer?
+    // (scheduledAt, outputFrames, sourceFrames) per outstanding buffer, FIFO.
+    private var outstanding: [(Date, Int, Int)] = []
 
     // Synchronous mirrors used by UI and the microphone callback.
     private let stateLock = NSLock()
@@ -109,25 +129,35 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     }
 
     struct PlaybackMetrics: Sendable {
-        let receivedPCMBytes: Int
-        let scheduledFrames: Int
-        let playedFrames: Int
-        let queuedDurationMs: Int
-        let underrunCount: Int
-        let invalidOrIncompleteFrameCount: Int
-        let droppedOverflowFrames: Int
+        let pcmReceivedFrames: Int
+        let pcmScheduledFrames: Int
+        let pcmPlayedFrames: Int
+        let overflowEvents: Int
+        let droppedFrames: Int
+        let underrunEvents: Int
+        let minScheduledLeadMs: Int
+        let maxScheduledLeadMs: Int
+        let currentScheduledLeadMs: Int
+        let maxQueueAgeMs: Int
+        let invalidFrameCount: Int
+        let sequenceGapCount: Int
     }
 
     func metrics() -> PlaybackMetrics {
         syncOnAudioQueue {
             PlaybackMetrics(
-                receivedPCMBytes: receivedPCMBytes,
-                scheduledFrames: scheduledFrames,
-                playedFrames: playedFrames,
-                queuedDurationMs: queuedDurationMs(),
-                underrunCount: underrunCount,
-                invalidOrIncompleteFrameCount: invalidOrIncompleteFrameCount,
-                droppedOverflowFrames: droppedOverflowFrames
+                pcmReceivedFrames: pcmReceivedFrames,
+                pcmScheduledFrames: pcmScheduledFrames,
+                pcmPlayedFrames: pcmPlayedFrames,
+                overflowEvents: overflowEvents,
+                droppedFrames: droppedFrames,
+                underrunEvents: underrunEvents,
+                minScheduledLeadMs: minScheduledLeadMs == Int.max ? 0 : minScheduledLeadMs,
+                maxScheduledLeadMs: maxScheduledLeadMs,
+                currentScheduledLeadMs: scheduledLeadMs(),
+                maxQueueAgeMs: maxQueueAgeMs,
+                invalidFrameCount: invalidOrIncompleteFrameCount,
+                sequenceGapCount: sequenceGapCount
             )
         }
     }
@@ -148,6 +178,8 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
             ephemeralSession = false
             invalidatePlayback(echoTail: false)
             if engine.isRunning { engine.stop() }
+            stallWatchdog?.cancel()
+            stallWatchdog = nil
         }
     }
 
@@ -160,7 +192,50 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
             sessionActive = false
             ephemeralSession = false
             invalidatePlayback(echoTail: false)
+            return
         }
+        startStallWatchdog()
+    }
+
+    /// Completion-truth stall watchdog. AVAudioEngine can silently stop
+    /// rendering on device reconfiguration while reporting isRunning —
+    /// buffers stay queued, completions never fire, playback freezes mid-word
+    /// while the producer keeps filling the queue. Truth is the completion
+    /// stream itself: if audio is scheduled and the newest completion is stale,
+    /// restart the engine once. Cheap, on-queue, no locks.
+    private func startStallWatchdog() {
+        guard stallWatchdog == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + 1.0, repeating: 0.5)
+        timer.setEventHandler { [weak self] in
+            self?.audioQueue.async { [weak self] in
+                guard let self, sessionActive, !responseFinished else { return }
+                guard pendingBuffers > 0, scheduledLeadMs() >= 300 else { return }
+                guard Date().timeIntervalSince(lastCompletionAt) > 1.2 else { return }
+                // Give up if repeated restarts are not restoring completions;
+                // an endless restart storm is worse than a frozen tail.
+                guard stallRestartStreak < 5 else { return }
+                stallRestartStreak += 1
+                restartEngineOnQueue(reason: "stall")
+            }
+        }
+        timer.resume()
+        stallWatchdog = timer
+    }
+
+    private func restartEngineOnQueue(reason: String) {
+        engineRestartCount += 1
+        NSLog("EV_TTS[engine-restart reason=\(reason)] restarts=\(engineRestartCount)")
+        if engine.isRunning { engine.stop() }
+        engine.prepare()
+        try? engine.start()
+        // After an engine restart the PlayerNode must be told to play again,
+        // otherwise queued buffers sit silent and the watchdog refires forever.
+        if pendingBuffers > 0 {
+            playerStarted = true
+            playerNode.play()
+        }
+        lastCompletionAt = Date()
     }
 
     /// One-shot callers (fixtures, non-live TTS) own the engine only for the
@@ -196,7 +271,8 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         _ base64: String,
         contentType: String?,
         sampleRate: Double,
-        responseID: String
+        responseID: String,
+        sequence: Int? = nil
     ) {
         audioQueue.async { [weak self] in
             guard let self else { return }
@@ -204,7 +280,7 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
                 invalidOrIncompleteFrameCount += 1
                 return
             }
-            ingest(data, contentType: contentType, sampleRate: sampleRate, responseID: responseID)
+            ingest(data, contentType: contentType, sampleRate: sampleRate, responseID: responseID, sequence: sequence)
         }
     }
 
@@ -213,10 +289,11 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         _ data: Data,
         contentType: String?,
         sampleRate: Double,
-        responseID: String
+        responseID: String,
+        sequence: Int? = nil
     ) {
         audioQueue.async { [weak self] in
-            self?.ingest(data, contentType: contentType, sampleRate: sampleRate, responseID: responseID)
+            self?.ingest(data, contentType: contentType, sampleRate: sampleRate, responseID: responseID, sequence: sequence)
         }
     }
 
@@ -304,9 +381,16 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         _ data: Data,
         contentType: String?,
         sampleRate declaredRate: Double,
-        responseID: String
+        responseID: String,
+        sequence: Int?
     ) {
         guard sessionActive, activeResponseID == responseID, !responseFinished else { return }
+        if let seq = sequence {
+            if let last = lastSequence, seq != last + 1 {
+                sequenceGapCount += 1
+            }
+            lastSequence = seq
+        }
 
         let pcm: Data
         let rate: Double
@@ -341,6 +425,8 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
 
     private func ingestAlignedPCM(_ pcm: Data, rate: Double) {
         receivedPCMBytes += pcm.count
+        let incomingFrames = pcm.count / Self.sourceBytesPerFrame
+        pcmReceivedFrames += incomingFrames
         stateLock.lock()
         lastAssistantChunkAt = Date()
         stateLock.unlock()
@@ -357,37 +443,57 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         }
         guard alignedCount > 0 else { return }
 
-        let aligned = bytes.prefix(alignedCount)
-        let currentMs = queuedDurationMs()
-        let availableMs = max(0, Self.maxQueuedMs - currentMs)
-        let maxBytes = Int(rate * Double(Self.sourceBytesPerFrame) * Double(availableMs) / 1000)
-        let allowedBytes = min(aligned.count, maxBytes - (maxBytes % Self.sourceBytesPerFrame))
-        if allowedBytes < aligned.count {
-            droppedOverflowFrames += (aligned.count - allowedBytes) / Self.sourceBytesPerFrame
+        // HARD CEILING ONLY. Speech is never dropped in normal operation: the
+        // target-lead gate below absorbs producer jitter. Reaching the ceiling
+        // means producer outran playback by >1.5s — counted loudly, and only
+        // the excess beyond the ceiling is rejected (never already-accepted
+        // audio, never the response).
+        let incomingMs = Double(alignedCount / Self.sourceBytesPerFrame) * 1000 / rate
+        let backlogMs = Double(totalBacklogMs())
+        let headroomMs = Double(Self.hardCeilingMs) - backlogMs
+        if incomingMs > headroomMs {
+            overflowEvents += 1
+            if headroomMs <= 0 {
+                droppedFrames += alignedCount / Self.sourceBytesPerFrame
+                logOverflowOnce()
+                return
+            }
+            let allowedFrames = Int(headroomMs * rate / 1000)
+            let allowedBytes = allowedFrames * Self.sourceBytesPerFrame
+            droppedFrames += (alignedCount - allowedBytes) / Self.sourceBytesPerFrame
+            aggregatePCM.append(bytes.prefix(allowedBytes))
+            rememberPlaybackReference(Data(bytes.prefix(allowedBytes)))
+        } else {
+            aggregatePCM.append(bytes.prefix(alignedCount))
+            rememberPlaybackReference(Data(bytes.prefix(alignedCount)))
         }
-        guard allowedBytes > 0 else { return }
-        aggregatePCM.append(aligned.prefix(allowedBytes))
-        rememberPlaybackReference(Data(aligned.prefix(allowedBytes)))
-        drainFullAggregates(rate: rate)
+        drainAggregated(rate: rate)
+        maybeStartPlayback()
     }
 
-    private func drainFullAggregates(rate: Double) {
+    /// Schedule full aggregated blocks while the PlayerNode-scheduled lead is
+    /// below the steady target. The gate reads SCHEDULED audio only — the
+    /// aggregate is a waiting room, not scheduled audio; counting it here
+    /// would stall scheduling forever once it exceeded the target. `force`
+    /// bypasses the gate (response tail: everything remaining must be
+    /// scheduled, including the sub-block remainder).
+    private func drainAggregated(rate: Double, force: Bool = false) {
         let targetBytes = Int(rate * Double(Self.sourceBytesPerFrame) * Double(Self.aggregationMs) / 1000)
         let alignedTarget = max(Self.sourceBytesPerFrame, targetBytes - targetBytes % Self.sourceBytesPerFrame)
-        while aggregatePCM.count >= alignedTarget {
-            let chunk = Data(aggregatePCM.prefix(alignedTarget))
-            aggregatePCM.removeFirst(alignedTarget)
+        while aggregatePCM.count >= alignedTarget || (force && aggregatePCM.count > 0) {
+            if !force, scheduledLeadMs() >= Self.targetLeadMs { break }
+            let take = min(alignedTarget, aggregatePCM.count)
+            let chunk = Data(aggregatePCM.prefix(take))
+            aggregatePCM.removeFirst(take)
             schedulePCM(chunk, sourceRate: rate)
         }
     }
 
-    private func flushAggregate() {
-        guard let rate = sourceRate else { return }
-        let alignedCount = aggregatePCM.count - aggregatePCM.count % Self.sourceBytesPerFrame
-        guard alignedCount > 0 else { return }
-        let chunk = Data(aggregatePCM.prefix(alignedCount))
-        aggregatePCM.removeFirst(alignedCount)
-        schedulePCM(chunk, sourceRate: rate)
+    private func maybeStartPlayback() {
+        guard !playerStarted, pendingBuffers > 0 else { return }
+        guard responseFinished || scheduledLeadMs() >= Self.startupPrebufferMs else { return }
+        playerStarted = true
+        playerNode.play()
     }
 
     private func schedulePCM(_ pcm: Data, sourceRate: Double) {
@@ -407,23 +513,55 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
             return
         }
 
-        let frames = Int(buffer.frameLength)
+        let outFrames = Int(buffer.frameLength)
         let generation = streamGeneration
         pendingBuffers += 1
-        pendingFrames += frames
-        scheduledFrames += frames
+        pendingFrames += outFrames
+        pcmScheduledFrames += sourceFrames
+        outstanding.append((Date(), outFrames, sourceFrames))
+        noteLeadSample()
         updateMirrors(speaking: true)
         setSpeaking(true)
 
+        let sourceFramesForCallback = sourceFrames
         playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             self?.audioQueue.async { [weak self] in
                 guard let self, streamGeneration == generation else { return }
+                lastCompletionAt = Date()
+                stallRestartStreak = 0
+                // Completions fire in FIFO schedule order; pop unconditionally
+                // and use the entry only for age truth. A frame-count mismatch
+                // must never corrupt the outstanding queue.
+                if !outstanding.isEmpty {
+                    let entry = outstanding.removeFirst()
+                    if entry.1 == outFrames {
+                        let ageMs = Date().timeIntervalSince(entry.0) * 1000
+                        if ageMs > Double(maxQueueAgeMs) { maxQueueAgeMs = Int(ageMs) }
+                    }
+                }
                 pendingBuffers = max(0, pendingBuffers - 1)
-                pendingFrames = max(0, pendingFrames - frames)
-                playedFrames += frames
+                pendingFrames = max(0, pendingFrames - outFrames)
+                pcmPlayedFrames += sourceFramesForCallback
+                // Refill from the aggregate as the lead dips below target —
+                // before the underrun check, so held audio prevents false
+                // underruns.
+                if let rate = self.sourceRate { drainAggregated(rate: rate) }
+                // Near-starvation: schedule a partial remainder rather than
+                // let the PlayerNode run dry while ordered audio still waits
+                // in the aggregate. Ordered, contiguous, non-duplicated.
+                if pendingBuffers == 0, let rate = self.sourceRate, !aggregatePCM.isEmpty {
+                    let chunk = aggregatePCM
+                    aggregatePCM.removeAll(keepingCapacity: true)
+                    schedulePCM(chunk, sourceRate: rate)
+                }
+                maybeStartPlayback()
                 if pendingBuffers == 0 {
-                    if !responseFinished { underrunCount += 1 }
+                    if !responseFinished { underrunEvents += 1 }
                     setSpeaking(false)
+                    if responseFinished, !responseSummaryLogged {
+                        responseSummaryLogged = true
+                        logCounters(reason: "response-complete")
+                    }
                     if responseFinished, ephemeralSession, !liveSessionOwned {
                         ephemeralSession = false
                         sessionActive = false
@@ -434,7 +572,47 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
                 }
             }
         }
-        playerNode.play()
+    }
+
+    private func noteLeadSample() {
+        let lead = scheduledLeadMs()
+        if lead < minScheduledLeadMs { minScheduledLeadMs = lead }
+        if lead > maxScheduledLeadMs { maxScheduledLeadMs = lead }
+    }
+
+    /// Scheduled lead in ms: audio physically queued on the PlayerNode (48k).
+    /// This is the continuity truth — when it reaches 0 during active speech
+    /// the speakers underrun.
+    private func scheduledLeadMs() -> Int {
+        Int(Double(pendingFrames) * 1000 / playerFormat.sampleRate)
+    }
+
+    /// Total backlog: scheduled lead plus still-unaggregated source PCM. This
+    /// is the latency the owner would experience; used for the ceiling only.
+    private func totalBacklogMs() -> Int {
+        guard let rate = sourceRate, rate > 0 else { return scheduledLeadMs() }
+        let aggregateFrames = aggregatePCM.count / Self.sourceBytesPerFrame
+        return scheduledLeadMs() + Int(Double(aggregateFrames) * 1000 / rate)
+    }
+
+    private func logOverflowOnce() {
+        guard !overflowLogged else { return }
+        overflowLogged = true
+        logCounters(reason: "overflow-ceiling")
+    }
+
+    private func logCounters(reason: String) {
+        let receivedMs = durationMs(frames: pcmReceivedFrames)
+        let scheduledMs = durationMs(frames: pcmScheduledFrames)
+        let playedMs = durationMs(frames: pcmPlayedFrames)
+        NSLog(
+            "EV_TTS[\(reason)] received=\(receivedMs)ms scheduled=\(scheduledMs)ms played=\(playedMs)ms lead(min/max/cur)=\(minScheduledLeadMs == Int.max ? 0 : minScheduledLeadMs)/\(maxScheduledLeadMs)/\(scheduledLeadMs())ms backlog=\(totalBacklogMs())ms queueAgeMax=\(maxQueueAgeMs)ms overflow=\(overflowEvents) dropped=\(droppedFrames) underruns=\(underrunEvents) gaps=\(sequenceGapCount) invalid=\(invalidOrIncompleteFrameCount) restarts=\(engineRestartCount)"
+        )
+    }
+
+    private func durationMs(frames: Int) -> Int {
+        guard let rate = sourceRate, rate > 0 else { return 0 }
+        return Int(Double(frames) * 1000 / rate)
     }
 
     private func ensureEngine() throws {
@@ -444,6 +622,16 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
             engine.connect(playerNode, to: engine.mainMixerNode, format: playerFormat)
             engine.mainMixerNode.outputVolume = 1.0
             playerNode.volume = 1.0
+            // Device reconfiguration (route change, virtual-driver flap) can
+            // stop the engine mid-response. Recover on the audio queue.
+            NotificationCenter.default.addObserver(
+                forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil
+            ) { [weak self] _ in
+                self?.audioQueue.async { [weak self] in
+                    guard let self, sessionActive else { return }
+                    restartEngineOnQueue(reason: "config-change")
+                }
+            }
             engineConfigured = true
         }
         if !engine.isRunning {
@@ -458,6 +646,7 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         playerNode.reset()
         activeResponseID = nil
         responseFinished = false
+        playerStarted = false
         sourceRate = nil
         partialFrameBytes.removeAll(keepingCapacity: true)
         aggregatePCM.removeAll(keepingCapacity: true)
@@ -465,6 +654,22 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         converterSourceRate = nil
         pendingBuffers = 0
         pendingFrames = 0
+        outstanding = []
+        lastSequence = nil
+        responseSummaryLogged = false
+        overflowLogged = false
+        stallRestartStreak = 0
+        receivedPCMBytes = 0
+        pcmReceivedFrames = 0
+        pcmScheduledFrames = 0
+        pcmPlayedFrames = 0
+        overflowEvents = 0
+        droppedFrames = 0
+        underrunEvents = 0
+        sequenceGapCount = 0
+        minScheduledLeadMs = Int.max
+        maxScheduledLeadMs = 0
+        maxQueueAgeMs = 0
         setSpeaking(false, echoTail: echoTail)
     }
 
@@ -472,10 +677,17 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         guard activeResponseID == responseID, !responseFinished else { return }
         responseFinished = true
         if !partialFrameBytes.isEmpty {
+            // Sub-sample tail bytes cannot form a valid PCM frame; the provider
+            // stream broke. Counted, never interpreted.
             invalidOrIncompleteFrameCount += 1
             partialFrameBytes.removeAll(keepingCapacity: true)
         }
-        flushAggregate()
+        // §13: the final partial aggregate is a valid tail — flush everything
+        // remaining as audio, bypassing the lead gate.
+        if let rate = sourceRate {
+            drainAggregated(rate: rate, force: true)
+        }
+        maybeStartPlayback()
         if pendingBuffers == 0 { setSpeaking(false) }
     }
 
@@ -489,19 +701,12 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private func updateMirrors(speaking: Bool, echoTail: Bool = true) {
         stateLock.lock()
         mirroredPendingFrames = pendingFrames
-        mirroredPlayedFrames = playedFrames
+        mirroredPlayedFrames = pcmPlayedFrames
         mirroredSpeaking = speaking
         if !speaking {
             captureMuteUntil = echoTail ? Date().addingTimeInterval(Self.echoTail) : .distantPast
         }
         stateLock.unlock()
-    }
-
-    private func queuedDurationMs() -> Int {
-        let scheduledMs = Int(Double(pendingFrames) * 1000 / playerFormat.sampleRate)
-        guard let rate = sourceRate, rate > 0 else { return scheduledMs }
-        let aggregateFrames = aggregatePCM.count / Self.sourceBytesPerFrame
-        return scheduledMs + Int(Double(aggregateFrames) * 1000 / rate)
     }
 
     private func playbackBuffer(from pcm: Data, sourceRate: Double) -> AVAudioPCMBuffer? {

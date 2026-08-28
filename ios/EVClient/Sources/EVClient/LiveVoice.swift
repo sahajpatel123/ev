@@ -16,6 +16,7 @@ public struct LiveVoiceEvent: Sendable {
     public let contentType: String?
     public let sampleRate: Int?
     public let providerResponseId: String?
+    public let index: Int?
     public let code: String?
     public let fatal: Bool
     public let metric: String?
@@ -53,6 +54,7 @@ public struct LiveVoiceEvent: Sendable {
         contentType: String? = nil,
         sampleRate: Int? = nil,
         providerResponseId: String? = nil,
+        index: Int? = nil,
         hud: HUDCard? = nil,
         deviceId: String? = nil,
         ttsDeviceId: String? = nil,
@@ -85,6 +87,7 @@ public struct LiveVoiceEvent: Sendable {
         self.contentType = contentType
         self.sampleRate = sampleRate
         self.providerResponseId = providerResponseId
+        self.index = index
         self.hud = hud
         self.deviceId = deviceId
         self.ttsDeviceId = ttsDeviceId
@@ -646,6 +649,7 @@ public final class LiveVoiceConnection: @unchecked Sendable {
             contentType: object["content_type"] as? String,
             sampleRate: sampleRate,
             providerResponseId: object["provider_response_id"] as? String,
+            index: object["index"] as? Int,
             hud: Self.decodeHUD(object["hud"] ?? object["card"]),
             deviceId: eventDeviceId,
             ttsDeviceId: eventTTSDeviceId,

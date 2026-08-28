@@ -19,6 +19,8 @@ if arguments.contains("--smoke-test") {
     exit(EVSmokeTest.runMic())
 } else if arguments.contains("--tts-test") {
     exit(EVSmokeTest.runTTS())
+} else if arguments.contains("--tts-continuity") {
+    exit(EVSmokeTest.runTTSContinuity())
 } else if arguments.contains("--first-audio-test") {
     exit(EVSmokeTest.runFirstAudioSurvival())
 } else if arguments.contains("--listener-presence-test") {

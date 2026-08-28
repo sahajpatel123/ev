@@ -918,7 +918,8 @@ final class LiveConversation {
                     b64,
                     contentType: event.contentType,
                     sampleRate: Double(event.sampleRate ?? 16_000),
-                    responseID: responseID
+                    responseID: responseID,
+                    sequence: event.index
                 )
             } else if let ref = event.audioRef, !ref.isEmpty {
                 do {
@@ -927,7 +928,8 @@ final class LiveConversation {
                         data,
                         contentType: event.contentType,
                         sampleRate: Double(event.sampleRate ?? 16_000),
-                        responseID: responseID
+                        responseID: responseID,
+                        sequence: event.index
                     )
                 } catch {
                     model.lastError = "TTS download failed: \(error.localizedDescription)"
