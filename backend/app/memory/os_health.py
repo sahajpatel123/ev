@@ -182,6 +182,44 @@ def _memory_epoch_value() -> int:
     return memory_epoch()
 
 
+# F5 candidate-pipeline + prospective metrics (bounded counts only).
+_F5 = {
+    "candidates_write": 0,
+    "candidates_reject_low_value": 0,
+    "candidates_reject_secret": 0,
+    "candidates_reject_assistant_speculation": 0,
+    "candidates_supersede": 0,
+    "prospective_queries": 0,
+    "prospective_required": 0,
+    "prospective_planned": 0,
+    "prospective_suggested": 0,
+    "prospective_conflicts": 0,
+    "prospective_sourceless_suggestions": 0,
+    "prospective_last_latency_ms": None,
+}
+
+
+def note_candidate_decision(decision: str) -> None:
+    key = f"candidates_{decision}"
+    _F5[key] = _F5.get(key, 0) + 1
+
+
+def note_prospective_query(*, required: int, planned: int, suggested: int,
+                           conflicts: int, latency_ms: float,
+                           sourceless: int = 0) -> None:
+    _F5["prospective_queries"] += 1
+    _F5["prospective_required"] += int(required)
+    _F5["prospective_planned"] += int(planned)
+    _F5["prospective_suggested"] += int(suggested)
+    _F5["prospective_conflicts"] += int(conflicts)
+    _F5["prospective_sourceless_suggestions"] += int(sourceless)
+    _F5["prospective_last_latency_ms"] = round(latency_ms, 2)
+
+
+def f5_health_snapshot() -> dict[str, Any]:
+    return dict(_F5)
+
+
 def shadow_health_snapshot() -> dict[str, Any]:
     classify = list(_SHADOW_CLASSIFY_MS)
     retrieval = list(_SHADOW_RETRIEVAL_MS)
@@ -237,4 +275,5 @@ def snapshot() -> dict[str, Any]:
         "shadow": shadow_health_snapshot(),
         "retrieval_stages": _retrieval_stage_snapshot(),
         "memory_epoch": _memory_epoch_value(),
+        "f5": f5_health_snapshot(),
     }

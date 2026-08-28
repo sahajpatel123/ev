@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     capability_router_v2: str = "off"
     # F4 model-surface reduction: legacy | shadow | on.
     model_surface_v2: str = "legacy"
+    # F5 continuous-memory candidate scoring: off | shadow | on.
+    memory_scoring_v2: str = "off"
+    # F5 prospective context: off | shadow | on.
+    prospective_context_v1: str = "off"
     memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
     memory_curator_enabled: bool = True
     memory_curator_version: str = "1.1"

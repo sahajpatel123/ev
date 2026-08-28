@@ -49,7 +49,9 @@ async def process_event_sync(event_id: UUID) -> list[dict]:
         if event is None or event.tombstoned_at is not None:
             return []
         writer = MemoryWriter(session, embeddings=get_embedder())
-        candidates = Extractor().extract(event)
+        from app.memory.candidates import filter_candidates
+
+        candidates, _decisions = filter_candidates(event, Extractor().extract(event))
         from app.memory.observe import log_memory
 
         log_memory(
