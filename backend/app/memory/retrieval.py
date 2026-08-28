@@ -165,7 +165,6 @@ _TOKEN_CACHE_MAX = 4096
 
 
 def _tokens_for_memory(m) -> frozenset:
-    from app.models import Memory as _M
 
     key = f"{m.id}:{int(m.updated_time.timestamp()) if m.updated_time else 0}"
     hit = _TOKEN_CACHE.get(key)
