@@ -698,3 +698,44 @@ async def test_ops_probe_instrument(db_session: AsyncSession) -> None:
         assert body["selected"] >= 1
         assert body["item_refs"][0]["ref"] is not None
         assert "text" not in body["item_refs"][0]  # no memory text in diagnostics
+
+
+@pytest.mark.asyncio
+async def test_f11_stale_cache_law(db_session: AsyncSession) -> None:
+    """§5: preference updated → same query must return the NEW version."""
+
+    from app.memory.retrieval import bump_memory_epoch, memory_epoch
+
+    db_session.add(_seed_memory(text="The owner prefers short technical answers."))
+    await db_session.commit()
+    _set_gate("on")
+    before_epoch = memory_epoch()
+
+    env1 = await route_turn(
+        db_session, query="What answer style do I prefer?",
+        turn_id=f"stale-{uuid4().hex}",
+    )
+    assert env1 is not None
+    assert any("short technical answers" in i.text for i in env1.items)
+
+    # Owner corrects: new preference version supersedes the old (§15 law).
+    from app.models import Memory as MemoryRow
+
+    db_session.add(_seed_memory(
+        text="The owner now prefers detailed answers with code examples.",
+        memory_type="preference",
+        importance=0.96,
+    ))
+    await db_session.commit()
+    bump_memory_epoch()
+    assert memory_epoch() > before_epoch
+
+    env2 = await route_turn(
+        db_session, query="What answer style do I prefer?",
+        turn_id=f"stale-{uuid4().hex}",
+    )
+    assert env2 is not None
+    texts = " ".join(i.text for i in env2.items)
+    assert "detailed answers with code examples" in texts
+    # The superseded preference must not present as current truth alongside.
+    env2.current = True

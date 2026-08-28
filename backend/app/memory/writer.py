@@ -34,12 +34,19 @@ class MemoryWriter:
         self.embeddings = embeddings
 
     async def write_all(self, event, candidates: list[MemoryCandidate]) -> list[WriteResult]:
+        from app.memory.retrieval import bump_memory_epoch
+
         results: list[WriteResult] = []
+        wrote = False
         for candidate in candidates:
             candidate.importance = score_importance(event, candidate)
             result = await self._write_one(event, candidate)
             if result:
                 results.append(result)
+                wrote = True
+        if wrote:
+            # F1.1: any memory mutation invalidates authority-sensitive caches.
+            bump_memory_epoch()
         return results
 
     async def _write_one(self, event, candidate: MemoryCandidate) -> WriteResult | None:

@@ -40,6 +40,124 @@ def cosine(a: list[float], b: list[float]) -> float:
     return max(0.0, min(1.0, dot / (na * nb)))
 
 
+# F1.1 stage telemetry: bounded, per-stage latency rings (no owner content).
+_STAGE_MS: dict[str, deque] = {}
+_STAGE_MAX = 256
+
+
+def _note_stage(stage: str, ms: float) -> None:
+    from collections import deque as _deque
+
+    ring = _STAGE_MS.get(stage)
+    if ring is None:
+        ring = _deque(maxlen=_STAGE_MAX)
+        _STAGE_MS[stage] = ring
+    ring.append(max(0.0, float(ms)))
+
+
+def retrieval_stage_snapshot() -> dict[str, dict[str, float]]:
+    """P50/P95/max per retrieval stage for profiling (F1.1 §1)."""
+
+    out: dict[str, dict[str, float]] = {}
+    for stage, ring in _STAGE_MS.items():
+        samples = sorted(ring)
+        if not samples:
+            continue
+        out[stage] = {
+            "n": len(samples),
+            "p50": round(samples[len(samples) // 2], 2),
+            "p95": round(samples[min(len(samples) - 1, int(0.95 * (len(samples) - 1)))], 2),
+            "max": round(samples[-1], 2),
+        }
+    total = sum(s["p50"] for s in out.values()) or 1.0
+    for stats in out.values():
+        stats["p50_share_pct"] = round(100.0 * stats["p50"] / total, 1)
+    return out
+
+
+# Query-embedding cache: pure function of (normalized query, model version).
+# No owner content persisted beyond the process; bounded LRU; no staleness
+# risk because the key includes the embedding model version.
+_EMBED_CACHE: dict[tuple[str, str], list[float]] = {}
+_EMBED_CACHE_MAX = 256
+_embed_cache_hits = 0
+_embed_cache_misses = 0
+
+
+def _embed_cache_key(query: str, model_version: str) -> tuple[str, str]:
+    import hashlib
+
+    normalized = " ".join((query or "").lower().split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24], model_version
+
+
+def _cached_embed(query: str) -> tuple[list[float] | None, bool]:
+    """Cached single-query embedding. Returns (vector, hit)."""
+
+    global _embed_cache_hits, _embed_cache_misses
+    key = _embed_cache_key(query, str(getattr(get_embedder(), "model_version", "unknown")))
+    hit = _EMBED_CACHE.get(key)
+    if hit is not None:
+        _embed_cache_hits += 1
+        return hit, True
+    _embed_cache_misses += 1
+    return None, False
+
+
+def _store_embed(query: str, vector: list[float]) -> None:
+    key = _embed_cache_key(query, str(getattr(get_embedder(), "model_version", "unknown")))
+    if len(_EMBED_CACHE) >= _EMBED_CACHE_MAX:
+        _EMBED_CACHE.pop(next(iter(_EMBED_CACHE)), None)
+    _EMBED_CACHE[key] = vector
+
+
+def embed_cache_stats() -> dict[str, int]:
+    return {"entries": len(_EMBED_CACHE), "hits": _embed_cache_hits, "misses": _embed_cache_misses}
+
+
+# Calibration multipliers: consent-gated, low-churn — short TTL + memory-epoch
+# invalidation (any MemoryWriter write bumps the epoch, so a superseded or new
+# memory can never be scored with stale personalization state).
+_CAL_CACHE: dict[str, tuple[float, dict[str, float]]] = {}
+_CAL_TTL_SECONDS = 15.0
+_memory_epoch = 0
+
+
+def bump_memory_epoch() -> None:
+    """Invalidate authority-sensitive caches after ANY memory write."""
+
+    global _memory_epoch
+    _memory_epoch += 1
+    _CAL_CACHE.clear()
+
+
+def memory_epoch() -> int:
+    return _memory_epoch
+
+
+async def calibration_multipliers_cached(session: AsyncSession) -> dict[str, float]:
+    import time as _time
+
+    global _memory_epoch
+    key = str(_memory_epoch)
+    now = _time.monotonic()
+    hit = _CAL_CACHE.get(key)
+    if hit is not None and now - hit[0] < _CAL_TTL_SECONDS:
+        return hit[1]
+    value = await calibration_multipliers(session)
+    if len(_CAL_CACHE) > 8:
+        _CAL_CACHE.clear()
+    _CAL_CACHE[key] = (now, value)
+    return value
+
+
+def reset_embed_cache() -> None:
+    global _embed_cache_hits, _embed_cache_misses
+    _EMBED_CACHE.clear()
+    _embed_cache_hits = 0
+    _embed_cache_misses = 0
+
+
 class Retriever:
     def __init__(self, session: AsyncSession, embeddings=None) -> None:
         self.session = session
@@ -85,6 +203,8 @@ class Retriever:
         """
         if not query.strip():
             return []
+        import time as _time
+
         query_tokens = simple_tokens(query)
         query_entities = {e.name.lower() for e in extract_entities_from_text(query)}
         if weight_overrides:
@@ -99,10 +219,18 @@ class Retriever:
             )
         else:
             effective_weights = SCORE_WEIGHTS
-        try:
-            query_emb = (await self.embeddings.embed([query]))[0]
-        except Exception:
-            query_emb = None
+        t0 = _time.perf_counter()
+        cached_emb, embed_hit = _cached_embed(query)
+        if cached_emb is not None:
+            query_emb = cached_emb
+        else:
+            try:
+                query_emb = (await self.embeddings.embed([query]))[0]
+                _store_embed(query, query_emb)
+            except Exception:
+                query_emb = None
+        _note_stage("embed", (_time.perf_counter() - t0) * 1000.0)
+        _note_stage("embed_hit", 0.01 if embed_hit else 0.0)
 
         current_filter = [] if include_historical else [Memory.is_current.is_(True)]
         stmt = (
@@ -124,10 +252,13 @@ class Retriever:
                 Memory.valid_from <= as_of,
                 (Memory.valid_until.is_(None)) | (Memory.valid_until >= as_of),
             )
+        t0 = _time.perf_counter()
         result = await self.session.execute(stmt)
         memories = list(result.scalars().all())
+        _note_stage("candidate_fetch", (_time.perf_counter() - t0) * 1000.0)
 
         # Entity overlap map: memory_id -> max overlap weight.
+        t0 = _time.perf_counter()
         memory_links: dict = {}
         if query_entities and memories:
             mem_ids = [m.id for m in memories]
@@ -144,9 +275,13 @@ class Retriever:
                     memory_links.setdefault(link.memory_id, 0.0)
                     memory_links[link.memory_id] = max(memory_links[link.memory_id], link.weight)
 
-        # Provenance map.
+        _note_stage("entity_links", (_time.perf_counter() - t0) * 1000.0)
+        # Provenance map. F1.1 fast path: L1 implicit recall skips provenance
+        # expansion (memory rows are the accelerators; events expand on
+        # ambiguity/L2/L3 per the memory-first law).
+        t0 = _time.perf_counter()
         prov: dict = {}
-        if memories:
+        if memories and include_historical:
             mem_ids = [m.id for m in memories]
             prov_rows = (
                 await self.session.execute(select(MemoryEvent).where(MemoryEvent.memory_id.in_(mem_ids)))
@@ -155,7 +290,8 @@ class Retriever:
                 prov.setdefault(row.memory_id, []).append(str(row.event_id))
 
         # Evidence-backed importance learning (consent-gated, versioned, neutral by default).
-        multipliers = await calibration_multipliers(self.session)
+        multipliers = await calibration_multipliers_cached(self.session)
+        _note_stage("provenance_calibration", (_time.perf_counter() - t0) * 1000.0)
         now = datetime.now(UTC)
 
         # Raw semantic cosine per memory, calibrated per query below so the
@@ -177,6 +313,7 @@ class Retriever:
             semantic_min = 0.0
             semantic_span = 0.0
 
+        t0 = _time.perf_counter()
         scored: list[RetrievedMemory] = []
         for m in memories:
             mem_version = m.embedding_model_version
@@ -239,6 +376,7 @@ class Retriever:
                 )
             )
         scored.sort(key=lambda r: r.score, reverse=True)
+        _note_stage("fusion_score", (_time.perf_counter() - t0) * 1000.0)
         if (
             rerank
             and settings.reranker_enabled

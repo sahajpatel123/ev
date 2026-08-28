@@ -167,6 +167,21 @@ def note_shadow_build() -> None:
     _SHADOW["shadow_builds"] += 1
 
 
+def _retrieval_stage_snapshot() -> dict[str, Any]:
+    from app.memory.retrieval import embed_cache_stats, retrieval_stage_snapshot
+
+    return {
+        "stages": retrieval_stage_snapshot(),
+        "embed_cache": embed_cache_stats(),
+    }
+
+
+def _memory_epoch_value() -> int:
+    from app.memory.retrieval import memory_epoch
+
+    return memory_epoch()
+
+
 def shadow_health_snapshot() -> dict[str, Any]:
     classify = list(_SHADOW_CLASSIFY_MS)
     retrieval = list(_SHADOW_RETRIEVAL_MS)
@@ -220,4 +235,6 @@ def snapshot() -> dict[str, Any]:
         "prefetch_hits": _PREFETCH["hits"],
         "prefetch_triggers": _PREFETCH["triggers"],
         "shadow": shadow_health_snapshot(),
+        "retrieval_stages": _retrieval_stage_snapshot(),
+        "memory_epoch": _memory_epoch_value(),
     }
