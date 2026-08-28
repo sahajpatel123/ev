@@ -57,6 +57,32 @@ async def memory_router_probe(
     started = time.perf_counter()
     classification = classify_retrieval(query)
 
+    if (body or {}).get("prospective"):
+        from app.memory.prospective import (
+            is_prospective_question,
+            prospective_mode,
+        )
+
+        pmode = prospective_mode()
+        pctx = None
+        if pmode in {"shadow", "on"} and is_prospective_question(query):
+            from app.memory.prospective import build_prospective_context
+
+            pctx = await build_prospective_context(session)
+        out["prospective"] = {
+            "mode": pmode,
+            "is_prospective": is_prospective_question(query),
+            "required": [i.to_dict() for i in (pctx.required if pctx else [])][:6],
+            "planned": [i.to_dict() for i in (pctx.planned if pctx else [])][:6],
+            "suggested": [i.to_dict() for i in (pctx.suggested if pctx else [])][:6],
+            "conflicts": (pctx.conflicts if pctx else [])[:4],
+            "sourceless_suggestions": sum(
+                1 for i in (pctx.suggested if pctx else []) if not i.source_refs
+            ),
+        }
+        return out
+
+
     out: dict = {
         "ok": True,
         "mode": mode,
@@ -116,31 +142,6 @@ async def memory_router_probe(
             ],
         }
     )
-
-    if (body or {}).get("prospective"):
-        from app.memory.prospective import (
-            is_prospective_question,
-            prospective_mode,
-        )
-
-        pmode = prospective_mode()
-        pctx = None
-        if pmode in {"shadow", "on"} and is_prospective_question(query):
-            from app.memory.prospective import build_prospective_context
-
-            pctx = await build_prospective_context(session)
-        out["prospective"] = {
-            "mode": pmode,
-            "is_prospective": is_prospective_question(query),
-            "required": [i.to_dict() for i in (pctx.required if pctx else [])][:6],
-            "planned": [i.to_dict() for i in (pctx.planned if pctx else [])][:6],
-            "suggested": [i.to_dict() for i in (pctx.suggested if pctx else [])][:6],
-            "conflicts": (pctx.conflicts if pctx else [])[:4],
-            "sourceless_suggestions": sum(
-                1 for i in (pctx.suggested if pctx else []) if not i.source_refs
-            ),
-        }
-        return out
 
     if run_gate:
         from app.ev.owner_turn import create_owner_turn
