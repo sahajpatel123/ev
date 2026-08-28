@@ -513,6 +513,9 @@ async def _memory_health() -> dict:
         "deep_recall_ready": True,
         "temporal_retrieval_ready": True,
         "memory_gate_mode": (settings.memory_gate or "off").strip().lower(),
+        # F1.1 profiling telemetry (bounded metadata only).
+        "retrieval_stages": os_part.get("retrieval_stages"),
+        "memory_epoch": os_part.get("memory_epoch"),
         "memory_gate_p50_ms": os_part.get("memory_gate_p50_ms"),
         "memory_gate_p95_ms": os_part.get("memory_gate_p95_ms"),
         "bootstrap_version": os_part.get("bootstrap_version"),
