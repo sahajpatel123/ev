@@ -259,6 +259,9 @@ async def route_action(goal: ActionGoal, *, session: Any = None) -> CapabilityRo
 
     started = time.perf_counter()
     intent = goal.semantic_intent
+    if intent is None and goal.target in SEMANTIC_CANDIDATES:
+        # Dispatched tool names in the routed set ARE semantic intents.
+        intent = goal.target
     if intent is None:
         lowered = (goal.goal or "").lower()
         for hint, candidate in GOAL_SEMANTIC_HINTS:
@@ -296,6 +299,18 @@ async def route_action(goal: ActionGoal, *, session: Any = None) -> CapabilityRo
     if intent:
         considered.append(intent)
         available, detail = await _semantic_available(intent, session, goal.device_scope)
+        # App navigation has a semantic native path too: the macos_life helper.
+        # Prefer it when actually connected; otherwise the F2 executor is the
+        # generic fallback (§9 hierarchy: semantic before generic).
+        if intent in {"open_app", "activate_app"} and not available:
+            try:
+                from app.ev.apps import find_macos_life_integration
+
+                helper = await find_macos_life_integration(session) if session is not None else None
+                if helper is not None:
+                    available, detail = True, "macos_life_helper"
+            except Exception:  # noqa: BLE001 - availability must never raise
+                pass
         risk = _policy_risk_for(intent)
         if goal.device_scope not in {"owner", "master"}:
             route = CapabilityRoute(

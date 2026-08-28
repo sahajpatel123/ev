@@ -100,7 +100,11 @@ async def test_semantic_capability_requires_real_availability(db_session) -> Non
 
 
 @pytest.mark.asyncio
-async def test_app_navigation_falls_back_to_generic_computer(db_session) -> None:
+async def test_app_navigation_prefers_helper_then_generic(db_session) -> None:
+    """§9: semantic helper first; generic executor only when it is absent."""
+
+    from unittest.mock import patch
+
     from app.voice.live.layer import register_live, reset_live_registry
     from app.voice.live.session import LiveSession
 
@@ -108,6 +112,7 @@ async def test_app_navigation_falls_back_to_generic_computer(db_session) -> None
     session = LiveSession(session_id="f3-generic", device_id="mac", backchannel_enabled=False)
     register_live(session)
     try:
+        # No macos_life helper in the test DB -> generic computer route.
         route = await route_action(
             _goal("Turn on the obscure preference inside FooApp", semantic_intent="open_app"),
             session=db_session,
@@ -116,6 +121,17 @@ async def test_app_navigation_falls_back_to_generic_computer(db_session) -> None
         assert route.executor_family == "navigate"
         assert route.rationale_code == Rationale.GENERIC_UI_REQUIRED
         assert route.verification_contract == "observe_after_expected_effect"
+
+        # With a helper integration present -> semantic route wins.
+        async def fake_helper(_session):
+            return object()
+
+        with patch("app.ev.apps.find_macos_life_integration", fake_helper):
+            route = await route_action(
+                _goal("Open Calculator", semantic_intent="open_app"), session=db_session
+            )
+        assert route.route_kind == RouteKind.SEMANTIC
+        assert route.rationale_code == Rationale.SEMANTIC_ADAPTER_AVAILABLE
     finally:
         session.close()
         reset_live_registry()
