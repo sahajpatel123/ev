@@ -158,6 +158,26 @@ def reset_embed_cache() -> None:
     _embed_cache_misses = 0
 
 
+# Fusion tokenization cache: text tokens per memory id. Memories are static
+# between writes; epoch bump clears (supersession/new rows get retokenized).
+_TOKEN_CACHE: dict[str, frozenset] = {}
+_TOKEN_CACHE_MAX = 4096
+
+
+def _tokens_for_memory(m) -> frozenset:
+    from app.models import Memory as _M
+
+    key = f"{m.id}:{int(m.updated_time.timestamp()) if m.updated_time else 0}"
+    hit = _TOKEN_CACHE.get(key)
+    if hit is not None:
+        return hit
+    tokens = frozenset(simple_tokens(m.text))
+    if len(_TOKEN_CACHE) >= _TOKEN_CACHE_MAX:
+        _TOKEN_CACHE.clear()
+    _TOKEN_CACHE[key] = tokens
+    return tokens
+
+
 class Retriever:
     def __init__(self, session: AsyncSession, embeddings=None) -> None:
         self.session = session
@@ -351,7 +371,7 @@ class Retriever:
                 if settings.semantic_normalize and semantic_span > 1e-9
                 else semantic_raw
             )
-            mem_tokens = simple_tokens(m.text)
+            mem_tokens = _tokens_for_memory(m)
             keyword = (
                 len(query_tokens & mem_tokens) / len(query_tokens | mem_tokens)
                 if query_tokens and mem_tokens
