@@ -236,7 +236,6 @@ async def test_today_to_tomorrow_continuity(db_session: AsyncSession) -> None:
     T0+1d: recall finds both; prospective suggests (never REQUIRED)."""
 
     now = utcnow()
-    t0 = now - timedelta(days=1)
     from app.models import MemoryEvent
     from app.schemas import EventCreate
     from app.services.event_service import EventService

@@ -41,13 +41,13 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 
 # F1.1 stage telemetry: bounded, per-stage latency rings (no owner content).
-_STAGE_MS: dict[str, deque] = {}
+from collections import deque as _deque
+
+_STAGE_MS: dict[str, Any] = {}
 _STAGE_MAX = 256
 
 
 def _note_stage(stage: str, ms: float) -> None:
-    from collections import deque as _deque
-
     ring = _STAGE_MS.get(stage)
     if ring is None:
         ring = _deque(maxlen=_STAGE_MAX)
