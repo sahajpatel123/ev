@@ -259,7 +259,9 @@ async def test_on_mode_routes_through_executor_with_fallback(db_session) -> None
 
 
 @pytest.mark.asyncio
-async def test_on_mode_falls_back_to_legacy_on_executor_failure(db_session) -> None:
+async def test_on_mode_falls_back_on_predispatch_failure_only(db_session) -> None:
+    """TEST A: pre-dispatch failure (nothing sent) -> legacy fallback allowed."""
+
     from app.ev.computer import handle_computer_tool
     from app.voice.live.layer import reset_live_registry
     from app.voice.live.session import LiveSession
@@ -269,8 +271,9 @@ async def test_on_mode_falls_back_to_legacy_on_executor_failure(db_session) -> N
     session = LiveSession(session_id="f2-fallback", device_id="mac", backchannel_enabled=False)
 
     async def script(command, arguments=None, *, timeout=12.0, request_id=None):
+        # Executor's before-observation cannot connect -> DISPATCH_NOT_STARTED.
         if command == "inspect_ui":
-            return {"ok": False, "error": "boom"}
+            return {"ok": False, "error": "computer_not_connected"}
         if command == "open_app":
             return {"ok": True, "app": "Music"}
         return {"ok": True}
@@ -283,10 +286,149 @@ async def test_on_mode_falls_back_to_legacy_on_executor_failure(db_session) -> N
         db_session, "open_app", {"name": "Music"},
         actor="master", live_session_id="f2-fallback", device_id="mac",
     )
-    assert result["ok"] is True  # legacy path rescued the call
+    assert result["ok"] is True  # legacy path rescued the pre-dispatch miss
     assert result.get("source") != "computer_executor"
     session.close()
     reset_live_registry()
+
+
+# ---------------------------------------------------------------------------
+# Execution-fence law (F2 §1-5): no fallback after a possible mutation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_verification_failure_forbids_legacy_fallback(db_session) -> None:
+    """TEST B: press dispatched, effect not verified -> NO legacy retry."""
+
+    from app.ev.computer import handle_computer_tool
+    from app.voice.live.layer import reset_live_registry
+    from app.voice.live.session import LiveSession
+
+    settings.computer_executor_v2 = "on"
+    reset_live_registry()
+    session = LiveSession(session_id="f2-verify-fail", device_id="mac", backchannel_enabled=False)
+    press_calls: list[tuple] = []
+
+    async def script(command, arguments=None, *, timeout=12.0, request_id=None):
+        if command == "inspect_ui":
+            return {"ok": True, "app": "Finder", "elements": [{"ref": "e1", "role": "AXButton", "title": "Play"}]}
+        if command == "ui_action":
+            press_calls.append((command, dict(arguments or {})))
+            return {"ok": True}  # dispatched OK, but UI unchanged
+        return {"ok": True}
+
+    session.request_computer = script  # type: ignore[method-assign]
+    import app.voice.live.layer as layer
+
+    layer.register_live(session)
+    result = await handle_computer_tool(
+        db_session, "ui_action", {"action": "press", "element_ref": "e1", "goal": "verify test"},
+        actor="master", live_session_id="f2-verify-fail", device_id="mac",
+    )
+    assert len(press_calls) == 1, "mutation must happen exactly once"
+    assert result["executed"] is True  # primitive ran (verification failure ≠ execution failure)
+    assert result["verified"] is False
+    assert result["error"] == "verification_failed"
+    assert result["side_effect_state"] in {"effect_observed", "ambiguous_after_attempt"}
+    session.close()
+    reset_live_registry()
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_mutation_forbids_legacy_fallback(db_session) -> None:
+    """TEST C: type dispatched, transport outcome unknown -> NO legacy retry."""
+
+    from app.ev.computer import handle_computer_tool
+    from app.voice.live.layer import reset_live_registry
+    from app.voice.live.session import LiveSession
+
+    settings.computer_executor_v2 = "on"
+    reset_live_registry()
+    session = LiveSession(session_id="f2-ambiguous", device_id="mac", backchannel_enabled=False)
+    type_calls: list[tuple] = []
+
+    async def script(command, arguments=None, *, timeout=12.0, request_id=None):
+        if command == "inspect_ui":
+            return {"ok": True, "app": "TextEdit", "elements": [{"ref": "e2", "role": "AXTextArea", "title": "doc"}]}
+        if command == "ui_action":
+            type_calls.append((command, dict(arguments or {})))
+            return {"ok": False, "error": "timeout"}  # sent; outcome unknown
+        return {"ok": True}
+
+    session.request_computer = script  # type: ignore[method-assign]
+    import app.voice.live.layer as layer
+
+    layer.register_live(session)
+    result = await handle_computer_tool(
+        db_session, "ui_action", {"action": "type", "element_ref": "e2", "value": "hello"},
+        actor="master", live_session_id="f2-ambiguous", device_id="mac",
+    )
+    assert len(type_calls) == 1, "ambiguous mutation must never be repeated"
+    assert result["ok"] is False
+    assert result["side_effect_state"] == "ambiguous_after_attempt"
+    session.close()
+    reset_live_registry()
+
+
+@pytest.mark.asyncio
+async def test_readonly_failure_falls_back(db_session) -> None:
+    """TEST D: read-only observe fails -> legacy read fallback may execute."""
+
+    from app.ev.computer import handle_computer_tool
+    from app.voice.live.layer import reset_live_registry
+    from app.voice.live.session import LiveSession
+
+    settings.computer_executor_v2 = "on"
+    reset_live_registry()
+    session = LiveSession(session_id="f2-readonly", device_id="mac", backchannel_enabled=False)
+
+    list_calls: list[int] = []
+
+    async def script(command, arguments=None, *, timeout=12.0, request_id=None):
+        if command == "list_apps":
+            list_calls.append(1)
+            if len(list_calls) == 1:
+                return {"ok": False, "error": "transient"}  # executor's read fails
+            return {"ok": True, "apps": ["Finder"], "count": 1}  # legacy retry succeeds
+        return {"ok": True, "apps": ["Finder"], "count": 1}
+
+    session.request_computer = script  # type: ignore[method-assign]
+    import app.voice.live.layer as layer
+
+    layer.register_live(session)
+    result = await handle_computer_tool(
+        db_session, "list_apps", {},
+        actor="master", live_session_id="f2-readonly", device_id="mac",
+    )
+    assert result["ok"] is True  # legacy read path rescued it
+    assert result.get("source") != "computer_executor"
+    session.close()
+    reset_live_registry()
+
+
+@pytest.mark.asyncio
+async def test_fence_blocks_retry_after_ambiguous_mutation() -> None:
+    """TEST E: same execution identity retried -> no second mutation dispatch."""
+
+    from app.ev.computer_executor import reset_fence
+
+    reset_fence()
+    mac = FakeMac(responses={"ui_action": {"ok": False, "error": "timeout"}})
+    executor = ComputerExecutor(live=mac)
+    request = _request(
+        "act", "ui_action",
+        args={"action": "type", "element_ref": "", "value": "hello"},
+        idempotency_key="turn-42-type",
+    )
+    first = await executor.execute(request)
+    assert first.side_effect.value == "ambiguous_after_attempt"
+    calls_after_first = len(mac.calls)
+    second = await executor.execute(request)  # retry with same identity
+    assert second.error_code == "fence_blocked_mutation_retry"
+    assert second.side_effect.value == "ambiguous_after_attempt"
+    assert len(mac.calls) == calls_after_first, "fence must prevent re-dispatch"
+    reset_fence()
 
 
 def test_mode_default_off() -> None:

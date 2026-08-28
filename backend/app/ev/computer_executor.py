@@ -44,9 +44,65 @@ from __future__ import annotations
 import contextlib
 import time
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from app.config import settings
+
+
+class SideEffectState(StrEnum):
+    """Execution fence: has a mutating side effect possibly been attempted?
+
+    PERMANENT LAW (F2/F3): once a state in MUTATION_RISK_STATES is reached,
+    automatic legacy fallback is FORBIDDEN — the action must never be repeated
+    blindly. Ambiguity fails truthfully.
+    """
+
+    NOT_ATTEMPTED = "not_attempted"
+    PRECONDITION_FAILED = "precondition_failed"  # refused before any dispatch
+    POLICY_DENIED = "policy_denied"
+    DISPATCH_NOT_STARTED = "dispatch_not_started"  # nothing was sent
+    ATTEMPTED_NO_EFFECT_KNOWN = "attempted_no_effect_known"
+    EFFECT_OBSERVED = "effect_observed"  # dispatched; effect seen but unverified
+    VERIFIED = "verified"
+    AMBIGUOUS_AFTER_ATTEMPT = "ambiguous_after_attempt"  # sent; outcome unknown
+
+
+# States from which a retry/fallback could duplicate a real-world mutation.
+MUTATION_RISK_STATES = frozenset(
+    {
+        SideEffectState.ATTEMPTED_NO_EFFECT_KNOWN,
+        SideEffectState.EFFECT_OBSERVED,
+        SideEffectState.VERIFIED,
+        SideEffectState.AMBIGUOUS_AFTER_ATTEMPT,
+    }
+)
+# States from which legacy fallback is legal (§2 A/B: read-only or
+# failure BEFORE mutation dispatch began).
+FALLBACK_SAFE_STATES = frozenset(
+    {
+        SideEffectState.NOT_ATTEMPTED,
+        SideEffectState.PRECONDITION_FAILED,
+        SideEffectState.POLICY_DENIED,
+        SideEffectState.DISPATCH_NOT_STARTED,
+    }
+)
+
+# Client-level refusals: the command reached the client and was refused
+# BEFORE any UI mutation — re-routing is safe.
+PRE_DISPATCH_REFUSALS = frozenset(
+    {
+        "stale_element",
+        "element_not_found",
+        "sensitive_field",
+        "missing_element",
+        "protected",
+        "invalid_url",
+        "find_only",
+        "unsupported",
+        "unknown_command",
+    }
+)
 
 EXECUTOR_TOOLS = frozenset(
     {
@@ -169,6 +225,7 @@ class ComputerExecutionResult:
     ok: bool = False
     executed: bool = False
     verified: bool = False
+    side_effect: SideEffectState = SideEffectState.NOT_ATTEMPTED
     observation_before: dict[str, Any] | None = None
     observation_after: dict[str, Any] | None = None
     error_code: str | None = None
@@ -180,6 +237,12 @@ class ComputerExecutionResult:
     latency_ms: float | None = None
     fallback_path: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def fallback_allowed(self) -> bool:
+        """Legacy fallback legality per the F2 execution-fence law (§2)."""
+
+        return self.side_effect in FALLBACK_SAFE_STATES
 
     def to_tool_payload(self) -> dict[str, Any]:
         """Shape compatible with the existing computer tool receipts."""
@@ -203,6 +266,47 @@ def _new_execution_id() -> str:
     from uuid import uuid4
 
     return f"exec-{uuid4().hex[:12]}"
+
+
+# ---------------------------------------------------------------------------
+# Execution fence: exactly-once mutation guarantee across retries
+# ---------------------------------------------------------------------------
+
+_FENCE: dict[str, SideEffectState] = {}
+_FENCE_MAX = 512
+
+
+def _fence_key(request: ComputerExecutionRequest) -> str:
+    return str(request.idempotency_key or request.execution_id)
+
+
+def check_fence(request: ComputerExecutionRequest) -> SideEffectState | None:
+    """Prior fenced state for this execution identity, if any."""
+
+    return _FENCE.get(_fence_key(request))
+
+
+def mark_fence(request: ComputerExecutionRequest, state: SideEffectState) -> None:
+    """Record the furthest-known side-effect state (monotonic upgrade)."""
+
+    key = _fence_key(request)
+    prior = _FENCE.get(key)
+    if prior is None or state in MUTATION_RISK_STATES or prior not in MUTATION_RISK_STATES:
+        _FENCE[key] = state
+    if len(_FENCE) > _FENCE_MAX:
+        oldest = next(iter(_FENCE))
+        _FENCE.pop(oldest, None)
+
+
+def fence_snapshot() -> dict[str, Any]:
+    risky = sum(1 for state in _FENCE.values() if state in MUTATION_RISK_STATES)
+    return {"entries": len(_FENCE), "mutation_risk_entries": risky}
+
+
+def reset_fence() -> None:
+    """Test/diagnostic reset. Never called on the production hot path."""
+
+    _FENCE.clear()
 
 
 def _note(event: str, request: ComputerExecutionRequest, result: ComputerExecutionResult) -> None:
@@ -342,10 +446,19 @@ class ComputerExecutor:
         result.raw = raw
         result.ok = bool(raw.get("ok"))
         result.executed = result.ok
-        # Observe is read-only: success of a structured observation IS the
-        # verification (no expected_effect applies).
+        # Observe is read-only: no mutation state beyond dispatch bookkeeping.
+        result.side_effect = SideEffectState.NOT_ATTEMPTED
         result.verified = result.ok and not raw.get("error")
-        result.error_code = None if result.ok else str(raw.get("error") or "observe_failed")
+        if result.ok:
+            result.error_code = None
+        else:
+            error = str(raw.get("error") or "observe_failed")
+            result.error_code = error
+            result.side_effect = (
+                SideEffectState.DISPATCH_NOT_STARTED
+                if error == "computer_not_connected"
+                else SideEffectState.PRECONDITION_FAILED
+            )
         result.retryable = result.error_code in {"timeout", "computer_bridge_failed"}
         result.latency_ms = round((time.monotonic() - started) * 1000, 2)
         return result
@@ -366,33 +479,67 @@ class ComputerExecutor:
                 result.error_code = "stale_element"
                 result.executed = False
                 result.verified = False
+                result.side_effect = SideEffectState.PRECONDITION_FAILED
                 result.retryable = True
                 result.latency_ms = round((time.monotonic() - started) * 1000, 2)
+                mark_fence(request, result.side_effect)
                 _note("computer.executor_block", request, result)
                 return result
         mutating = is_mutating("ui_action", request.args)
         if mutating:
             result.observation_before = await self._observe_state()
+        # FENCE: from here the primitive may reach the UI — mark before await.
+        if mutating:
+            mark_fence(request, SideEffectState.ATTEMPTED_NO_EFFECT_KNOWN)
+            result.side_effect = SideEffectState.ATTEMPTED_NO_EFFECT_KNOWN
         raw = await self._transport("ui_action", dict(request.args))
         result.raw = raw
         result.ok = bool(raw.get("ok"))
         # EXECUTED ≠ VERIFIED (§27): an AX press that returns success is only
         # the primitive dispatch; the claim gate is the after-observation.
-        result.executed = bool(raw.get("ok")) or str(raw.get("error") or "") in {"stale_element", "element_not_found"}
-        result.error_code = None if raw.get("ok") else str(raw.get("error") or "ui_action_failed")
+        error_code = str(raw.get("error") or "") if not raw.get("ok") else None
+        result.executed = bool(raw.get("ok")) or error_code in {"stale_element", "element_not_found"}
+        result.error_code = error_code
         if raw.get("ok") and mutating:
-            result.observation_after = await self._observe_state()
+            # Fallback is now forbidden regardless of what verification finds.
+            result.side_effect = SideEffectState.ATTEMPTED_NO_EFFECT_KNOWN
+            try:
+                result.observation_after = await self._observe_state()
+            except Exception:  # noqa: BLE001 - observation loss = ambiguity
+                result.observation_after = None
             result.verified = _verify_effect(request.expected_effect, result.observation_before, result.observation_after)
+            if result.verified:
+                result.side_effect = SideEffectState.VERIFIED
+            elif result.observation_after and result.observation_after.get("ok") is False:
+                # Verification itself could not be performed → ambiguity (§3).
+                result.side_effect = SideEffectState.AMBIGUOUS_AFTER_ATTEMPT
+                result.error_code = "ambiguous_effect"
+            else:
+                result.side_effect = SideEffectState.EFFECT_OBSERVED
+                result.error_code = "verification_failed"
             result.evidence = {
                 "before": result.observation_before,
                 "after": result.observation_after,
                 "effect": request.expected_effect,
             }
         elif raw.get("ok"):
-            result.verified = True  # non-mutating read-style act
+            result.side_effect = SideEffectState.NOT_ATTEMPTED  # read-style act
+            result.verified = True
         else:
             result.verified = False
             result.evidence = {"error": result.error_code}
+            if error_code in PRE_DISPATCH_REFUSALS:
+                result.side_effect = SideEffectState.PRECONDITION_FAILED
+            elif error_code == "computer_not_connected":
+                result.side_effect = SideEffectState.DISPATCH_NOT_STARTED
+            elif mutating:
+                # Sent but refused/unknown at the client: never assume safety.
+                result.side_effect = SideEffectState.AMBIGUOUS_AFTER_ATTEMPT
+                result.error_code = result.error_code or "ambiguous_effect"
+            else:
+                result.side_effect = SideEffectState.PRECONDITION_FAILED
+        if mutating:
+            mark_fence(request, result.side_effect)
         result.retryable = result.error_code in {"timeout", "computer_bridge_failed", "stale_element"}
         result.latency_ms = round((time.monotonic() - started) * 1000, 2)
         return result
@@ -401,13 +548,20 @@ class ComputerExecutor:
         result = ComputerExecutionResult(execution_id=request.execution_id, family="navigate", operation=request.operation)
         started = time.monotonic()
         before = await self._observe_state() if request.operation != "open_url" else None
+        # FENCE: navigation mutations may reach the Mac — mark before await.
+        mark_fence(request, SideEffectState.ATTEMPTED_NO_EFFECT_KNOWN)
+        result.side_effect = SideEffectState.ATTEMPTED_NO_EFFECT_KNOWN
         raw = await self._transport(request.operation, dict(request.args))
         result.raw = raw
         result.ok = bool(raw.get("ok"))
         result.executed = result.ok
-        result.error_code = None if result.ok else str(raw.get("error") or "navigate_failed")
+        error_code = str(raw.get("error") or "") if not result.ok else None
+        result.error_code = error_code
         if result.ok:
-            after = await self._observe_state() if request.operation != "open_url" else {"url": request.args.get("url")}
+            try:
+                after = await self._observe_state() if request.operation != "open_url" else {"url": request.args.get("url")}
+            except Exception:  # noqa: BLE001 - observation loss = ambiguity
+                after = None
             result.observation_before = before
             result.observation_after = after
             default_effect: dict[str, Any] | None
@@ -418,11 +572,27 @@ class ComputerExecutor:
             else:
                 default_effect = {"type": "url_open", "url": request.args.get("url")}
             effect = request.expected_effect or default_effect
-            result.verified = _verify_effect(effect, before, after)
+            if after is None:
+                result.verified = False
+                result.side_effect = SideEffectState.AMBIGUOUS_AFTER_ATTEMPT
+                result.error_code = "ambiguous_effect"
+            else:
+                result.verified = _verify_effect(effect, before, after)
+                result.side_effect = SideEffectState.VERIFIED if result.verified else SideEffectState.EFFECT_OBSERVED
+                if not result.verified:
+                    result.error_code = "verification_failed"
             result.evidence = {"before": before, "after": after, "effect": effect}
         else:
             result.verified = False
-            result.evidence = {"error": result.error_code}
+            result.evidence = {"error": error_code}
+            if error_code in PRE_DISPATCH_REFUSALS:
+                result.side_effect = SideEffectState.PRECONDITION_FAILED
+            elif error_code == "computer_not_connected":
+                result.side_effect = SideEffectState.DISPATCH_NOT_STARTED
+            else:
+                result.side_effect = SideEffectState.AMBIGUOUS_AFTER_ATTEMPT
+                result.error_code = result.error_code or "ambiguous_effect"
+        mark_fence(request, result.side_effect)
         result.retryable = result.error_code in {"timeout", "computer_bridge_failed"}
         result.latency_ms = round((time.monotonic() - started) * 1000, 2)
         return result
@@ -453,11 +623,20 @@ class ComputerExecutor:
         result.executed = result.ok
         result.error_code = None if result.ok else str(raw.get("error") or "fs_failed")
         result.verified = result.ok
-        if request.operation == "write" and result.ok:
-            # Verify by re-reading inside the jail.
-            check = sandbox.read_file(path)
-            result.verified = isinstance(check, dict) and "content" in check
-            result.evidence = {"recheck": result.verified}
+        if request.operation == "write":
+            # FENCE: a write may have reached the jail before any failure surfaced.
+            mark_fence(request, SideEffectState.ATTEMPTED_NO_EFFECT_KNOWN)
+            result.side_effect = SideEffectState.ATTEMPTED_NO_EFFECT_KNOWN
+            if result.ok:
+                # Verify by re-reading inside the jail.
+                check = sandbox.read_file(path)
+                result.verified = isinstance(check, dict) and "content" in check
+                result.side_effect = SideEffectState.VERIFIED if result.verified else SideEffectState.AMBIGUOUS_AFTER_ATTEMPT
+                result.evidence = {"recheck": result.verified}
+            else:
+                result.side_effect = SideEffectState.PRECONDITION_FAILED
+        else:
+            result.side_effect = SideEffectState.NOT_ATTEMPTED
         result.retryable = result.error_code in {"timeout"}
         result.latency_ms = round((time.monotonic() - started) * 1000, 2)
         return result
@@ -481,8 +660,11 @@ class ComputerExecutor:
             raw.setdefault("ok", raw.get("exit_code") == 0)
             result.raw = raw
             result.ok = bool(raw.get("ok"))
+            mark_fence(request, SideEffectState.EFFECT_OBSERVED)
+            result.side_effect = SideEffectState.EFFECT_OBSERVED
         except SandboxError as exc:
             result.raw = {"ok": False, "error": "sandbox_denied", "detail": str(exc)[:80]}
+            result.side_effect = SideEffectState.PRECONDITION_FAILED
         result.executed = result.ok
         result.error_code = None if result.ok else str(result.raw.get("error") or "exec_failed")
         result.verified = result.ok  # structured op output IS the evidence
@@ -494,6 +676,23 @@ class ComputerExecutor:
     async def execute(self, request: ComputerExecutionRequest) -> ComputerExecutionResult:
         if not request.execution_id:
             request.execution_id = _new_execution_id()
+        # FENCE (§4): a retried execution identity that may already have mutated
+        # the world is refused — no automatic second mutation, ever.
+        prior = check_fence(request)
+        if prior in MUTATION_RISK_STATES:
+            result = ComputerExecutionResult(
+                execution_id=request.execution_id,
+                ok=False,
+                executed=False,
+                verified=False,
+                side_effect=prior,
+                error_code="fence_blocked_mutation_retry",
+                family=request.primitive,
+                operation=request.operation,
+                evidence={"prior_state": prior.value},
+            )
+            _note("computer.executor_fence_block", request, result)
+            return result
         runners = {
             "observe": self._run_observe,
             "act": self._run_act,

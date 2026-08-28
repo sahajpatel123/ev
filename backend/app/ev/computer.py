@@ -232,10 +232,46 @@ async def handle_computer_tool(
                     verified=exec_result.verified,
                     request_id=request_id,
                 )
+                if name == "ui_action" and not exec_result.verified:
+                    # VERIFICATION FAILURE IS NOT EXECUTION FAILURE (§3):
+                    # surface it truthfully — never fall back and re-press.
+                    shaped["error"] = exec_result.error_code or "verification_failed"
+                    shaped["side_effect_state"] = exec_result.side_effect.value
+                    if not shaped.get("spoken"):
+                        shaped["spoken"] = "I did that, but I couldn't confirm the result."
                 _record(state, name, arguments, shaped, started, request_id=request_id)
                 return shaped
-            # Executor failed/unavailable → legacy path handles richer error
-            # shaping and helper fallbacks; the miss is in executor diagnostics.
+            # EXECUTION FENCE LAW (F2 §2): legacy fallback is legal ONLY when
+            # the executor failed BEFORE any mutation dispatch (read-only
+            # failures and pre-dispatch refusals). Once a mutating side effect
+            # may have been attempted, fallback would risk repeating a real
+            # action — fail truthfully instead.
+            if (
+                exec_result is not None
+                and not exec_result.fallback_allowed
+            ):
+                raw = exec_result.raw
+                shaped = {
+                    "ok": False,
+                    "executed": exec_result.executed,
+                    "verified": exec_result.verified,
+                    "error": exec_result.error_code or "executor_failed",
+                    "side_effect_state": exec_result.side_effect.value,
+                    "spoken": str(raw.get("spoken") or "The Mac action did not complete, and I won't repeat it blindly."),
+                }
+                shaped = stamp_computer_receipt(
+                    shaped,
+                    state,
+                    name=name,
+                    executed=exec_result.executed,
+                    verified=exec_result.verified,
+                    request_id=request_id,
+                )
+                _record(state, name, arguments, shaped, started, request_id=request_id)
+                return shaped
+            # exec_result is None (mapping unsupported) or a pre-dispatch
+            # failure → legacy path handles richer error shaping and helper
+            # fallbacks; the miss is in executor diagnostics.
         else:
             await shadow_validate_tool(name, arguments, live=live, actor=actor)
     if name == "app_action":
