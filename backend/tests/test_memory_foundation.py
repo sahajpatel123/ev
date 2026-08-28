@@ -712,7 +712,7 @@ async def test_f11_stale_cache_law(db_session: AsyncSession) -> None:
     before_epoch = memory_epoch()
 
     env1 = await route_turn(
-        db_session, query="What answer style do I prefer?",
+        db_session, query="What do I prefer for answer style?",
         turn_id=f"stale-{uuid4().hex}",
     )
     assert env1 is not None
@@ -731,7 +731,7 @@ async def test_f11_stale_cache_law(db_session: AsyncSession) -> None:
     assert memory_epoch() > before_epoch
 
     env2 = await route_turn(
-        db_session, query="What answer style do I prefer?",
+        db_session, query="What do I prefer for answer style?",
         turn_id=f"stale-{uuid4().hex}",
     )
     assert env2 is not None
