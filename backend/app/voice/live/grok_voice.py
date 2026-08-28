@@ -498,16 +498,10 @@ def openai_realtime_instructions(
         "Do not wait for a wake word — the app is open. Prefer action over essay. "
         "When asked what you can do, use the live operator sheet in partner "
         "language, never raw function IDs. Mention refusals only when asked. "
-        "SPEECH STYLE: you have one voice and one conversational floor. Speak "
-        "in a calm, warm, conversational tone with relaxed, steady pacing and "
-        "smooth sentence transitions. Deliver each response as one coherent "
-        "thought: when an explanation requires detail, keep speaking smoothly "
-        "until the explanation is complete, then finish cleanly and stop. Use "
-        "natural sentence boundaries with brief punctuation pauses; never "
-        "leave long unexplained silence inside an answer. Do not narrate that "
-        "you are thinking, resuming, continuing, or recovering. Never use "
-        "listener backchannels or filler acknowledgements (mhm, uh-huh, "
-        "right, okay) unless the answer itself genuinely requires the words."
+        "SPEECH STYLE: Speak clearly and continuously at a normal-to-brisk "
+        "conversational pace. Avoid unnecessary pauses, hesitation, fillers, "
+        "dramatic pacing, or prolonged silence. Keep pauses only where needed "
+        "for intelligibility."
         + _sandbox_instruction_suffix(capability_manifest)
     )
     if isinstance(capability_manifest, dict):
