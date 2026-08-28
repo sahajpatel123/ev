@@ -1433,6 +1433,38 @@ class VoiceRuntime:
                 listening=False,
             )
         is_shadow = gate == "SHADOW"
+        # FAIL-CLOSED MODEL VALIDATION (§4): ON must refuse to activate if model missing/dummy/fails or speaker profile missing; remain SHADOW.
+        if gate == "ON":
+            try:
+                from pathlib import Path
+                import hashlib
+
+                model_path = Path(str(settings.voice_wake_openwakeword_model_path or "")).expanduser()
+                if not model_path.is_file():
+                    raise ValueError(f"wake model missing at {model_path}")
+                if model_path.stat().st_size < 10240:
+                    raise ValueError(f"wake model too small {model_path.stat().st_size} (dummy/test)")
+                h = hashlib.sha256(model_path.read_bytes()).hexdigest()
+                if h == "e0b8a2d22a39b8e9b60bcb4059765dc95533c9b4557f5320b3f4c1706acb1dea":
+                    raise ValueError("wake model is known dummy/test")
+                # Dimensions / load check (input [batch,16,96] -> [batch,1])
+                import onnxruntime as ort
+
+                sess = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+                inp = sess.get_inputs()[0]
+                out = sess.get_outputs()[0]
+                if list(inp.shape) != ["batch", 16, 96]:
+                    raise ValueError(f"wake model input shape {inp.shape} != ['batch',16,96]")
+                if list(out.shape) != ["batch", 1]:
+                    raise ValueError(f"wake model output shape {out.shape} != ['batch',1]")
+                # Owner speaker profile must exist for ON
+                enrollment = await self._current_enrollment()
+                if enrollment is None or getattr(enrollment, "status", None) != "active":
+                    raise ValueError("owner speaker profile missing/inactive")
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning("ON fails closed to SHADOW (model/speaker validation): %s", exc)
+                is_shadow = True
+                gate = "SHADOW"
 
         if not consent:
             return EarsIngestOutcome(
