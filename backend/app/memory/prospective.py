@@ -344,7 +344,11 @@ async def _suggested_items(session: AsyncSession, now, horizon_end) -> list[Pros
                 Memory.is_current.is_(True),
                 Memory.redacted.is_(False),
                 Memory.privacy_level.notin_(("never_send_to_model", "sensitive")),
-                Memory.memory_type.in_(("decision", "summary", "goal", "observation")),
+                # F5 (§12): momentum draws from DURABLE classes only — the
+                # noisy observation class was the old pipeline's permissive
+                # catch-all; candidate scoring stops future noise at write.
+                Memory.memory_type.in_(("decision", "summary", "goal")),
+                Memory.importance >= 0.55,
                 Memory.event_time >= since.replace(tzinfo=None) if since.tzinfo is None else Memory.event_time >= since,
             )
             .order_by(Memory.event_time.desc())
