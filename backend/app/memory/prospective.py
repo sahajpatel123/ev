@@ -64,6 +64,13 @@ PROSPECTIVE_PATTERNS = (
     "focus tomorrow",
     "plan for today",
     "plan for tomorrow",
+    "been working on",
+    "working on recently",
+    "working on recently",
+    "seems unfinished",
+    "still unfinished",
+    "what is unfinished",
+    "continue working",
 )
 
 
@@ -360,12 +367,27 @@ async def _suggested_items(session: AsyncSession, now, horizon_end) -> list[Pros
     ).scalars().all()
     from app.memory.candidates import Eligibility, legacy_eligibility
 
+    stopwordish = {
+        "get", "make", "this", "that", "little", "bit", "more", "some", "have",
+        "want", "try", "you", "the", "and", "for", "with", "into", "just",
+    }
+
+    def _vague_fragment(text: str) -> bool:
+        strip_chars = ".,;:!?'\"()"
+        content = [
+            tok
+            for tok in text.replace(":", " ").replace("/", " ").split()
+            if tok.lower().strip(strip_chars) not in stopwordish and len(tok) >= 2
+        ]
+        meaningful = [tok for tok in content if len(tok.strip(strip_chars)) >= 4]
+        return len(meaningful) < 2
+
     for row in memories:
         if legacy_eligibility(row) not in {Eligibility.KEEP_HIGH_VALUE, Eligibility.KEEP_NORMAL}:
             continue
         text = (row.text or "")[:140]
-        if not text:
-            continue
+        if not text or _vague_fragment(text):
+            continue  # fragment chatter never becomes prospective advice
         items.append(
             ProspectiveItem(
                 title=f"Recent momentum: {text}",
