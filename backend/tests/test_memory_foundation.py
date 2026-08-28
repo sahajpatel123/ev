@@ -706,7 +706,9 @@ async def test_f11_stale_cache_law(db_session: AsyncSession) -> None:
 
     from app.memory.retrieval import bump_memory_epoch, memory_epoch
 
-    db_session.add(_seed_memory(text="The owner prefers short technical answers."))
+    db_session.add(_seed_memory(
+        text="The owner prefers short technical answers.", memory_type="preference",
+    ))
     await db_session.commit()
     _set_gate("on")
     before_epoch = memory_epoch()
