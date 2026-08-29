@@ -37,7 +37,7 @@ from app.ev.computer_strategy import (
     evaluate_provider_computer_schema,
     looks_like_computer_task,
 )
-from app.ev.tool_select import LIVE_VOICE_TOOLS
+from app.ev.tool_select import LIVE_VOICE_TOOLS, SHADOW_VOICE_TOOLS
 from app.voice.live.barge_in import (
     delivered_assistant_text,
     generated_duration_ms,
@@ -419,7 +419,8 @@ def grok_voice_instructions(
         "a function name or argument. If EV asks for confirmation, say the hold "
         "line and wait; never claim completion before verified evidence. "
         "If they only said your name, say Yes? and wait. Do not wait for a "
-        "wake word — the app is already open. Prefer action over essay."
+        "wake word — the app is already open. Prefer short sentences. Prefer "
+        "action over essay."
         " When asked what you can do, answer in partner language from the live "
         "operator sheet, not with function IDs. Mention the refused list only "
         "when the owner asks what you will not do."
@@ -441,6 +442,13 @@ def openai_realtime_instructions(
     who = spoken_identity(name or settings.persona_name)
     instructions = (
         f"You are {who}. Pronounce your name as the two letter names E V, never E-y or Evie. Never present as ChatGPT, OpenAI, Grok, xAI, or DeepSeek.\n"
+        "VOICE AND CONSISTENCY LAW: You are ONE person with ONE voice. Keep the "
+        "same tone, persona, and speaking style for the entire conversation. "
+        "Answer each question exactly ONCE, in a single take — never give two "
+        "different answers to the same utterance, never re-answer or revise "
+        "something you already said. Short owner backchannels ('mm', 'yeah', "
+        "'okay') are not questions: stay quiet unless they clearly address you "
+        "or ask something. "
         "This is a spoken conversation. Hear the person and answer out loud "
         "calmly and clearly. Use an available EV function for every owner request to "
         "perform an action or retrieve "
@@ -448,11 +456,14 @@ def openai_realtime_instructions(
         "function before answering. This includes setting or starting a timer: "
         "call the matching listed timer function with the requested minutes and "
         "text when applicable. "
-        "For any turn that may involve projects, goals, commitments, status, "
-        "what-changed, or canonical life state, call evie_turn with the canonical "
-        "owner transcript (owner speech only, final). Luna will interpret, Evie "
-        "Core owns truth. Only claim Done/Created/Saved when evie_turn returns "
-        "ok true; never contradict its canonical_data. "
+        "For a turn ONLY when the owner explicitly asks about their projects, "
+        "goals, commitments, status, or what changed recently, call evie_turn "
+        "with the canonical owner transcript (owner speech only, final); Luna "
+        "interprets and Evie Core owns truth — only claim Done/Created/Saved "
+        "when evie_turn returns ok true, and never contradict its "
+        "canonical_data. "
+        "Pure conversation — greetings, opinions, chat, general questions — "
+        "needs NO function call: answer immediately out loud. "
         "This includes opening, closing, inspecting, or operating apps on this "
         "Mac: call the matching listed computer functions before speaking, and "
         "keep calling them until the owner's goal is verified or blocked. "
@@ -546,15 +557,44 @@ def capability_instructions(manifest: dict | None) -> str:
     )
 
 
-def grok_voice_tools(specs: list[dict] | None = None) -> list[dict]:
+def _live_surface_mode(explicit: str | None = None) -> str:
+    """EV VOICE CONTROL PLAN: supervised | shadow | autonomous.
+
+    Default is supervised — the historical live surface, byte-identical.
+    shadow replaces the conflated memory searches with injected history and
+    the UI verbs; autonomous advertises no tools at all (pure speech chat).
+    """
+
+    value = str(
+        explicit
+        or getattr(settings, "voice_live_mode", "supervised")  # type: ignore[attr-defined]
+        or "supervised"
+    ).strip().lower()
+    if value not in {"supervised", "shadow", "autonomous"}:
+        return "supervised"
+    return value
+
+
+def grok_voice_tools(specs: list[dict] | None = None, *, mode: str | None = None) -> list[dict]:
     """Build flat Realtime function payloads from an approved spec projection.
 
     ``None`` means that the capability projection was not supplied.  It is
     deliberately treated as empty: the realtime bridge must never widen the
     live surface by reading the static registry.
+
+    Surface modes (EV VOICE CONTROL PLAN §5–6):
+    - supervised (default): the full LIVE_VOICE_TOOLS surface;
+    - shadow: only SHADOW_VOICE_TOOLS survive (UI verbs + recall_history +
+      generic capabilities; raw per-app computer names are removed);
+    - autonomous: no tools at all.
     """
 
+    mode = _live_surface_mode(mode)
+    if mode == "autonomous":
+        return []
     wanted = set(GROK_VOICE_TOOL_NAMES)
+    if mode == "shadow":
+        wanted = set(SHADOW_VOICE_TOOLS)
     blocked = {"execute_command", "drone", "print_start", "camera_replay", "ticket_buy"}
     payload: list[dict] = []
     source_specs = specs or []
@@ -694,18 +734,20 @@ def grok_session_update(
     # fail-closed list), but direct callers must get the same behavior.
     if selected_tools is None:
         selected_tools = []
-    realtime_tools = grok_voice_tools(selected_tools)
+    mode = _live_surface_mode()
+    realtime_tools = grok_voice_tools(selected_tools, mode=mode)
     if kind == "openai":
         voice = (settings.openai_realtime_voice or "marin").strip() or "marin"
-        gate = bool(getattr(settings, "turn_gate_enabled", False))
+        # OWNER LAW (S2S latency): server VAD creates the response the moment
+        # speech ends. The TurnGate still records canonical OwnerTurns in
+        # parallel but no longer gates the spoken reply behind Luna/Core.
         turn_detection = {
             "type": "server_vad",
             "threshold": 0.5,
             "prefix_padding_ms": 200,
             "silence_duration_ms": 400,
             "interrupt_response": False,
-            # G1.6 TurnGate: VAD is sensor only, backend owns response.
-            "create_response": not (turn_authority_v2 or gate),
+            "create_response": True,
         }
         return {
             "type": "session.update",
@@ -717,6 +759,9 @@ def grok_session_update(
                 )
                 + capability_instructions(capability_manifest),
                 "output_modalities": ["audio"],
+                "reasoning": {
+                    "effort": (settings.openai_realtime_reasoning_effort or "low").strip().lower()
+                },
                 "audio": {
                     "input": {
                         "format": {"type": "audio/pcm", "rate": 24000},
@@ -741,8 +786,8 @@ def grok_session_update(
     xai_tools = realtime_tools
     # xAI's built-in web_search is provider-side execution, so only expose it
     # when the current EV search capability is explicitly available. It is not
-    # a substitute for an empty EV function projection.
-    if _manifest_allows_search(capability_manifest):
+    # a substitute for an empty EV function projection. Never in autonomous.
+    if mode != "autonomous" and _manifest_allows_search(capability_manifest):
         xai_tools = [{"type": "web_search"}, *realtime_tools]
     return {
         "type": "session.update",
@@ -945,6 +990,11 @@ class GrokVoiceBridge:
         self._tool_specs = list(selected_tool_specs or [])
         self._load_tools_from_manifest = selected_tool_specs is None
         self._tool_specs_loader = tool_specs_loader
+        # EV VOICE CONTROL PLAN §5: shadow-mode state. Default supervised →
+        # these stay inert and the historical live path is byte-identical.
+        self._shadow_mode = _live_surface_mode() == "shadow"
+        self._shadow_base_instructions = ""
+        self._last_shadow_block = ""
         self._handled_tool_calls: set[str] = set()
         self._tool_response_ids: set[str] = set()
         self._pending_confirmation_calls: dict[str, str] = {}
@@ -1202,10 +1252,80 @@ class GrokVoiceBridge:
             ),
         }
 
-    def _response_create_for_user_text(self, text: str) -> dict[str, Any]:
+    async def _build_shadow_block(self, text: str) -> str | None:
+        """EV VOICE CONTROL PLAN §5: read-only history block for one turn.
+
+        Never raises; a shadow failure degrades to normal chat (the model
+        simply does not receive the optional memory block).
+        """
+
+        if not self._shadow_mode or not (text or "").strip():
+            return None
+        try:
+            from app.db import SessionLocal
+            from app.memory.history import build_shadow_memory
+
+            async with SessionLocal() as db:
+                block = await build_shadow_memory(
+                    db,
+                    text,
+                    k=int(getattr(settings, "voice_shadow_k", 5) or 5),
+                    budget_tokens=int(
+                        getattr(settings, "voice_shadow_budget_tokens", 900) or 900
+                    ),
+                    min_score=float(
+                        getattr(settings, "voice_shadow_min_score", 0.0) or 0.0
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001 — shadow is optional by design
+            logger.warning(
+                "realtime_trace event=shadow.recall.failed error_type=%s",
+                type(exc).__name__,
+            )
+            return None
+        return block or None
+
+    async def _maybe_refresh_shadow(self, text: str) -> None:
+        """Refresh session instructions with a fresh SHADOW MEMORY block.
+
+        Fires after a completed owner transcript so the provider's next
+        auto-created response sees the injected history. Deduplicated on the
+        block text; runs only in shadow mode.
+        """
+
+        if not self._shadow_mode or self._ws is None or not self._shadow_base_instructions:
+            return
+        block = await self._build_shadow_block(text)
+        if not block or block == self._last_shadow_block:
+            return
+        self._last_shadow_block = block
+        payload: dict[str, Any] = {
+            "type": "session.update",
+            "session": {"instructions": f"{self._shadow_base_instructions}\n\n{block}"},
+        }
+        if self._provider == "openai":
+            payload["session"]["type"] = "realtime"  # GA Realtime requirement
+        sent = await self._send(payload)
+        logger.warning(
+            "realtime_trace event=shadow.session_update provider=%s sent=%s chars=%s",
+            self._provider,
+            sent,
+            len(block),
+        )
+
+    async def _response_create_for_user_text(self, text: str) -> dict[str, Any]:
+        """EV VOICE CONTROL PLAN §5: shadow-aware response.create."""
+
         if looks_like_computer_task(text):
             return self._response_create_after_tool(must_continue=True, terminal_speech=False)
-        return {"type": "response.create"}
+        create: dict[str, Any] = {"type": "response.create"}
+        if self._shadow_mode:
+            block = await self._build_shadow_block(text)
+            if block:
+                create["response"] = {
+                    "instructions": f"{self._shadow_base_instructions}\n\n{block}"
+                }
+        return create
 
     def _response_create_after_tool(
         self, *, must_continue: bool, terminal_speech: bool
@@ -1312,6 +1432,8 @@ class GrokVoiceBridge:
         session_tools = session_payload.get("tools")
         session_tools = session_tools if isinstance(session_tools, list) else []
         self._tool_choice = str(session_payload.get("tool_choice") or "none")
+        if self._shadow_mode:
+            self._shadow_base_instructions = str(session_payload.get("instructions") or "")
         self._session_update_metadata = {
             "event": "session.update",
             "provider": self._provider,
@@ -1544,7 +1666,7 @@ class GrokVoiceBridge:
                 }
             )
             return
-        await self._send(self._response_create_for_user_text(raw))
+        await self._send(await self._response_create_for_user_text(raw))
 
     async def cancel(self) -> None:
         self._note_cancelled_response()
@@ -1554,6 +1676,49 @@ class GrokVoiceBridge:
         self._out_resampler.reset()
         self._discard_queued_audio_events()
         await self._cancel_active_response()
+
+    async def speak_ack(self, text: str) -> bool:
+        """Speak a short system acknowledgment in the realtime voice.
+
+        ONE VOICE LAW: pause/resume/cancel/capability confirmations and
+        proactive callouts must use the same spoken voice as answers. This
+        injects the ack as a user item plus a response whose instructions
+        force a verbatim, tool-free one-liner — never the pipeline
+        synthesizer.
+        """
+        raw = (text or "").strip()
+        if not raw or self._closed or self._ws is None:
+            return False
+        if not await self._send(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "(system confirmation — speak this to the owner now) "
+                                f"{raw}"
+                            ),
+                        }
+                    ],
+                },
+            }
+        ):
+            return False
+        response: dict[str, Any] = {
+            "instructions": (
+                "Your ONLY job for this reply is to speak the owner-facing "
+                "confirmation from the latest user item, verbatim, in your "
+                "normal voice. One short sentence. No tools, no additions, "
+                "no questions, no persona changes."
+            )
+        }
+        if self._response_tool_choice_supported:
+            response["tool_choice"] = "none"
+        return await self._send({"type": "response.create", "response": response})
 
     async def interrupt_for_user(
         self,
@@ -2449,6 +2614,14 @@ class GrokVoiceBridge:
                     transcript_source=source,
                 )
             )
+            if self._shadow_mode:
+                # EV VOICE CONTROL PLAN §5: inject history before the next
+                # provider response. Best-effort and non-blocking.
+                with contextlib.suppress(Exception):
+                    asyncio.create_task(
+                        self._maybe_refresh_shadow(spoken),
+                        name="ev-shadow-recall",
+                    )
             return
         await self._on_event(
             PartialTranscriptEvent(

@@ -59,11 +59,14 @@ def test_voice_paths_never_call_app_quit() -> None:
     # Talk must not start a second audio engine on top of live.
     assert "live.isRunning" in model
     assert "setVoiceProcessingEnabled" not in voice_client
-    start = model.split("func start()", 1)[1].split("func ", 1)[0]
-    assert "live.start()" in start
-    assert start.find("live.start()") < start.find("await refresh()"), (
-        "live.start() must run before await refresh() so Talk cannot "
-        "open MicCapture while live is still connecting"
+    # OWNER LAW (no PTT): opening the app starts the audio — the safe startup
+    # sequence itself must bring the live session up, and start() must invoke it.
+    startup = model.split("private func runSafeStartup()", 1)[1].split("private ", 1)[0]
+    assert "live.start()" in startup
+    start_body = model.split("func start()", 1)[1].split("func ", 1)[0]
+    assert "runSafeStartup()" in start_body
+    assert "startRecording" not in model and "stopAndSend" not in model, (
+        "push-to-talk clip capture is removed from the product"
     )
     run_loop = live.split("func runLoop()", 1)[1].split("func ", 1)[0]
     assert "defer" in run_loop

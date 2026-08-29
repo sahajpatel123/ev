@@ -444,6 +444,9 @@ class Settings(BaseSettings):
     openai_realtime_model: str = "gpt-realtime-2.1-mini"
     # OpenAI Realtime voice for spoken output (marin is the natural default).
     openai_realtime_voice: str = "marin"
+    # S2S reasoning effort for spoken replies: low = fastest natural speech;
+    # raise to medium/high when depth matters more than response time.
+    openai_realtime_reasoning_effort: str = "low"
     openai_realtime_url: str = "wss://api.openai.com/v1/realtime"
     # G1.3/G1.5 Turn Control Plane: Luna (GPT-5.6 Luna) via OpenAI Responses
     # structured outputs.  Primary is Luna, fallback is explicit.
@@ -688,6 +691,16 @@ class Settings(BaseSettings):
     life_helper_timeout_seconds: float = 20.0
     life_helper_max_output_bytes: int = 65_536
     # --- END AGENT 12 CONDUIT (WAVE LIFE) ---
+
+    # --- EV VOICE CONTROL PLAN (foundation, additive) ------------------------
+    # See docs/VOICE_CONTROL_PLAN.md. The default stays byte-identical to the
+    # previous live surface; shadow/autonomous are opt-in experiment surfaces.
+    voice_live_mode: str = "supervised"  # supervised | shadow | autonomous
+    voice_shadow_k: int = 5  # memory chunks injected per owner turn (shadow mode)
+    voice_shadow_budget_tokens: int = 900  # cap for the injected SHADOW MEMORY block
+    voice_shadow_min_score: float = 0.0  # retrieval floor for shadow chunks
+    ui_verb_tools_enabled: bool = True  # read/see/click/type/key/... registry toggle
+    # --- END EV VOICE CONTROL PLAN --------------------------------------------
 
 
 @lru_cache

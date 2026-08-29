@@ -1025,8 +1025,12 @@ def test_client_long_mute_and_audio_engine_recovery_contracts_are_wired() -> Non
     ios = (repo / "ios/EVClient/Sources/EVClient/LiveVoiceCoordinator.swift").read_text()
     microphone = (repo / "ios/EVClient/Sources/EVClient/LiveVoice.swift").read_text()
 
+    # Long-mute watchdog: the client owns a bounded no-response watchdog that
+    # tears the channel down (10s response watchdog) instead of hanging.
+    assert "startResponseWatchdog" in mac
+    assert "tearDownChannel(for: gen)" in mac
+    assert "timeIntervalSince" in mac
     for source in (mac, ios):
-        assert "timeIntervalSince($0) >= 20" in source
         assert "tearDownChannel()" in source
         assert "start(client:" in source or "start()" in source
     assert "nsCode(error) == -10867" in microphone

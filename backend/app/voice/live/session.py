@@ -319,22 +319,20 @@ class LiveSession:
                     note_turn_result = getattr(self.grok_voice, "note_turn_result", None)
                     if callable(note_turn_result):
                         note_turn_result(ok=bool(result.ok))
-                    # Create exactly one response via gate
-                    payload = create_realtime_response_payload(turn, result)
-                    # Send via GrokVoiceBridge if available
-                    if self.grok_voice is not None and hasattr(self.grok_voice, "_send"):
-                        with contextlib.suppress(Exception):
-                            await self.grok_voice._send(payload)
+                    # OWNER LATENCY LAW: server VAD auto-creates the spoken
+                    # response the moment speech ends. The gate's canonical
+                    # recording above still runs in parallel — but the gate
+                    # must NOT send its own response.create, or the model
+                    # would answer the owner twice (two takes, two angles).
                     # Observability trace (no custom provider event — GA-safe)
                     import logging as _log
 
                     _log.getLogger("ev.turn_gate").warning(
-                        "turn_gate response.create turn_id=%s route=%s op=%s ok=%s keys=%s",
+                        "turn_gate recorded turn_id=%s route=%s op=%s ok=%s (response owned by server VAD)",
                         turn.turn_id,
                         result.route,
                         result.operation,
                         result.ok,
-                        sorted((payload.get("response") or {}).keys()),
                     )
             except Exception as e:
                 import logging
@@ -1701,6 +1699,29 @@ class LiveSession:
         if not text or text == self._last_honesty:
             return
         self._last_honesty = text
+        # ONE VOICE LAW: when the realtime S2S session is attached, control
+        # acknowledgments and callouts must come from the SAME spoken voice
+        # as normal answers — never from the pipeline synthesizer.
+        grok = self.grok_voice
+        if grok is not None and hasattr(grok, "speak_ack"):
+            try:
+                if await grok.speak_ack(text):
+                    await self.emit(
+                        ReplyEvent(
+                            at_ms=self.now(),
+                            text=text,
+                            conversation_id=self.conversation_id,
+                            device_id=self.device_id,
+                            tts_device_id=self.tts_device_id,
+                        )
+                    )
+                    if code:
+                        await self.emit(
+                            ErrorEvent(at_ms=self.now(), code=code, message=text, fatal=fatal)
+                        )
+                    return
+            except Exception:  # noqa: BLE001 - ack must not kill the session
+                logger.exception("realtime speak_ack failed; falling back to synthesizer")
         await self._speak_listen_ack(text)
         await self.emit(
             ReplyEvent(
