@@ -265,6 +265,39 @@ def test_resample_pcm16_16k_to_24k_grows() -> None:
     assert abs(len(back) - 3200) < 8
 
 
+def test_stream_resampler_chunked_matches_one_shot() -> None:
+    """AUDIO FIDELITY: chunked streaming SRC must not lose anchors at chunk
+    boundaries. The old implementation dropped one input sample per feed
+    (~10 waveform discontinuities/second = audible scratching)."""
+    import random
+
+    from app.voice.live.grok_voice import _StreamResampler
+
+    rng = random.Random(7)
+    src_rate, dst_rate = 24000, 16000
+    total_in = 24000 * 2  # two seconds of audio
+    # Strictly increasing ramp: any anchor skip shows as a length deficit.
+    pcm = b"".join(
+        int(i * 32767 / total_in).to_bytes(2, "little", signed=False)
+        for i in range(total_in)
+    )
+    one_shot = len(resample_pcm16(pcm, src_rate=src_rate, dst_rate=dst_rate))
+
+    stream = _StreamResampler(src_rate, dst_rate)
+    out = bytearray()
+    offset = 0
+    while offset < len(pcm):
+        take = min(len(pcm) - offset, rng.randrange(480, 2400) * 2)
+        out.extend(stream.feed(pcm[offset : offset + take]))
+        offset += take
+    out.extend(stream.feed(b"", flush=True))
+
+    expected = one_shot / 2  # bytes -> samples vs one-shot samples
+    assert abs(len(out) / 2 - expected) <= 4, (
+        f"chunked SRC lost samples: {len(out) / 2:.0f} vs one-shot {expected:.0f}"
+    )
+
+
 def test_grok_voice_tools_are_flat_function_payloads() -> None:
     assert grok_voice_tools() == []
     tools = grok_voice_tools(
@@ -1068,7 +1101,7 @@ async def test_openai_item_done_nested_transcript_emits_final() -> None:
     bridge.close()
 
 
-async def test_openai_realtime_bridge_resamples_and_uses_ga_session() -> None:
+async def test_openai_realtime_bridge_emits_native_rate_and_uses_ga_session() -> None:
     events: list = []
     fake = _FakeRealtime()
 
@@ -1129,13 +1162,15 @@ async def test_openai_realtime_bridge_resamples_and_uses_ga_session() -> None:
     await fake.incoming.put(json.dumps({"type": "response.done"}))
     await asyncio.sleep(0.05)
     chunk = next(event for event in events if isinstance(event, TtsChunkEvent))
-    assert chunk.sample_rate == 16000
+    # AUDIO FIDELITY LAW: native provider rate, honestly declared — no
+    # lossy server-side downsample between the model and the client.
+    assert chunk.sample_rate == 24000
     assert chunk.provider == "openai-realtime"
     assert chunk.content_type == "audio/pcm"
     chunks = [event for event in events if isinstance(event, TtsChunkEvent)]
     total = b"".join(base64.b64decode(event.audio_b64) for event in chunks)
     assert total[:4] != b"RIFF"
-    assert abs(len(total) - 3200) < 64
+    assert abs(len(total) - 4800) < 64
     bridge.close()
 
 

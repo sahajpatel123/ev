@@ -819,7 +819,15 @@ def resample_pcm16(pcm: bytes, *, src_rate: int, dst_rate: int) -> bytes:
 
 
 class _StreamResampler:
-    """Continuous linear SRC so chunk boundaries do not click."""
+    """Continuous linear SRC so chunk boundaries do not click.
+
+    Invariant: `_pos` is a float index into `_buf`; a feed emits while a
+    right anchor exists, then consumes exactly `int(pos)` whole samples and
+    keeps the fractional remainder — so the interpolation position is
+    CONTINUOUS across feeds (the previous version clamped consumption to
+    `len-1`, which dropped one anchor per chunk boundary: ~10 waveform
+    discontinuities per second).
+    """
 
     def __init__(self, src_rate: int, dst_rate: int) -> None:
         self.src_rate = int(src_rate)
@@ -847,15 +855,17 @@ class _StreamResampler:
         out = array.array("h")
         pos = self._pos
         last = len(self._buf) - 1
-        limit = last if flush else last
-        while pos < limit:
+        # Without flush, hold one sample back as the right anchor so the
+        # next feed can interpolate across the boundary seamlessly.
+        boundary = last if flush else last - 1
+        while pos < boundary:
             left = int(pos)
             right = min(left + 1, last)
             frac = pos - left
             sample = self._buf[left] + (self._buf[right] - self._buf[left]) * frac
             out.append(int(sample))
             pos += step
-        consumed = min(int(pos), len(self._buf) - (0 if flush else 1))
+        consumed = min(int(pos), len(self._buf))
         if consumed > 0:
             del self._buf[:consumed]
             pos -= consumed
@@ -919,7 +929,6 @@ class GrokVoiceBridge:
             self._model = settings.xai_voice_model
         self._upstream_rate = 24000 if self._provider == "openai" else 16000
         self._in_resampler = _StreamResampler(16000, self._upstream_rate)
-        self._out_resampler = _StreamResampler(self._upstream_rate, 16000)
         self._ws: Any = None
         self._send_lock = asyncio.Lock()
         self._pump: asyncio.Task | None = None
@@ -1673,7 +1682,6 @@ class GrokVoiceBridge:
         self._out_pcm.clear()
         self._first_audio = True
         self._audio_accepting = False
-        self._out_resampler.reset()
         self._discard_queued_audio_events()
         await self._cancel_active_response()
 
@@ -1743,7 +1751,6 @@ class GrokVoiceBridge:
         self._audio_accepting = False
         self._out_pcm.clear()
         self._first_audio = True
-        self._out_resampler.reset()
         self._discard_queued_audio_events()
         self._playback_active = False
         self._playback_since = 0.0
@@ -2323,7 +2330,6 @@ class GrokVoiceBridge:
         self._user_input_open = False
         self._interrupt_in_flight = False
         self._in_resampler.reset()
-        self._out_resampler.reset()
         if self._turns_awaiting_transcript():
             await self._fallback_pending_turns("provider_disconnect")
         if self._closed or self._failed_permanent or self._durability_draining:
@@ -3073,7 +3079,6 @@ class GrokVoiceBridge:
                 self._response_id = None
                 self._turn_audio_bytes = 0
                 self._turn_audio_chunks = 0
-                self._out_resampler.reset()
             return
         if kind in _FUNCTION_ERROR_TYPES:
             self._function_call_error = True
@@ -3183,12 +3188,13 @@ class GrokVoiceBridge:
             return
         if not pcm and not flush:
             return
-        if self._upstream_rate != 16000:
-            pcm = self._out_resampler.feed(pcm, flush=flush)
-            if not pcm:
-                return
-        elif not pcm:
-            return
+        # AUDIO FIDELITY LAW: emit the provider's NATIVE rate and declare it
+        # honestly on the event. The hand-rolled 24k→16k linear resampler
+        # skipped an anchor at every chunk boundary (~10 clicks/second =
+        # "scratching") and aliased 8-12kHz speech energy without an
+        # anti-alias filter (garbled consonants). Clients convert to their
+        # output rate with AVAudioConverter — far better quality.
+        rate = int(self._upstream_rate) or 16000
         audio_b64 = base64.b64encode(pcm).decode("ascii")
         text = self._reply_text.strip() if self._chunk_index == 0 else ""
         event = TtsChunkEvent(
@@ -3197,8 +3203,8 @@ class GrokVoiceBridge:
             text=text,
             audio_b64=audio_b64,
             content_type="audio/pcm",
-            duration_ms=int((len(pcm) / 2) / 16.0),
-            sample_rate=16000,
+            duration_ms=int((len(pcm) / 2) * 1000.0 / rate),
+            sample_rate=rate,
             provider="openai-realtime" if self._provider == "openai" else "grok-voice",
             provider_response_id=self._response_id,
         )
