@@ -104,10 +104,6 @@ struct MenuBarView: View {
                 Text("live")
                     .font(.caption2)
                     .foregroundStyle(.green)
-            } else if model.isRecording {
-                Text("REC")
-                    .font(.caption2)
-                    .foregroundStyle(.red)
             }
             Text("cam · \(model.cameraState.presentationLabel)")
                 .font(.caption2)
@@ -181,18 +177,10 @@ struct MenuBarView: View {
 
             HStack(spacing: 8) {
                 Spacer()
-                Button(liveButtonTitle) {
-                    model.toggleTalk()
+                Button(audioButtonTitle) {
+                    model.toggleAudioControl()
                 }
-                .font(.caption)
-                // DETERMINISTIC STOP (spoken-interruption fallback):
-                // always-available manual floor-take while Evie speaks.
-                if model.status == .speaking {
-                    Button("Stop Speaking") {
-                        model.live.stopAssistantSpeech()
-                    }
-                    .font(.caption.weight(.semibold))
-                }
+                .font(model.status == .speaking ? .caption.weight(.semibold) : .caption)
                 Button(cameraButtonTitle) {
                     model.toggleCamera()
                 }
@@ -231,18 +219,22 @@ struct MenuBarView: View {
         }
     }
 
-    private var liveButtonTitle: String {
+    /// ONE audio control: Mute/Unmute while listening, Stop Speaking while
+    /// Evie is responding. No push-to-talk — the live session starts at app
+    /// open and this button only gates it.
+    private var audioButtonTitle: String {
+        if model.status == .speaking { return "Stop Speaking" }
         if model.isLiveActive || model.isLiveMuted {
             return model.isLiveMuted ? "Unmute" : "Mute"
         }
-        return model.isRecording ? "Stop & send" : "Push to talk"
+        return "Start listening"
     }
 
     private var cameraButtonTitle: String {
         if model.cameraRequestInFlight { return "Camera…" }
-        if model.cameraState.isTruthfullyActive { return "Camera off" }
+        if model.cameraState.isTruthfullyActive { return "Stop Camera" }
         if model.cameraState.state == .denied { return "Camera denied" }
-        return "Camera on"
+        return "Record Camera"
     }
 
     private var developerStatusSurface: some View {

@@ -53,7 +53,6 @@ final class AppModel: ObservableObject {
     @Published var queueCount = 0
     @Published var lastError: String?
     @Published var needsComputerAccessibility = false
-    @Published var isRecording = false
     @Published var isLiveMuted = false
     @Published var isLiveActive = false
     @Published var isLivePaused = false
@@ -97,16 +96,13 @@ final class AppModel: ObservableObject {
     private(set) var client: EVAPIClient
     let queue: OfflineCaptureQueue
     let hotkey = GlobalHotkey()
-    let mic = MicCapture()
     let player = TTSPlayer()
     let live = LiveConversation()
 
     private var heartbeatTask: Task<Void, Never>?
     private var conversationTask: Task<Void, Never>?
-    private var recordLimitTask: Task<Void, Never>?
     private var pendingAssistantID: String?
     private var started = false
-    private var sendingVoice = false
     private var micAuthObserver: NSObjectProtocol?
     private var authCoordinator: Task<Void, Never>?
 
@@ -193,7 +189,7 @@ final class AppModel: ObservableObject {
             keyCode: 14,
             flags: [.command, .shift],
             handler: { [weak self] in
-                Task { @MainActor in self?.toggleTalk() }
+                Task { @MainActor in self?.toggleAudioControl() }
             }
         )
         // WAKE W1: ev.ears is the always-on mic owner (launchd KeepAlive+RunAtLoad true).
@@ -258,26 +254,16 @@ final class AppModel: ObservableObject {
         await bootstrapIfNeeded()
         // Camera LAW: remains OFF during normal boot
         startupCameraStarts = 0
-        // WAKE IDLE LAW: when always-available wake is SHADOW/ON, idle is local EARS only.
-        // Do NOT open Realtime/mic at startup; ev.ears owns mic idle, Realtime only after accepted wake.
-        let wakeMode = config.alwaysAvailableWake
-        NSLog("EV wakeMode=\(wakeMode) at startup, config.alwaysAvailableWake=\(config.alwaysAvailableWake)")
-        if wakeMode == "SHADOW" || wakeMode == "ON" {
-            startupState = .online
-            status = .listening // EARS LISTENING local-only, not LIVE
-            // Ensure background ears is alive, but do not start live.
-            EarsProcess.ensureRunning()
-            startupMicStarts = 0
-            NSLog("EV wake idle local-only mode=\(wakeMode) — live not started at boot")
-        } else {
-            // Legacy OFF: always-live at app open
-            startupState = .startingVoice
-            startupMicStarts = 1
-            live.start()
-            startupState = .online
-            status = .listening
-            NSLog("EV wake legacy OFF — live started at boot")
-        }
+        // OWNER LAW: opening EV.app IS starting the audio — the live Realtime
+        // session comes up immediately (no push-to-talk, no wake gate). The
+        // always-available wake system serves the app-closed path only; the
+        // mic handoff marker keeps ears standing down while the app is open.
+        startupState = .startingVoice
+        startupMicStarts = 1
+        live.start()
+        startupState = .online
+        status = .listening
+        NSLog("EV audio started at app open (live session up; wake serves app-closed)")
         // Defer non-critical bridges until after voice is stable
         let statuses = await PermissionCenter.statuses()
         await connectGrantedBridges(from: statuses)
@@ -947,7 +933,7 @@ final class AppModel: ObservableObject {
 
     func refreshConversation() async {
         guard !isLiveActive, !isLiveMuted else { return }
-        guard pendingAssistantID == nil, !isRecording, !sendingVoice,
+        guard pendingAssistantID == nil,
               status != .thinking, status != .speaking else { return }
         do {
             let detail = try await client.conversation(limit: 40)
@@ -1063,30 +1049,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Voice (live duplex while the app is open; PTT is fallback)
+    // MARK: - Voice (live duplex; audio starts at app open — no push-to-talk)
 
-    func toggleTalk() {
-        // Live owns the mic while the app is open. Never start the clip
-        // recorder on top of it — two AVAudioEngines on one input abort
-        // the process, which looked like “Talk closes the app”.
-        switch TalkRouting.action(
-            liveOwnsInput: TalkRouting.liveOwnsInput(
-                isLiveActive: isLiveActive,
-                isLiveMuted: isLiveMuted,
-                liveIsRunning: live.isRunning
-            ),
-            isRecording: isRecording,
-            sendingVoice: sendingVoice
-        ) {
-        case .toggleLiveMute:
-            live.toggleMute()
-        case .stopClipCapture:
-            stopAndSend()
-        case .ignore:
+    /// The single audio control behind the menu button and ⇧⌘E:
+    /// Stop Speaking while Evie responds, else Mute/Unmute the live session,
+    /// else start listening (app opened with the session down).
+    func toggleAudioControl() {
+        if status == .speaking {
+            live.stopAssistantSpeech()
             return
-        case .startClipCapture:
-            startRecording()
         }
+        if isLiveActive || isLiveMuted {
+            live.toggleMute()
+            return
+        }
+        live.start()
     }
 
     func toggleCamera() {
@@ -1146,12 +1123,7 @@ final class AppModel: ObservableObject {
         if lastError?.localizedCaseInsensitiveContains("microphone permission") == true {
             lastError = nil
         }
-        // WAKE IDLE LAW: do not start live when wake is SHADOW/ON (EARS LISTENING local-only)
-        let wakeMode = config.alwaysAvailableWake
-        if wakeMode == "SHADOW" || wakeMode == "ON" {
-            NSLog("EV wake idle local-only — mic auth granted but live not started (mode=\(wakeMode))")
-            return
-        }
+        // App-open law: mic granted means the live session should be up.
         if !live.isRunning {
             live.start()
         }
@@ -1162,237 +1134,6 @@ final class AppModel: ObservableObject {
 
     func formattedLiveError(_ error: Error) -> String {
         formattedAPIError(error, fallback: "Live listen failed")
-    }
-
-    func startRecording() {
-        if TalkRouting.liveOwnsInput(
-            isLiveActive: isLiveActive,
-            isLiveMuted: isLiveMuted,
-            liveIsRunning: live.isRunning
-        ) {
-            return
-        }
-        Task {
-            let started = await mic.start()
-            if TalkRouting.liveOwnsInput(
-                isLiveActive: isLiveActive,
-                isLiveMuted: isLiveMuted,
-                liveIsRunning: live.isRunning
-            ) {
-                if started {
-                    _ = mic.stop()
-                }
-                return
-            }
-            isRecording = started
-            status = started ? .listening : status
-            if !started {
-                if MicrophoneAuthorization.current().isUsable {
-                    noteMicrophoneCaptureFailed()
-                } else {
-                    noteMicrophoneDenied()
-                }
-                return
-            }
-            lastError = nil
-            recordLimitTask?.cancel()
-            recordLimitTask = Task { [weak self] in
-                let nanos = UInt64(MicCapture.maxSeconds * 1_000_000_000)
-                try? await Task.sleep(nanoseconds: nanos)
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    self?.stopAndSend()
-                }
-            }
-        }
-    }
-
-    func stopAndSend() {
-        recordLimitTask?.cancel()
-        recordLimitTask = nil
-        Task {
-            let data = mic.stop()
-            isRecording = false
-            guard let data, !data.isEmpty else {
-                if !sendingVoice {
-                    status = .listening
-                    lastError = "I didn’t hear anything. Hold Push to talk and try again."
-                }
-                return
-            }
-            if MicCapture.isQuiet(data) {
-                status = .listening
-                lastError = "That clip was too quiet. Hold Push to talk closer to the mic."
-                return
-            }
-            let audioB64 = data.base64EncodedString()
-            sendingVoice = true
-            status = .thinking
-            lastError = nil
-            defer { sendingVoice = false }
-            var attempt = 0
-            while attempt < 2 {
-                attempt += 1
-                do {
-                    // Reuse an already-open Talk session. A second press must not
-                    // end the follow-up and start a new wake cycle — unless the
-                    // held id is already ENDED (SSE "wake EVIE again" loop).
-                    guard let session = try await openTalkSession(audioB64: audioB64) else {
-                        lastError = "No voice session — grant voice consent in Permissions."
-                        status = .listening
-                        return
-                    }
-                    var streamedAudio = false
-                    var assistantID: String?
-                    var deadSession = false
-                    for try await event in client.streamUtterance(
-                        sessionId: session,
-                        audioB64: audioB64,
-                        pushToTalk: true
-                    ) {
-                        switch event {
-                        case .partial:
-                            break
-                        case .transcript(let spoken):
-                            transcript = spoken.text
-                            if !spoken.text.isEmpty {
-                                messages.append(ChatMessage(id: UUID().uuidString, role: "user", text: spoken.text, streaming: false))
-                            }
-                            let id = UUID().uuidString
-                            assistantID = id
-                            messages.append(ChatMessage(id: id, role: "assistant", text: "", streaming: true))
-                        case .ttsChunk(let chunk):
-                            // One speaker: play TTS bytes only. Never /usr/bin/say
-                            // alongside real audio, and never say() a text chunk
-                            // that later arrives as TTS.
-                            if let b64 = chunk.audioB64, let data = Data(base64Encoded: b64), !data.isEmpty {
-                                streamedAudio = true
-                                status = .speaking
-                                try? player.enqueue(data)
-                            }
-                        case .reply(let response):
-                            if let id = assistantID, let index = messages.firstIndex(where: { $0.id == id }) {
-                                messages[index].text = response.reply
-                                messages[index].streaming = false
-                            } else {
-                                messages.append(ChatMessage(id: UUID().uuidString, role: "assistant", text: response.reply, streaming: false))
-                            }
-                            if response.state == "ended" {
-                                sessionId = nil
-                            }
-                            if let err = response.error, !err.isEmpty {
-                                lastError = err
-                            }
-                            if !streamedAudio {
-                                await playReply(response)
-                            }
-                        case .error(let message):
-                            if attempt == 1 && isDeadVoiceSession(message) {
-                                sessionId = nil
-                                deadSession = true
-                                break
-                            }
-                            lastError = message
-                        case .done:
-                            break
-                        }
-                    }
-                    if deadSession {
-                        continue
-                    }
-                    if let id = assistantID, let index = messages.firstIndex(where: { $0.id == id }) {
-                        messages[index].streaming = false
-                    }
-                    status = streamedAudio && player.isPlaying ? .speaking : .listening
-                    return
-                } catch {
-                    let rendered = formattedAPIError(error, fallback: "Voice failed")
-                    if attempt == 1 && isDeadVoiceSession(rendered) {
-                        sessionId = nil
-                        continue
-                    }
-                    sessionId = nil
-                    lastError = rendered
-                    status = .listening
-                    return
-                }
-            }
-            status = .listening
-            if lastError == nil {
-                lastError = "Voice session ended — wake EVIE again"
-            }
-        }
-    }
-
-    private func isDeadVoiceSession(_ message: String) -> Bool {
-        let lower = message.lowercased()
-        return lower.contains("wake evie again")
-            || lower.contains("session ended")
-            || lower.contains("session_ended")
-            || lower.contains("session not found")
-            || lower.contains("not verified")
-    }
-
-    private func openTalkSession(audioB64: String) async throws -> String? {
-        if let existing = sessionId {
-            return existing
-        }
-        // Wake is session setup only — do not upload the spoken clip
-        // twice (that doubled Whisper work and blew the 60s timeout).
-        let wake = try await client.wakeVoice(
-            deviceId: config.deviceID,
-            pushToTalk: true
-        )
-        sessionId = wake.sessionId
-        guard let session = wake.sessionId else {
-            return nil
-        }
-        if wake.state == "verifying", wake.ownerEnrolled, let nonce = wake.challengeNonce {
-            let verify = try await client.verifyVoice(
-                sessionId: session,
-                nonce: nonce,
-                phrase: wake.challengePhrase,
-                samples: [audioB64]
-            )
-            if !verify.verified {
-                lastError = "Speaker verification failed: \(verify.reason)"
-                sessionId = nil
-                return nil
-            }
-        }
-        return session
-    }
-
-    func playReply(_ response: VoiceUtteranceResponse) async {
-        status = .speaking
-        // decide_playback: TTS audio/ref → play once; never /usr/bin/say
-        // as a parallel voice. No audio → stay silent (overlay/text only).
-        if let b64 = response.tts?.audioB64, let data = Data(base64Encoded: b64), !data.isEmpty {
-            do {
-                try player.play(data: data)
-                return
-            } catch {
-                lastError = "TTS playback failed: \(error.localizedDescription)"
-            }
-        }
-        if let ref = response.tts?.audioRef, !ref.isEmpty {
-            do {
-                let data = try await client.voiceAudio(ref: ref)
-                try player.play(data: data)
-                return
-            } catch {
-                lastError = "TTS playback failed: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    func playAudio(ref: String) async {
-        do {
-            let data = try await client.voiceAudio(ref: ref)
-            try player.play(data: data)
-        } catch {
-            lastError = "TTS playback failed: \(error.localizedDescription)"
-        }
     }
 
     private func speakFallback(_ text: String) {
