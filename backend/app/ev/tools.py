@@ -102,6 +102,26 @@ def safe_calculate(expression: str) -> float:
     return checked(evaluate(tree.body))
 
 
+# --- EV VOICE CONTROL PLAN §4 (additive) ---
+# UI-specific verbs map onto the existing computer primitives so ANY app is
+# controllable by changing the query string, never by adding a per-app verb.
+# double_click and drag are handled explicitly in ``_handle`` (multi-step).
+UI_VERB_MAP: dict[str, tuple[str, dict[str, Any]]] = {
+    "read": ("inspect_ui", {}),
+    "see": ("screen_look", {}),
+    "click": ("ui_action", {"action": "press"}),
+    "right_click": ("ui_action", {"action": "menu"}),
+    "type": ("ui_action", {"action": "type"}),
+    "paste": ("ui_action", {"action": "paste"}),
+    "key": ("ui_action", {"action": "keyboard"}),
+    "scroll": ("ui_action", {"action": "scroll"}),
+}
+
+# The complete UI-verb family (the map plus the multi-step verbs handled
+# explicitly in ``_handle``). Kill-switch and surfaces key off this set.
+UI_VERB_TOOLS: frozenset[str] = frozenset({*UI_VERB_MAP, "double_click", "drag"})
+
+
 TOOL_SPECS: list[dict[str, Any]] = [
     {
         # F4: explicit deep-history escape hatch over the F0+F1 retrieval
@@ -1893,6 +1913,344 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "target_ownership": "owner",
         "provider": "local",
     },
+    # --- EV VOICE CONTROL PLAN (foundation, additive) --------------------------
+    # Past/history retrieval, deliberately separate from event/reminder tools.
+    # See docs/VOICE_CONTROL_PLAN.md §2.
+    {
+        "name": "recall_history",
+        "description": (
+            "Retrieve the owner's PAST history: decisions, preferences, goals, "
+            "facts, observations, lessons, patterns, and what was said or "
+            "decided before. Use ONLY for the past (what they did, decided, "
+            "preferred, or thought, with time context like in March, last month, "
+            "when did I, back in 2026). For FUTURE reminders, alerts, calendar, "
+            "or timers use get_upcoming_alerts or calendar_read instead. "
+            "Results are chunked evidence with provenance and scores; if count "
+            "is zero, say no reliable record exists. Pass a page cursor to fetch "
+            "the next chunk page."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                    "description": "What to recall, e.g. 'why did I choose SQLite'.",
+                },
+                "k": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 8,
+                    "description": "Chunk page size; 8 is optimal for voice.",
+                },
+                "time_range": {
+                    "type": "string",
+                    "enum": [
+                        "all_time",
+                        "recent_week",
+                        "recent_month",
+                        "last_3_months",
+                        "last_year",
+                    ],
+                    "default": "all_time",
+                },
+                "start_date": {
+                    "type": "string",
+                    "description": "ISO date (2026-03-01) for the start of a custom window.",
+                },
+                "end_date": {
+                    "type": "string",
+                    "description": "ISO date (2026-03-31) for the end of a custom window.",
+                },
+                "memory_type": {
+                    "type": "string",
+                    "enum": [
+                        "decision",
+                        "goal",
+                        "preference",
+                        "fact",
+                        "observation",
+                        "episodic",
+                        "pattern",
+                        "summary",
+                        "lesson",
+                    ],
+                    "description": "Only return chunks of this type.",
+                },
+                "as_of": {
+                    "type": "string",
+                    "description": "ISO date-time; version-window time travel (what was true then).",
+                },
+                "chunk_mode": {
+                    "type": "string",
+                    "enum": ["brief", "full"],
+                    "default": "brief",
+                    "description": "brief = voice-fast chunks; full = complete text.",
+                },
+                "cursor": {
+                    "type": "string",
+                    "description": "Opaque next_cursor from a previous call to fetch the next page.",
+                },
+            },
+            "required": ["query"],
+        },
+        "output": {"type": "object", "required": ["count", "results"]},
+        "sensitive": False,
+        "read_only": True,
+        "risk_class": "R0",
+        "permission": "memory:read",
+        "undoable": False,
+    },
+    # UI-specific verbs: read/see/click/type/... control ANY app by query, not
+    # per-app verbs. See docs/VOICE_CONTROL_PLAN.md §4. These route onto the
+    # existing computer primitives (inspect_ui / screen_look / ui_action).
+    {
+        "name": "read",
+        "description": (
+            "Read the current UI of the front Mac app (Accessibility tree) and "
+            "return compact element refs like e12_1. Call this before clicking "
+            "or typing anything on the Mac. query narrows to a control (Bluetooth, "
+            "Empty Trash, lofi); omit query for the whole snapshot."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "query": {"type": "string", "maxLength": 200},
+                "level": {
+                    "type": "string",
+                    "enum": ["summary", "targeted", "expanded"],
+                    "default": "summary",
+                },
+                "app": {"type": "string", "maxLength": 80},
+            },
+        },
+        "sensitive": False,
+        "read_only": True,
+        "risk_class": "R0",
+        "permission": "apps:act",
+        "undoable": False,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
+    {
+        "name": "see",
+        "description": (
+            "Capture the front window (or a display) as an image when Accessibility "
+            "cannot answer (canvas apps, Chrome, Figma). Describe only what you "
+            "can actually see in the provided frame."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": ["active_window", "app", "display"],
+                    "default": "active_window",
+                },
+                "app": {"type": "string", "maxLength": 80},
+            },
+        },
+        "sensitive": False,
+        "read_only": True,
+        "risk_class": "R1",
+        "permission": "apps:act",
+        "undoable": False,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
+    {
+        "name": "click",
+        "description": (
+            "Click a UI element returned by read (pass ref) or at normalized "
+            "coordinates on a recent see frame (action click_at + frame_id + x + y). "
+            "Never claim a click happened unless the result verifies it."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "ref": {"type": "string", "maxLength": 24, "description": "Element ref from read."},
+                "action": {
+                    "type": "string",
+                    "enum": ["press", "click", "click_at"],
+                    "default": "press",
+                },
+                "frame_id": {"type": "string", "maxLength": 40, "description": "Required for click_at."},
+                "x": {"type": "number", "description": "Normalized 0-1 x for click_at."},
+                "y": {"type": "number", "description": "Normalized 0-1 y for click_at."},
+            },
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "apps:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
+    {
+        "name": "double_click",
+        "description": "Double-click a UI element returned by read (opens files and folders).",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "ref": {"type": "string", "minLength": 1, "maxLength": 24},
+            },
+            "required": ["ref"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "apps:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
+    {
+        "name": "right_click",
+        "description": "Open the context menu for a UI element returned by read.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "ref": {"type": "string", "minLength": 1, "maxLength": 24},
+            },
+            "required": ["ref"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "apps:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
+    {
+        "name": "type",
+        "description": (
+            "Type text into the focused field, or into the ref returned by read. "
+            "mode type inserts at the caret; append adds; replace overwrites."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "ref": {"type": "string", "maxLength": 24},
+                "mode": {
+                    "type": "string",
+                    "enum": ["type", "append", "replace"],
+                    "default": "type",
+                },
+            },
+            "required": ["text"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "apps:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
+    {
+        "name": "paste",
+        "description": "Paste clipboard text into the focused field, or a ref from read.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "ref": {"type": "string", "maxLength": 24},
+            },
+            "required": ["text"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "apps:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
+    {
+        "name": "key",
+        "description": (
+            "Press a keyboard hotkey or key: cmd+space, cmd+s, enter, esc, tab. "
+            "This opens Spotlight, confirms dialogs, and operates menus in any app."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "keys": {"type": "string", "minLength": 1, "maxLength": 64},
+                "ref": {"type": "string", "maxLength": 24},
+            },
+            "required": ["keys"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "apps:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
+    {
+        "name": "scroll",
+        "description": "Scroll the front window (or a ref from read) in a direction.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "direction": {
+                    "type": "string",
+                    "enum": ["up", "down", "left", "right"],
+                    "default": "down",
+                },
+                "ref": {"type": "string", "maxLength": 24},
+            },
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "apps:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
+    {
+        "name": "drag",
+        "description": (
+            "Select a ref from read, then move it to normalized x/y on a recent "
+            "see frame (frame_id required). Refuses honestly when frame_id is "
+            "missing; never guesses coordinates."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "ref": {"type": "string", "minLength": 1, "maxLength": 24},
+                "frame_id": {"type": "string", "minLength": 1, "maxLength": 40},
+                "x": {"type": "number", "description": "Normalized 0-1 destination x."},
+                "y": {"type": "number", "description": "Normalized 0-1 destination y."},
+            },
+            "required": ["ref", "frame_id", "x", "y"],
+        },
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "apps:act",
+        "undoable": True,
+        "target_ownership": "owner",
+        "provider": "computer",
+    },
     *FLEET_TOOL_SPECS,
 ]
 
@@ -1933,6 +2291,10 @@ def get_spec(name: str) -> dict | None:
     ``execute_command`` resolve here so HUD resume and ``/v1/tools/execute``
     share ``dispatch`` / ``evaluate_policy`` without a fourth registry.
     """
+    if name in UI_VERB_TOOLS and not _ui_verbs_enabled():
+        # EV VOICE CONTROL PLAN kill-switch: disabled UI verbs resolve as
+        # unknown so policy never admits them.
+        return None
     from app.ev.policy import annotate_spec
 
     for spec in TOOL_SPECS:
@@ -1951,12 +2313,21 @@ def get_spec(name: str) -> dict | None:
     return annotate_spec(resolved)
 
 
+def _ui_verbs_enabled() -> bool:
+    """EV VOICE CONTROL PLAN: kill-switch for the UI verb family."""
+
+    from app.config import settings
+
+    return bool(getattr(settings, "ui_verb_tools_enabled", True))
+
+
 def list_tools() -> list[dict]:
     from app.ev.policy import annotate_spec
 
     return [
         annotate_spec({**spec, "sensitive": _resolved_sensitive(spec)})
         for spec in TOOL_SPECS
+        if not (spec.get("name") in UI_VERB_TOOLS and not _ui_verbs_enabled())
     ]
 
 
@@ -2635,6 +3006,61 @@ async def _run_computer_goal(
     )
 
 
+async def _run_ui_sequence(
+    session: AsyncSession,
+    steps: list[tuple[str, dict[str, Any]]],
+    *,
+    actor: str,
+    live_session_id: str | None,
+    device_id,
+    request_id: str | None,
+    label: str,
+) -> dict:
+    """EV VOICE CONTROL PLAN: run a fixed sequence of computer primitives.
+
+    Steps run strictly in order and stop at the first failure (a deliberate
+    user-requested sequence such as double-click or drag — never a blind
+    retry of a side-effecting action). Returns a truthful merged receipt.
+    """
+
+    from app.ev.computer import handle_computer_tool as _computer_handle
+
+    outcomes: list[dict] = []
+    for canonical, step_args in steps:
+        outcome = await _computer_handle(
+            session,
+            canonical,
+            step_args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=str(device_id) if device_id else None,
+            request_id=request_id,
+        )
+        outcome = outcome if isinstance(outcome, dict) else {"ok": False}
+        outcomes.append(outcome)
+        if not bool(outcome.get("ok")):
+            break
+    executed = any(bool(o.get("executed")) for o in outcomes)
+    verified = bool(outcomes and outcomes[-1].get("verified"))
+    ok = bool(outcomes) and all(bool(o.get("ok")) for o in outcomes)
+    last_spoken = next(
+        (str(o.get("spoken")) for o in reversed(outcomes) if o.get("spoken")), None
+    )
+    failed = next(
+        (str(o.get("error")) for o in outcomes if not bool(o.get("ok"))), None
+    )
+    return {
+        "ok": ok,
+        "executed": executed,
+        "verified": verified,
+        "label": label,
+        "steps": outcomes,
+        "error": failed,
+        "spoken": last_spoken
+        or (f"{label}: completed and verified." if ok else f"{label} did not complete."),
+    }
+
+
 async def _handle(
     session: AsyncSession,
     name: str,
@@ -2665,6 +3091,94 @@ async def _handle(
         return await _run_computer_goal(
             session, args, actor=actor,
             live_session_id=live_session_id, device_id=device_id,
+            request_id=request_id,
+        )
+    if name == "recall_history":
+        # EV VOICE CONTROL PLAN: chunked past-history retrieval with time
+        # ranges, as_of time travel, brief/full chunks, cursor pagination.
+        from app.memory.history import recall_history as _recall_history
+
+        return await _recall_history(
+            session,
+            str(args.get("query") or ""),
+            k=int(args.get("k") or 8),
+            time_range=str(args.get("time_range") or "all_time"),
+            start_date=args.get("start_date"),
+            end_date=args.get("end_date"),
+            memory_type=args.get("memory_type"),
+            as_of=args.get("as_of"),
+            chunk_mode=str(args.get("chunk_mode") or "brief"),
+            cursor=args.get("cursor"),
+        )
+    if name in UI_VERB_TOOLS:
+        # EV VOICE CONTROL PLAN §4: UI-specific verbs map onto the existing
+        # computer primitives; no per-app verb is ever added to the registry.
+        from app.ev.computer import handle_computer_tool as _computer_handle
+
+        if not _ui_verbs_enabled():
+            return {
+                "ok": False,
+                "executed": False,
+                "verified": False,
+                "error": "ui_verbs_disabled",
+                "spoken": "UI verb tools are disabled for this build.",
+            }
+        if name == "double_click":
+            return await _run_ui_sequence(
+                session,
+                [
+                    ("ui_action", {"action": "click", "element_ref": str(args["ref"])}),
+                    ("ui_action", {"action": "click", "element_ref": str(args["ref"])}),
+                ],
+                actor=actor,
+                live_session_id=live_session_id,
+                device_id=device_id,
+                request_id=request_id,
+                label="double_click",
+            )
+        if name == "drag":
+            return await _run_ui_sequence(
+                session,
+                [
+                    ("ui_action", {"action": "select", "element_ref": str(args["ref"])}),
+                    (
+                        "ui_action",
+                        {
+                            "action": "click_at",
+                            "frame_id": str(args["frame_id"]),
+                            "x_normalized": float(args["x"]),
+                            "y_normalized": float(args["y"]),
+                        },
+                    ),
+                ],
+                actor=actor,
+                live_session_id=live_session_id,
+                device_id=device_id,
+                request_id=request_id,
+                label="drag",
+            )
+        canonical, defaults = UI_VERB_MAP[name]
+        merged = dict(defaults)
+        for key, value in args.items():
+            if value is None:
+                continue
+            if key == "ref":
+                merged["element_ref"] = value
+            elif key == "x":
+                merged["x_normalized"] = float(value)
+            elif key == "y":
+                merged["y_normalized"] = float(value)
+            elif key == "mode" and canonical == "ui_action":
+                merged["action"] = value
+            else:
+                merged[key] = value
+        return await _computer_handle(
+            session,
+            canonical,
+            merged,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=str(device_id) if device_id else None,
             request_id=request_id,
         )
     retriever = Retriever(session)

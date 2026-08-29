@@ -161,7 +161,9 @@ async def test_tool_selection_routes_extended_intents(client) -> None:
         "compute 12 * 12": "calculate",
         "who is Maya?": "get_person",
         "anything on my calendar tomorrow?": "calendar_read",
-        "what did I decide about SQLite?": "search_decisions",
+        # EV VOICE CONTROL PLAN: past-tense history questions route to the
+        # dedicated chunked past-history tool, not the generic search.
+        "what did I decide about SQLite?": "recall_history",
     }
     for message, expected in cases.items():
         resp = await client.post("/v1/gateway/select-tool", json={"message": message})

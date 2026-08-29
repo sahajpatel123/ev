@@ -420,3 +420,17 @@ the helper is missing; local mode never fakes a sent message or placed call.
 
 Per-integration config overrides (non-secret): `helper_path`, `contact_allowlist`,
 `autonomy`, `confirm_unknown` inside `config` when installing the integration.
+
+# --- EV VOICE CONTROL PLAN (append-only, 2026) --------------------------------
+
+Live speech surface modes for the realtime brain (OpenAI Realtime
+`gpt-realtime-2.1-mini` / Grok Voice). See `docs/VOICE_CONTROL_PLAN.md`.
+
+| Key | Default | Values | Purpose |
+| --- | --- | --- | --- |
+| `EV_VOICE_LIVE_MODE` | `supervised` | `supervised` \| `shadow` \| `autonomous` | `supervised` = full curated surface (historical behavior, unchanged). `shadow` = UI verbs + `recall_history` + generic capabilities; history is injected read-only as a `SHADOW MEMORY` block per owner turn (no function call needed to answer the past). `autonomous` = zero tools, pure speech-to-speech chat (no memory, no actions). |
+| `EV_VOICE_SHADOW_K` | `5` | 1–10 | Memory chunks injected per owner turn in `shadow` mode. |
+| `EV_VOICE_SHADOW_BUDGET_TOKENS` | `900` | ≥64 | Token cap for the injected `SHADOW MEMORY` block. |
+| `EV_VOICE_SHADOW_MIN_SCORE` | `0.0` | 0–1 | Retrieval floor for shadow chunks. |
+| `EV_UI_VERB_TOOLS_ENABLED` | `true` | boolean | Kill-switch for the `read/see/click/double_click/right_click/type/paste/key/scroll/drag` UI verbs. |
+| `EV_MODEL_SURFACE_V2` | `legacy` | `legacy` \| `shadow` \| `on` | Existing F4 surface reducer (independent of `EV_VOICE_LIVE_MODE`); `on` reduces the projected surface to `F4_TARGET_SURFACE`. |

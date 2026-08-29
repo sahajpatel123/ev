@@ -336,6 +336,15 @@ enum EVSmokeTest {
                     chunkRange: 20...60, rateJitter: 1.0...1.0, burstUntilSec: nil,
                     stalls: [0.25, 0.6]
                 ) && allPass
+                // THE REAL PROVIDER PROFILE: S2S models generate far faster
+                // than realtime. The player must absorb the whole burst and
+                // play it continuously — dropping anything here is the bug
+                // that made Evie say one word and go silent.
+                allPass = await continuitySim(
+                    name: "E-fastgen", pcm: fixture.pcm, sampleRate: fixture.sampleRate,
+                    chunkRange: 20...60, rateJitter: 1.0...1.0, burstUntilSec: nil,
+                    stalls: [], rateOverride: 5.0
+                ) && allPass
                 exitCode = allPass ? 0 : 1
             } catch {
                 print("continuity: FAIL — \(error)")
@@ -461,7 +470,8 @@ enum EVSmokeTest {
         rateJitter: ClosedRange<Double>,
         burstUntilSec: Double?,
         stalls: [Double],
-        spikeChance: Double = 0.0
+        spikeChance: Double = 0.0,
+        rateOverride: Double? = nil
     ) async -> Bool {
         let frames = pcm.count / 2
         let totalSec = Double(frames) / sampleRate
@@ -497,7 +507,7 @@ enum EVSmokeTest {
                 continue
             }
             let ideal = Double(chunkFrames) / sampleRate
-            var factor = Double.random(in: rateJitter)
+            var factor = rateOverride ?? Double.random(in: rateJitter)
             if let burstUntilSec, consumedSec < burstUntilSec { factor = 1.25 }
             if spikeChance > 0, Double.random(in: 0..<1) < spikeChance {
                 debt += 0.12

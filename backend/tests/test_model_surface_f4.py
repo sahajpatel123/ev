@@ -73,7 +73,7 @@ def test_legacy_surface_full_on_surface_reduced() -> None:
     settings.model_surface_v2 = "on"
     reduced = live_tool_projection(_fake_manifest())
     settings.model_surface_v2 = "legacy"
-    assert len(legacy) == 50  # 48 + recall + computer
+    assert len(legacy) == 61  # 48 + recall + computer + 11 VOICE CONTROL PLAN (recall_history + 10 UI verbs)
     assert {e["name"] for e in reduced} == F4_TARGET_SURFACE
     # Old tools are NOT deleted — the spec registry keeps every implementation.
     for name in ("send_message", "calendar_add", "open_app", "search_memory", "mission_control"):
@@ -90,7 +90,7 @@ def test_surface_modes_and_measurement() -> None:
     settings.model_surface_v2 = "legacy"
     print(f"\n[surface] legacy {n_l} tools {chars_l}B ~{tok_l}tok | on {n_o} tools {chars_o}B ~{tok_o}tok "
           f"| reduction {100 - round(100 * tok_o / tok_l, 1)}%")
-    assert n_l == 50 and n_o == 6
+    assert n_l == 61 and n_o == 6
     assert tok_o < tok_l / 4  # substantial reduction
     assert model_surface_mode() in {"legacy", "shadow", "on"}
 
@@ -240,9 +240,25 @@ async def test_f4_shadow_corpus_no_lost_capability(db_session: AsyncSession) -> 
         "life_relationship_set",
     }
     router_served = set(SEMANTIC_CANDIDATES) | {"search_memory"}
+    # EV VOICE CONTROL PLAN: first-class capabilities that route directly
+    # through dispatch (recall_history) or onto the computer primitives
+    # (UI verbs) — no broker needed, same direct path as any first-class tool.
+    first_class = {
+        "recall_history",
+        "read",
+        "see",
+        "click",
+        "double_click",
+        "right_click",
+        "type",
+        "paste",
+        "key",
+        "scroll",
+        "drag",
+    }
     unrouted = [
         tool for tool in sorted(hidden)
-        if tool not in router_served and tool not in core_brokered
+        if tool not in router_served and tool not in core_brokered and tool not in first_class
     ]
     assert not unrouted, f"hidden tools without a routed destination: {unrouted}"
     # Deterministic transcript resolver still reaches hidden tools by name —

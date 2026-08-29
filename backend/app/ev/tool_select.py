@@ -182,6 +182,92 @@ LIVE_VOICE_TOOLS = frozenset(
     }
 )
 
+# --- EV VOICE CONTROL PLAN (additive) ---------------------------------------
+# New live-surface members: past/history retrieval plus UI-specific verbs.
+LIVE_VOICE_TOOLS = LIVE_VOICE_TOOLS | frozenset(
+    {
+        "recall_history",
+        "read",
+        "see",
+        "click",
+        "double_click",
+        "right_click",
+        "type",
+        "paste",
+        "key",
+        "scroll",
+        "drag",
+    }
+)
+
+# Curated surface for EV_VOICE_LIVE_MODE=shadow: UI verbs + recall_history +
+# generic capabilities (API-critical actions with real delivery evidence and
+# canonical life state). Raw per-app computer names (inspect_ui, ui_action,
+# screen_look, app_action) and the conflated generic memory searches are NOT
+# advertised here: the verbs replace them and the shadow block injects history.
+SHADOW_VOICE_TOOLS = frozenset(
+    {
+        "recall_history",
+        # UI verbs (any app, forever)
+        "read",
+        "see",
+        "click",
+        "double_click",
+        "right_click",
+        "type",
+        "paste",
+        "key",
+        "scroll",
+        "drag",
+        # Canonical life state and generic life actions
+        "evie_turn",
+        "life_project_create",
+        "life_project_update",
+        "life_project_query",
+        "life_goal_create",
+        "life_goal_update",
+        "life_goal_add_step",
+        "life_goal_query",
+        "life_commitment_create",
+        "life_commitment_update",
+        "life_commitment_query",
+        "life_relationship_set",
+        "mission_control",
+        # Generic capabilities (not per-app verbs)
+        "search_web",
+        "get_weather",
+        "set_reminder",
+        "start_timer",
+        "send_message",
+        "place_call",
+        "list_messages",
+        "list_mail",
+        "resolve_contact",
+        "calendar_read",
+        "calendar_add",
+        "get_person",
+        "get_health_trends",
+        "get_gear_status",
+        "brief_me",
+        "present",
+        "calculate",
+        "open_url",
+        "open_app",
+        "close_app",
+        "activate_app",
+        "list_apps",
+        "computer_status",
+        "home_status",
+        "home_act",
+        "calibrate",
+        "list_protocols",
+        "look",
+        "observe_camera",
+        "phone_action",
+    }
+)
+# --- END EV VOICE CONTROL PLAN ----------------------------------------------
+
 # F4 target model-facing surface (transitional): the six names the realtime
 # model sees when EV_MODEL_SURFACE_V2=on. Everything else becomes an internal
 # implementation detail behind Core / Memory / Capability Router / Executor.
@@ -297,6 +383,25 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("search_timeline", 2, "The message asks about past events.")
     if any(t in lowered for t in ("decision", "decided", "what did i decide")):
         add("search_decisions", 3, "The message asks about past decisions.")
+    # EV VOICE CONTROL PLAN: past-tense + time-anchored questions route to the
+    # dedicated past/history retrieval (chunked recall_history) instead of the
+    # conflated generic memory search.
+    if (
+        any(p in lowered for p in (
+            "what did i", "what did we", "when did i", "when did we",
+            "why did i", "did i decide", "did we decide",
+            "what was i thinking", "what did we say", "what did i say",
+            "remember when", "back in ", "last month", "last week",
+            "in march", "in april", "in may", "in june", "in july",
+            "in august", "in september", "in october", "in november",
+            "in december", "in january", "in february",
+        ))
+        or re.search(r"\bin (19|20)\d{2}\b", lowered)
+        or "history" in lowered
+        or "recall" in lowered
+        or "previously" in lowered
+    ):
+        add("recall_history", 9, "The owner asks about past history.")
     if any(p in lowered for p in ("calibrat", "check the calibration", "run diagnostics", "checkup")):
         add("calibrate", 7, "The owner asked to check calibration.")
     if lowered.startswith("research ") or "cite sources" in lowered or "cite your sources" in lowered:

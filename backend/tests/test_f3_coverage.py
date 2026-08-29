@@ -44,7 +44,7 @@ CORE_TOOLS = {
     "life_commitment_create", "life_commitment_update", "life_commitment_query",
     "life_relationship_set",
 }
-MEMORY_TOOLS = {"search_memory", "recall"}
+MEMORY_TOOLS = {"search_memory", "recall", "recall_history"}
 SEMANTIC_TOOLS = {
     "send_message", "place_call", "list_messages", "list_mail", "resolve_contact",
     "calendar_read", "calendar_add", "set_reminder", "start_timer",
@@ -56,6 +56,9 @@ COMPUTER_TOOLS = {
     "computer", "computer_status", "list_apps", "open_app", "close_app",
     "activate_app", "open_url", "inspect_ui", "ui_action", "screen_look",
     "app_action",
+    # EV VOICE CONTROL PLAN §4: UI-specific verbs (any app, by query).
+    "read", "see", "click", "double_click", "right_click",
+    "type", "paste", "key", "scroll", "drag",
 }
 TRANSITIONAL_TOOLS = {"look", "observe_camera", "phone_action"}
 
@@ -79,13 +82,13 @@ def test_all_48_tools_classified() -> None:
             seen[tool] = class_name
     unclassified = all_tools - set(seen)
     assert not unclassified, f"UNCLASSIFIED live tools: {sorted(unclassified)}"
-    assert len(seen) == 50  # 48 original + recall + computer brokers
+    assert len(seen) == 61  # 48 original + recall + computer + 11 VOICE CONTROL PLAN
     # Destination counts (report data): CORE 13 (12 hidden + evie_turn broker),
-    # MEMORY 2 (search_memory hidden -> recall broker), SEMANTIC 21,
-    # COMPUTER 11 (10 hidden + computer broker), TRANSITIONAL 3.
+    # MEMORY 3 (search_memory/recall_history hidden -> recall broker), SEMANTIC 21,
+    # COMPUTER 21 (20 hidden + computer broker), TRANSITIONAL 3.
     # F4 KEEP MODEL-FACING = evie_turn + recall + computer + transitional 3 = 6.
-    assert len(CORE_TOOLS) == 13 and len(MEMORY_TOOLS) == 2
-    assert len(SEMANTIC_TOOLS) == 21 and len(COMPUTER_TOOLS) == 11
+    assert len(CORE_TOOLS) == 13 and len(MEMORY_TOOLS) == 3
+    assert len(SEMANTIC_TOOLS) == 21 and len(COMPUTER_TOOLS) == 21
     assert len(TRANSITIONAL_TOOLS) == 3
 
 

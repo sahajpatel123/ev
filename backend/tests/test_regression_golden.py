@@ -127,19 +127,25 @@ def test_golden_voice_playback_buffer():
     import pathlib as _pl
     repo = _pl.Path(__file__).resolve().parents[2]
     tts = (repo / "macos/Sources/EV/TTSPlayer.swift").read_text()
+    smoke = (repo / "macos/Sources/EV/SmokeTest.swift").read_text()
     # Continuity repair 033d808 replaced minStartSeconds/maxPrimeWait with
     # duration-based aggregationMs/targetLeadMs/hardCeilingMs — contract is
     # controlled lead, not a huge delay, and bounded buffering.
     assert "aggregationMs = 160" in tts
     assert "startupPrebufferMs = 280" in tts
     assert "targetLeadMs = 500" in tts
-    assert "hardCeilingMs = 1500" in tts
+    # Owner-proven (one word then silence): S2S providers generate whole
+    # responses faster than realtime; the ceiling is a 60 s safety valve and
+    # accepted-response speech is NEVER dropped. The E-fastgen continuity
+    # simulation is the acceptance for this law.
+    assert "hardCeilingMs = 60000" in tts
     assert "underrunEvents" in tts
     assert "pendingBuffers" in tts
     # No per-chunk engine restart
     assert tts.count("try engine.start()") <= 2  # ensureEngine only, not per-chunk
     # Dropped audio only at hard ceiling, never in normal jitter absorption
     assert "overflowEvents" in tts and "droppedFrames" in tts
+    assert "E-fastgen" in smoke
 
 
 # ---------------------------------------------------------------------------

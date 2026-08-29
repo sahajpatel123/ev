@@ -17,7 +17,12 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private static let aggregationMs = 160
     private static let startupPrebufferMs = 280
     private static let targetLeadMs = 500
-    private static let hardCeilingMs = 1500
+    /// Safety valve only. A realtime provider generates audio FASTER than
+    /// realtime (a 30 s answer can arrive in ~3 s), so the hold buffer must
+    /// absorb whole-response bursts — bounded speech latency is maintained by
+    /// the scheduled-lead gate, not by dropping speech. 60 s of backlog is
+    /// impossible in practice and means a broken client.
+    private static let hardCeilingMs = 60000
     private static let echoTail: TimeInterval = 0.25
 
     private let audioQueue = DispatchQueue(label: "com.ev.audio.playback", qos: .userInitiated)
@@ -443,30 +448,20 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         }
         guard alignedCount > 0 else { return }
 
-        // HARD CEILING ONLY. Speech is never dropped in normal operation: the
-        // target-lead gate below absorbs producer jitter. Reaching the ceiling
-        // means producer outran playback by >1.5s — counted loudly, and only
-        // the excess beyond the ceiling is rejected (never already-accepted
-        // audio, never the response).
+        // SPEECH CONTINUITY LAW: accepted-response audio is never dropped.
+        // The lead gate below bounds PLAYED latency; the aggregate absorbs
+        // whole-response generation bursts. Reaching a pathological backlog
+        // is counted and logged, never silently deleted.
         let incomingMs = Double(alignedCount / Self.sourceBytesPerFrame) * 1000 / rate
         let backlogMs = Double(totalBacklogMs())
-        let headroomMs = Double(Self.hardCeilingMs) - backlogMs
-        if incomingMs > headroomMs {
+        if backlogMs > Double(Self.hardCeilingMs) {
             overflowEvents += 1
-            if headroomMs <= 0 {
-                droppedFrames += alignedCount / Self.sourceBytesPerFrame
-                logOverflowOnce()
-                return
-            }
-            let allowedFrames = Int(headroomMs * rate / 1000)
-            let allowedBytes = allowedFrames * Self.sourceBytesPerFrame
-            droppedFrames += (alignedCount - allowedBytes) / Self.sourceBytesPerFrame
-            aggregatePCM.append(bytes.prefix(allowedBytes))
-            rememberPlaybackReference(Data(bytes.prefix(allowedBytes)))
-        } else {
-            aggregatePCM.append(bytes.prefix(alignedCount))
-            rememberPlaybackReference(Data(bytes.prefix(alignedCount)))
+            droppedFrames += alignedCount / Self.sourceBytesPerFrame
+            logOverflowOnce()
+            return
         }
+        aggregatePCM.append(bytes.prefix(alignedCount))
+        rememberPlaybackReference(Data(bytes.prefix(alignedCount)))
         drainAggregated(rate: rate)
         maybeStartPlayback()
     }
