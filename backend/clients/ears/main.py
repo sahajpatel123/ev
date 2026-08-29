@@ -1487,9 +1487,10 @@ async def run_ears(
             "ears: EV menu-bar app is not running; microphone not opened"
         )
         return stats
-    if require_menu_bar_app and not await wait_for_mic_ownership():
+    if not await wait_for_mic_ownership():
         # EV.app's live session owns the input (accepted-wake handoff).
-        # Exit without touching the mic; launchd KeepAlive re-runs this check.
+        # ONE mic owner applies in every wake mode; exit without touching
+        # the mic and let launchd re-run this check.
         return stats
     if require_menu_bar_app:
         # Hard guarantee: release the mic even if the main loop is stuck in a
@@ -1537,17 +1538,17 @@ async def run_ears(
         consecutive_errors = 0
         last_app_check = time.monotonic()
         while not stop.is_set():
-            if require_menu_bar_app and time.monotonic() - last_app_check >= app_check_interval_s:
+            if time.monotonic() - last_app_check >= app_check_interval_s:
                 last_app_check = time.monotonic()
-                if not app_alive():
+                if require_menu_bar_app and not app_alive():
                     LOGGER.warning(
                         "ears: EV menu-bar app is not running; releasing microphone"
                     )
                     break
                 if ev_live_owns_mic():
                     # A live session started while ears was already running.
-                    # ONE mic owner: release the input; the post-exit respawn
-                    # waits on the marker before reopening.
+                    # ONE mic owner (every wake mode): release the input; the
+                    # post-exit respawn waits on the marker before reopening.
                     LOGGER.warning(
                         "ears: EV.app live session owns the mic; releasing"
                     )
