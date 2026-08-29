@@ -158,6 +158,9 @@ final class LiveConversation {
         // idle; this kill is the accepted-wake acquisition, not a launch kill.
         // When live stops, ev.ears must be ensured again (see stop()).
         EarsProcess.stopAndWait()
+        // ONE mic owner: publish ownership so the launchd-respawned ears
+        // stands down instead of reopening the input mid-conversation.
+        EarsProcess.LiveMicOwnerMarker.set()
         loopTask = Task { [weak self] in
             await self?.runLoop()
         }
@@ -184,6 +187,7 @@ final class LiveConversation {
         // WAKE W1: surrender mic back to the always-on ears owner when Realtime
         // is not needed (idle local-only). KeepAlive ensures restart, but kick
         // immediately so wake is available without throttle delay.
+        EarsProcess.LiveMicOwnerMarker.clear()
         EarsProcess.ensureRunningAsync()
     }
 
@@ -536,6 +540,9 @@ final class LiveConversation {
             loopTask = nil
             isActive = false
             model?.isLiveActive = false
+            // Mic ownership reverts to ears on ANY loop exit (error, cancel,
+            // reconnect-less teardown). stop() clears it again — idempotent.
+            EarsProcess.LiveMicOwnerMarker.clear()
         }
         guard let model else { return }
         let granted = await MicrophoneAuthorization.requestAccess()

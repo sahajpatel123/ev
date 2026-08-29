@@ -11,6 +11,29 @@ import Foundation
 enum EarsProcess {
     private static var domain: String { "gui/\(getuid())/ev.ears" }
 
+    /// ONE mic owner handoff: while this marker names a live process, ears
+    /// stands down and never opens the input. The owning PID makes a stale
+    /// marker (crashed app) self-healing — ears ignores dead owners.
+    enum LiveMicOwnerMarker {
+        private static var url: URL {
+            FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("EV", isDirectory: true)
+                .appendingPathComponent("live-mic-owner")
+        }
+
+        static func set() {
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try? "\(ProcessInfo.processInfo.processIdentifier)"
+                .write(to: url, atomically: true, encoding: .utf8)
+        }
+
+        static func clear() {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     static func stop() {
         Task.detached(priority: .utility) {
             stopAndWait()

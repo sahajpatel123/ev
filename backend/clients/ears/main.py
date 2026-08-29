@@ -44,6 +44,62 @@ ACTIVE_SESSION_STATES = frozenset(
 
 LOGGER = logging.getLogger("ears")
 
+#: Marker written by EV.app for the whole duration of a Realtime session.
+#: ONE mic owner law: while the marker names a live process, ears must not
+#: hold the input device — the accepted-wake handoff owns it. PID-liveness
+#: means a crashed app can never wedge ears out of the microphone.
+EV_LIVE_MIC_MARKER = Path.home() / "Library" / "Application Support" / "EV" / "live-mic-owner"
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
+
+
+def ev_live_owns_mic() -> bool:
+    """True while EV.app's live session owns the microphone.
+
+    The marker carries the owning app's PID; a stale marker whose PID is
+    gone is ignored so a crashed EV.app can never permanently silence the
+    always-on listener.
+    """
+    try:
+        raw = EV_LIVE_MIC_MARKER.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    try:
+        return _pid_alive(int(raw))
+    except ValueError:
+        return False
+
+
+async def wait_for_mic_ownership(poll_s: float = 5.0, max_wait_s: float = 3600.0) -> bool:
+    """Wait until the live session releases the mic (marker gone/owner dead).
+
+    Returns True when ears may open the input. Bounded so a pathological
+    marker cannot hang the service forever; launchd KeepAlive restarts the
+    process if the wait gives up.
+    """
+    waited = 0.0
+    logged = 0.0
+    while ev_live_owns_mic():
+        if waited >= max_wait_s:
+            LOGGER.warning("ears: live-mic marker waited %.0fs — giving up this cycle", waited)
+            return False
+        if waited - logged >= 30.0:
+            LOGGER.info("ears: EV.app live session owns the mic; standing down (%.0fs)", waited)
+            logged = waited
+        await asyncio.sleep(poll_s)
+        waited += poll_s
+    return True
+
 
 def menu_bar_app_running() -> bool:
     """True when the EV menu-bar app process is alive.
@@ -1431,6 +1487,10 @@ async def run_ears(
             "ears: EV menu-bar app is not running; microphone not opened"
         )
         return stats
+    if require_menu_bar_app and not await wait_for_mic_ownership():
+        # EV.app's live session owns the input (accepted-wake handoff).
+        # Exit without touching the mic; launchd KeepAlive re-runs this check.
+        return stats
     if require_menu_bar_app:
         # Hard guarantee: release the mic even if the main loop is stuck in a
         # long HTTP/TTS call and never gets around to the periodic in-loop check.
@@ -1482,6 +1542,14 @@ async def run_ears(
                 if not app_alive():
                     LOGGER.warning(
                         "ears: EV menu-bar app is not running; releasing microphone"
+                    )
+                    break
+                if ev_live_owns_mic():
+                    # A live session started while ears was already running.
+                    # ONE mic owner: release the input; the post-exit respawn
+                    # waits on the marker before reopening.
+                    LOGGER.warning(
+                        "ears: EV.app live session owns the mic; releasing"
                     )
                     break
             if cfg.duration_s is not None and time.monotonic() - started >= cfg.duration_s:

@@ -170,7 +170,16 @@ async def serve_live_websocket(
     cadence = (tick_ms if tick_ms is not None else settings.voice_live_tick_ms) / 1000.0
     if on_heartbeat is None:
         on_heartbeat = getattr(live, "on_heartbeat", None)
-    await websocket.send_json(live.ready_event().as_dict())
+    # A client that dies between accept and the first event (flap, probe,
+    # network reset) must shed cleanly — an unhandled WebSocketDisconnect here
+    # spams tracebacks and can race the session bind.
+    try:
+        await websocket.send_json(live.ready_event().as_dict())
+    except WebSocketDisconnect:
+        live.note_client_gone()
+        with contextlib.suppress(Exception):
+            await websocket.close()
+        return
     live.transport_ws = websocket
     register_live(live)
     if getattr(live, "grok_voice", None) is not None:

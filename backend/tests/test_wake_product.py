@@ -346,3 +346,23 @@ def test_privacy_ring_volatile() -> None:
     assert "RingBuffer" in ring_src or "volatile" in ring_src.lower() or "memory" in ring_src.lower()
     # Ring not persisted to disk, not Event/Memory
     assert "Event" not in ring_src or "not stored" in ring_src.lower() or "PCM16RingBuffer" in ring_src
+
+
+def test_live_mic_marker_pid_liveness() -> None:
+    """ONE mic owner: ears stands down only for a LIVE owner PID, and a
+    stale marker whose PID is gone must never wedge the always-on listener."""
+    from clients.ears.main import EV_LIVE_MIC_MARKER, ev_live_owns_mic
+
+    import os
+
+    assert not ev_live_owns_mic(), "no marker -> ears owns the mic"
+    try:
+        EV_LIVE_MIC_MARKER.write_text(str(os.getpid()), encoding="utf-8")
+        assert ev_live_owns_mic(), "live owner PID -> ears stands down"
+        EV_LIVE_MIC_MARKER.write_text("999999999", encoding="utf-8")
+        assert not ev_live_owns_mic(), "dead owner PID -> marker is self-healing"
+        EV_LIVE_MIC_MARKER.write_text("not-a-pid", encoding="utf-8")
+        assert not ev_live_owns_mic(), "garbage marker ignored"
+    finally:
+        EV_LIVE_MIC_MARKER.unlink(missing_ok=True)
+    assert not ev_live_owns_mic()
