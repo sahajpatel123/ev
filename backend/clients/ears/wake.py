@@ -19,8 +19,16 @@ import contextlib
 import re
 from dataclasses import dataclass, field
 
+# Siri-style strict wake: the owner's NAME is the only wake token. Acoustically
+# near words (every/even/Stevie) are never candidates.
 WAKE_PHRASES = (
+    "eve",
     "evie",
+    "hey eve",
+    "hi eve",
+    "hello eve",
+    "ok eve",
+    "okay eve",
     "hey evie",
     "hi evie",
     "hello evie",
@@ -28,9 +36,11 @@ WAKE_PHRASES = (
     "okay evie",
     "evie wake",
     "evie wake up",
-    "evi",
+    "eve here",
+    "evie here",
 )
-WAKE_TOKEN = re.compile(r"\bevi(?:e|)?\b", re.IGNORECASE)
+# Name as a whole word (word boundary) so "even"/"every"/"Stevie" never match.
+WAKE_TOKEN = re.compile(r"\b(?:eve|evie|eevee|ee vee)\b", re.IGNORECASE)
 
 
 def normalize(text: str) -> str:

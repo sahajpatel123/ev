@@ -251,6 +251,13 @@ class Settings(BaseSettings):
     ears_wake_local_spotter: bool = True
     ears_wake_asr_model: str = "tiny"  # dedicated fast wake model, not the ASR model
 
+    # Siri-style strict wake (owner law, 2026-08-29): ONLY the owner's name
+    # ("Eve"/"Evie") activates EVIE. Acoustically-near words (every/even/evil/
+    # Stevie) are never wake candidates. When true, ears uses the strict local
+    # whisper spotter as the authoritative idle detector; the openWakeWord head
+    # is only used when local spotting is explicitly disabled.
+    ears_wake_strict_name: bool = True
+
     # Stuck-mic / self-echo loops: drop segments whose content literally
     # repeats (docs/VOICE.md §0) before they reach ASR or the API.
     ears_stuck_loop_drop: bool = True

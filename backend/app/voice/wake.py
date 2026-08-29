@@ -561,44 +561,55 @@ class SileroVadWakeEngine:
 
 
 class WhisperPhraseWakeEngine:
-    """Real ASR wake spotter for "EVIE" when a custom openWakeWord head is absent.
+    """Siri-style strict wake spotter — ONLY the owner's name activates EVIE.
 
-    Transcribes the VAD segment with faster-whisper and matches EVIE / Eevee /
-    "every" (common ASR misspelling). Bare "ivy" / "avi" are too common as
-    silence hallucinations and are not wake tokens. "Eve" / "evil" ARE how
-    faster-whisper base actually hears the owner's spoken "EVIE" (measured on
-    real clips), so they are accepted as **weak aliases** only when the
-    segment carries real speech evidence (``no_speech_prob`` at or below
-    Whisper's own 0.6 hallucination gate). Text hints stay available so
-    offline tests keep working.
+    The always-on wake must be activated by saying the name itself ("Eve",
+    "Evie"), exactly like Siri responds only to its name. Acoustically-near
+    words that look/sound similar — "every", "even", "evil", "Stevie" — are
+    NEVER wake candidates, with or without speech evidence.
+
+    The name must appear at the head of the clip as a whole word (word
+    boundary), so a conversational mention ("I think Evie is...") produces a
+    wake *candidate* that the later directed-speech gate rejects, but it is
+    never elevated to a full acceptance on its own. Whisper transcribes the
+    local VAD segment (token-free, on-device) and the transcript is classified
+    here. Bare silence hallucinations (no_speech_prob above result) never wake.
     """
 
     name = "whisper-phrase"
     power_state = "burst"
     WAKE_PHRASES = PhraseWakeEngine.WAKE_PHRASES
-    # Distinctive spellings — safe to match anywhere in the clip.
-    STRONG_TOKEN = re.compile(
-        r"\b(?:evie+|eevee|evy|ee\s*vee)\b",
-        re.IGNORECASE,
-    )
-    # Keep the historical name so tests and lifecycle still import WAKE_TOKEN.
-    WAKE_TOKEN = STRONG_TOKEN
-    # Weak aliases only count at the *start* of a clip. "every" in
-    # "every type of work" is not a wake; "every" / "Eve" / "evil" as the
-    # first name (how faster-whisper hears spoken EVIE) is.
-    HEAD_WAKE = re.compile(
+    # Siri-style: the name may optionally be preceded by a greeting, but the
+    # wake token itself must be the name. The word-boundary lookahead rejects
+    # "every"/"even"/"evil"/"Stevie" because the char after the name is not a
+    # boundary — e.g. "eve"+"r" in "every" never matches.
+    STRONG_HEAD = re.compile(
         r"^(?:hey |ok |okay |hi |hello )?"
-        r"(?:evie+|eevee|evy|evi|eve|evil|every|ee vee)"
-        r"(?: here)?\b",
+        r"(?:eve|evie|ee vee|eevee|evy)"
+        r"(?: here)?(?=[\s,!.?'-]|$)",
         re.IGNORECASE,
     )
-    WEAK_HEAD = re.compile(
-        r"^(?:hey |ok |okay |hi |hello )?(?:eve|evil|every|evi)(?: here)?\b",
+    # Whole-clip name (with optional trailing "here") is also a strong hit.
+    NAME_FULL = re.compile(
+        r"^(?:hey |ok |okay |hi |hello )?"
+        r"(?:eve|evie|ee vee|eevee|evy)(?: here)?$",
         re.IGNORECASE,
     )
-    WEAK_TOKEN = WEAK_HEAD
+    # Keep the historical names so tests and lifecycle still import them.
+    STRONG_TOKEN = STRONG_HEAD
+    WAKE_TOKEN = STRONG_HEAD
+    HEAD_WAKE = STRONG_HEAD
+    WEAK_HEAD = STRONG_HEAD
+    WEAK_TOKEN = STRONG_HEAD
+    # Never-wake confusable words (whole clip or anywhere): these are NOT the
+    # owner addressing Evie and must never produce a candidate, even if a
+    # substring happens to look like the name. Transcripts are normalized to
+    # lower-case, so the set is lower-case too.
+    CONFUSABLE = frozenset(
+        {"every", "even", "evil", "evolve", "event", "everything", "everyone", "stevie"}
+    )
     # Whisper's own no-speech gate: a segment with no_speech_prob above this is
-    # a silence hallucination, not the owner saying EVIE.
+    # a silence hallucination, not the owner saying the name.
     NO_SPEECH_CAP = 0.6
 
     def __init__(self, *, transcriber=None) -> None:
@@ -687,7 +698,9 @@ class WhisperPhraseWakeEngine:
         if text_hint is not None and audio_ref is None and frames is None:
             normalized = normalize(text_hint)
             strong, weak = self._classify_transcript(normalized)
-            triggered = strong or weak
+            # Siri-style strictness: a bare text hint wakes ONLY if it is the
+            # owner's name at the head. No weak aliases, no confusables.
+            triggered = strong
             return WakeDetection(
                 triggered=triggered,
                 wake_word="evie",
@@ -737,13 +750,19 @@ class WhisperPhraseWakeEngine:
             )
         normalized = normalize(transcript)
         strong, weak = self._classify_transcript(normalized)
-        triggered = strong or (weak and self._real_speech(result))
+        # Strict Siri-style: only the name at the head AND confirmed real speech
+        # wake. Weak aliases and confusables never wake; a name without speech
+        # evidence (or with confirmed silence) never wakes. Real faster-whisper
+        # wake-mode transcription always reports no_speech_prob, so this never
+        # blocks a genuine owner wake while making silence hallucinations and
+        # unknown-source transcripts cost nothing.
+        triggered = strong and self._real_speech(result)
         degraded = bool(getattr(result, "degraded", False))
         details = {
             "engine": self.name,
             "transcript": transcript,
             "no_speech_prob": getattr(result, "details", {}).get("no_speech_prob"),
-            "weak_alias": weak and not strong,
+            "weak_alias": False,
             "sample_rate": sample_rate,
             "degraded": degraded,
         }
@@ -764,34 +783,32 @@ class WhisperPhraseWakeEngine:
 
     @classmethod
     def _classify_transcript(cls, normalized: str) -> tuple[bool, bool]:
-        """Return (strong_hit, weak_head_hit) for a normalized transcript."""
+        """Siri-style: (strong_hit, weak_head_hit) where only the NAME hits.
+
+        The name must be a whole word at the head of the clip (word boundary),
+        optionally preceded by a greeting. Confusable words that are NOT the
+        owner's name — every/even/evil/Stevie — never wake, even with real
+        speech. The second return is always False (no weak aliases); it is
+        kept for API compatibility.
+        """
 
         if not normalized:
             return False, False
-        if normalized in cls.WAKE_PHRASES or normalized in {
-            "every",
-            "hey every",
-            "ok every",
-            "okay every",
-            "hi every",
-            "hello every",
-            "every here",
-        }:
-            # "eve"/"evil" are remembered spellings for text hints, but on
-            # the ASR path they stay weak (need real-speech evidence).
-            # "every" as the whole clip is a known strong misspelling.
-            if re.fullmatch(
-                r"(?:hey |ok |okay |hi |hello )?(?:eve|evil|evi)(?: here)?",
-                normalized,
-            ):
-                return False, True
+        # Siri-style: a confusable word at the WAKE POSITION (the first word,
+        # optionally after a greeting) is never the owner's name. Words like
+        # "every"/"even" later in the utterance (e.g. "Evie, even that") do not
+        # block a name-headed wake — recall is preserved.
+        head_token = normalized.split(None, 1)[0].strip(".,!?'\"-")
+        if cls.CONFUSABLE and head_token in cls.CONFUSABLE:
+            return False, False
+        # Whole-clip name or greeting+name at the head (with boundary). This
+        # covers "eve", "evie", "ee vee", "hey eve", "eve what's the weather",
+        # and NEVER "every"/"even"/"Stevie".
+        if cls.NAME_FULL.match(normalized):
             return True, False
-        if cls.STRONG_TOKEN.search(normalized):
+        head = " ".join(normalized.split()[:6])
+        if cls.STRONG_HEAD.match(head) or cls.STRONG_HEAD.match(normalized):
             return True, False
-        head = " ".join(normalized.split()[:5])
-        if cls.HEAD_WAKE.match(head) or cls.HEAD_WAKE.match(normalized):
-            weak = bool(cls.WEAK_HEAD.match(head) or cls.WEAK_HEAD.match(normalized))
-            return (not weak), weak
         return False, False
 
     @staticmethod

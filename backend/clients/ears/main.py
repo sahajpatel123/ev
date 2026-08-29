@@ -183,6 +183,7 @@ class EarConfig:
     wake_verifier_path: str | None = None
     wake_threshold: float = 0.5
     wake_local_spotter: bool = True
+    wake_strict_name: bool = True
     wake_asr_model: str = "tiny"
     stuck_loop_drop: bool = True
     stuck_loop_threshold: float = 0.10
@@ -280,6 +281,7 @@ def build_config(args: argparse.Namespace | None = None) -> EarConfig:
         wake_verifier_path=settings.voice_wake_openwakeword_verifier_path,
         wake_threshold=settings.ears_wake_threshold,
         wake_local_spotter=settings.ears_wake_local_spotter,
+        wake_strict_name=settings.ears_wake_strict_name,
         wake_asr_model=settings.ears_wake_asr_model,
         stuck_loop_drop=settings.ears_stuck_loop_drop,
         stuck_loop_threshold=settings.ears_stuck_loop_threshold,
@@ -898,13 +900,21 @@ def _configure_engine(cfg: EarConfig):
 def default_ears_wake(cfg: EarConfig):
     """Real wake engine when configured; otherwise the local on-device spotter.
 
-    When the custom openWakeWord head is on disk it is the primary engine.
-    Otherwise, with ``EV_EARS_WAKE_LOCAL_SPOTTER=true`` (default), a small
-    local faster-whisper model spots "EVIE" on-device and the server trusts
-    its confidence — no more byte-matching fallback that could never hear the
-    word. ``PhraseFallbackWake`` remains only for the pure-offline test double.
+    Siri-style strictness (owner law, 2026-08-29): the always-on wake responds
+    ONLY to the owner's name ("Eve"/"Evie"), never to acoustically-near words.
+    The strict local faster-whisper spotter is the authoritative idle path —
+    it is token-free (on-device), and only loud VAD segments reach it, so idle
+    cost stays near zero on CPU and tokens. ``PhraseFallbackWake`` remains
+    only for the pure-offline test double.
     """
 
+    if cfg.wake_local_spotter and cfg.wake_strict_name:
+        from clients.ears.wake import LocalWhisperWakeSpotter
+
+        return LocalWhisperWakeSpotter(
+            model=cfg.wake_asr_model or "tiny",
+            threshold=cfg.wake_threshold,
+        )
     if cfg.wake_model_path:
         from app.voice.wake import OpenWakeWordEngine, configured_wake_engine
 
@@ -914,13 +924,6 @@ def default_ears_wake(cfg: EarConfig):
         return OpenWakeWordEngine(
             model_path=cfg.wake_model_path,
             verifier_path=cfg.wake_verifier_path,
-            threshold=cfg.wake_threshold,
-        )
-    if cfg.wake_local_spotter:
-        from clients.ears.wake import LocalWhisperWakeSpotter
-
-        return LocalWhisperWakeSpotter(
-            model=cfg.wake_asr_model or "tiny",
             threshold=cfg.wake_threshold,
         )
     return PhraseFallbackWake()

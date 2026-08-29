@@ -204,6 +204,7 @@ async def test_default_wake_engine_providers(monkeypatch) -> None:
     assert default_wake_engine().name == "multi-stage"
 
     monkeypatch.setattr(settings, "voice_wake_openwakeword_model_path", "/tmp/evie.onnx")
+    monkeypatch.setattr(settings, "voice_wake_openwakeword_threshold", 0.5)
     engine = default_wake_engine()
     assert engine.name == "openwakeword"
     assert engine.threshold == pytest.approx(0.5)
@@ -318,7 +319,13 @@ async def test_whisper_phrase_detects_spoken_evie_from_transcriber() -> None:
     class _FakeAsr:
         async def transcribe(self, **kwargs):
             assert kwargs.get("audio_b64") or kwargs.get("audio_ref")
-            return Transcript(text="hey evie", confidence=0.8, provider="faster_whisper")
+            # Real wake-mode faster-whisper always reports no_speech_prob.
+            return Transcript(
+                text="hey evie",
+                confidence=0.8,
+                provider="faster_whisper",
+                details={"no_speech_prob": 0.2},
+            )
 
     frames = b"\x00\x10" * 800
     hit = await WhisperPhraseWakeEngine(transcriber=_FakeAsr()).detect(
@@ -326,7 +333,7 @@ async def test_whisper_phrase_detects_spoken_evie_from_transcriber() -> None:
     )
     assert hit.triggered is True
     assert hit.details.get("transcript") == "hey evie"
-
+    
     class _MissAsr:
         async def transcribe(self, **kwargs):
             return Transcript(
@@ -361,10 +368,12 @@ async def test_whisper_phrase_detects_spoken_evie_from_transcriber() -> None:
         async def transcribe(self, **kwargs):
             return Transcript(text="every", confidence=0.7, provider="faster_whisper")
 
+    # Siri-style strictness: "every" is NOT the owner's name and must never
+    # wake, even with high confidence.
     alias = await WhisperPhraseWakeEngine(transcriber=_EveryAsr()).detect(
         frames=frames, sample_rate=16000
     )
-    assert alias.triggered is True
+    assert alias.triggered is False
 
     class _HallucinationAsr:
         def __init__(self, text: str, no_speech_prob: float | None = None) -> None:
@@ -382,30 +391,34 @@ async def test_whisper_phrase_detects_spoken_evie_from_transcriber() -> None:
                 details=details,
             )
 
-    # Whisper can hallucinate the wake word out of pure silence. Weak aliases
-    # ("eve"/"evil") and the classic hallucination words must not wake when the
-    # model reports no speech (no_speech_prob > Whisper's own 0.6 gate).
+    # Whisper can hallucinate the wake word out of pure silence. The name
+    # without real speech evidence must not wake (no_speech_prob above the gate).
     for bogus, nsp in (("eve", 0.85), ("ivy", 0.9), ("avi", 0.9), ("a bee", 0.9)):
         miss_alias = await WhisperPhraseWakeEngine(
             transcriber=_HallucinationAsr(bogus, no_speech_prob=nsp)
         ).detect(frames=frames, sample_rate=16000)
         assert miss_alias.triggered is False, bogus
 
-    # A weak alias with no reliability signal at all stays non-triggering:
-    # unknown-source transcripts must not false-wake the system.
+    # No reliability signal at all stays non-triggering: unknown-source
+    # transcripts must not false-wake the system.
     unknown = await WhisperPhraseWakeEngine(
         transcriber=_HallucinationAsr("eve")
     ).detect(frames=frames, sample_rate=16000)
     assert unknown.triggered is False
 
-    # Real speech evidence unlocks the weak aliases: faster-whisper base
-    # transcribes the owner's actual spoken "EVIE" as "Eve"/"evil" (measured
-    # on the voice-sample clips, no_speech_prob ~0.2-0.4).
-    for real in ("Eve", "Hey Eve", "Okay Eve", "evil", "every", "evie here", "Hey EVIE here"):
+    # Siri-style strictness with real speech: ONLY the name wakes. Confusable
+    # words ("evil", "every") are rejected even with real speech evidence.
+    for real in ("Eve", "Hey Eve", "Okay Eve", "evie here", "Hey EVIE here", "Evie what's the weather"):
         hit_alias = await WhisperPhraseWakeEngine(
             transcriber=_HallucinationAsr(real, no_speech_prob=0.3)
         ).detect(frames=frames, sample_rate=16000)
         assert hit_alias.triggered is True, real
+
+    for near_miss in ("evil", "every", "even", "Stevie", "young Evie", "the word Evie"):
+        miss = await WhisperPhraseWakeEngine(
+            transcriber=_HallucinationAsr(near_miss, no_speech_prob=0.3)
+        ).detect(frames=frames, sample_rate=16000)
+        assert miss.triggered is False, near_miss
 
     class _LongEvery:
         async def transcribe(self, **kwargs):
