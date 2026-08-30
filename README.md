@@ -164,7 +164,8 @@ ev/
   README.md              # this file
   Makefile               # install / dev / test / lint / typecheck / eval / compose / migrate / seed
   compose.yaml           # db + redis + minio + api + worker + scheduler + runtime
-  .env.example           # 69 quickstart configuration entries
+  AGENTS.md              # start here if you are an agent: rules, baseline, gotchas
+  .env.example           # 204 quickstart configuration entries
   docs/                  # plan suite (PLAN, ARCHITECTURE, API, ENVIRONMENT, DEPLOYMENT, ...)
   backend/
     app/
@@ -191,7 +192,7 @@ ev/
       web/               # self-contained web workbench served at /app
       collectors/        # macOS perception agent (screen, audio scene, location)
       device_listener.py # always-on device listener / fleet ear
-    tests/               # 59 test modules; CI runs lint + mypy + pytest + eval gates
+    tests/               # 99 test modules; CI runs lint + mypy + pytest + eval gates
     alembic/             # forward-only migrations
   ios/
     EVClient/            # shared Swift package (API client, HUD, offline queue, UI)
@@ -208,14 +209,21 @@ make eval         # eval gates: contract, retrieval, filter, voice, latency, res
 make update-contract  # re-lock the API contract manifest after deliberate changes
 ```
 
-CI runs lint, typecheck, the full test suite, and the eval gates on every push
-to `main` and on pull requests; a nightly workflow publishes a fresh eval
-report artifact.
+CI is configured to run lint, typecheck, the full test suite, and the eval gates
+on every push to `main` and on pull requests, plus a nightly eval report
+artifact. **Those jobs are not currently executing:** every GitHub Actions run
+since 2026-08-09 has been blocked before its first step by an account
+billing/spending-limit block, so all verification to date is local. See
+[docs/WORKSPACE_ANALYSIS.md](docs/WORKSPACE_ANALYSIS.md) §5 for the measured
+state, including the three reasons the suite would still be red on the
+`ubuntu-latest` runner once billing is restored.
 
 ## Documentation map
 
 | Document | Contents |
 | --- | --- |
+| [AGENTS.md](AGENTS.md) | **Start here if you are an agent:** binding rules, measured baseline, known-broken state |
+| [docs/WORKSPACE_ANALYSIS.md](docs/WORKSPACE_ANALYSIS.md) | Measured workspace analysis, subsystem map, documentation drift ledger |
 | [docs/PLAN.md](docs/PLAN.md) | Vision, product principles, data model, roadmap, open decisions |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, tech stack, data model, retrieval, orchestrator, API examples |
 | [docs/API.md](docs/API.md) | v1 API contract and endpoint map |
@@ -223,9 +231,10 @@ report artifact.
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Self-hosting, TLS, backups, upgrades, failure modes |
 | [docs/WORK_BREAKDOWN.md](docs/WORK_BREAKDOWN.md) | Factor-by-factor build status across every domain |
 | [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md) | Post-breadth strategy: dogfood, depth tracks, what not to build |
-| [docs/AGENT_FLEET.md](docs/AGENT_FLEET.md) | **Multi-agent SSOT:** 15 agents (1–15), ownership, merge, bans |
-| [docs/AGENT_LAUNCH.md](docs/AGENT_LAUNCH.md) | **Paste elite messages** — send in order **1→15** |
-| [docs/AGENT_BRIEFS.md](docs/AGENT_BRIEFS.md) | Detailed work orders; not 19 equal domain agents |
+| [docs/FLEET_LAW.md](docs/FLEET_LAW.md) | **Binding law** for every agent: ownership, append-only files, bans |
+| [docs/AGENT_FLEET.md](docs/AGENT_FLEET.md) | **Multi-agent SSOT:** 20 agents (1–20), ownership, merge, bans |
+| [docs/AGENT_LAUNCH.md](docs/AGENT_LAUNCH.md) | Paste-ready launch messages (superseded 15-agent pack; roster is 1–20) |
+| [docs/AGENT_BRIEFS.md](docs/AGENT_BRIEFS.md) | Historical work orders (A0–A9); read for intent, not ownership |
 | [docs/SECURITY.md](docs/SECURITY.md) | Auth, privacy boundary, encryption, ethics guardrails |
 | [docs/CLIENTS.md](docs/CLIENTS.md) | Client architecture, CLI reference, sync protocol |
 | [docs/BEHAVIOR.md](docs/BEHAVIOR.md) | Interaction intelligence, persona, assertiveness, permissions |
@@ -242,9 +251,15 @@ live in [docs/ROADMAP.md](docs/ROADMAP.md). **What to do next** after breadth �
 stabilize, dogfood, then deepen voice / phone / calendar — is in
 [docs/NEXT_STEPS.md](docs/NEXT_STEPS.md).
 
-**Multi-agent depth work** uses **exactly 15 agents (numbered 1–15)** with exclusive path
+**Multi-agent depth work** uses **exactly 20 agents (numbered 1–20)** with exclusive path
 ownership for a personal shippable EVIE/EDITH stack (presence, perception,
 notifications, real-dataset training, EDITH software modules, gateway/tools) —
-not Domain 20 and not 19 parallel equal agents. Plan:
-[docs/AGENT_FLEET.md](docs/AGENT_FLEET.md). **Launch messages to paste:**
-[docs/AGENT_LAUNCH.md](docs/AGENT_LAUNCH.md).
+not Domain 20 and not 19 parallel equal agents. Roster and ownership:
+[docs/AGENT_FLEET.md](docs/AGENT_FLEET.md) §1–2. Binding rules:
+[docs/FLEET_LAW.md](docs/FLEET_LAW.md).
+
+The paste-ready messages in [docs/AGENT_LAUNCH.md](docs/AGENT_LAUNCH.md) are
+still the superseded 15-agent pack, in which agents 3, 4, 14, and 15 name
+*different* owners than the 1–20 roster. Until Agent 1 publishes the v3 pack,
+treat `AGENT_FLEET.md` §2 as the only ownership table, and read
+[AGENTS.md](AGENTS.md) §2 for the precedence rule.

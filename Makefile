@@ -288,3 +288,16 @@ opencode-status:
 
 opencode-agent-cost:
 	$(call backend-run, uv run python -m app.scripts.opencode_agent_cost)
+
+# --- AGENT 0 ANALYST ---
+# Workspace ground truth. Stdlib only; runs on a bare checkout before uv sync.
+.PHONY: baseline baseline-write baseline-check
+
+baseline:
+	@python3 tools/baseline.py
+
+baseline-write:
+	@python3 tools/baseline.py --write
+
+baseline-check:
+	@python3 tools/baseline.py --check
