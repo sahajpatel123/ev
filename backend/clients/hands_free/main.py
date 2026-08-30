@@ -1,4 +1,4 @@
-"""Always-on "EVIE" listener: microphone → /v1/voice/live → speaker.
+"""Always-on "EVIE" listener: microphone → /v1/voice/hands-free → speaker.
 
 A thin transport. Every decision (wake, endpointing, follow-up, barge-in) lives
 server-side in :mod:`app.voice.live`, so this client and the web workbench and
@@ -61,10 +61,10 @@ class ClientConfig:
     def ws_url(self) -> str:
         base = self.api_url.rstrip("/")
         if base.startswith("https://"):
-            return "wss://" + base[len("https://") :] + "/v1/voice/live"
+            return "wss://" + base[len("https://") :] + "/v1/voice/hands-free"
         if base.startswith("http://"):
-            return "ws://" + base[len("http://") :] + "/v1/voice/live"
-        return base + "/v1/voice/live"
+            return "ws://" + base[len("http://") :] + "/v1/voice/hands-free"
+        return base + "/v1/voice/hands-free"
 
     @property
     def frame_samples(self) -> int:
@@ -382,7 +382,7 @@ class HandsFreeClient:
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m clients.hands_free",
-        description='Always-on "EVIE" listener (microphone → /v1/voice/live → speaker).',
+        description='Always-on "EVIE" listener (microphone → /v1/voice/hands-free → speaker).',
     )
     parser.add_argument("--api-url", default=os.environ.get("EV_API_URL", "http://127.0.0.1:8000"))
     parser.add_argument(

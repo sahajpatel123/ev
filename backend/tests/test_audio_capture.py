@@ -5,6 +5,7 @@ from __future__ import annotations
 import array
 import asyncio
 import json
+import math
 import random
 
 import pytest
@@ -31,7 +32,7 @@ from app.audio.vad import (
     segment_utterances,
 )
 from app.voice.contracts import WakeDetection
-from clients.ears.main import EarConfig, run_ears
+from clients.ears.main import EarConfig, idle_clip_worth_spotting, pcm_peak_rms, run_ears
 
 
 class FakeIndata:
@@ -111,6 +112,17 @@ def test_ring_wraps_and_keeps_newest() -> None:
     assert len(ring.read_new()) == 0
 
 
+def test_ring_read_last_keeps_consumed_pre_roll() -> None:
+    """Pre-roll must survive read_new(); otherwise the onset of EVIE is dropped."""
+
+    ring = PCM16RingBuffer(32)
+    ring.write(list(range(10)))
+    assert ring.read_new().tolist() == list(range(10))
+    ring.write([90, 91])
+    assert ring.read_last(5).tolist() == [7, 8, 9, 90, 91]
+    assert ring.read_new().tolist() == [90, 91]
+
+
 def test_ring_accepts_bytes_and_roundtrips_pcm16() -> None:
     ring = PCM16RingBuffer(8)
     ring.write(array.array("h", [1, -2, 3]).tobytes())
@@ -133,6 +145,32 @@ def test_mic_stream_callback_writes_ring() -> None:
     assert stream.ring.read_new().tolist() == [1, 3, 5]
     stream.close()
     assert fake.last_kwargs is not None
+
+
+def test_mic_stream_captures_native_rate_then_resamples_to_contract() -> None:
+    fake = FakeSoundDevice(
+        devices=[
+            {
+                "name": "MacBook Air Microphone",
+                "default_samplerate": 48000,
+                "max_input_channels": 1,
+            }
+        ]
+    )
+    stream = MicrophoneStream(
+        sounddevice_module=fake,
+        sample_rate=16000,
+        block_ms=20,
+        device="0",
+    )
+    stream.open()
+    assert fake.last_kwargs["samplerate"] == 48000
+    callback = fake.last_kwargs["callback"]
+    callback(FakeIndata([1000] * 960), 960, None, None)
+    samples = stream.ring.read_new()
+    assert len(samples) == 320
+    assert all(value == 1000 for value in samples)
+    stream.close()
 
 
 def test_mic_permission_denied_is_loud() -> None:
@@ -180,6 +218,16 @@ def _silence_block(length: int = 320) -> array.array:
     return array.array("h", [0] * length)
 
 
+def test_idle_clip_skips_room_tone_keeps_speech() -> None:
+    silence = _silence_block(16000)
+    peak, rms = pcm_peak_rms(silence)
+    assert peak == 0
+    assert rms == 0.0
+    assert idle_clip_worth_spotting(silence, min_rms=140.0, min_peak=600) is False
+    speech = _speech_block(seed=3, length=16000)
+    assert idle_clip_worth_spotting(speech, min_rms=140.0, min_peak=600) is True
+
+
 async def test_streaming_segmenter_applies_pre_and_post_roll() -> None:
     seg = StreamingSegmenter(
         sample_rate=16000,
@@ -219,6 +267,25 @@ async def test_streaming_segmenter_caps_memory() -> None:
     assert all(len(s.samples) <= 1600 for s in segments)
 
 
+async def test_streaming_segmenter_emits_idle_wake_chunks() -> None:
+    """Continuous room energy must not wait 60s before the first wake clip."""
+
+    seg = StreamingSegmenter(
+        sample_rate=16000,
+        pre_roll_s=0.0,
+        post_roll_s=0.6,
+        min_speech_s=0.12,
+        max_segment_s=1.5,
+    )
+    emitted = []
+    for _ in range(150):  # 3.0 s of 20 ms speech blocks
+        out = seg.push(_speech_block(), 0.9)
+        if out is not None:
+            emitted.append(out)
+    assert len(emitted) >= 2
+    assert all(len(item.samples) <= int(1.5 * 16000) + 320 for item in emitted)
+
+
 async def test_energy_vad_and_offline_segmentation() -> None:
     engine = EnergyVad()
     samples = _silence_block() * 2 + _speech_block(seed=5) * 8 + _silence_block() * 2
@@ -233,6 +300,17 @@ async def test_energy_vad_and_offline_segmentation() -> None:
     assert len(segments) == 1
     assert segments[0].engine == "energy"
     assert len(segments[0].samples) > 8 * 320
+
+
+async def test_energy_vad_keeps_low_zcr_voiced_frames() -> None:
+    """Male/far-field vowels sit under the old 0.015 ZCR floor."""
+
+    engine = EnergyVad()
+    voiced = array.array(
+        "h",
+        (int(8000 * math.sin(2 * math.pi * 80 * i / 16000)) for i in range(320)),
+    )
+    assert await engine.block_probability(voiced, 16000) >= 0.5
 
 
 def test_silero_onnx_session_contract() -> None:
@@ -278,6 +356,116 @@ def test_diarization_fake_pipeline_returns_turns(tmp_path) -> None:
 
     turns = diarize_meeting(audio, consent=True, pipeline_factory=FakePipeline)
     assert turns == [SpeakerTurn(start_s=1.0, end_s=2.5, speaker="SPEAKER_00")]
+
+
+def test_ears_prefers_macbook_mic_over_hidden_continuity(monkeypatch) -> None:
+    from clients.ears.main import _resolve_live_input_device
+
+    monkeypatch.setattr(
+        "app.audio.capture.list_input_devices",
+        lambda: [
+            {"name": ".Datta"},
+            {"name": "MacBook Air Microphone"},
+            {"name": "iPhone Microphone"},
+        ],
+    )
+    rms = {
+        ".Datta": 0.0,
+        "MacBook Air Microphone": 340.0,
+        "iPhone Microphone": 0.0,
+    }
+    assert (
+        _resolve_live_input_device(None, probe_rms=lambda name: rms[name])
+        == "MacBook Air Microphone"
+    )
+    assert (
+        _resolve_live_input_device(
+            "Sahaj Microphone", probe_rms=lambda name: rms.get(name, 0.0)
+        )
+        == "MacBook Air Microphone"
+    )
+
+
+def test_ears_skips_silent_requested_headset() -> None:
+    """A listed-but-silent .env mic must not win over the built-in that has signal."""
+
+    from clients.ears.main import _resolve_live_input_device
+
+    devices = [
+        {"name": "Sahaj Microphone"},
+        {"name": "MacBook Air Microphone"},
+        {"name": "Sahaj’s iPhone SE Microphone"},
+        {"name": ".Datta"},
+    ]
+    import app.audio.capture as capture
+
+    original = capture.list_input_devices
+    capture.list_input_devices = lambda: devices
+    try:
+        chosen = _resolve_live_input_device(
+            "Sahaj Microphone",
+            probe_rms=lambda name: 0.0 if "Sahaj" in name or name.startswith(".") else 341.0,
+        )
+    finally:
+        capture.list_input_devices = original
+    assert chosen == "MacBook Air Microphone"
+
+
+def test_ears_does_not_bind_requested_name_to_iphone() -> None:
+    """'Sahaj Microphone' must not substring-match Continuity iPhone mics."""
+
+    from clients.ears.main import _resolve_live_input_device
+
+    devices = [
+        {"name": "Sahaj’s iPhone SE Microphone"},
+        {"name": "MacBook Air Microphone"},
+        {"name": ".Datta"},
+    ]
+    import app.audio.capture as capture
+
+    original = capture.list_input_devices
+    capture.list_input_devices = lambda: devices
+    try:
+        chosen = _resolve_live_input_device(
+            "Sahaj Microphone",
+            probe_rms=lambda name: 400.0 if "iPhone" in name else 340.0 if "MacBook" in name else 0.0,
+        )
+    finally:
+        capture.list_input_devices = original
+    assert chosen == "MacBook Air Microphone"
+
+
+def test_ears_does_not_probe_disconnected_headset_when_macbook_is_available() -> None:
+    """Opening 'Sahaj Microphone' while unplugged posts a macOS audio banner."""
+
+    from clients.ears.main import _resolve_live_input_device
+
+    devices = [
+        {"name": "Sahaj Microphone"},
+        {"name": "MacBook Air Microphone"},
+        {"name": "Sahaj’s iPhone SE Microphone"},
+    ]
+    import app.audio.capture as capture
+
+    original = capture.list_input_devices
+    capture.list_input_devices = lambda: devices
+    probed: list[str] = []
+
+    def probe(name: str) -> float:
+        probed.append(name)
+        return 0.0
+
+    try:
+        assert (
+            _resolve_live_input_device("MacBook Air Microphone", probe_rms=probe)
+            == "MacBook Air Microphone"
+        )
+        assert probed == []
+        probed.clear()
+        assert _resolve_live_input_device(None, probe_rms=probe) == "MacBook Air Microphone"
+        assert probed == []
+    finally:
+        capture.list_input_devices = original
 
 
 def test_ears_wake_schema_contract() -> None:
@@ -333,6 +521,46 @@ def test_ingest_ambient_counts_toward_missing_report(tmp_path) -> None:
     assert wav_duration(chunks[0]) == pytest.approx(1.0)
     report = missing_report(plan)
     assert report["ambient_seconds"] == pytest.approx(1.0)
+
+
+def test_ingest_clips_and_negatives_into_capture_layout(tmp_path) -> None:
+    from app.audio.capture_eval import (
+        CapturePlan,
+        ingest_clips,
+        ingest_negatives,
+        missing_report,
+    )
+
+    plan = CapturePlan(out_dir=tmp_path / "wake")
+    clip_src = tmp_path / "clip-src"
+    clip_src.mkdir()
+    neg_src = tmp_path / "neg-src"
+    neg_src.mkdir()
+    far_clip = clip_src / "take-one-3m.wav"
+    far_clip.write_bytes(pcm_to_wav_bytes(array.array("h", [0] * 16000), 16000))
+    close_clip = clip_src / "take-two.wav"
+    close_clip.write_bytes(pcm_to_wav_bytes(array.array("h", [0] * 16000), 16000))
+    negative = neg_src / "paragraph.wav"
+    negative.write_bytes(pcm_to_wav_bytes(array.array("h", [0] * 16000), 16000))
+
+    clips = ingest_clips(clip_src, plan)
+    negatives = ingest_negatives(negative, plan)
+    assert [p.name for p in clips] == ["evie-001-3m.wav", "evie-002-close.wav"]
+    assert [p.name for p in negatives] == ["negative-01.wav"]
+    report = missing_report(plan)
+    assert report["clips"]["present"] == 2
+    assert report["far_clips"]["present"] == 1
+    assert report["negatives"]["present"] == 1
+
+
+def test_ingest_m4a_requires_converter(tmp_path, monkeypatch) -> None:
+    from app.audio.capture_eval import CapturePlan, ingest_clips
+
+    monkeypatch.setattr("app.audio.capture_eval.shutil.which", lambda name: None)
+    source = tmp_path / "evie.m4a"
+    source.write_bytes(b"not really audio")
+    with pytest.raises(RuntimeError, match="ffmpeg"):
+        ingest_clips(source, CapturePlan(out_dir=tmp_path / "wake"))
 
 
 async def test_run_ears_simulated_resource_report(tmp_path) -> None:
@@ -433,6 +661,105 @@ async def test_run_ears_delivers_wake_utterance_only_with_consent() -> None:
     assert len(sent) == 1
     assert sent[0]["cfg"].consent is True
     assert "frames_b64" in sent[0]
+
+
+async def test_run_ears_requires_menu_bar_app_before_opening_mic() -> None:
+    """When bound to the EV app, ears must not open the mic if EV is closed."""
+
+    cfg = EarConfig(
+        sample_rate=16000,
+        block_ms=20,
+        vad_pre_roll_s=0.02,
+        vad_post_roll_s=0.04,
+        vad_min_speech_s=0.02,
+        duration_s=1.0,
+    )
+    stream = FakeStream([_silence_block()])
+    stats = await run_ears(
+        cfg,
+        stream=stream,
+        wake_engine=FakeWakeEngine(),
+        vad_engine=EnergyVad(),
+        require_menu_bar_app=True,
+        app_running=lambda: False,
+    )
+    assert stream.opened is False
+    assert stats.blocks == 0
+
+
+async def test_run_ears_releases_mic_when_menu_bar_app_goes_away() -> None:
+    """Once EV quits, ears releases the microphone within the check interval."""
+
+    cfg = EarConfig(
+        sample_rate=16000,
+        block_ms=20,
+        vad_pre_roll_s=0.02,
+        vad_post_roll_s=0.04,
+        vad_min_speech_s=0.02,
+    )
+    alive = {"value": True}
+    stream = FakeStream([_silence_block()])
+    stop = asyncio.Event()
+
+    async def run_with_app_toggle() -> None:
+        try:
+            await run_ears(
+                cfg,
+                stream=stream,
+                wake_engine=FakeWakeEngine(),
+                vad_engine=EnergyVad(),
+                stop_event=stop,
+                require_menu_bar_app=True,
+                app_check_interval_s=0.01,
+                app_running=lambda: alive["value"],
+                # The watchdog's real on_exit is os._exit(0), which would kill
+                # the whole pytest process. The in-loop check is what releases
+                # the mic here; the watchdog is exercised separately.
+                app_exit=lambda: None,
+            )
+        finally:
+            stop.set()
+
+    task = asyncio.create_task(run_with_app_toggle())
+    for _ in range(50):
+        if stream.opened:
+            break
+        await asyncio.sleep(0.02)
+    assert stream.opened is True
+    alive["value"] = False
+    await asyncio.wait_for(task, timeout=5)
+    assert stream.opened is False
+    assert stop.is_set()
+
+
+def test_present_reply_opens_overlay_for_spoken_text(monkeypatch) -> None:
+    from clients.ears import main as ears_main
+
+    called: list[list[str]] = []
+
+    class _Proc:
+        pass
+
+    def fake_popen(args, **kwargs):
+        called.append(list(args))
+        return _Proc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    ears_main._present_reply("   ")
+    assert called == []
+    ears_main._present_reply("Yes?")
+    assert called == []
+    ears_main._present_reply("Hmm.")
+    assert called == []
+    ears_main._present_reply("Nothing on the calendar right now.")
+    assert len(called) == 1
+    assert called[0][0] == "/usr/bin/open"
+    url = called[0][1]
+    assert url.startswith("ev://present?")
+    assert "ticker" in url
+    assert "glance" in url
+    assert "Nothing" in url
+    assert "Nothing+on+the+calendar" not in url
 
 
 async def test_run_ears_blocks_delivery_without_consent() -> None:

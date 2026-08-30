@@ -9,6 +9,25 @@ public enum HUDCardError: Error, Equatable, Sendable {
     case unsupportedSchema(String)
 }
 
+public struct LookoutUtteranceResult: Codable, Sendable {
+    public let reply: String
+    public let conversationId: String?
+    public let preferHaptic: Bool?
+    public let hud: HUDCard?
+
+    public init(
+        reply: String,
+        conversationId: String? = nil,
+        preferHaptic: Bool? = true,
+        hud: HUDCard? = nil
+    ) {
+        self.reply = reply
+        self.conversationId = conversationId
+        self.preferHaptic = preferHaptic
+        self.hud = hud
+    }
+}
+
 public struct HUDCard: Codable, Sendable, Equatable {
     public static let schemaVersionV1 = "ev.hud.card.v1"
 
@@ -45,5 +64,26 @@ public struct HUDCard: Codable, Sendable, Equatable {
     /// one-liners: `[schema] title (priority N)` + body.
     public func renderText() -> String {
         "[\(schemaVersion)] \(title) (priority \(priority))\n\(body)"
+    }
+
+    public var metaKind: String? {
+        meta?["kind"]?.stringValue
+    }
+
+    public var isApprovalHold: Bool {
+        metaKind == "approval_hold"
+    }
+
+    public var holdToolName: String? {
+        meta?["tool"]?.stringValue
+    }
+
+    public var holdActionId: String? {
+        meta?["action_id"]?.stringValue
+    }
+
+    public var holdArguments: [String: Any] {
+        guard let object = meta?["arguments"]?.objectValue else { return [:] }
+        return object.mapValues { $0.jsonObject() }
     }
 }

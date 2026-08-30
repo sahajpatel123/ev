@@ -238,6 +238,42 @@ breakdown, backend) automatically if Agent 2 exposes `arbiter` (or
 `models_residency`) in `/v1/ops/metrics`; until then it states the gap
 explicitly.
 
+### 4.3 Local owner auto-connect ("First chat on this Mac")
+
+When the workbench is served from the same origin on a loopback host
+(`127.0.0.1` / `localhost` / `::1`), the SPA calls `GET /app/bootstrap` on
+load and receives a **one-time workbench device token** — never the master
+key. The token is used exactly like a manual device token and is rotated on
+every bootstrap, so older tokens stop working. No URL or key is typed.
+
+```text
+1. Start the API:  cd backend && uv run uvicorn app.main:app
+2. Open:           http://127.0.0.1:8000/app
+3. Status becomes: "connected (this Mac)"   (no key pasted)
+4. Ask EV:         type into Ask or Conversation and send
+5. Optional CLI:   uv run ev workbench      (prints URL + auto-connect status)
+6. Disconnect:     click Disconnect; Reconnect this Mac restores loopback
+7. Remote hosts:   keep using the manual API URL + device token form
+```
+
+**Security properties (mechanism B — one-time connect token):**
+
+- `GET /app/bootstrap` only succeeds when the peer is `127.0.0.1` or `::1`
+  **and** the `Host` header is a loopback name; non-loopback clients get 403
+  with no token, and a remote client spoofing `Host: localhost` still gets 403
+  because the socket peer is the gate.
+- The endpoint never returns `EV_MASTER_KEY`/`EV_API_KEY`. It mints a
+  revocable `workbench-local` device row (trust level `owner` once the owner
+  ceremony exists) and returns its plaintext token once; the stored hash is
+  rotated on the next bootstrap.
+- The browser stores only the device token in `localStorage` (the same slot
+  the manual device-token path already uses). Static HTML/JS contain no
+  secret. Master credentials are never baked into assets or persisted by the
+  auto-connect path.
+- "connected (this Mac)" is only shown after the token successfully
+  authenticates against `/v1/timeline`; a failed bootstrap shows an explicit
+  error, never a fake connected state.
+
 ## 5. HUD rendering targets (M5)
 
 | Target | Renderer | Schema |

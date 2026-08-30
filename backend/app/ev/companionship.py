@@ -13,9 +13,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev.user_state import build_user_state
-from app.models import DecisionOutcome, Device, Event, Memory, Prediction, ResponseLog
+from app.models import DecisionOutcome, Device, Entity, Event, Memory, Prediction, ResponseLog
 from app.schemas import IsolationScanOut, RelationshipOut
 from app.utils.text import utcnow
+
+GENERIC_HUMAN_NUDGE = (
+    "I'm not a substitute for people. A real conversation with someone you know "
+    "would help more than I can."
+)
 
 LONELINESS_TOKENS = re.compile(
     r"\b(lonely|alone|no one|nobody|isolated|isolation|i have no friends|"
@@ -110,13 +115,24 @@ async def scan_isolation(session: AsyncSession, *, window_days: int = 14) -> Iso
             "timeline. A short call or meetup with someone from your network would break the "
             "loop — I can help you prepare for it. (I'm an AI; I don't replace that.)"
         )
-    return IsolationScanOut(
+    result = IsolationScanOut(
         detected=detected,
         signals=signals,
         recommendation=recommendation,
         evidence_ids=evidence_ids,
         confidence=confidence,
     )
+    try:
+        from app.ev.assistant import get_profile
+
+        profile = await get_profile(session)
+        profile.isolation_scan_ran_at = utcnow()
+        profile.isolation_detected = detected
+        profile.updated_at = utcnow()
+        await session.flush()
+    except Exception:  # noqa: BLE001 - scan result still returns
+        pass
+    return result
 
 
 async def relationship_stats(session: AsyncSession) -> RelationshipOut:
@@ -200,3 +216,78 @@ async def relationship_stats(session: AsyncSession) -> RelationshipOut:
         devices=device_count,
         updated_at=utcnow(),
     )
+
+
+async def first_person_name(session: AsyncSession) -> str | None:
+    row = (
+        await session.execute(
+            select(Entity.name)
+            .where(Entity.entity_type == "person")
+            .order_by(Entity.updated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    name = (row or "").strip()
+    return name or None
+
+
+def isolation_nudge_text(person_name: str | None) -> str:
+    if person_name:
+        return (
+            f"I'm not a substitute for people. When you can, reach out to {person_name}."
+        )
+    return GENERIC_HUMAN_NUDGE
+
+
+async def maybe_isolation_nudge(
+    session: AsyncSession,
+    *,
+    scan: IsolationScanOut | None = None,
+    social_turns: int | None = None,
+) -> str | None:
+    """At most one nudge after a real scan trip (or N social turns that run a scan).
+
+    If a scan has never run, return None — a fake nudge is worse than silence.
+    """
+
+    from app.config import settings
+    from app.ev.assistant import get_profile
+
+    profile = await get_profile(session)
+    if profile.social_nudge_sent_at is not None:
+        return None
+
+    detected = False
+    ran = profile.isolation_scan_ran_at is not None
+    if scan is not None:
+        ran = True
+        detected = bool(scan.detected)
+    elif ran:
+        detected = bool(profile.isolation_detected)
+
+    threshold = int(settings.social_nudge_after_turns)
+    turns = profile.social_turn_count if social_turns is None else social_turns
+    if not detected and turns >= threshold:
+        scan = await scan_isolation(session)
+        ran = True
+        detected = bool(scan.detected)
+
+    if not ran or not detected:
+        return None
+
+    person = await first_person_name(session)
+    text = isolation_nudge_text(person)
+    profile.social_nudge_sent_at = utcnow()
+    profile.updated_at = utcnow()
+    await session.flush()
+    return text
+
+
+async def note_social_turn(session: AsyncSession) -> int:
+    from app.ev.assistant import get_profile
+
+    profile = await get_profile(session)
+    profile.social_turn_count = int(profile.social_turn_count or 0) + 1
+    profile.updated_at = utcnow()
+    await session.flush()
+    return profile.social_turn_count

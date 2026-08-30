@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,12 +15,13 @@ from app.auth import (
     ActorContext,
     require_actor,
     require_actor_context,
+    require_master,
     require_owner_trust,
     require_reverification,
 )
 from app.db import get_session
 from app.ev.actions import list_action_specs
-from app.models import ApprovedAction, DeadLetter
+from app.models import ApprovedAction, DeadLetter, LifeOutboundAction
 from app.schemas import (
     ActionDecisionRequest,
     ActionSpecOut,
@@ -27,10 +29,16 @@ from app.schemas import (
     ApprovedActionOut,
     DeadLetterCreate,
     DeadLetterOut,
+    LifeJobOut,
+    LookoutComposeIn,
+    LookoutDismissIn,
+    LookoutListOut,
     MemoryDelta,
     NotificationCreate,
     NotificationOut,
     NotifyStatusOut,
+    PresenceShowIn,
+    PresenceShowOut,
     RuntimeHeartbeatCreate,
     RuntimeHeartbeatOut,
     RuntimeStatusOut,
@@ -169,17 +177,25 @@ async def utterance(
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     await session.commit()
+    tts_device_id = result.get("tts_device_id")
     return RuntimeUtteranceResponse(
         session_id=current.id,
-        state="follow_up",
+        state=result.get("state") or current.state,
         transcript=result["transcript"].text,
         transcript_confidence=result["transcript"].confidence,
         reply=result["reply"],
         conversation_id=UUID(result["conversation_id"]) if result["conversation_id"] else None,
+        tts_device_id=UUID(str(tts_device_id)) if tts_device_id else None,
         tts=(
             TtsOut(
                 provider=result["tts"].provider,
                 audio_ref=result["tts"].audio_ref,
+                audio_b64=(
+                    base64.b64encode(result["tts"].audio).decode("ascii")
+                    if getattr(result["tts"], "audio", None)
+                    and len(result["tts"].audio) <= 1_500_000
+                    else None
+                ),
                 content_type=result["tts"].content_type,
                 ssml=result["tts"].ssml,
                 duration_ms=result["tts"].duration_ms,
@@ -207,6 +223,78 @@ async def utterance(
             if isinstance(d, dict)
         ],
     )
+
+
+@router.get("/transcript")
+async def transcript(
+    since: datetime | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    """JSON snapshot of the owner's live conversation thread."""
+    from app.ev.fleet import list_transcript
+
+    payload = await list_transcript(session, since=since, limit=limit)
+    await session.commit()
+    return payload
+
+
+@router.get("/transcript/stream")
+async def transcript_stream(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+):
+    """SSE stream of new live-thread events for web/Mac lookout."""
+    import asyncio
+    import json
+
+    from fastapi.responses import StreamingResponse
+
+    from app.ev.fleet import list_transcript
+
+    first = await list_transcript(session, limit=50)
+    await session.commit()
+    last_ids = {item["id"] for item in first["events"]}
+
+    async def events():
+        yield f"data: {json.dumps(first)}\n\n"
+        for _ in range(120):
+            await asyncio.sleep(1.0)
+            nxt = await list_transcript(session, limit=50)
+            fresh = [item for item in nxt["events"] if item["id"] not in last_ids]
+            if fresh:
+                last_ids.update(item["id"] for item in fresh)
+                yield f"data: {json.dumps({'conversation_id': nxt['conversation_id'], 'events': fresh})}\n\n"
+            else:
+                yield ":\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@router.post("/lock-all")
+async def lock_all(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> dict:
+    """Master key: revoke every device token."""
+    from app.ev.tools import dispatch
+
+    result = await dispatch(
+        session,
+        "lock_everything",
+        {"confirm": True},
+        actor=actor,
+        allow_sensitive=True,
+        channel="action",
+        request_id="runtime-lock-all",
+    )
+    payload = result.result if isinstance(result.result, dict) else {
+        "ok": result.ok,
+        "error": result.error,
+    }
+    await session.commit()
+    return payload
 
 
 @router.get("/status", response_model=RuntimeStatusOut)
@@ -413,13 +501,68 @@ async def list_actions(
     return [ApprovedActionOut.model_validate(row) for row in rows]
 
 
+async def _require_independent_approve_factor(
+    session: AsyncSession,
+    ctx: ActorContext,
+    data: ActionDecisionRequest | None,
+    x_ev_reverify: str | None,
+) -> None:
+    """Master, purpose-bound reverify, or a verified WebAuthn assertion."""
+
+    if ctx.is_master:
+        return
+    assertion = data.webauthn if data is not None else None
+    if assertion is not None:
+        from app.identity.service import IdentityError, verify_webauthn_assertion
+
+        try:
+            await verify_webauthn_assertion(
+                session,
+                challenge_id=assertion.challenge_id,
+                credential_id=assertion.credential_id,
+                client_data_json=assertion.client_data_json,
+                authenticator_data=assertion.authenticator_data,
+                signature=assertion.signature,
+            )
+        except IdentityError as exc:
+            raise HTTPException(
+                status_code=exc.status,
+                detail=exc.message,
+                headers={"X-Error-Code": exc.code},
+            ) from exc
+        return
+    if not x_ev_reverify:
+        raise HTTPException(
+            status_code=403,
+            detail="Re-verification required for this sensitive action",
+            headers={"X-Error-Code": "reverification_required"},
+        )
+    from app.identity.service import IdentityError, consume_reverification
+
+    try:
+        await consume_reverification(
+            session,
+            token=x_ev_reverify,
+            purpose="runtime.action",
+            ctx=ctx,
+        )
+    except IdentityError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail=exc.message,
+            headers={"X-Error-Code": exc.code},
+        ) from exc
+
+
 @router.post("/actions/{action_id}/approve", response_model=ApprovedActionOut)
 async def approve_action(
     action_id: UUID,
     data: ActionDecisionRequest | None = None,
     session: AsyncSession = Depends(get_session),
-    ctx: ActorContext = Depends(require_reverification("runtime.action")),
+    ctx: ActorContext = Depends(require_actor_context),
+    x_ev_reverify: str | None = Header(default=None, alias="X-EV-Reverify"),
 ) -> ApprovedActionOut:
+    await _require_independent_approve_factor(session, ctx, data, x_ev_reverify)
     actor = ctx.actor
     try:
         action = await runtime_service.decide_action(
@@ -432,6 +575,7 @@ async def approve_action(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
     except ValueError as exc:
+        await session.commit()
         raise HTTPException(status_code=409, detail=str(exc)) from None
     await session.commit()
     return ApprovedActionOut.model_validate(action)
@@ -568,3 +712,149 @@ async def discard_dead_letter(
         raise HTTPException(status_code=404, detail=str(exc)) from None
     await session.commit()
     return DeadLetterOut.model_validate(letter)
+
+
+@router.get("/life-jobs", response_model=list[LifeJobOut])
+async def list_life_jobs(
+    status_filter: str | None = Query(default=None, alias="status"),
+    lifecycle_filter: str | None = Query(default=None, alias="lifecycle"),
+    limit: int = Query(default=100, ge=1, le=500),
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> list[LifeJobOut]:
+    """Outbound life-action jobs with the full lifecycle (never fake success)."""
+    stmt = (
+        select(LifeOutboundAction)
+        .order_by(LifeOutboundAction.created_at.desc())
+        .limit(limit)
+    )
+    if status_filter:
+        stmt = stmt.where(LifeOutboundAction.status == status_filter)
+    if lifecycle_filter:
+        stmt = stmt.where(LifeOutboundAction.lifecycle == lifecycle_filter)
+    rows = (await session.execute(stmt)).scalars().all()
+    return [LifeJobOut.model_validate(row) for row in rows]
+
+
+@router.post("/life-jobs/{job_id}/claim", response_model=LifeJobOut)
+async def claim_life_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> LifeJobOut:
+    """A device acknowledges that it has picked up its dispatched job."""
+    from app.notify.routing import claim_life_job
+
+    if ctx.device_id is None:
+        raise HTTPException(status_code=403, detail="Claiming requires a device token")
+    try:
+        row = await claim_life_job(session, job_id, device_id=ctx.device_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    await session.commit()
+    return LifeJobOut.model_validate(row)
+
+
+@router.post("/present", response_model=PresenceShowOut)
+async def present_overlay(
+    data: PresenceShowIn,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> PresenceShowOut:
+    """Open EVIE's native HUD on the owner's Mac. Never a fake success."""
+    from app.ev.tools import dispatch
+
+    response = await dispatch(
+        session,
+        "present",
+        {
+            "title": data.title,
+            "body": data.body,
+            "kind": data.kind,
+            "size": data.size,
+            "time_type": data.time_type,
+            "placement": data.placement,
+            "ttl_ms": data.ttl_ms,
+            "items": data.items,
+            "questions": data.questions,
+            "response": data.response,
+            "layout": data.layout,
+            "recommendation": data.recommendation,
+            "source": data.source,
+            "lookout": data.lookout,
+            "window_id": data.window_id,
+        },
+        actor=ctx.actor,
+        device_id=ctx.device_id,
+        channel="action",
+    )
+    await session.commit()
+    outcome = response.result if isinstance(response.result, dict) else {
+        "ok": False,
+        "opened": False,
+        "reason": response.error or "present_failed",
+    }
+    outcome.setdefault("ok", response.ok)
+    outcome.setdefault("opened", False)
+    return PresenceShowOut.model_validate(outcome)
+
+
+@router.post("/lookouts", response_model=PresenceShowOut)
+async def compose_lookouts(
+    data: LookoutComposeIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> PresenceShowOut:
+    """Let surface intelligence plan (and optionally open) HUD windows."""
+    from app.ev.lookout import compose_and_maybe_open, fill_windows_from_state, plan_surfaces
+
+    if data.open:
+        payload = await compose_and_maybe_open(
+            session,
+            message=data.message,
+            reply=data.body,
+            title=data.title,
+            explicit=data.explicit,
+        )
+        return PresenceShowOut(
+            ok=True,
+            opened=bool(payload.get("opened")),
+            surface=str(payload.get("surface") or "overlay"),
+            url=payload.get("url"),
+            via=payload.get("via"),
+            degraded=bool(payload.get("degraded")),
+            reason=payload.get("reason"),
+            windows=list(payload.get("windows") or []),
+            plan=payload,
+        )
+    plan = plan_surfaces(data.message, explicit=data.explicit, title=data.title, body=data.body or "")
+    await fill_windows_from_state(session, plan)
+    payload = plan.as_dict()
+    return PresenceShowOut(
+        ok=True,
+        opened=False,
+        surface="overlay",
+        windows=payload["windows"],
+        plan=payload,
+    )
+
+
+@router.get("/lookouts", response_model=LookoutListOut)
+async def list_lookouts(actor: str = Depends(require_actor)) -> LookoutListOut:
+    from app.notify.lookouts import list_windows
+
+    return LookoutListOut(windows=list_windows())
+
+
+@router.post("/lookouts/dismiss")
+async def dismiss_lookouts(
+    data: LookoutDismissIn,
+    actor: str = Depends(require_actor),
+) -> dict:
+    from app.notify.presence import dismiss_presence
+
+    return await dismiss_presence(data.window_id)

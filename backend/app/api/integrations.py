@@ -7,12 +7,24 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import ActorContext, require_actor, require_master, require_reverification
+from app.auth import (
+    ActorContext,
+    require_actor,
+    require_actor_context,
+    require_master,
+    require_reverification,
+)
 from app.config import settings
 from app.db import get_session
+from app.ev.policy import Confirmation
 from app.integrations import oauth, webhooks
 from app.integrations import plugins as plugin_service
 from app.integrations import service as integrations
+from app.integrations.life_helper import (
+    LifeHelperError,
+    LifeHelperUnavailableError,
+    LifePermissionDeniedError,
+)
 from app.models import Integration
 from app.schemas import (
     IntegrationActionOut,
@@ -24,6 +36,10 @@ from app.schemas import (
     IntegrationOut,
     IntegrationScopeUpdate,
     IntegrationSyncOut,
+    LifeDeviceResultIn,
+    LifeDeviceResultOut,
+    LifeOutboxOut,
+    LifePolicyOut,
     LiveEventOut,
     OAuthAuthorizeOut,
     OAuthStatusOut,
@@ -37,6 +53,7 @@ from app.schemas import (
     WebhookIngestOut,
     WebhookSecretOut,
 )
+from app.utils.text import utcnow
 
 router = APIRouter(prefix="/v1")
 
@@ -55,6 +72,10 @@ def _integration_error(exc: Exception) -> HTTPException:
     if isinstance(exc, oauth.OAuthAuthError):
         return HTTPException(status_code=401, detail=str(exc))
     if isinstance(exc, oauth.OAuthProviderError):
+        return HTTPException(status_code=502, detail=str(exc))
+    if isinstance(exc, LifePermissionDeniedError):
+        return HTTPException(status_code=403, detail=str(exc))
+    if isinstance(exc, (LifeHelperError, LifeHelperUnavailableError)):
         return HTTPException(status_code=502, detail=str(exc))
     raise exc
 
@@ -339,13 +360,37 @@ async def run_integration_action(
     ctx: ActorContext = Depends(require_reverification("integration.action")),
 ) -> IntegrationActionOut:
     actor = ctx.actor
+    confirmation_target = next(
+        (
+            str(data.args.get(key))
+            for key in ("to", "name", "entity", "entity_id", "command", "project", "summary", "query", "id")
+            if data.args.get(key) not in (None, "")
+        ),
+        None,
+    )
+    confirmation = Confirmation(
+        factor="master_key" if ctx.is_master else "reverify",
+        confirmed=True,
+        target=confirmation_target,
+        issued_at=utcnow(),
+    )
     try:
-        result = await integrations.execute_action(
+        await integrations.authorize_integration_action(
             session,
             integration_id,
             action=data.action,
             args=data.args,
             actor=actor,
+            device_id=ctx.device_id,
+            confirmation=confirmation,
+        )
+        result = await integrations.execute_action_after_policy(
+            session,
+            integration_id,
+            action=data.action,
+            args=data.args,
+            actor=actor,
+            device_id=ctx.device_id,
         )
     except Exception as exc:
         raise _integration_error(exc) from exc
@@ -372,6 +417,7 @@ async def sync_integration(
             integration_id,
             actor=actor,
             days=effective_days,
+            device_id=ctx.device_id,
         )
     except Exception as exc:
         raise _integration_error(exc) from exc
@@ -386,13 +432,125 @@ async def sync_integration(
 async def calendar_signals(
     integration_id: UUID,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
     """Derived calendar signals (next event, leave-by, density, quiet hours)."""
+    integration = await session.get(Integration, integration_id)
+    if integration is None:
+        raise _integration_error(KeyError(integration_id))
+    if integration.adapter != "calendar":
+        raise _integration_error(ValueError("integration is not a calendar adapter"))
+    from app.ev.policy import authorize, not_connected_payload
+    from app.ev.tools import get_spec
+
+    decision = await authorize(
+        session,
+        "calendar_read",
+        actor=ctx.actor,
+        arguments={},
+        device_id=ctx.device_id,
+        channel="action",
+        spec=get_spec("calendar_read"),
+        provider_scopes_override=list(integration.scopes or []),
+        provider_connected_override=integration.status == "active",
+    )
+    if not decision.allowed:
+        if decision.effect in {"not_connected", "unavailable"}:
+            return not_connected_payload(decision)
+        raise HTTPException(status_code=403, detail=decision.reason)
     try:
-        return await integrations.calendar_signals(session, integration_id)
+        result = await integrations.calendar_signals(session, integration_id)
     except Exception as exc:
         raise _integration_error(exc) from exc
+    from app.services.access_log import log_access
+
+    await log_access(
+        session,
+        actor=ctx.actor,
+        action="calendar.read",
+        endpoint="GET /v1/integrations/{id}/calendar/signals",
+        resource_type="integration",
+        resource_ids=[integration.id],
+        details={
+            "policy_effect": decision.effect,
+            "risk_class": decision.risk_class,
+            "provider": decision.provider,
+            "evidence": (result.get("source") if isinstance(result, dict) else None),
+        },
+    )
+    await session.commit()
+    return result
+
+
+@router.get(
+    "/integrations/{integration_id}/life/policy",
+    response_model=LifePolicyOut,
+)
+async def life_policy(
+    integration_id: UUID,
+    action: str,
+    recipient: str | None = None,
+    confirm: bool = False,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> LifePolicyOut:
+    """Standing-authority policy for a life action (never fabricates consent)."""
+    try:
+        return await integrations.life_policy_decision(
+            session,
+            integration_id,
+            action=action,
+            recipient=recipient,
+            confirm=confirm,
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+
+
+@router.get(
+    "/integrations/{integration_id}/life/outbox",
+    response_model=LifeOutboxOut,
+)
+async def life_outbox(
+    integration_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> LifeOutboxOut:
+    """Queued outbound actions for a registered device actuator (poll)."""
+    device_id = ctx.device_id
+    try:
+        return await integrations.list_device_outbox(
+            session,
+            integration_id,
+            device_id=device_id,
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+
+
+@router.post(
+    "/integrations/{integration_id}/life/device-results",
+    response_model=LifeDeviceResultOut,
+)
+async def life_device_results(
+    integration_id: UUID,
+    data: LifeDeviceResultIn,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> LifeDeviceResultOut:
+    """Authenticated device-posted delivery results (evidence required)."""
+    try:
+        result = await integrations.ingest_device_result(
+            session,
+            integration_id,
+            data,
+            actor=ctx.actor,
+            device_id=ctx.device_id,
+        )
+    except Exception as exc:
+        raise _integration_error(exc) from exc
+    await session.commit()
+    return result
 
 
 @router.get("/integrations/{integration_id}/events", response_model=list[LiveEventOut])
@@ -554,6 +712,7 @@ async def run_plugin_command(
             command_name,
             args=data.args,
             actor=actor,
+            device_id=ctx.device_id,
         )
     except Exception as exc:
         raise _plugin_error(exc) from exc

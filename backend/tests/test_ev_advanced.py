@@ -322,6 +322,27 @@ async def test_health_radar_snapshot_trends_and_anomalies(client: AsyncClient) -
     assert summary["anomalies"]
 
 
+async def test_helio_aliases_and_clinical_emergency(client: AsyncClient) -> None:
+    from app.ev.health_radar import clinical_flags, normalize_metrics
+
+    mapped = normalize_metrics({"hr": 72, "hrv": 50, "blood_oxygen": 97, "stress_score": 20})
+    assert mapped["heart_rate"] == 72
+    assert mapped["hrv_ms"] == 50
+    assert mapped["spo2"] == 97
+    flags = clinical_flags({"heart_rate": 155, "spo2": 88})
+    assert any(row["metric"] == "heart_rate" and row.get("emergency") for row in flags)
+    assert any(row["metric"] == "spo2" for row in flags)
+
+    resp = await client.post(
+        "/v1/health/snapshot",
+        json={"source": "amazfit_helio", "metrics": {"hr": 148, "spo2": 90, "hrv": 12}},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["source"] == "amazfit_helio"
+    assert any(flag.get("clinical") for flag in body["anomalies"])
+
+
 async def test_alert_radar_scan_dedup(client: AsyncClient) -> None:
     resp = await client.post(
         "/v1/alerts/watchlist",

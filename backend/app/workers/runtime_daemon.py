@@ -58,6 +58,7 @@ async def tick_once() -> dict:
 def main() -> None:
     # Ensure the schema exists before the first tick (idempotent, Postgres-safe).
     asyncio.run(init_db())
+    _startup_presence()
     interval = max(1, settings.runtime_daemon_tick_seconds)
     while True:
         try:
@@ -70,6 +71,30 @@ def main() -> None:
                 error=f"{type(exc).__name__}: {exc}",
             )
         time.sleep(interval)
+
+
+def _startup_presence() -> None:
+    """Seed the fleet registry and beacon boot health once per process start."""
+    from app.notify.registry import ensure_fleet_devices
+    from app.notify.service import send_presence_beacon
+
+    async def _go() -> None:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as session:
+            fleet = await ensure_fleet_devices(session)
+            beacon = (
+                await send_presence_beacon(session)
+                if settings.notify_boot_beacon
+                else None
+            )
+            await session.commit()
+            print(
+                f"[runtime] fleet seeded: {fleet['created'] or 'up-to-date'}; "
+                f"presence beacon: {beacon.status if beacon else 'disabled'}"
+            )
+
+    asyncio.run(_go())
 
 
 if __name__ == "__main__":

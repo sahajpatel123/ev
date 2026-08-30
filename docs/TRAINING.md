@@ -24,6 +24,29 @@ The two sets are different today. When a servable local model exists, the
 weight-training pipeline (SFT + DPO, eval, rollback, privacy) is ready to use
 with owner data.
 
+## 0.1 HUD surface learning (added)
+
+The window UI is **not a frozen skin**. `eval/hud/surface_corpus.json` is a
+one-time public harvest (cited URLs + licenses in
+`eval/hud/public_sources.json`; multiple paraphrases per mechanic plus a
+held-out slice) and `eval/hud/surface_calibration.json` is the
+repo-shipped fit (JARVIS sizes, Karen time-types, E.V.I.E. less-intrusive rule).
+This does **not** weight-train DeepSeek. It is a deeper policy fit, scored on
+phrases the fit step did not consume.
+`app/training/surface.py` scores the live planner against that gold set
+(`GET /v1/training/surfaces/smoke`) and folds owner ratings
+(`POST /v1/training/surfaces/rate` → `POST /v1/training/surfaces/calibrate`)
+into urgency, suppress/boost kinds, and size preference. That calibration is
+what `plan_surfaces` reads on every turn.
+
+This is the same class of training as style/importance/filter: evidence in,
+policy out, reversible by writing a new version. It is **not** DeepSeek
+weight training. The corpus also exports as SFT/tool records
+(`surface.sft_records`) for a future local adapter.
+
+Review the current renderer at `/app/gallery`. Rate a window that felt wrong
+and calibrate — the next HUD decision learns.
+
 ## 1. The active training story — prompt-level personalization
 
 Three deterministic learners turn the owner's real ratings and corrections

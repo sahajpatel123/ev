@@ -55,9 +55,10 @@ def cmd_list(args: argparse.Namespace) -> int:
 def cmd_pull(args: argparse.Namespace) -> int:
     settings = get_ml_settings()
     reg = _build_registry()
-    spec = reg.get(args.name)
-    path = store.download_model(spec, settings)
-    print(f"verified {spec.name}: {path}")
+    for name in args.name:
+        spec = reg.get(name)
+        path = store.download_model(spec, settings)
+        print(f"verified {spec.name}: {path}")
     return 0
 
 
@@ -152,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.set_defaults(func=cmd_list)
 
     p_pull = sub.add_parser("pull", help="download + checksum-verify a model")
-    p_pull.add_argument("name")
+    p_pull.add_argument("name", nargs="+")
     p_pull.set_defaults(func=cmd_pull)
 
     p_verify = sub.add_parser("verify", help="verify cached checksums")

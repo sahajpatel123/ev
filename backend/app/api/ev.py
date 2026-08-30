@@ -8,11 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import require_actor
+from app.auth import require_actor, require_actor_context
 from app.db import get_session
 from app.ev import (
     alert_radar,
-    diagnostics,
     ev_sense,
     gear,
     health_radar,
@@ -32,9 +31,12 @@ from app.schemas import (
     AlertDismissRequest,
     AlertOut,
     AlertScanResponse,
+    BeaconCreate,
+    BeaconOut,
     CalibrationReport,
     DecisionOutcomeCreate,
     DecisionOutcomeOut,
+    DiagnosticsLastOut,
     GearScanResponse,
     GearSnapshotCreate,
     GearSnapshotOut,
@@ -45,15 +47,24 @@ from app.schemas import (
     HudQuickCardOut,
     InteractionModeRequest,
     InteractionModeResponse,
+    LocationShareCreate,
+    LocationShareOut,
+    LookoutUtteranceIn,
+    OwnerCameraCreate,
     PersonWhereaboutsOut,
     PredictionOut,
     PredictionOutcomeUpdate,
     ProactiveTuningOut,
+    PublicFeedCreate,
     SensePredictRequest,
     SensePredictResponse,
     TacticalBriefOut,
     TacticalBriefRequest,
     TacticalQuickRequest,
+    TelemetrySampleCreate,
+    TelemetrySampleOut,
+    TelemetrySessionCreate,
+    TelemetrySessionOut,
     WatchlistCreate,
     WatchlistOut,
 )
@@ -65,10 +76,217 @@ router = APIRouter(prefix="/v1")
 @router.post("/diagnostics/calibrate", response_model=CalibrationReport)
 async def calibrate(
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx=Depends(require_actor_context),
 ) -> CalibrationReport:
-    """E.V.-style self-calibration: database, embeddings, gateway, retrieval, storage."""
-    return await diagnostics.run_calibration(session)
+    """Run diagnostics through the same policy and audit path as other tools."""
+    from app.ev.tools import dispatch
+
+    tool = await dispatch(
+        session,
+        "calibrate",
+        {},
+        actor=ctx.actor,
+        allow_sensitive=True,
+        device_id=ctx.device_id,
+        channel="action",
+        audit_endpoint="POST /v1/diagnostics/calibrate",
+    )
+    payload = tool.result if isinstance(tool.result, dict) else {}
+    report_payload = payload.get("report") if isinstance(payload.get("report"), dict) else payload
+    if not tool.ok or not report_payload.get("checks"):
+        error = str(tool.error or payload.get("error") or "diagnostics unavailable")
+        status = 503 if error in {"not_connected", "unavailable"} else 403
+        raise HTTPException(status_code=status, detail=error)
+    report = CalibrationReport.model_validate(report_payload)
+    await session.commit()
+    return report
+
+
+@router.get("/diagnostics/last", response_model=DiagnosticsLastOut)
+async def diagnostics_last(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> DiagnosticsLastOut:
+    from app.ev.assistant import last_calibration_report
+    from app.ev.workbench import last_diagnostics_payload
+
+    payload = last_diagnostics_payload(await last_calibration_report(session))
+    return DiagnosticsLastOut.model_validate(payload)
+
+
+@router.post("/telemetry/sessions", response_model=TelemetrySessionOut, status_code=201)
+async def start_telemetry_session(
+    data: TelemetrySessionCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> TelemetrySessionOut:
+    from app.ev.hardware import start_test_session
+
+    row = await start_test_session(session, label=data.label)
+    await session.commit()
+    return TelemetrySessionOut.model_validate(row)
+
+
+@router.post("/telemetry/sample", response_model=TelemetrySampleOut, status_code=201)
+async def post_telemetry_sample(
+    data: TelemetrySampleCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> TelemetrySampleOut:
+    from app.ev.hardware import record_sample
+
+    row = await record_sample(
+        session,
+        source=data.source,
+        battery=data.battery,
+        alt=data.alt,
+        speed=data.speed,
+        lat=data.lat,
+        lon=data.lon,
+        session_id=data.session_id,
+        details=data.details,
+    )
+    await session.commit()
+    return TelemetrySampleOut.model_validate(row)
+
+
+@router.post("/location-shares", response_model=LocationShareOut, status_code=201)
+async def create_location_share(
+    data: LocationShareCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> LocationShareOut:
+    from datetime import timedelta
+
+    from app.models import LocationShare
+    from app.utils.text import utcnow
+
+    row = LocationShare(
+        person_name=data.name,
+        last_lat=data.last_lat,
+        last_lon=data.last_lon,
+        token_expires=data.token_expires or (utcnow() + timedelta(hours=6)),
+        source=data.source,
+        owner_family_device=data.owner_family_device,
+        consented_at=utcnow(),
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return LocationShareOut.model_validate(row)
+
+
+@router.post("/beacons", response_model=BeaconOut, status_code=201)
+async def create_beacon(
+    data: BeaconCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> BeaconOut:
+    from app.models import Beacon
+    from app.utils.text import utcnow
+
+    row = Beacon(
+        label=data.label,
+        kind=data.kind,
+        last_lat=data.last_lat,
+        last_lon=data.last_lon,
+        owner_only=True,
+        last_seen_at=utcnow() if data.last_lat is not None else None,
+        details=data.details,
+    )
+    session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return BeaconOut.model_validate(row)
+
+
+@router.post("/cameras", status_code=201)
+async def add_owner_camera(
+    data: OwnerCameraCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from app.models import OwnerCamera
+
+    row = OwnerCamera(
+        name=data.name,
+        vault_ref=data.vault_ref,
+        kind=data.kind,
+        clip_attachment_id=data.clip_attachment_id,
+    )
+    session.add(row)
+    await session.commit()
+    return {"id": str(row.id), "name": row.name, "discovered_lan": False}
+
+
+@router.post("/public-feeds", status_code=201)
+async def add_public_feed(
+    data: PublicFeedCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from app.models import PublicFeed
+
+    row = PublicFeed(
+        kind=data.kind,
+        url=data.url,
+        label=data.label,
+        last_items=list(data.items or []),
+    )
+    session.add(row)
+    await session.commit()
+    return {"id": str(row.id), "label": row.label}
+
+
+@router.post("/lookout/utterance")
+async def lookout_utterance(
+    data: LookoutUtteranceIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from app.ev.workbench import post_utterance
+
+    result = await post_utterance(
+        session,
+        data.text,
+        conversation_id=data.conversation_id,
+        prefer_haptic=data.prefer_haptic,
+        actor=actor,
+    )
+    await session.commit()
+    return result
+
+
+@router.get("/lookout/transcript")
+async def lookout_transcript(
+    conversation_id: UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from app.ev.workbench import lookout_transcript as _transcript
+
+    return await _transcript(session, conversation_id)
+
+
+@router.get("/lookout/live")
+async def lookout_live(
+    conversation_id: UUID | None = None,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+):
+    import json
+
+    from fastapi.responses import StreamingResponse
+
+    from app.ev.workbench import lookout_transcript as _transcript
+
+    payload = await _transcript(session, conversation_id)
+
+    async def frames():
+        yield f"event: transcript\ndata: {json.dumps(payload, default=str)}\n\n"
+        yield "event: done\ndata: {\"ok\": true}\n\n"
+
+    return StreamingResponse(frames(), media_type="text/event-stream")
 
 
 @router.post("/tactical/brief", response_model=TacticalBriefOut)
@@ -199,8 +417,33 @@ async def health_snapshot(
         source=data.source,
         device_id=data.device_id,
         occurred_at=data.occurred_at,
+        permission_state=data.permission_state,
+        synced_at=data.synced_at,
+        units=data.units,
+        source_metadata=data.source_metadata,
     )
     await session.commit()
+    if any(flag.get("emergency") for flag in (snapshot.anomalies or [])) or (
+        snapshot.readiness is not None and snapshot.readiness < 35
+    ):
+        try:
+            from app.ev.lookout import compose_and_maybe_open
+
+            await compose_and_maybe_open(
+                session,
+                message="live vitals need a pulse",
+                reply=(
+                    f"Readiness {snapshot.readiness}. "
+                    + "; ".join(
+                        str(flag.get("rationale") or flag.get("metric"))
+                        for flag in (snapshot.anomalies or [])[:3]
+                    )
+                ),
+                title="Vitals",
+                explicit=False,
+            )
+        except Exception:  # noqa: BLE001 - a HUD miss must not drop the snapshot
+            pass
     return HealthSnapshotOut.model_validate(snapshot)
 
 
@@ -408,6 +651,9 @@ async def gear_snapshot(
         details=data.details,
     )
     session.add(row)
+    from app.ev.workshop import scan_empties
+
+    await scan_empties(session, emit=True)
     await session.commit()
     return GearSnapshotOut.model_validate(row)
 

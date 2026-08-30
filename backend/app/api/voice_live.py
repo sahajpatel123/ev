@@ -1,8 +1,8 @@
 """Hands-free voice transport: one WebSocket carries the always-on stream.
 
-`GET /v1/voice/live/status` answers the only question that matters when EVIE
+`GET /v1/voice/hands-free/status` answers the only question that matters when EVIE
 cannot hear you — *which engine is missing and what installs it* — and
-`WS /v1/voice/live` carries the always-on conversation:
+`WS /v1/voice/hands-free` carries the always-on conversation:
 
 * client → server: an ``auth`` frame, then continuous 16 kHz mono PCM16 binary
   frames plus small JSON control frames (``playback_finished``, ``cancel``,
@@ -36,7 +36,7 @@ from app.models import Device, VoiceSession
 from app.utils.text import sha256_hex, utcnow
 from app.voice.contracts import VoiceError
 from app.voice.lifecycle import VoiceRuntime, VoiceState
-from app.voice.live import (
+from app.voice.hands_free_loop import (
     LiveConfig,
     LiveEvent,
     LiveReply,
@@ -129,12 +129,12 @@ def hands_free_status() -> dict:
     }
 
 
-@router.get("/live/status")
+@router.get("/hands-free/status")
 async def live_status(ctx: ActorContext = Depends(require_actor_context)) -> dict:
     return hands_free_status()
 
 
-@router.get("/live/diagnostics")
+@router.get("/hands-free/diagnostics")
 async def live_diagnostics(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
@@ -323,7 +323,7 @@ def build_loop(
     )
 
 
-@router.websocket("/live")
+@router.websocket("/hands-free")
 async def live_socket(websocket: WebSocket) -> None:
     await websocket.accept()
     key = id(websocket)

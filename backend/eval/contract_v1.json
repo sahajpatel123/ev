@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-08-13T09:02:39.193153+00:00",
+  "locked_at": "2026-08-18T13:33:24.585731+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -15,6 +15,37 @@
       "delete"
     ],
     "/v1/alerts/{alert_id}/dismiss": [
+      "post"
+    ],
+    "/v1/assistant/callouts": [
+      "get",
+      "post"
+    ],
+    "/v1/assistant/dedication": [
+      "post"
+    ],
+    "/v1/assistant/dedication/play": [
+      "post"
+    ],
+    "/v1/assistant/name": [
+      "post"
+    ],
+    "/v1/assistant/name/reset": [
+      "post"
+    ],
+    "/v1/assistant/profile": [
+      "get"
+    ],
+    "/v1/assistant/protocols": [
+      "get"
+    ],
+    "/v1/assistant/quiet-hours": [
+      "post"
+    ],
+    "/v1/assistant/training-wheels/complete": [
+      "post"
+    ],
+    "/v1/assistant/training-wheels/start": [
       "post"
     ],
     "/v1/attachments": [
@@ -35,7 +66,16 @@
     "/v1/backup/verify": [
       "post"
     ],
+    "/v1/beacons": [
+      "post"
+    ],
     "/v1/calibration/tuning": [
+      "get"
+    ],
+    "/v1/cameras": [
+      "post"
+    ],
+    "/v1/capabilities": [
       "get"
     ],
     "/v1/chat": [
@@ -102,8 +142,24 @@
     "/v1/devices/{device_id}": [
       "delete"
     ],
+    "/v1/devices/{device_id}/bootstrap": [
+      "get"
+    ],
+    "/v1/devices/{device_id}/panic": [
+      "post"
+    ],
+    "/v1/devices/{device_id}/push-token": [
+      "delete",
+      "post"
+    ],
+    "/v1/devices/{device_id}/status": [
+      "get"
+    ],
     "/v1/diagnostics/calibrate": [
       "post"
+    ],
+    "/v1/diagnostics/last": [
+      "get"
     ],
     "/v1/ears/wake": [
       "post"
@@ -289,6 +345,15 @@
     "/v1/import": [
       "post"
     ],
+    "/v1/indoor/edges": [
+      "post"
+    ],
+    "/v1/indoor/graph": [
+      "get"
+    ],
+    "/v1/indoor/nodes": [
+      "post"
+    ],
     "/v1/integrations": [
       "get",
       "post"
@@ -329,6 +394,15 @@
     "/v1/integrations/{integration_id}/events": [
       "get"
     ],
+    "/v1/integrations/{integration_id}/life/device-results": [
+      "post"
+    ],
+    "/v1/integrations/{integration_id}/life/outbox": [
+      "get"
+    ],
+    "/v1/integrations/{integration_id}/life/policy": [
+      "get"
+    ],
     "/v1/integrations/{integration_id}/oauth/status": [
       "get"
     ],
@@ -367,6 +441,18 @@
     "/v1/live/stream": [
       "get"
     ],
+    "/v1/location-shares": [
+      "post"
+    ],
+    "/v1/lookout/live": [
+      "get"
+    ],
+    "/v1/lookout/transcript": [
+      "get"
+    ],
+    "/v1/lookout/utterance": [
+      "post"
+    ],
     "/v1/maintenance/prune-backups": [
       "post"
     ],
@@ -392,6 +478,9 @@
       "post"
     ],
     "/v1/memory/rebuild": [
+      "post"
+    ],
+    "/v1/notify/{notification_id}/receipt": [
       "post"
     ],
     "/v1/ops/center": [
@@ -428,6 +517,9 @@
     "/v1/people/recognize": [
       "post"
     ],
+    "/v1/people/roster": [
+      "get"
+    ],
     "/v1/people/{entity_id}": [
       "delete"
     ],
@@ -436,6 +528,12 @@
     ],
     "/v1/people/{name}/biodata/link": [
       "post"
+    ],
+    "/v1/people/{name}/context": [
+      "get"
+    ],
+    "/v1/people/{name}/resolve": [
+      "get"
     ],
     "/v1/people/{name}/whereabouts": [
       "get"
@@ -496,11 +594,29 @@
     "/v1/projects/{project_id}/status": [
       "patch"
     ],
+    "/v1/public-feeds": [
+      "post"
+    ],
     "/v1/recall/week": [
       "get"
     ],
     "/v1/relationship": [
       "get"
+    ],
+    "/v1/research/jobs": [
+      "post"
+    ],
+    "/v1/research/jobs/{job_id}": [
+      "get"
+    ],
+    "/v1/research/jobs/{job_id}/cancel": [
+      "post"
+    ],
+    "/v1/research/jobs/{job_id}/resume": [
+      "post"
+    ],
+    "/v1/research/jobs/{job_id}/run": [
+      "post"
     ],
     "/v1/research/sessions": [
       "get",
@@ -605,6 +721,22 @@
     "/v1/runtime/heartbeat": [
       "post"
     ],
+    "/v1/runtime/life-jobs": [
+      "get"
+    ],
+    "/v1/runtime/life-jobs/{job_id}/claim": [
+      "post"
+    ],
+    "/v1/runtime/lock-all": [
+      "post"
+    ],
+    "/v1/runtime/lookouts": [
+      "get",
+      "post"
+    ],
+    "/v1/runtime/lookouts/dismiss": [
+      "post"
+    ],
     "/v1/runtime/notifications": [
       "get"
     ],
@@ -614,10 +746,19 @@
     "/v1/runtime/notify/status": [
       "get"
     ],
+    "/v1/runtime/present": [
+      "post"
+    ],
     "/v1/runtime/status": [
       "get"
     ],
     "/v1/runtime/sync": [
+      "get"
+    ],
+    "/v1/runtime/transcript": [
+      "get"
+    ],
+    "/v1/runtime/transcript/stream": [
       "get"
     ],
     "/v1/runtime/transition": [
@@ -655,6 +796,12 @@
     ],
     "/v1/tactical/quick": [
       "get"
+    ],
+    "/v1/telemetry/sample": [
+      "post"
+    ],
+    "/v1/telemetry/sessions": [
+      "post"
     ],
     "/v1/temporal/memories": [
       "get"
@@ -759,6 +906,18 @@
     "/v1/training/personalization/rollback": [
       "post"
     ],
+    "/v1/training/surfaces/calibrate": [
+      "post"
+    ],
+    "/v1/training/surfaces/calibration": [
+      "get"
+    ],
+    "/v1/training/surfaces/rate": [
+      "post"
+    ],
+    "/v1/training/surfaces/smoke": [
+      "get"
+    ],
     "/v1/training/voice/delete": [
       "post"
     ],
@@ -822,11 +981,14 @@
     "/v1/voice/enrollments/{enrollment_id}/rollback": [
       "post"
     ],
-    "/v1/voice/live/diagnostics": [
+    "/v1/voice/hands-free/diagnostics": [
       "get"
     ],
-    "/v1/voice/live/status": [
+    "/v1/voice/hands-free/status": [
       "get"
+    ],
+    "/v1/voice/live/open": [
+      "post"
     ],
     "/v1/voice/sessions/{session_id}": [
       "get"
@@ -848,6 +1010,56 @@
     ],
     "/v1/voice/wake": [
       "post"
+    ],
+    "/v1/world-model/cameras": [
+      "get"
+    ],
+    "/v1/world-model/cameras/{device_id}": [
+      "get",
+      "put"
+    ],
+    "/v1/world-model/forget-last-hour": [
+      "post"
+    ],
+    "/v1/world-model/locations/{location}/changes": [
+      "get"
+    ],
+    "/v1/world-model/objects": [
+      "get",
+      "post"
+    ],
+    "/v1/world-model/objects/by-name/{name}/last-seen": [
+      "get"
+    ],
+    "/v1/world-model/objects/{object_id}": [
+      "delete",
+      "get"
+    ],
+    "/v1/world-model/objects/{object_id}/last-seen": [
+      "get"
+    ],
+    "/v1/world-model/objects/{object_id}/observations": [
+      "post"
+    ],
+    "/v1/world-model/objects/{object_id}/why": [
+      "get"
+    ],
+    "/v1/world-model/observations": [
+      "get",
+      "post"
+    ],
+    "/v1/world-model/observations/{observation_id}": [
+      "delete",
+      "get"
+    ],
+    "/v1/world-model/observations/{observation_id}/why": [
+      "get"
+    ],
+    "/v1/world-model/people/observations": [
+      "post"
+    ],
+    "/v1/world-model/people/{name}": [
+      "delete"
     ]
   },
   "schema_version": "ev.contract.v1",

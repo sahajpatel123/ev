@@ -34,6 +34,11 @@ class VisionSettings(BaseSettings):
     vision_screen_max_dimension: int = 1280
     vision_capture_timeout: float = 30.0
 
+    # Self-hosted DeepSeek-OCR HTTP endpoint. Official api.deepseek.com is
+    # text-only and is refused by DeepSeekOCRProvider.
+    vision_deepseek_ocr_url: str | None = None
+    vision_deepseek_ocr_timeout: float = 20.0
+
 
 @lru_cache
 def get_vision_settings() -> VisionSettings:

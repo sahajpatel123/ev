@@ -18,6 +18,8 @@ from __future__ import annotations
 import argparse
 import array
 import json
+import shutil
+import subprocess
 import sys
 import time
 import wave
@@ -58,6 +60,9 @@ class CapturePlan:
     ambient_chunk_minutes: int = 10
     device: str | None = None
     sample_rate: int = 16000
+
+    def __post_init__(self) -> None:
+        self.out_dir = Path(self.out_dir)
 
     def is_far(self, index: int) -> bool:
         return index in self.far_slots
@@ -164,15 +169,92 @@ def ingest_ambient(source: str | Path, plan: CapturePlan) -> list[Path]:
     src = Path(source)
     ambient_dir = plan.ambient_dir()
     ambient_dir.mkdir(parents=True, exist_ok=True)
-    sources = sorted(src.rglob("*.wav")) if src.is_dir() else [src]
+    suffixes = (".wav", ".m4a", ".mp3", ".flac")
+    sources = sorted(p for p in src.rglob("*") if p.suffix.lower() in suffixes) if src.is_dir() else [src]
     if not sources:
         raise FileNotFoundError(f"no WAV files found under {src}")
     chunks: list[Path] = []
     for index, item in enumerate(sources, start=1):
         target = ambient_dir / f"ambient-{index:03d}.wav"
-        target.write_bytes(item.read_bytes())
+        _convert_to_wav(item, target)
         chunks.append(target)
     return chunks
+
+
+def _convert_to_wav(source: Path, target: Path) -> None:
+    """Convert any ffmpeg-readable audio to 16 kHz mono PCM16 WAV."""
+
+    if source.suffix.lower() == ".wav":
+        with wave.open(str(source), "rb") as wav:
+            if wav.getnchannels() == 1 and wav.getsampwidth() == 2 and wav.getframerate() == 16000:
+                target.write_bytes(source.read_bytes())
+                return
+    ffmpeg = shutil.which("ffmpeg") or shutil.which("afconvert")
+    if ffmpeg is None:
+        raise RuntimeError(
+            "ffmpeg/afconvert is required to convert non-16k mono WAV audio; "
+            "install ffmpeg or provide 16 kHz mono WAV files"
+        )
+    if Path(ffmpeg).name == "ffmpeg":
+        subprocess.run(
+            [ffmpeg, "-y", "-i", str(source), "-ac", "1", "-ar", "16000",
+             "-c:a", "pcm_s16le", str(target)],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        subprocess.run(
+            [ffmpeg, "-f", "WAVE", "-d", "LEI16@16000", str(source), str(target)],
+            check=True,
+            capture_output=True,
+        )
+
+
+def ingest_clips(source: str | Path, plan: CapturePlan) -> list[Path]:
+    """Convert existing wake clips (m4a/wav/…) into the CapturePlan layout.
+
+    Files whose names contain ``3m`` (or ``far``) are tagged as far clips;
+    everything else is tagged close. Numbering continues after existing clips.
+    """
+
+    src = Path(source)
+    suffixes = (".wav", ".m4a", ".mp3", ".flac")
+    sources = sorted(p for p in src.rglob("*") if p.suffix.lower() in suffixes) if src.is_dir() else [src]
+    if not sources:
+        raise FileNotFoundError(f"no audio files found under {src}")
+    clips_dir = plan.out_dir / "clips"
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(clips_dir.glob("evie-*.wav"))
+    next_index = 1 + max((int(p.stem.split("-")[1]) for p in existing), default=0)
+    ingested: list[Path] = []
+    for item in sources:
+        tag = "3m" if any(t in item.stem.lower() for t in ("3m", "far")) else "close"
+        target = clips_dir / f"evie-{next_index:03d}-{tag}.wav"
+        _convert_to_wav(item, target)
+        ingested.append(target)
+        next_index += 1
+    return ingested
+
+
+def ingest_negatives(source: str | Path, plan: CapturePlan) -> list[Path]:
+    """Convert non-wake speech recordings into negatives/."""
+
+    src = Path(source)
+    suffixes = (".wav", ".m4a", ".mp3", ".flac")
+    sources = sorted(p for p in src.rglob("*") if p.suffix.lower() in suffixes) if src.is_dir() else [src]
+    if not sources:
+        raise FileNotFoundError(f"no audio files found under {src}")
+    negatives_dir = plan.out_dir / "negatives"
+    negatives_dir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(negatives_dir.glob("negative-*.wav"))
+    next_index = 1 + max((int(p.stem.split("-")[1]) for p in existing), default=0)
+    ingested: list[Path] = []
+    for item in sources:
+        target = negatives_dir / f"negative-{next_index:02d}.wav"
+        _convert_to_wav(item, target)
+        ingested.append(target)
+        next_index += 1
+    return ingested
 
 
 def missing_report(plan: CapturePlan) -> dict:
@@ -241,6 +323,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ambient-minutes", type=float, default=0.0)
     parser.add_argument("--ambient-chunk-minutes", type=int, default=10)
     parser.add_argument("--ingest-ambient", default=None, help="existing WAV file/dir to ingest")
+    parser.add_argument("--ingest-clips", default=None, help="existing wake-clip file/dir to ingest")
+    parser.add_argument("--ingest-negatives", default=None, help="non-wake speech file/dir to ingest")
     parser.add_argument("--ingest-only", action="store_true", help="skip live clip recording")
     args = parser.parse_args(argv)
 
@@ -269,6 +353,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Data will be saved under {plan.out_dir.resolve()} (local only, owner-consented).")
 
     ambient_chunks: list[Path] = []
+    if args.ingest_clips:
+        ingested = ingest_clips(args.ingest_clips, plan)
+        print(f"Ingested {len(ingested)} wake clip(s).")
+    if args.ingest_negatives:
+        ingested = ingest_negatives(args.ingest_negatives, plan)
+        print(f"Ingested {len(ingested)} negative(s).")
     if args.ingest_ambient:
         ambient_chunks = ingest_ambient(args.ingest_ambient, plan)
         write_ambient_manifest(plan, ambient_chunks)

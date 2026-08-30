@@ -475,6 +475,8 @@ async def test_runtime_sensitive_utterance_requires_reverification(
 async def test_runtime_follow_up_window_expires(
     client: AsyncClient, db_session
 ) -> None:
+    """Short follow-up hint expiry must not idle the runtime session."""
+
     await grant_voice_consent(client)
     await enroll_owner(client)
     outcome = await _verified_runtime_session(client, "mac-followup-expire")
@@ -483,6 +485,8 @@ async def test_runtime_follow_up_window_expires(
         json={"session_id": outcome["session_id"], "text": "Set a timer"},
     )
     assert resp.status_code == 200
+    first = resp.json()
+    assert first["state"] in {"awake", "follow_up"}
 
     row = (
         await db_session.execute(
@@ -502,8 +506,15 @@ async def test_runtime_follow_up_window_expires(
             "follow_up": True,
         },
     )
-    assert resp.status_code == 428
-    assert resp.headers.get("x-error-code") == "follow_up_expired"
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["state"] in {"awake", "follow_up"}
+    assert body["reply"]
+    assert body["conversation_id"] == first["conversation_id"]
+    assert resp.headers.get("x-error-code") not in {
+        "follow_up_expired",
+        "session_ended",
+    }
 
 
 async def test_stale_session_times_out(client: AsyncClient, db_session) -> None:

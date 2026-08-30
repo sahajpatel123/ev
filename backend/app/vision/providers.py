@@ -5,6 +5,9 @@ The seam keeps EVIE model-agnostic and privacy-first:
 - OCR runs locally (Apple Vision on macOS via the ``evvision`` helper,
   tesseract elsewhere, deterministic double for CI); raw media never leaves
   the device for OCR.
+- Optional ``deepseek_ocr`` talks to a *self-hosted* DeepSeek-OCR server
+  (``EV_VISION_DEEPSEEK_OCR_URL``). Official ``api.deepseek.com`` is text-only
+  and is refused as an OCR endpoint.
 - Only derived text is ever offered to a reasoning provider, and only under
   the existing permission + privacy rules.
 - A missing or broken OCR binary raises a typed error instead of masquerading
@@ -14,6 +17,7 @@ The seam keeps EVIE model-agnostic and privacy-first:
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -257,6 +261,76 @@ class TesseractVisionProvider:
         )
 
 
+class DeepSeekOCRProvider:
+    """Self-hosted DeepSeek-OCR. Never the official chat API.
+
+    Expected HTTP contract::
+
+        POST {EV_VISION_DEEPSEEK_OCR_URL}
+        {"image_b64": "...", "content_type": "image/jpeg", "prompt": "Free OCR."}
+        -> {"text": "...", "lines": [{"text": "...", "confidence": 0.9}]}
+    """
+
+    name = "deepseek_ocr"
+    _BLOCKED_HOSTS = ("api.deepseek.com",)
+
+    def __init__(self, endpoint: str | None = None, timeout: float | None = None) -> None:
+        vision = get_vision_settings()
+        self.endpoint = (endpoint if endpoint is not None else vision.vision_deepseek_ocr_url or "").strip()
+        self.timeout = float(timeout if timeout is not None else vision.vision_deepseek_ocr_timeout)
+
+    def _reject_official_chat_api(self) -> None:
+        lowered = self.endpoint.lower()
+        if any(host in lowered for host in self._BLOCKED_HOSTS):
+            raise VisionEngineError(
+                "Official DeepSeek chat (api.deepseek.com) is text-only and cannot OCR. "
+                "Host DeepSeek-OCR yourself and set EV_VISION_DEEPSEEK_OCR_URL to that server."
+            )
+        if not self.endpoint:
+            raise VisionEngineError(
+                "EV_VISION_DEEPSEEK_OCR_URL is empty; DeepSeek-OCR is not configured"
+            )
+
+    async def analyze(
+        self,
+        *,
+        data: bytes,
+        content_type: str | None = None,
+        filename: str | None = None,
+        prompt: str | None = None,
+    ) -> VisionResult:
+        self._reject_official_chat_api()
+        import httpx
+
+        payload = {
+            "image_b64": base64.b64encode(data).decode("ascii"),
+            "content_type": content_type or "application/octet-stream",
+            "filename": filename,
+            "prompt": prompt or "Free OCR.",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(self.endpoint, json=payload)
+        except httpx.HTTPError as exc:
+            raise VisionEngineError(f"DeepSeek-OCR request failed: {exc}") from exc
+        if response.status_code >= 400:
+            raise VisionEngineError(
+                f"DeepSeek-OCR returned HTTP {response.status_code}: {response.text[:300]}"
+            )
+        try:
+            body = response.json()
+        except json.JSONDecodeError as exc:
+            raise VisionEngineError("DeepSeek-OCR returned non-JSON") from exc
+        text = str(body.get("text") or body.get("ocr_text") or "").strip()
+        lines = body.get("lines") if isinstance(body.get("lines"), list) else []
+        return VisionResult(
+            ocr_text=text[:4000] or None,
+            lines=[item for item in lines if isinstance(item, dict)],
+            provider=self.name,
+            degraded=False,
+        )
+
+
 def _error_message(stdout: str) -> str:
     try:
         payload = json.loads(stdout)
@@ -332,6 +406,8 @@ VISION_PROVIDER_REGISTRY: dict[str, Callable[[], VisionProvider]] = {
         binary=getattr(settings, "vision_tesseract_binary", "tesseract")
     ),
     "apple_vision": lambda: AppleVisionProvider(),
+    "deepseek_ocr": DeepSeekOCRProvider,
+    "deepseek-ocr": DeepSeekOCRProvider,
 }
 
 

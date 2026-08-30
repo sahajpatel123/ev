@@ -2,9 +2,77 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+from app.config import settings
 from app.gateway.validation import validate_arguments
 
-ACTION_SPECS = [
+LIFE_ACTION_NAMES = frozenset(
+    {
+        "send_message",
+        "list_messages",
+        "resolve_contact",
+        "place_call",
+        "list_mail",
+        "open_url",
+        "open_app",
+        "close_app",
+        "set_reminder",
+    }
+)
+
+AUTONOMY_VALUES = ("full", "confirm_unknown", "confirm_all")
+
+
+def autonomy_mode() -> str:
+    """EV_OWNER_AUTONOMY, normalized; unknown values fail closed to ``full``."""
+
+    mode = (settings.owner_autonomy or "full").strip().lower()
+    return mode if mode in AUTONOMY_VALUES else "full"
+
+
+def life_action_requires_approval(name: str) -> bool:
+    """Per-action approval requirement under the current autonomy mode.
+
+    ``full`` and ``confirm_unknown`` do not add a per-action approval step:
+    the standing scopes / contact allowlist are enforced by the CONDUIT life
+    policy inside the adapter. ``confirm_all`` requires explicit approval for
+    every life action.
+    """
+
+    if name in LIFE_ACTION_NAMES:
+        return autonomy_mode() == "confirm_all"
+    spec = next((item for item in ACTION_SPECS if item["name"] == name), None)
+    return bool(spec and spec.get("requires_approval", False))
+
+
+def life_agency_prompt(name: str | None = None) -> str:
+    """System-prompt block for life agency (injected when life tools are offered)."""
+
+    from app.ev.assistant import spoken_name
+
+    who = spoken_name(name)
+    return (
+        f"LIFE AGENCY. You are {who}, the owner's agent, and the owner has standing "
+        "authority: when the owner tells you to do something and a granted life "
+        "bridge exists, DO it.\n"
+        "- Execute life actions (messages, calls, mail, contacts, open/close "
+        "allowlisted Mac apps and https links) through the granted bridges. "
+        "Under EV_OWNER_AUTONOMY=full, no per-action approval is required "
+        "inside granted scopes.\n"
+        "- Opening Safari, Messages, Mail, or another allowlisted app is a "
+        "real helper action. Do it. Never invent a refusal such as "
+        "'I cannot open Safari for you'.\n"
+        "- If a bridge is missing or a permission/scope is denied, explain "
+        "exactly WHAT must be granted and WHICH helper is required (integration "
+        "slug + scope, or helper command). Never invent a theatrical or moral "
+        "refusal.\n"
+        "- When an action succeeds, confirm briefly with evidence: "
+        "recipient/target, channel, and time."
+    )
+
+
+ACTION_SPECS: list[dict[str, Any]] = [
     {
         "name": "search_memory",
         "description": "Run a bounded personal-memory search (read-only model capability).",
@@ -37,6 +105,41 @@ ACTION_SPECS = [
             },
         },
         "output": {"type": "object"},
+        "requires_approval": False,
+        "undoable": True,
+        "permission": "hud:write",
+        "read_only": False,
+    },
+    {
+        "name": "present",
+        "description": (
+            "Open EVIE's native HUD windows on the owner's Mac to show something. "
+            "Use this instead of telling the owner to open a web page. "
+            "kind=auto lets intelligence pick size, time-type, and lookout."
+        ),
+        "payload": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "title": {"type": "string", "minLength": 1, "maxLength": 120},
+                "body": {"type": "string", "minLength": 1, "maxLength": 4000},
+                "kind": {"type": "string", "maxLength": 32, "default": "auto"},
+                "size": {"type": "string", "maxLength": 16},
+                "time_type": {"type": "string", "maxLength": 16},
+                "placement": {"type": "string", "maxLength": 16},
+                "ttl_ms": {"type": "integer", "minimum": 0, "maximum": 3600000},
+                "items": {"type": "array", "items": {"type": "string"}},
+                "questions": {"type": "array", "items": {"type": "string"}},
+                "response": {"type": "string", "maxLength": 4000},
+                "layout": {"type": "string", "maxLength": 16},
+                "recommendation": {"type": "string", "maxLength": 400},
+                "source": {"type": "string", "maxLength": 160},
+                "lookout": {"type": "boolean"},
+                "window_id": {"type": "string", "maxLength": 64},
+            },
+            "required": ["title", "body"],
+        },
+        "output": {"type": "object", "required": ["opened"]},
         "requires_approval": False,
         "undoable": True,
         "permission": "hud:write",
@@ -116,6 +219,108 @@ ACTION_SPECS = [
         "undoable": False,
         "permission": "message:send",
         "read_only": False,
+        "risk_class": "R2",
+        "confirmation": "standing",
+        "target_ownership": "owner",
+        "provider": "messaging",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "key",
+        "cancellation": "not_applicable",
+    },
+    {
+        "name": "list_messages",
+        "description": "List recent messages from the granted messaging bridge.",
+        "payload": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "channel": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "default": "messages",
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            },
+        },
+        "output": {"type": "object"},
+        "requires_approval": False,
+        "undoable": False,
+        "permission": "message:read",
+        "read_only": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "messaging",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["message:read"],
+    },
+    {
+        "name": "get_weather",
+        "description": "Live weather and a 3-day forecast via Open-Meteo.",
+        "payload": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "place": {"type": "string", "minLength": 1, "maxLength": 80},
+                "query": {"type": "string", "minLength": 1, "maxLength": 200},
+            },
+        },
+        "output": {"type": "object", "required": ["ok", "count", "results"]},
+        "requires_approval": False,
+        "undoable": False,
+        "permission": "web:search",
+        "read_only": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "public",
+        "provider": "open-meteo",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+    },
+    {
+        "name": "calibrate",
+        "description": "Run self-diagnostics (database, embeddings, gateway, retrieval, storage).",
+        "payload": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object", "required": ["spoken", "hud"]},
+        "requires_approval": False,
+        "undoable": False,
+        "permission": "diagnostics:read",
+        "read_only": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+    },
+    {
+        "name": "calendar_read",
+        "description": "Read the owner's calendar signals (next event, leave-by). Never writes.",
+        "payload": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            },
+        },
+        "output": {"type": "object", "required": ["ok", "spoken"]},
+        "requires_approval": False,
+        "undoable": False,
+        "permission": "calendar:read",
+        "read_only": True,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "calendar",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["calendar:read"],
     },
     {
         "name": "execute_command",
@@ -127,6 +332,7 @@ ACTION_SPECS = [
                 "command": {"type": "string", "minLength": 1, "maxLength": 4000},
                 "cwd": {"type": "string", "maxLength": 512},
                 "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 300, "default": 30},
+                "confirm": {"type": "boolean", "default": False},
             },
             "required": ["command"],
         },
@@ -143,7 +349,11 @@ def get_action_spec(name: str) -> dict | None:
     """Return the declared spec for an action name, or None when unknown."""
     for spec in ACTION_SPECS:
         if spec["name"] == name:
-            return spec
+            from app.ev.policy import annotate_spec
+
+            resolved = dict(spec)
+            resolved["requires_approval"] = life_action_requires_approval(name)
+            return annotate_spec(resolved)
     return None
 
 
@@ -157,4 +367,9 @@ def validate_action_payload(name: str, payload: dict) -> list[str]:
 
 
 def list_action_specs() -> list[dict]:
-    return list(ACTION_SPECS)
+    from app.ev.policy import annotate_spec
+
+    return [
+        annotate_spec({**spec, "requires_approval": life_action_requires_approval(spec["name"])})
+        for spec in ACTION_SPECS
+    ]

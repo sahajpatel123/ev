@@ -148,6 +148,45 @@ This is the single capture UX: Agent 3's ears process records the same
 16 kHz mono PCM16 contract, and any enrollment pipeline consumes the same
 WAV files.
 
+## 3.2 Operator script: voice-sample/ → enrolled owner
+
+The orchestrator-supplied owner files (`voice-sample/Sample 1.m4a` …
+`Sample 5.m4a`, stereo AAC 48 kHz) are converted and enrolled with one
+command:
+
+```bash
+cd backend
+export EV_VOICEPRINT_PROVIDER=campp
+export EV_VAULT_KEY=<vault key>
+
+# 1. Convert m4a → 16 kHz mono WAV, validate all 5 samples, then enroll:
+uv run python -m app.voice.speaker enroll \
+  --source-dir ../voice-sample \
+  --reason "owner enrollment via voice-sample CLI"
+
+# Conversion + validation only (no DB touch):
+uv run python -m app.voice.speaker enroll \
+  --source-dir ../voice-sample --convert-only
+
+# 2. Calibrate once the VoxCeleb subset exists:
+uv run ev-eval speaker \
+  --owner-dir ../voice-sample/wav \
+  --impostor-dir ~/.ev/datasets/voxceleb1_o \
+  --roc-out roc.csv
+export EV_VOICEPRINT_THRESHOLD=<SHIPPED_THRESHOLD>
+```
+
+The `enroll` command enforces the production spine: it refuses unless
+`EV_VOICEPRINT_PROVIDER=campp`, computes liveness evidence server-side (never
+accepts a client `live` string), and stores only the encrypted 192-dim
+voiceprint plus per-sample SHA-256 hashes — raw audio is not retained by EV.
+It fails closed with an exact message when the CAM++ or liveness ONNX weights
+are not installed.
+
+Current status on this machine: the 5 m4a files are converted and validated
+(16 kHz mono, 4.9–9.2 s, RMS 0.04–0.05); DB enrollment is waiting on the
+pinned CAM++ (`speaker-campp`) and `liveness-audio` weights from Agent 2.
+
 **Honest status:** the calibration has not been measured yet on this machine —
 it requires the human-approved enrollment recordings, the loudspeaker replay
 test, and the VoxCeleb eval download, none of which exist in the offline

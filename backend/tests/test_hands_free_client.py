@@ -26,8 +26,8 @@ def _mono_wav(path: Path, *, frames: int = 320, rate: int = 16000) -> None:
 def test_ws_url_rewrites_http_and_https_to_the_live_path() -> None:
     http = ClientConfig(api_url="http://127.0.0.1:8000", api_key="k")
     https = ClientConfig(api_url="https://ev.example/api/", api_key="k")
-    assert http.ws_url == "ws://127.0.0.1:8000/v1/voice/live"
-    assert https.ws_url == "wss://ev.example/api/v1/voice/live"
+    assert http.ws_url == "ws://127.0.0.1:8000/v1/voice/hands-free"
+    assert https.ws_url == "wss://ev.example/api/v1/voice/hands-free"
     assert http.frame_samples == 320
 
 

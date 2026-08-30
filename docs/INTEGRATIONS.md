@@ -315,6 +315,9 @@ were already wiped, so re-authorization and a new webhook secret are required).
 | GET | `/v1/integrations/{id}/oauth/status` |
 | POST | `/v1/integrations/{id}/sync?days=N` (default `EV_CALENDAR_SYNC_DAYS`) |
 | GET | `/v1/integrations/{id}/calendar/signals` |
+| GET | `/v1/integrations/{id}/life/policy?action=…&recipient=…` |
+| GET | `/v1/integrations/{id}/life/outbox` (device-authenticated poll) |
+| POST | `/v1/integrations/{id}/life/device-results` (device-authenticated) |
 | POST | `/v1/integrations/vault/rotate` (master key only) |
 | POST | `/v1/integrations/{id}/webhook-secret` |
 | POST | `/v1/integrations/{id}/actions` |
@@ -365,3 +368,180 @@ rotation and provider revocation.
   an extra sync is harmless.
 - **Conductor**: new endpoints are additive only; no existing operation or
   response schema was changed.
+
+## 15. WAVE LIFE — Apple life bridges (messaging / contacts / phone / mail)
+
+**Status: v3 (WAVE LIFE)** — real provider modes for Messages, Contacts,
+Phone, FaceTime, and Mail are implemented behind `provider=macos_life`
+(EVLifeHelper) and `provider=device_proxy` (iPhone actuator queue). The Swift
+helper is implemented by Agent 18 at `macos/Sources/EVLifeHelper/main.swift`;
+this backend is aligned to its real contract (§15.2).
+
+### 15.1 Owner setup (once SUIT ships the helper)
+
+1. Build/install the EVLifeHelper binary (Agent 18): `cd macos && swift build
+   -c release` ships `.build/release/EVLifeHelper` (also inside EV.app as
+   `Contents/MacOS/EVLifeHelper`).
+2. Grant TCC permissions in **System Settings → Privacy & Security**:
+   **Contacts**, **Full Disk Access** (Messages DB), **FaceTime/Call
+   History**, and **Automation** as needed. EVLifeHelper exits **3** on
+   permission denial; EV surfaces that as a loud 403 with the exact setting
+   to open — never as success.
+3. Set the helper path and provider:
+
+   ```bash
+   export EV_LIFE_HELPER_PATH=/Applications/EV.app/Contents/MacOS/EVLifeHelper
+   export EV_MESSAGING_PROVIDER=macos_life
+   ```
+
+4. Install the adapters (scopes are the standing authority):
+
+   ```bash
+   curl -X POST http://127.0.0.1:8000/v1/integrations \
+     -H "Authorization: Bearer $EV_MASTER_KEY" -H "Content-Type: application/json" \
+     -d '{"adapter":"messaging","name":"Messages","scopes":["messaging:read","messaging:act"],"config":{"provider":"macos_life"}}'
+   curl -X POST http://127.0.0.1:8000/v1/integrations \
+     -H "Authorization: Bearer $EV_MASTER_KEY" -H "Content-Type: application/json" \
+     -d '{"adapter":"contacts","name":"Contacts","scopes":["contacts:read"],"config":{"provider":"macos_life"}}'
+   curl -X POST http://127.0.0.1:8000/v1/integrations \
+     -H "Authorization: Bearer $EV_MASTER_KEY" -H "Content-Type: application/json" \
+     -d '{"adapter":"phone","name":"Phone","scopes":["phone:act"],"config":{"provider":"macos_life","contact_allowlist":"starred"}}'
+   ```
+
+5. Say **"EVIE, text Mom I'm late"**. The runtime action dispatches to
+   `POST /v1/integrations/{messaging_id}/actions` with `messaging.send`; EV
+   executes EVLifeHelper and only reports success when the helper returns
+   delivery evidence (`message_id` + `sent_at`). The proof of send is that
+   evidence in the action result.
+
+### 15.2 EVLifeHelper contract v1 (implemented by Agent 18, backend-aligned)
+
+CLI: `EVLifeHelper <command> [--flag value ...]` — flag-style arguments,
+exactly one JSON object on stdout. stderr is human diagnostics only.
+
+Commands (the backend maps its actions onto these): `contacts.list`,
+`contacts.resolve --query`, `messages.list [--limit N]`,
+`messages.send --to --text`, `mail.list [--limit N]`,
+`mail.send --to --subject --body`, `call.place --destination
+[--kind tel|facetime]`, `call.check`, `apps.frontmost`, `apps.activate`.
+Adapter mapping: `phone.call` → `call.place --kind tel`, `facetime.call` →
+`call.place --kind facetime`.
+
+Success envelope:
+
+```json
+{
+  "ok": true,
+  "data": {"to": "Mom", "sent": true}
+}
+```
+
+Delivery evidence: `messages.send` / `mail.send` must set `data.sent == true`;
+`call.place` must set `data.opened == true`. `data.dry_run == true` is
+**not** delivery. The backend wraps the confirmation as
+`delivery: {"confirmed": true, "evidence": {"provider": "EVLifeHelper",
+"confirmed_by": "sent|opened", ...}}`; without it the operation fails
+(`missing_delivery_evidence`) — never a silent success.
+
+Error envelope:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "permission_denied|not_available|bad_arguments|failed",
+    "message": "human-readable"
+  }
+}
+```
+
+Exit codes: `0` ok · `1` generic failure · `3` **permission denied** ·
+`4` not available · `5` bad arguments.
+
+- **Permission denied is never success**: exit 3 (or
+  `error.code=permission_denied`) maps to HTTP 403 with an actionable TCC
+  message; the action result never contains `ok: true`.
+- Timeouts (backend kills after `EV_LIFE_HELPER_TIMEOUT_SECONDS`) and
+  oversized stdout are loud failures.
+
+Real-provider evidence (2026-08-12, this host, built binary
+`macos/.build/arm64-apple-macosx/release/EVLifeHelper`):
+
+- `messages.list --limit 2` returned real Messages DB rows (handle, text,
+  ISO date) through the backend runner — real data, not a double.
+- `contacts.resolve` without the Contacts TCC grant produced exit 3, which the
+  backend surfaced as a loud permission-denied failure.
+- `messages.send` surfaced the helper's current AppleScript error
+  (`Expected class name but found identifier.`) as a loud 502 — no fake
+  success. **DEPENDENCY NOTE (Agent 18)**: fix the `buddy` targeting in
+  `macos/Sources/EVLifeHelper/main.swift` `messages.send`; the backend side is
+  correct and needs no change.
+
+### 15.3 Standing owner authority
+
+Granting `messaging:act` / `phone:act` / `contacts:read` is the standing
+authority. Once granted, known contacts are pre-authorized per
+`EV_LIFE_CONTACT_ALLOWLIST`:
+
+- `all` — every known (resolved) contact is pre-authorized.
+- `starred` — only starred contacts are pre-authorized.
+- `any` — every recipient is pre-authorized.
+
+Recipients outside the allowlist require `confirm: true` on the action (or
+runtime approval) when `EV_LIFE_CONFIRM_UNKNOWN=true`; otherwise they are
+denied. `EV_LIFE_AUTONOMY=full` is the owner's explicit opt-out of per-action
+confirmation inside granted scopes. Per-integration `config` overrides:
+`contact_allowlist`, `autonomy`, `confirm_unknown`, `helper_path`.
+`GET /v1/integrations/{id}/life/policy?action=…&recipient=…` returns the
+decision without executing anything.
+
+### 15.4 iPhone device proxy (`provider=device_proxy`)
+
+API-ready even though SUIT's iOS app is unbuilt:
+
+- Outbound: install the `device_proxy` adapter; `messaging.send` / `phone.call`
+  / `facetime.call` through `POST /v1/integrations/{id}/actions` create a
+  `life_outbound_actions` row with `status=queued` and return
+  `{"queued": true, "delivery": {"confirmed": false, "status": "queued"}}`.
+  Nothing is reported delivered without evidence.
+- Poll: a registered iPhone calls
+  `GET /v1/integrations/{id}/life/outbox` with its device token and receives
+  its queued actions (unassigned rows are visible to any registered device of
+  that integration).
+- Results: `POST /v1/integrations/{id}/life/device-results` with
+  `{"queue_id": "…", "status": "delivered", "evidence": {"message_id": "…",
+  "sent_at": "…"}}` marks the row delivered (evidence required; otherwise
+  502 `missing_delivery_evidence`). `failed` marks it failed. A device can
+  also post inbound `{"message": {...}}` payloads, which are ingested into the
+  integration's live channel as `message.received`.
+
+### 15.5 Runtime / notify wiring (dependency note)
+
+`send_message` must reach the real backend path when
+`EV_MESSAGING_PROVIDER=macos_life`:
+
+- **Agent 14 (PULSE)**: in `app/notify/service.py::dispatch_action`, when
+  `action.action_type == "send_message"` and
+  `settings.messaging_provider == "macos_life"` (or `"device_proxy"`), call
+  `POST /v1/integrations/{messaging_id}/actions` with `messaging.send` and
+  `{"to", "text"}` instead of converting the message into a notification.
+  Keep the notification ledger row only as the action receipt.
+- **Agent 10 (CORTEX)**: `app/ev/actions.py` `send_message` may keep
+  `requires_approval: true` for unknown recipients; the integrations
+  `life/policy` endpoint provides the standing-authority decision so the
+  approval flow can skip known contacts.
+
+### 15.6 Verification
+
+```bash
+cd backend
+uv run pytest tests/test_life_bridges.py tests/test_integrations.py tests/test_oauth_calendar.py -q
+uv run ruff check app clients tests
+uv run mypy app clients
+```
+
+Offline tests cover: mock-helper JSON parsing, exit-code → error mapping,
+permission-denied loudness, missing-delivery-evidence rejection, no local
+fallback when `macos_life` is configured, standing-authority matrix, and the
+device-proxy queue/outbox/evidence lifecycle. The real helper path is tested
+when `EV_LIFE_HELPER_PATH` is configured (skipped otherwise).

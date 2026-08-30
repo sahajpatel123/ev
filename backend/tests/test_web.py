@@ -5,10 +5,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
+
+from app.main import app
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "docs" / "schemas"
+
+
+def loopback_client(host: str = "127.0.0.1", port: int = 55555) -> AsyncClient:
+    return AsyncClient(
+        transport=ASGITransport(app=app, client=(host, port)),
+        base_url="http://127.0.0.1:8000",
+    )
 
 
 async def test_web_app_served_with_strict_csp(client: AsyncClient) -> None:
@@ -22,6 +31,75 @@ async def test_web_app_served_with_strict_csp(client: AsyncClient) -> None:
     assert resp.headers["x-frame-options"] == "DENY"
     assert "no-referrer" in resp.headers["referrer-policy"]
     html = resp.text
+    assert "I’m in your menu bar" in html or "I'm in your menu bar" in html
+    assert "connection-form" not in html
+    assert "Ask EV" not in html
+
+
+async def test_lookout_glass_is_translucent(client: AsyncClient) -> None:
+    css = (await client.get("/app/lookout.css")).text
+    assert "--window-opacity: 0.75" in css
+    assert "opacity: var(--window-opacity)" in css
+    assert "rgba(14, 11, 9, 0.30)" in css
+    assert "70%" in css
+    assert "backdrop-filter" in css
+    assert "background: transparent" in css
+    assert "body.visor .hud" in css
+    assert "--cyan" not in css
+    assert "hud-corners" not in css
+    html = (await client.get("/app/lookout")).text
+    assert "folio" in html
+    assert "hud-corners" not in html
+    overlay = (
+        Path(__file__).resolve().parents[2]
+        / "macos"
+        / "Sources"
+        / "EV"
+        / "PresenceOverlay.swift"
+    ).read_text(encoding="utf-8")
+    assert "windowOpacity: CGFloat = 0.75" in overlay
+    assert "opacity(0.30)" in overlay
+    assert "isOpaque = false" in overlay
+    assert "alphaValue = EVPalette.windowOpacity" in overlay
+    assert ".hudWindow" not in overlay
+    assert ".borderless" in overlay
+    assert ".titled" not in overlay
+    assert "PresenceLayout" in overlay
+
+
+async def test_web_gallery_shows_window_examples(client: AsyncClient) -> None:
+    resp = await client.get("/app/gallery")
+    assert resp.status_code == 200, resp.text
+    assert "EVIE HUD gallery" in resp.text
+    assert "/app/lookout.js" in resp.text
+    js = (await client.get("/app/lookout.js")).text
+    assert "GALLERY" in js
+    assert "renderGallery" in js
+    assert "amazfit_helio" in js
+
+
+async def test_web_lookout_and_stage_are_independent_windows(client: AsyncClient) -> None:
+    lookout = await client.get("/app/lookout")
+    assert lookout.status_code == 200, lookout.text
+    assert "EVIE lookout" in lookout.text
+    assert "/app/lookout.css" in lookout.text
+    assert "/app/lookout.js" in lookout.text
+    assert "connection-form" not in lookout.text
+    stage = await client.get("/app/stage?demo=1")
+    assert stage.status_code == 200, stage.text
+    assert "EVIE visor" in stage.text
+    css = await client.get("/app/lookout.css")
+    assert css.status_code == 200
+    js = await client.get("/app/lookout.js")
+    assert js.status_code == 200
+    assert "DEMO_WINDOWS" in js.text
+    assert "window.open" in js.text
+
+
+async def test_web_ops_console_is_not_the_default(client: AsyncClient) -> None:
+    resp = await client.get("/app/ops")
+    assert resp.status_code == 200, resp.text
+    html = resp.text
     for marker in (
         "ev-hud-card",
         "ev-memory-browser",
@@ -34,7 +112,7 @@ async def test_web_app_served_with_strict_csp(client: AsyncClient) -> None:
 
 
 async def test_web_app_has_no_third_party_resources(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     js = (await client.get("/app/app.js")).text
     assert 'src="http' not in html and 'src="https' not in html
     assert 'href="http' not in html and 'href="https' not in html
@@ -74,13 +152,13 @@ async def test_web_uses_idempotent_capture_keys(client: AsyncClient) -> None:
     assert "queueCapture" in js
     assert "syncQueue" in js
     assert "window.EV" in js
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'id="sync-queue"' in html
     assert 'id="queue-status"' in html
 
 
 async def test_web_has_onboarding_panel(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'id="ev-onboarding"' in html
     assert 'id="onboarding-text"' in html
     assert 'id="onboarding-finish"' in html
@@ -107,7 +185,7 @@ async def test_web_has_onboarding_panel(client: AsyncClient) -> None:
 
 
 async def test_web_setup_wizard(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'id="ev-wizard"' in html
     assert 'id="wizard-next"' in html
     assert 'id="wizard-back"' in html
@@ -122,7 +200,7 @@ async def test_web_setup_wizard(client: AsyncClient) -> None:
 
 
 async def test_web_voice_enrollment_sends_liveness_proof(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'id="voice-liveness"' in html
     assert 'id="voice-live-score"' in html
     js = (await client.get("/app/app.js")).text
@@ -141,11 +219,11 @@ async def test_web_memory_browser_supports_editing(client: AsyncClient) -> None:
     assert "/v1/memories/${id}/correct" in js
     assert "/v1/memories/${id}/forget" in js
     assert "/v1/memories/${id}/restore" in js
-    assert 'id="memory-result"' in (await client.get("/app")).text
+    assert 'id="memory-result"' in (await client.get("/app/ops")).text
 
 
 async def test_web_conversation_view(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'id="ev-conversation"' in html
     assert 'id="conversation-form"' in html
     assert 'id="conversation-messages"' in html
@@ -156,7 +234,7 @@ async def test_web_conversation_view(client: AsyncClient) -> None:
 
 
 async def test_web_settings_panel(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'id="ev-settings"' in html
     assert 'id="personality-save"' in html
     assert 'id="recovery-codes"' in html
@@ -173,7 +251,7 @@ async def test_web_settings_panel(client: AsyncClient) -> None:
 
 
 async def test_web_hud_briefings_panel(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'id="ev-hud-more"' in html
     assert 'id="hud-topic"' in html
     assert 'id="hud-briefing"' in html
@@ -190,7 +268,7 @@ async def test_web_hud_briefings_panel(client: AsyncClient) -> None:
 
 
 async def test_web_console_surface(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     js = (await client.get("/app/app.js")).text
     for marker in (
         'id="ev-console"',
@@ -223,7 +301,7 @@ async def test_web_console_surface(client: AsyncClient) -> None:
 
 
 async def test_web_streaming_cancellation_and_provenance(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     js = (await client.get("/app/app.js")).text
     assert 'id="ask-cancel"' in html
     assert 'id="conversation-cancel"' in html
@@ -241,7 +319,7 @@ async def test_web_streaming_cancellation_and_provenance(client: AsyncClient) ->
 
 async def test_web_voice_roundtrip_path(client: AsyncClient) -> None:
     js = (await client.get("/app/app.js")).text
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'id="voice-wake"' in html
     assert 'id="voice-verify"' in html
     assert 'id="voice-talk"' in html
@@ -267,7 +345,7 @@ async def test_web_voice_roundtrip_path(client: AsyncClient) -> None:
 
 async def test_web_people_integrations_routines_markers(client: AsyncClient) -> None:
     js = (await client.get("/app/app.js")).text
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'id="people-photos"' in html
     assert 'id="people-correct"' in html
     assert 'id="integration-adapter"' in html
@@ -294,11 +372,12 @@ async def test_web_schema_faithful_renderer(client: AsyncClient) -> None:
     assert '"ev.hud.focus.v1"' in js
     assert '"ev.hud.route.v1"' in js
     assert '"ev.hud.quickcard.v1"' in js
+    assert '"ev.hud.lookout.v1"' in js
     assert "schema_version" in js
 
 
 async def test_web_accessibility_landmarks(client: AsyncClient) -> None:
-    html = (await client.get("/app")).text
+    html = (await client.get("/app/ops")).text
     assert 'class="skip-link"' in html
     assert '<main id="main" role="main">' in html
 
@@ -326,3 +405,107 @@ async def test_web_csp_posture_unchanged(client: AsyncClient) -> None:
     js = (await client.get("/app/app.js")).text
     assert "https://" not in html.replace("https://github.com/sahajpatel123/ev", "")
     assert "src=\"https" not in js and "src='https" not in js
+
+
+async def test_web_bootstrap_loopback_issues_device_token_without_key() -> None:
+    async with loopback_client() as loopback:
+        resp = await loopback.get("/app/bootstrap")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["authenticated"] is True
+        assert data["mode"] == "loopback"
+        assert data["label"] == "connected (this Mac)"
+        assert data["token"]
+        assert data["token"] != "test-key"
+        assert "master_key" not in data
+        # The issued token is a real device credential the API accepts.
+        proof = await loopback.get(
+            "/v1/timeline",
+            params={"limit": 1},
+            headers={"Authorization": "Bearer " + data["token"]},
+        )
+        assert proof.status_code == 200, proof.text
+
+
+async def test_web_bootstrap_rotates_previous_token() -> None:
+    async with loopback_client() as loopback:
+        first = (await loopback.get("/app/bootstrap")).json()["token"]
+        second = (await loopback.get("/app/bootstrap")).json()["token"]
+        assert first != second
+        old = await loopback.get(
+            "/v1/timeline",
+            params={"limit": 1},
+            headers={"Authorization": "Bearer " + first},
+        )
+        assert old.status_code == 401
+        new = await loopback.get(
+            "/v1/timeline",
+            params={"limit": 1},
+            headers={"Authorization": "Bearer " + second},
+        )
+        assert new.status_code == 200
+
+
+async def test_web_bootstrap_rejects_non_loopback_client() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("203.0.113.7", 1234)),
+        base_url="http://test",
+    ) as remote:
+        resp = await remote.get("/app/bootstrap")
+        assert resp.status_code == 403
+        assert "token" not in resp.text
+
+
+async def test_web_bootstrap_rejects_remote_client_spoofing_localhost_host_header() -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("203.0.113.7", 1234)),
+        base_url="http://test",
+        headers={"Host": "127.0.0.1:8000"},
+    ) as remote:
+        resp = await remote.get("/app/bootstrap")
+        assert resp.status_code == 403
+        assert "token" not in resp.text
+
+
+async def test_web_static_assets_contain_no_master_secret(client: AsyncClient) -> None:
+    html = (await client.get("/app/ops")).text
+    js = (await client.get("/app/app.js")).text
+    combined = html + js
+    assert "EV_MASTER_KEY" not in combined
+    assert "EV_API_KEY=" not in combined
+    assert "test-key" not in combined
+    assert "master_key" not in js
+
+
+async def test_web_local_auto_connect_markers(client: AsyncClient) -> None:
+    html = (await client.get("/app/ops")).text
+    js = (await client.get("/app/app.js")).text
+    for marker in (
+        'id="connection-note"',
+        'id="disconnect-local"',
+        'id="reconnect-local"',
+        'id="manual-switch"',
+    ):
+        assert marker in html
+    for marker in (
+        "autoConnectLocal",
+        "fetchBootstrap",
+        "/app/bootstrap",
+        "connected (this Mac)",
+        "isLoopbackOrigin",
+        "disconnectLocal",
+        "manualSwitch",
+        "reconnectLocal",
+        "ev.connectionMode",
+    ):
+        assert marker in js
+
+
+async def test_web_manual_connect_still_supported(client: AsyncClient) -> None:
+    js = (await client.get("/app/app.js")).text
+    html = (await client.get("/app/ops")).text
+    assert 'id="api-key"' in html
+    assert 'id="api-url"' in html
+    assert "connection-form" in js
+    assert "device token recommended" in html
+    assert "ev.apiKey" in js

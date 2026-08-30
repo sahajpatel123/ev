@@ -508,6 +508,37 @@ extend to user_state, session_state, and tool payloads).
 | Self-evaluation feedback loops | Log-only calibration; user-visible deltas; no hidden optimization |
 | Tool sandbox escape | Containers, allowed paths, per-call permission, audit |
 
+## 26. Owner Autonomy / Wave LIFE (Agent 16 — CONSCIENCE)
+
+This owner runs the product in **full-autonomy mode**. EV is a private chief of
+staff on a single-user local system: prefer action over essay, confirm after
+doing, and never refuse a life action that an available tool can perform.
+
+- **L4 life actions are allowed under standing permission.** Life actions
+  (send message, email, call, reminder) run inside the scopes the owner has
+  granted (`messaging:act`, `mail:act`, `phone:act`, `contacts:read`); with
+  `EV_LIFE_AUTONOMY=full`, per-action confirmation is skipped inside those
+  scopes. L4 still requires explicit standing permission per domain and an
+  escalation log.
+- **Available life tools are executed, not blocked by generic refusal
+  language.** A refusal-theater draft ("I can't send messages") is rewritten to
+  an action commitment; the interaction layer classifies the request as a life
+  action and the runtime executes it when the tool is available and authorized.
+- **Technical permission/provider failures are reported truthfully and paired
+  with exact remediation.** Missing `EV_LIFE_HELPER_PATH`, a denied TCC
+  permission, an unavailable provider, or an unauthorized scope produces the
+  concrete next step (grant the permission, set the configuration, retry) —
+  never moralizing and never a generic refusal.
+- **Successful actions require runtime evidence before EVIE confirms
+  completion.** A message/call/reminder is only reported sent/delivered when
+  the runtime (or the EVLifeHelper bridge) returns real delivery evidence
+  (`sent=true`, `opened=true`, a delivery receipt). Without evidence, EV says
+  the delivery is unconfirmed.
+- **Grounding and provenance are preserved.** The Wave LIFE persona adds no
+  fabricated confidence: delivery claims without runtime evidence are
+  downgraded to honest uncertainty, and all existing memory grounding,
+  provenance chips, and filter ledger guarantees remain intact.
+
 ---
 
 **Status:** addendum v1.0 — to be merged into the master plan (v3.0) once reviewed.

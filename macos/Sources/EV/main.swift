@@ -7,6 +7,10 @@ import SwiftUI
 let arguments = CommandLine.arguments
 if arguments.contains("--smoke-test") {
     exit(EVSmokeTest.run())
+} else if arguments.contains("--mac-control-probe") {
+    exit(MacControlProbe.run())
+} else if arguments.contains("--live-e2e") {
+    exit(MacControlLiveE2E.run())
 } else if arguments.contains("--permissions") {
     exit(EVSmokeTest.runPermissions())
 } else if arguments.contains("--notify-test") {
@@ -15,6 +19,27 @@ if arguments.contains("--smoke-test") {
     exit(EVSmokeTest.runMic())
 } else if arguments.contains("--tts-test") {
     exit(EVSmokeTest.runTTS())
+} else if arguments.contains("--tts-continuity") {
+    exit(EVSmokeTest.runTTSContinuity())
+} else if arguments.contains("--first-audio-test") {
+    exit(EVSmokeTest.runFirstAudioSurvival())
+} else if arguments.contains("--listener-presence-test") {
+    exit(EVSmokeTest.runListenerPresenceOverlap())
+} else if arguments.contains("--vp-echo-probe") {
+    let vpOn = arguments.contains("--vp-on")
+    exit(EVSmokeTest.runVPEchoProbe(vpOn))
+} else if arguments.contains("--barge-in-probe") {
+    exit(EVSmokeTest.runBargeInProbe())
+} else if arguments.contains("--life-request") {
+    exit(EVSmokeTest.runLifeRequest())
+} else if arguments.contains("--request-all") {
+    exit(EVSmokeTest.runRequestAll())
+} else if arguments.contains("--request-pending") {
+    exit(EVSmokeTest.runRequestPending())
 } else {
+    // Bind the shared app to EVApplication before SwiftUI touches AppKit,
+    // so last-window / stray terminate hits TerminatePolicy even when the
+    // MenuBarExtra adaptor has not wired AppDelegate yet.
+    _ = EVApplication.shared
     EVApp.main()
 }

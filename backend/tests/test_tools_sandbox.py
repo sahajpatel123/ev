@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.tools.sandbox as sandbox
 from app.main import app
 from app.models import AccessLog
 from app.tools.sandbox import (
@@ -77,16 +78,31 @@ def test_file_write_read_roundtrip_within_sandbox() -> None:
 
 
 async def test_execute_api_requires_owner_trust_and_audits(
-    client: httpx.AsyncClient, db_session: AsyncSession
+    client: httpx.AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The production path fails closed when seatbelt cannot be applied. This
+    # test double exercises policy/allowlist behavior on restricted CI hosts.
+    monkeypatch.setattr(sandbox, "effective_isolation", lambda: "process")
+    held = await client.post(
+        "/v1/tools/execute",
+        json={"operation": "workspace_smoke_test", "timeout_seconds": 5},
+    )
+    assert held.status_code == 200, held.text
+    held_body = held.json()
+    assert held_body.get("needs_confirm") is True
+    assert held_body.get("error") == "confirmation_required"
+    assert held_body.get("action_id")
+
     resp = await client.post(
         "/v1/tools/execute",
-        json={"command": "echo via-api", "timeout_seconds": 5},
+        json={"operation": "workspace_smoke_test", "timeout_seconds": 5, "confirm": True},
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["exit_code"] == 0
-    assert body["stdout"].strip() == "via-api"
+    assert body["stdout"].strip() == "EV workspace smoke test passed"
+    assert body["operation"] == "workspace_smoke_test"
+    assert body.get("ok") is True
 
     audit = (
         await db_session.execute(
@@ -95,6 +111,13 @@ async def test_execute_api_requires_owner_trust_and_audits(
     ).scalars().all()
     assert len(audit) == 1
     assert audit[0].details["exit_code"] == 0
+
+    denied = await client.post(
+        "/v1/tools/execute",
+        json={"operation": "arbitrary_shell", "confirm": True},
+    )
+    assert denied.status_code == 200
+    assert denied.json()["error"] == "operation_not_allowed"
 
     device = await client.post(
         "/v1/devices", json={"name": "plain-watch", "capabilities": []}
@@ -108,7 +131,7 @@ async def test_execute_api_requires_owner_trust_and_audits(
     )
     async with plain:
         resp = await plain.post(
-            "/v1/tools/execute", json={"command": "echo nope"}
+            "/v1/tools/execute", json={"operation": "workspace_smoke_test"}
         )
     assert resp.status_code == 403
 

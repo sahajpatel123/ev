@@ -34,6 +34,7 @@ DEFAULT_API_URL = "http://127.0.0.1:8000"
 DEFAULT_QUEUE_DIR = str(Path.home() / ".ev" / "listener_queue")
 QUEUE_FILENAME = "pending.jsonl"
 QUARANTINE_FILENAME = "quarantine.jsonl"
+RETRYABLE_HTTP_STATUSES = frozenset({408, 429}) | frozenset(range(500, 600))
 
 
 def _api_url() -> str:
@@ -175,6 +176,10 @@ class DeviceListener:
             if response.status_code == 409:
                 return {"duplicate": True, "idempotency_key": idempotency_key}
             reason = f"HTTP {response.status_code}: {response.text[:500]}"
+            if response.status_code in RETRYABLE_HTTP_STATUSES:
+                queued = self._enqueue(record)
+                queued.update({"retryable": True, "reason": reason})
+                return queued
             self._quarantine(record, reason)
             return {"quarantined": True, "reason": reason, "idempotency_key": idempotency_key}
 
@@ -207,12 +212,20 @@ class DeviceListener:
         if response.status_code == 409:
             return {"duplicate": True, "idempotency_key": idempotency_key}
         reason = f"HTTP {response.status_code}: {response.text[:500]}"
+        if response.status_code in RETRYABLE_HTTP_STATUSES:
+            queued = self._enqueue(record)
+            queued.update({"retryable": True, "reason": reason})
+            return queued
         self._quarantine(record, reason)
         return {"quarantined": True, "reason": reason, "idempotency_key": idempotency_key}
 
     async def deliver_pending(self) -> dict:
-        """Replay the offline queue: 201 synced, 409 duplicate dropped,
-        400/422 quarantined, network failure leaves the queue intact."""
+        """Replay the offline queue with transient HTTP failures retained.
+
+        201 is synced, 409 is a duplicate drop, 400/422 are quarantined, and
+        network/408/429/5xx failures leave the current and later records in
+        the queue for the next loop.
+        """
         records = self.pending_captures()
         if not records:
             return {"synced": 0, "dropped": 0, "quarantined": 0, "errors": [], "remaining": 0}
@@ -379,7 +392,7 @@ class DeviceListener:
         follow_up: bool = False,
         reverify_token: str | None = None,
     ) -> dict:
-        """Send one utterance (or 30-second follow-up) to the runtime."""
+        """Send one utterance (or a same-session follow-up) to the runtime."""
         payload: dict[str, Any] = {
             "session_id": self.session_id,
             "text": text,

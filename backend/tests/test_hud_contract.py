@@ -23,6 +23,7 @@ FOCUS_SCHEMA_PATH = REPO_ROOT / "docs" / "schemas" / "ev-hud-focus-v1.json"
 ROUTE_SCHEMA_PATH = REPO_ROOT / "docs" / "schemas" / "ev-hud-route-v1.json"
 ALERT_SCHEMA_PATH = REPO_ROOT / "docs" / "schemas" / "ev-hud-alert-v1.json"
 OPS_SCHEMA_PATH = REPO_ROOT / "docs" / "schemas" / "ev-hud-ops-v1.json"
+LOOKOUT_SCHEMA_PATH = REPO_ROOT / "docs" / "schemas" / "ev-hud-lookout-v1.json"
 WEB_ROOT = REPO_ROOT / "backend" / "clients" / "web"
 SWIFT_CLIENT = REPO_ROOT / "ios" / "EVClient" / "Sources" / "EVClient" / "HUDCard.swift"
 
@@ -244,6 +245,18 @@ async def test_server_ops_validates_against_schema(client: AsyncClient) -> None:
     resp = await client.get("/v1/hud/ops")
     assert resp.status_code == 200, resp.text
     assert validate_card(resp.json(), schema) == []
+
+
+async def test_lookout_schema_is_canonical() -> None:
+    schema = load_schema_file(LOOKOUT_SCHEMA_PATH)
+    assert schema["properties"]["schema_version"]["const"] == "ev.hud.lookout.v1"
+    assert set(schema["required"]) == {
+        "schema_version",
+        "generated_at",
+        "open",
+        "windows",
+        "rationale",
+    }
 
 
 async def test_swift_hud_briefing_models_match_schemas() -> None:

@@ -195,3 +195,21 @@ decode, resize, and EXIF-aware transpose. The storage integration point
    could repeat with their own documents); all passed >= 95%.
 5. MobileCLIP weights are under Apple's ML Research license — legal review
    needed before commercial use.
+
+## Live `look` tool
+
+Voice and HTTP can now call `look` (permission `vision:read`, risk R1). That
+path is one consented frame, not a stream:
+
+1. Live session emits `camera_request` action `capture`.
+2. Mac/iOS grabs one JPEG, uploads `/v1/attachments`, replies `look_frame`.
+3. Backend OCR (Apple Vision / tesseract / optional self-hosted DeepSeek-OCR)
+   plus local detect/scene/face-count.
+4. Enrolled owner objects and consented roster faces may be named. Strangers
+   stay unnamed.
+5. DeepSeek chat, when configured, rewrites the spoken sentence from derived
+   text and labels only. Official `api.deepseek.com` cannot inspect pixels.
+
+The capability appears on the live operator sheet as **camera look** and in
+the runtime manifest as `look` (`provider=vision`). `camera_replay` remains
+the separate R3 owner-NVR tool and stays off the realtime catalog.

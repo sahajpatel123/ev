@@ -31,6 +31,11 @@ def test_search_provider_selection_is_config_level(monkeypatch) -> None:
     monkeypatch.setattr(settings, "search_provider", "none")
     assert get_search_provider() is None
 
+    monkeypatch.setattr(settings, "search_provider", "live")
+    from app.search.live import LiveSearchProvider
+
+    assert isinstance(get_search_provider(), LiveSearchProvider)
+
 
 async def test_mock_search_returns_citations() -> None:
     provider = MockSearchProvider()
@@ -64,8 +69,12 @@ async def test_search_web_tool_disabled_without_provider(
         "search_web",
         {"query": "anything"},
     )
-    assert response.ok is False
-    assert "disabled" in (response.error or "")
+    # Capability-theater contract: honest degraded result with an exact next_step.
+    assert response.ok is True
+    assert response.result is not None
+    assert response.result["degraded"] is True
+    assert "EV_SEARCH_PROVIDER" in response.result["next_step"]
+    assert response.result["count"] == 0
 
 
 async def test_search_web_tool_rejects_missing_query(

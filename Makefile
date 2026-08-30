@@ -1,4 +1,4 @@
-.PHONY: install dev test e2e-cli eval lint typecheck doctor verify compose-up compose-down migrate seed postgres-e2e
+.PHONY: install dev test e2e-cli eval lint typecheck doctor verify compose-up compose-down migrate seed postgres-e2e package-macos mac-control-live-e2e mac-control-live-e2e-full mac-control-dev-restart evie-cross-platform-dev evie-home-station evie-cross-platform-ready cross-platform-e2e mobile-voice-e2e mobile-voice-config-diff mobile-actions-e2e evie-shell-check
 
 # Backend commands run from backend/ where pydantic looks for ./.env. Load the
 # repo-root .env into the environment first so EV_VAULT_KEY and friends are
@@ -12,6 +12,61 @@ install:
 
 dev:
 	$(call backend-run, uv run uvicorn app.main:app --reload --port 8000)
+
+evie-cross-platform-dev:
+	$(call backend-run, uv run python -m app.scripts.cross_platform_dev)
+
+evie-home-station:
+	$(call backend-run, uv run python -m app.scripts.home_station)
+
+evie-cross-platform-ready:
+	$(call backend-run, uv run python -m app.scripts.cross_platform_ready)
+
+cross-platform-e2e:
+	$(call backend-run, uv run python -m app.scripts.cross_platform_e2e)
+
+mobile-voice-config-diff:
+	$(call backend-run, uv run python -m app.scripts.mobile_voice_config_diff)
+
+mobile-voice-e2e:
+	cd backend && uv run pytest -q tests/test_mobile_voice_core.py tests/test_phone_audio_architecture.py tests/test_pwa_audio.py tests/test_webrtc_connection.py
+
+mobile-actions-e2e:
+	cd backend && uv run pytest -q tests/test_mobile_actions.py tests/test_mobile_shell.py tests/test_pure_pwa_no_native_shell.py tests/test_phone_audio_architecture.py tests/test_device_gateway.py
+
+evie-shell-check:
+	cd ios/EvieShell && swift run EvieBrokerCheck
+
+pwa-release-manifest:
+	cd backend && uv run python -m app.scripts.gen_release_manifest
+
+ios-ci-check:
+	bash -n scripts/ios/build-evie-ipa.sh && bash -n scripts/ios/verify-release.sh
+	cd backend && uv run pytest -q tests/test_release_portal.py
+	@echo "ios-ci-check OK (no Xcode needed)"
+
+# Full native build — requires macOS with Xcode.app (CI runner or dev Mac).
+ios-canary:
+	CHANNEL=canary ./scripts/ios/build-evie-ipa.sh
+
+ios-release-verify:
+	./scripts/ios/verify-release.sh --ipa $${IPA:-build/ios-release/canary/Evie.ipa} --expect-bundle-id com.ev.evie.shell
+
+# Promote the owner-approved canary artifact to stable WITHOUT rebuilding.
+ios-stable-promote:
+	cd backend && uv run python -m app.scripts.promote_stable $${FROM_BUILD:-}
+
+package-macos:
+	macos/scripts/package.sh
+
+mac-control-dev-restart:
+	$(call backend-run, uv run python -m app.scripts.mac_control_live_e2e --restart-only --skip-package)
+
+mac-control-live-e2e:
+	$(call backend-run, uv run python -m app.scripts.mac_control_live_e2e --suite music)
+
+mac-control-live-e2e-full:
+	$(call backend-run, uv run python -m app.scripts.mac_control_live_e2e --suite full --timeout 120)
 
 test:
 	cd backend && uv run pytest -q
@@ -86,6 +141,47 @@ datasets-list:
 datasets-prune:
 	cd backend && uv run python -m app.datasets.cli prune
 
+# --- AGENT 2 FOUNDRY · VOICE ACTIVATION (append-only) -----------------------
+# NOTE: the existing `make preflight` (app.scripts.preflight) is Agent 20's;
+# voice-preflight adds Foundry's deeper per-engine diagnostics without
+# overriding it.
+.PHONY: voice-deps model-pull-voice voice-preflight
+
+voice-deps:
+	cd backend && uv sync --extra ml --extra face --extra dev
+
+model-pull-voice:
+	$(call backend-run, uv run python -m app.ml.cli pull tts-kokoro-82m-int8 tts-kokoro-voices-v1.0)
+
+voice-preflight:
+	$(call backend-run, uv run python -m app.ml.voice_preflight)
+
+# --- WAKE TRAINING (openwakeword custom head) --------------------------------
+# The ears process works today via the local Whisper spotter
+# (EV_EARS_WAKE_LOCAL_SPOTTER=true). Training the real always-on keyword head
+# replaces it with a <300 ms on-device detector; requires the PyTorch stack.
+.PHONY: wake-train-deps wake-train
+
+wake-train-deps:
+	cd backend && uv pip install torch torchinfo torchmetrics scipy tqdm pyyaml
+
+# Train from the owner's recorded EVIE clips (voice-sample/wav) with other-voice
+# EVIE takes (voice-tryouts/evie) as adversarial negatives. Export lands at
+# ~/.ev/models/wake-openwakeword.onnx.
+wake-train:
+	$(call backend-run, uv run python -m clients.ears.train.train_head \
+		--real-clips \
+		--positive-dir "$$(pwd)/voice-sample/wav" \
+		--negative-dir "$$(pwd)/voice-sample/voice-tryouts/evie" \
+		--output-dir "$$HOME/.ev/models")
+
+wake-train-dry-run:
+	$(call backend-run, uv run python -m clients.ears.train.train_head \
+		--real-clips --no-train \
+		--positive-dir "$$(pwd)/voice-sample/wav" \
+		--negative-dir "$$(pwd)/voice-sample/voice-tryouts/evie" \
+		--output-dir "$$HOME/.ev/models")
+
 # --- AGENT 14 PULSE (append-only) -------------------------------------------
 .PHONY: launchd-install launchd-uninstall notify-test notify-status
 
@@ -104,6 +200,16 @@ notify-status:
 
 soak-audit:
 	cd backend && uv run python -m app.workers.runtime_healthcheck --soak
+
+seed-devices:
+	cd backend && uv run python -m app.notify.registry --tokens
+
+life-jobs:
+	@curl -s -H "Authorization: Bearer $${EV_MASTER_KEY:-test-key}" \
+		"http://127.0.0.1:8000/v1/runtime/life-jobs?limit=50"
+
+boot-check:
+	./launchd/check.sh
 
 # === Agent 8 Synapse (retrieval) — appended marker block ===
 .PHONY: ev-eval-retrieval ev-eval-reembed
@@ -125,6 +231,7 @@ native-down:
 	@brew services stop postgresql@17 2>/dev/null || true
 	@brew services stop redis 2>/dev/null || true
 	@launchctl bootout "gui/$$UID/ev.backup" 2>/dev/null || true
+	@launchctl bootout "gui/$$UID/ev.opencode" 2>/dev/null || true
 	@rm -f "$$HOME/Library/LaunchAgents/ev.backup.plist"
 
 native-status:
@@ -205,3 +312,15 @@ hands-free-down:
 	@launchctl bootout "gui/$$UID/ev.hands_free" 2>/dev/null || true
 	@rm -f "$$HOME/Library/LaunchAgents/ev.hands_free.plist"
 	@echo "[ev] ev.hands_free removed"
+# --- AGENT 0 ANALYST ---
+# Workspace ground truth. Stdlib only; runs on a bare checkout before uv sync.
+.PHONY: baseline baseline-write baseline-check
+
+baseline:
+	@python3 tools/baseline.py
+
+baseline-write:
+	@python3 tools/baseline.py --write
+
+baseline-check:
+	@python3 tools/baseline.py --check

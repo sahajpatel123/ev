@@ -20,6 +20,10 @@ DEFAULT_PROFILE = {
     "emotional_style": "calm",
 }
 
+# Keep EVIE for storage, display, and wake-word matching. Speech providers get
+# the two-letter form so they say "E V" rather than choosing an "E-y" reading.
+SPOKEN_DEFAULT_NAME = "E V"
+
 
 async def get_current(session: AsyncSession) -> PersonalityProfile:
     result = await session.execute(
@@ -73,16 +77,79 @@ def to_dict(profile: PersonalityProfile) -> dict:
     }
 
 
-def identity_block(name: str, description: str, profile: dict | None = None) -> str:
-    """Compile EV's provider-independent identity for the reasoning model."""
+def spoken_identity(name: str | None) -> str:
+    """Spoken nickname used in provider prompts; the default is pronounced E V."""
+
+    raw = (name or "").strip()
+    if not raw or raw.upper() in {"EV", "E.V.", "EVIE"}:
+        return SPOKEN_DEFAULT_NAME
+    return raw
+
+
+def identity_block(
+    name: str,
+    description: str,
+    profile: dict | None = None,
+    *,
+    compact: bool = False,
+    live_sheet: str | None = None,
+) -> str:
+    """Compile EV's identity without claiming static or unavailable tools."""
 
     profile = profile or DEFAULT_PROFILE
+    who = spoken_identity(name)
+    humor = profile.get("humor", 2)
+    formality = profile.get("formality", 2)
+    verbosity = profile.get("verbosity", 3)
+    if compact:
+        lines = [
+            f"You are {who}, {description}. Pronounce your name as the two letter names E V, never E-y or Evie. Dry, loyal, specific. Never a host-model brand. Never Grok, xAI, DeepSeek, or ChatGPT.",
+            (
+                "Use the Intelligence briefing as ground truth. Spoken replies "
+                "start with the answer in the first clause. One or two sentences "
+                "unless asked for a briefing. Prefer action over essay. If they "
+                "ask whether you can hear them or if you are there, confirm you "
+                "hear them in one short sentence. You have known this owner "
+                "continuously; use memory silently and never invent a memory."
+            ),
+            f"Pinned tone: humor={humor} formality={formality} verbosity={verbosity}.",
+        ]
+        if live_sheet:
+            lines.append(
+                "The live operator sheet below is the complete current capability "
+                "list. Only its 'I can do now' line is ready to claim.\n" + live_sheet
+            )
+        return "\n".join(lines)
     lines = [
-        f"You are {name}, {description}.",
+        f"You are {who}, {description}. Pronounce your name as the two letter names E V, never E-y or Evie.",
+        (
+            "You are the owner's personal operating system — house, phone, "
+            "workshop, and visor. Dry, loyal, specific. Never a generic chatbot. "
+            "Never present yourself as DeepSeek, ChatGPT, OpenAI, Claude, Grok, "
+            "xAI, or the host model."
+        ),
         (
             "Your identity, memory semantics, and behavior belong to EV and are "
-            "independent of the model that hosts you; never present yourself as that "
-            "model or as a generic assistant."
+            "independent of the model that hosts you. Remember broadly, recall "
+            "selectively, and do not force old topics into a fresh question."
+        ),
+        (
+            "Your capabilities are session-scoped. The live operator sheet is the "
+            "only source of what is ready now; do not turn registry entries, setup "
+            "requirements, or refused actions into identity claims."
+        ),
+        (
+            "When an Intelligence briefing is attached, treat it as ground truth "
+            "and say what you checked. If a tool failed, name the exact "
+            "next_step — never a fake success and never a vague 'I can't help'. "
+            "Never invent memories, forecasts, or actions. Do not tell the "
+            "owner to open a website; call present instead. Do not claim "
+            "city-scale surveillance, weapons, or superhuman sensing."
+        ),
+        (
+            "Answer the question they asked. If they asked you to act (text, "
+            "call, remind, show on screen), prefer action over essay. Spoken "
+            "replies stay tight unless they asked for a briefing."
         ),
         (
             f"Personality profile: directness={profile.get('directness', 3)}, "
@@ -95,4 +162,8 @@ def identity_block(name: str, description: str, profile: dict | None = None) -> 
             f"emotional_style={profile.get('emotional_style', 'calm')}."
         ),
     ]
+    if live_sheet:
+        lines.append(
+            "Live operator sheet (the only current capability list):\n" + live_sheet
+        )
     return "\n".join(lines)

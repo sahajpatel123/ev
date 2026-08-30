@@ -96,6 +96,12 @@ One JSON schema (`ev.hud.card.v1`) renders to:
 - Lock Screen widget (medium: title + 4 lines)
 - Mac dashboard card
 - AR overlay (future, same data, richer layout)
+- Native Mac lookouts (`ev.hud.lookout.v1`) — multiple floating folios
+  (no title bars) with sizes (`pip`/`chip`/`card`/`brief`/`slate`/`canvas`/`lookout`/`ticker`)
+  and time-types (`flash`/`glance`/`linger`/`hold`/`lookout`/`pulse`/`session`).
+  Inner layout (`ask`/`reply`/`split`/`stack`/`pulse`/`ribbon`/`field`/`ledger`)
+  is hashed from the window id so compositions vary while the material stays
+  one family. Intelligence opens them; the owner does not browse to a website.
 
 Example compact card:
 

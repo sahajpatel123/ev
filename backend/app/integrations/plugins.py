@@ -411,6 +411,7 @@ async def run_command(
     command_name: str,
     args: dict,
     actor: str,
+    device_id=None,
 ) -> PluginCommandOut:
     row = await session.get(Plugin, plugin_id)
     if row is None:
@@ -424,6 +425,36 @@ async def run_command(
     permission = spec.get("permission")
     if permission not in (row.permissions or []):
         raise PermissionError("command permission is not approved")
+    from app.ev.policy import authorize
+
+    policy_name = f"plugin:{row.slug}:{command_name}"
+    policy_spec = {
+        "name": policy_name,
+        "description": f"Run the approved {row.slug} plugin command",
+        "parameters": {"type": "object", "additionalProperties": True},
+        "output": {"type": "object"},
+        "permission": permission,
+        "required_scopes": [permission],
+        "read_only": permission.endswith(":read"),
+        "sensitive": permission == "live:emit",
+        "risk_class": "R1" if permission == "live:emit" else "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+    }
+    decision = await authorize(
+        session,
+        policy_name,
+        actor=actor,
+        device_id=device_id,
+        channel="action",
+        arguments=args or {},
+        spec=policy_spec,
+        provider_connected_override=True,
+    )
+    if not decision.allowed:
+        raise PermissionError(decision.reason)
     handler = spec.get("handler")
     if not isinstance(handler, str):
         raise ValueError("plugin command handler is missing")
@@ -484,7 +515,13 @@ async def run_command(
         endpoint="POST /v1/plugins/{id}/commands/{command}",
         resource_type="plugin",
         resource_ids=[row.id],
-        details={"plugin": row.slug, "command": command_name, "emitted": len(emitted)},
+        details={
+            "plugin": row.slug,
+            "command": command_name,
+            "emitted": len(emitted),
+            "policy_effect": decision.effect,
+            "risk_class": decision.risk_class,
+        },
     )
     return PluginCommandOut(
         plugin_id=row.id,

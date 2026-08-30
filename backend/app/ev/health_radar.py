@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import statistics
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,8 +16,130 @@ def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
+# Amazfit Helio Strap → Zepp → Apple Health writes these (DC Rainmaker / firmware notes).
+HELIO_ALIASES = {
+    "hrv": "hrv_ms",
+    "hrv_rmssd": "hrv_ms",
+    "heart_rate_variability": "hrv_ms",
+    "resting_heart_rate": "resting_hr",
+    "hr": "heart_rate",
+    "spo2_pct": "spo2",
+    "blood_oxygen": "spo2",
+    "oxygen_saturation": "spo2",
+    "respiratory_rate": "resp_rate",
+    "breathing_rate": "resp_rate",
+    "vo2max": "vo2_max",
+    "active_energy": "active_kcal",
+    "calories": "active_kcal",
+    "skin_temperature": "skin_temp_c",
+    "biocharge": "readiness_raw",
+    "pai": "pai",
+    "stress_score": "stress",
+}
+
+HEALTH_STALE_AFTER_SECONDS = 24 * 60 * 60
+DEFAULT_UNITS = {
+    "heart_rate": "bpm",
+    "resting_hr": "bpm",
+    "hrv_ms": "ms",
+    "steps": "count",
+    "active_kcal": "kcal",
+    "sleep_hours": "hours",
+    "spo2": "percent",
+    "resp_rate": "breaths/min",
+    "vo2_max": "mL/kg/min",
+    "stress": "score",
+    "readiness_raw": "score",
+    "recovery": "score",
+    "workout_minutes": "minutes",
+    "workout_count": "count",
+}
+
+
+def freshness_state(
+    synced_at: datetime | None,
+    *,
+    now: datetime | None = None,
+    stale_after_seconds: int = HEALTH_STALE_AFTER_SECONDS,
+) -> str:
+    """Classify sync age so a health answer can never imply current data silently."""
+
+    if synced_at is None:
+        return "unknown"
+    now = now or utcnow()
+    if synced_at.tzinfo is None:
+        synced_at = synced_at.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    age = (now.astimezone(UTC) - synced_at.astimezone(UTC)).total_seconds()
+    return "fresh" if age <= max(0, stale_after_seconds) else "stale"
+
+
+def snapshot_freshness(snapshot: HealthSnapshot) -> str:
+    """A sample is stale when either its measurement or sync is stale."""
+
+    states = [
+        freshness_state(snapshot.occurred_at),
+        freshness_state(snapshot.synced_at),
+    ]
+    if "stale" in states:
+        return "stale"
+    return "fresh" if "fresh" in states else "unknown"
+
+
+def normalize_metrics(metrics: dict) -> dict[str, float]:
+    """Map Helio / HealthKit names onto the radar's canonical keys."""
+
+    out: dict[str, float] = {}
+    for key, value in (metrics or {}).items():
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            continue
+        name = HELIO_ALIASES.get(str(key).strip().lower(), str(key).strip().lower())
+        out[name] = float(value)
+    if "resting_hr" not in out and "heart_rate" in out:
+        out["resting_hr"] = out["heart_rate"]
+    return out
+
+
+# Absolute bands (not z-scores). Used when a single live sample is dangerous
+# even if we do not yet have a 14-day baseline — Karen-style body scan.
+CLINICAL_RULES: list[tuple[str, str, float, str]] = [
+    ("heart_rate", "high", 140.0, "Heart rate is very high at rest."),
+    ("heart_rate", "low", 40.0, "Heart rate is unusually low."),
+    ("resting_hr", "high", 110.0, "Resting heart rate is elevated."),
+    ("resting_hr", "low", 38.0, "Resting heart rate is unusually low."),
+    ("spo2", "low", 92.0, "Blood oxygen is below a safe band."),
+    ("hrv_ms", "low", 15.0, "HRV has crashed — recovery looks poor."),
+    ("stress", "high", 85.0, "Stress reading is in the top band."),
+]
+
+
+def clinical_flags(metrics: dict) -> list[dict]:
+    flags: list[dict] = []
+    data = normalize_metrics(metrics)
+    for metric, side, bound, text in CLINICAL_RULES:
+        value = data.get(metric)
+        if value is None:
+            continue
+        hit = value >= bound if side == "high" else value <= bound
+        if hit:
+            flags.append(
+                {
+                    "metric": metric,
+                    "value": float(value),
+                    "side": side,
+                    "bound": bound,
+                    "rationale": text,
+                    "clinical": True,
+                    "emergency": metric in {"heart_rate", "resting_hr", "spo2"},
+                }
+            )
+    return flags
+
+
 def readiness_score(metrics: dict) -> tuple[float, str]:
     """0-100 readiness from sleep, HRV ratio, resting HR, activity, mood."""
+    metrics = normalize_metrics(metrics)
     sleep_hours = metrics.get("sleep_hours")
     hrv_ms = metrics.get("hrv_ms")
     resting_hr = metrics.get("resting_hr")
@@ -128,9 +250,23 @@ async def create_snapshot(
     source: str = "api",
     device_id: str | None = None,
     occurred_at=None,
+    permission_state: str = "authorized",
+    synced_at: datetime | None = None,
+    units: dict | None = None,
+    source_metadata: dict | None = None,
 ) -> HealthSnapshot:
     occurred_at = occurred_at or utcnow()
-    readiness, band = readiness_score(metrics)
+    synced_at = synced_at or utcnow()
+    metrics = normalize_metrics(metrics) if permission_state == "authorized" else {}
+    readiness, band = readiness_score(metrics) if metrics else (None, None)
+    source_metadata = dict(source_metadata or {})
+    source_metadata.setdefault(
+        "provider_chain",
+        ["Amazfit Helio", "Zepp", "Apple Health", "HealthKit", "EV iOS bridge"]
+        if source in {"amazfit_helio", "zepp", "healthkit"}
+        else [source],
+    )
+    resolved_units = {**DEFAULT_UNITS, **(units or {})}
     snapshot = HealthSnapshot(
         occurred_at=occurred_at,
         source=source,
@@ -139,10 +275,20 @@ async def create_snapshot(
         readiness=readiness,
         band=band,
         anomalies=[],
+        permission_state=permission_state,
+        synced_at=synced_at,
+        units=resolved_units,
+        source_metadata=source_metadata,
+        freshness_state=(
+            "stale"
+            if freshness_state(occurred_at) == "stale" or freshness_state(synced_at) == "stale"
+            else "fresh"
+        ),
     )
     session.add(snapshot)
     await session.flush()
-    snapshot.anomalies = await detect_anomalies(session, snapshot)
+    z_flags = await detect_anomalies(session, snapshot)
+    snapshot.anomalies = [*clinical_flags(metrics), *z_flags]
     return snapshot
 
 
@@ -185,6 +331,10 @@ async def trend(
         "current": current,
         "z_scores": z_scores,
         "anomalies": anomalies,
+        "freshness_state": snapshot_freshness(rows[-1]) if rows else "unknown",
+        "last_sync_at": rows[-1].synced_at if rows else None,
+        "source": rows[-1].source if rows else None,
+        "permission_state": rows[-1].permission_state if rows else "unknown",
     }
 
 
@@ -214,16 +364,52 @@ async def morning_brief(session: AsyncSession) -> dict:
             "band": None,
             "recommendation": "No health data yet. Share a snapshot and I'll start tracking trends.",
             "anomalies": [],
+            "freshness_state": "unknown",
+            "last_sync_at": None,
+            "permission_state": "unknown",
         }
     recommendation, question = morning_recommendation(latest.readiness, latest.metrics, latest.anomalies or [])
+    metrics = normalize_metrics(latest.metrics or {})
     return {
         "generated_at": utcnow(),
         "readiness": latest.readiness,
         "band": latest.band,
-        "sleep_hours": latest.metrics.get("sleep_hours"),
-        "hrv_ms": latest.metrics.get("hrv_ms"),
-        "resting_hr": latest.metrics.get("resting_hr"),
+        "sleep_hours": metrics.get("sleep_hours"),
+        "hrv_ms": metrics.get("hrv_ms"),
+        "resting_hr": metrics.get("resting_hr"),
+        "heart_rate": metrics.get("heart_rate"),
+        "spo2": metrics.get("spo2"),
+        "stress": metrics.get("stress"),
+        "source": latest.source,
+        "permission_state": latest.permission_state,
+        "freshness_state": snapshot_freshness(latest),
+        "last_sync_at": latest.synced_at,
+        "source_metadata": latest.source_metadata or {},
         "recommendation": recommendation,
         "open_question": question,
         "anomalies": latest.anomalies or [],
+        "emergency": any(flag.get("emergency") for flag in (latest.anomalies or [])),
+    }
+
+
+async def latest_clinical(session: AsyncSession) -> dict:
+    """Latest snapshot's clinical/emergency state, or empty if none."""
+
+    result = await session.execute(select(HealthSnapshot).order_by(HealthSnapshot.occurred_at.desc()).limit(1))
+    latest = result.scalars().first()
+    if latest is None:
+        return {"emergency": False, "flags": [], "readiness": None}
+    flags = [row for row in (latest.anomalies or []) if row.get("clinical") or row.get("emergency")]
+    return {
+        "emergency": any(row.get("emergency") for row in flags) or (
+            latest.readiness is not None and latest.readiness < 35
+        ),
+        "flags": flags,
+        "readiness": latest.readiness,
+        "source": latest.source,
+        "metrics": normalize_metrics(latest.metrics or {}),
+        "freshness_state": snapshot_freshness(latest),
+        "last_sync_at": latest.synced_at,
+        "permission_state": latest.permission_state,
+        "source_metadata": latest.source_metadata or {},
     }

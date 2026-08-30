@@ -6,18 +6,25 @@ from pydantic import BaseModel, Field
 
 
 class ToolsExecuteRequest(BaseModel):
-    command: str = Field(min_length=1, max_length=4000)
+    operation: str = Field(min_length=1, max_length=128)
     cwd: str | None = Field(default=None, max_length=512)
     timeout_seconds: int = Field(default=30, ge=1, le=300)
+    confirm: bool = False
 
 
 class ToolsExecuteResponse(BaseModel):
-    exit_code: int
-    stdout: str
-    stderr: str
+    exit_code: int = -1
+    stdout: str = ""
+    stderr: str = ""
     stdout_truncated: bool = False
     stderr_truncated: bool = False
     command: str
+    operation: str | None = None
+    ok: bool = True
+    error: str | None = None
+    needs_confirm: bool = False
+    action_id: str | None = None
+    spoken: str | None = None
 
 
 class FileReadRequest(BaseModel):

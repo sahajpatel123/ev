@@ -570,6 +570,80 @@ async def test_webauthn_registration_rejects_credential_mismatch(
     assert resp.headers.get("X-Error-Code") == "webauthn_credential_mismatch"
 
 
+async def test_webauthn_assertion_approves_parked_action_without_reverify_header(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    webauthn_defaults,
+) -> None:
+    from tests.test_identity_trust import _client, create_device
+    from tests.test_pol_policy import _unlock_life
+    from app.ev.tools import dispatch
+    from app.models import ApprovedAction
+
+    await _create_owner(client)
+    await _unlock_life(db_session)
+    authenticator = FakeAuthenticator()
+    options = (await client.post("/v1/identity/webauthn/register/options")).json()
+    client_data = authenticator.client_data(options["challenge"], typ="webauthn.create")
+    attestation = authenticator.attestation_object(
+        options["challenge"], fmt="none", empty_att_stmt=True
+    )
+    registered = await client.post(
+        "/v1/identity/webauthn/register/verify",
+        json={
+            "challenge_id": str(options["challenge_id"]),
+            "credential_id": b64url(authenticator.credential_id),
+            "client_data_json": b64url(client_data),
+            "attestation_object": b64url(attestation),
+            "name": "confirm passkey",
+        },
+    )
+    assert registered.status_code == 201, registered.text
+
+    held = await dispatch(
+        db_session,
+        "place_call",
+        {"name": "Ned"},
+        actor="voice",
+        allow_sensitive=True,
+        channel="voice",
+    )
+    action_id = (held.result or {}).get("action_id")
+    assert action_id
+    await db_session.commit()
+
+    owner_device = await create_device(client, "owner-phone", trust_level="owner")
+    owner_client = _client({"Authorization": f"Bearer {owner_device['token']}"})
+    denied = await owner_client.post(f"/v1/runtime/actions/{action_id}/approve", json={})
+    assert denied.status_code == 403
+    assert denied.headers.get("X-Error-Code") == "reverification_required"
+
+    anon = _client()
+    auth_options = (await anon.post("/v1/identity/webauthn/auth/options")).json()
+    authenticator.sign_count = 2
+    client_data, auth_data, signature = authenticator.authentication_response(
+        auth_options["challenge"]
+    )
+    approved = await owner_client.post(
+        f"/v1/runtime/actions/{action_id}/approve",
+        json={
+            "factor": "webauthn",
+            "webauthn": {
+                "challenge_id": str(auth_options["challenge_id"]),
+                "credential_id": b64url(authenticator.credential_id),
+                "client_data_json": b64url(client_data),
+                "authenticator_data": b64url(auth_data),
+                "signature": b64url(signature),
+            },
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "executed"
+    row = await db_session.get(ApprovedAction, UUID(str(action_id)))
+    assert row is not None
+    assert row.status == "executed"
+
+
 # Small helpers that keep the tests above readable.
 async def db_session_get_passkey(passkey_id: str):
     from app.db import SessionLocal

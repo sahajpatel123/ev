@@ -30,7 +30,7 @@ from app.utils.text import fingerprint, normalize_text
 ALLOWED_MEMORY_TYPES = {"decision", "preference", "goal", "fact", "observation", "episodic"}
 ALLOWED_SOURCE_TYPES = {"explicit", "inferred", "derived"}
 ALLOWED_ENTITY_TYPES = {"person", "place", "project", "topic", "other"}
-ENRICHMENT_PROVIDERS = {"deepseek", "local"}
+ENRICHMENT_PROVIDERS = {"deepseek", "local", "xai"}
 TYPED_TYPES = {"decision", "preference", "goal", "fact"}
 
 _OUTPUT_SHAPE = (

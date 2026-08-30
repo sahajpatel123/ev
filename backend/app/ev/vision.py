@@ -32,11 +32,12 @@ from app.contracts import (
 )
 from app.ev.edith import record_command
 from app.ev.live import get_or_create_channel, ingest_events
+from app.ev.world_memory import ObservationContract, record_owner_object_observation
 from app.gateway.providers import get_chat_provider
 from app.gateway.service import ModelGateway
 from app.memory.entities import get_or_create_entity
 from app.memory.writer import MemoryWriter
-from app.models import Attachment, Event, LiveChannel, LiveEvent, RecognitionLog
+from app.models import Attachment, Event, LiveChannel, LiveEvent, OwnerObject, RecognitionLog
 from app.schemas import EventCreate, LiveEventCreate
 from app.services.access_log import log_access
 from app.services.event_service import EventService
@@ -575,6 +576,68 @@ async def confirm_recognition(
         if attachment is not None:
             source_event = await session.get(Event, attachment.event_id)
     privacy = (source_event.privacy_level if source_event is not None else "normal") or "normal"
+
+    # A user-confirmed object label can update an explicitly enrolled object
+    # without turning every model suggestion into a world-model fact.  Person
+    # sightings remain on the consent-aware recognition roster path above;
+    # this keeps existing unknown-person behavior and avoids identity claims
+    # from a generic vision confirmation.
+    if entity_type != "person":
+        enrolled_objects = list(
+            (
+                await session.execute(
+                    select(OwnerObject).where(
+                        OwnerObject.status == "active",
+                        OwnerObject.deleted_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        target_object = next(
+            (
+                item
+                for item in enrolled_objects
+                if item.name.strip().casefold() == row.label.strip().casefold()
+            ),
+            None,
+        )
+        if target_object is not None:
+            location = "unknown"
+            if source_event is not None:
+                event_content = source_event.content or {}
+                event_metadata = source_event.metadata_ or {}
+                location = str(
+                    event_content.get("location")
+                    or event_metadata.get("location")
+                    or "unknown"
+                )
+            evidence_ref = (
+                f"attachment:{row.attachment_id}"
+                if row.attachment_id
+                else f"event:{source_event.id if source_event else row.event_id or row.live_event_id}"
+            )
+            await record_owner_object_observation(
+                session,
+                target_object.id,
+                ObservationContract(
+                    subject="owner",
+                    subject_type="object",
+                    object_or_event=target_object.name,
+                    action="seen",
+                    location=location,
+                    timestamp=source_event.occurred_at if source_event else row.created_at,
+                    source_device=source_event.device_id if source_event and source_event.device_id else "vision",
+                    evidence_ref=evidence_ref,
+                    confidence=row.confidence,
+                    uncertainty="user-confirmed visual match; object may have moved",
+                    consent_state="owner_confirmed",
+                    retention_class="standard",
+                    fact_kind="observed",
+                ),
+                actor=actor,
+            )
 
     confirm_event = await EventService(session, actor=actor).create(
         EventCreate(

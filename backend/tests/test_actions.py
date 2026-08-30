@@ -24,6 +24,7 @@ async def test_action_specs_declare_execution_boundaries(client) -> None:
         "web_search",
         "send_message",
         "execute_command",
+        "present",
     } <= names
     for spec in specs:
         assert spec["payload"]["type"] == "object"

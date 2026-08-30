@@ -127,6 +127,19 @@ function renderStreamingText(element, text) {
   element.textContent = text;
 }
 
+function stageLabel(stage) {
+  const labels = {
+    accepted: "Heard you…",
+    filter: "Checking…",
+    retrieve: "Recalling…",
+    briefing: "Looking things up…",
+    model: "Thinking…",
+    tools: "Working…",
+    output_filter: "Checking the answer…",
+  };
+  return labels[stage] || "Thinking…";
+}
+
 function provenanceChips(items, container) {
   container.innerHTML = (items || [])
     .map(
@@ -254,6 +267,19 @@ const HUD_SCHEMAS = {
       tier: { type: "string" },
       kind: { type: ["string", "null"] },
       rationale: { type: ["string", "null"] },
+      meta: { type: "object" },
+    },
+  },
+  "ev.hud.lookout.v1": {
+    required: ["schema_version", "generated_at", "open", "windows", "rationale"],
+    properties: {
+      schema_version: { type: "string" },
+      generated_at: { type: "string" },
+      open: { type: "boolean" },
+      explicit: { type: "boolean" },
+      needed: { type: "boolean" },
+      rationale: { type: "string" },
+      windows: { type: "array" },
       meta: { type: "object" },
     },
   },
@@ -574,13 +600,101 @@ async function connect(event) {
   event.preventDefault();
   store.url = $("api-url").value.trim();
   store.key = $("api-key").value.trim();
+  if (!store.key) {
+    setStatus("unreachable", false);
+    showError($("capture-result"), new Error("API key required (device token recommended)"));
+    return;
+  }
+  localStorage.setItem("ev.connectionMode", "manual");
   try {
     const health = await api("/v1/health");
+    // Prove the credential actually authenticates instead of trusting /v1/health.
+    await api("/v1/timeline?limit=1");
     setStatus(health.status + " · " + health.app, true);
+    $("connection-note").textContent =
+      "connected manually — device token in use (never store the master key here)";
+    $("disconnect-local").hidden = false;
+    $("reconnect-local").hidden = true;
   } catch (error) {
     setStatus("unreachable", false);
     showError($("capture-result"), error);
   }
+}
+
+function isLoopbackOrigin() {
+  const host = location.hostname.toLowerCase();
+  return host === "127.0.0.1" || host === "localhost" || host === "::1";
+}
+
+async function fetchBootstrap() {
+  // Same-origin only. Never attach a stale localStorage key or a typed URL —
+  // those are the two ways auto-connect used to 404 / 401 on this Mac.
+  const response = await fetch("/app/bootstrap", {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`${response.status}: ${(await response.text()).slice(0, 300)}`);
+  }
+  return response.json();
+}
+
+async function autoConnectLocal() {
+  const note = $("connection-note");
+  $("disconnect-local").hidden = true;
+  $("reconnect-local").hidden = true;
+  if (!isLoopbackOrigin() || localStorage.getItem("ev.manualMode")) {
+    note.textContent = isLoopbackOrigin()
+      ? "manual mode — use the form or reconnect this Mac"
+      : "remote host — manual API URL + device token";
+    return false;
+  }
+  try {
+    store.url = "";
+    const data = await fetchBootstrap();
+    if (!data || !data.token) {
+      throw new Error("bootstrap returned no token");
+    }
+    store.key = data.token;
+    localStorage.setItem("ev.connectionMode", "local");
+    // Prove the loopback device token authenticates before showing connected.
+    await api("/v1/timeline?limit=1");
+    const health = await api("/v1/health");
+    if (health.status !== "ok") {
+      throw new Error("backend health not ok: " + health.status);
+    }
+    setStatus(data.label || "connected (this Mac)", true);
+    note.textContent =
+      "connected (this Mac) — local workbench device token (never the master key)";
+    $("disconnect-local").hidden = false;
+    $("reconnect-local").hidden = true;
+    return true;
+  } catch (error) {
+    setStatus("connect failed", false);
+    note.textContent = "local auto-connect failed: " + error.message;
+    $("disconnect-local").hidden = true;
+    $("reconnect-local").hidden = false;
+    return false;
+  }
+}
+
+function disconnectLocal() {
+  localStorage.removeItem("ev.apiKey");
+  localStorage.removeItem("ev.connectionMode");
+  setStatus("disconnected", false);
+  $("disconnect-local").hidden = true;
+  $("reconnect-local").hidden = false;
+  $("connection-note").textContent =
+    "disconnected — reconnect this Mac or use a device token";
+}
+
+function manualSwitch() {
+  localStorage.setItem("ev.manualMode", "1");
+  location.reload();
+}
+
+function reconnectLocal() {
+  localStorage.removeItem("ev.manualMode");
+  location.reload();
 }
 
 async function refreshHud() {
@@ -742,7 +856,9 @@ function runAsk(question) {
     { message: question, stream: true },
     {
       onEvent(name, data) {
-        if (name === "delta") {
+        if (name === "status" && !tokens.length) {
+          renderStreamingText(reply, stageLabel(data.stage));
+        } else if (name === "delta") {
           tokens.push(data.text || "");
           renderStreamingText(reply, tokens.join(""));
         } else if (name === "refined") {
@@ -849,7 +965,9 @@ function runSendConversation(text, appendUserBubble) {
   }
   conversationController = postSse("/v1/chat", body, {
     onEvent(name, data) {
-      if (name === "delta") {
+      if (name === "status" && !tokens.length) {
+        renderStreamingText(bodyEl, stageLabel(data.stage));
+      } else if (name === "delta") {
         tokens.push(data.text || "");
         renderStreamingText(bodyEl, tokens.join(""));
       } else if (name === "refined") {
@@ -1734,7 +1852,7 @@ async function voiceAudioTest() {
 }
 
 // --------------------------------------------------------------------------- #
-// Hands-free: always-on "EVIE" stream over WS /v1/voice/live
+// Hands-free: always-on "EVIE" stream over WS /v1/voice/hands-free
 // --------------------------------------------------------------------------- #
 
 const HF_STATE_LABELS = {
@@ -1787,7 +1905,7 @@ function hfLog(role, text) {
 
 function hfLiveUrl() {
   const base = baseUrl() || window.location.origin;
-  return base.replace(/^http/, "ws") + "/v1/voice/live";
+  return base.replace(/^http/, "ws") + "/v1/voice/hands-free";
 }
 
 function hfStopPlayback() {
@@ -1952,7 +2070,7 @@ async function hfStart() {
   hfSetState("connecting");
   let status;
   try {
-    status = await api("/v1/voice/live/status");
+    status = await api("/v1/voice/hands-free/status");
   } catch (error) {
     hfSetState("off");
     showError(result, error);
@@ -2072,7 +2190,7 @@ function hfToggle() {
 
 async function hfRefreshEngines() {
   try {
-    hfRenderEngines(await api("/v1/voice/live/diagnostics"));
+    hfRenderEngines(await api("/v1/voice/hands-free/diagnostics"));
   } catch (error) {
     $("hf-engines-body").textContent = String(error);
   }
@@ -2570,6 +2688,7 @@ async function refreshConsole() {
     api("/v1/runtime/notify/status"),
     api("/v1/runtime/notifications"),
     api("/v1/runtime/health"),
+    api("/v1/diagnostics/last"),
   ]);
   const [
     hud,
@@ -2650,6 +2769,23 @@ async function refreshConsole() {
         `${escapeHtml(alert.tier || "alert")}</span> ${escapeHtml(alert.title || alert.body || "")}</div>`
     )
     .join("") || `<div class="muted">alerts: ${failReason(parts, 3) || "none"}</div>`;
+
+  const diagnosticsValue = fulfill(parts, parts.length - 1);
+  const diagEl = $("diagnostics-strip");
+  if (diagEl) {
+    const checks = ((diagnosticsValue && diagnosticsValue.report && diagnosticsValue.report.checks) || []);
+    const stale = diagnosticsValue && diagnosticsValue.stale;
+    const stamp = diagnosticsValue && diagnosticsValue.generated_at;
+    diagEl.innerHTML =
+      tileHtml("overall", diagnosticsValue && diagnosticsValue.overall) +
+      (stale ? `<div class="muted">stale${stamp ? " · " + escapeHtml(String(stamp)) : ""}</div>` : "") +
+      checks
+        .map(
+          (check) =>
+            `<div>${escapeHtml(check.name)}: ${escapeHtml(check.status)}</div>`
+        )
+        .join("") || `<div class="muted">diagnostics: ${stale ? "stale" : "empty"}</div>`;
+  }
 
   const gearEl = $("gear-tiles");
   gearEl.innerHTML = (gearValue || [])
@@ -2733,6 +2869,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("api-url").value = store.url;
   $("api-key").value = store.key;
   $("connection-form").addEventListener("submit", connect);
+  $("disconnect-local").addEventListener("click", disconnectLocal);
+  $("reconnect-local").addEventListener("click", reconnectLocal);
+  $("manual-switch").addEventListener("click", manualSwitch);
   $("onboarding-add").addEventListener("click", addOnboardingText);
   $("onboarding-finish").addEventListener("click", finishOnboarding);
   $("onboarding-check").addEventListener("click", onboardingReadiness);
@@ -2797,22 +2936,25 @@ document.addEventListener("DOMContentLoaded", () => {
   $("routine-create").addEventListener("click", routineCreate);
   $("routine-templates").addEventListener("click", routineTemplates);
   $("notifications-refresh").addEventListener("click", refreshConsole);
-  refreshHud();
-  refreshTimeline();
   updateVoiceSampleUi();
   updateQueueStatus();
   renderOnboardingList();
   renderWizard();
-  loadConversation();
-  loadSettings();
-  peopleRefresh();
-  integrationsRefresh();
-  routinesRefresh();
   renderVoiceSessionStatus({});
   hfSetState("off");
   startConsoleLoop();
   updateClock();
   setInterval(updateClock, 1000);
+  autoConnectLocal().then(() => {
+    refreshHud();
+    refreshTimeline();
+    loadConversation();
+    loadSettings();
+    peopleRefresh();
+    integrationsRefresh();
+    routinesRefresh();
+    startConsoleLoop();
+  });
 });
 
 window.EV = {
@@ -2857,4 +2999,8 @@ window.EV = {
   routineTemplates,
   askRetry,
   conversationRetry,
+  autoConnectLocal,
+  disconnectLocal,
+  manualSwitch,
+  reconnectLocal,
 };

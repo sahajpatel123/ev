@@ -2,10 +2,25 @@
 
 import Foundation
 
-public enum EVAPIError: Error, Sendable {
+public enum EVAPIError: Error, Sendable, LocalizedError {
     case httpStatus(Int, String)
     case transport(String)
     case decoding(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .httpStatus(let code, let body):
+            let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if detail.isEmpty {
+                return "API error \(code)"
+            }
+            return "API error \(code): \(detail.prefix(240))"
+        case .transport(let message):
+            return "Network error: \(message)"
+        case .decoding(let message):
+            return "Bad response: \(message)"
+        }
+    }
 }
 
 public struct CaptureResult: Sendable, Equatable {
@@ -51,6 +66,28 @@ private struct VoiceVerifyRequestBody: Encodable {
     let liveScore: Double?
 }
 
+private struct VoiceWakeRequestBody: Encodable {
+    let deviceId: String
+    let wakeWord: String
+    let audioRef: String?
+    let textHint: String?
+    let audioB64: String?
+    let pushToTalk: Bool
+}
+
+private struct VoiceLiveOpenRequestBody: Encodable {
+    let deviceId: String
+}
+
+private struct IntegrationCreateRequestBody: Encodable {
+    let adapter: String
+    let slug: String
+    let name: String
+    let scopes: [String]
+    let privacyLevel: String
+    let config: [String: AnyCodable]
+}
+
 private struct VoiceUtteranceRequestBody: Encodable {
     let sessionId: String
     let text: String?
@@ -60,6 +97,7 @@ private struct VoiceUtteranceRequestBody: Encodable {
     let reverifyToken: String?
     let language: String
     let conversationId: String?
+    let pushToTalk: Bool
 }
 
 public struct EVAPIClient: Sendable {
@@ -67,7 +105,17 @@ public struct EVAPIClient: Sendable {
     public let token: String
     public let session: URLSession
 
-    public init(baseURL: URL, token: String, session: URLSession = .shared) {
+    /// Voice turns (ASR + chat + TTS) can exceed URLSession.shared's 60s default.
+    public static let voiceSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 90
+        config.timeoutIntervalForResource = 180
+        config.waitsForConnectivity = false
+        config.httpMaximumConnectionsPerHost = 8
+        return URLSession(configuration: config)
+    }()
+
+    public init(baseURL: URL, token: String, session: URLSession = EVAPIClient.voiceSession) {
         self.baseURL = baseURL
         self.token = token
         self.session = session
@@ -92,7 +140,8 @@ public struct EVAPIClient: Sendable {
         body: Data? = nil,
         headers: [String: String] = [:],
         queryItems: [URLQueryItem] = [],
-        allowedStatuses: Set<Int> = [200]
+        allowedStatuses: Set<Int> = [200],
+        timeout: TimeInterval? = nil
     ) async throws -> (Int, Data) {
         var request = URLRequest(url: url(for: path, queryItems: queryItems))
         request.httpMethod = method
@@ -102,6 +151,7 @@ public struct EVAPIClient: Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
         request.httpBody = body
+        request.timeoutInterval = timeout ?? 90
         return try await perform(request, allowedStatuses: allowedStatuses)
     }
 
@@ -122,10 +172,22 @@ public struct EVAPIClient: Sendable {
         guard allowedStatuses.contains(http.statusCode) else {
             throw EVAPIError.httpStatus(
                 http.statusCode,
-                String(data: data, encoding: .utf8) ?? ""
+                Self.apiErrorDetail(data)
             )
         }
         return (http.statusCode, data)
+    }
+
+    static func apiErrorDetail(_ data: Data) -> String {
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let detail = object["detail"] as? String {
+                return detail
+            }
+            if let detail = object["detail"] {
+                return String(describing: detail)
+            }
+        }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
@@ -138,7 +200,7 @@ public struct EVAPIClient: Sendable {
         }
     }
 
-    private func encode<T: Encodable>(_ value: T) throws -> Data {
+    func encode<T: Encodable>(_ value: T) throws -> Data {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         return try encoder.encode(value)
@@ -302,6 +364,103 @@ public struct EVAPIClient: Sendable {
         return card
     }
 
+    /// Confirm or retry a tool on the HTTP action channel (`POST /v1/gateway/tools`).
+    /// Voice never calls this while holding the audio loop.
+    public func dispatchTool(
+        name: String,
+        arguments: [String: Any] = [:],
+        confirm: Bool = false,
+        allowSensitive: Bool = true,
+        requestId: String? = nil
+    ) async throws -> ToolDispatchResponse {
+        var merged = arguments
+        if confirm {
+            merged["confirm"] = true
+        }
+        struct Body: Encodable {
+            let name: String
+            let arguments: AnyCodable
+            let allowSensitive: Bool
+            let requestId: String?
+        }
+        let (_, data) = try await send(
+            "/v1/gateway/tools",
+            method: "POST",
+            body: encode(
+                Body(
+                    name: name,
+                    arguments: .wrap(merged),
+                    allowSensitive: allowSensitive,
+                    requestId: requestId
+                )
+            )
+        )
+        return try decode(ToolDispatchResponse.self, from: data)
+    }
+
+    /// Independent HUD / HTTP approval for a parked R3/R4 ticket.
+    /// Device actors must pass a purpose-bound reverify token (Face ID / Touch ID
+    /// then `POST /v1/identity/reverification`) or a WebAuthn assertion.
+    public func approveAction(
+        id: String,
+        reason: String? = nil,
+        reverifyToken: String? = nil,
+        webauthn: WebauthnAssertion? = nil
+    ) async throws -> ApprovedActionOut {
+        struct Body: Encodable {
+            let reason: String?
+            let factor: String?
+            let webauthn: WebauthnAssertion?
+        }
+        var headers: [String: String] = [:]
+        if let reverifyToken, !reverifyToken.isEmpty {
+            headers["X-EV-Reverify"] = reverifyToken
+        }
+        let factor = webauthn == nil ? nil : "webauthn"
+        let (_, data) = try await send(
+            "/v1/runtime/actions/\(id)/approve",
+            method: "POST",
+            body: encode(Body(reason: reason, factor: factor, webauthn: webauthn)),
+            headers: headers
+        )
+        return try decode(ApprovedActionOut.self, from: data)
+    }
+
+    public func issueReverification(
+        purpose: String,
+        voiceSessionId: String? = nil
+    ) async throws -> ReverificationResponse {
+        struct Body: Encodable {
+            let purpose: String
+            let voiceSessionId: String?
+        }
+        let (_, data) = try await send(
+            "/v1/identity/reverification",
+            method: "POST",
+            body: encode(Body(purpose: purpose, voiceSessionId: voiceSessionId)),
+            allowedStatuses: [200, 201]
+        )
+        return try decode(ReverificationResponse.self, from: data)
+    }
+
+    public func lookoutUtterance(
+        text: String,
+        conversationId: String? = nil,
+        preferHaptic: Bool = true
+    ) async throws -> LookoutUtteranceResult {
+        struct Body: Encodable {
+            let text: String
+            let conversationId: String?
+            let preferHaptic: Bool
+        }
+        let (_, data) = try await send(
+            "/v1/lookout/utterance",
+            method: "POST",
+            body: encode(Body(text: text, conversationId: conversationId, preferHaptic: preferHaptic))
+        )
+        return try decode(LookoutUtteranceResult.self, from: data)
+    }
+
     public func quickCard(
         topic: String,
         stakes: String? = nil,
@@ -324,31 +483,186 @@ public struct EVAPIClient: Sendable {
         return card
     }
 
+    public func postHealthSnapshot(
+        source: String,
+        deviceId: String? = nil,
+        metrics: [String: Double],
+        occurredAt: String? = nil,
+        permissionState: String = "authorized",
+        syncedAt: String? = nil,
+        units: [String: String] = [:],
+        sourceMetadata: [String: String] = [:]
+    ) async throws {
+        struct Body: Encodable {
+            let source: String
+            let deviceId: String?
+            let metrics: [String: Double]
+            let occurredAt: String?
+            let permissionState: String
+            let syncedAt: String?
+            let units: [String: String]
+            let sourceMetadata: [String: String]
+        }
+        _ = try await send(
+            "/v1/health/snapshot",
+            method: "POST",
+            body: encode(
+                Body(
+                    source: source,
+                    deviceId: deviceId,
+                    metrics: metrics,
+                    occurredAt: occurredAt,
+                    permissionState: permissionState,
+                    syncedAt: syncedAt,
+                    units: units,
+                    sourceMetadata: sourceMetadata
+                )
+            ),
+            allowedStatuses: [201]
+        )
+    }
+
     public func health() async throws -> HealthResponse {
-        let (_, data) = try await send("/v1/health")
+        let (_, data) = try await send("/v1/health", timeout: 8)
         return try decode(HealthResponse.self, from: data)
+    }
+
+    // MARK: - Integration bridges
+
+    public func integrations(includeRevoked: Bool = true) async throws -> [IntegrationRecord] {
+        let (_, data) = try await send(
+            "/v1/integrations",
+            queryItems: [URLQueryItem(name: "include_revoked", value: includeRevoked ? "true" : "false")],
+            allowedStatuses: [200],
+            timeout: 15
+        )
+        return try decode([IntegrationRecord].self, from: data)
+    }
+
+    public func installIntegration(
+        adapter: String,
+        slug: String,
+        name: String,
+        scopes: [String],
+        config: [String: AnyCodable] = [:]
+    ) async throws -> IntegrationRecord {
+        let body = try encode(
+            IntegrationCreateRequestBody(
+                adapter: adapter,
+                slug: slug,
+                name: name,
+                scopes: scopes,
+                privacyLevel: "normal",
+                config: config
+            )
+        )
+        let (_, data) = try await send(
+            "/v1/integrations",
+            method: "POST",
+            body: body,
+            allowedStatuses: [201],
+            timeout: 20
+        )
+        return try decode(IntegrationRecord.self, from: data)
+    }
+
+    public func beginIntegrationOAuth(integrationID: String) async throws -> IntegrationOAuthAuthorize {
+        let (_, data) = try await send(
+            "/v1/integrations/oauth/authorize",
+            queryItems: [URLQueryItem(name: "integration_id", value: integrationID)],
+            allowedStatuses: [200],
+            timeout: 20
+        )
+        return try decode(IntegrationOAuthAuthorize.self, from: data)
+    }
+
+    public func integrationOAuthStatus(integrationID: String) async throws -> IntegrationOAuthStatus {
+        let (_, data) = try await send(
+            "/v1/integrations/\(integrationID)/oauth/status",
+            allowedStatuses: [200],
+            timeout: 15
+        )
+        return try decode(IntegrationOAuthStatus.self, from: data)
+    }
+
+    /// Fetch the convergent device/runtime snapshot used by the Mac and iOS
+    /// clients. A fresh snapshot replaces the previous node set so vanished
+    /// devices do not remain visually present.
+    public func runtimeSync(since: String? = nil, limit: Int = 200) async throws -> RuntimeSync {
+        var items = [URLQueryItem(name: "limit", value: String(limit))]
+        if let since {
+            items.append(URLQueryItem(name: "since", value: since))
+        }
+        let (_, data) = try await send(
+            "/v1/runtime/sync",
+            queryItems: items,
+            allowedStatuses: [200],
+            timeout: 15
+        )
+        return try decode(RuntimeSync.self, from: data)
     }
 
     public func conversation(limit: Int = 50) async throws -> ConversationDetail {
         let (_, data) = try await send(
             "/v1/conversation",
-            queryItems: [URLQueryItem(name: "limit", value: String(limit))]
+            queryItems: [URLQueryItem(name: "limit", value: String(limit))],
+            timeout: 15
         )
         return try decode(ConversationDetail.self, from: data)
     }
 
+    /// Fetch persisted TTS bytes. ``ref`` may be ``ev://voice/tts/...`` or a store key.
+    public func voiceAudio(ref: String) async throws -> Data {
+        var key = ref
+        if key.hasPrefix("ev://") {
+            key = String(key.dropFirst(5))
+        }
+        while key.hasPrefix("/") {
+            key = String(key.dropFirst())
+        }
+        let (_, data) = try await send("/v1/voice/audio/\(key)", timeout: 20)
+        return data
+    }
+
     public func wakeVoice(
         deviceId: String,
-        wakeWord: String = "evie"
+        wakeWord: String = "evie",
+        audioRef: String? = nil,
+        textHint: String? = nil,
+        audioB64: String? = nil,
+        pushToTalk: Bool = false
     ) async throws -> VoiceWakeResponse {
-        let body = try encode(["device_id": deviceId, "wake_word": wakeWord])
+        let body = try encode(
+            VoiceWakeRequestBody(
+                deviceId: deviceId,
+                wakeWord: wakeWord,
+                audioRef: audioRef,
+                textHint: textHint,
+                audioB64: audioB64,
+                pushToTalk: pushToTalk
+            )
+        )
         let (_, data) = try await send(
             "/v1/voice/wake",
             method: "POST",
             body: body,
-            allowedStatuses: [200, 201]
+            allowedStatuses: [200, 201],
+            timeout: 20
         )
         return try decode(VoiceWakeResponse.self, from: data)
+    }
+
+    /// Open a full-duplex live conversation without a wake word.
+    public func openLiveVoice(deviceId: String) async throws -> VoiceLiveOpenResponse {
+        let body = try encode(VoiceLiveOpenRequestBody(deviceId: deviceId))
+        let (_, data) = try await send(
+            "/v1/voice/live/open",
+            method: "POST",
+            body: body,
+            allowedStatuses: [200, 201],
+            timeout: 20
+        )
+        return try decode(VoiceLiveOpenResponse.self, from: data)
     }
 
     public func verifyVoice(
@@ -381,7 +695,8 @@ public struct EVAPIClient: Sendable {
         audioRef: String? = nil,
         reverifyToken: String? = nil,
         language: String = "en",
-        conversationId: String? = nil
+        conversationId: String? = nil,
+        pushToTalk: Bool = false
     ) async throws -> VoiceUtteranceResponse {
         let body = try encode(
             VoiceUtteranceRequestBody(
@@ -392,10 +707,16 @@ public struct EVAPIClient: Sendable {
                 audioRef: audioRef,
                 reverifyToken: reverifyToken,
                 language: language,
-                conversationId: conversationId
+                conversationId: conversationId,
+                pushToTalk: pushToTalk
             )
         )
-        let (_, data) = try await send("/v1/voice/utterance", method: "POST", body: body)
+        let (_, data) = try await send(
+            "/v1/voice/utterance",
+            method: "POST",
+            body: body,
+            timeout: 90
+        )
         return try decode(VoiceUtteranceResponse.self, from: data)
     }
 
@@ -455,5 +776,49 @@ public struct EVAPIClient: Sendable {
         let route = try decode(HUDRoute.self, from: data)
         try route.validate()
         return route
+    }
+
+    public func createDevice(
+        name: String,
+        capabilities: [String],
+        deviceType: String = "unknown"
+    ) async throws -> DeviceCreateResponse {
+        struct Body: Encodable {
+            let name: String
+            let capabilities: [String]
+            let deviceType: String
+        }
+        let (_, data) = try await send(
+            "/v1/devices",
+            method: "POST",
+            body: encode(Body(name: name, capabilities: capabilities, deviceType: deviceType)),
+            allowedStatuses: [200, 201]
+        )
+        return try decode(DeviceCreateResponse.self, from: data)
+    }
+
+    public func bootstrapDevice(id: String) async throws -> DeviceBootstrap {
+        let (_, data) = try await send("/v1/devices/\(id)/bootstrap")
+        return try decode(DeviceBootstrap.self, from: data)
+    }
+
+    public func panicDevice(id: String) async throws -> DevicePanic {
+        let (_, data) = try await send(
+            "/v1/devices/\(id)/panic",
+            method: "POST",
+            body: Data("{}".utf8),
+            allowedStatuses: [200, 201]
+        )
+        return try decode(DevicePanic.self, from: data)
+    }
+
+    public func lockAll() async throws -> DevicePanic {
+        let (_, data) = try await send(
+            "/v1/runtime/lock-all",
+            method: "POST",
+            body: Data("{}".utf8),
+            allowedStatuses: [200, 201]
+        )
+        return try decode(DevicePanic.self, from: data)
     }
 }

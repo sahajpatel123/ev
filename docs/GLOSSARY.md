@@ -41,4 +41,5 @@
 | Attention budget | Cap on actionable notifications; quiet hours + digest batching. |
 | Idempotency key | Client-supplied key preventing duplicate event writes. |
 | SSE | Server-Sent Events streaming for chat responses. |
+| EV LIVE | Full-duplex conversational voice runtime: continuous state, silence-aware turn-taking, backchannels, barge-in, and foreground speech with DeepSeek delegated for deep work (`WS /v1/voice/live`). |
 

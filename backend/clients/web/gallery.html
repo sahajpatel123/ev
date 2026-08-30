@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EVIE HUD gallery</title>
+  <link rel="stylesheet" href="/app/lookout.css">
+</head>
+<body class="gallery-page">
+  <main class="gallery-root">
+    <header class="gallery-head">
+      <p class="mark">EVIE</p>
+      <h1>How the folios land — today</h1>
+      <p class="lede">
+        One material, many compositions. Questions sit in serif; replies sit
+        in sans. Placement and layout drift so the desk never repeats, without
+        becoming a titled window.
+      </p>
+    </header>
+    <div id="gallery" class="gallery-field"></div>
+    <p class="hint">
+      Rate a lookout with
+      <code>POST /v1/training/surfaces/rate</code>
+      then
+      <code>POST /v1/training/surfaces/calibrate</code>
+      so the next turn learns.
+    </p>
+  </main>
+  <script src="/app/lookout.js" defer></script>
+</body>
+</html>

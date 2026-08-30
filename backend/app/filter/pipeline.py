@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.contracts import ChatMessage, ChatProvider, MemoryRef, RequestEnvelope, RetrievedMemory
 from app.ev.interaction import build_strategy, strategy_block
-from app.ev.personality import get_current, identity_block, to_dict
 from app.ev.user_state import build_user_state
 from app.filter.envelope import (
     GroundingMaterial,
@@ -125,10 +124,14 @@ async def run_full_filter_pipeline(
 
     strategy = strategy or build_strategy(decision.provider_message)
     user_state = await build_user_state(session, access="model")
+    from app.ev.assistant import compile_identity, get_profile, spoken_name
+
+    identity = await compile_identity(session, compact=False)
+    who = spoken_name((await get_profile(session)).nickname)
     context, context_tokens = _compile(
         memories=memories,
         user_state=user_state,
-        strategy_text=strategy_block(strategy),
+        strategy_text=strategy_block(strategy, who=who),
         budget=settings.context_budget_tokens,
     )
     envelope_hash = compute_envelope_hash(
@@ -138,7 +141,6 @@ async def run_full_filter_pipeline(
         privacy_level=decision.privacy_level,
         speaker_method=speaker.method,
     )
-    profile = await get_current(session)
     envelope = RequestEnvelope(
         request_id=request_id,
         strategy=strategy.model_dump(),
@@ -154,10 +156,14 @@ async def run_full_filter_pipeline(
         ],
         conversation_id=str(conversation_id) if conversation_id else None,
         context_tokens=context_tokens,
-        metadata={"privacy_level": decision.privacy_level, "envelope_hash": envelope_hash},
+        metadata={
+            "privacy_level": decision.privacy_level,
+            "envelope_hash": envelope_hash,
+            "spoken_name": who,
+        },
     )
     system_prompt = (
-        f"{identity_block(settings.persona_name, settings.persona_description, to_dict(profile))}\n\n"
+        f"{identity}\n\n"
         "You reason over memory that EV's system has retrieved for you; never invent memories. "
         "Be honest about uncertainty, cite dates/sources when you use them, and keep the user's "
         "goals in mind.\n\n"

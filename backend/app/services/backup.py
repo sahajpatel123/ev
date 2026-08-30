@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
-from sqlalchemy import delete, inspect, select, update
+from sqlalchemy import delete, inspect, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -56,6 +56,7 @@ from app.models import (
     RuntimeEvent,
     RuntimeHeartbeat,
     RuntimeSession,
+    VoiceAttemptLog,
     VoiceSession,
 )
 from app.services.rebuild import rebuild_derived_state
@@ -128,6 +129,13 @@ async def _collect_payload(session: AsyncSession) -> dict:
     attachments = await rows(Attachment)
     devices = await rows(Device)
     access_log = await rows(AccessLog)
+    # G1 + G2 life state + consent (P1.1 privacy regression: these must survive restore)
+    from app.models import Commitment, ConsentRecord, Goal, Project
+
+    projects = await rows(Project)
+    goals = await rows(Goal)
+    commitments = await rows(Commitment)
+    consent_records = await rows(ConsentRecord)
     store = get_object_store()
     attachment_blobs: list[dict] = []
     for attachment in attachments:
@@ -149,6 +157,10 @@ async def _collect_payload(session: AsyncSession) -> dict:
         "attachments": attachment_blobs,
         "devices": [_row_dict(d) for d in devices],
         "access_log": [_row_dict(a) for a in access_log],
+        "projects": [_row_dict(p) for p in projects],
+        "goals": [_row_dict(g) for g in goals],
+        "commitments": [_row_dict(c) for c in commitments],
+        "consent_records": [_row_dict(c) for c in consent_records],
         "counts": {
             "events": len(events),
             "memories": len(memories),
@@ -158,6 +170,10 @@ async def _collect_payload(session: AsyncSession) -> dict:
             "attachments": len(attachments),
             "devices": len(devices),
             "access_log": len(access_log),
+            "projects": len(projects),
+            "goals": len(goals),
+            "commitments": len(commitments),
+            "consent_records": len(consent_records),
         },
     }
     return payload
@@ -184,6 +200,12 @@ async def create_backup(
     payload = await _collect_payload(session)
     plaintext = _canonical_plaintext(payload)
     ciphertext, salt = encrypt_payload(payload, master_key=passphrase)
+    # P0 PART 3: backups carry lineage metadata (explicit STATE_EPOCH +
+    # environment). The epoch recorded here is the SOURCE lineage at backup
+    # time; a later restore still rotates to a NEW active epoch.
+    from app.ops.state_epoch import envelope_metadata, get_current_epoch_id
+
+    source_epoch = await get_current_epoch_id(session)
     envelope = {
         "schema": BACKUP_SCHEMA,
         "created_at": utcnow().isoformat(),
@@ -191,6 +213,10 @@ async def create_backup(
         "salt": salt,
         "plaintext_sha256": hashlib.sha256(plaintext).hexdigest(),
         "counts": payload["counts"],
+        **envelope_metadata(
+            source_epoch,
+            __import__("os").environ.get("EV_ENV"),
+        ),
     }
     path = Path(destination) if destination else _default_backup_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -277,14 +303,37 @@ def load_backup(path: str, passphrase: str) -> dict:
     )
 
 
+async def _delete_voice_replay_nonces(session: AsyncSession) -> None:
+    from sqlalchemy import text as _text
+
+    await session.execute(_text("DELETE FROM voice_replay_nonces WHERE session_id IS NOT NULL"))
+
+
+def bind_dialect_is_postgresql(session) -> bool:
+    return session.bind is not None and session.bind.dialect.name == 'postgresql'
+
+
 async def _wipe_data_tables(session: AsyncSession) -> None:
-    """Delete the personal-data layer and its dependent operational rows."""
+    """Delete the personal-data layer and its dependent operational rows.
+
+    FK-ORDER ROBUSTNESS (P0 INC-20260825): after the explicit historical
+    deletes, a CATALOG-DRIVEN sweep purges ANY table still holding rows
+    that reference the wiped roots (events/devices/memories/projects/
+    goals/commitments/...), deepest-first. No child table can be forgotten
+    again — the original failure was exactly such a forgotten child
+    (voice_attempt_log → voice_sessions, then memory_curation_jobs →
+    events).
+    """
     # Operational rows that reference devices/events/memories first.
     await session.execute(delete(RuntimeEvent))
     await session.execute(delete(RoutineRun))
     await session.execute(delete(ApprovedAction))
     await session.execute(delete(PasskeyCredential))
     await session.execute(delete(ReVerificationProof))
+    # FK children of voice_sessions MUST be deleted before voice_sessions
+    # itself (P0 INC-20260825: ForeignKeyViolation aborted the wipe mid-way,
+    # leaving a half-deleted database).
+    await session.execute(delete(VoiceAttemptLog))
     await session.execute(delete(VoiceSession))
     await session.execute(delete(RuntimeHeartbeat))
     await session.execute(delete(RuntimeSession))
@@ -300,12 +349,85 @@ async def _wipe_data_tables(session: AsyncSession) -> None:
     await session.execute(update(MakerProject).values(goal_memory_id=None))
 
     # Derived layer.
+    await session.execute(delete(Conflict))
     await session.execute(delete(MemoryEntity))
     await session.execute(delete(MemoryEvent))
-    await session.execute(delete(Conflict))
     await session.execute(delete(EntityRelationship))
     await session.execute(delete(Memory))
     await session.execute(delete(Entity))
+    # G1 life state + consent (must be wiped with events; not derived memories)
+    from app.models import Commitment, ConsentRecord, DeviceRoutedAction, Goal, GoalStep, OwnerHandoffContext, Project
+
+    await session.execute(delete(GoalStep))
+    await session.execute(delete(Commitment))
+    await session.execute(delete(Goal))
+    await session.execute(delete(Project))
+    await session.execute(delete(ConsentRecord))
+    with contextlib.suppress(Exception):
+        await session.execute(delete(DeviceRoutedAction))
+    with contextlib.suppress(Exception):
+        await session.execute(delete(OwnerHandoffContext))
+
+    # 2) CATALOG-DRIVEN SWEEP: purge ANY remaining table whose rows still
+    # reference a wiped root (events/devices/memories/projects/goals/
+    # commitments/attachments/notifications/sandbox_facts), deepest-first.
+    # Postgres only — sqlite has no information_schema.
+    if bind_dialect_is_postgresql(session):
+        from sqlalchemy import text as _text
+
+        roots = [
+            "events",
+            "devices",
+            "memories",
+            "projects",
+            "goals",
+            "commitments",
+            "attachments",
+            "notifications",
+            "sandbox_facts",
+        ]
+        for _ in range(8):
+            pending = (
+                await session.execute(
+                    _text(
+                        """
+                        select distinct tc.table_name as child,
+                                        ccu.table_name as parent
+                        from information_schema.table_constraints tc
+                        join information_schema.key_column_usage kcu
+                          on tc.constraint_name = kcu.constraint_name
+                         and tc.table_schema = kcu.table_schema
+                        join information_schema.constraint_column_usage ccu
+                          on ccu.constraint_name = tc.constraint_name
+                         and ccu.table_schema = tc.table_schema
+                        where tc.constraint_type = 'FOREIGN KEY'
+                          and tc.table_schema = 'public'
+                          and ccu.table_schema = 'public'
+                          and ccu.table_name = any(:roots)
+                          and tc.table_name <> ccu.table_name
+                        """
+                    ),
+                    {"roots": roots},
+                )
+            ).fetchall()
+            if not pending:
+                break
+            children = sorted({r.child for r in pending})
+            for child in children:
+                try:
+                    await session.execute(_text(f'DELETE FROM "{child}"'))
+                    if child not in roots:
+                        roots.append(child)
+                except Exception:
+                    await session.rollback()
+                    # Child could not be purged this round; a later sweep
+                    # iteration retries it (bounded by the outer loop).
+
+    # 3) The canonical roots themselves.
+    await session.execute(delete(Attachment))
+    await session.execute(delete(AccessLog))
+    await session.execute(delete(Device))
+    await session.execute(delete(Event))
 
     # Primary stores.
     await session.execute(delete(Attachment))
@@ -404,6 +526,119 @@ async def restore_backup(
         existing_ids.add(device_id)
         devices_restored += 1
 
+    # G1 life + consent (P1.1: must survive wipe/merge, backward compat with old backups)
+    from app.models import Commitment, ConsentRecord, Goal, Project
+
+    existing_project_ids = {str(row[0]) for row in (await session.execute(select(Project.id))).all()}
+    projects_restored = 0
+    for data in payload.get("projects", []):
+        pid = str(data["id"])
+        if pid in existing_project_ids:
+            continue
+        session.add(
+            Project(
+                id=UUID(pid),
+                actor=str(data.get("actor") or "master"),
+                title=str(data.get("title") or "restored"),
+                description=str(data.get("description") or ""),
+                status=str(data.get("status") or "ACTIVE"),
+                priority=str(data.get("priority") or "NORMAL"),
+                privacy_level=str(data.get("privacy_level") or "normal"),
+                source=str(data.get("source") or "owner"),
+                created_at=_parse_dt(data.get("created_at")) or utcnow(),
+                updated_at=_parse_dt(data.get("updated_at")) or utcnow(),
+                archived_at=_parse_dt(data.get("archived_at")),
+                version=int(data.get("version") or 0),
+            )
+        )
+        existing_project_ids.add(pid)
+        projects_restored += 1
+    # Goals: defer FK check, set project_id to None if parent missing (merge safety)
+    existing_goal_ids = {str(row[0]) for row in (await session.execute(select(Goal.id))).all()}
+    goals_restored = 0
+    for data in payload.get("goals", []):
+        gid = str(data["id"])
+        if gid in existing_goal_ids:
+            continue
+        pid = data.get("project_id")
+        if pid and str(pid) not in existing_project_ids:
+            pid = None
+        session.add(
+            Goal(
+                id=UUID(gid),
+                actor=str(data.get("actor") or "master"),
+                project_id=UUID(str(pid)) if pid else None,
+                parent_goal_id=UUID(str(data["parent_goal_id"])) if data.get("parent_goal_id") else None,
+                title=str(data.get("title") or "restored"),
+                description=str(data.get("description") or ""),
+                state=str(data.get("state") or "ACTIVE"),
+                priority=str(data.get("priority") or "NORMAL"),
+                success_criteria=str(data.get("success_criteria") or ""),
+                progress_note=str(data.get("progress_note") or ""),
+                next_action=str(data.get("next_action") or ""),
+                privacy_level=str(data.get("privacy_level") or "normal"),
+                source=str(data.get("source") or "owner"),
+                created_at=_parse_dt(data.get("created_at")) or utcnow(),
+                updated_at=_parse_dt(data.get("updated_at")) or utcnow(),
+                version=int(data.get("version") or 0),
+            )
+        )
+        existing_goal_ids.add(gid)
+        goals_restored += 1
+    existing_commitment_ids = {str(row[0]) for row in (await session.execute(select(Commitment.id))).all()}
+    commitments_restored = 0
+    for data in payload.get("commitments", []):
+        cid = str(data["id"])
+        if cid in existing_commitment_ids:
+            continue
+        session.add(
+            Commitment(
+                id=UUID(cid),
+                actor=str(data.get("actor") or "master"),
+                description=str(data.get("description") or "restored"),
+                status=str(data.get("status") or "OPEN"),
+                due_at=_parse_dt(data.get("due_at")),
+                project_id=UUID(str(data["project_id"])) if data.get("project_id") and str(data["project_id"]) in existing_project_ids else None,
+                goal_id=UUID(str(data["goal_id"])) if data.get("goal_id") and str(data["goal_id"]) in existing_goal_ids else None,
+                privacy_level=str(data.get("privacy_level") or "normal"),
+                source=str(data.get("source") or "owner"),
+                created_at=_parse_dt(data.get("created_at")) or utcnow(),
+                updated_at=_parse_dt(data.get("updated_at")) or utcnow(),
+            )
+        )
+        existing_commitment_ids.add(cid)
+        commitments_restored += 1
+    existing_consent_ids = {str(row[0]) for row in (await session.execute(select(ConsentRecord.id))).all()}
+    consents_restored = 0
+    # Track-based dedupe: don't duplicate active track
+    active_tracks = {row.track for row in (await session.execute(select(ConsentRecord).where(ConsentRecord.revoked_at.is_(None)))).scalars().all()}
+    for data in payload.get("consent_records", []):
+        cid = str(data["id"])
+        track = str(data.get("track") or "")
+        if cid in existing_consent_ids:
+            continue
+        if track in active_tracks and not data.get("revoked_at"):
+            # Already have active consent for this track — skip duplicate
+            continue
+        session.add(
+            ConsentRecord(
+                id=UUID(cid),
+                track=track,
+                granted_at=_parse_dt(data.get("granted_at")) or utcnow(),
+                revoked_at=_parse_dt(data.get("revoked_at")),
+                revoked_reason=data.get("revoked_reason"),
+                consent_version=str(data.get("consent_version") or "1.0"),
+                purpose=str(data.get("purpose") or "personalize EV to the owner"),
+                scope=data.get("scope") or {},
+                source=str(data.get("source") or "privacy_center"),
+                created_at=_parse_dt(data.get("created_at")) or utcnow(),
+            )
+        )
+        existing_consent_ids.add(cid)
+        if not data.get("revoked_at"):
+            active_tracks.add(track)
+        consents_restored += 1
+
     existing_attachment_ids = {
         str(row[0])
         for row in (await session.execute(select(Attachment.id))).all()
@@ -469,14 +704,39 @@ async def restore_backup(
         actor=actor,
         reason=f"backup:restore:{mode}",
     )
+    # P0 STATE EPOCH LAW: a lineage-replacing restore rotates the epoch in
+    # the SAME transaction as the replacing write. 'new state + old epoch'
+    # is impossible; if the restore fails, no rotation is advertised.
+    from app.ops.state_epoch import rotate_epoch
+
+    # P0.2: replayed rows carry their original stream_seq values; re-align
+    # the allocator past them so future events cannot collide.
+    if bind_dialect_is_postgresql(session):
+        await session.execute(
+            text(
+                "SELECT setval('events_stream_seq_seq', "
+                "COALESCE((SELECT MAX(stream_seq) FROM events), 0) + 1, false)"
+            )
+        )
+    new_epoch = await rotate_epoch(
+        session,
+        reason=(
+            f"backup.restore:{mode}:{Path(path).name}"
+        ),
+    )
     return {
         "mode": mode,
         "restored_at": utcnow().isoformat(),
+        "new_state_epoch": new_epoch,
         "events_restored": events_restored,
         "events_skipped": max(0, len(payload.get("events", [])) - events_restored),
         "attachments_restored": attachments_restored,
         "blobs_restored": restored_blobs,
         "devices_restored": devices_restored,
+        "projects_restored": projects_restored,
+        "goals_restored": goals_restored,
+        "commitments_restored": commitments_restored,
+        "consents_restored": consents_restored,
         "access_log_restored": access_restored,
         "backup_counts": payload.get("counts") or {},
         "rebuild": rebuild,

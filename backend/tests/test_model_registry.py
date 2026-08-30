@@ -125,6 +125,37 @@ def test_builtin_roster_matches_budget_law() -> None:
         assert by_name[name].optional, name
 
 
+def test_kokoro_voice_entries_are_pinned_and_targeted() -> None:
+    by_name = {spec.name: spec for spec in builtin_models()}
+    model = by_name["tts-kokoro-82m-int8"]
+    voices = by_name["tts-kokoro-voices-v1.0"]
+    assert model.verified
+    assert model.sha256 and len(model.sha256) == 64
+    assert voices.verified
+    assert voices.sha256 and len(voices.sha256) == 64
+    # The shared voices artifact is engine-neutral (used by every Kokoro
+    # precision); the higher-fidelity fp16 engine is registered alongside.
+    assert voices.target_name == "tts-kokoro.voices"
+    fp16 = by_name["tts-kokoro-82m-fp16"]
+    assert fp16.verified
+    assert fp16.sha256 and len(fp16.sha256) == 64
+    assert "fp16" in fp16.source_url
+
+
+def test_target_name_overrides_artifact_filename(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    source = tmp_path / "x.bin"
+    source.write_bytes(b"x")
+    spec = make_spec(
+        "voices",
+        source_url=source.as_uri(),
+        sha256=hashlib.sha256(b"x").hexdigest(),
+    ).model_copy(update={"target_name": "tts-kokoro.voices"})
+    assert store.target_path(settings, spec).name == "tts-kokoro.voices.bin"
+    path = store.download_model(spec, settings)
+    assert path.name == "tts-kokoro.voices.bin"
+
+
 def test_pull_verified_local_file(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     source = tmp_path / "source.bin"

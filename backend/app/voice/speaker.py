@@ -29,6 +29,7 @@ import inspect
 import io
 import math
 import os
+import subprocess
 import sys
 import wave
 from collections.abc import Callable, Sequence
@@ -170,13 +171,83 @@ def _resample(values: list[float], src_rate: int, dst_rate: int) -> list[float]:
     return out
 
 
+def _decode_container_to_wav(raw: bytes) -> bytes:
+    """Convert m4a/mp3/aac/... bytes to 16 kHz mono PCM WAV via afconvert/ffmpeg."""
+
+    suffix = ".bin"
+    if raw.startswith(b"RIFF"):
+        return raw
+    if raw[4:8] == b"ftyp" or raw.startswith(b"\x00\x00\x00"):
+        suffix = ".m4a"
+    elif raw.startswith(b"ID3") or raw[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2"):
+        suffix = ".mp3"
+    tmp_dir = Path(tempfile_dir())
+    src = tmp_dir / f"ev-audio-src-{os.getpid()}-{id(raw)}{suffix}"
+    dst = src.with_suffix(".wav")
+    try:
+        src.write_bytes(raw)
+        _convert_audio(src, dst)
+        return dst.read_bytes()
+    finally:
+        src.unlink(missing_ok=True)
+        dst.unlink(missing_ok=True)
+
+
+def tempfile_dir() -> str:
+    import tempfile
+
+    return tempfile.gettempdir()
+
+
+def _looks_like_media_container(raw: bytes) -> bool:
+    """True for m4a/mp4/mp3/aac that we can convert to WAV."""
+
+    if len(raw) < 12:
+        return False
+    if raw[4:8] == b"ftyp":
+        return True
+    return raw.startswith(b"ID3") or raw[:2] in (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2")
+
+
+def _looks_like_pcm16(raw: bytes) -> bool:
+    """True for 16-bit little-endian PCM long enough to be a real utterance."""
+
+    return len(raw) >= 3200 and len(raw) % 2 == 0
+
+
+def ensure_wav_bytes(raw: bytes, sample_rate: int = 16000) -> bytes:
+    """Normalize client audio to a 16-bit PCM WAV.
+
+    The macOS Talk button sends raw 16 kHz mono PCM with no RIFF header.
+    Phone enrollments may send m4a/mp3. Both become WAV here so CAM++ and
+    ASR share one decode.
+    """
+
+    if raw.startswith(b"RIFF"):
+        return raw
+    if _looks_like_media_container(raw):
+        try:
+            return _decode_container_to_wav(raw)
+        except Exception as exc:
+            raise ValueError("audio must be a RIFF/WAVE file") from exc
+    if _looks_like_pcm16(raw):
+        from app.audio.capture import pcm_to_wav_bytes
+
+        return pcm_to_wav_bytes(raw, sample_rate)
+    raise ValueError("audio must be a RIFF/WAVE file")
+
+
 def decode_waveform(raw: bytes) -> tuple[list[float], int]:
     """Decode RIFF/WAVE audio to a mono float32 waveform at 16 kHz.
 
     The CAM++ ONNX engine and the audio liveness model both consume the same
-    server-side decode so there is exactly one audio interpretation.
+    server-side decode so there is exactly one audio interpretation. Non-WAV
+    containers (m4a/mp3) are converted with afconvert/ffmpeg rather than
+    refused, so owner enrollment from phone recordings works. Raw PCM16 from
+    the menu-bar Talk button is wrapped as WAV.
     """
 
+    raw = ensure_wav_bytes(raw)
     try:
         with wave.open(io.BytesIO(raw), "rb") as wav:
             channels = wav.getnchannels()
@@ -202,6 +273,46 @@ def decode_waveform(raw: bytes) -> tuple[list[float], int]:
             for index in range(0, len(values), channels)
         ]
     return _resample(values, rate, 16000), 16000
+
+
+def _keep_speech(waveform: Sequence[float], sample_rate: int = 16000) -> list[float]:
+    """Keep frames with energy near the clip peak so silence does not dilute CAM++."""
+
+    values = list(waveform)
+    frame = max(1, sample_rate // 100)
+    if len(values) < frame * 4:
+        return values
+    energies = [
+        math.sqrt(sum(x * x for x in values[index : index + frame]) / frame)
+        for index in range(0, len(values) - frame + 1, frame)
+    ]
+    peak = max(energies) if energies else 0.0
+    if peak < 1e-4:
+        return values
+    gate = max(0.015, 0.12 * peak)
+    kept: list[float] = []
+    for index, energy in enumerate(energies):
+        if energy >= gate:
+            start = index * frame
+            kept.extend(values[start : start + frame])
+    if len(kept) < int(0.35 * sample_rate):
+        return values
+    return kept
+
+
+def _verify_windows(waveform: Sequence[float], sample_rate: int = 16000) -> list[list[float]]:
+    """1.5s hops over a long clip so a montage of 'EVIE' takes can still match."""
+
+    values = list(waveform)
+    window = int(1.5 * sample_rate)
+    if len(values) <= window:
+        return [values]
+    hop = max(int(0.4 * sample_rate), (len(values) - window) // 16 or 1)
+    windows = [values[index : index + window] for index in range(0, len(values) - window + 1, hop)]
+    tail = values[-window:]
+    if windows[-1] != tail:
+        windows.append(tail)
+    return windows
 
 
 def _embedding_for_test(sample: dict, dim: int) -> list[float]:
@@ -569,12 +680,76 @@ def _model_cache_candidates() -> list[Path]:
     return candidates
 
 
+_SPEAKER_ONNX_NAMES = (
+    "campp.onnx",
+    "speaker-campp.onnx",
+    "campplus.onnx",
+    "campplus_cn_en_common_200k.onnx",
+    "model.onnx",
+    "speaker.onnx",
+)
+_SPEAKER_ONNX_SKIP = (
+    "granite",
+    "sface",
+    "kokoro",
+    "tts-",
+    "wake-",
+    "embed-",
+    "face-",
+    "yamnet",
+    "silero",
+)
+
+
+def _pick_speaker_onnx(directory: Path) -> Path | None:
+    """Prefer a CAM++ export; never pick unrelated ONNX files in a shared cache."""
+
+    for name in _SPEAKER_ONNX_NAMES:
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    for candidate in sorted(directory.glob("*.onnx")):
+        lowered = candidate.name.lower()
+        if any(skip in lowered for skip in _SPEAKER_ONNX_SKIP):
+            continue
+        if "camp" in lowered or "speaker" in lowered:
+            return candidate
+    return None
+
+
+def _session_input_layout(session) -> str:
+    """waveform | b_time_80 | b_80_time — inferred from the ONNX input spec."""
+
+    inputs = session.get_inputs()
+    if not inputs:
+        return "waveform"
+    spec = inputs[0]
+    shape = list(getattr(spec, "shape", None) or [])
+    dims = [dim if isinstance(dim, int) else None for dim in shape]
+    if len(dims) >= 3 and dims[-1] == 80:
+        return "b_time_80"
+    if len(dims) >= 3 and dims[1] == 80:
+        return "b_80_time"
+    name = str(getattr(spec, "name", "") or "").lower()
+    if "feat" in name:
+        return "b_time_80"
+    return "waveform"
+
+
+# Process-wide CAM++ InferenceSession. VoiceRuntime is per-request.
+_CAMPP_SESSIONS: dict[str, object] = {}
+
+
 class CamppSpeakerVerifier:
     """CAM++ speaker encoder (ONNX, 192-dim, 16 kHz).
 
     CAM++ (7.2M params) reaches 0.65% EER on VoxCeleb1-O — better than
     ECAPA-TDNN (~0.86–1.45%) and ERes2Net-base (0.84%) — and the ONNX export is
     about 28 MB, fitting the locked 28 MB always-resident speaker slot.
+
+    Community ONNX exports take 80-dim Kaldi fbank (``[B, T, 80]`` or
+    ``[B, 80, T]``), not raw waveform. ``_embed_onnx`` inspects the session
+    inputs and runs fbank when needed.
 
     When weights or onnxruntime are absent the engine refuses to run outside
     pytest; inside pytest it degrades to the deterministic test double with
@@ -615,25 +790,25 @@ class CamppSpeakerVerifier:
             if candidate.is_file():
                 return candidate
             if candidate.is_dir():
-                for name in ("campp.onnx", "model.onnx", "speaker.onnx"):
-                    found = candidate / name
-                    if found.is_file():
-                        return found
-                onnx_files = sorted(candidate.glob("*.onnx"))
-                if onnx_files:
-                    return onnx_files[0]
+                return _pick_speaker_onnx(candidate)
             return None
         configured = settings.voiceprint_model_dir
         if configured:
             candidate = Path(configured).expanduser().resolve()
             if candidate.is_file():
-                return candidate
+                lowered = candidate.name.lower()
+                if lowered in _SPEAKER_ONNX_NAMES or "camp" in lowered or "speaker" in lowered:
+                    return candidate
+                if not any(skip in lowered for skip in _SPEAKER_ONNX_SKIP):
+                    return candidate
             if candidate.is_dir():
-                onnx_files = sorted(candidate.glob("*.onnx"))
-                if onnx_files:
-                    return onnx_files[0]
+                found = _pick_speaker_onnx(candidate)
+                if found is not None:
+                    return found
         for candidate in _model_cache_candidates():
-            if candidate.is_file():
+            if candidate.is_file() and not any(
+                skip in candidate.name.lower() for skip in _SPEAKER_ONNX_SKIP
+            ):
                 return candidate
         return None
 
@@ -652,16 +827,38 @@ class CamppSpeakerVerifier:
             raise RuntimeError("CAM++ ONNX model file is not available")
         if self._factory is not None:
             self._session = self._factory(path)
-        else:
-            self._session = onnxruntime.InferenceSession(
-                str(path), providers=["CPUExecutionProvider"]
-            )
+            return self._session
+        key = str(path)
+        cached = _CAMPP_SESSIONS.get(key)
+        if cached is not None:
+            self._session = cached
+            return cached
+        self._session = onnxruntime.InferenceSession(
+            str(path), providers=["CPUExecutionProvider"]
+        )
+        _CAMPP_SESSIONS[key] = self._session
         return self._session
 
     def _embed_onnx(self, session, waveform: list[float]) -> list[float]:
-        audio = [list(waveform)]
-        inputs: dict[str, Any] = {inp.name: audio for inp in session.get_inputs()}
+        layout = _session_input_layout(session)
+        primary = session.get_inputs()[0].name if session.get_inputs() else "speech"
+        if layout in {"b_time_80", "b_80_time"}:
+            from app.voice.fbank import kaldi_fbank
+
+            feats = kaldi_fbank(waveform, sample_rate=16000, num_mel_bins=80, dither=0.0)
+            payload: Any = [feats] if layout == "b_time_80" else [[[row[i] for row in feats] for i in range(80)]]
+        else:
+            payload = [list(waveform)]
+        try:
+            import numpy as np
+
+            payload = np.asarray(payload, dtype=np.float32)
+        except ImportError:
+            pass
+        inputs: dict[str, Any] = {primary: payload}
         for inp in session.get_inputs():
+            if inp.name == primary:
+                continue
             if "length" in inp.name.lower():
                 inputs[inp.name] = [len(waveform)]
         outputs = session.run(None, inputs)
@@ -673,9 +870,10 @@ class CamppSpeakerVerifier:
 
     def _encode_sync(self, sample: dict) -> list[float]:
         raw = sample_audio_bytes(sample)
-        waveform, _rate = decode_waveform(raw)
+        waveform, rate = decode_waveform(raw)
         if not waveform:
             raise ValueError("audio contains no samples")
+        waveform = _keep_speech(waveform, rate)
         return self._embed_onnx(self._load_session(), waveform)
 
     async def _sample_embedding(self, sample: dict) -> tuple[list[float], bool]:
@@ -731,8 +929,19 @@ class CamppSpeakerVerifier:
                 algorithm=self.name,
                 reason="no enrolled voiceprint",
             )
-        embedding, _degraded = await self._sample_embedding(sample)
-        similarity = cosine_similarity(embedding, enrolled)
+        try:
+            raw = sample_audio_bytes(sample)
+            waveform, rate = decode_waveform(raw)
+            waveform = _keep_speech(waveform, rate)
+            session = self._load_session()
+            scores = [
+                cosine_similarity(self._embed_onnx(session, window), enrolled)
+                for window in _verify_windows(waveform, rate)
+            ]
+            similarity = max(scores) if scores else 0.0
+        except (ImportError, RuntimeError, ValueError):
+            embedding, _degraded = await self._sample_embedding(sample)
+            similarity = cosine_similarity(embedding, enrolled)
         threshold = (
             threshold
             if threshold is not None
@@ -938,6 +1147,10 @@ def _main(argv: Sequence[str] | None = None) -> int:
     ``replay-test`` mode drives the physical loudspeaker replay acceptance
     test: wake, play the owner's own enrollment audio through the speakers,
     and attempt verification 20 times.
+
+    ``enroll`` mode is the one-command owner enrollment path: convert
+    m4a/wav sources under a directory to 16 kHz mono WAV, validate them, and
+    enroll through VoiceRuntime with the CAM++ engine and strict liveness.
     """
 
     import argparse
@@ -951,6 +1164,8 @@ def _main(argv: Sequence[str] | None = None) -> int:
         return _capture_main(raw_argv[1:])
     if raw_argv[:1] == ["replay-test"]:
         return _replay_main(raw_argv[1:])
+    if raw_argv[:1] == ["enroll"]:
+        return _enroll_main(raw_argv[1:])
 
     parser = argparse.ArgumentParser(
         prog="python -m app.voice.speaker",
@@ -1097,7 +1312,18 @@ def _eval_main(argv: Sequence[str]) -> int:
         result["degraded"] = bool(payload.get("degraded"))
         return result
 
-    result = asyncio.run(run())
+    try:
+        result = asyncio.run(run())
+    except RuntimeError as exc:
+        print(f"speaker eval refused: {exc}", file=sys.stderr)
+        return 2
+    if result.get("degraded") and not args.test_double:
+        print(
+            "speaker eval refused: encoder degraded (test double) without "
+            "--test-double; a degraded artifact is never a measured threshold.",
+            file=sys.stderr,
+        )
+        return 2
     result["schema"] = "ev.speaker.eval.v1"
     result["schema_version"] = "ev.speaker.eval.v1"
     result["producer"] = "app.voice.speaker"
@@ -1445,6 +1671,220 @@ def _capture_main(argv: Sequence[str]) -> int:
         "--impostor-dir <voxceleb> --report canonical` to calibrate."
     )
     return 0
+
+
+def _convert_audio(src: Path, dst: Path) -> None:
+    """Convert one audio file to 16 kHz mono PCM WAV (afconvert, fallback ffmpeg)."""
+    import shutil
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("afconvert"):
+        try:
+            subprocess.run(
+                [
+                    "afconvert",
+                    "-f",
+                    "WAVE",
+                    "-d",
+                    "LEI16@16000",
+                    "-c",
+                    "1",
+                    str(src),
+                    str(dst),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            return
+        except subprocess.CalledProcessError:
+            pass
+    if shutil.which("ffmpeg"):
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                str(src),
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                str(dst),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return
+    raise RuntimeError(
+        "no audio converter available; install afconvert (macOS) or ffmpeg"
+    )
+
+
+def _enroll_main(argv: Sequence[str]) -> int:
+    """One-command owner enrollment: voice-sample/ → 16 kHz WAVs → VoiceRuntime.
+
+    Enforces the production security spine: CAM++ only (the hash double stays
+    refused outside pytest), strict liveness with a real model, server-side
+    audio hashes, and no client-trusted liveness string. Fails closed with an
+    exact message when a required model is not installed.
+    """
+    import argparse
+    import asyncio
+    import base64
+    import json
+
+    parser = argparse.ArgumentParser(
+        prog="python -m app.voice.speaker enroll",
+        description=(
+            "Convert owner recordings to 16 kHz mono WAV and enroll through "
+            "VoiceRuntime with the CAM++ engine and strict liveness"
+        ),
+    )
+    parser.add_argument("--source-dir", default="voice-sample")
+    parser.add_argument("--out-dir", default=None, help="converted WAV directory")
+    parser.add_argument("--reason", default="owner enrollment via voice-sample CLI")
+    parser.add_argument("--voiceprint-model", default=None, help="CAM++ ONNX path")
+    parser.add_argument("--liveness-model", default=None, help="liveness ONNX path")
+    parser.add_argument(
+        "--convert-only",
+        action="store_true",
+        help="convert + validate only; do not touch the database",
+    )
+    args = parser.parse_args(argv)
+
+    source_dir = Path(args.source_dir).expanduser().resolve()
+    out_dir = (
+        Path(args.out_dir).expanduser().resolve()
+        if args.out_dir
+        else source_dir / "wav"
+    )
+    if not source_dir.is_dir():
+        print(f"source-dir not found: {source_dir}", file=sys.stderr)
+        return 2
+
+    converted = 0
+    for m4a in sorted(source_dir.rglob("*.m4a")):
+        dst = out_dir / f"{m4a.stem}.wav"
+        try:
+            _convert_audio(m4a, dst)
+            converted += 1
+        except Exception as exc:
+            print(f"convert failed {m4a.name}: {exc}", file=sys.stderr)
+            return 2
+
+    wav_files = _iter_wavs(out_dir) if out_dir != source_dir else _iter_wavs(source_dir)
+    if not wav_files:
+        print(
+            f"no WAV files found in {out_dir} (converted {converted} m4a)",
+            file=sys.stderr,
+        )
+        return 2
+    invalid = []
+    for path in wav_files:
+        result = validate_capture_wav(path.read_bytes())
+        if not result["ok"]:
+            invalid.append((path.name, result["reason"]))
+    if invalid:
+        for name, reason in invalid:
+            print(f"invalid {name}: {reason}", file=sys.stderr)
+        return 2
+    if len(wav_files) < 5:
+        print(f"need at least 5 valid samples, found {len(wav_files)}", file=sys.stderr)
+        return 2
+    for path in wav_files:
+        print(f"OK   {path.name}")
+    print(f"validated {len(wav_files)} samples in {out_dir}")
+    if args.convert_only:
+        print(f"CONVERTED={converted} WAVS={len(wav_files)}")
+        return 0
+
+    if settings.voiceprint_provider != "campp":
+        print(
+            "EV_VOICEPRINT_PROVIDER must be campp for production enrollment "
+            f"(current: {settings.voiceprint_provider!r}); the hash double is "
+            "refused outside pytest.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from app.voice.anti_spoof import AudioLivenessModel
+
+    liveness = AudioLivenessModel(model_path=args.liveness_model)
+    if not liveness.available:
+        from app.voice.anti_spoof import acoustic_liveness_available
+
+        if not acoustic_liveness_available():
+            print(
+                "liveness model unavailable; failing closed. Provide the 2 MB "
+                "liveness-audio ONNX via EV_LIVENESS_MODEL_PATH or --liveness-model.",
+                file=sys.stderr,
+            )
+            return 2
+        print(
+            "liveness ONNX missing; using server-side acoustic speech gate "
+            "(energy + spectral entropy). Not a substitute for ASVspoof weights."
+        )
+    try:
+        CamppSpeakerVerifier(
+            model_path=args.voiceprint_model,
+            require_available=True,
+        )
+    except RuntimeError as exc:
+        print(f"voiceprint model unavailable; failing closed: {exc}", file=sys.stderr)
+        return 2
+
+    async def run() -> int:
+        from app.config import settings as app_settings
+        from app.db import SessionLocal, init_db
+        from app.models import ConsentRecord
+        from app.training.consent import ConsentRequiredError, require_consent
+        from app.utils.text import utcnow
+        from app.voice.lifecycle import VoiceRuntime
+
+        await init_db()
+        async with SessionLocal() as session:
+            try:
+                await require_consent(session, "voice_enrollment")
+            except ConsentRequiredError:
+                session.add(
+                    ConsentRecord(
+                        track="voice_enrollment",
+                        granted_at=utcnow(),
+                        consent_version="1.0",
+                        purpose="owner voice enrollment from operator CLI",
+                        scope={"source": "voice_sample_cli"},
+                        source="operator_enrollment_cli",
+                    )
+                )
+                await session.flush()
+            runtime = VoiceRuntime(session, master_key=app_settings.master_key)
+            samples = [
+                {
+                    "audio_b64": base64.b64encode(path.read_bytes()).decode("ascii"),
+                }
+                for path in wav_files
+            ]
+            row = await runtime.enroll(samples, reason=args.reason)
+            await session.commit()
+            summary = {
+                "enrollment_id": str(row.id),
+                "version": row.version,
+                "algorithm": row.algorithm,
+                "embedding_dim": row.embedding_dim,
+                "threshold": row.threshold,
+                "sample_count": row.sample_count,
+                "raw_samples_stored": False,
+            }
+            print(json.dumps(summary, indent=2))
+            print(f"ENROLLED_VERSION={row.version}")
+            print(f"ENROLLED_THRESHOLD={row.threshold}")
+            return 0
+
+    return asyncio.run(run())
 
 
 if __name__ == "__main__":

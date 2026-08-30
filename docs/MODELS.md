@@ -10,7 +10,7 @@ CI and offline dev do not pay for ML packages.
 
 | Extra | Packages | Use when |
 | --- | --- | --- |
-| `ml` | onnxruntime, numpy | ONNX models (embedding, VAD, ASR, TTS voices) |
+| `ml` | onnxruntime, numpy, tokenizers, datasets, faster-whisper, openwakeword, kokoro-onnx | ONNX models (embedding, VAD, ASR, TTS voices) + voice activation packages |
 | `mlx` | mlx, mlx-lm, mlx-tune (Apple Silicon only) | optional trainer only (local LLM inference is not expected) |
 | `face` | opencv-python-headless | face/vision pre-processing |
 | `dev` | pytest, ruff, mypy | development and CI |
@@ -130,3 +130,55 @@ python -m app.ml.cli doctor      # posture, four-model readiness, backend, ceili
 `ModelArbiter.stats()` is the source for `/v1/ops`: ceiling, resident total,
 resident by tier, per-model state, exclusive holder, backend, and free disk.
 The ops router can import it without touching this package.
+
+## 7. Voice activation (Agent 2 follow-up)
+
+Run once:
+
+```bash
+cd backend
+uv sync --extra ml --extra face --extra dev
+uv run python -m app.ml.cli pull tts-kokoro-82m-int8 tts-kokoro-voices-v1.0
+export EV_VOICE_ASR_PROVIDER=faster_whisper
+```
+
+Make targets: `make voice-deps`, `make model-pull-voice`,
+`make voice-preflight` (Foundry diagnostics; `make preflight` remains Agent
+20's system-wide readiness report). `voice-preflight` prints per-engine
+readiness and exact remediation.
+
+### ASR — pragmatic default: faster-whisper
+
+faster-whisper is proven on this machine and is a first-class provider
+(`EV_VOICE_ASR_PROVIDER=faster_whisper`; model downloads on first use via
+`EV_VOICE_ASR_MODEL`, default `tiny`). Parakeet is **not pinned**: the
+streaming split export (`soniqo/Parakeet-EOU-120M-ONNX-INT8`, encoder +
+decoder + joint ONNX) does not match `ParakeetOnnxSession`'s single-session
+contract, so no sha256 is published until Agent 4 supplies a compatible
+export.
+
+### TTS — recommended default: openai_compat
+
+Per fleet law §13, production TTS uses the API seam:
+`EV_VOICE_TTS_PROVIDER=openai_compat` with `EV_ALLOW_REMOTE_TTS=true` and
+`EV_VOICE_TTS_BASE_URL` / `EV_VOICE_TTS_API_KEY` set. Local offline fallback:
+`EV_VOICE_TTS_PROVIDER=kokoro` after pulling the pinned int8 weights (see
+above; Apache-2.0, 88 MB model + 27 MB voices).
+
+### Speaker — CAM++ needs Agent 5's export
+
+The verified community ONNX export (`Alkd/campplus-zh-cn-common-200k-onnx`,
+Apache-2.0, 27 MB) expects `feats [B,T,80]` fbank input, while
+`CamppSpeakerVerifier._embed_onnx` feeds raw 16 kHz waveform. It is therefore
+**not pinned** — pinning it would load a model that cannot run. Agent 5 must
+either export CAM++ with waveform input (fbank preprocessing inside the graph)
+or add fbank preprocessing to the verifier; then `ml pull speaker-campp` can
+be pinned. The engine already fails closed with an actionable error when
+weights are absent.
+
+### Wake — openwakeword package landed; head owned by Agent 3
+
+`openwakeword>=0.6` is in the `ml` extra. The custom "EVIE" head is trained by
+Agent 3 from the owner's `voice-sample/wake/` clips and must land at
+`EV_VOICE_WAKE_OPENWAKEWORD_MODEL_PATH` (`~/.ev/models/wake-openwakeword.onnx`
+by default). This task does not train or enroll.

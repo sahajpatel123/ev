@@ -56,7 +56,8 @@ def target_path(settings: MLSettings, spec: ModelSpec) -> Path:
     suffix = ".bin"
     if spec.source_url:
         suffix = Path(unquote(urlparse(spec.source_url).path)).suffix or ".bin"
-    return cache_dir(settings) / f"{spec.name}{suffix}"
+    basename = spec.target_name or spec.name
+    return cache_dir(settings) / f"{basename}{suffix}"
 
 
 @contextmanager

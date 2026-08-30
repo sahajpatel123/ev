@@ -36,6 +36,8 @@ from app.schemas import (
     PersonalizationCalibrationOut,
     PersonalizationDeleteResponse,
     PersonalizationRollbackRequest,
+    SurfaceCalibrateOut,
+    SurfaceRateIn,
     TrainingCorpusBuildResponse,
     TrainingCorpusDeleteResponse,
     TrainingCorpusEntryOut,
@@ -60,6 +62,7 @@ from app.training import consent as consent_service
 from app.training import corpus as corpus_service
 from app.training import filter_improvement as filter_improvement_service
 from app.training import personalization as personalization_service
+from app.training import surface as surface_service
 from app.training.consent import ConsentRequiredError
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
@@ -801,3 +804,37 @@ async def adapter_delete(
     )
     await session.commit()
     return AdapterDeleteResponse(deleted=deleted, redacted=True)
+
+
+@router.get("/surfaces/smoke")
+async def surface_smoke(actor: str = Depends(require_actor)) -> dict:
+    """Score the live HUD planner against the gold surface corpus."""
+    return surface_service.evaluate_planner()
+
+
+@router.get("/surfaces/calibration", response_model=SurfaceCalibrateOut)
+async def surface_calibration(actor: str = Depends(require_actor)) -> SurfaceCalibrateOut:
+    return SurfaceCalibrateOut.model_validate(surface_service.load_calibration())
+
+
+@router.post("/surfaces/rate", status_code=201)
+async def surface_rate(
+    data: SurfaceRateIn,
+    actor: str = Depends(require_actor),
+) -> dict:
+    """Owner teaches EVIE which windows were useful. Next calibrate() learns it."""
+    row = surface_service.record_rating(
+        kind=data.kind,
+        useful=data.useful,
+        message=data.message,
+        preferred_kind=data.preferred_kind,
+        window_id=data.window_id,
+    )
+    return {"ok": True, "rating": row}
+
+
+@router.post("/surfaces/calibrate", response_model=SurfaceCalibrateOut, status_code=201)
+async def surface_calibrate(actor: str = Depends(require_actor)) -> SurfaceCalibrateOut:
+    """Fold gold corpus + ratings into the planner. Reversible by writing a new version."""
+    payload = surface_service.calibrate(actor=actor)
+    return SurfaceCalibrateOut.model_validate(payload)

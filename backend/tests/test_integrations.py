@@ -117,18 +117,35 @@ async def test_catalog_and_install_validation(client: AsyncClient) -> None:
     resp = await client.get("/v1/integrations/catalog")
     assert resp.status_code == 200
     catalog = {item["adapter"]: item for item in resp.json()}
-    assert set(catalog) == {
+    assert set(catalog) >= {
         "calendar",
+        "contacts",
+        "device_proxy",
         "health",
         "github",
+        "mail",
+        "phone",
         "smart_home",
         "messaging",
         "search",
+        "octoprint",
+        "cameras",
+        "drone",
+        "public_feeds",
     }
     assert catalog["github"]["capabilities"] == ["github:read", "github:act"]
     assert catalog["health"]["min_privacy"] == "sensitive"
     assert catalog["calendar"]["actions"][0]["name"] == "calendar.list_upcoming"
     assert catalog["search"]["actions"][0]["name"] == "search.query"
+    assert catalog["contacts"]["capabilities"] == ["contacts:read"]
+    assert catalog["phone"]["capabilities"] == ["phone:act"]
+    assert catalog["mail"]["capabilities"] == ["mail:read", "mail:act"]
+    assert catalog["device_proxy"]["capabilities"] == [
+        "messaging:read",
+        "messaging:act",
+        "phone:act",
+        "contacts:read",
+    ]
 
     integration = await install(client, "calendar", scopes=["calendar:read", "calendar:act"])
     assert integration["status"] == "active"

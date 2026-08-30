@@ -36,6 +36,7 @@ public enum ChatStreamEvent: Sendable, Equatable {
     case contextPlan(AnyCodable)
     case delta(String, final: Bool)
     case refined(String)
+    case status(String)
     case done(ChatStreamDone)
     case error(String)
 }
@@ -90,9 +91,20 @@ public struct VoiceTranscriptOut: Codable, Sendable, Equatable {
 public enum VoiceStreamEvent: Sendable, Equatable {
     case partial(VoicePartialOut)
     case transcript(VoiceTranscriptOut)
+    case ttsChunk(VoiceTtsChunk)
     case reply(VoiceUtteranceResponse)
     case error(String)
     case done
+}
+
+/// First-word (and later clause) TTS audio streamed before the full reply.
+public struct VoiceTtsChunk: Codable, Sendable, Equatable {
+    public let index: Int
+    public let text: String
+    public let audioB64: String?
+    public let contentType: String?
+    public let durationMs: Int?
+    public let provider: String?
 }
 
 // MARK: - Client extensions
@@ -100,9 +112,10 @@ public enum VoiceStreamEvent: Sendable, Equatable {
 extension EVAPIClient {
     /// Stream a chat reply from `POST /v1/chat` (SSE).
     ///
-    /// The backend emits `memory-delta`, `provenance`, `filter-report`,
-    /// `context-plan`, progressive `delta` chunks, `refined` (replace
-    /// semantics after output filtering), `done`, and `error` events.
+    /// The backend emits `status` while the pipeline is still working,
+    /// then `memory-delta`, `provenance`, `filter-report`, `context-plan`,
+    /// progressive `delta` chunks, `refined` (replace semantics after
+    /// output filtering), `done`, and `error` events.
     public func askStream(
         _ question: String,
         conversationId: String? = nil,
@@ -191,7 +204,8 @@ extension EVAPIClient {
         reverifyToken: String? = nil,
         language: String = "en",
         conversationId: String? = nil,
-        followUp: Bool = false
+        followUp: Bool = false,
+        pushToTalk: Bool = false
     ) -> AsyncThrowingStream<VoiceStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -207,6 +221,7 @@ extension EVAPIClient {
                         let language: String
                         let conversationId: String?
                         let followUp: Bool
+                        let pushToTalk: Bool
                     }
                     let body = try encoder.encode(
                         Body(
@@ -217,7 +232,8 @@ extension EVAPIClient {
                             reverifyToken: reverifyToken,
                             language: language,
                             conversationId: conversationId,
-                            followUp: followUp
+                            followUp: followUp,
+                            pushToTalk: pushToTalk
                         )
                     )
                     var request = URLRequest(
@@ -234,7 +250,21 @@ extension EVAPIClient {
                         throw EVAPIError.transport("non-HTTP response")
                     }
                     guard http.statusCode == 200 else {
-                        throw EVAPIError.httpStatus(http.statusCode, "stream request failed")
+                        var collected = Data()
+                        do {
+                            for try await byte in bytes {
+                                collected.append(byte)
+                                if collected.count >= 800 { break }
+                            }
+                        } catch {
+                            // Body may already be closed; the status is enough.
+                        }
+                        throw EVAPIError.httpStatus(
+                            http.statusCode,
+                            collected.isEmpty
+                                ? "stream request failed"
+                                : EVAPIClient.apiErrorDetail(collected)
+                        )
                     }
 
                     var eventName = ""
@@ -242,7 +272,7 @@ extension EVAPIClient {
                     for try await line in bytes.lines {
                         if line.hasPrefix("event:") {
                             if !eventName.isEmpty || !dataLines.isEmpty {
-                                try Self.flushVoice(
+                                Self.flushVoice(
                                     name: eventName,
                                     data: dataLines.joined(separator: "\n"),
                                     continuation: continuation
@@ -254,7 +284,7 @@ extension EVAPIClient {
                         } else if line.hasPrefix("data:") {
                             dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
                         } else if line.isEmpty {
-                            try Self.flushVoice(
+                            Self.flushVoice(
                                 name: eventName,
                                 data: dataLines.joined(separator: "\n"),
                                 continuation: continuation
@@ -263,7 +293,7 @@ extension EVAPIClient {
                             dataLines = []
                         }
                     }
-                    try Self.flushVoice(
+                    Self.flushVoice(
                         name: eventName,
                         data: dataLines.joined(separator: "\n"),
                         continuation: continuation
@@ -312,6 +342,10 @@ extension EVAPIClient {
             continuation.yield(.filterReport(try decoder.decode(AnyCodable.self, from: payload)))
         case "context-plan":
             continuation.yield(.contextPlan(try decoder.decode(AnyCodable.self, from: payload)))
+        case "status":
+            struct StatusPayload: Decodable { let stage: String? }
+            let status = try decoder.decode(StatusPayload.self, from: payload)
+            continuation.yield(.status(status.stage ?? "thinking"))
         case "delta":
             let delta = try decoder.decode(DeltaPayload.self, from: payload)
             continuation.yield(.delta(delta.text, final: delta.final ?? false))
@@ -332,24 +366,30 @@ extension EVAPIClient {
         name: String,
         data: String,
         continuation: AsyncThrowingStream<VoiceStreamEvent, Error>.Continuation
-    ) throws {
+    ) {
         guard !name.isEmpty, !data.isEmpty else { return }
         let decoder = decoder()
         let payload = Data(data.utf8)
-        switch name {
-        case "partial":
-            continuation.yield(.partial(try decoder.decode(VoicePartialOut.self, from: payload)))
-        case "final_transcript":
-            continuation.yield(.transcript(try decoder.decode(VoiceTranscriptOut.self, from: payload)))
-        case "reply":
-            continuation.yield(.reply(try decoder.decode(VoiceUtteranceResponse.self, from: payload)))
-        case "error":
-            let error = try decoder.decode(ErrorPayload.self, from: payload)
-            continuation.yield(.error(error.message ?? error.code ?? "unknown stream error"))
-        case "done":
-            continuation.yield(.done)
-        default:
-            break
+        do {
+            switch name {
+            case "partial":
+                continuation.yield(.partial(try decoder.decode(VoicePartialOut.self, from: payload)))
+            case "final_transcript":
+                continuation.yield(.transcript(try decoder.decode(VoiceTranscriptOut.self, from: payload)))
+            case "tts_chunk":
+                continuation.yield(.ttsChunk(try decoder.decode(VoiceTtsChunk.self, from: payload)))
+            case "reply":
+                continuation.yield(.reply(try decoder.decode(VoiceUtteranceResponse.self, from: payload)))
+            case "error":
+                let error = try decoder.decode(ErrorPayload.self, from: payload)
+                continuation.yield(.error(error.message ?? error.code ?? "unknown stream error"))
+            case "done":
+                continuation.yield(.done)
+            default:
+                break
+            }
+        } catch {
+            continuation.yield(.error("Bad voice reply: \(error.localizedDescription)"))
         }
     }
 }

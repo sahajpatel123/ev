@@ -71,7 +71,7 @@ enum HandsFreeError: LocalizedError {
 /// Uses `AVAudioEngine` rather than the `AVCaptureSession` in ``MicCapture``:
 /// push-to-talk wants one blob at the end, this wants a tap it can convert and
 /// ship frame by frame forever. An `AVAudioConverter` turns whatever the
-/// hardware hands us into the 16 kHz mono PCM16 frames `WS /v1/voice/live`
+/// hardware hands us into the 16 kHz mono PCM16 frames `WS /v1/voice/hands-free`
 /// expects; the converter is created once so its resampler keeps its state
 /// across buffers.
 final class HandsFreeMic: @unchecked Sendable {
@@ -465,7 +465,7 @@ final class HandsFreeSession: ObservableObject {
         let trimmed = components.path.hasSuffix("/")
             ? String(components.path.dropLast())
             : components.path
-        components.path = trimmed + "/v1/voice/live"
+        components.path = trimmed + "/v1/voice/hands-free"
         return components.url
     }
 

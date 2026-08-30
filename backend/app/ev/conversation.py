@@ -103,7 +103,9 @@ async def history(
 
     ``access="model"`` enforces the payload boundary here too: conversation
     history is assembled into provider context, so ``never_send_to_model`` and
-    (without an explicit opt-in) ``sensitive`` events are excluded.
+    (without an explicit opt-in) ``sensitive`` events are excluded. Verified
+    voice turns may use ``voice_model`` to retain sensitive owner context while
+    still excluding explicit never-send events.
     """
     stmt = (
         select(Event)
@@ -115,10 +117,13 @@ async def history(
         .order_by(Event.occurred_at.desc(), Event.id.desc())
         .limit(min(limit, 200))
     )
-    if access == "model":
-        stmt = stmt.where(
-            Event.privacy_level.notin_(("never_send_to_model", "sensitive"))
+    if access in {"model", "voice_model"}:
+        excluded = (
+            ("never_send_to_model",)
+            if access == "voice_model"
+            else ("never_send_to_model", "sensitive")
         )
+        stmt = stmt.where(Event.privacy_level.notin_(excluded))
     result = await session.execute(stmt)
     return list(reversed(result.scalars().all()))
 

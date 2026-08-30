@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EVIE lookout</title>
+  <link rel="stylesheet" href="/app/lookout.css">
+</head>
+<body class="folio">
+  <main class="hud folio-sheet" id="lookout">
+    <div class="kicker">
+      <p class="mark">EVIE</p>
+      <span id="kind" class="kind">card</span>
+      <span id="time" class="time">linger</span>
+      <span id="live" class="live" hidden></span>
+      <span id="source" class="source"></span>
+    </div>
+    <div id="compose" class="compose"></div>
+    <div id="ttl" class="ttl" hidden><span></span></div>
+    <p id="offline" class="body" hidden>offline</p>
+    <ol id="transcript" class="notes" hidden></ol>
+    <div id="diagnostics-strip" class="notes" data-source="/v1/diagnostics/last"></div>
+  </main>
+  <script src="/app/lookout.js" defer></script>
+</body>
+</html>

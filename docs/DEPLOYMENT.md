@@ -54,25 +54,27 @@ first capture/answer/notification, backup + restore drill.
 
 ## 3a. API-first profile (the owner's blessed configuration)
 
-The M2/8 GB host does **not** run local LLM inference; reasoning is the
-DeepSeek API. Local models stay only where an API is impossible or clearly
-worse: wake word, OCR (Apple Vision, free), speaker verification (biometric
-privacy), embeddings (recurring cost), and face recognition. The blessed
-configuration lives in **`.env.api-first`** and is activated with
+The M2/8 GB host does **not** run local LLM inference; reasoning is the local
+`opencode serve` session API (launchd `ev.opencode`), which reaches the
+owner's hosted models through `OPENCODE_API_KEY` — no separate DeepSeek key.
+Local models stay only where an API is impossible or clearly worse: wake
+word, OCR (Apple Vision, free), speaker verification (biometric privacy),
+embeddings (recurring cost), and face recognition. The blessed configuration
+lives in **`.env.api-first`** and is activated with
 `cp .env.api-first .env` (then fill the FILL-ME secrets):
 
 | Organ | Provider in profile | Why |
 | --- | --- | --- |
-| Chat | `EV_CHAT_PROVIDER=deepseek` | No local LLM on 8 GB |
-| ASR | `EV_VOICE_ASR_PROVIDER=parakeet` (Agent 4 measured pick) | Local Parakeet-EOU; hosted `openai_compat` alternative documented |
-| TTS | `EV_VOICE_TTS_PROVIDER=kokoro` (Agent 4 measured pick) | Local Kokoro-82M; hosted alternative documented |
+| Chat | `EV_CHAT_PROVIDER=opencode` | Local server → owner's hosted models via `OPENCODE_API_KEY` |
+| ASR | `EV_VOICE_ASR_PROVIDER=faster_whisper` | What Agent 2 actually shipped (Parakeet weights not in registry yet) |
+| TTS | `EV_VOICE_TTS_PROVIDER=openai_compat` + `EV_ALLOW_REMOTE_TTS=true` | Hosted until Kokoro package + weights land |
 | Speaker | `EV_VOICEPRINT_PROVIDER=campp` | Biometric privacy stays local |
 | Vision | `EV_VISION_PROVIDER=apple_vision` | Free, on-device OCR via the `evvision` Swift helper |
 | Wake | `EV_VOICE_WAKE_PROVIDER=openwakeword` | Wake word must be local |
 | Embeddings | `EV_EMBEDDING_PROVIDER=granite` | Agent 8 verified recommendation (granite R2) |
 | Face | `EV_FACE_PROVIDER=sface` | Verified SFace ONNX |
 | Storage | `EV_OBJECT_STORE_BACKEND=local` | Filesystem; MinIO out of the daily path |
-| Runtime | native Postgres 17 + Redis via launchd | Compose is CI-only |
+| Runtime | native Postgres 17 + Redis + `opencode serve` via launchd | Compose is CI-only |
 
 **Hard refusal note (read before booting):** `default_speaker_verifier()`
 (`backend/app/voice/speaker.py`) refuses the hash test double outside pytest.
@@ -81,9 +83,11 @@ With `EV_VOICEPRINT_PROVIDER=campp` and no exported `.onnx` in
 fail-closed behavior. `make preflight` reports exactly which weight file is
 missing and how to obtain it.
 
-The profile also pins the enforceable monthly spend guard
-(`EV_MONTHLY_COST_CAP_USD=40`, `EV_COST_CAP_ENABLED=true`) — see
-docs/OPS.md §Cost.
+The opencode server is loaded by `make native-up` (`launchd/ev.opencode.plist`,
+127.0.0.1:4096, `KeepAlive`); it sources `.env` and
+`~/.config/ev/opencode.env` for `OPENCODE_API_KEY`. The profile also pins the
+enforceable monthly spend guard (`EV_MONTHLY_COST_CAP_USD=40`,
+`EV_COST_CAP_ENABLED=true`) — see docs/OPS.md §Cost.
 
 ## 4. TLS & device access
 

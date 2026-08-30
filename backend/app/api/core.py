@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
+import os
 import secrets
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Literal, cast
 from uuid import UUID, uuid4
@@ -24,12 +28,24 @@ from app.config import settings
 from app.context.compiler import ContextPlan
 from app.contracts import ChatMessage, ChatResult, MemoryRef, RequestEnvelope
 from app.db import get_session
-from app.ev import alert_radar, conversation, tools, vision
+from app.device_gateway.auth import assert_not_sandbox_production
+from app.device_gateway.release import current_web_release
+from app.ev import alert_radar, conversation, vision
+from app.ev import assistant as assistant_mod
 from app.ev import rollup as rollup_service
 from app.ev.calibration import proactive_tuning
 from app.ev.interaction import build_strategy, strategy_block
-from app.ev.personality import get_current, identity_block, to_dict
+from app.ev.personality import get_current, to_dict
 from app.ev.self_eval import log_response
+from app.ev.turn import (
+    build_system_prompt,
+    confirmed_reply,
+    execute_requested_actions,
+    presented_this_turn,
+    receipt_messages,
+    snapshot_working_on,
+    writes_ran,
+)
 from app.ev.user_state import build_user_state
 from app.filter.envelope import (
     OutputReport,
@@ -89,6 +105,8 @@ from app.schemas import (
     ModelCallOut,
     PrivacyLevel,
     ProvenanceItem,
+    PushTokenOut,
+    PushTokenRegister,
     RebuildOut,
     StateOfMeOut,
     TimelineResponse,
@@ -106,7 +124,30 @@ from app.services.tool_loop import run_tool_loop
 from app.storage.object_store import get_object_store, sha256_bytes
 from app.utils.text import sha256_hex, utcnow
 
+PROCESS_STARTED_AT = datetime.now(UTC).isoformat()
 router = APIRouter(prefix="/v1")
+
+
+def _runtime_git_sha() -> str | None:
+    """Best-effort HEAD SHA captured once at import (health truth, Part 19:
+    the runtime must provably serve a known commit)."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        sha = (out.stdout or "").strip()
+        return sha or None
+    except Exception:
+        return None
+
+
+RUNTIME_GIT_SHA = _runtime_git_sha()
 
 
 def _event_ref(event: Event) -> EventRef:
@@ -166,8 +207,34 @@ async def _memory_out(session: AsyncSession, memory: Memory) -> MemoryOut:
 
 @router.get("/health")
 async def health() -> dict:
+    from app.ev.capability_registry import capability_diagnostics
+    from app.ev.luna_adapter import luna_metrics_snapshot
+    from app.ev.manager_adapter import DeepSeekManagerAdapter
+    from app.ev.model_router import health_snapshot as model_health
+    from app.ops.migration_health import migration_parity
+    from app.voice.live.grok_voice import (
+        GROK_VOICE_TOOL_NAMES,
+        REALTIME_BRIDGE_SOURCE_FINGERPRINT,
+        REALTIME_BRIDGE_VERSION,
+        GrokVoiceBridge,
+        live_realtime_provider,
+    )
+
+    live = live_realtime_provider()
+    live_label = {
+        "openai": "openai-realtime",
+        "xai": "grok-voice",
+    }.get(live or "", "pipeline")
+
+    from app.db import SessionLocal
+
+    async with SessionLocal() as session:
+        migrations = await migration_parity(session)
+
     return {
-        "status": "ok",
+        # G1.1: schema/migration drift degrades health visibly. Observability
+        # only — this never runs migrations.
+        "status": "ok" if migrations["parity"] == "YES" else "degraded",
         "app": settings.app_name,
         "environment": settings.environment,
         "version": "0.1.0",
@@ -196,9 +263,296 @@ async def health() -> dict:
         ],
         "providers": {
             "chat": settings.chat_provider,
+            "live": live_label,
             "embeddings": settings.embedding_provider,
             "storage": settings.object_store_backend,
         },
+        "models": {
+            **model_health(),
+            "turn_control_metrics": luna_metrics_snapshot(),
+            "manager": DeepSeekManagerAdapter().health(),
+        },
+        "migrations": migrations,
+        "git": {"sha": RUNTIME_GIT_SHA},
+        "runtime": {
+            "pid": os.getpid(),
+            "started_at": PROCESS_STARTED_AT,
+            "realtime_bridge_version": REALTIME_BRIDGE_VERSION,
+            "realtime_bridge_source_fingerprint": REALTIME_BRIDGE_SOURCE_FINGERPRINT,
+            "realtime_supports_function_calls": bool(
+                GrokVoiceBridge.supports_function_calls
+            ),
+            "realtime_model": (
+                settings.openai_realtime_model
+                if live == "openai"
+                else settings.xai_voice_model
+                if live == "xai"
+                else None
+            ),
+            "realtime_allowlist": sorted(
+                (lambda lst: lst - {
+                    "life_project_create", "life_project_update", "life_project_query",
+                    "life_goal_create", "life_goal_update", "life_goal_add_step", "life_goal_query",
+                    "life_commitment_create", "life_commitment_update", "life_commitment_query",
+                    "life_relationship_set", "mission_control", "evie_turn",
+                } if getattr(settings, "turn_gate_enabled", False) else lst)(set(GROK_VOICE_TOOL_NAMES))
+            ),
+            "camera": _camera_health(),
+            "memory": await _memory_health(),
+            "device_gateway": _device_gateway_health(),
+            "everywhere": await _everywhere_health(),
+        },
+        "voice": _voice_health(),
+        "capability_authority": capability_diagnostics(),
+    }
+
+
+def _voice_health() -> dict:
+    """Expose live voice boundaries without audio, transcript, or secret data."""
+
+    from app.voice.live.layer import active_lives
+
+    lives = active_lives()
+    live = lives[0] if lives else None
+    bridge = getattr(live, "grok_voice", None) if live is not None else None
+    snapshot_fn = getattr(bridge, "voice_health_snapshot", None)
+    snapshot = snapshot_fn() if callable(snapshot_fn) else {}
+    conversation_id = getattr(live, "conversation_id", None) if live else None
+    session_id = getattr(live, "session_id", None) if live else None
+    return {
+        "client_socket_connected": live is not None,
+        "native_client_connected": live is not None,
+        "live_session_count": len(lives),
+        "live_session_id_fingerprint": sha256_hex(str(session_id))[:12]
+        if session_id
+        else None,
+        "conversation_id_fingerprint": sha256_hex(str(conversation_id))[:12]
+        if conversation_id
+        else None,
+        **snapshot,
+    }
+
+
+def _camera_health() -> dict:
+    from app.ev.camera_runtime import readiness_from_camera_state
+    from app.voice.live.layer import active_lives
+
+    lives = active_lives()
+    live = lives[0] if lives else None
+    if live is None:
+        from app.voice.live.grok_voice import live_realtime_provider
+
+        return readiness_from_camera_state(
+            {},
+            client_connected=False,
+            realtime_provider=live_realtime_provider(),
+        ).as_dict()
+    ready = live.camera_readiness()
+    return ready.as_dict()
+
+
+async def _everywhere_health() -> dict:
+    """G2 device fabric: bounded, content-free diagnostics (trusted devices,
+    presence, sync cursors/lag, revocations). No owner content crosses."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import func, select
+
+    from app.db import get_session
+    from app.everywhere.devices import health_summary
+    from app.models import Device
+
+    try:
+        session_gen = get_session()
+        session = await anext(session_gen)
+        try:
+            total = (
+                await session.execute(select(func.count()).select_from(Device))
+            ).scalar_one()
+            revoked = (
+                await session.execute(
+                    select(func.count()).select_from(Device).where(Device.revoked_at.is_not(None))
+                )
+            ).scalar_one()
+            summary = await health_summary(session)
+        finally:
+            await session.close()
+        # P0 PART 8: truthful backup health. The nightly job writes to
+        # ~/.ev/backups; staleness threshold 26h (daily cadence + slack).
+        import glob
+        import os
+
+        from app.ev.turn_gate import db_failure_stats
+        from app.utils.text import utcnow as _utcnow
+
+        home_backups = os.path.expanduser("~/.ev/backups")
+        newest_path, newest_mtime = None, 0.0
+        for f in glob.glob(os.path.join(home_backups, "*.evbackup")):
+            m = os.path.getmtime(f)
+            if m > newest_mtime:
+                newest_mtime, newest_path = m, f
+        age_hours = (
+            (max(_utcnow().timestamp(), newest_mtime + 1) - newest_mtime) / 3600.0
+            if newest_mtime
+            else None
+        )
+        stale = bool(age_hours is None or age_hours > 26.0)
+        return {
+            "trusted_devices": int(total or 0) - int(revoked or 0),
+            "revoked_devices": int(revoked or 0),
+            "online_devices": int(summary.get("devices_online") or 0),
+            "offline_or_degraded": int(summary.get("devices_offline_or_degraded") or 0),
+            "last_sync_at": summary.get("last_sync_at"),
+            "pending_device_actions": summary.get("pending_device_actions"),
+            "failed_device_actions": summary.get("failed_device_actions"),
+            "backup_job_enabled": True,
+            "last_backup_file": os.path.basename(newest_path) if newest_path else None,
+            "last_backup_age_hours": round(age_hours, 2) if age_hours is not None else None,
+            "backup_stale_over_26h": stale,
+            **db_failure_stats(),
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
+    except Exception:  # noqa: BLE001 - health must never raise
+        return {"available": False}
+
+
+def _device_gateway_health() -> dict:    return {
+        "ready": True,
+        "protocol_version": settings.device_protocol_version,
+        # Served-asset truth, read from disk (see device_gateway.release).
+        "pwa_build": current_web_release()["web_build"],
+        "production_memory_enabled": bool(settings.cross_platform_production_memory),
+        "health": "/v1/device-gateway/health",
+        "pwa": "/evie/",
+    }
+
+
+async def _memory_health() -> dict:
+    from redis import Redis
+    from rq import Queue
+    from rq.registry import FailedJobRegistry
+
+    from app.memory.curator import curator_available
+    from app.memory.os_health import snapshot as os_snapshot
+    from app.services.processor import queue_worker_available
+    from app.voice.live.layer import active_lives
+
+    mode = settings.processing_mode
+    worker = queue_worker_available() if mode == "queue" else True
+    lives = active_lives()
+    live = lives[0] if lives else None
+    redis_ok = False
+    queue_depth = None
+    failed_jobs = None
+    try:
+        conn = Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=0.4,
+            socket_timeout=0.4,
+        )
+        redis_ok = bool(conn.ping())
+        queue = Queue("ingestion", connection=conn)
+        queue_depth = queue.count
+        failed_jobs = FailedJobRegistry(queue=queue).count
+    except Exception:  # noqa: BLE001 - health must never raise
+        redis_ok = False
+    ingestion = "ok" if worker or mode == "sync" else "degraded"
+    os_part = os_snapshot()
+    from app.memory.prefetch import snapshot as prefetch_snap
+
+    prefetch_part = prefetch_snap()
+    pending = failed_os = retryable = open_loop_count = active_project_count = 0
+    last_user = None
+    try:
+        from sqlalchemy import func, select
+
+        from app.db import SessionLocal
+        from app.memory.outbox import job_counts, pending_counts
+        from app.models import Event
+
+        async with SessionLocal() as session:
+            pending, failed_os = await pending_counts(session)
+            counts = await job_counts(session)
+            retryable = counts["retryable_failed"]
+            last_user = (
+                await session.execute(
+                    select(func.max(Event.occurred_at)).where(
+                        Event.event_type == "message.user",
+                        Event.tombstoned_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            from app.memory.loops import list_loops
+
+            opens = await list_loops(session, k=200)
+            open_loop_count = len(opens)
+            active_project_count = len(
+                {str((row.payload or {}).get("scope") or "").strip().lower() for row in opens if (row.payload or {}).get("scope")}
+            )
+    except Exception:  # noqa: BLE001 - health must still return
+        pending = failed_os = 0
+        last_user = None
+    return {
+        "processing_mode": mode,
+        "worker_available": worker,
+        "redis_ok": redis_ok,
+        "queue_depth": queue_depth,
+        "failed_jobs": failed_jobs,
+        "ingestion": ingestion,
+        "sync_fallback": mode == "queue" and not worker,
+        "live_client_connected": live is not None,
+        "live_conversation_id": getattr(live, "conversation_id", None) if live else None,
+        "provider_is_not_source_of_truth": True,
+        "raw_event_store_ready": True,
+        "curator_ready": curator_available(),
+        "curation_degraded": not curator_available(),
+        "vector_index_ready": os_part.get("vector_ready"),
+        "fulltext_ready": os_part.get("fulltext_ready"),
+        "bootstrap_ready": bool(os_part.get("bootstrap_version")),
+        "cache_ready": bool(os_part.get("bootstrap_version")),
+        "deep_recall_ready": True,
+        "temporal_retrieval_ready": True,
+        "memory_gate_mode": (settings.memory_gate or "off").strip().lower(),
+        # F1.1 profiling telemetry (bounded metadata only).
+        "retrieval_stages": os_part.get("retrieval_stages"),
+        "memory_epoch": os_part.get("memory_epoch"),
+        "f5": os_part.get("f5"),
+        "memory_gate_p50_ms": os_part.get("memory_gate_p50_ms"),
+        "memory_gate_p95_ms": os_part.get("memory_gate_p95_ms"),
+        "bootstrap_version": os_part.get("bootstrap_version"),
+        "bootstrap_age": os_part.get("bootstrap_age"),
+        "last_curated_event_id": os_part.get("last_curated_event_id"),
+        "curator_status": os_part.get("curator_status"),
+        "pending_curation_jobs": pending,
+        "failed_curation_jobs": failed_os,
+        "curator_pending_jobs": pending,
+        "curator_retryable_failed": retryable,
+        "curator_permanent_failed": failed_os,
+        "open_loop_count": open_loop_count,
+        "active_project_count": active_project_count,
+        "last_reflection_at": os_part.get("last_reflection_at"),
+        "reflection_lag_events": os_part.get("reflection_lag_events"),
+        "curator_version": settings.memory_curator_version,
+        "prefetch_mode": (settings.memory_prefetch or "off").strip().lower(),
+        "prefetch_hit_rate": prefetch_part.get("prefetch_hit_rate"),
+        "last_user_event_committed_at": last_user.isoformat() if last_user else None,
+        **_voice_memory_health(),
+    }
+
+
+def _voice_memory_health() -> dict:
+    from app.voice.live.voice_memory import health_snapshot
+
+    snap = health_snapshot()
+    return {
+        "pending_voice_turns": snap["pending_voice_turns"],
+        "last_voice_transcript_status": snap["last_voice_transcript_status"],
+        "last_voice_event_commit_at": snap["last_voice_event_commit_at"],
+        "last_turn_memory_safe": snap["last_turn_memory_safe"],
+        "last_transcription_latency_ms": snap["last_transcription_latency_ms"],
+        "durable_voice_memory_ready": snap["durable_voice_memory_ready"],
+        "realtime_input_transcription": snap["realtime_input_transcription"],
+        "provider_session_id": snap["provider_session_id"],
     }
 
 
@@ -247,6 +601,12 @@ async def create_event(
     await consider_event(session, event=event)
     await session.commit()
     deltas = await ensure_processed(event.id)
+    try:
+        from app.memory.curator import schedule_curation
+
+        schedule_curation(limit=1)
+    except Exception:  # noqa: BLE001 - capture already succeeded
+        pass
     return EventCreateResponse(
         event=EventOut.model_validate(event),
         memory_delta=[MemoryDelta.model_validate(d) for d in deltas],
@@ -385,7 +745,9 @@ async def list_memories(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> MemoryListResponse:
+    assert_not_sandbox_production(ctx.device)
     stmt = select(Memory)
     if memory_type:
         stmt = stmt.where(Memory.memory_type == memory_type)
@@ -432,8 +794,10 @@ async def memory_changes(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> MemoryChangesResponse:
     """Version-chain query: what has the user changed their mind about since ``since``."""
+    assert_not_sandbox_production(ctx.device)
     if since.tzinfo is not None:
         since = since.astimezone(UTC).replace(tzinfo=None)
     stmt = select(Memory).where(Memory.valid_from >= since)
@@ -495,7 +859,9 @@ async def get_memory(
     memory_id: UUID,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> MemoryOut:
+    assert_not_sandbox_production(ctx.device)
     memory = await session.get(Memory, memory_id)
     if memory is None:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -669,19 +1035,41 @@ async def chat(
     data: ChatRequest,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ):
+    assert_not_sandbox_production(ctx.device)
+    if data.allow_sensitive_tools and not ctx.is_master and (
+        ctx.device is None or ctx.device.trust_level != "owner"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Owner-trusted device required for sensitive tools",
+            headers={"X-Error-Code": "owner_trust_required"},
+        )
     if data.stream:
-        thread = await conversation.resolve_thread(session, data.conversation_id)
+        thread = await assistant_mod.resolve_live_thread(session, data.conversation_id)
         return StreamingResponse(
-            _stream_chat(data, session, actor, thread_id=thread.id),
+            _stream_chat(
+                data,
+                session,
+                actor,
+                thread_id=thread.id,
+                device_id=ctx.device_id,
+            ),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
     try:
-        thread = await conversation.resolve_thread(session, data.conversation_id)
+        thread = await assistant_mod.resolve_live_thread(session, data.conversation_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="Conversation not found") from None
-    pipeline = await run_chat_pipeline(data, session, actor, thread_id=thread.id)
+    pipeline = await run_chat_pipeline(
+        data,
+        session,
+        actor,
+        thread_id=thread.id,
+        device_id=ctx.device_id,
+    )
     return ChatResponse(
         reply=pipeline["result"].text,
         conversation_id=pipeline["conversation_id"],
@@ -693,6 +1081,7 @@ async def chat(
         provenance=pipeline["provenance"],
         filter_report=pipeline.get("filter_report"),
         context_plan=pipeline.get("context_plan"),
+        surfaces=pipeline.get("surfaces"),
     )
 
 
@@ -700,13 +1089,71 @@ def _sse(name: str, data: dict) -> str:
     return f"event: {name}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
-def _text_chunks(text: str, size: int = 24) -> list[str]:
-    return [text[i : i + size] for i in range(0, len(text), size)] or [""]
+async def _stream_chat(
+    data: ChatRequest,
+    session: AsyncSession,
+    actor: str,
+    *,
+    thread_id: UUID,
+    device_id: UUID | None = None,
+):
+    """Yield SSE as the pipeline runs — never wait for the last stage first."""
 
+    queue: asyncio.Queue[tuple[str, dict] | BaseException | None] = asyncio.Queue()
+    streamed_chars = 0
 
-async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, thread_id: UUID):
+    async def progress(stage: str, extra: dict | None = None) -> None:
+        payload = {"stage": stage}
+        if extra:
+            payload.update(extra)
+        await queue.put(("status", payload))
+
+    async def on_delta(text: str) -> None:
+        nonlocal streamed_chars
+        if not text:
+            return
+        streamed_chars += len(text)
+        await queue.put(("delta", {"text": text, "final": False}))
+
+    async def run() -> None:
+        try:
+            pipeline = await run_chat_pipeline(
+                data,
+                session,
+                actor,
+                thread_id=thread_id,
+                device_id=device_id,
+                progress_callback=progress,
+                text_delta_callback=on_delta,
+            )
+            await queue.put(("__pipeline__", pipeline))
+        except Exception as exc:  # noqa: BLE001 - handed to the SSE consumer
+            await queue.put(exc)
+        finally:
+            await queue.put(None)
+
+    # First client-visible event before filter/retrieve/briefing/model start.
+    yield _sse("status", {"stage": "accepted"})
+    task = asyncio.create_task(run())
+    pipeline: dict | None = None
     try:
-        pipeline = await run_chat_pipeline(data, session, actor, thread_id=thread_id)
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            if isinstance(item, BaseException):
+                yield _sse("error", {"message": str(item)})
+                yield _sse("done", {})
+                return
+            name, payload = item
+            if name == "__pipeline__":
+                pipeline = payload
+                continue
+            yield _sse(name, payload)
+        if pipeline is None:
+            yield _sse("error", {"message": "chat pipeline produced no result"})
+            yield _sse("done", {})
+            return
         for delta in pipeline["memory_deltas"]:
             yield _sse("memory-delta", delta)
         for item in pipeline["provenance"]:
@@ -715,19 +1162,14 @@ async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, 
             yield _sse("filter-report", pipeline["filter_report"].model_dump())
         if pipeline.get("context_plan") is not None:
             yield _sse("context-plan", pipeline["context_plan"])
-        # Streaming refinement protocol (plan 3.9): the provider draft streams as
-        # progressive `delta` events, then the output-filtered final answer is
-        # emitted as `refined` with replace semantics.
         final_text = pipeline["result"].text
         report = pipeline.get("filter_report")
         raw_text = getattr(report, "draft", None) or final_text
-        chunks = _text_chunks(raw_text)
-        for index, chunk in enumerate(chunks):
-            yield _sse(
-                "delta",
-                {"text": chunk, "final": index == len(chunks) - 1 and raw_text == final_text},
-            )
+        if streamed_chars == 0 and raw_text:
+            yield _sse("delta", {"text": raw_text, "final": raw_text == final_text})
         yield _sse("refined", {"text": final_text, "replaces": True})
+        if pipeline.get("surfaces") is not None:
+            yield _sse("surfaces", pipeline["surfaces"])
         yield _sse(
             "done",
             {
@@ -738,9 +1180,11 @@ async def _stream_chat(data: ChatRequest, session: AsyncSession, actor: str, *, 
                 "model": pipeline["result"].model,
             },
         )
-    except Exception as exc:  # noqa: BLE001 - stream boundary
-        yield _sse("error", {"message": str(exc)})
-        yield _sse("done", {})
+    finally:
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
 
 
 async def run_chat_pipeline(
@@ -749,14 +1193,26 @@ async def run_chat_pipeline(
     actor: str,
     *,
     thread_id: UUID,
+    device_id: UUID | None = None,
     source: str = "chat",
     user_event_type: str = "message.user",
     event_privacy: PrivacyLevel = "normal",
     speaker: SpeakerIdentity | None = None,
+    text_delta_callback: Callable[[str], Awaitable[None]] | None = None,
+    on_turn_ready: Callable[[object], Awaitable[None]] | None = None,
+    progress_callback: Callable[[str, dict], Awaitable[None]] | None = None,
 ) -> dict:
     retriever = Retriever(session)
     request_id = str(uuid4())
     service = EventService(session, actor=actor)
+
+    async def _progress(stage: str, extra: dict | None = None) -> None:
+        if progress_callback is not None:
+            await progress_callback(stage, extra or {})
+    await assistant_mod.maybe_text_greeting(session, thread_id, actor=actor)
+    from app.ev.callouts import session_malfunction_callout
+
+    await session_malfunction_callout(session, session_key=f"text:{thread_id}")
 
     depth = _resolve_depth(data.context_depth, data.message)
     history_limit, retrieval_k, budget = _depth_profile(depth)
@@ -764,6 +1220,7 @@ async def run_chat_pipeline(
     # Input filter: identity gate + privacy guard run before anything is stored
     # or sent. Credentials never cross to the provider; high-severity injection
     # attempts block the turn entirely.
+    await _progress("filter")
     input_filter = InputFilter(session)
     filter_policy = await active_policy(session)
     speaker_identity = speaker or SpeakerIdentity(
@@ -772,6 +1229,7 @@ async def run_chat_pipeline(
         confidence=1.0,
         method="auth_token",
     )
+    voice_model_access = source == "voice" and speaker_identity.verified
     input_decision = input_filter.guard(
         message=data.message,
         speaker=speaker_identity,
@@ -797,24 +1255,47 @@ async def run_chat_pipeline(
     )
     await session.commit()
     memory_deltas = await ensure_processed(user_event.id)
+    try:
+        from app.memory.curator import schedule_curation
+
+        schedule_curation(limit=1)
+    except Exception:  # noqa: BLE001 - typed chat must not wait on DeepSeek
+        pass
+    await _progress("retrieve")
 
     history_events = [
         event
         for event in await conversation.history(
-            session, thread_id, limit=history_limit, access="model"
+            session,
+            thread_id,
+            limit=history_limit,
+            access="voice_model" if voice_model_access else "model",
         )
         if event.id != user_event.id
     ]
-    memories = await retriever.search(
-        input_decision.provider_message, k=retrieval_k, access="model"
+    from app.memory.select import select_context_memories
+
+    memory_intent, memories = await select_context_memories(
+        session,
+        input_decision.provider_message,
+        k=retrieval_k,
+        access="model",
+        include_sensitive=voice_model_access,
     )
-    user_state = await build_user_state(session, access="model")
-    if depth != "standard":
+    user_state = await build_user_state(
+        session, access="voice_model" if voice_model_access else "model"
+    )
+    if depth != "standard" and memory_intent != "fresh":
         secondary_query = (
             user_state.current_task or user_state.active_project or input_decision.provider_message
         )
         if secondary_query != input_decision.provider_message:
-            extra = await retriever.search(secondary_query, k=retrieval_k, access="model")
+            extra = await retriever.search(
+                secondary_query,
+                k=retrieval_k,
+                access="model",
+                include_sensitive=voice_model_access,
+            )
             seen = {m.memory_id for m in memories}
             memories = [*memories, *[m for m in extra if m.memory_id not in seen]]
             memories.sort(key=lambda m: m.score, reverse=True)
@@ -877,7 +1358,25 @@ async def run_chat_pipeline(
         pending_alert_tier=alert_tier,
         challenge_ceiling=tuning.challenge_ceiling,
     )
-    model_rollup = await rollup_service.model_safe_rollup(session, thread_id)
+    # A fresh, self-contained question ("what's the weather in Gujarat?") must
+    # not inherit old-thread context, or the model mixes topics and answers
+    # with a confused "do you mean X or Y?" clarifier. When the message does
+    # not point back at earlier turns, drop the conversation-derived context
+    # (history, rollup, open questions) and suppress the clarifying-question
+    # directive so the model answers the current message on its own merits.
+    continuation = memory_intent in {"continuation", "explicit_recall", "pin"}
+    if not continuation and getattr(strategy, "ask_question", None):
+        updater = getattr(strategy, "model_copy", None)
+        if callable(updater):
+            strategy = updater(update={"ask_question": False})
+        elif hasattr(strategy, "ask_question"):
+            with contextlib.suppress(Exception):
+                strategy.ask_question = False
+    model_rollup = await rollup_service.model_safe_rollup(
+        session,
+        thread_id,
+        access="voice_model" if voice_model_access else "model",
+    )
     state = await conversation.get_or_create_state(session, thread_id)
     open_questions = list(
         dict.fromkeys([*(model_rollup.open_questions or []), *(state.pending_questions or [])])
@@ -891,82 +1390,182 @@ async def run_chat_pipeline(
     perception_provenance: list[ProvenanceItem] = []
     chat_media_refs: list[dict] = []
     if data.attachment_id is not None:
-        try:
-            perception_event = await vision.analyze_attachment(
-                session,
-                data.attachment_id,
-                actor=actor,
-                permission=True,
-                allow_raw=data.allow_raw_media,
-                provider=provider,
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Attachment not found") from None
-        except PermissionError as exc:
-            raise HTTPException(status_code=403, detail=str(exc)) from None
-        perception_payload = perception_event.payload or {}
-        summary = str(perception_payload.get("summary") or "No summary")
-        perception_lines = [summary]
-        labels = perception_payload.get("labels") or []
-        if labels:
-            perception_lines.append(
-                "suggested labels: " + ", ".join(str(item.get("label")) for item in labels)
-            )
-        perception_lines.append(
-            "provenance: "
-            f"perception_event={perception_event.id}, "
-            f"attachment={perception_payload.get('attachment_id')}, "
-            f"source_event={perception_payload.get('source_event_id')}, "
-            f"provider={perception_payload.get('provider')}, "
-            f"raw_sent={perception_payload.get('raw_sent')}"
-        )
-        perception_provenance = [
-            ProvenanceItem(
-                memory_id=None,
-                text=summary,
-                memory_type="perception",
-                score=float(perception_payload.get("confidence") or 0.0),
-                kind="perception",
-                attachment_id=data.attachment_id,
-                perception_event_id=perception_event.id,
-                source_event_id=(
-                    UUID(perception_payload["source_event_id"])
-                    if perception_payload.get("source_event_id")
-                    else None
-                ),
-                raw_sent=bool(perception_payload.get("raw_sent")),
-            )
-        ]
-        chat_media_refs = [
-            {
-                "kind": "perception",
-                "mime": perception_payload.get("content_type"),
-                "ref": str(perception_event.id),
-                "size_bytes": perception_payload.get("size_bytes"),
-                "attachment_id": str(data.attachment_id),
-                "raw": bool(perception_payload.get("raw_sent")),
-                "derived_text_used": bool(perception_payload.get("derived_text_used")),
-            }
-        ]
+        # Chat attachments are an explicit authenticated request, but the
+        # request itself still has to cross the camera policy boundary.  The
+        # confirmation is derived from the authenticated action, never from a
+        # body-level permission flag.
+        from app.ev.policy import Confirmation, authorize
+        from app.ev.tools import get_spec
 
+        camera_decision = await authorize(
+            session,
+            "camera_replay",
+            actor=actor,
+            arguments={"camera": str(data.attachment_id)},
+            device_id=device_id,
+            channel="action",
+            confirmation=Confirmation(
+                factor="http_approve",
+                confirmed=True,
+                target=str(data.attachment_id),
+                issued_at=utcnow(),
+            ),
+            spec=get_spec("camera_replay"),
+            provider_connected_override=True,
+        )
+        if not camera_decision.allowed:
+            spoken = camera_decision.spoken or camera_decision.reason
+            perception_lines = [spoken]
+            perception_provenance = [
+                ProvenanceItem(
+                    memory_id=None,
+                    text=spoken,
+                    memory_type="perception",
+                    kind="perception",
+                    attachment_id=data.attachment_id,
+                    raw_sent=False,
+                )
+            ]
+        else:
+            try:
+                perception_event = await vision.analyze_attachment(
+                    session,
+                    data.attachment_id,
+                    actor=actor,
+                    permission=True,
+                    allow_raw=data.allow_raw_media,
+                    provider=provider,
+                )
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Attachment not found") from None
+            except PermissionError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from None
+            perception_payload = perception_event.payload or {}
+            summary = str(perception_payload.get("summary") or "No summary")
+            perception_lines = [summary]
+            labels = perception_payload.get("labels") or []
+            if labels:
+                perception_lines.append(
+                    "suggested labels: " + ", ".join(str(item.get("label")) for item in labels)
+                )
+            perception_lines.append(
+                "provenance: "
+                f"perception_event={perception_event.id}, "
+                f"attachment={perception_payload.get('attachment_id')}, "
+                f"source_event={perception_payload.get('source_event_id')}, "
+                f"provider={perception_payload.get('provider')}, "
+                f"raw_sent={perception_payload.get('raw_sent')}"
+            )
+            perception_provenance = [
+                ProvenanceItem(
+                    memory_id=None,
+                    text=summary,
+                    memory_type="perception",
+                    score=float(perception_payload.get("confidence") or 0.0),
+                    kind="perception",
+                    attachment_id=data.attachment_id,
+                    perception_event_id=perception_event.id,
+                    source_event_id=(
+                        UUID(perception_payload["source_event_id"])
+                        if perception_payload.get("source_event_id")
+                        else None
+                    ),
+                    raw_sent=bool(perception_payload.get("raw_sent")),
+                )
+            ]
+            chat_media_refs = [
+                {
+                    "kind": "perception",
+                    "mime": perception_payload.get("content_type"),
+                    "ref": str(perception_event.id),
+                    "size_bytes": perception_payload.get("size_bytes"),
+                    "attachment_id": str(data.attachment_id),
+                    "raw": bool(perception_payload.get("raw_sent")),
+                    "derived_text_used": bool(perception_payload.get("derived_text_used")),
+                }
+            ]
+
+    who = assistant_mod.spoken_name(
+        (await assistant_mod.get_profile(session)).nickname
+    )
+    from app.memory.observe import log_memory as log_memory_trace
+    from app.memory.relationship import MEMORY_BEHAVIOR, relationship_card
+    from app.memory.select import _lexical_overlap
+
+    if memory_intent == "fresh":
+        relationship_text = MEMORY_BEHAVIOR
+        updater = getattr(user_state, "model_copy", None)
+        if callable(updater):
+            def _keep_state(value: str | None) -> str | None:
+                if not value:
+                    return None
+                return value if _lexical_overlap(data.message, value) >= 0.15 else None
+
+            user_state = updater(
+                update={
+                    "recent_topics": [
+                        topic
+                        for topic in (user_state.recent_topics or [])
+                        if _lexical_overlap(data.message, str(topic)) >= 0.15
+                    ],
+                    "current_task": _keep_state(user_state.current_task),
+                    "active_project": _keep_state(user_state.active_project),
+                    "active_goal": _keep_state(user_state.active_goal),
+                    "activity": _keep_state(user_state.activity),
+                }
+            )
+    else:
+        try:
+            from app.memory.bootstrap import bootstrap_instructions, get_bootstrap
+
+            pack = await get_bootstrap(session)
+            if pack.get("relationship"):
+                relationship_text = bootstrap_instructions(pack)
+            else:
+                relationship_text = MEMORY_BEHAVIOR + "\n" + await relationship_card(session)
+        except Exception:  # noqa: BLE001 - chat must still answer
+            relationship_text = MEMORY_BEHAVIOR
     context, context_tokens, context_plan = _assemble_context(
         memories,
         user_state=user_state,
-        strategy_text=strategy_block(strategy),
+        strategy_text=strategy_block(strategy, who=who),
         budget=budget,
         message=data.message,
         perception_lines=perception_lines,
-        rollup_summary=model_rollup.summary,
-        open_questions=open_questions,
-        open_conflicts=open_conflicts,
-        history=[
-            {
-                "role": "assistant" if e.event_type == "message.assistant" else "user",
-                "text": (e.content or {}).get("text") or "",
-            }
-            for e in history_events
-        ],
+        rollup_summary=(model_rollup.summary if continuation else None),
+        open_questions=(open_questions if continuation else []),
+        open_conflicts=(open_conflicts if continuation or memories else []),
+        history=(
+            [
+                {
+                    "role": "assistant" if e.event_type == "message.assistant" else "user",
+                    "text": (e.content or {}).get("text") or "",
+                }
+                for e in history_events
+            ]
+            if continuation
+            else []
+        ),
+        relationship_text=relationship_text,
+        memory_intent=memory_intent,
     )
+    log_memory_trace(
+        "memory.context_injected",
+        extra={
+            "intent": memory_intent,
+            "retrieved": len(memories),
+            "tokens": context_plan.used_tokens,
+            "sections": ",".join(section.name for section in context_plan.sections if section.items_included),
+        },
+    )
+
+    local = await assistant_mod.handle_local_intent(
+        session,
+        data.message,
+        actor=actor,
+        device_id=device_id,
+    )
+    receipts: list = []
 
     if decision.blocked:
         final_draft = (
@@ -980,6 +1579,21 @@ async def run_chat_pipeline(
         )
         result = ChatResult(text=final_draft)
         envelope_hash = None
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
+    elif local is not None:
+        result = ChatResult(text=str(local["reply"]))
+        report = OutputReport(
+            draft=result.text,
+            final_text=result.text,
+            flags=decision.flags,
+        )
+        envelope_hash = None
+        # Voice Talk only plays tts_chunk audio. Local intents never
+        # stream token deltas, so push the full reply into the same
+        # callback the model path uses or the answer stays silent.
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
     else:
         envelope_hash = compute_envelope_hash(
             message=decision.provider_message,
@@ -1021,29 +1635,121 @@ async def run_chat_pipeline(
             },
             media_refs=chat_media_refs,
         )
-        system_prompt = (
-            f"{identity_block(settings.persona_name, settings.persona_description, to_dict(profile))}\n\n"
-            "You reason over memory that EV's system has retrieved for you; never invent memories. "
-            "Be honest about uncertainty, cite dates/sources when you use them, and keep the user's "
-            "goals in mind.\n\n"
-            f"{context}"
+        identity = await assistant_mod.compile_identity(session, compact=True)
+        envelope.metadata["spoken_name"] = who
+        working_on = snapshot_working_on(
+            decision.provider_message,
+            user_state=user_state,
+            conv_state=state,
+            continuation=continuation,
         )
-        gateway = ModelGateway(provider)
-        call = await run_tool_loop(
+        envelope.metadata["working_on"] = working_on
+        from app.ev.briefing import (
+            WRITE_TOOLS,
+            gather_intelligence_briefing,
+            tools_for_turn,
+            voice_needs_tools,
+        )
+        from app.ev.interaction import detect_life_action
+        from app.ev.tool_select import select_tool
+
+        allow_sensitive = data.allow_sensitive_tools or source == "voice"
+        await _progress("briefing")
+        briefing = await gather_intelligence_briefing(
             session,
-            gateway,
-            [
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=decision.provider_message),
-            ],
-            envelope=envelope,
-            tool_specs=tool_specs_from_dicts(tools.list_tools()),
-            model=data.model,
+            decision.provider_message,
             actor=actor,
-            allow_sensitive_tools=data.allow_sensitive_tools,
-            request_id=request_id,
+            allow_sensitive=allow_sensitive,
+            source=source,
         )
+        await _progress("actions")
+        receipts = await execute_requested_actions(
+            session,
+            decision.provider_message,
+            actor=actor,
+            allow_sensitive=allow_sensitive,
+            request_id=request_id,
+            device_id=data.device_id,
+        )
+        envelope.metadata["actions"] = [
+            {"name": item.name, "ok": item.ok} for item in receipts
+        ]
+        system_prompt = build_system_prompt(
+            identity=identity,
+            who=who,
+            source=source,
+            working_on=working_on,
+            context=context,
+            briefing=briefing,
+            receipts=receipts,
+        )
+        if on_turn_ready is not None:
+            await on_turn_ready(strategy)
+        gateway = ModelGateway(provider)
+        chat_messages = [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=decision.provider_message),
+            *receipt_messages(receipts),
+        ]
+        offer_tools = source != "voice" or voice_needs_tools(decision.provider_message)
+        tool_specs = tool_specs_from_dicts(tools_for_turn(decision.provider_message)) if offer_tools else []
+        write_needed = bool(
+            detect_life_action(decision.provider_message)
+            or select_tool(decision.provider_message).selected in WRITE_TOOLS
+            or writes_ran(receipts)
+        )
+        supports_native_tools = bool(getattr(provider, "supports_tools", True))
+        dispatched_names = {item.name for item in receipts}
+        stream_tokens = text_delta_callback is not None and not write_needed
+        if stream_tokens and text_delta_callback is not None:
+            await _progress("model", {"streaming": True})
+            call = None
+            parts: list[str] = []
+            async for event in gateway.stream_chat(
+                chat_messages,
+                envelope=envelope,
+                tools=[],
+                model=data.model,
+                allow_sensitive_tools=allow_sensitive,
+            ):
+                if event.kind == "delta" and event.text:
+                    parts.append(event.text)
+                    await text_delta_callback(event.text)
+                elif event.kind == "done":
+                    call = event.call
+            if call is None:
+                raise HTTPException(status_code=503, detail="Model provider returned no completion")
+            await log_model_call(session, call=call, actor=actor)
+            if not (call.result.text or "").strip():
+                call.result.text = "".join(parts)
+        elif supports_native_tools:
+            await _progress("tools" if offer_tools else "model")
+            call = await run_tool_loop(
+                session,
+                gateway,
+                chat_messages,
+                envelope=envelope,
+                tool_specs=tool_specs,
+                model=data.model,
+                actor=actor,
+                allow_sensitive_tools=allow_sensitive,
+                request_id=request_id,
+                already_dispatched=dispatched_names,
+            )
+        else:
+            await _progress("model")
+            call = await gateway.chat(
+                chat_messages,
+                envelope=envelope,
+                tools=[],
+                model=data.model,
+                allow_sensitive_tools=allow_sensitive,
+            )
+            await log_model_call(session, call=call, actor=actor)
         result = call.result
+        result.text = confirmed_reply(result.text, receipts)
+        if not stream_tokens and text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
         if call.status == "blocked":
             raise HTTPException(
                 status_code=403,
@@ -1055,8 +1761,13 @@ async def run_chat_pipeline(
                 detail=f"Model provider unavailable: {call.error}",
             )
 
+        await _progress("output_filter")
         critic = None
-        if settings.filter_critic_enabled and strategy.mode in settings.filter_critic_modes:
+        if (
+            source != "voice"
+            and settings.filter_critic_enabled
+            and strategy.mode in settings.filter_critic_modes
+        ):
             from app.filter.critic import GatewayCritic
 
             critic = GatewayCritic(gateway, request_id=request_id, envelope=envelope)
@@ -1119,6 +1830,18 @@ async def run_chat_pipeline(
         )
         await session.commit()
 
+    if strategy.mode == "social":
+        from app.ev import companionship as companionship_mod
+        from app.ev.callouts import emit_callout
+
+        await companionship_mod.note_social_turn(session)
+        nudge = await companionship_mod.maybe_isolation_nudge(session)
+        if nudge:
+            callout = await emit_callout(session, nudge, source="isolation")
+            if callout.spoken:
+                result.text = f"{result.text} {nudge}".strip()
+                report.final_text = result.text
+
     assistant_event = await service.create(
         EventCreate(
             source=source,
@@ -1160,9 +1883,38 @@ async def run_chat_pipeline(
             "last_assistant_message": result.text[:1000],
             "context_tokens": context_tokens,
             "context_depth": depth,
+            "last_actions": [item.name for item in receipts],
+            "memory_intent": memory_intent,
         },
     )
+    from app.memory.episodes import maybe_update_episode
+
+    await maybe_update_episode(session, thread_id, seed_event=user_event)
     await session.commit()
+
+    surfaces = None
+    if local is not None and isinstance(local.get("hud"), dict):
+        surfaces = {
+            "schema_version": "ev.hud.card.v1",
+            "open": True,
+            "title": local["hud"].get("title") or "Protocols",
+            "windows": [local["hud"]],
+            **local["hud"],
+        }
+    if surfaces is None and not decision.blocked and not presented_this_turn(receipts):
+        try:
+            from app.ev.lookout import compose_and_maybe_open
+
+            surfaces = await compose_and_maybe_open(
+                session,
+                message=data.message,
+                reply=result.text,
+                strategy=strategy,
+                pending_alert_priority=alert_priority,
+                pending_alert_tier=alert_tier,
+            )
+        except Exception:  # noqa: BLE001 - HUD must never fail a chat turn
+            surfaces = None
 
     provenance = [
         *perception_provenance,
@@ -1192,6 +1944,7 @@ async def run_chat_pipeline(
         "strategy": strategy,
         "filter_report": FilterReportOut.model_validate(report.to_dict()),
         "context_plan": context_plan.to_dict() if context_plan is not None else None,
+        "surfaces": surfaces,
     }
 
 
@@ -1281,6 +2034,8 @@ def _assemble_context(
     rollup_summary: str | None = None,
     open_questions: list[str] | None = None,
     open_conflicts: list[str] | None = None,
+    relationship_text: str | None = None,
+    memory_intent: str | None = None,
 ) -> tuple[str, int, ContextPlan]:
     """Compile the request window through the ContextCompiler (plan 2.4)."""
     from app.context.compiler import ContextCompiler
@@ -1296,6 +2051,8 @@ def _assemble_context(
         rollup_summary=rollup_summary,
         open_questions=open_questions,
         open_conflicts=open_conflicts,
+        relationship_text=relationship_text,
+        memory_intent=memory_intent,
     )
     return plan.text, plan.used_tokens, plan
 
@@ -1344,6 +2101,9 @@ async def create_device(
         capabilities=data.capabilities,
         trust_level=data.trust_level,
         owner_id=owner.id if owner else None,
+        device_type=data.device_type,
+        platform=data.platform,
+        paired_at=utcnow() if owner else None,
     )
     session.add(device)
     await session.flush()
@@ -1390,6 +2150,174 @@ async def revoke_device(
     return DeviceOut.model_validate(device)
 
 
+@router.post(
+    "/devices/{device_id}/push-token",
+    response_model=PushTokenOut,
+    status_code=200,
+)
+async def register_push_token(
+    device_id: UUID,
+    data: PushTokenRegister,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> PushTokenOut:
+    """Register/rotate a push token for one trusted device (APNs today)."""
+    if ctx.is_device and ctx.device_id != device_id:
+        raise HTTPException(status_code=403, detail="Device can only register its own token")
+    device = await session.get(Device, device_id)
+    if device is None or device.revoked_at is not None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    device.push_token = data.token
+    device.push_token_updated_at = utcnow()
+    device.push_bundle_id = data.bundle_id
+    device.platform = "apple" if data.platform == "apns" else device.platform
+    if device.paired_at is None:
+        device.paired_at = utcnow()
+    await log_access(
+        session,
+        actor=ctx.actor,
+        action="device.push_token_register",
+        endpoint="POST /v1/devices/{id}/push-token",
+        resource_type="device",
+        resource_ids=[device.id],
+        details={"platform": data.platform},
+    )
+    await session.commit()
+    return PushTokenOut(
+        device_id=device.id,
+        platform=device.push_platform,
+        registered=True,
+        updated_at=device.push_token_updated_at,
+    )
+
+
+@router.delete("/devices/{device_id}/push-token", response_model=PushTokenOut)
+async def deregister_push_token(
+    device_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> PushTokenOut:
+    """Deregister a push token (device offboarding / rotation cleanup)."""
+    if ctx.is_device and ctx.device_id != device_id:
+        raise HTTPException(status_code=403, detail="Device can only deregister its own token")
+    device = await session.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    device.push_token = None
+    device.push_token_updated_at = utcnow()
+    device.push_bundle_id = None
+    await log_access(
+        session,
+        actor=ctx.actor,
+        action="device.push_token_deregister",
+        endpoint="DELETE /v1/devices/{id}/push-token",
+        resource_type="device",
+        resource_ids=[device.id],
+    )
+    await session.commit()
+    return PushTokenOut(
+        device_id=device.id,
+        platform=None,
+        registered=False,
+        updated_at=device.push_token_updated_at,
+    )
+
+
+@router.get("/devices/{device_id}/bootstrap")
+async def bootstrap_device(
+    device_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """Import owner prefs onto this device. First success speaks We're online. once."""
+    if ctx.is_device and ctx.device_id != device_id:
+        raise HTTPException(status_code=403, detail="Device can only bootstrap itself")
+    from app.ev.fleet import bootstrap_device as do_bootstrap
+
+    try:
+        payload = await do_bootstrap(session, device_id, actor=ctx.actor)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    await session.commit()
+    return payload
+
+
+@router.post("/devices/{device_id}/panic")
+async def panic_device(
+    device_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """Revoke one device. Remaining trusted devices hear that it went offline."""
+    if (
+        ctx.is_device
+        and ctx.device is not None
+        and ctx.device.trust_level != "owner"
+        and ctx.device_id != device_id
+    ):
+        raise HTTPException(status_code=403, detail="Owner trust required to panic another device")
+    from app.ev.fleet import panic_device as do_panic
+
+    try:
+        payload = await do_panic(session, device_id, actor=ctx.actor)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    await session.commit()
+    return payload
+
+
+@router.get("/devices/{device_id}/status")
+async def device_status(
+    device_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> dict:
+    """Registry source of truth: identity, reachability, push readiness."""
+    from app.notify.routing import device_reachability
+
+    device = await session.get(Device, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="Device not found")
+    now = utcnow()
+    return {
+        "schema_version": "ev.device.status.v1",
+        "device": DeviceOut.model_validate(device).model_dump(mode="json"),
+        "presence": device_reachability(device, now),
+        "push_ready": bool(device.push_token),
+        "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
+        "generated_at": now.isoformat(),
+    }
+
+
+@router.post("/notify/{notification_id}/receipt")
+async def notification_receipt(
+    notification_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> dict:
+    """App-side ack for a delivered notification (SUIT's single-path receipt)."""
+    from app.notify.service import acknowledge_notification
+
+    try:
+        row = await acknowledge_notification(
+            session,
+            notification_id,
+            device_id=ctx.device_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    await session.commit()
+    return {
+        "acknowledged": True,
+        "notification_id": str(row.id),
+        "attention_kind": row.attention_kind,
+    }
+
+
 @router.get("/gateway/models")
 async def gateway_models(
     session: AsyncSession = Depends(get_session),
@@ -1405,6 +2333,7 @@ async def gateway_chat(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> GatewayChatResponse:
+    assert_not_sandbox_production(ctx.device)
     actor = ctx.actor
     sensitive_allowed = data.allow_sensitive_tools
     if sensitive_allowed and not (
@@ -1904,10 +2833,12 @@ async def temporal_memories(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
 ) -> MemoryListResponse:
     """As-of temporal search: memories whose resolved temporal range or event
     time overlaps ``[period_start, period_end)`` (e.g. 'what was I thinking in
     March?')."""
+    assert_not_sandbox_production(ctx.device)
     from app.memory.temporal import memory_temporal_bounds, temporal_overlap
 
     if period_start.tzinfo is None:
@@ -2000,3 +2931,17 @@ async def enrichment_usage_endpoint(
     )
     await session.commit()
     return result
+
+
+@router.get("/migrations/parity")
+async def migrations_parity(
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """G1.1 observability: expected migration head vs actual DB revision.
+
+    Read-only. Mission Control / Self Diagnostics consume this; a mismatch
+    degrades /v1/health but never triggers automatic migrations.
+    """
+    from app.ops.migration_health import migration_parity
+
+    return await migration_parity(session)

@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -33,10 +34,14 @@ EmbeddingType = Vector(EMBEDDING_DIM).with_variant(JSON, "sqlite")
 JSONType = JSON().with_variant(JSONB(), "postgresql")
 
 
+
 class Event(Base):
     """Raw, immutable input. Tombstoned, never updated or deleted."""
 
     __tablename__ = "events"
+    __table_args__ = (
+        Index("ix_events_type_occurred", "event_type", "occurred_at"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
@@ -52,6 +57,53 @@ class Event(Base):
     idempotency_key_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tombstone_reason: Mapped[str | None] = mapped_column(String(512))
+    # G2 P0.2 STREAM ORDER LAW: server-owned delivery position inside the
+    # current StateEpoch lineage. occurred_at answers "when it happened";
+    # stream_seq answers "when it entered this stream". Assigned by the DB
+    # sequence (migration p2q3r4s5t6u7); immutable once issued; never
+    # derived from occurred_at or client input.
+    stream_seq: Mapped[int | None] = mapped_column(
+        BigInteger(), unique=True, index=True
+    )
+
+
+class EventStreamPosition(Base):
+    """Durable monotonic allocator for EVENT STREAM ORDER (P0.2 PART 2).
+
+    Single-row counter incremented inside each inserting transaction.
+    Row-level locking serializes concurrent writers -> positions are unique
+    and monotonic. Transaction rollback removes both the Event and its
+    counter increment together (no permanent gaps, no stale locks).
+    """
+
+    __tablename__ = "event_stream_position"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    last_seq: Mapped[int] = mapped_column(BigInteger(), nullable=False)
+
+
+from sqlalchemy import event as _sa_event
+
+
+def _assign_event_stream_seq(mapper, connection, target) -> None:
+    if getattr(target, "stream_seq", None) is not None:
+        return
+    connection.execute(
+        text(
+            "INSERT INTO event_stream_position (id, last_seq) VALUES (1, 1) "
+            "ON CONFLICT (id) DO NOTHING"
+        )
+    )
+    row = connection.execute(
+        text(
+            "UPDATE event_stream_position SET last_seq = last_seq + 1 "
+            "WHERE id = 1 RETURNING last_seq"
+        )
+    ).scalar_one()
+    target.stream_seq = int(row)
+
+
+_sa_event.listen(Event.__mapper__, "before_insert", _assign_event_stream_seq)
 
 
 class Entity(Base):
@@ -282,6 +334,175 @@ class Device(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_reason: Mapped[str | None] = mapped_column(String(256))
     capabilities: Mapped[list] = mapped_column(JSONType, default=list)
+    # --- AGENT 14 PULSE (WAVE LIFE, additive) ---
+    device_type: Mapped[str | None] = mapped_column(String(32), index=True)
+    platform: Mapped[str | None] = mapped_column(String(32))
+    paired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    push_token: Mapped[str | None] = mapped_column(Text)
+    push_token_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    push_bundle_id: Mapped[str | None] = mapped_column(String(256))
+    battery_percent: Mapped[float | None] = mapped_column(Float)
+    storage_free_bytes: Mapped[int | None] = mapped_column(Integer)
+    bootstrapped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    bootstrapped_spoken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Cross-platform Device Gateway (additive). NULL memory_scope means owner.
+    role: Mapped[str | None] = mapped_column(String(32), index=True)
+    memory_scope: Mapped[str | None] = mapped_column(String(16), index=True)
+    client_version: Mapped[str | None] = mapped_column(String(64))
+    protocol_version: Mapped[str | None] = mapped_column(String(16))
+    # --- G2 EVIE EVERYWHERE (additive): per-device sync cursor over the
+    # canonical event history. Routing hint + resume point, never authority.
+    sync_cursor_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sync_cursor_id: Mapped[UUID | None] = mapped_column(Uuid)
+    # --- G2 SESSION AUTHORITY (additive): server-owned generation counter.
+    # Bumped on every trust transition; sessions established under an older
+    # generation are invalid and must rebind (promotion AND revocation).
+    auth_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+
+    @property
+    def push_platform(self) -> str | None:
+        return "apns" if self.push_token else None
+
+    @property
+    def push_registered(self) -> bool:
+        return bool(self.push_token)
+
+
+class DevicePairingToken(Base):
+    """One-time pairing code. Tailnet membership is not Evie device trust."""
+
+    __tablename__ = "device_pairing_tokens"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    role: Mapped[str] = mapped_column(String(32), default="companion")
+    display_name: Mapped[str] = mapped_column(String(128), default="Evie phone")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ConversationLease(Base):
+    """One response-output device at a time. Not Memory OS."""
+
+    __tablename__ = "conversation_leases"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_key: Mapped[str] = mapped_column(String(64), unique=True, default="owner")
+    lease_id: Mapped[str] = mapped_column(String(64), index=True)
+    device_id: Mapped[UUID] = mapped_column(ForeignKey("devices.id"), index=True)
+    instance_id: Mapped[str] = mapped_column(String(64), default="")
+    method: Mapped[str] = mapped_column(String(32), default="manual")
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_activity: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class ActiveConversationState(Base):
+    """Short-lived handoff context. Not production Memory OS."""
+
+    __tablename__ = "active_conversation_states"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_key: Mapped[str] = mapped_column(String(64), unique=True, default="owner")
+    active_device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"))
+    topic: Mapped[str | None] = mapped_column(String(240))
+    turns: Mapped[list] = mapped_column(JSONType, default=list)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+# --------------------------------------------------------------------------- #
+# G2 — Device fabric: cross-device capability routing + bounded context handoff
+# --------------------------------------------------------------------------- #
+
+
+class DeviceRoutedAction(Base):
+    """Canonical cross-device action broker (G2 B5-B11).
+
+    One row is ONE canonical request: requesting device -> target device
+    via deterministic resolver. Idempotent by (owner_scope, action_id).
+    Queued rows survive client restart/transport reconnect; side effect
+    occurs once (claimed guard). Revoked targets never execute.
+    """
+
+    __tablename__ = "device_routed_actions"
+    __table_args__ = (
+        UniqueConstraint("owner_scope", "action_id", name="uq_device_routed_action_scope_id"),
+        Index("ix_device_routed_actions_target_status", "target_device_id", "status"),
+        Index("ix_device_routed_actions_requesting", "requesting_device_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    action_id: Mapped[str] = mapped_column(String(128), index=True)
+    owner_scope: Mapped[str] = mapped_column(String(64), index=True, default="master")
+    requesting_device_id: Mapped[UUID] = mapped_column(ForeignKey("devices.id"), index=True)
+    target_device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"), index=True)
+    capability: Mapped[str] = mapped_column(String(128), index=True)
+    arguments: Mapped[dict] = mapped_column(JSONType, default=dict)
+    # REQUESTED | ROUTED | QUEUED | EXECUTING | SUCCEEDED | FAILED | CANCELLED | EXPIRED
+    status: Mapped[str] = mapped_column(String(16), default="REQUESTED", index=True)
+    risk_class: Mapped[str | None] = mapped_column(String(8))
+    confirmation_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    result: Mapped[dict | None] = mapped_column(JSONType)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error: Mapped[str | None] = mapped_column(Text)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class OwnerHandoffContext(Base):
+    """Bounded semantic context that follows the owner across trusted devices.
+
+    Lightweight + derived, centrally mediated with version + TTL. NOT the
+    full GPT conversation or provider hidden state. Used only to resolve
+    pronouns like "its" to the recently focused entity; canonical facts
+    are always reread from Evie Core.
+    """
+
+    __tablename__ = "owner_handoff_contexts"
+    __table_args__ = (UniqueConstraint("owner_key", name="uq_owner_handoff_owner"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_key: Mapped[str] = mapped_column(String(64), unique=True, default="owner")
+    # Focused entity (one primary focus): project | goal | commitment | task
+    focused_type: Mapped[str | None] = mapped_column(String(32))
+    focused_id: Mapped[str | None] = mapped_column(String(128))
+    focused_title: Mapped[str | None] = mapped_column(String(256))
+    # Extended bounded refs
+    focused_project_id: Mapped[str | None] = mapped_column(String(128))
+    focused_project_title: Mapped[str | None] = mapped_column(String(256))
+    focused_goal_id: Mapped[str | None] = mapped_column(String(128))
+    current_task: Mapped[str | None] = mapped_column(String(256))
+    recent_refs: Mapped[list] = mapped_column(JSONType, default=list)
+    source_device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"))
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class SandboxFact(Base):
+    """Isolated cross-platform test memory. Never mixed with Memory OS rows."""
+
+    __tablename__ = "sandbox_facts"
+    __table_args__ = (UniqueConstraint("namespace", "fact_key", name="uq_sandbox_facts_ns_key"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    namespace: Mapped[str] = mapped_column(String(64), index=True, default="cross_platform_test")
+    fact_key: Mapped[str] = mapped_column(String(160), index=True)
+    value: Mapped[str] = mapped_column(Text)
+    source_device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Attachment(Base):
@@ -295,6 +516,83 @@ class Attachment(Base):
     storage_key: Mapped[str] = mapped_column(String(512), unique=True)
     sha256: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ObservationRecord(Base):
+    """Structured, provenance-first observation in the personal world model.
+
+    This table deliberately keeps the observation's epistemic status separate
+    from its content.  A model guess is never accepted as a stored fact by the
+    world-model writer; ``fact_kind`` is limited by that writer to observed,
+    reported, or inferred.
+    """
+
+    __tablename__ = "observations"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    subject: Mapped[str] = mapped_column(String(256), index=True)
+    subject_type: Mapped[str] = mapped_column(String(32), index=True, default="owner")
+    object_or_event: Mapped[str] = mapped_column("object", String(256), index=True)
+    action: Mapped[str] = mapped_column(String(128), index=True)
+    location: Mapped[str] = mapped_column(String(512), default="unknown")
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
+    source_device: Mapped[str] = mapped_column(String(128), index=True, default="unknown")
+    evidence_ref: Mapped[str] = mapped_column(String(512), index=True, default="unknown")
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    uncertainty: Mapped[str] = mapped_column(String(512), default="unknown")
+    consent_state: Mapped[str] = mapped_column(String(32), index=True, default="unknown")
+    retention_class: Mapped[str] = mapped_column(String(64), index=True, default="standard")
+    freshness_state: Mapped[str] = mapped_column(String(16), index=True, default="fresh")
+    stale_after_seconds: Mapped[int] = mapped_column(Integer, default=86_400)
+    fact_kind: Mapped[str] = mapped_column(String(16), index=True, default="observed")
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONType, default=dict)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OwnerObject(Base):
+    """An explicitly enrolled owner-owned object and its last evidence."""
+
+    __tablename__ = "owner_objects"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner: Mapped[str] = mapped_column(String(256), default="owner", index=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
+    object_type: Mapped[str] = mapped_column(String(64), index=True, default="thing")
+    enrollment_source: Mapped[str] = mapped_column(String(128), default="user", index=True)
+    appearance_references: Mapped[list] = mapped_column(JSONType, default=list)
+    common_locations: Mapped[list] = mapped_column(JSONType, default=list)
+    last_observed_location: Mapped[str | None] = mapped_column(String(512))
+    last_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    last_evidence_ref: Mapped[str | None] = mapped_column(String(512))
+    last_confidence: Mapped[float | None] = mapped_column(Float)
+    last_uncertainty: Mapped[str | None] = mapped_column(String(512))
+    last_freshness_state: Mapped[str] = mapped_column(String(16), default="unknown")
+    possible_matches: Mapped[list] = mapped_column(JSONType, default=list)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class CameraState(Base):
+    """Current visible state of one permissioned camera provider."""
+
+    __tablename__ = "camera_states"
+    __table_args__ = (UniqueConstraint("device_id", name="uq_camera_states_device"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    device_id: Mapped[str] = mapped_column(String(128), index=True)
+    platform: Mapped[str] = mapped_column(String(32), default="mac", index=True)
+    state: Mapped[str] = mapped_column(String(32), index=True, default="off")
+    visible: Mapped[bool] = mapped_column(Boolean, default=False)
+    permission_state: Mapped[str] = mapped_column(String(32), default="unknown")
+    explicit_request: Mapped[bool] = mapped_column(Boolean, default=False)
+    paused_reason: Mapped[str | None] = mapped_column(String(256))
+    consent_state: Mapped[str] = mapped_column(String(32), default="not_granted")
+    raw_frames_persisted: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_error: Mapped[str | None] = mapped_column(String(512))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 # --------------------------------------------------------------------------- #
@@ -315,6 +613,11 @@ class HealthSnapshot(Base):
     readiness: Mapped[float | None] = mapped_column(Float, index=True)
     band: Mapped[str | None] = mapped_column(String(16))
     anomalies: Mapped[list] = mapped_column(JSONType, default=list)
+    permission_state: Mapped[str] = mapped_column(String(32), index=True, default="authorized")
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, default=utcnow)
+    units: Mapped[dict] = mapped_column(JSONType, default=dict)
+    source_metadata: Mapped[dict] = mapped_column(JSONType, default=dict)
+    freshness_state: Mapped[str] = mapped_column(String(16), index=True, default="fresh")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -426,14 +729,35 @@ class DecisionOutcome(Base):
 
 
 class ResearchSession(Base):
-    """A memory-grounded research session (E.V.'s science-assistant role)."""
+    """A memory-grounded research session or durable research job.
+
+    ``mode=session`` preserves the original interactive note-taking flow.
+    ``mode=job`` uses the same durable row as the long-running execution
+    substrate: the row contains the owner, bounded scope, progress,
+    checkpoints, citations, artifacts, and provider evidence needed to resume
+    after a worker restart without inventing a second job framework.
+    """
 
     __tablename__ = "research_sessions"
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
     question: Mapped[str] = mapped_column(Text, index=True)
+    goal: Mapped[str] = mapped_column(Text, default="")
+    owner: Mapped[str] = mapped_column(String(128), default="master", index=True)
+    mode: Mapped[str] = mapped_column(String(16), default="session", index=True)
     status: Mapped[str] = mapped_column(String(16), default="open", index=True)
     conclusion: Mapped[str | None] = mapped_column(Text)
+    allowed_tools: Mapped[list] = mapped_column(JSONType, default=list)
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    budget: Mapped[dict] = mapped_column(JSONType, default=dict)
+    checkpoints: Mapped[list] = mapped_column(JSONType, default=list)
+    progress: Mapped[dict] = mapped_column(JSONType, default=dict)
+    final_artifacts: Mapped[list] = mapped_column(JSONType, default=list)
+    citations: Mapped[list] = mapped_column(JSONType, default=list)
+    evidence: Mapped[dict] = mapped_column(JSONType, default=dict)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -495,6 +819,9 @@ class PrintJob(Base):
     status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
     estimated_minutes: Mapped[int | None] = mapped_column(Integer)
     filament_grams: Mapped[float | None] = mapped_column(Float)
+    vendor_job_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    adapter: Mapped[str | None] = mapped_column(String(32))
+    details: Mapped[dict] = mapped_column(JSONType, default=dict)
     error_log: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
@@ -1030,6 +1357,11 @@ class VoiceSession(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     end_reason: Mapped[str | None] = mapped_column(String(128))
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_threads.id"), index=True
+    )
+    greeted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    malfunction_spoken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
@@ -1117,6 +1449,7 @@ class RuntimeHeartbeat(Base):
     status: Mapped[str] = mapped_column(String(16), default="ok", index=True)
     listener_state: Mapped[str] = mapped_column(String(16), default="listening")
     battery_percent: Mapped[float | None] = mapped_column(Float)
+    storage_free_bytes: Mapped[int | None] = mapped_column(Integer)
     latency_ms: Mapped[int | None] = mapped_column(Integer)
     details: Mapped[dict] = mapped_column(JSONType, default=dict)
 
@@ -1151,6 +1484,32 @@ class ApprovedAction(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class MemoryCurationJob(Base):
+    """Postgres outbox for DeepSeek memory curation. Not Redis/RQ ingestion."""
+
+    __tablename__ = "memory_curation_jobs"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    job_key: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="curate", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    curator_version: Mapped[str] = mapped_column(String(32), default="1")
+    priority: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    source_event_ids: Mapped[list] = mapped_column(JSONType, default=list)
+    result: Mapped[dict] = mapped_column(JSONType, default=dict)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
     )
 
 
@@ -1579,6 +1938,13 @@ class Notification(Base):
     action_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("approved_actions.id"), index=True
     )
+    # --- AGENT 14 PULSE (WAVE LIFE, additive) ---
+    device_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("devices.id"), index=True
+    )
+    attention_kind: Mapped[str] = mapped_column(
+        String(24), default="incoming", index=True
+    )
     attempt_count: Mapped[int] = mapped_column(Integer, default=1)
     queued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True
@@ -1644,5 +2010,490 @@ class PasskeyAuthMaterial(Base):
     rp_id: Mapped[str] = mapped_column(String(256))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# --------------------------------------------------------------------------- #
+# AGENT 12 CONDUIT (WAVE LIFE) — Apple life bridges (additive)
+# --------------------------------------------------------------------------- #
+
+
+class LifeOutboundAction(Base):
+    """One queued outbound life action for a registered device actuator.
+
+    The device_proxy adapter queues messages/calls here; a registered iPhone
+    (SUIT app) polls the outbox and posts authenticated delivery results.
+    ``delivered`` is only set when the device returns provider evidence
+    (message_id/call_id + timestamp); nothing is ever marked delivered
+    without evidence.
+    """
+
+    __tablename__ = "life_outbound_actions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    integration_id: Mapped[UUID] = mapped_column(
+        ForeignKey("integrations.id"), index=True
+    )
+    device_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("devices.id"), index=True
+    )
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    args: Mapped[dict] = mapped_column(JSONType, default=dict)
+    # queued | delivered | failed | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    result: Mapped[dict | None] = mapped_column(JSONType)
+    evidence: Mapped[dict | None] = mapped_column(JSONType)
+    error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # --- AGENT 14 PULSE (WAVE LIFE, additive) ---
+    # Lifecycle mirrors the brief's queued → dispatched → acknowledged →
+    # executed / failed contract while Agent 12's ``status`` column keeps the
+    # device-proxy outbox semantics (queued → delivered/failed).
+    lifecycle: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 # --- AGENT 20 LAUNCH ---
 # ============================================================================
+
+
+# --------------------------------------------------------------------------- #
+# Day-long companion: owner profile, calibration cache, callouts, gates
+# --------------------------------------------------------------------------- #
+
+
+class AssistantProfile(Base):
+    """Singleton owner-scoped spoken identity and companion stamps."""
+
+    __tablename__ = "assistant_profiles"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("owner_identities.id"), index=True
+    )
+    nickname: Mapped[str] = mapped_column(String(64), default="EVIE")
+    owner_preferred_name: Mapped[str | None] = mapped_column(String(128))
+    greeting_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    tts_voice_id: Mapped[str | None] = mapped_column(String(64))
+    tts_rate: Mapped[float | None] = mapped_column(Float)
+    last_sense_why: Mapped[str | None] = mapped_column(Text)
+    last_sense_source_ids: Mapped[list] = mapped_column(JSONType, default=list)
+    last_sense_callout_id: Mapped[UUID | None] = mapped_column(Uuid)
+    morning_brief_spoken_on: Mapped[str | None] = mapped_column(String(16))
+    onboarding_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dedication_text: Mapped[str | None] = mapped_column(String(500))
+    dedication_blob_id: Mapped[str | None] = mapped_column(String(256))
+    dedication_played_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    live_conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_threads.id"), index=True
+    )
+    training_wheels_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    training_wheels_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    social_turn_count: Mapped[int] = mapped_column(Integer, default=0)
+    social_nudge_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    isolation_scan_ran_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    isolation_detected: Mapped[bool] = mapped_column(Boolean, default=False)
+    quiet_hours_start: Mapped[str | None] = mapped_column(String(16))
+    quiet_hours_end: Mapped[str | None] = mapped_column(String(16))
+    quiet_digest_spoken_on: Mapped[str | None] = mapped_column(String(16))
+    tts_voice: Mapped[str | None] = mapped_column(String(64), default="default")
+    hud_layout: Mapped[dict] = mapped_column(JSONType, default=dict)
+    training_steps: Mapped[dict] = mapped_column(JSONType, default=dict)
+    volume_percent: Mapped[int] = mapped_column(Integer, default=70)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class CalibrationReportRow(Base):
+    """Cached last self-calibration report (item 26 hook)."""
+
+    __tablename__ = "calibration_reports"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    overall: Mapped[str] = mapped_column(String(16), index=True)
+    report: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Callout(Base):
+    """Persisted status narration; spoken only when policy allows."""
+
+    __tablename__ = "callouts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    text: Mapped[str] = mapped_column(Text)
+    source: Mapped[str] = mapped_column(String(64), index=True)
+    source_item: Mapped[str | None] = mapped_column(String(128), index=True)
+    hud: Mapped[dict] = mapped_column(JSONType, default=dict)
+    spoken: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    emergency: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
+class FeatureGate(Base):
+    """Minimal feature-gate / training-wheels flags for the protocol sheet."""
+
+    __tablename__ = "feature_gates"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    key: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="locked", index=True)
+    reason: Mapped[str | None] = mapped_column(Text)
+    setup_hint: Mapped[str | None] = mapped_column(String(256))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+# --------------------------------------------------------------------------- #
+# House / lab / devices (items 11–25)
+# --------------------------------------------------------------------------- #
+
+
+class OwnerTimer(Base):
+    """Durable owner timer. Survives process restart; daemon due-scans fire it."""
+
+    __tablename__ = "timers"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    fire_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    late: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class Delegate(Base):
+    """Time- and scope-boxed account share. Never a second owner."""
+
+    __tablename__ = "delegates"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    person_id: Mapped[UUID | None] = mapped_column(ForeignKey("entities.id"), index=True)
+    person_name: Mapped[str] = mapped_column(String(256), index=True)
+    device_id: Mapped[UUID | None] = mapped_column(ForeignKey("devices.id"), index=True)
+    scopes: Mapped[list] = mapped_column(JSONType, default=list)
+    not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    granted_by: Mapped[str] = mapped_column(String(64), default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class HomeEntity(Base):
+    """Smart-home inventory so names like 'lab lights' resolve."""
+
+    __tablename__ = "home_entities"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    entity_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(256), index=True)
+    area: Mapped[str | None] = mapped_column(String(128), index=True)
+    domain: Mapped[str] = mapped_column(String(32), index=True)
+    state: Mapped[str] = mapped_column(String(64), default="unknown")
+    attributes: Mapped[dict] = mapped_column(JSONType, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class IndoorNode(Base):
+    """Owner-authored indoor map node (a room or waypoint)."""
+
+    __tablename__ = "indoor_nodes"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    aliases: Mapped[list] = mapped_column(JSONType, default=list)
+    photo_ref: Mapped[str | None] = mapped_column(String(512))
+    x: Mapped[float | None] = mapped_column(Float)
+    y: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class IndoorEdge(Base):
+    """Directed walk between two indoor nodes."""
+
+    __tablename__ = "indoor_edges"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    from_node_id: Mapped[UUID] = mapped_column(ForeignKey("indoor_nodes.id"), index=True)
+    to_node_id: Mapped[UUID] = mapped_column(ForeignKey("indoor_nodes.id"), index=True)
+    instruction: Mapped[str] = mapped_column(Text, default="")
+    meters: Mapped[float | None] = mapped_column(Float)
+
+
+class LocationShare(Base):
+    """Opt-in live location share. Never created without that person's consent."""
+
+    __tablename__ = "location_shares"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    person_id: Mapped[UUID | None] = mapped_column(ForeignKey("entities.id"), index=True)
+    person_name: Mapped[str] = mapped_column(String(256), index=True)
+    token_expires: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_lat: Mapped[float | None] = mapped_column(Float)
+    last_lon: Mapped[float | None] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String(32), default="consent")
+    owner_family_device: Mapped[bool] = mapped_column(Boolean, default=False)
+    consented_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Beacon(Base):
+    """Owner-registered finder tag for *their* gear — never a person hunt."""
+
+    __tablename__ = "beacons"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    label: Mapped[str] = mapped_column(String(128), index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="ev_device", index=True)
+    last_lat: Mapped[float | None] = mapped_column(Float)
+    last_lon: Mapped[float | None] = mapped_column(Float)
+    owner_only: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    details: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TelemetrySession(Base):
+    """Owner-started vehicle/drone test window."""
+
+    __tablename__ = "telemetry_sessions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    label: Mapped[str] = mapped_column(String(128), default="test")
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TelemetrySample(Base):
+    """One owner-posted telemetry pulse (drone, vehicle, or phone stand-in)."""
+
+    __tablename__ = "telemetry_samples"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    session_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("telemetry_sessions.id"), index=True
+    )
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    battery: Mapped[float | None] = mapped_column(Float)
+    alt: Mapped[float | None] = mapped_column(Float)
+    speed: Mapped[float | None] = mapped_column(Float)
+    lat: Mapped[float | None] = mapped_column(Float)
+    lon: Mapped[float | None] = mapped_column(Float)
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    details: Mapped[dict] = mapped_column(JSONType, default=dict)
+
+
+class MailDraft(Base):
+    """Draft-not-send mail. Helper send requires owner confirm."""
+
+    __tablename__ = "mail_drafts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    mail_id: Mapped[str] = mapped_column(String(128), index=True)
+    to_addr: Mapped[str | None] = mapped_column(String(256))
+    subject: Mapped[str | None] = mapped_column(String(512))
+    body: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
+    confirm: Mapped[bool] = mapped_column(Boolean, default=False)
+    sent: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class HardwareAudit(Base):
+    """Every printer/drone/camera command is audited."""
+
+    __tablename__ = "hardware_audits"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    command: Mapped[str] = mapped_column(String(64), index=True)
+    args: Mapped[dict] = mapped_column(JSONType, default=dict)
+    result: Mapped[dict] = mapped_column(JSONType, default=dict)
+    actor: Mapped[str] = mapped_column(String(64), default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class PublicFeed(Base):
+    """Owner-picked public RSS/NWS feed — not a private scanner."""
+
+    __tablename__ = "public_feeds"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    kind: Mapped[str] = mapped_column(String(32), default="rss", index=True)
+    url: Mapped[str] = mapped_column(String(1024))
+    label: Mapped[str] = mapped_column(String(256))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_items: Mapped[list] = mapped_column(JSONType, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class OwnerCamera(Base):
+    """Owner-added camera only. Never LAN-discovered."""
+
+    __tablename__ = "owner_cameras"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    name: Mapped[str] = mapped_column(String(128), index=True)
+    vault_ref: Mapped[str | None] = mapped_column(String(256))
+    kind: Mapped[str] = mapped_column(String(32), default="upload")
+    clip_attachment_id: Mapped[UUID | None] = mapped_column(ForeignKey("attachments.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class HudPush(Base):
+    """Last validated HUD payload pushed to lookout / Watch / widget."""
+
+    __tablename__ = "hud_pushes"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    schema_version: Mapped[str] = mapped_column(String(32), default="ev.hud.card.v1")
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("conversation_threads.id"), index=True
+    )
+    prefer_haptic: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(64), default="tool")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+# ============================================================================
+# EVIE OS G1 — CORE STATE (Projects / Goals / Steps / Commitments)
+# Canonical current-state projections. Durable history lives in `events`.
+# ============================================================================
+
+class Project(Base):
+    """A persistent area of coordinated work. Same schema for every project;
+    importance is expressed through priority, never through special cases."""
+
+    __tablename__ = "projects"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    actor: Mapped[str] = mapped_column(String(64), index=True, default="master")
+    title: Mapped[str] = mapped_column(String(256), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    # ACTIVE | PAUSED | COMPLETED | ARCHIVED
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    # CRITICAL | HIGH | NORMAL | LOW
+    priority: Mapped[str] = mapped_column(String(16), default="NORMAL", index=True)
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal")
+    source: Mapped[str] = mapped_column(String(32), default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # --- G2 EVIE EVERYWHERE (additive): optimistic-lock revision. Bumped on
+    # every canonical change; clients send expected_version to avoid lost
+    # conflicting writes. 0 for pre-G2 rows.
+    version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class Goal(Base):
+    """An outcome to accomplish. May belong to a Project or stand alone.
+    Operational truth for goal state — memory(type=goal) is recall only."""
+
+    __tablename__ = "goals"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    actor: Mapped[str] = mapped_column(String(64), index=True, default="master")
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    parent_goal_id: Mapped[UUID | None] = mapped_column(ForeignKey("goals.id"), index=True)
+    title: Mapped[str] = mapped_column(String(512), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    # PLANNED | ACTIVE | BLOCKED | PAUSED | COMPLETED | CANCELLED
+    state: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    priority: Mapped[str] = mapped_column(String(16), default="NORMAL", index=True)
+    success_criteria: Mapped[str] = mapped_column(Text, default="")
+    progress_note: Mapped[str] = mapped_column(Text, default="")
+    next_action: Mapped[str] = mapped_column(Text, default="")
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal")
+    source: Mapped[str] = mapped_column(String(32), default="owner")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # --- G2 EVIE EVERYWHERE (additive): optimistic-lock revision (see Project).
+    version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+
+class GoalStep(Base):
+    """A concrete subordinate work item. Product state — NOT an execution job
+    (ResearchSession/FleetTask/RoutineRun remain execution substrates)."""
+
+    __tablename__ = "goal_steps"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    goal_id: Mapped[UUID] = mapped_column(ForeignKey("goals.id"), index=True)
+    title: Mapped[str] = mapped_column(String(512))
+    # PENDING | DONE | SKIPPED
+    status: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class Commitment(Base):
+    """A promise/obligation. Explicit creation only in G1 — no silent
+    extraction from casual conversation."""
+
+    __tablename__ = "commitments"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    actor: Mapped[str] = mapped_column(String(64), index=True, default="master")
+    description: Mapped[str] = mapped_column(Text)
+    # OPEN | FULFILLED | CANCELLED | MISSED
+    status: Mapped[str] = mapped_column(String(16), default="OPEN", index=True)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    project_id: Mapped[UUID | None] = mapped_column(ForeignKey("projects.id"), index=True)
+    goal_id: Mapped[UUID | None] = mapped_column(ForeignKey("goals.id"), index=True)
+    entity_id: Mapped[UUID | None] = mapped_column(ForeignKey("entities.id"), index=True)
+    source_event_id: Mapped[UUID | None] = mapped_column(ForeignKey("events.id"))
+    privacy_level: Mapped[str] = mapped_column(String(32), default="normal")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class StateEpoch(Base):
+    """G2 P0: canonical history lineage identity (explicit, server-owned).
+
+    One row per lineage-replacing transition. The CURRENT epoch is the most
+    recent row. Stable across normal semantic activity, restarts, deploys,
+    and event pruning; changes ONLY on destructive restore / wipe / explicit
+    canonical-history replacement.
+    """
+
+    __tablename__ = "state_epoch"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    epoch_id: Mapped[UUID] = mapped_column(Uuid, unique=True, index=True, default=uuid4)
+    previous_epoch_id: Mapped[UUID | None] = mapped_column(Uuid)
+    reason: Mapped[str] = mapped_column(String(256))
+    environment: Mapped[str | None] = mapped_column(String(32))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )

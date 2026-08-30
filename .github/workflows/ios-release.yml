@@ -1,0 +1,105 @@
+# EVIE NATIVE — automated macOS CI → Ad Hoc signed IPA → private tailnet portal
+#
+# Triggers are DELIBERATE (B29): manual dispatch for canary; stable promotion
+# happens on the Home Station against an owner-approved artifact (B20/B22).
+# Tests run here; distribution never runs from untrusted PRs (B38/B39).
+#
+# REQUIRED REPOSITORY SECRETS (one-time owner setup, see docs/EVIE_MOBILE_RELEASE.md):
+#   APPLE_TEAM_ID                 Apple Developer Team ID
+#   DISTRIBUTION_CERT_P12         base64 of "Apple Distribution" .p12
+#   DISTRIBUTION_CERT_PASSWORD    .p12 export password
+#   ADHOC_PROFILE_BASE64          Ad Hoc provisioning profile (both UDIDs), base64
+#   EVIE_INSTALL_TOKEN            Home Station master key (publish endpoint)
+#   EV_API_URL                    https://<home-station>.ts.net
+#   UDID_PRIMARY / UDID_SECONDARY registered iPhone UDIDs
+
+name: evie-ios
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        type: choice
+        options: [canary]
+        default: canary
+
+concurrency:
+  group: evie-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage report — SOURCE
+        run: xcodebuild -version && swift --version && echo "commit=$(git rev-parse HEAD)"
+
+      - name: Import signing material into temporary keychain
+        env:
+          CERT_P12: ${{ secrets.DISTRIBUTION_CERT_P12 }}
+          CERT_PASS: ${{ secrets.DISTRIBUTION_CERT_PASSWORD }}
+          PROFILE_B64: ${{ secrets.ADHOC_PROFILE_BASE64 }}
+        run: |
+          echo "::group::keychain"
+          KC="$RUNNER_TEMP/evie.keychain-db"
+          security create-keychain -pw "" "$KC" || true
+          security default-keychain -s "$KC"
+          security unlock-keychain -pw "" "$KC"
+          security set-keychain-settings -t 3600 "$KC"
+          echo "$CERT_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" -P "$CERT_PASS" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple-signing: -s -k "" "$KC" >/dev/null
+          echo "$PROFILE_B64" | base64 --decode > "$RUNNER_TEMP/adhoc.mobileprovision"
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print UUID' /dev/stdin <<< "$(security cms -D -i "$RUNNER_TEMP/adhoc.mobileprovision")")
+          cp "$RUNNER_TEMP/adhoc.mobileprovision" ~/Library/MobileDevice/Provisioning\ Profiles/$UUID.mobileprovision
+          echo "profile UUID=$UUID"
+          echo "::endgroup::"
+
+      - name: Stage report — TEST
+        run: cd ios/EvieShell && swift run -c release EvieBrokerCheck
+
+      - name: Stage ARCHIVE + SIGNING/EXPORT + VERIFY + PACKAGE
+        env:
+          EXPORT_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          EXPORT_CERT_NAME: "Apple Distribution"
+          EV_API_URL: ${{ secrets.EV_API_URL }}
+          UDID_PRIMARY: ${{ secrets.UDID_PRIMARY }}
+          UDID_SECONDARY: ${{ secrets.UDID_SECONDARY }}
+          CHANNEL: canary
+        run: ./scripts/ios/build-evie-ipa.sh
+
+      - name: Stage report — artifact
+        run: |
+          cat build/ios-release/canary/release.json
+          shasum -a 256 build/ios-release/canary/Evie.ipa
+
+      - name: Publish to private tailnet portal
+        env:
+          INSTALL_TOKEN: ${{ secrets.EVIE_INSTALL_TOKEN }}
+        run: |
+          CODE=$(curl -s -o publish-result.json -w "%{http_code}" \
+            -X POST "${{ secrets.EV_API_URL }}/evie-install/admin/publish?channel=canary" \
+            -H "Authorization: Bearer $INSTALL_TOKEN" \
+            -F "release_json=@build/ios-release/canary/release.json" \
+            -F "ipa=@build/ios-release/canary/Evie.ipa")
+          cat publish-result.json
+          test "$CODE" = "200" || { echo "::error::publish failed HTTP $CODE"; exit 1; }
+
+      - name: Destroy temporary keychain material
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/evie.keychain-db" || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/adhoc.mobileprovision" || true
+
+      - name: Upload artifact for audit trail
+        uses: actions/upload-artifact@v4
+        with:
+          name: evie-canary-${{ github.sha }}
+          path: build/ios-release/canary/
+          retention-days: 14

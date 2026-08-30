@@ -18,6 +18,114 @@ OpenAI-compatible ASR/TTS are recommended when a valid key exists, and local
 Parakeet/Kokoro remain the no-network, no-cost default once weights are
 registered.
 
+The HTTP utterance path in this document is the **turn-based** door
+(`POST /v1/voice/utterance` / SSE). The continuous full-duplex runtime —
+turn-taking, thinking pauses, backchannels, native barge-in, and
+foreground conversation + background DeepSeek — lives in
+[`LIVE_VOICE.md`](LIVE_VOICE.md) and `WS /v1/voice/live`. Both share the
+same ASR/TTS contracts, wake session, and chat pipeline.
+
+The spoken brain for **typed chat and the HTTP utterance path** is still a
+chat-completions model: official DeepSeek (`deepseek-v4-flash`) or official
+xAI (`grok-4.6`) via `EV_CHAT_PROVIDER`.
+
+**Live talk is not that.** It is a speech-to-speech realtime model. When
+`EV_OPENAI_API_KEY` is set and `EV_VOICE_LIVE_BRAIN` is `auto` or `openai`,
+`WS /v1/voice/live` forwards 16 kHz PCM to OpenAI Realtime
+(`gpt-realtime-2.1-mini` at 24 kHz, resampled in the bridge) and plays
+audio back as `tts_chunk` events. If only `EV_XAI_API_KEY` is set, live
+uses Grok Voice Think Fast 2.0 instead. Typed chat can stay on DeepSeek —
+live does not send every question through chat-completions. Local
+ASR/TTS/turn-taking step aside for that channel. EV life tools still run
+here when the voice model asks. Until a realtime key is set, live keeps
+the DeepSeek pipeline.
+
+Thinking/CoT is off for DeepSeek (`EV_DEEPSEEK_THINKING=false`). OpenAI
+Realtime mini answers in audio; Grok Voice uses `reasoning.effort=none` so
+the first spoken audio is the answer.
+Actions the owner asked for still run in EV (`backend/app/ev/turn.py` on the
+pipeline path; function calls on the realtime path). `opencode-go` remains
+an optional fallback, not the voice default.
+
+## 0. Session state machine (Wave Life)
+
+The wake word is a **door for when EV.app is not already listening**, not a
+password for every sentence. Opening EV.app starts the full-duplex live
+channel immediately (`POST /v1/voice/live/open` + `WS /v1/voice/live`); you
+do not say EVIE. When the app is closed, one wake from `ev.ears` opens a
+verified session; the owner stays in conversation until a clear dismissal or
+long true idle.
+
+```text
+IDLE ──wake "EVIE"──▶ VERIFY (once) ──owner match──▶ AWAKE (ACTIVE)
+                                                       │
+                                          utterance ──▶ PROCESSING ──▶ RESPONDING
+                                                                       │
+                                                          reply ──────▶ FOLLOW_UP
+                                                                       │
+                          owner utterance resets timer ◀───────────────┘
+                                                       │
+      sleep phrase / explicit end / long idle ────────▶ ENDED (IDLE)
+```
+
+States:
+
+| State | Meaning |
+| --- | --- |
+| `idle` | Listening for the wake word only. |
+| `verifying` | Wake accepted; one-time owner verification is required. |
+| `awake` | Active conversation; no re-wake is needed. |
+| `processing` / `responding` | Utterance → chat/TTS pipeline is running. |
+| `follow_up` | Short hands-free window; every owner-verified utterance resets it. |
+| `ended` | Sleep phrase, explicit end, silence-lock, verify failure, or replay rejection. |
+
+### Follow-up window
+
+`EV_VOICE_FOLLOW_UP_SECONDS` (default `240`, recommended range 180–300) is the
+short REST hint shown as `follow_up_remaining_seconds` after a reply. It is
+**not** a session door: when the hint elapses the session stays listening
+(`awake` / `follow_up`) until a sleep phrase, an explicit end, or the long
+idle lock (`EV_VOICE_SESSION_TIMEOUT_SECONDS`, default `900`). Every accepted
+owner turn resets both the hint and the idle lock. The always-on ears path
+and a second Talk/PTT press reuse the open session — you do not say EVIE
+again. Ambient clips during that session are ignored; they do not close the
+door or extend the idle lock. If chat/TTS is already running (`processing` /
+`responding`), overlapping mic clips return `still listening` instead of
+HTTP 409. A session stuck in `processing` for more than 60 seconds is
+treated as crashed and recovered in place.
+
+### Sleep phrases
+
+These clear dismissals end the session without sending the phrase to chat:
+
+- `that's all`
+- `that's it`
+- `go to sleep`
+- `stop listening`
+- `stop EVIE`
+- `goodbye EVIE`
+- `never mind`
+
+The phrase list is configurable via `EV_VOICE_SLEEP_PHRASES` (JSON array).
+
+### Addressivity — who is talking
+
+During `awake` / `follow_up`, every **audio** utterance runs VAD (Silero ONNX
+when configured, energy double otherwise) and then owner speaker verification
+against the current enrollment. Speech that fails either check is ignored
+(`403 voice_ignored`); it is **never** sent to ASR or chat. Ambient TV and other
+people cannot steal the session. Explicit push-to-talk (`push_to_talk: true` in
+`POST /v1/voice/utterance`) bypasses both checks for button-held capture.
+Text-only requests remain the owner-authenticated dev/test surface.
+
+### One lifelong thread
+
+Every utterance resolves to the one default conversation thread
+(`EV_VOICE_CONTINUITY_CONVERSATION_ID`, default `CONTINUITY_LIVE`). Waking again
+does not create a new chat; the pipeline reuses the same default thread, so
+history, rollup, and working state persist across wakes (see
+`docs/CONTINUITY_LIVE.md`).
+
 ## 1. Engine matrix
 
 | Layer | Dev/test double (default config) | Real on-device engine | Opt-in real engines |
@@ -83,6 +191,13 @@ the sibling `<model>.vocab.json` tokenizer map; Kokoro needs the voices pack
 | `EV_VOICE_CHATTERBOX_VOICE` | `default` | speaker id | Cloned-voice reference |
 | `EV_ALLOW_REMOTE_ASR` | `false` | boolean | Must be true for `openai_compat` ASR |
 | `EV_ALLOW_REMOTE_TTS` | `false` | boolean | Must be true for `openai_compat` TTS |
+| `EV_VOICE_FOLLOW_UP_SECONDS` | `240` | int | REST follow-up hint (recommended 180–300); every owner utterance resets it. Not a session door. |
+| `EV_VOICE_SESSION_TIMEOUT_SECONDS` | `900` | int | Long-idle lock; must exceed the follow-up window |
+| `EV_VOICE_VERIFY_TIMEOUT_SECONDS` | `20` | int | One-time verification window after wake |
+| `EV_VOICE_CONTINUITY_CONVERSATION_ID` | `CONTINUITY_LIVE` | string | Canonical name of the one lifelong conversation thread |
+| `EV_VOICE_ADDRESSIVITY_ENABLED` | `true` | boolean | Per-utterance VAD + owner-verification gate |
+| `EV_VOICE_ADDRESSIVITY_VAD_THRESHOLD` | `0.5` | float | Minimum mean VAD probability before owner verification |
+| `EV_VOICE_SLEEP_PHRASES` | JSON list | JSON array | Dismissal phrases that end the session without chat |
 
 Both remote gates run through `compliance.policy.remote_processing_allowed`
 (tracks `voice_asr` and `voice_tts`), so `policy_summary()` and the regional
@@ -302,7 +417,13 @@ uv run mypy app clients
   a fake pipeline, remote TTS gate (factory + class), hosted network failure
   degradation, no fabricated durations.
 - `test_voice_lifecycle.py` — full lifecycle, barge-in, degraded-ASR 503,
-  SSE streaming, API-first ASR+TTS round trip with persisted playable audio.
+  SSE streaming, API-first ASR+TTS round trip with persisted playable audio,
+  follow-up timer reset, no re-wake inside ACTIVE/FOLLOW_UP, sleep phrases,
+  non-owner/silence addressivity rejection, push-to-talk bypass, and the
+  configurable follow-up timeout.
+- `test_voice_live.py` — EV LIVE turn-taking (thinking vs complete vs
+  trailing pauses), barge-in cancel, backchannels, behavior envelopes,
+  deep-work routing, sleep-phrase close, and `WS /v1/voice/live` registration.
 
 ## 12. Still needs a human
 

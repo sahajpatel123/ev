@@ -5,6 +5,11 @@ voices) as the default real engine, with Chatterbox-Nano as an opt-in
 expressive/cloned-voice tier. The dev ``meta`` provider renders prosody
 metadata for offline tests; real engines degrade (``degraded=True``) when
 weights or runtimes are missing rather than emitting fake audio.
+
+``edge_tts`` is the remote neural tier (free, no key): its natural voices are
+the closest publicly available match to the movie E.V. profile (warm British
+female, Naomi Watts). Voice consistency is enforced: the engine never falls
+back to a different voice — on remote failure the reply is text-only.
 """
 
 from __future__ import annotations
@@ -34,20 +39,45 @@ from app.voice.contracts import (
 )
 
 
+def spoken_fallback_voice() -> str:
+    """Configured macOS `say` voice (kept for diagnostics/tests).
+
+    The ears playback path no longer falls back to `say` on purpose — a
+    different voice is the "two voices" bug — so this value is only used by
+    tooling and tests.
+    """
+
+    return settings.voice_tts_say_voice
+
+
 def speech_style_from_strategy(strategy: InteractionStrategy) -> SpeechStyle:
     """Map the intelligence-filter strategy to TTS controls.
 
-    Urgency raises rate and lowers warmth padding; warmth softens delivery;
-    brevity compresses length target into short prosody.
+    Owner emotion changes warmth / urgency / brevity versus a same-task
+    neutral turn. Emergency mode still clips; it does not erase affect.
     """
 
-    urgency = strategy.urgency
-    warmth = 0.9 if strategy.emotional_state in ("excited", "sad") else 0.6
-    brevity = 0.9 if strategy.mode in ("emergency", "casual") else 0.3
+    from app.ev.interaction import EMOTION_SPEECH
+
+    spec = EMOTION_SPEECH.get(strategy.emotional_state or "", EMOTION_SPEECH["neutral"])
+    urgency = float(strategy.urgency) + float(spec.get("urgency_boost", 0.0))
+    if "urgency_cap" in spec:
+        urgency = min(urgency, float(spec["urgency_cap"]))
+    warmth = float(spec["warmth"])
+    brevity = float(spec["brevity"])
+    if strategy.mode == "emergency":
+        brevity = max(brevity, 0.85)
+        urgency = max(urgency, 0.75)
+    elif strategy.mode in {"technical", "analytical"} and strategy.emotional_state in {
+        None,
+        "",
+        "neutral",
+    }:
+        brevity = min(brevity, 0.35)
     return SpeechStyle(
-        urgency=round(urgency, 3),
-        warmth=round(warmth, 3),
-        brevity=round(brevity, 3),
+        urgency=round(min(1.0, max(0.0, urgency)), 3),
+        warmth=round(min(1.0, max(0.0, warmth)), 3),
+        brevity=round(min(1.0, max(0.0, brevity)), 3),
         mode=strategy.mode,
         length_target=strategy.length_target,
         directness=strategy.directness,
@@ -112,8 +142,14 @@ class MetaSynthesizer:
 
     name = "meta"
 
+    def __init__(self, voice: str | None = None, rate: float | None = None) -> None:
+        self.voice = voice or settings.voice_tts_voice
+        self.rate = rate if rate is not None else float(settings.voice_tts_rate or 1.0)
+
     async def synthesize(self, text: str, *, style: SpeechStyle) -> SynthesisResult:
-        rate = 1.0 + 0.25 * style.urgency - 0.15 * style.warmth
+        self.voice = settings.voice_tts_voice or self.voice
+        self.rate = float(settings.voice_tts_rate or self.rate or 1.0)
+        rate = (1.0 + 0.25 * style.urgency - 0.15 * style.warmth) * float(self.rate)
         pitch = 1.0 + 0.08 * style.warmth
         volume = 0.8 + 0.2 * style.urgency
         ssml = (
@@ -127,7 +163,7 @@ class MetaSynthesizer:
             ssml=ssml,
             duration_ms=None,
             style=style,
-            details={"engine": "dev-double"},
+            details={"engine": "dev-double", "voice": self.voice, "rate": self.rate},
         )
 
 
@@ -161,6 +197,8 @@ class OpenAICompatSynthesizer:
         self.model = model
         self.voice = voice
         self.fmt = fmt
+        # Only WAV output can be concatenated for per-sentence streaming.
+        self.streamable_output = self.fmt == "wav"
         self._client = client
 
     async def synthesize(self, text: str, *, style: SpeechStyle) -> SynthesisResult:
@@ -361,6 +399,8 @@ class PiperSynthesizer:
 # Kokoro-82M INT8 ONNX — default real TTS engine
 # --------------------------------------------------------------------------- #
 
+_KOKORO_PIPELINES: dict[tuple[str | None, str | None], object] = {}
+
 
 class KokoroSynthesizer:
     """Kokoro-82M INT8 ONNX TTS (Apache-2.0, 54 voices) via the ``kokoro`` package.
@@ -397,6 +437,11 @@ class KokoroSynthesizer:
         if self._pipeline_factory is not None:
             self._pipeline = self._pipeline_factory(self.model_path, self.voices_path)
             return self._pipeline
+        key = (self.model_path, self.voices_path)
+        cached = _KOKORO_PIPELINES.get(key)
+        if cached is not None:
+            self._pipeline = cached
+            return cached
         if not self.model_path or not os.path.isfile(self.model_path):
             raise ModelUnavailableError(
                 f"Kokoro ONNX weights not found at {self.model_path!r}; "
@@ -404,20 +449,39 @@ class KokoroSynthesizer:
                 f"{self.model_name}` (Agent 2 dependency)"
             )
         try:
+            from kokoro_onnx import Kokoro
+        except ImportError:
+            Kokoro = None  # type: ignore[misc, assignment]
+        if Kokoro is not None:
+            voices = self.voices_path
+            if not voices or not os.path.isfile(voices):
+                raise ModelUnavailableError(
+                    f"Kokoro voices not found at {voices!r}; "
+                    "run `uv run python -m app.ml.cli pull tts-kokoro-voices-v1.0`"
+                )
+            with acquire_model(self.registry_name):
+                self._pipeline = Kokoro(self.model_path, voices)
+            _KOKORO_PIPELINES[key] = self._pipeline
+            return self._pipeline
+        try:
             from kokoro import KPipeline
         except ImportError as exc:
             raise ModelUnavailableError(
-                "the kokoro package is not installed; install it via Agent 2 "
-                "dependency request"
+                "kokoro-onnx is not installed; install the ml extra "
+                "(pip package: kokoro-onnx)"
             ) from exc
         kwargs = {"lang_code": "a", "model": self.model_path}
         if self.voices_path and os.path.isfile(self.voices_path):
             kwargs["voices"] = self.voices_path
         with acquire_model(self.registry_name):
             self._pipeline = KPipeline(**kwargs)
+        _KOKORO_PIPELINES[key] = self._pipeline
         return self._pipeline
 
     def _generate_sync(self, pipeline, text: str, speed: float):
+        if hasattr(pipeline, "create"):
+            samples, _rate = pipeline.create(text, voice=self.voice, speed=speed)
+            return [("", "", samples)]
         return list(pipeline(text, voice=self.voice, speed=speed))
 
     async def synthesize(self, text: str, *, style: SpeechStyle) -> SynthesisResult:
@@ -459,6 +523,109 @@ class KokoroSynthesizer:
             duration_ms=_wav_duration_ms(audio),
             style=style,
             details={"engine": self.name, "voice": self.voice, "speed": speed},
+        )
+
+
+class EdgeTTSSynthesizer:
+    """Microsoft Edge neural TTS (free, no key, remote).
+
+    The closest publicly available match to the movie E.V. profile (warm
+    British female, Naomi Watts). Edge returns MP3; the ears client plays it
+    via afplay (content-sniffed).
+
+    Voice consistency is the contract here: a denied remote gate, missing
+    package, or any network failure degrades (``degraded=True``) — the caller
+    must NOT switch to a different engine, because that is exactly what makes
+    an assistant "sound like two people". Transient failures are retried with a
+    hard per-attempt timeout so a stalled connection fails fast instead of
+    hanging the whole voice turn.
+    """
+
+    name = "edge_tts"
+    streamable_output = False  # MP3 output cannot be concatenated as WAV
+
+    def __init__(
+        self,
+        *,
+        voice: str | None = None,
+        communicate_factory=None,
+        retries: int | None = None,
+        timeout: float | None = None,
+    ) -> None:
+        self.voice = voice or settings.voice_tts_edge_voice
+        self._communicate_factory = communicate_factory
+        self.retries = retries if retries is not None else settings.voice_tts_retries
+        self.timeout = timeout if timeout is not None else settings.voice_tts_timeout_seconds
+
+    def _rate_from_style(self, style: SpeechStyle) -> str:
+        # Warmth slows delivery; urgency speeds it. Edge rate is a signed %.
+        speed = _speed_from_style(style)
+        return f"{int(round((speed - 1.0) * 100)):+d}%"
+
+    def _communicate(self, text: str, rate: str):
+        if self._communicate_factory is not None:
+            return self._communicate_factory(text, self.voice, rate=rate)
+        import edge_tts
+
+        return edge_tts.Communicate(text, self.voice, rate=rate)
+
+    async def _synthesize_once(self, text: str, rate: str) -> bytes:
+        communicate = self._communicate(text, rate)
+        data = bytearray()
+
+        async def _stream() -> None:
+            async for chunk in communicate.stream():
+                if chunk.get("type") == "audio" and chunk.get("data"):
+                    data.extend(chunk["data"])
+
+        await asyncio.wait_for(_stream(), timeout=self.timeout)
+        return bytes(data)
+
+    async def synthesize(self, text: str, *, style: SpeechStyle) -> SynthesisResult:
+        if not remote_processing_allowed("voice_tts"):
+            return SynthesisResult(
+                text=text,
+                provider=self.name,
+                style=style,
+                degraded=True,
+                details={"reason": "remote_processing_denied", "voice": self.voice},
+            )
+        rate = self._rate_from_style(style)
+        last_reason = "unknown"
+        for _attempt in range(max(0, self.retries) + 1):
+            try:
+                data = await self._synthesize_once(text, rate)
+            except ImportError:
+                return SynthesisResult(
+                    text=text,
+                    provider=self.name,
+                    style=style,
+                    degraded=True,
+                    details={"reason": "edge-tts-not-installed", "voice": self.voice},
+                )
+            except TimeoutError:
+                last_reason = "tts_timeout"
+                continue
+            except Exception as exc:  # noqa: BLE001 - degrade on any remote failure
+                last_reason = f"{type(exc).__name__}: {exc}"
+                continue
+            if not data:
+                last_reason = "empty synthesis output"
+                continue
+            return SynthesisResult(
+                text=text,
+                provider=self.name,
+                audio=data,
+                content_type="audio/mpeg",
+                style=style,
+                details={"engine": self.name, "voice": self.voice, "rate": rate},
+            )
+        return SynthesisResult(
+            text=text,
+            provider=self.name,
+            style=style,
+            degraded=True,
+            details={"reason": last_reason, "voice": self.voice},
         )
 
 
@@ -567,7 +734,12 @@ def _resolve_tts_voices_path(model_name: str) -> str | None:
     candidates = []
     if settings.voice_tts_model_dir:
         candidates.append(Path(settings.voice_tts_model_dir) / f"{model_name}.voices.bin")
+        candidates.append(Path(settings.voice_tts_model_dir) / "tts-kokoro.voices.bin")
     candidates.append(Path.home() / ".ev" / "models" / f"tts-{model_name}.voices.bin")
+    # Engine-neutral shared voices (kokoro-onnx voices-v1.0.bin) and the
+    # legacy int8-pinned name, so every precision (int8/fp16/fp32) resolves.
+    candidates.append(Path.home() / ".ev" / "models" / "tts-kokoro.voices.bin")
+    candidates.append(Path.home() / ".ev" / "models" / "tts-kokoro-82m-int8.voices.bin")
     for candidate in candidates:
         if candidate.is_file():
             return str(candidate)
@@ -631,7 +803,9 @@ def get_synthesizer() -> Synthesizer:
         return MetaSynthesizer()
     if provider == "openai_compat":
         if not settings.voice_tts_base_url:
-            raise RuntimeError("EV_VOICE_TTS_BASE_URL is required for openai_compat TTS")
+            # Misconfigured remote TTS must not 500 Talk/wake. Text + local
+            # say() still work; the Mac client already has a spoken fallback.
+            return MetaSynthesizer()
         if not remote_processing_allowed("voice_tts"):
             raise RuntimeError(
                 "Remote TTS is denied by regional policy; set EV_ALLOW_REMOTE_TTS=true"
@@ -649,6 +823,11 @@ def get_synthesizer() -> Synthesizer:
         return PiperSynthesizer()
     if provider == "kokoro":
         return KokoroSynthesizer()
+    if provider == "edge_tts":
+        # Single voice only: no cross-engine fallback (that is what makes an
+        # assistant "sound like two people"). Transient failures are retried
+        # inside the engine; a hard failure degrades to a text-only reply.
+        return EdgeTTSSynthesizer(voice=settings.voice_tts_edge_voice)
     if provider == "chatterbox":
         return ChatterboxSynthesizer()
     if provider == "meta":

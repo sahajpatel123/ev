@@ -108,6 +108,21 @@ class ToolSpec:
     permission: str = "memory:read"
     undoable: bool = False
     output: dict = field(default_factory=dict)
+    # Permissioned Operating Layer metadata is carried with the existing
+    # gateway contract; it is projected from TOOL_SPECS/ACTION_SPECS rather
+    # than maintained as a second registry.
+    version: str = "1"
+    required_scopes: list[str] = field(default_factory=list)
+    risk_class: str = "R0"
+    confirmation: str = "none"
+    target_ownership: str = "owner"
+    provider: str = "local"
+    fallback: str | None = None
+    evidence: list[str] = field(default_factory=list)
+    idempotency: str = "natural"
+    timeout_seconds: int = 10
+    cancellation: str = "not_applicable"
+    audit_event: str | None = None
 
 
 @dataclass

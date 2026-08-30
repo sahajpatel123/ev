@@ -41,6 +41,14 @@ def _stream_text_chunks(text: str, *, size: int = 24, model: str | None) -> list
     ] or [ChatStreamChunk(text="", model=model)]
 
 
+def _offline_reply(user_text: str, *, kind: str) -> str:
+    """Deterministic offline reply used only when the gateway is echo/mock."""
+
+    if kind == "echo":
+        return f"EV: I heard you. (echo provider — '{user_text[:120]}')"
+    return f"EV: Mock reply. Last user message: {user_text[:100]}"
+
+
 class EchoProvider(StreamingChatProvider):
     """Offline echo provider for zero-config local runs."""
 
@@ -59,7 +67,7 @@ class EchoProvider(StreamingChatProvider):
     ) -> ChatResult:
         user_text = next((m.content for m in reversed(messages) if m.role == "user"), "")
         return ChatResult(
-            text=f"EV: I heard you. (echo provider — '{user_text[:120]}')",
+            text=_offline_reply(user_text, kind="echo"),
             usage={"prompt_tokens": sum(len(m.content) // 4 for m in messages), "completion_tokens": 8},
             model=model or self.model,
         )
@@ -82,7 +90,7 @@ class EchoProvider(StreamingChatProvider):
         temperature: float = 0.7,
     ) -> AsyncIterator[ChatStreamChunk]:
         user_text = next((m.content for m in reversed(messages) if m.role == "user"), "")
-        text = f"EV: I heard you. (echo provider — '{user_text[:120]}')"
+        text = _offline_reply(user_text, kind="echo")
         for chunk in _stream_text_chunks(text, model=model or self.model):
             yield chunk
         yield ChatStreamChunk(
@@ -116,7 +124,7 @@ class MockProvider(StreamingChatProvider):
     ) -> ChatResult:
         user_text = next((m.content for m in reversed(messages) if m.role == "user"), "")
         return ChatResult(
-            text=f"EV: Mock reply. Last user message: {user_text[:100]}",
+            text=_offline_reply(user_text, kind="mock"),
             usage={"prompt_tokens": 10, "completion_tokens": 5},
             model=model or self.model,
         )
@@ -139,7 +147,7 @@ class MockProvider(StreamingChatProvider):
         temperature: float = 0.7,
     ) -> AsyncIterator[ChatStreamChunk]:
         user_text = next((m.content for m in reversed(messages) if m.role == "user"), "")
-        text = f"EV: Mock reply. Last user message: {user_text[:100]}"
+        text = _offline_reply(user_text, kind="mock")
         for chunk in _stream_text_chunks(text, model=model or self.model):
             yield chunk
         yield ChatStreamChunk(
@@ -152,11 +160,12 @@ class MockProvider(StreamingChatProvider):
         return [self.model]
 
 
-class DeepSeekProvider(StreamingChatProvider):
-    """DeepSeek via the OpenAI-compatible chat completions API."""
+class OpenAICompatibleProvider(StreamingChatProvider):
+    """Provider-neutral OpenAI-compatible chat completions (shared protocol)."""
 
-    name = "deepseek"
+    name = "openai-compatible"
     supports_media = True
+    supports_tools = True
 
     def __init__(
         self,
@@ -164,15 +173,37 @@ class DeepSeekProvider(StreamingChatProvider):
         base_url: str,
         api_key: str | None,
         default_model: str,
+        provider_name: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.default_model = default_model
+        if provider_name:
+            self.name = provider_name
 
     def _headers(self) -> dict:
         if not self.api_key:
             return {}
         return {"Authorization": f"Bearer {self.api_key}"}
+
+    def _thinking_payload(self) -> dict | None:
+        return None
+
+
+class DeepSeekProvider(OpenAICompatibleProvider):
+    """DeepSeek via the OpenAI-compatible chat completions API."""
+
+    name = "deepseek"
+    supports_media = True
+    supports_tools = True
+
+    def _thinking_payload(self) -> dict | None:
+        """Official V4 thinking toggle. Voice stays non-thinking for latency.
+
+        Local OpenAI-compatible servers (Ollama) must not receive this field.
+        """
+
+        return {"type": "enabled" if settings.deepseek_thinking else "disabled"}
 
     def _message_payload(self, message: ChatMessage) -> dict:
         """Render one message, using OpenAI-style content parts for media."""
@@ -222,6 +253,9 @@ class DeepSeekProvider(StreamingChatProvider):
             "messages": [self._message_payload(m) for m in messages],
             "temperature": temperature,
         }
+        thinking = self._thinking_payload()
+        if thinking is not None:
+            payload["thinking"] = thinking
         if tools:
             payload["tools"] = [
                 {
@@ -269,6 +303,8 @@ class DeepSeekProvider(StreamingChatProvider):
             except json.JSONDecodeError:
                 args = {"raw": fn.get("arguments")}
             tool_calls.append(ToolCall(id=call.get("id", ""), name=fn["name"], arguments=args))
+        # Spoken/text replies use ``content`` only. Chain-of-thought lives in
+        # ``reasoning_content`` and must never be read aloud.
         return ChatResult(
             text=choice.get("content") or "",
             tool_calls=tool_calls,
@@ -323,6 +359,9 @@ class DeepSeekProvider(StreamingChatProvider):
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        thinking = self._thinking_payload()
+        if thinking is not None:
+            payload["thinking"] = thinking
         tool_buffers: dict[int, dict[str, str]] = {}
         final_usage: dict = {}
         finish_reason: str | None = None
@@ -367,6 +406,7 @@ class DeepSeekProvider(StreamingChatProvider):
                             choice = (event.get("choices") or [{}])[0]
                             delta = choice.get("delta") or {}
                             chunk_model = event.get("model") or resolved_model
+                            # Never stream chain-of-thought; TTS would speak it.
                             text = delta.get("content")
                             if text:
                                 yield ChatStreamChunk(text=text, model=chunk_model)
@@ -467,6 +507,30 @@ class LocalModelProvider(DeepSeekProvider):
         )
 
 
+class OpenAIProvider(DeepSeekProvider):
+    """OpenAI chat completions (GPT-5.6 Luna) via https://api.openai.com/v1."""
+
+    name = "openai"
+    supports_media = True
+    supports_tools = True
+
+    def _thinking_payload(self) -> dict | None:
+        return None
+
+
+class XAIProvider(DeepSeekProvider):
+    """Official xAI chat completions (Grok 4.6). OpenAI-compatible.
+
+    Grok Voice Think Fast 2.0 is *not* this provider — that model is
+    speech-to-speech on ``wss://api.x.ai/v1/realtime``. Typed chat, HUD, and
+    the tool loop use Grok 4.6 here.
+    """
+
+    name = "xai"
+    supports_media = True
+    supports_tools = True
+
+
 def _deepseek_factory() -> DeepSeekProvider:
     return DeepSeekProvider(
         base_url=settings.deepseek_base_url,
@@ -475,8 +539,25 @@ def _deepseek_factory() -> DeepSeekProvider:
     )
 
 
+def _xai_factory() -> XAIProvider:
+    return XAIProvider(
+        base_url=settings.xai_base_url,
+        api_key=settings.xai_api_key,
+        default_model=settings.xai_model,
+    )
+
+
 def _local_factory() -> LocalModelProvider:
     return LocalModelProvider()
+
+
+def _openai_factory() -> OpenAIProvider:
+    return OpenAIProvider(
+        base_url=(getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/"),
+        api_key=settings.openai_api_key,
+        default_model=(getattr(settings, "turn_control_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-4o-mini").strip() or "gpt-4o-mini",
+        provider_name="openai",
+    )
 
 
 # Provider registry: model swap is a configuration change (EV_CHAT_PROVIDER).
@@ -484,7 +565,9 @@ PROVIDER_REGISTRY: dict[str, Callable[[], ChatProvider]] = {
     "echo": EchoProvider,
     "mock": MockProvider,
     "deepseek": _deepseek_factory,
+    "xai": _xai_factory,
     "local": _local_factory,
+    "openai": _openai_factory,
 }
 
 

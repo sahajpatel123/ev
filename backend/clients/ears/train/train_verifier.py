@@ -20,10 +20,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--negative-dir", required=True, help="human non-wake speech + ambient")
     parser.add_argument(
         "--model-name",
-        default="evie.onnx",
+        default="wake-openwakeword.onnx",
         help="base model path/name the verifier filters (must match the trained head)",
     )
-    parser.add_argument("--output", default="data/wake/verifier/evie_verifier.pkl")
+    parser.add_argument("--output", default="~/.ev/models/wake-openwakeword-verifier.pkl")
     args = parser.parse_args(argv)
     try:
         import openwakeword
@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
             f"need at least 3 positive wake clips, found {len(positive)}. "
             "Record 30 'EVIE' clips (10 at 3 m) first."
         )
-    output = Path(args.output)
+    output = Path(args.output).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     openwakeword.train_custom_verifier(
         positive_reference_clips=positive,
