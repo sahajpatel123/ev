@@ -1284,6 +1284,8 @@ async def execute_action_after_policy(
     missing keyword error; adapter/runtime TypeErrors are never swallowed.
     """
 
+    # Keep actor= as a keyword so historical 4-arg test doubles / adapters
+    # that declare ``*, actor`` still match (positional actor breaks them).
     try:
         if device_id is not None:
             return await execute_action(
@@ -1291,7 +1293,7 @@ async def execute_action_after_policy(
                 integration_id,
                 action,
                 args,
-                actor,
+                actor=actor,
                 device_id=device_id,
                 policy_checked=True,
             )
@@ -1300,7 +1302,7 @@ async def execute_action_after_policy(
             integration_id,
             action,
             args,
-            actor,
+            actor=actor,
             policy_checked=True,
         )
     except TypeError as exc:
@@ -1312,10 +1314,16 @@ async def execute_action_after_policy(
                 integration_id,
                 action,
                 args,
-                actor,
+                actor=actor,
                 device_id=device_id,
             )
-        return await execute_action(session, integration_id, action, args, actor)
+        return await execute_action(
+            session,
+            integration_id,
+            action,
+            args,
+            actor=actor,
+        )
 
 
 async def _queue_device_action(
