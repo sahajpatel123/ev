@@ -1004,7 +1004,7 @@ async def rotate_vault(
 def _integration_policy_spec(adapter_slug: str, action: str, adapter_spec) -> tuple[str, dict]:
     """Map an adapter action onto a policy-shaped capability contract."""
 
-    from app.ev.policy import confirmation_policy_for
+    from app.ev.policy import RiskClass, confirmation_policy_for
 
     adapter_name = str(adapter_slug or "integration")
     action_name = str(action or "")
@@ -1039,7 +1039,7 @@ def _integration_policy_spec(adapter_slug: str, action: str, adapter_spec) -> tu
         or scope.endswith(":write")
         or any(token in lowered for token in ("send", "create", "set", "write", "call"))
     )
-    risk = "R3" if high_risk else "R2" if acting else "R0"
+    risk: RiskClass = "R3" if high_risk else "R2" if acting else "R0"
     policy_spec = {
         "name": capability_name,
         "description": str(adapter_spec.description or action_name),
@@ -1284,24 +1284,38 @@ async def execute_action_after_policy(
     missing keyword error; adapter/runtime TypeErrors are never swallowed.
     """
 
-    kwargs = {"actor": actor, "policy_checked": True}
-    if device_id is not None:
-        kwargs["device_id"] = device_id
     try:
-        return await execute_action(session, integration_id, action, args, **kwargs)
-    except TypeError as exc:
-        if "unexpected keyword argument 'policy_checked'" not in str(exc):
-            raise
-        fallback_kwargs = {"actor": actor}
         if device_id is not None:
-            fallback_kwargs["device_id"] = device_id
+            return await execute_action(
+                session,
+                integration_id,
+                action,
+                args,
+                actor,
+                device_id=device_id,
+                policy_checked=True,
+            )
         return await execute_action(
             session,
             integration_id,
             action,
             args,
-            **fallback_kwargs,
+            actor,
+            policy_checked=True,
         )
+    except TypeError as exc:
+        if "unexpected keyword argument 'policy_checked'" not in str(exc):
+            raise
+        if device_id is not None:
+            return await execute_action(
+                session,
+                integration_id,
+                action,
+                args,
+                actor,
+                device_id=device_id,
+            )
+        return await execute_action(session, integration_id, action, args, actor)
 
 
 async def _queue_device_action(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from sqlalchemy import select
@@ -45,7 +45,7 @@ DEFAULT_HOUSE: tuple[dict[str, Any], ...] = (
 )
 
 _ON = {"on", "open", "unlocked", "true", "1"}
-_DOMAIN_ACTIONS = {
+_DOMAIN_ACTIONS: dict[str, dict[str, tuple[str, ...]]] = {
     "light": {
         "on": ("on", "turn_on"),
         "off": ("off", "turn_off"),
@@ -252,7 +252,7 @@ async def home_status(session: AsyncSession, area: str | None = None) -> dict:
         spoken = prefix + (" Last known: " + "; ".join(bits) + "." if bits else "")
     else:
         spoken = "; ".join(bits) + "." if bits else f"{len(rows)} home entities."
-    result = {
+    result: dict[str, Any] = {
         "ok": True,
         "simulated": simulated,
         "stale": stale,
@@ -419,7 +419,7 @@ async def home_act(
         }
     canonical = normalize_action(row.domain, action)
     if canonical is None:
-        valid = ", ".join(_DOMAIN_ACTIONS.get(row.domain, {}))
+        valid = ", ".join(_DOMAIN_ACTIONS.get(row.domain, {}).keys())
         return {
             "ok": False,
             "error": "unknown_action",
@@ -759,7 +759,8 @@ async def sync_from_ha(
         domain = entity_id.split(".", 1)[0]
         if domain not in _DOMAIN_ACTIONS:
             continue
-        attrs = item.get("attributes") if isinstance(item.get("attributes"), dict) else {}
+        raw_attrs = item.get("attributes")
+        attrs = raw_attrs if isinstance(raw_attrs, dict) else {}
         name = str(attrs.get("friendly_name") or entity_id)
         area = attrs.get("area") or attrs.get("area_id")
         row = (
@@ -779,7 +780,7 @@ async def sync_from_ha(
         else:
             row.name = name
             row.state = str(item.get("state") or row.state)
-            row.attributes = attrs
+            row.attributes = dict(attrs)
             row.updated_at = utcnow()
         count += 1
     await session.flush()

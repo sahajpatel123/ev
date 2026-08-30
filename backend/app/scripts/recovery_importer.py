@@ -31,7 +31,11 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import urlparse
+
+from sqlalchemy import Table
+from sqlalchemy.engine import CursorResult
 
 BACKUP_DEFAULT = str(
     Path.home() / ".ev/backups/ev-backup-20260824T210005.evbackup"
@@ -213,7 +217,6 @@ async def cmd_mount(args: argparse.Namespace) -> None:
                 # Pass 2: restore intra-memory supersedes links now that all
                 # memory rows exist.
                 rows = payload.get("memories") or []
-                tbl = Base.metadata.tables["memories"]
                 fixes = [
                     {"id": r["id"], "supersedes_id": r.get("supersedes_id")}
                     for r in rows
@@ -227,7 +230,8 @@ async def cmd_mount(args: argparse.Namespace) -> None:
                             _upd("UPDATE memories SET supersedes_id=:sid WHERE id=:id"),
                             {"sid": f["supersedes_id"], "id": f["id"]},
                         )
-                        n += res.rowcount or 0
+                        cursor = cast(CursorResult[Any], res)
+                        n += int(cursor.rowcount or 0)
                     await s.commit()
                     inserted["memories_supersedes_fixups"] = n
                 continue
@@ -235,9 +239,10 @@ async def cmd_mount(args: argparse.Namespace) -> None:
             rows = payload.get(table_name)
             if not isinstance(rows, list) or not rows:
                 continue
-            tbl = Base.metadata.tables.get(table_name)
-            if tbl is None:
+            table = Base.metadata.tables.get(table_name)
+            if table is None:
                 continue
+            tbl = table
             vector_cols_by_table.get(table_name, set())
 
             if table_name == "memories":
@@ -344,24 +349,21 @@ async def cmd_diff(args: argparse.Namespace) -> None:
     async with SessionLocal() as s:
         for model in (Project, Goal, Commitment, Memory, Device):
             rows = (await s.execute(select(model))).scalars().all()
-            prod_rows[model.__tablename__] = [str(r.id) for r in rows]
+            prod_rows[model.__tablename__] = [str(getattr(r, "id")) for r in rows]
             if model is Project:
-                {str(r.id): r.title for r in rows}
+                {str(getattr(r, "id")): getattr(r, "title") for r in rows}
 
     drill_eng = await _engine(drill_url)
-    from sqlalchemy.orm import sessionmaker
-
-    Maker = sessionmaker(drill_eng, class_=type(SessionLocal().sync_session))
-    del Maker
     from sqlalchemy.ext.asyncio import AsyncSession as AS
+    from sqlalchemy.ext.asyncio import async_sessionmaker
 
-    maker = sessionmaker(bind=drill_eng, class_=AS, expire_on_commit=False)
+    maker = async_sessionmaker(bind=drill_eng, class_=AS, expire_on_commit=False)
     pre_rows: dict[str, dict[str, dict]] = {}
     async with maker() as s:
         for model in (Project, Goal, Commitment, Memory, Device):
             rows = (await s.execute(select(model))).scalars().all()
             pre_rows[model.__tablename__] = {
-                str(r.id): {
+                str(getattr(r, "id")): {
                     "title": getattr(r, "title", None) or getattr(r, "description", None)
                     or getattr(r, "name", None),
                     "status": getattr(r, "status", None) or getattr(r, "state", None),
@@ -445,6 +447,7 @@ async def cmd_apply(args: argparse.Namespace) -> None:
     from app.db import SessionLocal
 
     passphrase = args.passphrase or os.environ.get("EV_BACKUP_PASSPHRASE")
+    assert passphrase, "passphrase required"
     from app.services.backup import load_backup
 
     payload = load_backup(args.backup, passphrase)

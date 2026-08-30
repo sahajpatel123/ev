@@ -1051,8 +1051,11 @@ def stamp_computer_receipt(
             state.non_progress_streak += 1
         fallbacks = list(out.get("suggested_fallbacks") or [])
         if not fallbacks and name == "open_app":
-            control = out.get("control") if isinstance(out.get("control"), dict) else control_for_app(
-                str(out.get("app") or out.get("name") or "")
+            raw_control = out.get("control")
+            control = (
+                raw_control
+                if isinstance(raw_control, dict)
+                else control_for_app(str(out.get("app") or out.get("name") or ""))
             )
             preferred = control.get("preferred")
             fallbacks = ["app_action"] if preferred == "semantic_adapter" else ["inspect_ui"]
@@ -1256,8 +1259,9 @@ def remember_snapshot(state: ComputerState | None, payload: dict[str, Any]) -> N
     if snapshot_id:
         state.snapshot_id = snapshot_id
     generation = payload.get("generation")
-    with contextlib.suppress(TypeError, ValueError):
-        state.generation = int(generation)
+    if generation is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            state.generation = int(generation)
     state.app_name = str(payload.get("app") or payload.get("active_app") or state.app_name or "") or None
     state.bundle_id = str(payload.get("bundle_id") or state.bundle_id or "") or None
     state.foreground_app = state.app_name

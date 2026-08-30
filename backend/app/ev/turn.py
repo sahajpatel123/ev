@@ -200,7 +200,7 @@ def build_system_prompt(
     ]
     if (context or "").strip():
         parts.append(context.strip())
-    if (briefing or "").strip():
+    if briefing and briefing.strip():
         parts.append(briefing.strip())
     return "\n\n".join(part for part in parts if part)
 
