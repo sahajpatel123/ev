@@ -62,6 +62,7 @@ from clients.cli import (
     voice_verify,
     voice_wake,
     word_error_rate,
+    workbench_info,
 )
 
 
@@ -754,6 +755,25 @@ async def test_cli_eval_asr_reports_wer_when_expected() -> None:
 def test_cli_model_stats_parser() -> None:
     args = build_parser().parse_args(["model", "stats"])
     assert args.model_command == "stats"
+
+
+def test_cli_workbench_info_loopback(monkeypatch) -> None:
+    monkeypatch.setenv("EV_API_URL", "http://127.0.0.1:8000")
+    info = workbench_info()
+    assert info["url"] == "http://127.0.0.1:8000/app"
+    assert info["loopback_auto_connect"] is True
+
+
+def test_cli_workbench_info_remote(monkeypatch) -> None:
+    monkeypatch.setenv("EV_API_URL", "http://tailscale.example:8000")
+    info = workbench_info()
+    assert info["url"] == "http://tailscale.example:8000/app"
+    assert info["loopback_auto_connect"] is False
+
+
+def test_cli_workbench_parser() -> None:
+    args = build_parser().parse_args(["workbench"])
+    assert args.command == "workbench"
 
 
 async def test_cli_day1_script_ten_actions_or_fewer(

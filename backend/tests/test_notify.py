@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from datetime import datetime
 from uuid import UUID
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from app.config import settings
-from app.models import Alert, Notification
+from app.main import app
+from app.models import Alert, Device, LifeOutboundAction, Notification
+from app.notify.registry import ensure_fleet_devices
+from app.notify.routing import assign_life_actions
+from app.notify.service import dispatch_notification, send_presence_beacon
 from app.services.runtime import daemon_tick
 
 
@@ -366,3 +372,370 @@ async def test_apns_backend_is_inert_until_token_registered(
     row = resp.json()
     assert row["status"] == "failed"
     assert "apns_inert" in (row["reason"] or "")
+
+
+async def test_push_token_register_rotate_and_deregister(
+    client, db_session
+) -> None:
+    resp = await client.post(
+        "/v1/devices",
+        json={
+            "name": "Phone A",
+            "device_type": "phone",
+            "platform": "apple",
+            "capabilities": ["notifications", "attention", "push"],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    device = resp.json()["device"]
+
+    registered = await client.post(
+        f"/v1/devices/{device['id']}/push-token",
+        json={"token": "ab" * 32, "platform": "apns", "bundle_id": "com.ev.ios"},
+    )
+    assert registered.status_code == 200, registered.text
+    assert registered.json()["registered"] is True
+    assert registered.json()["platform"] == "apns"
+
+    status = (await client.get(f"/v1/devices/{device['id']}/status")).json()
+    assert status["push_ready"] is True
+    assert status["device"]["push_registered"] is True
+    assert status["device"]["device_type"] == "phone"
+
+    rotated = await client.post(
+        f"/v1/devices/{device['id']}/push-token",
+        json={"token": "cd" * 32, "platform": "apns"},
+    )
+    assert rotated.status_code == 200
+    row = await db_session.get(Device, UUID(device["id"]))
+    assert row is not None
+    assert row.push_token == "cd" * 32
+
+    removed = await client.delete(f"/v1/devices/{device['id']}/push-token")
+    assert removed.status_code == 200
+    assert removed.json()["registered"] is False
+    await db_session.refresh(row)
+    assert row.push_token is None
+
+
+async def test_fleet_registry_seeds_mac_and_two_phones_idempotently(
+    db_session,
+) -> None:
+    first = await ensure_fleet_devices(db_session)
+    await db_session.commit()
+    assert set(first["created"]) == {"Mac", "Phone A", "Phone B"}
+
+    second = await ensure_fleet_devices(db_session)
+    await db_session.commit()
+    assert second["created"] == []
+
+    rows = (
+        await db_session.execute(
+            select(Device).where(Device.name.in_(["Mac", "Phone A", "Phone B"]))
+        )
+    ).scalars().all()
+    types = {row.name: row.device_type for row in rows}
+    assert types == {"Mac": "mac", "Phone A": "phone", "Phone B": "phone"}
+
+
+async def test_apns_routing_fails_honestly_without_credentials(
+    db_session, monkeypatch
+) -> None:
+    _quiet_hours_off(monkeypatch)
+    phone = Device(
+        name="Phone A",
+        device_type="phone",
+        platform="apple",
+        capabilities=["notifications", "attention", "push"],
+        push_token="ab" * 32,
+        push_token_updated_at=datetime.now(),
+    )
+    db_session.add(phone)
+    await db_session.flush()
+
+    row = await dispatch_notification(
+        db_session,
+        title="APNs route",
+        body="Should route to the phone and fail honestly",
+        device_id=phone.id,
+        emergency=True,
+        bypass_policy=True,
+    )
+    await db_session.commit()
+    assert row.device_id == phone.id
+    assert row.backend == "apns"
+    assert row.status == "failed"
+    assert "apns_inert" in (row.reason or "")
+    assert (row.details or {}).get("routing", {}).get("device_type") == "phone"
+
+
+async def test_acknowledged_attention_never_re_notifies(
+    db_session, monkeypatch
+) -> None:
+    _quiet_hours_off(monkeypatch)
+    row = await dispatch_notification(
+        db_session,
+        title="Acked",
+        body="Already acknowledged",
+        attention_kind="acknowledged",
+        fingerprint="ack:test:1",
+    )
+    await db_session.commit()
+    assert row.status == "suppressed"
+    assert row.reason == "already_acknowledged"
+
+
+async def test_presence_beacon_sends_once_per_day(
+    db_session, monkeypatch
+) -> None:
+    _quiet_hours_off(monkeypatch)
+    first = await send_presence_beacon(db_session)
+    await db_session.commit()
+    assert first is not None
+    assert first.kind == "presence"
+    assert first.status == "delivered"
+    assert first.attention_kind == "evie_initiated"
+
+    second = await send_presence_beacon(db_session)
+    await db_session.commit()
+    assert second is None
+
+
+async def test_life_action_routing_and_lifecycle_end_to_end(
+    client, db_session, monkeypatch
+) -> None:
+    """queued → dispatched → acknowledged → executed, all evidence-backed."""
+    _quiet_hours_off(monkeypatch)
+    mac_resp = await client.post(
+        "/v1/devices",
+        json={
+            "name": "Mac",
+            "device_type": "mac",
+            "capabilities": ["attention", "messaging", "call"],
+        },
+    )
+    assert mac_resp.status_code == 201, mac_resp.text
+    mac = mac_resp.json()["device"]
+    phone_resp = await client.post(
+        "/v1/devices",
+        json={
+            "name": "Phone A",
+            "device_type": "phone",
+            "capabilities": ["attention", "messaging", "call", "push"],
+        },
+    )
+    assert phone_resp.status_code == 201, phone_resp.text
+    phone_payload = phone_resp.json()
+    phone = phone_payload["device"]
+    # Phone A heartbeats last, so it is the best reachable messaging device.
+    await client.post(
+        "/v1/runtime/heartbeat",
+        json={"device_id": mac["id"], "status": "ok"},
+    )
+    await client.post(
+        "/v1/runtime/heartbeat",
+        json={"device_id": phone["id"], "status": "ok"},
+    )
+
+    proxy = (
+        await client.post(
+            "/v1/integrations",
+            json={
+                "adapter": "device_proxy",
+                "name": "Phone proxy",
+                "scopes": ["messaging:act", "phone:act"],
+                "config": {"provider": "device_proxy", "contact_allowlist": "any"},
+            },
+        )
+    ).json()
+    queued = (
+        await client.post(
+            f"/v1/integrations/{proxy['id']}/actions",
+            json={"action": "messaging.send", "args": {"to": "Mom", "text": "On my way"}},
+        )
+    ).json()["result"]
+    queue_id = UUID(queued["queue_id"])
+
+    routed = await assign_life_actions(db_session)
+    await db_session.commit()
+    assert routed["assigned"] == 1
+    row = await db_session.get(LifeOutboundAction, queue_id)
+    assert row is not None
+    assert row.device_id == UUID(phone["id"])
+    assert row.lifecycle == "dispatched"
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {phone_payload['token']}"},
+    ) as phone_client:
+        claimed = await phone_client.post(f"/v1/runtime/life-jobs/{queue_id}/claim")
+        assert claimed.status_code == 200, claimed.text
+        assert claimed.json()["lifecycle"] == "acknowledged"
+
+        delivered = await phone_client.post(
+            f"/v1/integrations/{proxy['id']}/life/device-results",
+            json={
+                "queue_id": str(queue_id),
+                "status": "delivered",
+                "evidence": {
+                    "message_id": "sms-42",
+                    "sent_at": "2026-08-13T10:00:00Z",
+                },
+            },
+        )
+        assert delivered.status_code == 200, delivered.text
+
+    db_session.expire_all()
+    report = await daemon_tick(db_session)
+    await db_session.commit()
+    assert report["life_reconciled"]["executed"] == 1
+    await db_session.refresh(row)
+    assert row.lifecycle == "executed"
+
+
+async def test_life_routing_respects_capabilities(client, db_session) -> None:
+    """A messaging job must never route to a device without messaging."""
+    phone = (
+        await client.post(
+            "/v1/devices",
+            json={
+                "name": "Phone A",
+                "device_type": "phone",
+                "capabilities": ["notifications", "attention"],
+            },
+        )
+    ).json()["device"]
+    mac = (
+        await client.post(
+            "/v1/devices",
+            json={
+                "name": "Mac",
+                "device_type": "mac",
+                "capabilities": ["messaging"],
+            },
+        )
+    ).json()["device"]
+    await client.post(
+        "/v1/runtime/heartbeat",
+        json={"device_id": phone["id"], "status": "ok"},
+    )
+    await client.post(
+        "/v1/runtime/heartbeat",
+        json={"device_id": mac["id"], "status": "ok"},
+    )
+
+    proxy = (
+        await client.post(
+            "/v1/integrations",
+            json={
+                "adapter": "device_proxy",
+                "name": "Proxy",
+                "scopes": ["messaging:act"],
+                "config": {"provider": "device_proxy", "contact_allowlist": "any"},
+            },
+        )
+    ).json()
+    queued = (
+        await client.post(
+            f"/v1/integrations/{proxy['id']}/actions",
+            json={"action": "messaging.send", "args": {"to": "Mom", "text": "hi"}},
+        )
+    ).json()["result"]
+    queue_id = UUID(queued["queue_id"])
+
+    routed = await assign_life_actions(db_session)
+    await db_session.commit()
+    assert routed["assigned"] == 1
+    row = await db_session.get(LifeOutboundAction, queue_id)
+    assert row is not None
+    assert row.device_id == UUID(mac["id"])
+
+
+async def test_life_routing_prefers_reachable_device(
+    client, db_session
+) -> None:
+    """Online beats unknown when both can execute the action."""
+    unknown = (
+        await client.post(
+            "/v1/devices",
+            json={
+                "name": "Phone A",
+                "device_type": "phone",
+                "capabilities": ["messaging", "call"],
+            },
+        )
+    ).json()["device"]
+    online = (
+        await client.post(
+            "/v1/devices",
+            json={
+                "name": "Phone B",
+                "device_type": "phone",
+                "capabilities": ["messaging", "call"],
+            },
+        )
+    ).json()["device"]
+    await client.post(
+        "/v1/runtime/heartbeat",
+        json={"device_id": online["id"], "status": "ok"},
+    )
+
+    proxy = (
+        await client.post(
+            "/v1/integrations",
+            json={
+                "adapter": "device_proxy",
+                "name": "Proxy",
+                "scopes": ["phone:act"],
+                "config": {"provider": "device_proxy", "contact_allowlist": "any"},
+            },
+        )
+    ).json()
+    queued = (
+        await client.post(
+            f"/v1/integrations/{proxy['id']}/actions",
+            json={"action": "phone.call", "args": {"to": "Mom"}},
+        )
+    ).json()["result"]
+    queue_id = UUID(queued["queue_id"])
+
+    routed = await assign_life_actions(db_session)
+    await db_session.commit()
+    assert routed["assigned"] == 1
+    row = await db_session.get(LifeOutboundAction, queue_id)
+    assert row is not None
+    assert row.device_id == UUID(online["id"])
+    assert unknown["id"] != online["id"]
+
+
+async def test_notification_receipt_ack_endpoint(
+    client, db_session, monkeypatch
+) -> None:
+    _quiet_hours_off(monkeypatch)
+    resp = await client.post(
+        "/v1/runtime/notify",
+        json={"title": "Ack me", "body": "EV.app should ack this"},
+    )
+    assert resp.status_code == 201, resp.text
+    notification_id = resp.json()["id"]
+
+    device = (
+        await client.post(
+            "/v1/devices",
+            json={"name": "Phone A", "device_type": "phone"},
+        )
+    ).json()
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        headers={"Authorization": f"Bearer {device['token']}"},
+    ) as device_client:
+        ack = await device_client.post(f"/v1/notify/{notification_id}/receipt")
+        assert ack.status_code == 200, ack.text
+        assert ack.json()["acknowledged"] is True
+
+    row = await db_session.get(Notification, UUID(notification_id))
+    assert row is not None
+    assert row.attention_kind == "acknowledged"
+    assert "acknowledged_at" in (row.details or {})

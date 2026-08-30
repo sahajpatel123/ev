@@ -1,0 +1,67 @@
+{
+  "schema": "ev.surface.public_sources.v1",
+  "harvest": "one-time",
+  "note": "Cited public pages used to label the surface corpus. Request time does not fetch these URLs. Full page text is not stored; only citations + gold labels.",
+  "sources": [
+    {
+      "url": "https://en.wikipedia.org/wiki/J.A.R.V.I.S.",
+      "title": "J.A.R.V.I.S. — Wikipedia",
+      "license": "CC BY-SA 4.0",
+      "mechanics": ["diagnostics", "vitals", "full_hud", "needed"]
+    },
+    {
+      "url": "https://marvelcinematicuniverse.fandom.com/wiki/J.A.R.V.I.S.",
+      "title": "J.A.R.V.I.S. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "mechanics": ["diagnostics", "vitals", "needed", "explicit_show"]
+    },
+    {
+      "url": "https://scifiinterfaces.com/2015/07/01/iron-man-hud-a-breakdown/",
+      "title": "Iron Man HUD: A Breakdown — Sci-fi interfaces",
+      "license": "All rights reserved; citation only (no full text stored)",
+      "mechanics": ["explicit_show", "needed", "full_hud"]
+    },
+    {
+      "url": "https://marvelcinematicuniverse.fandom.com/wiki/Karen",
+      "title": "Karen | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "mechanics": ["briefing", "vitals", "watch"]
+    },
+    {
+      "url": "https://marvelcinematicuniverse.fandom.com/wiki/Baby_Monitor_Protocol",
+      "title": "Baby Monitor Protocol | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "mechanics": ["watch"]
+    },
+    {
+      "url": "https://marvelcinematicuniverse.fandom.com/wiki/Training_Wheels_Protocol",
+      "title": "Training Wheels Protocol | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "mechanics": ["explicit_show"]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/Spider-Man:_Homecoming",
+      "title": "Spider-Man: Homecoming — Wikipedia",
+      "license": "CC BY-SA 4.0",
+      "mechanics": ["explicit_show", "quiet"]
+    },
+    {
+      "url": "https://marvelcinematicuniverse.fandom.com/wiki/E.D.I.T.H.",
+      "title": "E.D.I.T.H. | Marvel Cinematic Universe Wiki",
+      "license": "CC BY-SA",
+      "mechanics": ["refuse"]
+    },
+    {
+      "url": "https://www.polygon.com/spider-man-brand-new-day-ai-assistant-ev-karen-edith",
+      "title": "Spider-Man Brand New Day AI assistant E.V. — Polygon",
+      "license": "All rights reserved; citation only (no full text stored)",
+      "mechanics": ["quiet"]
+    },
+    {
+      "url": "https://en.wikipedia.org/wiki/F.R.I.D.A.Y._(Marvel_Cinematic_Universe)",
+      "title": "F.R.I.D.A.Y. (Marvel Cinematic Universe) — Wikipedia",
+      "license": "CC BY-SA 4.0",
+      "mechanics": ["diagnostics"]
+    }
+  ]
+}

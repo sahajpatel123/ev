@@ -39,6 +39,10 @@
           <div id="alert-tiles" class="tile-body"></div>
         </div>
         <div class="console-tile">
+          <h2>Diagnostics</h2>
+          <div id="diagnostics-strip" class="tile-body" data-source="/v1/diagnostics/last"></div>
+        </div>
+        <div class="console-tile">
           <h2>Gear</h2>
           <div id="gear-tiles" class="tile-body"></div>
         </div>
@@ -57,13 +61,19 @@
 
     <section id="connection" class="panel">
       <h2>Connection</h2>
+      <p id="connection-note" class="muted"></p>
       <form id="connection-form">
         <input id="api-url" type="text" autocomplete="off"
                placeholder="API URL (leave empty for this origin)">
         <input id="api-key" type="password" autocomplete="off"
-               placeholder="API key (master or device token)">
+               placeholder="API key (device token recommended)">
         <button type="submit">Connect</button>
       </form>
+      <div class="row">
+        <button id="disconnect-local" type="button" hidden>Disconnect</button>
+        <button id="reconnect-local" type="button" hidden>Reconnect this Mac</button>
+        <button id="manual-switch" type="button">Use manual / device token</button>
+      </div>
     </section>
 
     <section id="ev-onboarding" class="panel">

@@ -12,6 +12,7 @@ from app.auth import ActorContext, require_actor, require_owner_trust
 from app.config import settings
 from app.db import get_session
 from app.models import Entity, FaceEnrollment
+from app.people import service as people_service
 from app.people.biodata import BiodataError, BiodataResolver
 from app.people.calibration import apply_threshold, calibrate
 from app.people.enrollment import FaceEnrollmentService
@@ -29,6 +30,9 @@ from app.schemas import (
     FaceRecognitionConfirmRequest,
     FaceRecognitionRequest,
     FaceRecognitionResponse,
+    PersonContextOut,
+    PersonResolveOut,
+    PersonRosterOut,
     PublicFigureBiodataOut,
     PublicFigureLinkRequest,
 )
@@ -128,6 +132,35 @@ async def list_face_enrollments(
         .all()
     )
     return [await _enrollment_out(session, row) for row in rows]
+
+
+@router.get("/roster", response_model=PersonRosterOut)
+async def list_person_roster(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> PersonRosterOut:
+    """Every person EV knows, with enrollment/provenance metadata."""
+    return await people_service.roster(session)
+
+
+@router.get("/{name}/resolve", response_model=PersonResolveOut)
+async def resolve_person(
+    name: str,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> PersonResolveOut:
+    """Resolve 'Mom'/'Alex' through roster + memory + contacts candidates."""
+    return await people_service.resolve_person(session, name, actor=actor)
+
+
+@router.get("/{name}/context", response_model=PersonContextOut)
+async def person_context(
+    name: str,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> PersonContextOut:
+    """Person context for EVIE overlays: how known, last seen, match state."""
+    return await people_service.person_context(session, name)
 
 
 @router.post(

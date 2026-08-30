@@ -10,6 +10,7 @@ identity and behavior live outside this module.
 from __future__ import annotations
 
 import inspect
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -23,12 +24,84 @@ from app.contracts import (
     ToolCall,
     ToolSpec,
 )
+from app.ev.actions import life_agency_prompt
 from app.gateway.costs import CostCapExceeded
 from app.gateway.reliability import CircuitOpenError, ProviderStreamError
 from app.gateway.routing import ProviderSelection
 from app.gateway.streaming import StreamingChatProvider
 from app.gateway.validation import ValidatedToolCall, validate_tool_calls
 from app.security.boundary import ModelBoundaryViolation, guard_model_payload
+
+LIFE_TOOL_PERMISSIONS = frozenset(
+    {
+        "message:send",
+        "message:read",
+        "phone:act",
+        "mail:read",
+        "mail:act",
+        "contacts:read",
+        "life:open_url",
+        "life:reminder",
+        "apps:act",
+    }
+)
+
+
+_YOU_ARE_RE = re.compile(r"You are ([^,\n]+)")
+
+
+def _spoken_name_for_agency(
+    messages: list[ChatMessage],
+    envelope: RequestEnvelope | None = None,
+) -> str:
+    """Prefer envelope spoken_name, then the identity prefix, then EVIE."""
+
+    from app.ev.assistant import spoken_name
+
+    meta = (envelope.metadata if envelope is not None else None) or {}
+    explicit = meta.get("spoken_name")
+    if explicit:
+        return spoken_name(str(explicit))
+    for message in messages:
+        if message.role != "system":
+            continue
+        match = _YOU_ARE_RE.search(message.content or "")
+        if match:
+            return spoken_name(match.group(1).strip())
+    return spoken_name(None)
+
+
+def _with_life_agency_prompt(
+    messages: list[ChatMessage],
+    tool_specs: list[ToolSpec],
+    envelope: RequestEnvelope | None = None,
+) -> list[ChatMessage]:
+    """Attach the life-agency block when life tools are offered.
+
+    This rides the existing system-message path, so it applies to the DeepSeek
+    provider and the OpenCode ev-minimal agent alike (the minimal agent is
+    instructed to follow the system instructions supplied with the request).
+    """
+
+    if not tool_specs or not any(
+        spec.permission in LIFE_TOOL_PERMISSIONS for spec in tool_specs
+    ):
+        return messages
+    block = life_agency_prompt(_spoken_name_for_agency(messages, envelope))
+    result = list(messages)
+    for index in range(len(result) - 1, -1, -1):
+        if result[index].role == "system":
+            if block not in result[index].content:
+                existing = result[index]
+                result[index] = ChatMessage(
+                    role="system",
+                    content=f"{existing.content}\n\n{block}",
+                    name=existing.name,
+                    media=list(existing.media),
+                )
+            return result
+    result.insert(0, ChatMessage(role="system", content=block))
+    return result
 
 
 @dataclass
@@ -85,6 +158,18 @@ def tool_specs_from_dicts(specs: Sequence[dict]) -> list[ToolSpec]:
                 permission=str(spec.get("permission", "memory:read")),
                 undoable=bool(spec.get("undoable", False)),
                 output=spec.get("output") or {},
+                version=str(spec.get("version", "1")),
+                required_scopes=[str(scope) for scope in spec.get("required_scopes", [])],
+                risk_class=str(spec.get("risk_class", "R0")),
+                confirmation=str(spec.get("confirmation", "none")),
+                target_ownership=str(spec.get("target_ownership", "owner")),
+                provider=str(spec.get("provider", "local")),
+                fallback=spec.get("fallback"),
+                evidence=[str(item) for item in spec.get("evidence", [])],
+                idempotency=str(spec.get("idempotency", "natural")),
+                timeout_seconds=int(spec.get("timeout_seconds", 10)),
+                cancellation=str(spec.get("cancellation", "not_applicable")),
+                audit_event=spec.get("audit_event"),
             )
         )
     return converted
@@ -175,6 +260,7 @@ class ModelGateway:
                     model=model,
                     status="error",
                 )
+        safe_messages = _with_life_agency_prompt(safe_messages, tool_specs, envelope)
         try:
             if tool_specs:
                 result = await self.provider.chat_with_tools(
@@ -284,6 +370,7 @@ class ModelGateway:
                 yield GatewayStreamEvent(kind="error", error=str(exc))
                 yield GatewayStreamEvent(kind="done", call=call)
                 return
+        safe_messages = _with_life_agency_prompt(safe_messages, tool_specs, envelope)
 
         try:
             if isinstance(self.provider, StreamingChatProvider):

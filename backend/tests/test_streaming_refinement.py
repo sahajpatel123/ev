@@ -35,6 +35,8 @@ async def test_chat_sse_streams_raw_then_refined(client: AsyncClient) -> None:
 
     events = _parse_sse(resp.text)
     names = [name for name, _data in events]
+    assert names[0] == "status"
+    assert events[0][1].get("stage") == "accepted"
     assert "memory-delta" in names
     assert "provenance" in names
     assert "delta" in names

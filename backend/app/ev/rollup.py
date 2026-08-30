@@ -105,8 +105,13 @@ async def _load_events(
                     & (Event.id > after.id)
                 )
             )
-    if access == "model":
-        stmt = stmt.where(Event.privacy_level.notin_(MODEL_EXCLUDED_PRIVACY))
+    if access in {"model", "voice_model"}:
+        excluded = (
+            ("never_send_to_model",)
+            if access == "voice_model"
+            else MODEL_EXCLUDED_PRIVACY
+        )
+        stmt = stmt.where(Event.privacy_level.notin_(excluded))
     rows = await session.execute(stmt)
     return list(rows.scalars().all())
 
@@ -304,9 +309,10 @@ async def model_safe_rollup(
     thread_id: UUID,
     *,
     budget_tokens: int | None = None,
+    access: str = "model",
 ) -> ModelSafeRollup:
     """Build a prompt-safe rolling summary without touching the persisted one."""
-    events = await _load_events(session, thread_id, access="model")
+    events = await _load_events(session, thread_id, access=access)
     scratch = ConversationRollup(thread_id=thread_id)
     _merge_events(scratch, events)
     scratch.summary = _format_summary(scratch, budget_tokens=budget_tokens)

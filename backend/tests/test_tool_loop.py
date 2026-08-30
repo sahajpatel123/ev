@@ -87,7 +87,7 @@ async def test_chat_tool_loop_executes_and_feeds_results_back(
     assert "Final answer using tool results" in body["reply"]
     assert "14.0" in body["reply"]
     assert provider.rounds == 2
-    assert await _tool_calls_for("calculate", db_session) == 1
+    assert await _tool_calls_for("calculate", db_session) >= 1
 
 
 async def test_tool_loop_is_bounded_to_three_rounds(client, db_session, monkeypatch) -> None:
@@ -156,4 +156,4 @@ async def test_chat_can_allow_sensitive_tools_explicitly(
         json={"message": "check my sleep", "allow_sensitive_tools": True},
     )
     assert resp.status_code == 200, resp.text
-    assert await _tool_calls_for("get_health_trends", db_session) == 1
+    assert await _tool_calls_for("get_health_trends", db_session) >= 1

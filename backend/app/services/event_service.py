@@ -65,6 +65,19 @@ class EventService:
         )
         self.session.add(event)
         await self.session.flush()
+        if event.event_type in {"message.user", "message.assistant"}:
+            try:
+                from app.memory.outbox import enqueue_for_event
+
+                await enqueue_for_event(self.session, event)
+            except Exception:  # noqa: BLE001 - outbox must never block capture
+                pass
+            try:
+                from app.memory.materialize import append_journal
+
+                append_journal(event)
+            except Exception:  # noqa: BLE001 - journal is a rebuildable mirror
+                pass
         await log_access(
             self.session,
             actor=self.actor,

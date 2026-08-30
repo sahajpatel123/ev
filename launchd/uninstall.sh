@@ -17,7 +17,7 @@ else
   DOMAIN="gui/$UID"
 fi
 
-for name in api worker scheduler runtime ears collector; do
+for name in api worker scheduler runtime ears collector opencode; do
   label="ev.$name"
   plist="$TARGET_DIR/ev.$name.plist"
   if [[ -f "$plist" ]]; then

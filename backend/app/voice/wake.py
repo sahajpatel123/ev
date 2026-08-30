@@ -9,8 +9,11 @@ privacy, and security logic is fully testable without hardware.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
 import re
 import wave
+from pathlib import Path
 
 from app.config import settings
 from app.voice.contracts import WakeDetection, WakeWordEngine
@@ -31,8 +34,32 @@ class PhraseWakeEngine:
     name = "phrase"
     power_state = "low_power"
 
-    WAKE_PHRASES = ("evie", "hey evie", "ok evie", "evie wake", "evie wake up", "evi")
-    WAKE_TOKEN = re.compile(r"\bevi(?:e|)?\b", re.IGNORECASE)
+    WAKE_PHRASES = (
+        "evie",
+        "hey evie",
+        "hi evie",
+        "hello evie",
+        "ok evie",
+        "okay evie",
+        "evie wake",
+        "evie wake up",
+        "evie here",
+        "hey evie here",
+        "hi evie here",
+        "hello evie here",
+        "ok evie here",
+        "okay evie here",
+        "evi",
+        "eve",
+        "hey eve",
+        "hi eve",
+        "hello eve",
+        "ok eve",
+        "okay eve",
+        "eve here",
+        "hey eve here",
+    )
+    WAKE_TOKEN = re.compile(r"\b(?:evie+|eevee|evi|eve)\b", re.IGNORECASE)
 
     async def detect(
         self,
@@ -282,6 +309,10 @@ class OpenWakeWordEngine:
         self.model_path = model_path
         self.threshold = threshold
         self.verifier_path = verifier_path
+        if self.model_path:
+            self.model_path = str(Path(self.model_path).expanduser())
+        if self.verifier_path:
+            self.verifier_path = str(Path(self.verifier_path).expanduser())
         self.verifier_threshold = verifier_threshold
         self._model_factory = model_factory
         self.chunk_samples = chunk_samples
@@ -292,10 +323,17 @@ class OpenWakeWordEngine:
     def _load_model(self):
         if self._loaded:
             return self._model
+        # Derive verifier key from model file stem (e.g., wake-openwakeword) so it matches Model's internal name.
+        # The old hardcoded "evie" only works when the model file is named evie.onnx; the canonical path is wake-openwakeword.onnx.
+        def _verifier_key() -> str:
+            if not self.model_path:
+                return "evie"
+            return Path(self.model_path).stem
+
         if self._model_factory is not None:
             kwargs = {"wakeword_models": [self.model_path]}
             if self.verifier_path:
-                kwargs["custom_verifier_models"] = {"evie": self.verifier_path}
+                kwargs["custom_verifier_models"] = {_verifier_key(): self.verifier_path}
                 kwargs["custom_verifier_threshold"] = self.verifier_threshold
             self._model = self._model_factory(**kwargs)
             self._loaded = True
@@ -317,7 +355,7 @@ class OpenWakeWordEngine:
                 ) from exc
             kwargs: dict = {"wakeword_models": [self.model_path]}
             if self.verifier_path:
-                kwargs["custom_verifier_models"] = {"evie": self.verifier_path}
+                kwargs["custom_verifier_models"] = {_verifier_key(): self.verifier_path}
                 kwargs["custom_verifier_threshold"] = self.verifier_threshold
             self._model = Model(**kwargs)
         self._loaded = True
@@ -522,6 +560,280 @@ class SileroVadWakeEngine:
         )
 
 
+class WhisperPhraseWakeEngine:
+    """Siri-style strict wake spotter — ONLY the owner's name activates EVIE.
+
+    The always-on wake must be activated by saying the name itself ("Eve",
+    "Evie"), exactly like Siri responds only to its name. Acoustically-near
+    words that look/sound similar — "every", "even", "evil", "Stevie" — are
+    NEVER wake candidates, with or without speech evidence.
+
+    The name must appear at the head of the clip as a whole word (word
+    boundary), so a conversational mention ("I think Evie is...") produces a
+    wake *candidate* that the later directed-speech gate rejects, but it is
+    never elevated to a full acceptance on its own. Whisper transcribes the
+    local VAD segment (token-free, on-device) and the transcript is classified
+    here. Bare silence hallucinations (no_speech_prob above result) never wake.
+    """
+
+    name = "whisper-phrase"
+    power_state = "burst"
+    WAKE_PHRASES = PhraseWakeEngine.WAKE_PHRASES
+    # Siri-style: the name may optionally be preceded by a greeting, but the
+    # wake token itself must be the name. The word-boundary lookahead rejects
+    # "every"/"even"/"evil"/"Stevie" because the char after the name is not a
+    # boundary — e.g. "eve"+"r" in "every" never matches.
+    STRONG_HEAD = re.compile(
+        r"^(?:hey |ok |okay |hi |hello )?"
+        r"(?:eve|evie|ee vee|eevee|evy)"
+        r"(?: here)?(?=[\s,!.?'-]|$)",
+        re.IGNORECASE,
+    )
+    # Whole-clip name (with optional trailing "here") is also a strong hit.
+    NAME_FULL = re.compile(
+        r"^(?:hey |ok |okay |hi |hello )?"
+        r"(?:eve|evie|ee vee|eevee|evy)(?: here)?$",
+        re.IGNORECASE,
+    )
+    # Keep the historical names so tests and lifecycle still import them.
+    STRONG_TOKEN = STRONG_HEAD
+    WAKE_TOKEN = STRONG_HEAD
+    HEAD_WAKE = STRONG_HEAD
+    WEAK_HEAD = STRONG_HEAD
+    WEAK_TOKEN = STRONG_HEAD
+    # Never-wake confusable words (whole clip or anywhere): these are NOT the
+    # owner addressing Evie and must never produce a candidate, even if a
+    # substring happens to look like the name. Transcripts are normalized to
+    # lower-case, so the set is lower-case too.
+    CONFUSABLE = frozenset(
+        {"every", "even", "evil", "evolve", "event", "everything", "everyone", "stevie"}
+    )
+    # Whisper's own no-speech gate: a segment with no_speech_prob above this is
+    # a silence hallucination, not the owner saying the name.
+    NO_SPEECH_CAP = 0.6
+
+    def __init__(self, *, transcriber=None) -> None:
+        self._transcriber = transcriber
+        self._warmed = False
+
+    async def warmup(self) -> None:
+        """Preload the spotter so the first spoken EVIE is not a cold load.
+
+        A fresh faster-whisper load is multi-second. Repeating "Evie" during
+        that window reads as a missed wake. Warm once at process start.
+        """
+
+        if self._warmed:
+            return
+        transcriber = self._transcriber_or_default()
+        load = getattr(transcriber, "_load_model", None)
+        if load is None:
+            self._warmed = True
+            return
+
+        def _load() -> None:
+            model = load()
+            if model is None:
+                return
+            import tempfile
+            import wave
+
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+                path = handle.name
+            try:
+                with wave.open(path, "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(16000)
+                    wav.writeframes(b"\x00\x00" * 8000)
+                transcribe = getattr(model, "transcribe", None)
+                if transcribe is None:
+                    return
+                list(
+                    transcribe(
+                        path,
+                        language="en",
+                        beam_size=1,
+                        temperature=0.0,
+                        vad_filter=False,
+                    )
+                )
+            except Exception:  # noqa: BLE001 - warmup is best-effort
+                return
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+
+        await asyncio.to_thread(_load)
+        self._warmed = True
+
+    def _transcriber_or_default(self):
+        if self._transcriber is not None:
+            return self._transcriber
+        from app.voice.asr import FasterWhisperTranscriber, get_transcriber
+
+        try:
+            shared = get_transcriber()
+        except Exception:
+            shared = None
+        if isinstance(shared, FasterWhisperTranscriber):
+            self._transcriber = shared
+            return shared
+        self._transcriber = FasterWhisperTranscriber(
+            model=os.environ.get("EV_VOICE_WAKE_ASR_MODEL")
+            or _wake_asr_model(),
+            vad_filter=False,
+        )
+        return self._transcriber
+
+    async def detect(
+        self,
+        *,
+        audio_ref: str | None = None,
+        sample_rate: int = 16000,
+        device_id: str | None = None,
+        frames: bytes | None = None,
+        text_hint: str | None = None,
+    ) -> WakeDetection:
+        if text_hint is not None and audio_ref is None and frames is None:
+            normalized = normalize(text_hint)
+            strong, weak = self._classify_transcript(normalized)
+            # Siri-style strictness: a bare text hint wakes ONLY if it is the
+            # owner's name at the head. No weak aliases, no confusables.
+            triggered = strong
+            return WakeDetection(
+                triggered=triggered,
+                wake_word="evie",
+                confidence=0.98 if triggered else 0.0,
+                device_id=device_id,
+                stage="burst" if triggered else "low_power",
+                power_state=self.power_state,
+                details={"engine": self.name, "source": "text_hint"},
+            )
+        transcript = ""
+        try:
+            transcriber = self._transcriber_or_default()
+            audio_b64 = None
+            padded = frames
+            if padded is not None:
+                from app.audio.capture import pcm_to_wav_bytes
+
+                padded = _pad_pcm16(padded, sample_rate, min_seconds=1.5)
+                wav = pcm_to_wav_bytes(padded, sample_rate)
+                import base64
+
+                audio_b64 = base64.b64encode(wav).decode("ascii")
+            transcribe = transcriber.transcribe
+            try:
+                result = await transcribe(
+                    audio_b64=audio_b64,
+                    audio_ref=audio_ref,
+                    language="en",
+                    wake_mode=True,
+                )
+            except TypeError:
+                result = await transcribe(
+                    audio_b64=audio_b64,
+                    audio_ref=audio_ref,
+                    language="en",
+                )
+            transcript = getattr(result, "text", "") or ""
+        except Exception as exc:  # noqa: BLE001 - wake must not crash ears/API
+            return WakeDetection(
+                triggered=False,
+                wake_word="evie",
+                confidence=0.0,
+                device_id=device_id,
+                stage="low_power",
+                power_state=self.power_state,
+                details={"engine": self.name, "error": f"{type(exc).__name__}: {exc}"},
+            )
+        normalized = normalize(transcript)
+        strong, weak = self._classify_transcript(normalized)
+        # Strict Siri-style: only the name at the head AND confirmed real speech
+        # wake. Weak aliases and confusables never wake; a name without speech
+        # evidence (or with confirmed silence) never wakes. Real faster-whisper
+        # wake-mode transcription always reports no_speech_prob, so this never
+        # blocks a genuine owner wake while making silence hallucinations and
+        # unknown-source transcripts cost nothing.
+        triggered = strong and self._real_speech(result)
+        degraded = bool(getattr(result, "degraded", False))
+        details = {
+            "engine": self.name,
+            "transcript": transcript,
+            "no_speech_prob": getattr(result, "details", {}).get("no_speech_prob"),
+            "weak_alias": False,
+            "sample_rate": sample_rate,
+            "degraded": degraded,
+        }
+        if degraded:
+            details["error"] = str(
+                getattr(result, "details", {}).get("reason")
+                or "wake ASR is degraded"
+            )
+        return WakeDetection(
+            triggered=triggered,
+            wake_word="evie",
+            confidence=0.9 if triggered else 0.0,
+            device_id=device_id,
+            stage="burst" if triggered else "low_power",
+            power_state=self.power_state,
+            details=details,
+        )
+
+    @classmethod
+    def _classify_transcript(cls, normalized: str) -> tuple[bool, bool]:
+        """Siri-style: (strong_hit, weak_head_hit) where only the NAME hits.
+
+        The name must be a whole word at the head of the clip (word boundary),
+        optionally preceded by a greeting. Confusable words that are NOT the
+        owner's name — every/even/evil/Stevie — never wake, even with real
+        speech. The second return is always False (no weak aliases); it is
+        kept for API compatibility.
+        """
+
+        if not normalized:
+            return False, False
+        # Siri-style: a confusable word at the WAKE POSITION (the first word,
+        # optionally after a greeting) is never the owner's name. Words like
+        # "every"/"even" later in the utterance (e.g. "Evie, even that") do not
+        # block a name-headed wake — recall is preserved.
+        head_token = normalized.split(None, 1)[0].strip(".,!?'\"-")
+        if cls.CONFUSABLE and head_token in cls.CONFUSABLE:
+            return False, False
+        # Whole-clip name or greeting+name at the head (with boundary). This
+        # covers "eve", "evie", "ee vee", "hey eve", "eve what's the weather",
+        # and NEVER "every"/"even"/"Stevie".
+        if cls.NAME_FULL.match(normalized):
+            return True, False
+        head = " ".join(normalized.split()[:6])
+        if cls.STRONG_HEAD.match(head) or cls.STRONG_HEAD.match(normalized):
+            return True, False
+        return False, False
+
+    @staticmethod
+    def _real_speech(result) -> bool:
+        """True when the transcribed clip is real speech, not a silence hallucination.
+
+        Bare weak aliases ("Eve"/"evil") only wake when the model's own
+        no_speech_prob says the clip contained speech. When the transcriber
+        did not report a no_speech_prob, a weak alias stays non-triggering so
+        unknown-source transcripts cannot false-wake the system.
+        """
+
+        no_speech_prob = getattr(result, "details", {}).get("no_speech_prob")
+        if no_speech_prob is None:
+            return False
+        return float(no_speech_prob) <= WhisperPhraseWakeEngine.NO_SPEECH_CAP
+
+
+def _wake_asr_model() -> str:
+    model = (settings.voice_asr_model or "base").strip()
+    if model in {"whisper-1", "gpt-4o-mini-transcribe", ""}:
+        return "base"
+    return model
+
+
 def default_wake_engine() -> WakeWordEngine:
     """Config-driven wake engine selection.
 
@@ -576,9 +888,48 @@ def set_default_wake_engine(engine: WakeWordEngine | None) -> None:
 
 
 _default_override: WakeWordEngine | None = None
+_whisper_phrase_wake: WhisperPhraseWakeEngine | None = None
 
 
 def configured_wake_engine() -> WakeWordEngine:
-    """Return the override if set, else the config-driven default."""
+    """Return the override if set, else the config-driven default.
 
-    return _default_override if _default_override is not None else default_wake_engine()
+    When openWakeWord is selected but the custom EVIE ONNX is not on disk,
+    fall through to the faster-whisper phrase spotter so saying "EVIE"
+    actually works instead of crashing the ears/API loop.
+    """
+
+    global _whisper_phrase_wake
+    if _default_override is not None:
+        return _default_override
+    engine = default_wake_engine()
+    # Spoken EVIE never contains the ASCII bytes ``evie``. Phrase matching
+    # and a missing openWakeWord ONNX head must not be the live detector —
+    # fall through to the ASR spotter so stock config (echo ASR + phrase
+    # wake) actually hears the name.
+    if engine.name == "openwakeword":
+        path = getattr(engine, "model_path", None)
+        if path and Path(str(path)).expanduser().is_file():
+            return engine
+        if _whisper_phrase_wake is None:
+            _whisper_phrase_wake = WhisperPhraseWakeEngine()
+        return _whisper_phrase_wake
+    if engine.name == "multi-stage":
+        if _whisper_phrase_wake is None:
+            _whisper_phrase_wake = WhisperPhraseWakeEngine()
+        return _whisper_phrase_wake
+    return engine
+
+
+def _pad_pcm16(frames: bytes, sample_rate: int, *, min_seconds: float = 1.5) -> bytes:
+    """Pad short VAD clips so faster-whisper does not treat them as no-speech."""
+
+    import array
+
+    samples = array.array("h")
+    even = frames[: len(frames) - (len(frames) % 2)]
+    samples.frombytes(even)
+    need = int(min_seconds * sample_rate)
+    if len(samples) < need:
+        samples.extend([0] * (need - len(samples)))
+    return samples.tobytes()

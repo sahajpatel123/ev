@@ -9,6 +9,7 @@ import json
 import math
 import random
 import struct
+import subprocess
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,6 +168,61 @@ async def test_campp_enrolls_and_verifies_with_fake_onnx_session(tmp_path) -> No
     assert impostor.verified is False
     assert impostor.reason == "voiceprint mismatch"
     assert session.calls == 7
+
+
+def test_campp_resolver_skips_unrelated_onnx(tmp_path) -> None:
+    models = tmp_path / "models"
+    models.mkdir()
+    (models / "embed-granite-r2.onnx").write_bytes(b"granite")
+    (models / "face-sface.onnx").write_bytes(b"face")
+    (models / "tts-kokoro-82m-int8.onnx").write_bytes(b"tts")
+    (models / "campp.onnx").write_bytes(b"speaker")
+    verifier = CamppSpeakerVerifier(
+        model_path=models,
+        require_available=False,
+        onnx_session_factory=lambda path: FakeCamppSession(),
+    )
+    assert verifier._resolve_model_path() == (models / "campp.onnx").resolve()
+
+
+def test_campp_fbank_layout_feeds_feats(tmp_path) -> None:
+    pytest.importorskip("kaldi_native_fbank")
+    class FakeFbankSession:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.last_feats = None
+
+        def get_inputs(self):
+            return [SimpleNamespace(name="feats", shape=["batch", "time", 80], type="tensor(float)")]
+
+        def run(self, _outputs, inputs):
+            self.calls += 1
+            self.last_feats = inputs["feats"]
+            return [_speaker_vector(True, 192)]
+
+    model_path = tmp_path / "campp.onnx"
+    model_path.write_bytes(b"fbank-onnx")
+    session = FakeFbankSession()
+    verifier = CamppSpeakerVerifier(
+        model_path=model_path,
+        onnx_session_factory=lambda _path: session,
+        require_available=False,
+        threshold=0.5,
+    )
+    waveform = [0.01 * ((i % 17) - 8) for i in range(16000)]
+    vector = verifier._embed_onnx(session, waveform)
+    assert len(vector) == 192
+    assert session.calls == 1
+    feats = session.last_feats
+    assert feats is not None
+    # [B, T, 80]
+    shape = getattr(feats, "shape", None)
+    if shape is not None:
+        assert len(shape) == 3
+        assert shape[0] == 1
+        assert shape[2] == 80
+    else:
+        assert isinstance(feats, list) and len(feats[0][0]) == 80
 
 
 async def test_campp_degrades_to_test_double_only_under_pytest(
@@ -340,6 +396,10 @@ def test_decode_waveform_resamples_and_mono() -> None:
     assert all(-1.0 <= value <= 1.0 for value in waveform)
     with pytest.raises(ValueError, match="RIFF"):
         decode_waveform(b"not a wav")
+    pcm = (b"\x00\x10" * 2000)
+    waveform, rate = decode_waveform(pcm)
+    assert rate == 16000
+    assert len(waveform) == 2000
 
 
 # --------------------------------------------------------------------------- #
@@ -404,6 +464,7 @@ def test_eval_cli_runs_end_to_end_and_writes_roc(
             str(roc_path),
             "--report",
             str(tmp_path / "speaker_security.json"),
+            "--test-double",
         ]
     )
     assert exit_code == 0
@@ -524,11 +585,56 @@ def test_eval_discovers_nested_impostor_wavs(tmp_path, capsys) -> None:
 
     assert (
         _eval_main(
-            ["--owner-dir", str(owner_dir), "--impostor-dir", str(tmp_path / "impostor")]
+            [
+                "--owner-dir",
+                str(owner_dir),
+                "--impostor-dir",
+                str(tmp_path / "impostor"),
+                "--test-double",
+            ]
         )
         == 0
     )
     assert '"impostor_count": 50' in capsys.readouterr().out
+
+
+def test_eval_refuses_degraded_artifact_without_test_double(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    from app.voice.speaker import _eval_main
+
+    owner_dir = tmp_path / "owner"
+    owner_dir.mkdir()
+    impostor_dir = tmp_path / "impostor"
+    impostor_dir.mkdir()
+    owner_wav = make_wav(duration=0.5, phase=0.0)
+    for index in range(5):
+        (owner_dir / f"owner-{index}.wav").write_bytes(owner_wav)
+    for index in range(50):
+        (impostor_dir / f"imp-{index}.wav").write_bytes(
+            make_wav(duration=0.3 + index * 0.001, phase=math.pi + index * 0.001)
+        )
+    artifact = tmp_path / "speaker_security.json"
+
+    # Outside pytest, the encoder is unavailable (no weights): refuse loudly.
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    assert (
+        _eval_main(
+            [
+                "--owner-dir",
+                str(owner_dir),
+                "--impostor-dir",
+                str(impostor_dir),
+                "--report",
+                str(artifact),
+            ]
+        )
+        == 2
+    )
+    assert "speaker eval refused" in capsys.readouterr().err
+    assert not artifact.exists()
 
 
 def test_replay_test_requires_zero_accepts(
@@ -616,3 +722,71 @@ def test_replay_test_requires_zero_accepts(
         == 1
     )
     assert "REPLAY_ACCEPTS=20" in capsys.readouterr().out
+
+
+def test_enroll_convert_only_converts_and_validates(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    from app.voice.speaker import _enroll_main
+
+    source_dir = tmp_path / "voice-sample"
+    source_dir.mkdir()
+    for index in range(1, 6):
+        (source_dir / f"Sample {index}.m4a").write_bytes(b"fake-m4a-bytes")
+
+    def fake_run(args, **kwargs):
+        dst = Path(args[-1])
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(make_wav(duration=2.5, rate=16000))
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr("app.voice.speaker.subprocess.run", fake_run)
+    assert (
+        _enroll_main(
+            [
+                "--source-dir",
+                str(source_dir),
+                "--convert-only",
+            ]
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "CONVERTED=5 WAVS=5" in out
+    wavs = sorted((source_dir / "wav").glob("*.wav"))
+    assert len(wavs) == 5
+
+
+def test_enroll_fails_closed_without_voiceprint_model(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+) -> None:
+    from app.voice.speaker import _enroll_main
+
+    monkeypatch.setattr(settings, "voiceprint_provider", "campp")
+    monkeypatch.setattr(settings, "voiceprint_model_dir", str(tmp_path / "missing-campp"))
+    wav_dir = tmp_path / "wav"
+    wav_dir.mkdir()
+    for index in range(5):
+        (wav_dir / f"sample-{index}.wav").write_bytes(
+            make_wav(duration=2.5, rate=16000)
+        )
+
+    assert (
+        _enroll_main(
+            [
+                "--source-dir",
+                str(wav_dir),
+                "--out-dir",
+                str(wav_dir),
+                "--voiceprint-model",
+                str(tmp_path / "no-such-campp.onnx"),
+            ]
+        )
+        == 2
+    )
+    err = capsys.readouterr().err
+    assert "voiceprint model unavailable" in err

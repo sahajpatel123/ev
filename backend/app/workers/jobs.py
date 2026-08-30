@@ -91,3 +91,44 @@ def run_compliance_retention(reason: str = "retention policy") -> dict:
             return result
 
     return asyncio.run(_run())
+
+
+def run_research_job(job_id: str) -> dict:
+    """RQ entry point for one durable research job.
+
+    The job row is the checkpoint/restart boundary; the worker owns no
+    in-memory state that must survive a process restart.
+    """
+    import asyncio
+    from uuid import UUID
+
+    async def _run() -> dict:
+        from app.db import SessionLocal
+        from app.ev.research import ResearchService
+
+        async with SessionLocal() as session:
+            result = await ResearchService(session, actor="worker").run_job(UUID(job_id))
+            await session.commit()
+            return result
+
+    try:
+        result = asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001 - worker boundary: record and re-raise
+        from app.services.runtime import record_dead_letter_sync
+
+        record_dead_letter_sync(
+            queue="research",
+            job_id=job_id,
+            payload={
+                "research_job_id": job_id,
+                "entrypoint": "app.workers.jobs.run_research_job",
+                "args": [job_id],
+            },
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+    else:
+        from app.services.runtime import resolve_dead_letter_sync
+
+        resolve_dead_letter_sync(queue="research", job_id=job_id)
+        return result

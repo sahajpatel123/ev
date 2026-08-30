@@ -115,13 +115,13 @@ fi
 
 note "installing EV launchd services"
 mkdir -p "$HOME/Library/LaunchAgents"
-for name in api worker scheduler runtime ears collector; do
+for name in api worker scheduler runtime ears collector opencode; do
   cp "$ROOT/launchd/ev.$name.plist" "$HOME/Library/LaunchAgents/"
 done
 # Parallel bootstrap: launchctl calls are slow under cold-start memory pressure;
 # the sequential installer (launchd/install.sh) added ~60s. Results are the
 # same topology; Agent 14's installer remains available for manual use.
-for name in api worker scheduler runtime ears collector; do
+for name in api worker scheduler runtime ears collector opencode; do
   label="ev.$name"
   plist="$HOME/Library/LaunchAgents/$label.plist"
   launchctl bootout "gui/$UID/$label" 2>/dev/null || true

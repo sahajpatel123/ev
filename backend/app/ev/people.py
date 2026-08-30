@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Entity, Event, Memory, MemoryEntity, RecognitionLog
+from app.models import Entity, Event, Memory, MemoryEntity, ObservationRecord, RecognitionLog
 from app.schemas import PersonWhereaboutsOut
-from app.utils.text import normalize_text
+from app.utils.text import normalize_text, utcnow
+
+
+def _freshness(value: str | datetime | None, *, stale_after_seconds: int = 86_400) -> str:
+    if value is None:
+        return "unknown"
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    age = (utcnow() - value.astimezone(UTC)).total_seconds()
+    return "fresh" if age <= stale_after_seconds else "stale"
 
 
 async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
@@ -106,6 +119,40 @@ async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
                 "confirmed_at": row.created_at.isoformat(),
             }
             for row in recognition_rows
+        ]
+
+    # Structured world-model observations are consent-checked at write time
+    # and carry their own evidence/freshness fields.  They augment, rather
+    # than replace, explicit face-recognition and reported-event evidence.
+    world_observations: list[dict] = []
+    if entity is not None:
+        rows = (
+            await session.execute(
+                select(ObservationRecord)
+                .where(
+                    ObservationRecord.subject_type == "person",
+                    ObservationRecord.deleted_at.is_(None),
+                    ObservationRecord.subject == entity.name,
+                )
+                .order_by(ObservationRecord.observed_at.desc())
+                .limit(10)
+            )
+        ).scalars().all()
+        world_observations = [
+            {
+                "observation_id": str(row.id),
+                "location": row.location,
+                "observed_at": row.observed_at.isoformat(),
+                "source_device": row.source_device,
+                "evidence_ref": row.evidence_ref,
+                "confidence": row.confidence,
+                "freshness_state": _freshness(
+                    row.observed_at,
+                    stale_after_seconds=row.stale_after_seconds,
+                ),
+                "uncertainty": row.uncertainty,
+            }
+            for row in rows
         ]
 
     # AGENT 7 ROSTER fusion: enrolled identity, face/voice sightings, biodata.
@@ -247,12 +294,22 @@ async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
             public_biodata = None
 
     last_seen = None
-    if mentions:
+    if world_observations:
+        latest_observation = world_observations[0]
+        last_seen = {
+            **latest_observation,
+            "event_id": latest_observation["observation_id"],
+            "source": "world_model",
+            "freshness_state": _freshness(latest_observation["observed_at"]),
+            "text": f"Observed {name} at {latest_observation['location']}.",
+        }
+    elif mentions:
         latest = mentions[0]
         last_seen = {
             "occurred_at": latest.occurred_at.isoformat(),
             "event_id": str(latest.id),
             "source": latest.source,
+            "freshness_state": _freshness(latest.occurred_at),
             "text": ((latest.content or {}).get("text") or "")[:240],
         }
     elif sightings:
@@ -261,6 +318,7 @@ async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
             "occurred_at": latest_sighting["confirmed_at"],
             "event_id": latest_sighting["recognition_id"],
             "source": "vision",
+            "freshness_state": _freshness(latest_sighting["confirmed_at"]),
             "text": f"Confirmed in a shared attachment ({latest_sighting['label']}).",
         }
 
@@ -276,6 +334,7 @@ async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
         enrolled=enrolled,
         face_sightings=face_sightings,
         voice_sightings=voice_sightings,
+        world_observations=world_observations,
         public_biodata=public_biodata,
         biodata_merged=biodata_merged,
     )

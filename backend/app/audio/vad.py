@@ -4,8 +4,8 @@ Two implementations share the same interface:
 
 * ``SileroVadOnnx`` — the real v5 ONNX model (2 MB, MIT) loaded through the
   ModelArbiter; the default when a model path is configured.
-* ``EnergyVad`` — the existing energy/ZCR heuristic, kept as the zero-
-  dependency offline double so CI and degraded runs stay deterministic.
+* ``EnergyVad`` — RMS energy heuristic, kept as the zero-dependency offline
+  double so CI and degraded runs stay deterministic.
 
 Segmentation (pre-roll, post-roll, gap merging, minimum duration) is shared so
 the two engines produce comparable utterance boundaries.
@@ -68,17 +68,97 @@ def _rms(samples) -> float:
     return math.sqrt(sum(int(s) * int(s) for s in samples) / len(samples))
 
 
-def _zcr(samples) -> float:
-    if len(samples) < 2:
-        return 0.0
-    crossings = sum(
-        1 for i in range(1, len(samples)) if (samples[i - 1] < 0) != (samples[i] < 0)
-    )
-    return crossings / (len(samples) - 1)
+def _cross_chunk_diff(samples, period: int) -> float:
+    """Normalized mean absolute difference between a signal and itself +``period``.
+
+    Near 0.0 when the audio literally repeats at that lag (a stuck-mic or
+    self-echo loop); higher for real speech, which is aperiodic. Comparison is
+    bounded to one period of overlap so a loop needs only a single clean repeat
+    to be caught.
+    """
+
+    n = len(samples)
+    if period <= 0 or period > n - period:
+        return 1.0
+    window = min(n - period, period)
+    if window <= 0:
+        return 1.0
+    denom = 0.0
+    acc = 0.0
+    for i in range(window):
+        a = int(samples[i])
+        b = int(samples[i + period])
+        acc += abs(a - b)
+        denom += abs(a) + abs(b)
+    if denom <= 0:
+        return 1.0
+    return acc / denom
+
+
+def looks_stuck_loop(
+    samples,
+    *,
+    sample_rate: int = 16000,
+    min_period_ms: float = 300.0,
+    max_period_ms: float = 1500.0,
+    loop_threshold: float = 0.10,
+    min_seconds: float = 1.5,
+) -> bool:
+    """True when the segment is a repeating audio loop (stuck mic / echo).
+
+    A stuck microphone or a playback self-loop produces audio whose content
+    repeats nearly identically, so some lag L re-matches the signal with a
+    normalized difference near zero. Real speech has no such lag.
+
+    The scan is coarse-to-fine: a coarse grid (~96 lags) finds the best
+    period, then a fine scan around it resolves misaligned loop lengths so a
+    loop is caught even when its period falls between grid points. The check is
+    deliberately conservative (only obvious loops are dropped) because a false
+    positive would discard the owner's actual speech.
+    """
+
+    if not samples or len(samples) < int(min_seconds * sample_rate):
+        return False
+    n = len(samples)
+    p0 = max(1, int(min_period_ms * sample_rate / 1000.0))
+    p1 = min(int(max_period_ms * sample_rate / 1000.0), n // 2)
+    if p0 > p1:
+        return False
+    # A literal loop always re-matches at a whole-number fraction of the
+    # segment (n/2, n/3, ...): the same phrase repeated. Check those exact
+    # lags first so clean repeats are caught even when the coarse grid lands
+    # a step away from the true period.
+    for k in range(2, max(2, n // p0) + 1):
+        lag = n // k
+        if lag < p0 or lag > p1:
+            continue
+        if _cross_chunk_diff(samples, lag) <= loop_threshold:
+            return True
+    best_ratio = 1.0
+    best_period = p0
+    coarse_step = max(1, (p1 - p0) // 96)
+    for period in range(p0, p1 + 1, coarse_step):
+        ratio = _cross_chunk_diff(samples, period)
+        if ratio < best_ratio:
+            best_ratio = ratio
+            best_period = period
+            if ratio <= loop_threshold:
+                return True
+    # The coarse grid can land a whole step off the true loop length; refine
+    # only around the best coarse lag (still bounded, and early-exits).
+    lo = max(p0, best_period - coarse_step)
+    hi = min(p1, best_period + coarse_step)
+    for period in range(lo, hi + 1):
+        ratio = _cross_chunk_diff(samples, period)
+        if ratio < best_ratio:
+            best_ratio = ratio
+            if ratio <= loop_threshold:
+                return True
+    return best_ratio <= loop_threshold
 
 
 class EnergyVad:
-    """Deterministic energy/ZCR VAD double (offline default)."""
+    """Deterministic energy VAD double (offline default)."""
 
     name = "energy"
 
@@ -86,8 +166,8 @@ class EnergyVad:
         self,
         *,
         frame_ms: int = 30,
-        rms_speech_floor: float = 300.0,
-        zcr_floor: float = 0.015,
+        rms_speech_floor: float = 80.0,
+        zcr_floor: float = 0.008,
         speech_probability: float = 0.9,
         silence_probability: float = 0.05,
     ) -> None:
@@ -105,7 +185,9 @@ class EnergyVad:
         for start in range(0, len(samples), frame_size):
             frame = _frame_slice(samples, start, start + frame_size)
             rms = _rms(frame)
-            speech = rms >= self.rms_speech_floor and _zcr(frame) >= self.zcr_floor
+            # RMS-only: voiced vowels (especially far-field "EE-vee") sit at or
+            # below a 0.015 ZCR floor on 20 ms frames, so ANDing ZCR dropped them.
+            speech = rms >= self.rms_speech_floor
             probabilities.append(self.speech_probability if speech else self.silence_probability)
         return probabilities
 
@@ -116,7 +198,7 @@ class EnergyVad:
 
         frame = _frame_slice(samples, 0, len(samples))
         rms = _rms(frame)
-        speech = rms >= self.rms_speech_floor and _zcr(frame) >= self.zcr_floor
+        speech = rms >= self.rms_speech_floor
         return self.speech_probability if speech else self.silence_probability
 
 

@@ -43,6 +43,16 @@ def api_key() -> str:
     return key
 
 
+def workbench_info() -> dict:
+    """Workbench URL + whether loopback auto-connect should kick in."""
+    url = api_url()
+    host = url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].strip("[]").lower()
+    return {
+        "url": f"{url}/app",
+        "loopback_auto_connect": host in ("127.0.0.1", "localhost", "::1"),
+    }
+
+
 def queue_dir() -> Path:
     return Path(os.environ.get("EV_CLI_QUEUE_DIR", str(Path.home() / ".ev" / "queue")))
 
@@ -316,6 +326,21 @@ async def sync_captures(
     }
 
 
+async def list_protocols(
+    *,
+    client: httpx.AsyncClient | None = None,
+    include_refused: bool = True,
+) -> dict:
+    c = client or _client()
+    resp = await c.get(
+        "/v1/assistant/protocols",
+        params={"include_refused": str(include_refused).lower()},
+    )
+    if resp.status_code != 200:
+        raise CliError(f"protocols failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
 async def ask(
     question: str,
     *,
@@ -326,6 +351,38 @@ async def ask(
     resp = await c.post("/v1/chat", json={"message": question, "stream": False})
     if resp.status_code != 200:
         raise CliError(f"ask failed ({resp.status_code}): {resp.text[:500]}")
+    return resp.json()
+
+
+async def present(
+    title: str,
+    body: str,
+    *,
+    kind: str = "card",
+    size: str | None = None,
+    time_type: str | None = None,
+    placement: str | None = None,
+    ttl_ms: int | None = None,
+    lookout: bool = False,
+    auto: bool = False,
+    client: httpx.AsyncClient | None = None,
+) -> dict:
+    c = client or _client()
+    payload = {"title": title, "body": body, "kind": kind, "lookout": lookout, "auto": auto}
+    if size:
+        payload["size"] = size
+    if time_type:
+        payload["time_type"] = time_type
+    if placement:
+        payload["placement"] = placement
+    if ttl_ms is not None:
+        payload["ttl_ms"] = ttl_ms
+    resp = await c.post(
+        "/v1/runtime/present",
+        json=payload,
+    )
+    if resp.status_code != 200:
+        raise CliError(f"present failed ({resp.status_code}): {resp.text[:500]}")
     return resp.json()
 
 
@@ -2042,10 +2099,42 @@ async def _run(args: argparse.Namespace) -> int:
         print(f"version: {health['version']}")
         print(f"capabilities ({len(health['capabilities'])}): {', '.join(health['capabilities'])}")
         return 0
+    if cmd == "workbench":
+        info = workbench_info()
+        print(f"workbench: {info['url']}")
+        expected = "yes" if info["loopback_auto_connect"] else "no"
+        print(f"loopback auto-connect expected: {expected}")
+        print("ops console: {url}/ops".format(url=info["url"]))
+        return 0
+    if cmd == "present":
+        async with _client() as client:
+            result = await present(
+                args.title,
+                args.body,
+                kind=args.kind,
+                size=getattr(args, "size", None),
+                time_type=getattr(args, "time_type", None),
+                placement=getattr(args, "placement", None),
+                ttl_ms=getattr(args, "ttl_ms", None),
+                lookout=bool(getattr(args, "lookout", False)),
+                auto=bool(getattr(args, "auto", False)),
+                client=client,
+            )
+        state = "opened" if result.get("opened") else "not opened"
+        print(f"EVIE overlay {state} via {result.get('via') or result.get('reason')}")
+        if result.get("next_step"):
+            print(result["next_step"])
+        return 0 if result.get("opened") else 2
     if cmd == "checkup":
         async with _client(120.0) as client:
             report = await checkup(client=client)
         print(json.dumps(report, indent=2, default=str))
+        return 0
+    if cmd == "protocols":
+        async with _client() as client:
+            sheet = await list_protocols(client=client)
+        for item in sheet.get("protocols") or []:
+            print(f"{item.get('status', '?'):12} {item.get('title')} — {item.get('detail', '')}")
         return 0
     if cmd == "export":
         async with _client() as client:
@@ -2275,6 +2364,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_vision_analyze.add_argument("--prompt", default=None)
 
     p_ask = sub.add_parser("ask", help="ask EV a question (streams tokens by default)")
+    sub.add_parser("protocols", help="list unlocked and refused protocols")
     p_ask.add_argument("question")
     p_ask.add_argument(
         "--no-stream",
@@ -2488,6 +2578,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_quickcard.add_argument("--context", default=None, help="extra context")
     p_quickcard.add_argument("--ttl", type=int, default=3600, help="cache TTL seconds")
     sub.add_parser("doctor", help="EV health check")
+    sub.add_parser(
+        "workbench",
+        help="print the workbench URL and whether loopback auto-connect applies",
+    )
+    p_present = sub.add_parser(
+        "present",
+        help="open EVIE's native HUD overlay on this Mac",
+    )
+    p_present.add_argument("title")
+    p_present.add_argument("body")
+    p_present.add_argument("--kind", default="card")
+    p_present.add_argument("--size", default=None)
+    p_present.add_argument("--time-type", dest="time_type", default=None)
+    p_present.add_argument("--placement", default=None)
+    p_present.add_argument("--ttl-ms", dest="ttl_ms", type=int, default=None)
+    p_present.add_argument("--lookout", action="store_true")
+    p_present.add_argument("--auto", action="store_true")
     sub.add_parser("checkup", help="run full diagnostics/calibration")
 
     p_export = sub.add_parser("export", help="export all events + memories as JSON")

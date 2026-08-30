@@ -1,8 +1,15 @@
-# opencode as an EV chat provider (Agent OPENCODE)
+# opencode as an EV chat provider (optional fallback)
 
-`EV_CHAT_PROVIDER=opencode` routes EV's reasoning through the locally installed
-`opencode` CLI (v1.18.12) running headless. The owner's `OPENCODE_API_KEY`
-already reaches hosted models through it, so EV needs no separate DeepSeek key.
+Typed chat uses official DeepSeek (`EV_CHAT_PROVIDER=deepseek`,
+`deepseek-v4-flash`). Live talk uses OpenAI Realtime (`gpt-realtime-2.1-mini`)
+when `EV_OPENAI_API_KEY` is set, else Grok Voice Think Fast 2.0 when
+`EV_XAI_API_KEY` is set — those are not chat-completions models. See
+`docs/VOICE.md` and `docs/ENVIRONMENT.md`.
+
+`EV_CHAT_PROVIDER=opencode` remains an optional route through the locally
+installed `opencode` CLI. It is not the voice default: the session API has no
+native function calling, and `opencode-go` was slower and less reliable for
+spoken turns than `api.deepseek.com`.
 
 Owned files: `backend/app/gateway/opencode.py`,
 `backend/app/scripts/opencode_agent_cost.py`,
@@ -82,14 +89,21 @@ The session API accepts **no** OpenAI-style function definitions, so
 3. sets `usage["degraded"] = True` and
    `usage["degradation"] = {"kind": "tools_unsupported", …}`.
 
-Consequence for EV: memory-tool *retrieval* still works, because
-`/v1/ev/chat` pre-retrieves memories into the request envelope before the model
-call — that path is untouched. What EV loses on this provider is
-**model-initiated** tool use inside a turn (`search_memory`,
-`search_decisions`, … and any write/action tool), so the tool loop
-(`MAX_TOOL_ROUNDS = 3`) completes in one round with zero executable calls. The
-loop handles that without crashing: with no executable validated calls it
-breaks immediately.
+Consequence for EV: the model cannot start tools itself. Chat therefore runs
+**execute-then-word** (`backend/app/ev/turn.py`):
+
+1. Snapshot WORKING ON (this request, thread focus, current task/project).
+2. Prefetch read intelligence (weather, math, memory, …).
+3. Dispatch write/life actions the owner asked for (`plan_life_tool_calls` →
+   `dispatch`) *before* the LLM speaks.
+4. One wording call to opencode-go / deepseek-v4-flash with identity,
+   WORKING ON, action receipts, and the briefing.
+5. If the model describes an action instead of confirming it, replace the
+   reply with `life_success_reply` from the real receipt.
+
+Native tool-calling providers still use the bounded tool loop after those
+pre-dispatched writes (already-run names are skipped). Memory retrieval into
+the request envelope is unchanged.
 
 Option (b) is implemented but **off by default**
 (`EV_OPENCODE_TOOL_EMULATION=true`): EV describes the tools in the system

@@ -77,11 +77,15 @@ Event ack < 1000 ms · chat first token < 1500 ms · timeline browse < 500 ms ·
 tactical briefing < 3000 ms · quick card < 800 ms · monthly spend ≤ $40.
 Measured in `/v1/ops/metrics` and `/v1/ops/center`.
 
-## 4a. Monthly DeepSeek cost (API-first)
+## 4a. Monthly hosted-model cost (opencode brain)
 
-The blessed profile (`.env.api-first`) sends reasoning to DeepSeek
-(`deepseek-v4-flash-0731`). At the documented owner-scale usage — ~50
-conversations/day, ~20k prompt tokens each, ~500 completion tokens each:
+The blessed profile (`.env.api-first`) routes reasoning through the local
+`opencode serve` session API, which reaches the owner's hosted models
+(`opencode-go/deepseek-v4-flash`) using `OPENCODE_API_KEY`. opencode reports
+its own measured `info.cost` per call, so EV records real spend rather than an
+estimate (`cost_source: opencode_reported`). At the documented owner-scale
+usage — ~50 conversations/day, ~20k prompt tokens each, ~500 completion tokens
+each, with EV's minimal agent keeping the preamble at ~100–230 tokens:
 
 ```text
 input:    50 × 30 days × 20k tokens = 30M tokens  × $0.27/M  = $8.10
@@ -201,7 +205,7 @@ restarted all services, and re-ran the runbook:
 | wake-openwakeword + speaker-campp | not loadable — weights are unpinned seed entries (Agent 2) |
 | `make preflight` | 6 REAL, 0 DOUBLE, 6 PARTIAL — exact remediations per organ |
 | `make eval-ml` | exit 0; `retrieval_quality` **measured** (nDCG@10 0.98, top-5 0.98) and `asr_quality` **measured** (WER 5.9% on LibriSpeech test-clean, faster_whisper); speaker/face/wake skip explicitly |
-| Chat | breaks honestly: 503 "401 Unauthorized" until `EV_DEEPSEEK_API_KEY` is set |
+| Chat | **REAL via opencode** (`opencode serve` 1.18.12 on :4096, key from `.env`/env file, agent `ev-minimal`, ephemeral sessions) |
 | Voice enrollment | breaks honestly: 422 "liveness model unavailable; failing closed" (liveness weights missing) — then CAM++ refusal after that |
 | Notification | delivered (console receipt) |
 | Backup | 20 events, 726 KB, verified |
@@ -230,3 +234,44 @@ is REAL.
   backups are unrecoverable; it must be stored offline before go-live.
 - **First failure mode under real use:** disk (models + datasets + backups on
   13 GB free), then RAM (swap), then a stale restore drill (alert at 35 days).
+
+## 9. Voice go-live checklist (one page)
+
+Every step maps to a real command or a launchd log; nothing here is a double.
+Watch `make preflight` rows (speaker, liveness, wake, asr, tts) go REAL as you
+complete each step.
+
+```text
+1. ENROLL (Agent 5 path, fail-closed)
+   ev consent grant voice_enrollment
+   ev voice-enroll <5 owner wavs> --liveness live
+   # requires liveness-audio weights + EV_VOICEPRINT_PROVIDER=campp
+   # with campp.onnx in EV_VOICEPRINT_MODEL_DIR; otherwise 422/refusal
+
+2. WAKE MODEL PATH (Agent 3 trained head)
+   EV_VOICE_WAKE_PROVIDER=openwakeword
+   EV_VOICE_WAKE_OPENWAKEWORD_MODEL_PATH=~/.ev/models/wake-openwakeword.onnx
+   EV_VOICE_WAKE_OPENWAKEWORD_VERIFIER_PATH=~/.ev/models/wake-openwakeword-verifier.pkl
+   launchctl kickstart -k gui/$UID/ev.ears
+
+3. SAY "EVIE"
+   talk; ears logs (~/Library/Logs/ev/ears.err.log) must show wake_hits > 0
+
+4. VERIFY
+   ev voice-verify <owner wav>        # prints accepted: True
+
+5. ASK (brain)
+   ev ask "what did I just say?"      # chat via opencode (preflight chat REAL)
+
+6. SPOKEN REPLY
+   EV_VOICE_TTS_PROVIDER=openai_compat  (or kokoro when Agent 2 lands it)
+   EV_ALLOW_REMOTE_TTS=true
+   EV_VOICE_TTS_BASE_URL=...  EV_VOICE_TTS_API_KEY=...
+   ev ask "hello"                      # reply prints: audio: ev://voice/tts/...
+```
+
+Notes: enrollment and verification are stateless on raw audio (base64 upload,
+raw samples discarded); the wake word is the only always-on listener. The
+opencode server binds 127.0.0.1:4096 only; if it ever logs "server is
+unsecured" and you expose the Mac on a network, set `OPENCODE_SERVER_PASSWORD`
+in the same env file the plist sources.

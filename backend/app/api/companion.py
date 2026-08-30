@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.core import _memory_out
-from app.auth import require_actor
+from app.auth import ActorContext, require_actor, require_actor_context
 from app.db import get_session
 from app.ev import (
     companionship,
@@ -50,6 +50,8 @@ from app.schemas import (
     PrintJobStatusUpdate,
     RelationshipOut,
     ResearchConclude,
+    ResearchJobCreate,
+    ResearchJobOut,
     ResearchNoteCreate,
     ResearchNoteOut,
     ResearchSessionCreate,
@@ -71,6 +73,85 @@ router = APIRouter(prefix="/v1")
 # --------------------------------------------------------------------------- #
 # Research assistant
 # --------------------------------------------------------------------------- #
+
+
+@router.post("/research/jobs", response_model=ResearchJobOut, status_code=201)
+async def create_research_job(
+    data: ResearchJobCreate,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        row = await service.create_job(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    await session.commit()
+    return ResearchJobOut.model_validate(row)
+
+
+@router.get("/research/jobs/{job_id}", response_model=ResearchJobOut)
+async def get_research_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        row = await service._job(job_id)
+    except (KeyError, PermissionError):
+        raise HTTPException(status_code=404, detail="Research job not found") from None
+    return ResearchJobOut.model_validate(row)
+
+
+@router.post("/research/jobs/{job_id}/run", response_model=ResearchJobOut)
+async def run_research_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        await service.run_job(job_id)
+        row = await service._job(job_id)
+    except (KeyError, PermissionError):
+        raise HTTPException(status_code=404, detail="Research job not found") from None
+    await session.commit()
+    return ResearchJobOut.model_validate(row)
+
+
+@router.post("/research/jobs/{job_id}/cancel", response_model=ResearchJobOut)
+async def cancel_research_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        await service.cancel_job(job_id)
+        row = await service._job(job_id)
+    except (KeyError, PermissionError):
+        raise HTTPException(status_code=404, detail="Research job not found") from None
+    await session.commit()
+    return ResearchJobOut.model_validate(row)
+
+
+@router.post("/research/jobs/{job_id}/resume", response_model=ResearchJobOut)
+async def resume_research_job(
+    job_id: UUID,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> ResearchJobOut:
+    service = research.ResearchService(session, actor=actor)
+    try:
+        await service.resume_job(job_id)
+        row = await service._job(job_id)
+    except (KeyError, PermissionError):
+        raise HTTPException(status_code=404, detail="Research job not found") from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    await session.commit()
+    return ResearchJobOut.model_validate(row)
 
 
 @router.post("/research/sessions", response_model=ResearchSessionOut, status_code=201)
@@ -314,6 +395,24 @@ async def hud_card(
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> HudCardOut:
+    from app.ev.workbench import last_hud_payload
+    from app.schemas import HudCardOut
+
+    last = await last_hud_payload(session)
+    if last and last.get("schema_version") == "ev.hud.card.v1":
+        try:
+            return HudCardOut.model_validate(
+                {
+                    "schema_version": "ev.hud.card.v1",
+                    "generated_at": last.get("generated_at"),
+                    "title": last.get("title") or "EV",
+                    "body": last.get("body") or "",
+                    "priority": last.get("priority") or 0.0,
+                    "meta": last.get("meta") if isinstance(last.get("meta"), dict) else {},
+                }
+            )
+        except Exception:
+            pass
     return await hud.status_card(session)
 
 
@@ -385,7 +484,9 @@ async def companionship_scan(
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_actor),
 ) -> IsolationScanOut:
-    return await companionship.scan_isolation(session, window_days=window_days)
+    result = await companionship.scan_isolation(session, window_days=window_days)
+    await session.commit()
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -439,25 +540,51 @@ async def list_tools(
     return [ToolSpecOut.model_validate(spec) for spec in tools.list_tools()]
 
 
+@router.get("/capabilities")
+async def capability_manifest(
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+    session_id: str | None = Query(default=None, max_length=128),
+) -> dict:
+    """Expose current capability contracts and honest provider availability."""
+
+    from app.ev.policy import capability_manifest as build_manifest
+    from app.voice.live.grok_voice import live_realtime_provider
+
+    return await build_manifest(
+        session,
+        actor=ctx.actor,
+        device_id=ctx.device_id,
+        realtime_provider=live_realtime_provider() or "pipeline",
+        channel="action",
+        session_id=session_id,
+    )
+
+
 @router.post("/gateway/tools", response_model=ToolCallResponse)
 async def call_tool(
     data: ToolCallRequest,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_actor_context),
+    x_ev_reverify: str | None = Header(default=None),
 ) -> ToolCallResponse:
     """Declarative tool dispatch used by the orchestrator/gateway.
 
     Every invocation is validated against the registry schema, checked against
     the permission matrix (sensitive tools need an explicit gate), executed,
-    and written to the access log before commit.
+    and written to the access log before commit. Life actions require a
+    purpose-bound reverify proof for device actors — a body flag is ignored.
     """
     response = await tools.dispatch(
         session,
         data.name,
         data.arguments,
-        actor=actor,
+        actor=ctx.actor,
         allow_sensitive=data.allow_sensitive,
         request_id=data.request_id,
+        device_id=ctx.device_id,
+        reverify_token=x_ev_reverify,
+        channel="action",
     )
     await session.commit()
     return response
@@ -602,3 +729,84 @@ async def continue_session(
         recent_context=recent_context,
         next_actions=next_actions,
     )
+
+
+@router.get("/indoor/graph")
+async def indoor_graph(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from app.models import IndoorEdge, IndoorNode
+
+    nodes = list((await session.execute(select(IndoorNode))).scalars().all())
+    edges = list((await session.execute(select(IndoorEdge))).scalars().all())
+    return {
+        "nodes": [
+            {
+                "id": str(node.id),
+                "name": node.name,
+                "aliases": node.aliases or [],
+                "photo_ref": node.photo_ref,
+                "x": node.x,
+                "y": node.y,
+            }
+            for node in nodes
+        ],
+        "edges": [
+            {
+                "id": str(edge.id),
+                "from": str(edge.from_node_id),
+                "to": str(edge.to_node_id),
+                "instruction": edge.instruction,
+                "meters": edge.meters,
+            }
+            for edge in edges
+        ],
+    }
+
+
+@router.post("/indoor/nodes")
+async def indoor_add_node(
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from app.ev.travel import upsert_node
+
+    name = str(data.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    node = await upsert_node(
+        session,
+        name,
+        aliases=list(data.get("aliases") or []),
+        photo_ref=data.get("photo_ref"),
+        x=data.get("x"),
+        y=data.get("y"),
+    )
+    await session.commit()
+    return {"id": str(node.id), "name": node.name}
+
+
+@router.post("/indoor/edges")
+async def indoor_add_edge(
+    data: dict,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_actor),
+) -> dict:
+    from uuid import UUID as _UUID
+
+    from app.ev.travel import connect_nodes
+
+    try:
+        edge = await connect_nodes(
+            session,
+            _UUID(str(data["from"])),
+            _UUID(str(data["to"])),
+            instruction=str(data.get("instruction") or ""),
+            meters=data.get("meters"),
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await session.commit()
+    return {"id": str(edge.id)}

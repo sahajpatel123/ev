@@ -56,7 +56,7 @@ PLIST
   codesign --force --deep -s - "$HELPER_DIR/EVNotificationHelper.app"
 fi
 
-PLISTS=(api worker scheduler runtime ears collector)
+PLISTS=(api worker scheduler runtime ears collector opencode)
 for name in "${PLISTS[@]}"; do
   plist="$ROOT/launchd/ev.$name.plist"
   plutil -lint "$plist" >/dev/null
@@ -66,13 +66,20 @@ for name in "${PLISTS[@]}"; do
     sudo cp "$plist" "$TARGET_DIR/"
     sudo launchctl bootstrap "$DOMAIN" "$TARGET_DIR/ev.$name.plist"
     sudo launchctl enable "$DOMAIN/$label"
-    sudo launchctl kickstart -k "$DOMAIN/$label"
+    # ears is a companion to the EV menu-bar app: it must not run by itself.
+    # The app starts it on launch and stops it on quit, so the microphone is
+    # only ever active while the menu-bar app is open.
+    if [[ "$name" != "ears" ]]; then
+      sudo launchctl kickstart -k "$DOMAIN/$label"
+    fi
   else
     launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
     cp "$plist" "$TARGET_DIR/"
     launchctl bootstrap "$DOMAIN" "$TARGET_DIR/ev.$name.plist"
     launchctl enable "$DOMAIN/$label"
-    launchctl kickstart -k "$DOMAIN/$label"
+    if [[ "$name" != "ears" ]]; then
+      launchctl kickstart -k "$DOMAIN/$label"
+    fi
   fi
   echo "[ev] $label loaded ($MODE)"
 done

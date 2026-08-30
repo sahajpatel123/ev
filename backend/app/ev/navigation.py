@@ -26,16 +26,35 @@ async def route_briefing(session: AsyncSession) -> RouteBriefingOut:
     notes: list[str] = []
 
     if next_event:
+        from app.ev.travel import leave_by_iso, maps_eta, owner_coarse_origin, weather_note
+
         destination = next_event.get("location") or next_event.get("summary")
-        leave_by = cal.get("leave_by")
-        travel_time = 30  # EV has no live routing API; explicit estimate only.
+        origin = await owner_coarse_origin(session)
+        eta = maps_eta(
+            origin=origin,
+            destination=destination,
+            provider="local",
+        )
+        travel_time = int(eta["minutes"])
+        start = next_event.get("start")
+        computed_leave = leave_by_iso(start, travel_time)
+        leave_by = computed_leave or cal.get("leave_by")
         notes.append(
             f"Next commitment from live calendar: {next_event.get('summary')} "
             f"at {next_event.get('start')}."
         )
-        notes.append(
-            "Travel time is an EV estimate (30 min default); no live routing API is connected."
-        )
+        if eta.get("estimate"):
+            notes.append(eta.get("honesty") or "Travel time is an estimate.")
+        if origin:
+            notes.append(f"Origin: {origin}.")
+        weather = await weather_note(destination)
+        if weather:
+            notes.append(f"Weather: {weather}.")
+            if "rain" in weather and eta.get("estimate"):
+                travel_time = int(travel_time) + 5
+                recomputed = leave_by_iso(start, travel_time)
+                if recomputed:
+                    leave_by = recomputed
         if next_event.get("participants"):
             names = ", ".join(
                 participant.get("name") or participant.get("email")
@@ -88,6 +107,13 @@ async def route_briefing(session: AsyncSession) -> RouteBriefingOut:
     location_lines = [line for line in state.live_context if "] location " in line]
     if location_lines:
         notes.append(f"Live context: {location_lines[0]}")
+
+    if destination and not any(note.lower().startswith("weather") for note in notes):
+        from app.ev.travel import weather_note
+
+        overlay = await weather_note(destination)
+        if overlay:
+            notes.append(f"Weather: {overlay}.")
 
     return RouteBriefingOut(
         schema_version="ev.hud.route.v1",

@@ -1,0 +1,36 @@
+---
+description: Freeze the working live-voice conversation path unless the owner explicitly asks to change it.
+alwaysApply: true
+---
+
+# Live voice freeze (2026-08-19)
+
+The Mac live conversation that greets, speaks smoothly, then hears the next
+question is a frozen baseline. Tag: `live-working-2026-08-19`.
+
+Do **not** rewrite, retune, or “simplify” this path unless the user explicitly
+asks. That includes speculative playback buffers, echo-gate redesigns, VAD
+changes, websocket reconnect-per-turn, and swapping OpenAI Realtime.
+
+Frozen surfaces:
+
+- `backend/app/voice/live/grok_voice.py`
+- `backend/app/voice/live/session.py`
+- `backend/app/voice/live/transport.py`
+- `macos/Sources/EV/TTSPlayer.swift`
+- `macos/Sources/EV/LiveConversation.swift`
+- `ios/EVClient/Sources/EVClient/LiveVoice.swift`
+
+Required behavior to preserve:
+
+1. First spoken reply is continuous PCM on one player node (16 kHz → 48 kHz),
+   with a short prime (~100 ms) rather than starting dry on the first packet.
+2. After she finishes, the mic gate reopens and turn 2+ are heard without
+   restarting the app or the websocket.
+3. OpenAI session uses `server_vad` with `create_response: true`.
+4. Playback mute must not stay latched after spoken audio is done.
+
+If live voice regresses, restore this tag and compare fingerprints
+(`/v1/health` → `runtime.realtime_bridge_source_fingerprint`) against the
+running API and a freshly packaged `macos/build/EV.app`. Do not layer a second
+implementation on top of a stale process.

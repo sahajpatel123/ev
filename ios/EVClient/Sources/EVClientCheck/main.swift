@@ -16,6 +16,46 @@ let client = EVAPIClient(
     session: mockSession()
 )
 
+// 0. Capability status buckets are mutually exclusive in the presentation.
+let manifest = CapabilityManifest(json: [
+    "enabled": ["HUD", "hud"],
+    "needs_permission": ["Screen Recording", "screen recording"],
+    "unavailable": ["screen recording", "Calendar", "calendar"],
+    "refused": ["screen recording", "Calendar", "Mail"]
+])
+expect(manifest.enabled == ["HUD"], "capability enabled list is deduplicated")
+expect(manifest.needsPermission == ["Screen Recording"], "needs-permission list is deduplicated")
+expect(manifest.unavailable == ["Calendar"], "unavailable excludes needs-permission overlap")
+expect(manifest.refused == ["Mail"], "refused excludes higher-precedence statuses")
+expect(
+    manifest.availability(of: " screen RECORDING ") == .needsPermission,
+    "capability availability follows presentation precedence"
+)
+print("ok: capability manifest status buckets")
+
+let setupManifest = CapabilityManifest(json: [
+    "protocols": [
+        ["title": "Calendar / leave-by", "status": "needs_setup"],
+        ["title": "Messages via life bridge", "status": "needs_setup"],
+    ]
+])
+expect(setupManifest.needsPermission.isEmpty, "provider setup is not reported as OS permission")
+expect(
+    setupManifest.unavailable == ["Calendar / leave-by", "Messages via life bridge"],
+    "provider setup is shown only as unavailable/setup"
+)
+let legacySetupManifest = CapabilityManifest(json: [
+    "missing_permissions": [
+        ["title": "Calendar / leave-by", "status": "needs_setup"]
+    ]
+])
+expect(
+    legacySetupManifest.needsPermission.isEmpty
+        && legacySetupManifest.unavailable == ["Calendar / leave-by"],
+    "legacy setup payload is migrated out of the permission bucket"
+)
+print("ok: provider setup stays separate from OS permissions")
+
 // 1. HUD card: decode, validate, render consistently.
 do {
     let json = """
@@ -647,6 +687,9 @@ do {
     event: final_transcript
     data: {"text":"hello","confidence":0.92,"provider":"mock","degraded":false,"audio_ref":"voice/in.wav"}
 
+    event: tts_chunk
+    data: {"index":0,"text":"Hi!","audio_b64":"UENG","content_type":"audio/wav"}
+
     event: reply
     data: {"session_id":"vs-3","state":"responding","transcript":"hello","transcript_confidence":0.92,"reply":"Hi!","conversation_id":null,"tts":{"provider":"piper","audio_ref":"voice/out.wav","content_type":"audio/wav","ssml":null,"duration_ms":900,"degraded":false},"style":null,"model":"mock","context_tokens":10,"memory_deltas":[]}
 
@@ -661,7 +704,7 @@ do {
     for try await event in client.streamUtterance(sessionId: "vs-3", audioB64: "UENG") {
         events.append(event)
     }
-    expect(events.count == 4, "voice stream parsed 4 events")
+    expect(events.count == 5, "voice stream parsed 5 events")
     guard case .partial(let partial)? = events.first else {
         failures.append("voice stream first event is partial")
         print("FAIL: voice stream first event is partial")
@@ -674,9 +717,15 @@ do {
         throw NSError(domain: "test", code: 4)
     }
     expect(transcript.text == "hello", "voice stream transcript text")
-    guard case .reply(let reply)? = events.dropFirst(2).first else {
-        failures.append("voice stream third event is reply")
-        print("FAIL: voice stream third event is reply")
+    guard case .ttsChunk(let chunk)? = events.dropFirst(2).first else {
+        failures.append("voice stream third event is tts_chunk")
+        print("FAIL: voice stream third event is tts_chunk")
+        throw NSError(domain: "test", code: 4)
+    }
+    expect(chunk.audioB64 == "UENG", "voice stream tts chunk audio")
+    guard case .reply(let reply)? = events.dropFirst(3).first else {
+        failures.append("voice stream fourth event is reply")
+        print("FAIL: voice stream fourth event is reply")
         throw NSError(domain: "test", code: 5)
     }
     expect(reply.tts?.audioRef == "voice/out.wav", "voice stream reply tts audio_ref")
@@ -691,6 +740,38 @@ do {
     print("FAIL: voice stream: \(error)")
 }
 
+// 14b. Voice wake carries a local audio_ref for the wake engine.
+do {
+    MockURLProtocol.handler = { request in
+        expect(request.url?.path == "/v1/voice/wake", "voice wake path")
+        let body = String(data: request.bodyData(), encoding: .utf8) ?? ""
+        expect(body.contains("audio_ref"), "voice wake audio_ref")
+        expect(body.contains("ev-smoke-wake.wav"), "voice wake audio_ref value")
+        expect(body.contains("\"device_id\":\"dev-audio\""), "voice wake device id")
+        let response = """
+        {
+          "session_id": null,
+          "state": "idle",
+          "owner_enrolled": false,
+          "challenge_nonce": null,
+          "challenge_phrase": null,
+          "message": "no session"
+        }
+        """
+        return (httpResponse(201), Data(response.utf8))
+    }
+    let wake = try await client.wakeVoice(
+        deviceId: "dev-audio",
+        audioRef: "/tmp/ev-smoke-wake.wav"
+    )
+    expect(wake.state == "idle", "voice wake state decoded")
+    expect(wake.sessionId == nil, "voice wake no session decoded")
+    print("ok: voice wake audio_ref")
+} catch {
+    failures.append("voice wake: \(error)")
+    print("FAIL: voice wake: \(error)")
+}
+
 // 15. Keychain token store (skip silently when an unsigned CLT binary is
 // denied keychain access; that is an environment limitation, not a client bug).
 do {
@@ -703,6 +784,37 @@ do {
     print("ok: keychain token store")
 } catch {
     print("skip: keychain unavailable to unsigned CLT binary (\(error))")
+}
+
+// 16. LIFE access: permission report POST + SMS URL builder.
+do {
+    MockURLProtocol.handler = { request in
+        expect(
+            request.url?.path == "/v1/devices/dev-1/permissions",
+            "permission report path"
+        )
+        let body = String(data: request.bodyData(), encoding: .utf8) ?? ""
+        expect(body.contains("\"platform\":\"macos\""), "permission report platform")
+        expect(body.contains("\"permission\":\"microphone\""), "permission report entry")
+        return (httpResponse(202), Data("{}".utf8))
+    }
+    let report = EVPermissionReport(
+        platform: "macos",
+        deviceId: "dev-1",
+        permissions: [
+            EVPermissionEntry(permission: "microphone", state: "granted"),
+        ]
+    )
+    let posted = try await client.postPermissionReport(report, deviceID: "dev-1")
+    expect(posted, "permission report accepted")
+
+    let sms = EVMessageURLs.smsURL(recipients: ["+123456"], body: "hi EV")
+    expect(sms?.scheme == "sms", "sms url scheme")
+    expect(sms?.query?.contains("body=hi%20EV") == true, "sms url body")
+    print("ok: LIFE access APIs")
+} catch {
+    failures.append("life access: \(error)")
+    print("FAIL: life access: \(error)")
 }
 
 if failures.isEmpty {

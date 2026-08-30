@@ -131,6 +131,9 @@ async def add_bom_item(session: AsyncSession, project_id: UUID, data: BomItemCre
     )
     session.add(item)
     await session.flush()
+    from app.ev.workshop import scan_empties
+
+    await scan_empties(session, emit=True)
     return item
 
 

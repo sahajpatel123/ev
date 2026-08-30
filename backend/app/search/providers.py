@@ -88,6 +88,10 @@ def get_search_provider() -> SearchProvider | None:
     name = settings.search_provider
     if name == "mock":
         return MockSearchProvider()
+    if name in {"live", "open", "openmeteo"}:
+        from app.search.live import LiveSearchProvider
+
+        return LiveSearchProvider()
     if name == "brave":
         if not settings.brave_search_api_key:
             return None

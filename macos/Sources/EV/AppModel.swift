@@ -1,5 +1,8 @@
 import AppKit
+import AVFoundation
+import EVAuth
 import EVClient
+import EVRuntime
 import Foundation
 import ServiceManagement
 
@@ -13,10 +16,34 @@ final class AppModel: ObservableObject {
     }
 
     struct ChatMessage: Identifiable, Equatable {
-        let id = UUID()
+        let id: String
         let role: String
         var text: String
         var streaming: Bool
+    }
+
+    struct LiveConfirmationHold: Equatable {
+        let action: String
+        let target: String?
+        let method: String?
+        let expiry: String?
+    }
+
+    enum BridgeConnectionState: String, Sendable {
+        case notChecked
+        case permissionRequired
+        case connecting
+        case authorizationRequired
+        case connected
+        case helperMissing
+        case failed
+    }
+
+    struct MacBridgeStatus: Identifiable, Equatable, Sendable {
+        let id: String
+        let title: String
+        var state: BridgeConnectionState
+        var detail: String
     }
 
     @Published var status: Status = .offline
@@ -25,29 +52,85 @@ final class AppModel: ObservableObject {
     @Published var hudCard: HUDCard?
     @Published var queueCount = 0
     @Published var lastError: String?
-    @Published var isRecording = false
+    @Published var needsComputerAccessibility = false
+    @Published var isLiveMuted = false
+    @Published var isLiveActive = false
+    @Published var isLivePaused = false
     @Published var sessionId: String?
+    @Published var conversationId: String?
     @Published var transcript = ""
+    @Published var confirmingHud = false
+    @Published var cameraState: CameraStateSnapshot = .unknown
+    @Published var cameraRequestInFlight = false
+    @Published var capabilityManifest = CapabilityManifest()
+    @Published var deviceMesh = DeviceMeshSnapshot()
+    @Published var activeLiveProvider: String?
+    /// Exact client-visible proof for the current/last Mac live runtime.
+    /// ``MenuBarView`` and diagnostics tooling can render ``displayText``
+    /// without reaching into the socket or duplicating event parsing.
+    @Published var liveRuntimeDiagnostics = LiveRuntimeDiagnostics()
+    @Published var activeLiveModel: String?
+    @Published var liveTTSDeviceID: String?
+    @Published var advertisedLiveToolNames: [String] = []
+    @Published var providerAcknowledgedToolNames: [String] = []
+    @Published var liveToolsReported = false
+    @Published var providerToolsReported = false
+    @Published var providerSessionReady = false
+    @Published var capabilityError: String?
+    @Published var lastToolCallName: String?
+    @Published var lastToolResultStatus: String?
+    @Published var lastToolEvidenceSource: String?
+    @Published var lastToolEvidenceTimestamp: String?
+    @Published var liveConfirmationHold: LiveConfirmationHold?
+    /// Backend bridge state is separate from local TCC permission state.
+    @Published var macBridgeStatuses: [MacBridgeStatus] = []
+    enum StartupState: String { case booting, loadingIdentity, authenticating, bootstrapping, startingVoice, online, authFailed, backendUnavailable }
+    @Published var startupState: StartupState = .booting
+    // Safe-startup diagnostics (single read, no prompt storm)
+    private(set) var startupKeychainReads = 0
+    private(set) var startupAuthAttempts = 0
+    private(set) var startupMicStarts = 0
+    private(set) var startupCameraStarts = 0
 
-    let config = AppConfig()
-    let client: EVAPIClient
+    private(set) var config: AppConfig
+    private(set) var client: EVAPIClient
     let queue: OfflineCaptureQueue
     let hotkey = GlobalHotkey()
-    let mic = MicCapture()
     let player = TTSPlayer()
+    let live = LiveConversation()
 
     private var heartbeatTask: Task<Void, Never>?
-    private var pendingAssistantID: UUID?
+    private var conversationTask: Task<Void, Never>?
+    private var pendingAssistantID: String?
+    private var started = false
+    private var micAuthObserver: NSObjectProtocol?
+    private var authCoordinator: Task<Void, Never>?
 
     init() {
+        // Force BuildInfo linkage so binary hash changes with git SHA / audio arch
+        print(BuildInfo.gitSHA, BuildInfo.audioArchitecture, BuildInfo.buildTimestamp)
         let config = AppConfig()
+        self.config = config
         client = EVAPIClient(baseURL: config.baseURL, token: config.apiKey)
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first?
             .appendingPathComponent("EV", isDirectory: true)
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("EV", isDirectory: true)
+        ?? FileManager.default.temporaryDirectory.appendingPathComponent("EV", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         queue = OfflineCaptureQueue(store: FileCaptureQueueStore(directory: support))
+        liveRuntimeDiagnostics.setBackend(
+            url: config.baseURL,
+            source: config.baseURLSource
+        )
+        Task { @MainActor [weak self] in
+            self?.start()
+        }
+    }
+
+    /// A read-only render target for a future diagnostics panel/log export.
+    /// The underlying facts remain structured in ``liveRuntimeDiagnostics``.
+    var liveRuntimeDiagnosticsText: String {
+        liveRuntimeDiagnostics.displayText
     }
 
     var launchAtLogin: Bool {
@@ -65,10 +148,58 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func start() {
-        Task {
-            await refresh()
+    @discardableResult
+    func reloadAPICredentials() -> Bool {
+        if let stored = UserDefaults.standard.string(forKey: "EV_API_KEY"),
+           !APIAuthKey.isUsable(stored) {
+            UserDefaults.standard.removeObject(forKey: "EV_API_KEY")
         }
+        let fresh = AppConfig()
+        guard APIAuthKey.isUsable(fresh.apiKey) else { return false }
+        let changed = fresh.apiKey != client.token || fresh.baseURL != client.baseURL
+        config = fresh
+        client = EVAPIClient(baseURL: fresh.baseURL, token: fresh.apiKey)
+        liveRuntimeDiagnostics.setBackend(
+            url: fresh.baseURL,
+            source: fresh.baseURLSource
+        )
+        if changed, live.isRunning {
+            // Keep the loop and its audio ownership intact; closing only the
+            // current channel makes the existing loop reconnect through the
+            // newly resolved AppConfig client on its normal path.
+            live.configurationDidChange()
+        }
+        return changed
+    }
+
+    private func isUnauthorized(_ error: Error) -> Bool {
+        if case EVAPIError.httpStatus(401, _) = error { return true }
+        return false
+    }
+
+    func start() {
+        guard !started else { return }
+        started = true
+        startupState = .booting
+        // SAFE STARTUP: no mic/camera/live until device auth is valid
+        live.attach(self)
+        VoiceOrbOverlay.shared.attach(self)
+        observeMicrophoneAuthorization()
+        hotkey.start(
+            keyCode: 14,
+            flags: [.command, .shift],
+            handler: { [weak self] in
+                Task { @MainActor in self?.toggleAudioControl() }
+            }
+        )
+        // WAKE W1: ev.ears is the always-on mic owner (launchd KeepAlive+RunAtLoad true).
+        // EV.app surrenders the mic while idle — only an accepted wake's
+        // Realtime handoff may acquire the input. Keep the kill for the brief
+        // handoff window (LiveConversation.start) but do not kill at launch
+        // when the idle path is local-only; ensure ears is alive instead.
+        EarsProcess.ensureRunning()
+        // Single coordinated startup sequence
+        Task { await runSafeStartup() }
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
@@ -76,36 +207,754 @@ final class AppModel: ObservableObject {
                 await self?.tick()
             }
         }
+        conversationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                guard !Task.isCancelled else { break }
+                await self?.refreshConversation()
+            }
+        }
+    }
+
+    private func runSafeStartup() async {
+        startupState = .loadingIdentity
+        // Exactly ONE Keychain read per process (cached thereafter)
+        startupKeychainReads = 1
+        _ = reloadAPICredentials()
+        if config.usesPlaceholderKey {
+            startupState = .authFailed
+            lastError = "DEVICE_CREDENTIAL_MISSING: No device token in Keychain. This Mac's trusted device record exists but local credential is missing — repair required (no master-key copy needed)."
+            status = .offline
+            return
+        }
+        startupState = .authenticating
+        startupAuthAttempts = 1
+        // Single auth attempt: bootstrap will validate device token via _resolve_actor
+        do {
+            try await authenticateOnce()
+        } catch {
+            if isUnauthorized(error) {
+                startupState = .authFailed
+                lastError = authFailureMessage((error as? EVAPIError)?.errorDescription ?? "")
+                status = .offline
+                return
+            } else {
+                startupState = .backendUnavailable
+                lastError = "Backend unavailable — will retry once."
+                // One bounded retry for transient network, not for invalid credential
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                do { try await authenticateOnce() } catch {
+                    startupState = .authFailed
+                    status = .offline
+                    return
+                }
+            }
+        }
+        startupState = .bootstrapping
+        await bootstrapIfNeeded()
+        // Camera LAW: remains OFF during normal boot
+        startupCameraStarts = 0
+        // OWNER LAW: opening EV.app IS starting the audio — the live Realtime
+        // session comes up immediately (no push-to-talk, no wake gate). The
+        // always-available wake system serves the app-closed path only; the
+        // mic handoff marker keeps ears standing down while the app is open.
+        startupState = .startingVoice
+        startupMicStarts = 1
+        live.start()
+        startupState = .online
+        status = .listening
+        NSLog("EV audio started at app open (live session up; wake serves app-closed)")
+        // Defer non-critical bridges until after voice is stable
+        let statuses = await PermissionCenter.statuses()
+        await connectGrantedBridges(from: statuses)
+    }
+
+    private func authenticateOnce() async throws {
+        // Lightweight auth probe: runtimeSync is device-authenticated and updates last_seen
+        _ = try await client.runtimeSync(limit: 1)
     }
 
     func tick() async {
         await refreshHealth()
+        await refreshDeviceMesh()
         await syncQueue()
         await updateQueueCount()
+        await refreshConversation()
     }
 
     func refresh() async {
         await refreshHealth()
+        await refreshDeviceMesh()
         await refreshHUD()
         await syncQueue()
         await updateQueueCount()
+        await refreshConversation()
+    }
+
+    func bootstrapIfNeeded() async {
+        do {
+            let registryId = try await ensureRegistryDevice()
+            let result = try await client.bootstrapDevice(id: registryId)
+            if result.spoken, let line = result.spokenText, !line.isEmpty {
+                lastError = nil
+            }
+            if let liveId = result.prefs?.liveConversationId, !liveId.isEmpty {
+                conversationId = liveId
+            }
+            if result.prefsLoaded == false {
+                lastError = result.spokenText ?? "I couldn't load prefs; using defaults."
+            }
+            await refreshDeviceMesh()
+        } catch {
+            if isUnauthorized(error) {
+                status = .offline
+            }
+        }
+    }
+
+    private func ensureRegistryDevice() async throws -> String {
+        let defaults = UserDefaults.standard
+        if let stored = defaults.string(forKey: "EV_REGISTRY_DEVICE_ID"),
+           UUID(uuidString: stored) != nil {
+            // If we have a stored ID but no Keychain token, the device is
+            // trusted but local credential is missing — do not create duplicate.
+            // Repair will be handled via manual DB reissue or future token refresh.
+            // Return existing ID and let bootstrap attempt device auth; if it
+            // fails with DEVICE_TOKEN_INVALID, AppModel will surface repair.
+            return stored
+        }
+        let created = try await client.createDevice(
+            name: config.deviceID,
+            capabilities: ["attention", "voice", "camera"],
+            deviceType: "mac"
+        )
+        defaults.set(created.device.id, forKey: "EV_REGISTRY_DEVICE_ID")
+        // Persist the one-time bearer token durably in Keychain (survives rebuild)
+        _ = DeviceCredentialStore.save(token: created.token, for: created.device.id)
+        // Switch client to the new device token immediately
+        _ = reloadAPICredentials()
+        return created.device.id
     }
 
     func refreshHealth() async {
         do {
-            _ = try await client.health()
+            let health = try await client.health()
+            capabilityManifest = health.capabilityManifest
+            activeLiveProvider = health.providers?["live"]?.stringValue
+            liveRuntimeDiagnostics.setBackend(
+                url: client.baseURL,
+                source: config.baseURLSource
+            )
+            liveRuntimeDiagnostics.backendStatus = health.status
+            liveRuntimeDiagnostics.backendVersion = health.version
+            liveRuntimeDiagnostics.backendEnvironment = health.environment
+            if let runtime = health.runtime {
+                liveRuntimeDiagnostics.backendPID = runtime["pid"]?.numberValue.map(Int.init)
+                liveRuntimeDiagnostics.backendStartedAt = runtime["started_at"]?.stringValue
+                liveRuntimeDiagnostics.backendSourceFingerprint =
+                    runtime["realtime_bridge_source_fingerprint"]?.stringValue
+            }
+            if let liveProvider = health.providers?["live"]?.objectValue {
+                let provider = liveProvider["provider"]?.stringValue
+                    ?? liveProvider["name"]?.stringValue
+                let model = liveProvider["model"]?.stringValue
+                if let provider, !provider.isEmpty {
+                    activeLiveProvider = provider
+                }
+                liveRuntimeDiagnostics.updateRuntime(
+                    provider: provider,
+                    model: model,
+                    advertisedTools: [],
+                    providerAcknowledgedTools: [],
+                    providerSessionReady: liveRuntimeDiagnostics.providerSessionReady,
+                    capabilityErrors: liveRuntimeDiagnostics.capabilityErrors
+                )
+            }
             if status == .offline {
                 status = .listening
             }
             let listener = RuntimeListener(client: client)
-            _ = try? await listener.heartbeat(deviceID: config.deviceID, listenerState: status.rawValue)
+            let listenerState = status == .offline ? "off" : "listening"
+            _ = try? await listener.heartbeat(deviceID: config.deviceID, listenerState: listenerState)
         } catch {
-            status = .offline
+            if isUnauthorized(error), reloadAPICredentials() {
+                await refreshHealth()
+                return
+            }
+            // CAPABILITY-HEALTH LAW (P0 2026-08-23): a health-poll failure
+            // must not collapse the whole assistant into OFFLINE. During
+            // long realtime responses the backend can be too busy to answer
+            // /health instantly while the voice WebSocket stays perfectly
+            // alive. Hard-offline only for auth failure or genuine
+            // connection-level transport errors; otherwise record and keep
+            // the current capability state.
+            if isUnauthorized(error) {
+                status = .offline
+            } else if let urlError = error as? URLError,
+                      [URLError.cannotConnectToHost, .cannotFindHost,
+                       .networkConnectionLost, .notConnectedToInternet,
+                       .timedOut].contains(urlError.code) {
+                lastError = "EV backend unreachable — retrying."
+            }
+            liveRuntimeDiagnostics.disconnected(
+                reason: "health poll failed: \(error.localizedDescription)",
+                willReconnect: true
+            )
         }
     }
 
-    func refreshHUD() async {
+    // MARK: - Live runtime diagnostics
+
+    func noteLiveConnectionAttempt(deviceID: String) {
+        liveRuntimeDiagnostics.beginConnectionAttempt(
+            backendURL: client.baseURL,
+            backendSource: config.baseURLSource,
+            deviceID: deviceID
+        )
+    }
+
+    func noteLiveSessionOpened(sessionID: String, deviceID: String) {
+        self.sessionId = sessionID
+        liveRuntimeDiagnostics.sessionOpened(sessionID: sessionID, deviceID: deviceID)
+    }
+
+    func noteLiveConnected() {
+        liveRuntimeDiagnostics.connected()
+    }
+
+    func noteLiveMuted() {
+        liveRuntimeDiagnostics.muted()
+    }
+
+    func noteLiveDisconnected(reason: String, willReconnect: Bool) {
+        liveRuntimeDiagnostics.disconnected(reason: reason, willReconnect: willReconnect)
+    }
+
+    func noteLiveStopped() {
+        liveRuntimeDiagnostics.stopped()
+    }
+
+    func noteLiveRuntime(
+        provider: String?,
+        model: String?,
+        advertisedTools: [String],
+        providerAcknowledgedTools: [String],
+        providerSessionReady: Bool,
+        capabilityErrors: [String]
+    ) {
+        if let provider, !provider.isEmpty {
+            activeLiveProvider = provider
+        }
+        liveRuntimeDiagnostics.updateRuntime(
+            provider: provider,
+            model: model,
+            advertisedTools: advertisedTools,
+            providerAcknowledgedTools: providerAcknowledgedTools,
+            providerSessionReady: providerSessionReady,
+            capabilityErrors: capabilityErrors
+        )
+    }
+
+    func noteLiveCapabilityError(_ error: String) {
+        liveRuntimeDiagnostics.addCapabilityError(error)
+    }
+
+    /// Consume the existing HUD proof fields. This keeps tool argument values
+    /// out of diagnostics while preserving the call/result/evidence chain.
+    func noteLiveToolHUD(_ card: HUDCard) {
+        guard let meta = card.meta else { return }
+        let kind = card.metaKind ?? ""
+        guard let name = meta["tool"]?.stringValue, !name.isEmpty else { return }
+        let observedAt = card.generatedAt.isEmpty ? nil : card.generatedAt
+        let argumentKeys = meta["arguments"]?.objectValue.map { $0.keys.sorted() } ?? []
+        let callID = meta["_realtime_call_id"]?.stringValue
+        if kind == "progress" || kind == "approval_hold" {
+            liveRuntimeDiagnostics.recordToolCall(
+                LiveRuntimeToolCall(
+                    name: name,
+                    callID: callID,
+                    argumentKeys: argumentKeys,
+                    observedAt: observedAt
+                )
+            )
+            return
+        }
+
+        let success = meta["success"]?.boolValue ?? (kind == "evidence")
+        let verified = meta["verified"]?.boolValue ?? (kind == "evidence")
+        // The HUD body and backend error can contain message text or targets.
+        // Keep only a boolean outcome in the diagnostics projection.
+        let error = meta["error"]?.stringValue.map { _ in "tool reported failure" }
+        liveRuntimeDiagnostics.recordToolResult(
+            LiveRuntimeToolResult(
+                name: name,
+                success: success,
+                verified: verified,
+                summary: "",
+                error: error,
+                observedAt: observedAt
+            )
+        )
+        if kind == "evidence" {
+            let evidence = meta["evidence"]?.objectValue ?? [:]
+            let source = evidence["source"]?.stringValue
+                ?? meta["source"]?.stringValue
+                ?? name
+            let timestamp = evidence["timestamp"]?.stringValue
+                ?? meta["timestamp"]?.stringValue
+            liveRuntimeDiagnostics.recordEvidence(
+                LiveRuntimeEvidence(
+                    source: source,
+                    timestamp: timestamp,
+                    summary: ""
+                )
+            )
+        }
+    }
+
+    func resetLiveDiagnostics() {
+        activeLiveModel = nil
+        liveTTSDeviceID = nil
+        advertisedLiveToolNames = []
+        providerAcknowledgedToolNames = []
+        liveToolsReported = false
+        providerToolsReported = false
+        providerSessionReady = false
+        capabilityError = nil
+        lastToolCallName = nil
+        lastToolResultStatus = nil
+        lastToolEvidenceSource = nil
+        lastToolEvidenceTimestamp = nil
+        liveConfirmationHold = nil
+    }
+
+    func applyLiveDiagnostics(
+        provider: String? = nil,
+        model: String? = nil,
+        ttsDeviceID: String? = nil,
+        advertisedTools: [String]? = nil,
+        acknowledgedTools: [String]? = nil,
+        toolsReported: Bool = false,
+        providerToolsReported: Bool = false,
+        providerSessionReady: Bool? = nil,
+        capabilityError: String? = nil
+    ) {
+        if let provider, !provider.isEmpty {
+            activeLiveProvider = provider
+        }
+        if let model, !model.isEmpty {
+            activeLiveModel = model
+        }
+        if let ttsDeviceID, !ttsDeviceID.isEmpty {
+            liveTTSDeviceID = ttsDeviceID
+        }
+        if let advertisedTools {
+            advertisedLiveToolNames = advertisedTools
+        }
+        if let acknowledgedTools {
+            providerAcknowledgedToolNames = acknowledgedTools
+        }
+        liveToolsReported = liveToolsReported || toolsReported
+        self.providerToolsReported = self.providerToolsReported || providerToolsReported
+        if let providerSessionReady {
+            self.providerSessionReady = providerSessionReady
+        }
+        if let capabilityError, !capabilityError.isEmpty {
+            self.capabilityError = capabilityError
+        }
+    }
+
+    func noteProviderToolMismatch(acknowledgedTools: [String], message: String) {
+        providerAcknowledgedToolNames = acknowledgedTools
+        providerToolsReported = true
+        providerSessionReady = true
+        if !message.isEmpty {
+            capabilityError = message
+        }
+        liveRuntimeDiagnostics.updateRuntime(
+            provider: liveRuntimeDiagnostics.provider,
+            model: liveRuntimeDiagnostics.model,
+            advertisedTools: liveRuntimeDiagnostics.advertisedTools,
+            providerAcknowledgedTools: acknowledgedTools,
+            providerSessionReady: true,
+            capabilityErrors: message.isEmpty
+                ? liveRuntimeDiagnostics.capabilityErrors
+                : liveRuntimeDiagnostics.capabilityErrors + [message]
+        )
+    }
+
+    func noteLiveToolProgress(name: String) {
+        lastToolCallName = name.isEmpty ? nil : name
+        lastToolResultStatus = name.isEmpty ? nil : "in progress"
+        lastToolEvidenceSource = nil
+        lastToolEvidenceTimestamp = nil
+        liveConfirmationHold = nil
+    }
+
+    func noteLiveConfirmationHold(
+        action: String,
+        target: String?,
+        method: String?,
+        expiry: String?
+    ) {
+        lastToolCallName = action.isEmpty ? nil : action
+        lastToolResultStatus = action.isEmpty ? nil : "waiting for confirmation"
+        lastToolEvidenceSource = nil
+        lastToolEvidenceTimestamp = nil
+        liveConfirmationHold = LiveConfirmationHold(
+            action: action,
+            target: target,
+            method: method,
+            expiry: expiry
+        )
+    }
+
+    func noteLiveToolResult(name: String, success: Bool) {
+        lastToolCallName = name.isEmpty ? lastToolCallName : name
+        lastToolResultStatus = success ? "success" : "failed"
+        liveConfirmationHold = nil
+        lastToolEvidenceSource = nil
+        lastToolEvidenceTimestamp = nil
+    }
+
+    func noteLiveToolEvidence(name: String, source: String?, timestamp: String?) {
+        lastToolCallName = name.isEmpty ? lastToolCallName : name
+        lastToolResultStatus = "success · evidence reported"
+        lastToolEvidenceSource = source
+        lastToolEvidenceTimestamp = timestamp
+        liveConfirmationHold = nil
+    }
+
+    // MARK: - Permission-to-backend bridges
+
+    func bridgeStatus(for id: String) -> MacBridgeStatus? {
+        macBridgeStatuses.first { $0.id == id }
+    }
+
+    /// Connect every bridge whose local permission is already granted. TCC
+    /// permission is reported first; these calls then perform the real backend
+    /// integration setup. No local calendar or fake messaging provider is
+    /// created when the backend/helper is unavailable.
+    ///
+    /// Automatic startup never opens a Google OAuth browser. Calendar stays
+    /// connected when OAuth is already authorized; otherwise it waits.
+    func connectGrantedBridges(
+        from statuses: [PermissionStatus],
+        openCalendarAuthorization: Bool = false
+    ) async {
+        let calendarGranted = statuses.contains {
+            $0.kind == .calendars && $0.state == .granted
+        }
+        let lifeGranted = statuses.contains {
+            $0.kind == .automation && ($0.state == .granted || $0.state == .partial)
+        }
+        if calendarGranted {
+            await connectGoogleCalendarBridge(openAuthorization: openCalendarAuthorization)
+        } else {
+            setBridge(
+                id: "google-calendar",
+                title: "Google Calendar",
+                state: .permissionRequired,
+                detail: "macOS Calendar permission is not granted yet."
+            )
+        }
+        if lifeGranted {
+            await connectMacOSLifeBridges()
+        } else {
+            for spec in Self.lifeBridgeSpecs {
+                setBridge(
+                    id: spec.id,
+                    title: spec.title,
+                    state: .permissionRequired,
+                    detail: "macOS Automation permission is not granted yet."
+                )
+            }
+        }
+    }
+
+    private func connectGoogleCalendarBridge(openAuthorization: Bool) async {
+        setBridge(
+            id: "google-calendar",
+            title: "Google Calendar",
+            state: .connecting,
+            detail: "Checking the real Google Calendar adapter…"
+        )
+        do {
+            let integration = try await findOrInstallIntegration(
+                adapter: "calendar",
+                slug: "google-calendar",
+                name: "Google Calendar",
+                scopes: ["calendar:read"],
+                config: ["provider": .string("google")]
+            )
+            if integration.credentialConfigured {
+                let oauthStatus = try await client.integrationOAuthStatus(integrationID: integration.id)
+                if oauthStatus.authorized {
+                    setBridge(
+                        id: "google-calendar",
+                        title: "Google Calendar",
+                        state: .connected,
+                        detail: "macOS allowed Calendar. Google Calendar is connected."
+                    )
+                    return
+                }
+            }
+            if !openAuthorization {
+                setBridge(
+                    id: "google-calendar",
+                    title: "Google Calendar",
+                    state: .authorizationRequired,
+                    detail: "macOS allowed Calendar. Google Calendar still needs OAuth."
+                )
+                return
+            }
+            let authorization = try await client.beginIntegrationOAuth(integrationID: integration.id)
+            guard let url = URL(string: authorization.authorizeURL) else {
+                throw EVAPIError.decoding("Google OAuth returned an invalid authorization URL")
+            }
+            NSWorkspace.shared.open(url)
+            setBridge(
+                id: "google-calendar",
+                title: "Google Calendar",
+                state: .authorizationRequired,
+                detail: "macOS allowed Calendar. I still need Google Calendar connected. I can start that now."
+            )
+        } catch {
+            setBridge(
+                id: "google-calendar",
+                title: "Google Calendar",
+                state: .failed,
+                detail: formattedAPIError(error, fallback: "Google Calendar connection failed")
+            )
+        }
+    }
+
+    private func connectMacOSLifeBridges() async {
+        guard let helperPath = Self.lifeHelperPath() else {
+            for spec in Self.lifeBridgeSpecs {
+                setBridge(
+                    id: spec.id,
+                    title: spec.title,
+                    state: .helperMissing,
+                    detail: "macOS allowed the local app permission, but EVLifeHelper is missing."
+                )
+            }
+            return
+        }
+        for spec in Self.lifeBridgeSpecs {
+            setBridge(
+                id: spec.id,
+                title: spec.title,
+                state: .connecting,
+                detail: "Connecting the real macos_life adapter…"
+            )
+            do {
+                let integration = try await findOrInstallIntegration(
+                    adapter: spec.adapter,
+                    slug: spec.id,
+                    name: spec.title,
+                    scopes: spec.scopes,
+                    config: [
+                        "provider": .string("macos_life"),
+                        "helper_path": .string(helperPath),
+                    ]
+                )
+                setBridge(
+                    id: spec.id,
+                    title: spec.title,
+                    state: .connected,
+                    detail: "macOS permission reported. Backend macos_life bridge connected."
+                )
+                _ = integration
+            } catch {
+                setBridge(
+                    id: spec.id,
+                    title: spec.title,
+                    state: .failed,
+                    detail: formattedAPIError(error, fallback: "\(spec.title) bridge connection failed")
+                )
+            }
+        }
+    }
+
+    private func findOrInstallIntegration(
+        adapter: String,
+        slug: String,
+        name: String,
+        scopes: [String],
+        config: [String: AnyCodable]
+    ) async throws -> IntegrationRecord {
+        let existing = try await client.integrations(includeRevoked: true)
+            .first { $0.slug == slug && $0.adapter == adapter }
+        if let existing, existing.status == "active" {
+            return existing
+        }
+        return try await client.installIntegration(
+            adapter: adapter,
+            slug: slug,
+            name: name,
+            scopes: scopes,
+            config: config
+        )
+    }
+
+    private func setBridge(
+        id: String,
+        title: String,
+        state: BridgeConnectionState,
+        detail: String
+    ) {
+        if let index = macBridgeStatuses.firstIndex(where: { $0.id == id }) {
+            macBridgeStatuses[index] = MacBridgeStatus(id: id, title: title, state: state, detail: detail)
+        } else {
+            macBridgeStatuses.append(MacBridgeStatus(id: id, title: title, state: state, detail: detail))
+        }
+    }
+
+    private struct LifeBridgeSpec: Sendable {
+        let id: String
+        let title: String
+        let adapter: String
+        let scopes: [String]
+    }
+
+    /// Resolve the real helper shipped beside EV.app (or the development
+    /// sibling produced by SwiftPM). Returning nil is intentional: callers
+    /// must report the missing bridge instead of creating a local fake.
+    private static func lifeHelperPath() -> String? {
+        var candidates: [String] = []
+        if let configured = ProcessInfo.processInfo.environment["EV_LIFE_HELPER_PATH"],
+           !configured.isEmpty {
+            candidates.append(configured)
+        }
+        if let executable = Bundle.main.executableURL {
+            candidates.append(executable.deletingLastPathComponent().appendingPathComponent("EVLifeHelper").path)
+        }
+        candidates.append(
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent(".build/debug/EVLifeHelper")
+                .path
+        )
+        var seen = Set<String>()
+        return candidates.first { path in
+            seen.insert(path).inserted && FileManager.default.isExecutableFile(atPath: path)
+        }
+    }
+
+    private static let lifeBridgeSpecs = [
+        LifeBridgeSpec(id: "macos-messaging", title: "Messages", adapter: "messaging", scopes: ["messaging:read", "messaging:act"]),
+        LifeBridgeSpec(id: "macos-phone", title: "Calls", adapter: "phone", scopes: ["phone:act"]),
+        LifeBridgeSpec(id: "macos-mail", title: "Mail", adapter: "mail", scopes: ["mail:read", "mail:act"]),
+    ]
+
+    func refreshDeviceMesh() async {
+        do {
+            let sync = try await client.runtimeSync()
+            // Replace, rather than merge, so revoked/disappeared nodes are
+            // removed from the UI as soon as the registry reports them gone.
+            let nodes = sync.devices.map { device in
+                DeviceMeshNode(
+                    id: device.deviceId,
+                    name: device.name,
+                    presence: DevicePresence(rawValue: device.presence),
+                    batteryPercent: device.batteryPercent,
+                    lastSeenAt: device.lastSeenAt,
+                    lastHeartbeatAt: device.lastHeartbeatAt
+                )
+            }
+            deviceMesh = DeviceMeshSnapshot(generatedAt: sync.generatedAt, nodes: nodes)
+        } catch {
+            // A transient sync failure is not evidence that devices vanished.
+            // Keep the last confirmed snapshot and let the next heartbeat retry.
+        }
+    }
+
+    func refreshHUD(force: Bool = false) async {
+        // Live HUD cards arrive on the voice socket. Skip the poll so a
+        // progress/hold card is not overwritten by /v1/hud/card — unless a
+        // HUD tap just confirmed and we need the latest cached card.
+        if !force, isLiveActive || isLiveMuted { return }
         hudCard = try? await client.hudCard()
+    }
+
+    func confirmHudAction() {
+        guard !confirmingHud, let card = hudCard, card.isApprovalHold,
+              let name = card.holdToolName, !name.isEmpty else { return }
+        confirmingHud = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { confirmingHud = false }
+            if EVLifeBiometric.isAvailable {
+                let ok = await EVLifeBiometric.confirmLifeAction(
+                    reason: "Confirm \(name.replacingOccurrences(of: "_", with: " "))"
+                )
+                guard ok else {
+                    lastError = "Confirmation cancelled"
+                    return
+                }
+            }
+            do {
+                if let actionId = card.holdActionId, !actionId.isEmpty {
+                    let proof = try? await client.issueReverification(
+                        purpose: "runtime.action",
+                        voiceSessionId: sessionId
+                    )
+                    let response = try await client.approveAction(
+                        id: actionId,
+                        reverifyToken: proof?.token
+                    )
+                    if response.status == "executed" || response.status == "approved" {
+                        lastError = nil
+                        await refreshHUD(force: true)
+                    } else {
+                        lastError = response.error ?? "Confirmation failed"
+                    }
+                    return
+                }
+                var arguments = card.holdArguments
+                arguments["confirm"] = true
+                let response = try await client.dispatchTool(
+                    name: name,
+                    arguments: arguments,
+                    confirm: true,
+                    allowSensitive: true
+                )
+                if response.ok {
+                    lastError = nil
+                    await refreshHUD(force: true)
+                } else {
+                    lastError = response.error ?? "Confirmation failed"
+                }
+            } catch {
+                lastError = formattedAPIError(error, fallback: "Confirmation failed")
+            }
+        }
+    }
+
+    func refreshConversation() async {
+        guard !isLiveActive, !isLiveMuted else { return }
+        guard pendingAssistantID == nil,
+              status != .thinking, status != .speaking else { return }
+        do {
+            let detail = try await client.conversation(limit: 40)
+            let mapped = detail.messages.map { message in
+                ChatMessage(id: message.id, role: message.role, text: message.text, streaming: false)
+            }
+            if mapped != messages {
+                messages = mapped
+            }
+            if lastError?.contains("401") == true || lastError?.contains("placeholder") == true {
+                lastError = nil
+            }
+        } catch {
+            if isUnauthorized(error), reloadAPICredentials() {
+                await refreshConversation()
+                return
+            }
+            if case EVAPIError.httpStatus(401, let body) = error {
+                lastError = authFailureMessage(body)
+            }
+        }
     }
 
     func syncQueue() async {
@@ -144,7 +993,7 @@ final class AppModel: ObservableObject {
                     lastError = "Queue write failed: \(error)"
                 }
             } catch {
-                lastError = "Capture failed: \(error)"
+                lastError = formattedAPIError(error, fallback: "Capture failed")
             }
             await updateQueueCount()
         }
@@ -155,10 +1004,10 @@ final class AppModel: ObservableObject {
     func sendChat(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        messages.append(ChatMessage(role: "user", text: trimmed, streaming: false))
-        let id = UUID()
+        messages.append(ChatMessage(id: UUID().uuidString, role: "user", text: trimmed, streaming: false))
+        let id = UUID().uuidString
         pendingAssistantID = id
-        messages.append(ChatMessage(role: "assistant", text: "", streaming: true))
+        messages.append(ChatMessage(id: id, role: "assistant", text: "", streaming: true))
         status = .thinking
 
         Task {
@@ -168,6 +1017,8 @@ final class AppModel: ObservableObject {
                     deviceId: config.deviceID
                 ) {
                     switch event {
+                    case .status:
+                        status = .thinking
                     case .delta(let chunk, _):
                         if let index = messages.firstIndex(where: { $0.id == id }) {
                             messages[index].text += chunk
@@ -188,100 +1039,202 @@ final class AppModel: ObservableObject {
                     }
                 }
             } catch {
-                lastError = "Chat failed: \(error.localizedDescription)"
+                lastError = formattedAPIError(error, fallback: "Chat failed")
                 if let index = messages.firstIndex(where: { $0.id == id }) {
                     messages[index].streaming = false
                 }
                 status = .listening
             }
+            pendingAssistantID = nil
         }
     }
 
-    // MARK: - Voice
+    // MARK: - Voice (live duplex; audio starts at app open — no push-to-talk)
 
-    func toggleTalk() {
-        if isRecording {
-            stopAndSend()
+    /// The single audio control behind the menu button and ⇧⌘E:
+    /// Stop Speaking while Evie responds, else Mute/Unmute the live session,
+    /// else start listening (app opened with the session down).
+    func toggleAudioControl() {
+        if status == .speaking {
+            live.stopAssistantSpeech()
+            return
+        }
+        if isLiveActive || isLiveMuted {
+            live.toggleMute()
+            return
+        }
+        live.start()
+    }
+
+    func toggleCamera() {
+        live.toggleCamera()
+    }
+
+    /// Keep camera UI truthful when the local permission layer reports a
+    /// denial before a provider can publish its normal state event.
+    func localCameraPermissionState() -> CameraState? {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .denied, .restricted:
+            return .denied
+        case .authorized:
+            return nil
+        case .notDetermined:
+            return .unknown
+        @unknown default:
+            return .unknown
+        }
+    }
+
+    func noteMicrophoneDenied() {
+        lastError = "Microphone permission denied — open EV → Permissions for the fix."
+        // Health owns offline vs listening. Never mark offline just because
+        // capture was treated as denied.
+        if status == .offline {
+            Task { await refreshHealth() }
+        }
+    }
+
+    func noteMicrophoneCaptureFailed(_ detail: String? = nil) {
+        if let detail, !detail.isEmpty {
+            lastError = "Microphone capture failed: \(detail)"
         } else {
-            startRecording()
+            lastError = "Microphone capture failed. Try Talk again."
+        }
+        if status == .offline {
+            Task { await refreshHealth() }
         }
     }
 
-    func startRecording() {
-        Task {
-            let granted = await mic.start()
-            isRecording = granted
-            status = granted ? .listening : status
-            if !granted {
-                lastError = "Microphone permission denied — open EV → Permissions for the fix."
-            }
-        }
-    }
-
-    func stopAndSend() {
-        Task {
-            let data = mic.stop()
-            isRecording = false
-            guard let data, !data.isEmpty else {
-                status = .listening
-                return
-            }
-            let audioB64 = data.base64EncodedString()
-            status = .thinking
-            do {
-                let wake = try await client.wakeVoice(deviceId: config.deviceID)
-                sessionId = wake.sessionId
-                guard let session = wake.sessionId else {
-                    lastError = wake.message ?? "No voice session — enroll a voiceprint first."
-                    status = .listening
-                    return
-                }
-                if wake.ownerEnrolled, let nonce = wake.challengeNonce {
-                    let verify = try await client.verifyVoice(
-                        sessionId: session,
-                        nonce: nonce,
-                        phrase: wake.challengePhrase,
-                        samples: [audioB64]
-                    )
-                    if !verify.verified {
-                        lastError = "Speaker verification failed: \(verify.reason)"
-                        status = .listening
-                        return
-                    }
-                }
-                let response = try await client.utterance(
-                    sessionId: session,
-                    audioB64: audioB64
-                )
-                transcript = response.transcript
-                messages.append(ChatMessage(role: "user", text: response.transcript, streaming: false))
-                messages.append(ChatMessage(role: "assistant", text: response.reply, streaming: false))
-                if let audioRef = response.tts?.audioRef {
-                    status = .speaking
-                    await playAudio(ref: audioRef)
-                }
-                status = .listening
-            } catch {
-                lastError = "Voice failed: \(error.localizedDescription)"
-                status = .listening
+    private func observeMicrophoneAuthorization() {
+        if micAuthObserver != nil { return }
+        micAuthObserver = NotificationCenter.default.addObserver(
+            forName: MicrophoneAuthorization.didChange,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.microphoneAuthorizationDidChange()
             }
         }
     }
 
-    func playAudio(ref: String) async {
-        do {
-            let url: URL
-            if let absolute = URL(string: ref), absolute.scheme != nil {
-                url = absolute
-            } else {
-                url = config.baseURL.appendingPathComponent(ref.hasPrefix("/") ? String(ref.dropFirst()) : ref)
-            }
-            var request = URLRequest(url: url)
-            request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-            let (data, _) = try await client.session.data(for: request)
-            try player.play(data: data)
-        } catch {
-            lastError = "TTS playback failed: \(error.localizedDescription)"
+    private func microphoneAuthorizationDidChange() {
+        guard MicrophoneAuthorization.current() == .granted else { return }
+        if lastError?.localizedCaseInsensitiveContains("microphone permission") == true {
+            lastError = nil
         }
+        // App-open law: mic granted means the live session should be up.
+        if !live.isRunning {
+            live.start()
+        }
+        if status == .offline {
+            Task { await refreshHealth() }
+        }
+    }
+
+    func formattedLiveError(_ error: Error) -> String {
+        formattedAPIError(error, fallback: "Live listen failed")
+    }
+
+    private func speakFallback(_ text: String) {
+        let spoken = String(text.prefix(280))
+        guard !spoken.isEmpty else { return }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        proc.arguments = ["-v", "Ava", "-r", "160", spoken]
+        try? proc.run()
+    }
+
+    private func formattedAPIError(_ error: Error, fallback: String) -> String {
+        if let apiError = error as? EVAPIError {
+            switch apiError {
+            case .httpStatus(401, let body):
+                return authFailureMessage(body)
+            case .httpStatus(let code, let body):
+                let detail = body.trimmingCharacters(in: .whitespacesAndNewlines)
+                if detail.isEmpty {
+                    return "\(fallback): API error \(code)."
+                }
+                return "\(fallback): \(detail.prefix(240))"
+            case .transport(let message) where message.lowercased().contains("timed out"):
+                return "\(fallback): the reply took too long to arrive. The live session is still available; try again when ready."
+            case .transport(let message):
+                return "\(fallback): network error — \(message)"
+            case .decoding(let message):
+                return "\(fallback): bad reply — \(message)"
+            }
+        }
+        return "\(fallback): \(error.localizedDescription)"
+    }
+
+    /// Mirrors ``AppConfig``'s URL precedence for diagnostics only. The
+    /// resolved ``client.baseURL`` remains the authority; this labels which
+    /// input supplied it without changing configuration resolution.
+    private static func backendURLConfigurationSource() -> String {
+        let environment = ProcessInfo.processInfo.environment
+        if environment["EV_API_URL"] != nil {
+            return "AppConfig: EV_API_URL environment"
+        }
+        if UserDefaults.standard.string(forKey: "EV_API_URL") != nil {
+            return "AppConfig: EV_API_URL UserDefaults"
+        }
+
+        let fileManager = FileManager.default
+        let home = fileManager.homeDirectoryForCurrentUser
+        var urls: [URL] = [
+            home.appendingPathComponent("Library/Application Support/EV/api.env"),
+            home.appendingPathComponent("Library/Application Support/EV/.env"),
+            home.appendingPathComponent(".ev/env"),
+            home.appendingPathComponent(".ev/.env"),
+            home.appendingPathComponent("Code/ev/.env"),
+        ]
+        var directory = URL(fileURLWithPath: fileManager.currentDirectoryPath)
+        for _ in 0..<6 {
+            urls.append(directory.appendingPathComponent(".env"))
+            directory.deleteLastPathComponent()
+        }
+        if let executable = Bundle.main.executableURL {
+            var parent = executable.deletingLastPathComponent()
+            for _ in 0..<8 {
+                parent.deleteLastPathComponent()
+                urls.append(parent.appendingPathComponent(".env"))
+            }
+        }
+        var seen = Set<String>()
+        for url in urls where seen.insert(url.path).inserted {
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let hasURL = text.split(whereSeparator: \.isNewline).contains { rawLine in
+                var line = String(rawLine).trimmingCharacters(in: .whitespaces)
+                if line.hasPrefix("export ") {
+                    line = String(line.dropFirst(7)).trimmingCharacters(in: .whitespaces)
+                }
+                return line.hasPrefix("EV_API_URL=")
+            }
+            if hasURL {
+                return "AppConfig: dotenv \(url.path)"
+            }
+        }
+        return "AppConfig: built-in default"
+    }
+
+    private func authFailureMessage(_ body: String) -> String {
+        let detail = body.isEmpty ? "DEVICE_TOKEN_INVALID" : body
+        if detail.contains("DEVICE_REVOKED") {
+            return "DEVICE_REVOKED: This Mac's device was revoked. Re-pair required."
+        }
+        if detail.contains("DEVICE_AUTH_REVISION_STALE") {
+            return "DEVICE_AUTH_REVISION_STALE: Credential revision stale — refreshing session."
+        }
+        if detail.contains("DEVICE_TOKEN_INVALID") {
+            return "DEVICE_TOKEN_INVALID: This Mac's device token is invalid. Attempting local repair."
+        }
+        if detail.contains("MASTER_KEY_INVALID") {
+            return "MASTER_KEY_INVALID: Administrative master mismatch — device auth does not use master key."
+        }
+        if detail.contains("CREDENTIAL_MISSING") {
+            return "DEVICE_CREDENTIAL_MISSING: No device credential — local Keychain missing or not paired."
+        }
+        // Legacy fallback without master-key hint
+        return "API rejected this Mac's device credential (\(detail)). Device auth failed."
     }
 }

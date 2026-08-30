@@ -4,6 +4,10 @@ Agent 14 PULSE owns the 24/7 runtime daemon, real notification delivery, and
 the launchd supervision that replaces Docker as the daily driver on an 8 GB
 Mac.
 
+For the multi-device WAVE LIFE contract (registry, push tokens, life-action
+routing, job lifecycle, owner boot checklist) see
+[`WAVE_LIFE.md`](WAVE_LIFE.md).
+
 ## Stack
 
 | Process | Entrypoint | Job |

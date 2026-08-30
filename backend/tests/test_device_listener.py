@@ -290,3 +290,40 @@ async def test_listener_quarantines_rejected_capture(tmp_path) -> None:
         assert "this will be rejected" in quarantine
     finally:
         await client.aclose()
+
+
+async def test_listener_retries_transient_http_capture(tmp_path) -> None:
+    attempts = 0
+
+    def transient_handler(request: httpx.Request) -> Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return Response(503, text="provider unavailable")
+        return Response(201, json={"event": {"id": "event-recovered"}})
+
+    client = AsyncClient(
+        transport=MockTransport(transient_handler),
+        base_url="http://test",
+        headers={"Authorization": "Bearer test-key"},
+    )
+    listener = DeviceListener(client, "device-1", queue_dir=tmp_path)
+    try:
+        queued = await listener.capture("retry me")
+        assert queued["queued"] is True
+        assert queued["retryable"] is True
+        assert "HTTP 503" in queued["reason"]
+        assert listener.pending_captures()
+        assert not (tmp_path / "quarantine.jsonl").exists()
+
+        recovered = await listener.deliver_pending()
+        assert recovered == {
+            "synced": 1,
+            "dropped": 0,
+            "quarantined": 0,
+            "errors": [],
+            "remaining": 0,
+        }
+        assert attempts == 2
+    finally:
+        await client.aclose()

@@ -19,11 +19,20 @@ async def test_registry_declares_execution_boundaries(client) -> None:
     assert "search_decisions" in names
     decisions_spec = next(s for s in specs if s["name"] == "search_decisions")
     assert decisions_spec["output"]["required"] == ["count", "results"]
+    write_tools = [s for s in specs if s["read_only"] is False]
+    assert {s["name"] for s in write_tools} >= {
+        "send_message",
+        "place_call",
+        "open_url",
+        "set_reminder",
+    }
     for spec in specs:
         assert spec["parameters"]["additionalProperties"] is False
         assert isinstance(spec["output"], dict)
-        assert spec["read_only"] is True  # all current tools are read-only
-        assert spec["undoable"] is False  # no side effects to roll back yet
+        assert spec["read_only"] in (True, False)
+        assert spec["undoable"] in (True, False)
+        assert spec["permission"]
+    for spec in write_tools:
         assert spec["permission"]
     health = next(s for s in specs if s["name"] == "get_health_trends")
     assert health["sensitive"] is True
@@ -151,8 +160,10 @@ async def test_tool_selection_routes_extended_intents(client) -> None:
         "what's 14% of 3,500?": "calculate",
         "compute 12 * 12": "calculate",
         "who is Maya?": "get_person",
-        "anything on my calendar tomorrow?": "get_upcoming_alerts",
-        "what did I decide about SQLite?": "search_decisions",
+        "anything on my calendar tomorrow?": "calendar_read",
+        # EV VOICE CONTROL PLAN: past-tense history questions route to the
+        # dedicated chunked past-history tool, not the generic search.
+        "what did I decide about SQLite?": "recall_history",
     }
     for message, expected in cases.items():
         resp = await client.post("/v1/gateway/select-tool", json={"message": message})
@@ -184,9 +195,18 @@ async def test_search_decisions_tool_returns_decision_memory(client) -> None:
 
 
 def test_gateway_prevalidates_model_tool_calls() -> None:
+    from dataclasses import fields as dc_fields
+
     from app.ev.tools import get_spec
 
-    specs = [ToolSpec(**{k: v for k, v in get_spec("calculate").items()})]
+    known = {item.name for item in dc_fields(ToolSpec)}
+
+    def as_contract(name: str) -> ToolSpec:
+        spec = get_spec(name)
+        assert spec is not None
+        return ToolSpec(**{key: value for key, value in spec.items() if key in known})
+
+    specs = [as_contract("calculate")]
     good = validate_tool_calls(
         [ToolCall(id="1", name="calculate", arguments={"expression": "1+1"})],
         specs,
@@ -207,7 +227,7 @@ def test_gateway_prevalidates_model_tool_calls() -> None:
     assert unknown[0].status == "rejected"
     assert "unknown tool" in unknown[0].issues[0]
 
-    health_spec = ToolSpec(**{k: v for k, v in get_spec("get_health_trends").items()})
+    health_spec = as_contract("get_health_trends")
     denied = validate_tool_calls(
         [ToolCall(id="4", name="get_health_trends", arguments={"metric": "sleep_hours"})],
         [health_spec],

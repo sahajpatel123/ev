@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 from collections.abc import AsyncIterator
 from typing import Any
@@ -54,11 +55,13 @@ class FakeOpenCode:
         healthy: bool = True,
         stream_deltas: tuple[str, ...] = ("Hello", " from", " opencode"),
         report_stream_usage: bool = True,
+        emit_user_message: bool = False,
     ) -> None:
         self.text = text
         self.healthy = healthy
         self.stream_deltas = stream_deltas
         self.report_stream_usage = report_stream_usage
+        self.emit_user_message = emit_user_message
         self.created: list[dict] = []
         self.deleted: list[str] = []
         self.bodies: list[dict] = []
@@ -84,6 +87,28 @@ class FakeOpenCode:
     def _script_stream(self, session_id: str) -> None:
         def put(event: dict) -> None:
             self.events.put_nowait(event)
+
+        # The real server echoes the user's own prompt back as events: a
+        # message.updated (role=user) followed by its text part. This is what
+        # used to leak into the reply via the tail replay.
+        if self.emit_user_message and self.bodies:
+            prompt = self.bodies[-1].get("parts", [{}])[0].get("text", "")
+            put({
+                "type": "message.updated",
+                "properties": {
+                    "sessionID": session_id,
+                    "info": {"id": "msg_user", "role": "user"},
+                },
+            })
+            put({
+                "type": "message.part.updated",
+                "properties": {
+                    "sessionID": session_id,
+                    "part": {"id": "prt_user", "sessionID": session_id,
+                             "messageID": "msg_user",
+                             "type": "text", "text": prompt},
+                },
+            })
 
         # A reasoning part streams first; its deltas must never reach the user.
         put({
@@ -456,6 +481,24 @@ async def test_stream_without_reported_usage_is_marked_degraded(monkeypatch, vis
     assert terminal.usage["degradation"]["kind"] == "usage_missing"
 
 
+async def test_stream_never_echoes_the_user_prompt(monkeypatch, visible_key) -> None:
+    """Regression: the user's own prompt (also a text part) must not be replayed.
+
+    opencode re-emits the posted prompt as a user-role message + text part;
+    without a role guard the tail replay appended it to every answer.
+    """
+    fake = FakeOpenCode(emit_user_message=True)
+    _patch_http(monkeypatch, fake)
+    prompt = "remind me to water the plants"
+    chunks = [
+        chunk
+        async for chunk in _provider().stream_chat([ChatMessage(role="user", content=prompt)])
+    ]
+    collected = "".join(c.text or "" for c in chunks if c.text)
+    assert "Hello from opencode" in collected
+    assert prompt not in collected, "the user's prompt must never be echoed back"
+
+
 async def test_gateway_stream_aggregates_provider_deltas(monkeypatch, visible_key) -> None:
     fake = FakeOpenCode()
     _patch_http(monkeypatch, fake)
@@ -492,9 +535,12 @@ def _server_up() -> bool:
         return False
 
 
-@pytest.mark.skipif(not _server_up(), reason="no opencode server on EV_OPENCODE_BASE_URL")
+@pytest.mark.skipif(
+    os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1" or not _server_up(),
+    reason="live opencode round trip requires EV_TEST_USE_LIVE_CHAT=1 and a running server",
+)
 async def test_live_opencode_round_trip() -> None:
-    """Real call against a running server (skipped, never failed, when absent)."""
+    """Real call against a running server (opt-in via EV_TEST_USE_LIVE_CHAT=1)."""
 
     provider = OpenCodeProvider()
     result = await provider.chat(

@@ -43,6 +43,7 @@ async def decide(
     priority: float,
     tier: str,
     emergency: bool,
+    attention_kind: str = "incoming",
     allow_during_quiet_hours: bool,
     bypass_policy: bool,
     now: datetime | None = None,
@@ -51,6 +52,10 @@ async def decide(
     now = now or utcnow()
 
     if not bypass_policy:
+        # Already-acknowledged events must never re-notify.
+        if attention_kind == "acknowledged":
+            return PolicyDecision(False, "already_acknowledged")
+
         # Dedup: identical content that already went out (or is in flight)
         # inside the window is suppressed, never double-delivered.
         since = now - timedelta(seconds=settings.notify_dedup_window_seconds)

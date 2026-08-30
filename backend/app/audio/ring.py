@@ -94,9 +94,15 @@ class PCM16RingBuffer:
         return out
 
     def read_last(self, count: int) -> array.array:
-        """Return the newest ``count`` samples without consuming them."""
+        """Return the newest ``count`` retained samples without consuming them.
 
-        count = max(0, min(count, self._write_pos - self._read_pos))
+        Includes samples already consumed by ``read_new`` until the writer
+        overwrites them. VAD pre-roll needs that earlier audio; limiting to
+        unread samples made ``read_last`` empty right after ``read_new``.
+        """
+
+        retained = min(self.capacity, self._write_pos)
+        count = max(0, min(count, retained))
         if count == 0:
             return array.array("h")
         start = (self._write_pos - count) & self._mask

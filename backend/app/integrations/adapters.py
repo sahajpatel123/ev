@@ -20,6 +20,12 @@ from app.config import settings
 from app.gateway.validation import validate_arguments
 from app.integrations import oauth
 from app.integrations.calendar_signals import derive_calendar_signals, parse_event_time
+from app.integrations.life_helper import (
+    LifeHelperError,
+    LifeHelperUnavailableError,
+    run_life_helper,
+)
+from app.integrations.life_policy import evaluate_life_policy
 from app.schemas import LiveEventCreate
 from app.utils.text import utcnow
 
@@ -219,6 +225,16 @@ class CalendarAdapter(Adapter):
                 "events": events,
                 "signals": derive_calendar_signals(events),
             }
+        if action == "calendar.create_event":
+            if config.get("provider") == "http":
+                return await super().act(
+                    action=action,
+                    args=args,
+                    token=token,
+                    scopes=scopes,
+                    config=config,
+                )
+            return await self._create_event(args, token, config)
         return await super().act(
             action=action,
             args=args,
@@ -274,6 +290,125 @@ class CalendarAdapter(Adapter):
                 raise oauth.OAuthProviderError("calendar OAuth provider unavailable")
             return await provider.revoke(token)
         return await super().revoke_remote(token=token, config=config)
+
+    async def _create_event(self, args: dict, token: str, config: dict) -> dict:
+        title = _text(args.get("summary") or args.get("title"), 256) or "Untitled event"
+        if config.get("provider") == "google":
+            if not token:
+                raise oauth.OAuthAuthError("calendar write requires an access token")
+            provider = oauth.provider_for("calendar")
+            if provider is None:
+                raise oauth.OAuthProviderError("calendar OAuth provider unavailable")
+            calendar_id = str(config.get("calendar_id") or "primary")
+            body = {
+                "summary": title,
+                "start": {"dateTime": args.get("start")},
+                "end": {"dateTime": args.get("end") or args.get("start")},
+            }
+            if args.get("location"):
+                body["location"] = _text(args.get("location"), 512)
+            start_at = parse_event_time(str(args.get("start") or ""))
+            if start_at is not None:
+                from app.ev.resolve import is_near_duplicate
+
+                try:
+                    nearby = await self._fetch_google_events(
+                        token,
+                        config,
+                        since=start_at - timedelta(minutes=15),
+                        until=start_at + timedelta(minutes=15),
+                    )
+                except Exception:
+                    nearby = []
+                for existing in nearby:
+                    if is_near_duplicate(
+                        title=title,
+                        start=args.get("start"),
+                        other_title=str(existing.get("summary") or existing.get("title") or ""),
+                        other_start=existing.get("start") or existing.get("starts_at"),
+                    ):
+                        event_id = _text(existing.get("id"), 256)
+                        if event_id:
+                            return {
+                                "ok": True,
+                                "mode": "google",
+                                "id": event_id,
+                                "event_id": event_id,
+                                "duplicate": True,
+                                "evidence": {"id": event_id, "duplicate": True},
+                                "summary": title,
+                            }
+            url = f"{provider.api_base}/calendars/{quote(calendar_id, safe='')}/events"
+            async with _make_client() as client:
+                response = await client.post(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=body,
+                )
+            if response.status_code in (401, 403):
+                raise oauth.OAuthAuthError("calendar provider rejected the access token")
+            if response.status_code >= 400:
+                raise oauth.OAuthProviderError(
+                    f"calendar create failed (status {response.status_code})"
+                )
+            data = response.json()
+            event_id = _text(data.get("id"), 256)
+            if not event_id:
+                return {"ok": False, "error": "missing_event_id", "mode": "google"}
+            return {
+                "ok": True,
+                "mode": "google",
+                "id": event_id,
+                "event_id": event_id,
+                "evidence": {"id": event_id},
+            }
+        from uuid import uuid4
+
+        from app.ev.resolve import is_near_duplicate
+
+        events = config.setdefault("events", [])
+        if not isinstance(events, list):
+            events = []
+            config["events"] = events
+        start = str(args.get("start") or "")
+        for existing in events:
+            if not isinstance(existing, dict):
+                continue
+            if is_near_duplicate(
+                title=title,
+                start=start,
+                other_title=str(existing.get("summary") or existing.get("title") or ""),
+                other_start=existing.get("start"),
+            ):
+                event_id = str(existing.get("id") or "")
+                if event_id:
+                    return {
+                        "ok": True,
+                        "mode": "local",
+                        "id": event_id,
+                        "event_id": event_id,
+                        "duplicate": True,
+                        "evidence": {"id": event_id, "duplicate": True},
+                        "summary": title,
+                    }
+        event_id = f"local-{uuid4()}"
+        events.append(
+            {
+                "id": event_id,
+                "summary": title,
+                "start": start,
+                "end": args.get("end"),
+                "location": args.get("location"),
+            }
+        )
+        return {
+            "ok": True,
+            "mode": "local",
+            "id": event_id,
+            "event_id": event_id,
+            "evidence": {"id": event_id},
+            "summary": title,
+        }
 
     async def _fetch_google_events(
         self,
@@ -468,6 +603,19 @@ class GitHubAdapter(Adapter):
         config: dict,
     ) -> dict:
         if config.get("provider") != "github":
+            spec = self.action(action)
+            if spec is None:
+                raise KeyError(f"unknown action '{action}'")
+            if spec.scope not in scopes:
+                raise PermissionError(f"scope '{spec.scope}' is not granted")
+            if action == "github.list_issues":
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "issues": list(config.get("issues") or []),
+                    "simulated": True,
+                }
             return await super().act(
                 action=action,
                 args=args,
@@ -704,6 +852,50 @@ class GitHubAdapter(Adapter):
 
 @dataclass(frozen=True)
 class SmartHomeAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        from app.ev.home import adapter_act
+
+        return await adapter_act(
+            action=action,
+            args=args or {},
+            token=token,
+            scopes=scopes,
+            config=config,
+            session=config.get("_session"),
+        )
+
+    async def sync(
+        self,
+        *,
+        token: str,
+        scopes: list[str],
+        config: dict,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> AdapterSyncResult:
+        if config.get("provider") == "homeassistant":
+            from app.ev.home import sync_from_ha
+
+            session = config.get("_session")
+            count = 0
+            if session is not None:
+                count = await sync_from_ha(session, token=token, config=config)
+            return AdapterSyncResult(signals={"mode": "homeassistant", "synced": count})
+        return AdapterSyncResult(signals={"mode": "local", "simulated": True})
+
     async def translate_webhook(
         self,
         payload: dict,
@@ -733,8 +925,108 @@ class SmartHomeAdapter(Adapter):
         ]
 
 
+def _life_action_common(
+    *,
+    action: str,
+    args: dict,
+    scopes: list[str],
+    config: dict,
+) -> tuple[dict, dict]:
+    """Shared macos_life policy gate + helper args for send/call actions."""
+    decision = evaluate_life_policy(
+        scopes=scopes,
+        action=action,
+        recipient=str(args.get("to") or "") or None,
+        contact=args.get("contact") if isinstance(args.get("contact"), dict) else None,
+        confirm=bool(args.get("confirm")),
+        allowlist=config.get("contact_allowlist"),
+        autonomy=config.get("autonomy"),
+        confirm_unknown=config.get("confirm_unknown"),
+    )
+    if not decision.allowed:
+        raise PermissionError(decision.reason)
+    helper_args = {key: value for key, value in args.items() if key not in ("confirm", "contact")}
+    return helper_args, decision.to_dict()
+
+
+def _life_read_only_action(*, provider: object) -> None:
+    if provider != "macos_life":
+        raise LifeHelperUnavailableError(
+            "no life provider configured for this read action; set "
+            "EV_LIFE_HELPER_PATH and provider=macos_life"
+        )
+
+
 @dataclass(frozen=True)
 class MessagingAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        provider = config.get("provider")
+        if provider == "macos_life":
+            return await self._macos_life_act(action, args, scopes, config)
+        if provider == "device_proxy":
+            raise LifeHelperError(
+                "device_proxy actions are queued by the integrations service",
+                error_code="device_proxy_service_only",
+            )
+        if provider == "http":
+            return await super().act(
+                action=action,
+                args=args,
+                token=token,
+                scopes=scopes,
+                config=config,
+            )
+        # Offline double: reads are honest empties; sends NEVER fake success.
+        if action == "messaging.send":
+            raise LifeHelperUnavailableError(
+                "no life provider configured (set EV_MESSAGING_PROVIDER=macos_life "
+                "and EV_LIFE_HELPER_PATH); refusing to fake a sent message"
+            )
+        return {"ok": True, "mode": "local", "action": action, "messages": []}
+
+    async def _macos_life_act(
+        self,
+        action: str,
+        args: dict,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        command = {
+            "messaging.list_messages": "messages.list",
+            "messaging.send": "messages.send",
+        }[action]
+        if action == "messaging.send":
+            helper_args, policy = _life_action_common(
+                action=action,
+                args=args,
+                scopes=scopes,
+                config=config,
+            )
+        else:
+            helper_args = {key: value for key, value in args.items() if key != "confirm"}
+            policy = {"allowed": True, "confirmation_required": False, "reason": "read"}
+        result = await run_life_helper(
+            command,
+            helper_args,
+            helper_path=config.get("helper_path"),
+        )
+        return {
+            "ok": True,
+            "mode": "macos_life",
+            "action": action,
+            **result.data,
+            "delivery": result.delivery,
+            "policy": policy,
+        }
+
     async def translate_webhook(
         self,
         payload: dict,
@@ -756,6 +1048,306 @@ class MessagingAdapter(Adapter):
                 },
             )
         ]
+
+
+@dataclass(frozen=True)
+class ContactsAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        provider = config.get("provider")
+        if provider in {None, "local"}:
+            spec = self.action(action)
+            if spec is None:
+                raise KeyError(f"unknown action '{action}'")
+            if spec.scope not in scopes:
+                raise PermissionError(f"scope '{spec.scope}' is not granted")
+            contacts = [item for item in (config.get("contacts") or []) if isinstance(item, dict)]
+            if action == "contacts.list":
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "contacts": contacts,
+                    "simulated": True,
+                }
+            if action == "contacts.resolve":
+                from app.ev.resolve import pick_unique
+
+                query = str(args.get("query") or args.get("name") or "")
+                match = pick_unique(
+                    query,
+                    contacts,
+                    labels=lambda row: [
+                        str(row.get("name") or ""),
+                        str(row.get("display_name") or ""),
+                        str(row.get("nickname") or ""),
+                        str(row.get("phone") or ""),
+                        str(row.get("email") or ""),
+                    ],
+                )
+                if match.status == "ambiguous":
+                    return {
+                        "ok": False,
+                        "mode": "local",
+                        "action": action,
+                        "error": "ambiguous",
+                        "contacts": list(match.candidates),
+                        "simulated": True,
+                    }
+                contact = match.item if match.unique else None
+                return {
+                    "ok": bool(contact),
+                    "mode": "local",
+                    "action": action,
+                    "contact": contact,
+                    "contacts": [contact] if contact else [],
+                    "simulated": True,
+                    "error": None if contact else "not_found",
+                }
+            raise KeyError(f"unknown action '{action}'")
+        _life_read_only_action(provider=config.get("provider"))
+        command = {
+            "contacts.resolve": "contacts.resolve",
+            "contacts.list": "contacts.list",
+        }[action]
+        result = await run_life_helper(
+            command,
+            args,
+            helper_path=config.get("helper_path"),
+        )
+        return {
+            "ok": True,
+            "mode": "macos_life",
+            "action": action,
+            **result.data,
+            "delivery": result.delivery,
+        }
+
+
+@dataclass(frozen=True)
+class PhoneAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        provider = config.get("provider")
+        if provider in {None, "local"}:
+            spec = self.action(action)
+            if spec is None:
+                raise KeyError(f"unknown action '{action}'")
+            if spec.scope not in scopes:
+                raise PermissionError(f"scope '{spec.scope}' is not granted")
+            destination = str(args.get("to") or args.get("destination") or "")
+            opened = bool(config.get("simulate_opened"))
+            return {
+                "ok": opened,
+                "mode": "local",
+                "action": action,
+                "opened": opened,
+                "simulated": True,
+                "error": None if opened else "not_opened",
+                "delivery": {
+                    "evidence": {
+                        "opened": opened,
+                        "source": "local",
+                        "recipient": destination,
+                    }
+                },
+            }
+        if provider == "macos_life":
+            helper_args, policy = _life_action_common(
+                action=action,
+                args=args,
+                scopes=scopes,
+                config=config,
+            )
+            command = "call.place"
+            destination = helper_args.pop("to", None)
+            if not destination:
+                raise ValueError("phone call requires a destination")
+            helper_args["destination"] = destination
+            helper_args["kind"] = "facetime" if action == "facetime.call" else "tel"
+            helper_args.pop("video", None)
+            result = await run_life_helper(
+                command,
+                helper_args,
+                helper_path=config.get("helper_path"),
+            )
+            return {
+                "ok": True,
+                "mode": "macos_life",
+                "action": action,
+                **result.data,
+                "delivery": result.delivery,
+                "policy": policy,
+            }
+        if provider == "device_proxy":
+            raise LifeHelperError(
+                "device_proxy actions are queued by the integrations service",
+                error_code="device_proxy_service_only",
+            )
+        if provider == "http":
+            return await super().act(
+                action=action,
+                args=args,
+                token=token,
+                scopes=scopes,
+                config=config,
+            )
+        raise LifeHelperUnavailableError(
+            "no life provider configured for phone calls; set EV_LIFE_HELPER_PATH "
+            "and provider=macos_life (or device_proxy)"
+        )
+
+
+@dataclass(frozen=True)
+class MailAdapter(Adapter):
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        provider = config.get("provider")
+        if provider in {None, "local"}:
+            spec = self.action(action)
+            if spec is None:
+                raise KeyError(f"unknown action '{action}'")
+            if spec.scope not in scopes:
+                raise PermissionError(f"scope '{spec.scope}' is not granted")
+            if action == "mail.list":
+                items = list(config.get("inbox") or [])
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "items": items,
+                    "simulated": True,
+                }
+            if action == "mail.draft":
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "drafted": True,
+                    "sent": False,
+                    "simulated": True,
+                }
+            if action == "mail.send":
+                if not args.get("confirm"):
+                    return {
+                        "ok": False,
+                        "mode": "local",
+                        "sent": False,
+                        "error": "confirm_required",
+                    }
+                from uuid import uuid4
+
+                message_id = f"local-{uuid4()}"
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "sent": True,
+                    "simulated": True,
+                    "message_id": message_id,
+                }
+            raise KeyError(f"unknown action '{action}'")
+        _life_read_only_action(provider=provider)
+        command = {
+            "mail.list": "mail.list",
+            "mail.send": "mail.send",
+        }[action]
+        if action == "mail.send":
+            helper_args, policy = _life_action_common(
+                action=action,
+                args=args,
+                scopes=scopes,
+                config=config,
+            )
+        else:
+            helper_args = args
+            policy = {"allowed": True, "confirmation_required": False, "reason": "read"}
+        result = await run_life_helper(
+            command,
+            helper_args,
+            helper_path=config.get("helper_path"),
+        )
+        return {
+            "ok": True,
+            "mode": "macos_life",
+            "action": action,
+            **result.data,
+            "delivery": result.delivery,
+            "policy": policy,
+        }
+
+
+@dataclass(frozen=True)
+class DeviceProxyAdapter(Adapter):
+    """iPhone actuator contract: outbound actions are queued for devices.
+
+    The integrations service persists the queue (``LifeOutboundAction``) and
+    accepts authenticated device result posts; this adapter only validates
+    actions and derives the queue payload so the contract stays testable
+    without the database.
+    """
+
+    async def act(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        raise LifeHelperError(
+            "device_proxy actions must go through the integrations service "
+            "queue (POST /v1/integrations/{id}/actions)",
+            error_code="device_proxy_service_only",
+        )
+
+    async def queue_payload(
+        self,
+        *,
+        action: str,
+        args: dict,
+        scopes: list[str],
+        config: dict,
+        device_id: str | None = None,
+    ) -> dict:
+        helper_args, policy = _life_action_common(
+            action=action,
+            args=args,
+            scopes=scopes,
+            config=config,
+        )
+        return {
+            "ok": True,
+            "mode": "device_proxy",
+            "action": action,
+            "queued": True,
+            "args": helper_args,
+            "target_device": device_id,
+            "delivery": {"confirmed": False, "status": "queued"},
+            "policy": policy,
+        }
 
 
 SEARCH_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
@@ -831,6 +1423,99 @@ class SearchAdapter(Adapter):
                 **normalize_search_results([]),
             }
         return {**result, **normalize_search_results(result.get("results"))}
+
+
+class OctoPrintAdapter(Adapter):
+    """Local fake job or OctoPrint/Moonraker REST (key in vault)."""
+
+    async def act(self, *, action: str, args: dict, token: str, scopes: list[str], config: dict) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        if config.get("connected") is False:
+            return {"ok": False, "error": "no printer connected", "mode": "local"}
+        if action == "octoprint.ping":
+            if config.get("provider") == "http" and config.get("base_url"):
+                try:
+                    async with _make_client(timeout=3.0) as client:
+                        resp = await client.get(f"{str(config['base_url']).rstrip('/')}/api/version")
+                        resp.raise_for_status()
+                    return {"ok": True, "mode": "http", "status": "ok"}
+                except Exception as exc:  # noqa: BLE001
+                    return {"ok": False, "mode": "http", "error": str(exc)}
+            return {"ok": True, "mode": "local", "status": "ok"}
+        if action == "octoprint.start":
+            return {
+                "ok": True,
+                "mode": config.get("provider") or "local",
+                "vendor_job_id": f"local-{args.get('job_id') or 'job'}",
+                "status": "printing",
+            }
+        if action == "octoprint.status":
+            return {
+                "ok": True,
+                "mode": "local",
+                "status": config.get("job_status") or "done",
+                "filament_remaining_g": config.get("filament_remaining_g", 120.0),
+            }
+        return {"ok": True, "mode": "local", "action": action}
+
+
+class CameraAdapter(Adapter):
+    """Owner-registered cameras only. Never scan the LAN."""
+
+    async def act(self, *, action: str, args: dict, token: str, scopes: list[str], config: dict) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        if action == "cameras.clip":
+            return {
+                "ok": True,
+                "mode": "local",
+                "camera": args.get("camera"),
+                "at": args.get("at"),
+                "discovered_lan": False,
+                "blob_id": config.get("clip_attachment_id"),
+            }
+        if action == "cameras.list":
+            return {"ok": True, "cameras": list(config.get("cameras") or []), "discovered_lan": False}
+        return {"ok": True, "mode": "local", "action": action, "discovered_lan": False}
+
+
+class DroneAdapter(Adapter):
+    """Owner-paired sim or Tello/MAVLink. Takeoff/hover/land/rtl only."""
+
+    async def act(self, *, action: str, args: dict, token: str, scopes: list[str], config: dict) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        cmd = action.split(".", 1)[-1]
+        return {
+            "ok": True,
+            "mode": config.get("provider") or "local",
+            "sim": (config.get("provider") or "local") == "local",
+            "status": cmd,
+            "command": cmd,
+        }
+
+
+class PublicFeedsAdapter(Adapter):
+    """Owner-picked RSS/NWS public feeds. Not a private scanner."""
+
+    async def act(self, *, action: str, args: dict, token: str, scopes: list[str], config: dict) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        items = list(config.get("items") or args.get("items") or [])
+        return {"ok": True, "mode": "local", "items": items, "url": args.get("url")}
 
 
 BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
@@ -922,7 +1607,25 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
         event_types=("home.device.updated",),
         actions=(
             AdapterAction("home.list_devices", "home:read", "List smart-home devices and state"),
-            AdapterAction("home.set_device", "home:act", "Set a device state"),
+            AdapterAction("home.status", "home:read", "Read home entity state"),
+            AdapterAction(
+                "home.set_device",
+                "home:act",
+                "Set a device state",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "entity": {"type": "string"},
+                        "entity_id": {"type": "string"},
+                        "action": {"type": "string"},
+                        "state": {"type": "string"},
+                        "confirm": {"type": "boolean"},
+                    },
+                },
+            ),
+            AdapterAction("light.set", "home:act", "Set a light on or off"),
+            AdapterAction("lock.set", "home:act", "Lock or unlock"),
+            AdapterAction("cover.set", "home:act", "Open or close a cover"),
         ),
     ),
     MessagingAdapter(
@@ -935,8 +1638,209 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
         privacy_kind="app",
         event_types=("message.received",),
         actions=(
-            AdapterAction("messaging.list_messages", "messaging:read", "List recent messages"),
-            AdapterAction("messaging.send", "messaging:act", "Send a message"),
+            AdapterAction(
+                "messaging.list_messages",
+                "messaging:read",
+                "List recent messages",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                        "conversation_id": {"type": "string", "maxLength": 256},
+                    },
+                },
+            ),
+            AdapterAction(
+                "messaging.send",
+                "messaging:act",
+                "Send a message (provider must return delivery evidence)",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                        "service": {"type": "string", "maxLength": 64},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to", "text"],
+                },
+            ),
+        ),
+    ),
+    ContactsAdapter(
+        slug="contacts",
+        name="Contacts",
+        description="Resolve and list the owner's Apple contacts (read-only).",
+        capabilities=("contacts:read",),
+        default_scopes=("contacts:read",),
+        min_privacy="normal",
+        privacy_kind="app",
+        event_types=(),
+        actions=(
+            AdapterAction(
+                "contacts.resolve",
+                "contacts:read",
+                "Resolve a name/query to contact records",
+                parameters={
+                    "type": "object",
+                    "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 256}},
+                    "required": ["query"],
+                },
+            ),
+            AdapterAction("contacts.list", "contacts:read", "List all contacts"),
+        ),
+    ),
+    PhoneAdapter(
+        slug="phone",
+        name="Phone",
+        description="Place real phone and FaceTime calls through EVLifeHelper.",
+        capabilities=("phone:act",),
+        default_scopes=("phone:act",),
+        min_privacy="normal",
+        privacy_kind="app",
+        event_types=(),
+        actions=(
+            AdapterAction(
+                "phone.call",
+                "phone:act",
+                "Place a phone call",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to"],
+                },
+            ),
+            AdapterAction(
+                "facetime.call",
+                "phone:act",
+                "Place a FaceTime call",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "video": {"type": "boolean"},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to"],
+                },
+            ),
+        ),
+    ),
+    MailAdapter(
+        slug="mail",
+        name="Mail",
+        description="Read and send mail through the owner's Apple Mail account.",
+        capabilities=("mail:read", "mail:act"),
+        default_scopes=("mail:read",),
+        min_privacy="normal",
+        privacy_kind="app",
+        event_types=(),
+        actions=(
+            AdapterAction(
+                "mail.list",
+                "mail:read",
+                "List recent mail messages",
+                parameters={
+                    "type": "object",
+                    "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 200}},
+                },
+            ),
+            AdapterAction(
+                "mail.send",
+                "mail:act",
+                "Send mail (provider must return delivery evidence)",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "subject": {"type": "string", "maxLength": 256},
+                        "body": {"type": "string", "maxLength": 4000},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to", "body"],
+                },
+            ),
+            AdapterAction(
+                "mail.draft",
+                "mail:act",
+                "Save a mail draft without sending",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "maxLength": 256},
+                        "subject": {"type": "string", "maxLength": 256},
+                        "body": {"type": "string", "maxLength": 4000},
+                    },
+                },
+            ),
+        ),
+    ),
+    DeviceProxyAdapter(
+        slug="device_proxy",
+        name="iPhone Device Proxy",
+        description=(
+            "Queue outbound messages/calls for registered iPhones and accept "
+            "authenticated delivery results (SUIT actuator contract)."
+        ),
+        capabilities=("messaging:read", "messaging:act", "phone:act", "contacts:read"),
+        default_scopes=("messaging:act", "phone:act"),
+        min_privacy="normal",
+        privacy_kind="app",
+        event_types=(),
+        actions=(
+            AdapterAction(
+                "messaging.send",
+                "messaging:act",
+                "Queue a message for a registered iPhone",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "text": {"type": "string", "minLength": 1, "maxLength": 4000},
+                        "device_id": {"type": "string"},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to", "text"],
+                },
+            ),
+            AdapterAction(
+                "phone.call",
+                "phone:act",
+                "Queue a phone call for a registered iPhone",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "device_id": {"type": "string"},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to"],
+                },
+            ),
+            AdapterAction(
+                "facetime.call",
+                "phone:act",
+                "Queue a FaceTime call for a registered iPhone",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "to": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "video": {"type": "boolean"},
+                        "device_id": {"type": "string"},
+                        "contact": {"type": "object"},
+                        "confirm": {"type": "boolean"},
+                    },
+                    "required": ["to"],
+                },
+            ),
         ),
     ),
     SearchAdapter(
@@ -962,6 +1866,60 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
                     "required": ["query"],
                 },
             ),
+        ),
+    ),
+    OctoPrintAdapter(
+        slug="octoprint",
+        name="OctoPrint",
+        description="Owner 3D printer via OctoPrint/Moonraker or a local fake job.",
+        capabilities=("printer:read", "printer:act"),
+        default_scopes=("printer:read", "printer:act"),
+        min_privacy="normal",
+        privacy_kind="app",
+        actions=(
+            AdapterAction("octoprint.ping", "printer:read", "Ping the printer"),
+            AdapterAction("octoprint.start", "printer:act", "Start a queued print"),
+            AdapterAction("octoprint.status", "printer:read", "Poll a print job"),
+        ),
+    ),
+    CameraAdapter(
+        slug="cameras",
+        name="Owner cameras",
+        description="Replay owner-added cameras only. Never discover the LAN.",
+        capabilities=("camera:read",),
+        default_scopes=("camera:read",),
+        min_privacy="private",
+        privacy_kind="app",
+        actions=(
+            AdapterAction("cameras.clip", "camera:read", "Fetch an owner clip"),
+            AdapterAction("cameras.list", "camera:read", "List owner-added cameras"),
+        ),
+    ),
+    DroneAdapter(
+        slug="drone",
+        name="Owner drone",
+        description="Leashed owner drone: takeoff, hover, land, return-to-launch.",
+        capabilities=("drone:act",),
+        default_scopes=("drone:act",),
+        min_privacy="normal",
+        privacy_kind="app",
+        actions=(
+            AdapterAction("drone.takeoff", "drone:act", "Take off (confirm required)"),
+            AdapterAction("drone.hover", "drone:act", "Hover in place"),
+            AdapterAction("drone.land", "drone:act", "Land"),
+            AdapterAction("drone.rtl", "drone:act", "Return to launch"),
+        ),
+    ),
+    PublicFeedsAdapter(
+        slug="public_feeds",
+        name="Public feeds",
+        description="Owner-picked RSS and NWS public alerts. Not a private scanner.",
+        capabilities=("feeds:read",),
+        default_scopes=("feeds:read",),
+        min_privacy="normal",
+        privacy_kind="app",
+        actions=(
+            AdapterAction("public_feeds.poll", "feeds:read", "Poll an owner-picked public feed"),
         ),
     ),
 )

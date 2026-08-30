@@ -90,6 +90,26 @@ These are the ones violated most often. `docs/FLEET_LAW.md` is the complete text
 - **End every report with the mandatory footer** from `AGENT_FLEET.md` §8,
   including a non-empty "WHAT IS STILL NOT REAL" section.
 
+
+## 3a. Production deployment law (P0)
+
+# PRODUCTION DEPLOYMENT LAW (P0 CLOSURE, 2026-08-25)
+
+Production (`ev.api` on :8000) has ONE deploy authority:
+`scripts/deploy_production.sh` (flock-guarded, verifies clean tree +
+origin parity, restarts once, waits for health to report the pinned SHA).
+
+Development agents MUST NOT independently:
+- `launchctl kickstart` ev.api or any production service,
+- run production migrations against the live database,
+- invoke destructive endpoints (restore/wipe/reseed — these are also
+  gated server-side by EV_MAINTENANCE_MODE + confirmation tokens),
+- run test suites with EV_TEST_USE_LIVE_DB=1 when EV_ENV=production
+  (conftest fails closed).
+
+Prepare patches + isolated tests freely; coordinate deploys through
+Project Head / the wrapper only.
+
 ## 4. Running the code
 
 Two keys are always required. `EV_VAULT_KEY` is never derived from the master
@@ -132,17 +152,17 @@ Measured on the working tree by `tools/baseline.py`; recorded in
 
 | Metric | Value |
 | --- | --- |
-| Python modules under `backend/app` | 237 (68,699 lines, 27 subpackages) |
-| Python modules under `backend/clients` | 27 (5,960 lines) |
-| Test modules / test functions | 99 / 1,035 |
-| API routers / route decorators | 18 / 294 |
-| Locked contract paths / operations | 272 / 295 |
-| `Settings` fields (`EV_*`) | 239 |
-| ORM tables | 67 |
-| Alembic migrations | 7 |
-| `docs/*.md` files | 50 |
-| `EV_*` keys in `.env.example` / `.env.api-first` | 204 / 32 |
-| Swift files / lines | 44 / 6,780 |
+| Python modules under `backend/app` | 416 (149,439 lines, 31 subpackages) |
+| Python modules under `backend/clients` | 28 (8,033 lines) |
+| Test modules / test functions | 206 / 2,338 |
+| API routers / route decorators | 23 / 425 |
+| Locked contract paths / operations | 341 / 372 |
+| `Settings` fields (`EV_*`) | 362 |
+| ORM tables | 102 |
+| Alembic migrations | 22 |
+| `docs/*.md` files | 73 |
+| `EV_*` keys in `.env.example` / `.env.api-first` | 276 / 35 |
+| Swift files / lines | 100 / 30,281 |
 | Fleet size | 20 |
 
 When a change legitimately moves these numbers, run `make baseline-write` and
@@ -151,9 +171,11 @@ one measured table, one command, one place to fix.
 
 ## 6. What is actually broken at HEAD
 
-Measured on this Linux checkout, `uv sync --extra s3 --extra dev` — the exact
-extras CI installs. Details and one-line fixes are in
-`docs/WORKSPACE_ANALYSIS.md` §5. Do not re-diagnose these from scratch:
+The findings below were measured on the analysis-branch Linux checkout
+(`uv sync --extra s3 --extra dev` — the extras CI installs). Tree size has
+grown since (see §5); re-measure before treating any count as current.
+Details and one-line fixes are in `docs/WORKSPACE_ANALYSIS.md` §5. Do not
+re-diagnose the structural issues from scratch:
 
 | Signal | Measured | Note |
 | --- | --- | --- |

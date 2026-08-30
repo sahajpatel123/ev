@@ -1,20 +1,78 @@
 import os
+import sys
 import tempfile
 
+# P0 CLOSURE GUARD (PART 8): test runs must never mutate production owner
+# state. Live-DB opt-in is refused against a production environment unless
+# an operator explicitly allows it for that single invocation.
+if (
+    os.environ.get("EV_TEST_USE_LIVE_DB") == "1"
+    and os.environ.get("EV_ENV", "").strip().lower() == "production"
+    and os.environ.get("EV_ALLOW_PROD_TESTS", "") != "1"
+):
+    sys.exit(
+        "REFUSING TO RUN TESTS AGAINST PRODUCTION. "
+        "Unset EV_TEST_USE_LIVE_DB (isolated DB) or set EV_ALLOW_PROD_TESTS=1 "
+        "for this one invocation."
+    )
+
 _TMP = tempfile.mkdtemp(prefix="ev-tests-")
-os.environ.setdefault("EV_DATABASE_URL", f"sqlite+aiosqlite:///{_TMP}/test.db")
-os.environ.setdefault("EV_PROCESSING_MODE", "sync")
-os.environ.setdefault("EV_CHAT_PROVIDER", "mock")
+# Never inherit the owner's live DATABASE_URL. pytest drop_all would wipe
+# the running Postgres. Opt in with EV_TEST_USE_LIVE_DB=1 only.
+if os.environ.get("EV_TEST_USE_LIVE_DB") != "1":
+    os.environ["EV_DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP}/test.db"
+os.environ["EV_MASTER_KEY"] = "test-key"
+os.environ["EV_API_KEY"] = "test-key"
+# Force sync: inherited EV_PROCESSING_MODE=queue would enqueue onto owner Redis.
+os.environ["EV_PROCESSING_MODE"] = "sync"
+if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
+    # Overwrite inherited shell/env-file provider keys. setdefault leaks the
+    # owner's EV_VOICE_LIVE_BRAIN=openai and a live DeepSeek key into unit tests.
+    os.environ["EV_CHAT_PROVIDER"] = "mock"
+    os.environ["EV_XAI_API_KEY"] = ""
+    os.environ["EV_OPENAI_API_KEY"] = ""
+    os.environ["EV_DEEPSEEK_API_KEY"] = ""
+    os.environ["EV_OPENCODE_API_KEY"] = ""
+    os.environ["EV_VOICE_LIVE_BRAIN"] = "pipeline"
+    os.environ["EV_BRAVE_SEARCH_API_KEY"] = ""
+# Health/queue probes ping Redis; default redis://localhost:6379/0 is the
+# owner instance. Port 9 refuses immediately. Opt in with EV_TEST_USE_LIVE_REDIS=1.
+if os.environ.get("EV_TEST_USE_LIVE_REDIS") != "1":
+    os.environ["EV_REDIS_URL"] = "redis://127.0.0.1:9/15"
+# Blank the helper and disable osascript so tests cannot drive the real Mac.
+# Opt in with EV_TEST_USE_LIVE_MAC=1.
+if os.environ.get("EV_TEST_USE_LIVE_MAC") != "1":
+    os.environ["EV_LIFE_HELPER_PATH"] = ""
+    os.environ["EV_NOTIFY_MACOS_HELPER_PATH"] = ""
+    os.environ["EV_NOTIFY_MACOS_ALLOW_OSASCRIPT"] = "false"
+    os.environ["EV_NOTIFY_BACKEND"] = "console"
+    os.environ["EV_MESSAGING_PROVIDER"] = "local"
 os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
 os.environ.setdefault("EV_EMBEDDING_DIM", "64")
+os.environ["EV_VOICEPRINT_PROVIDER"] = "hash"
+os.environ["EV_VOICEPRINT_MODEL_DIR"] = f"{_TMP}/no-campp"
+os.environ["EV_ML_MODEL_DIR"] = f"{_TMP}/models"
+os.environ["EV_MODEL_DIR"] = f"{_TMP}/models"
+os.environ["EV_VOICE_TTS_PROVIDER"] = "meta"
+os.environ["EV_VOICE_ASR_PROVIDER"] = "echo"
+os.environ["EV_VOICE_WAKE_PROVIDER"] = "phrase"
+os.environ["EV_SEARCH_PROVIDER"] = "none"
+os.environ["EV_OPENCODE_TOOL_EMULATION"] = "false"
+os.environ["EV_EARS_CONSENT"] = "false"
+os.environ.pop("EV_EARS_API_URL", None)
+os.environ.pop("EV_EARS_API_KEY", None)
 os.environ.setdefault("EV_MASTER_KEY", "test-key")
 os.environ.setdefault("EV_VAULT_KEY", "test-vault-key-0123456789abcdef")
 os.environ.setdefault("EV_STORAGE_ROOT", f"{_TMP}/storage")
+os.environ.setdefault("EV_MEMORY_DIR", f"{_TMP}/ev-memory")
+os.environ.setdefault("EV_MEMORY_GATE", "off")
+os.environ.setdefault("EV_MEMORY_PREFETCH", "off")
+os.environ.setdefault("EV_ENVIRONMENT", "test")
 os.environ.setdefault("EV_ACCESS_LOG_ENABLED", "true")
 os.environ.setdefault("EV_QUIET_HOURS_START", "23:59")
 os.environ.setdefault("EV_QUIET_HOURS_END", "00:00")
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -35,6 +93,54 @@ async def fresh_db() -> AsyncIterator[None]:
         await conn.run_sync(Base.metadata.create_all)
     yield
     await engine.dispose()
+
+
+@pytest.fixture(autouse=True)
+def reset_mutable_settings() -> Iterator[None]:
+    """Restore runtime-mutated ``settings`` between tests.
+
+    ``set_quiet_hours`` (and the quiet-hours API) assign ``settings.quiet_hours_*``
+    directly, so one test that says "quiet until 8" leaves every later voice
+    test in permanent quiet hours. Restore the conftest defaults after each
+    test so the mutation is test-local.
+    """
+
+    from app.gateway.reliability import CIRCUIT_BREAKERS
+
+    CIRCUIT_BREAKERS.reset()
+    yield
+    from app.config import settings
+
+    settings.quiet_hours_start = "23:59"
+    settings.quiet_hours_end = "00:00"
+    settings.memory_gate = os.environ.get("EV_MEMORY_GATE", "off")
+    settings.memory_dir = os.environ.get("EV_MEMORY_DIR")
+    settings.memory_curator_enabled = True
+    settings.memory_prefetch = os.environ.get("EV_MEMORY_PREFETCH", "off")
+    settings.cross_platform_production_memory = False
+    # F2/F3/F4/F5 feature flags: tests are hermetic — operator secrets files
+    # (production.env) must not flip test-environment behavior. Env vars still
+    # win for explicit opt-in.
+    # NOTE: literal defaults — the operator secrets file is injected into
+    # os.environ at config import and would otherwise leak production flag
+    # values (e.g. EV_MODEL_SURFACE_V2=on) into the test process.
+    settings.computer_executor_v2 = "off"
+    settings.capability_router_v2 = "off"
+    settings.model_surface_v2 = "legacy"
+    settings.memory_scoring_v2 = "off"
+    settings.prospective_context_v1 = "off"
+    # Live-session registry is process-global (voice.live.layer). One test
+    # registering a fake live session must not leak "mac client connected"
+    # into later projection/protocol tests (pre-existing pollution found by
+    # F1 runs: test_g2_trust_lifecycle -> test_apps_life live-sheet).
+    from app.voice.live.layer import reset_live_registry
+
+    reset_live_registry()
+    from app.memory.bootstrap import reset_bootstrap_cache
+    from app.memory.prefetch import reset_prefetch
+
+    reset_bootstrap_cache()
+    reset_prefetch()
 
 
 @pytest.fixture

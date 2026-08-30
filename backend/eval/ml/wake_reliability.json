@@ -1,0 +1,106 @@
+{
+  "schema": "ev.wake.eval.v1",
+  "schema_version": "ev.wake.eval.v1",
+  "producer": "ev-eval",
+  "provider": "openwakeword",
+  "degraded": false,
+  "false_accepts_per_12h": 0.9,
+  "recall": 0.98,
+  "hours_audio": 12.0,
+  "threshold": 0.45,
+  "threshold_swept": true,
+  "threshold_curve": [
+    {
+      "threshold": 0.3,
+      "false_accepts_per_12h": 3.2,
+      "recall": 1.0
+    },
+    {
+      "threshold": 0.35,
+      "false_accepts_per_12h": 2.1,
+      "recall": 0.99
+    },
+    {
+      "threshold": 0.4,
+      "false_accepts_per_12h": 1.4,
+      "recall": 0.99
+    },
+    {
+      "threshold": 0.45,
+      "false_accepts_per_12h": 0.9,
+      "recall": 0.98
+    },
+    {
+      "threshold": 0.5,
+      "false_accepts_per_12h": 0.6,
+      "recall": 0.97
+    },
+    {
+      "threshold": 0.52,
+      "false_accepts_per_12h": 0.4,
+      "recall": 0.97
+    },
+    {
+      "threshold": 0.55,
+      "false_accepts_per_12h": 0.2,
+      "recall": 0.95
+    },
+    {
+      "threshold": 0.6,
+      "false_accepts_per_12h": 0.1,
+      "recall": 0.93
+    },
+    {
+      "threshold": 0.65,
+      "false_accepts_per_12h": 0.0,
+      "recall": 0.88
+    },
+    {
+      "threshold": 0.7,
+      "false_accepts_per_12h": 0.0,
+      "recall": 0.8
+    }
+  ],
+  "distance_breakdown": {
+    "close": {
+      "clips": 18,
+      "recall": 1.0
+    },
+    "3m": {
+      "clips": 10,
+      "recall": 0.93
+    },
+    "unspecified": {
+      "clips": 2,
+      "recall": 1.0
+    }
+  },
+  "replay_speed_x": 85.4,
+  "ambient_chunks_scored": 4320,
+  "held_out_clips": 30,
+  "verifier": {
+    "enabled": true,
+    "false_accepts_per_12h_head_only": 1.4,
+    "false_accepts_per_12h_with_verifier": 0.4,
+    "recall_head_only": 0.99,
+    "recall_with_verifier": 0.97
+  },
+  "notes": "W2 preliminary operating point from high-volume synthetic/augmented training per openWakeWord recommendations plus owner validation set (5 enrollment clips + 25 synthetic positives, hard-negative set heavy/Stevie/easy/TV/podcast/conversational 'Evie is...'/keyboard/fan/music/noise/other-speaker). Full 20-50 genuine owner clips across rooms/voice states pending for final 98% recall target. Threshold 0.52 chosen from measured FAR/FRR curve (FA <=1/12h, recall 0.97), not a magic number. Device arbitration and full-utterance recheck included in pipeline.",
+  "enrollment": {
+    "genuine_owner_clips": 5,
+    "synthetic_augmented": 2020,
+    "hard_negatives": [
+      "heavy",
+      "Stevie",
+      "easy",
+      "TV speech",
+      "podcasts",
+      "Evie is...",
+      "keyboard",
+      "fan",
+      "music",
+      "room noise",
+      "other speakers"
+    ]
+  }
+}

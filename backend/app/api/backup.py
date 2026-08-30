@@ -11,6 +11,7 @@ from app.ops.metrics import record_restore_drill
 from app.schemas import (
     BackupCreateRequest,
     BackupOut,
+    BackupPrepareOut,
     BackupRestoreOut,
     BackupRestoreRequest,
     BackupVerifyOut,
@@ -92,24 +93,77 @@ async def verify_backup_endpoint(
     )
 
 
+@router.post("/restore/prepare", response_model=BackupPrepareOut)
+async def prepare_restore_endpoint(
+    data: BackupRestoreRequest,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(require_master),
+) -> BackupPrepareOut:
+    """P0 CONTAINMENT (Phase 6/7): mint a short-lived single-use confirmation
+    token bound to this backup path + environment + live DB fingerprint.
+    Ordinary master bearer tokens alone can no longer run restore."""
+    from app.ops.destructive_maintenance import (
+        DestructiveOperationError,
+        prepare_destructive_operation,
+    )
+
+    try:
+        prep = prepare_destructive_operation(
+            session, operation="backup.restore", target=data.path
+        )
+    except DestructiveOperationError as exc:
+        raise HTTPException(status_code=exc.status, detail={"error_code": exc.code, "message": exc.message}) from None
+    await log_access(
+        session,
+        actor=actor,
+        action="restore_prepare",
+        endpoint="POST /v1/backup/restore/prepare",
+        resource_type="all",
+        details={"path": data.path, "environment": prep["environment"], "fingerprint": prep["database_fingerprint"]},
+    )
+    await session.commit()
+    return BackupPrepareOut(**prep)
+
+
 @router.post("/restore", response_model=BackupRestoreOut)
 async def restore_backup_endpoint(
     data: BackupRestoreRequest,
     session: AsyncSession = Depends(get_session),
     actor: str = Depends(require_master),
 ) -> BackupRestoreOut:
-    """Restore from a verified backup (merge, or wipe + full restore drill)."""
+    """Restore from a verified backup (merge, or wipe + full restore drill).
+
+    P0 LAW: gated by destructive-maintenance confirmation. Master bearer
+    alone is insufficient. Confirmation is single-use, bound to
+    path+environment+live database fingerprint, and expires."""
+    from app.ops.destructive_maintenance import (
+        DestructiveOperationError,
+        verify_destructive_confirmation,
+    )
+
     try:
-        result = await restore_backup(
+        verify_destructive_confirmation(
             session,
-            path=data.path,
-            passphrase=data.passphrase,
-            mode=data.mode,
-            confirm_wipe=data.confirm_wipe,
-            actor=actor,
+            token=getattr(data, "restore_confirmation", None),
+            operation="backup.restore",
+            target=data.path,
         )
-    except BackupError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
+    except DestructiveOperationError as exc:
+        raise HTTPException(status_code=exc.status, detail={"error_code": exc.code, "message": exc.message}) from None
+    from app.ops.destructive_maintenance import exclusive_destructive_lock
+
+    with exclusive_destructive_lock():
+        try:
+            result = await restore_backup(
+                session,
+                path=data.path,
+                passphrase=data.passphrase,
+                mode=data.mode,
+                confirm_wipe=data.confirm_wipe,
+                actor=actor,
+            )
+        except BackupError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
     await log_access(
         session,
         actor=actor,

@@ -2,6 +2,7 @@
 
 from app.vision.providers import (
     AppleVisionProvider,
+    DeepSeekOCRProvider,
     DeterministicVisionProvider,
     TesseractVisionProvider,
     VisionBinaryError,
@@ -14,6 +15,7 @@ from app.vision.providers import (
 
 __all__ = [
     "AppleVisionProvider",
+    "DeepSeekOCRProvider",
     "DeterministicVisionProvider",
     "TesseractVisionProvider",
     "VisionBinaryError",

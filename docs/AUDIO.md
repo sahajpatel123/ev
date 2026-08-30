@@ -138,6 +138,42 @@ Artifact schema (`ev.wake.eval.v1`): `provider`, `degraded`,
 `threshold_curve`, `distance_breakdown`, and — when a verifier is configured —
 `verifier` with head-only vs with-verifier false-accept/recall numbers.
 
+### 3a-1. Owner wake training (exact paths)
+
+The trained artifacts go where `.env` already expects them:
+
+* `~/.ev/models/wake-openwakeword.onnx` (`EV_VOICE_WAKE_OPENWAKEWORD_MODEL_PATH`)
+* `~/.ev/models/wake-openwakeword-verifier.pkl`
+  (`EV_VOICE_WAKE_OPENWAKEWORD_VERIFIER_PATH`)
+
+Both are expanded with `~` → the owner's home directory before the engine
+opens them. The target wake phrase is **"EVIE" (E-V-I-E)**, not "Eve".
+
+Existing recordings (m4a/wav/…) can be ingested into the CapturePlan layout
+without a microphone:
+
+```
+python -m app.audio.capture_eval \
+  --ingest-clips <wake clips dir or file> \
+  --ingest-negatives <non-wake speech dir or file> \
+  --ingest-ambient <ambient dir or file> \
+  --ingest-only
+```
+
+Files whose names contain `3m`/`far` are tagged as far clips; everything else
+is tagged close. Non-16 kHz mono audio is converted with `ffmpeg` (or
+`afconvert`) to 16 kHz mono PCM16 WAV.
+
+Current owner-data status: `voice-sample/` contains one EVIE clip (44.6 s),
+one non-wake paragraph, and five enrollment samples (Agent 5's — never used
+for wake training). The required 30 clips (10 at 3 m) and ambient recording
+are not present yet, so training stops with the exact shortfall instead of
+faking a model.
+
+If ambient is unavailable at tuning time, the threshold is shipped
+conservative (higher than the 0.5 default is the safe direction) and explicitly
+marked unmeasured until the owner ambient session exists.
+
 ### 3b. Long-run resource measurement
 
 `python -m clients.ears --simulate-wav <16 kHz mono WAV> --resource-report

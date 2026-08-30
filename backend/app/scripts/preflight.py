@@ -85,11 +85,44 @@ def _check_chat() -> tuple[str, str, str]:
         return _check_opencode()
     if provider == "deepseek":
         if settings.deepseek_api_key:
-            return "REAL", "deepseek", "DeepSeek API key set"
+            from app.voice.live.grok_voice import grok_voice_enabled
+
+            model = settings.deepseek_model or "deepseek-v4-flash"
+            if grok_voice_enabled():
+                from app.voice.live.grok_voice import live_realtime_provider
+
+                live = (
+                    "live: gpt-realtime-2.1-mini"
+                    if live_realtime_provider() == "openai"
+                    else "live: Grok Voice Think Fast 2.0"
+                )
+            elif (settings.xai_api_key or "").strip():
+                live = "live: pipeline (EV_VOICE_LIVE_BRAIN=pipeline)"
+            else:
+                live = "live: DeepSeek pipeline until EV_XAI_API_KEY is set"
+            return "REAL", "deepseek", f"DeepSeek API key set ({model}); {live}"
         return (
             "PARTIAL",
             "deepseek",
             "configured DeepSeek but EV_DEEPSEEK_API_KEY is empty — chat will "
+            "fail at request time; fill the key in .env",
+        )
+    if provider == "xai":
+        if settings.xai_api_key:
+            from app.voice.live.grok_voice import live_realtime_provider
+
+            live_p = live_realtime_provider()
+            if live_p == "openai":
+                live = "typed: grok-4.6; live: gpt-realtime-2.1-mini"
+            elif live_p == "xai":
+                live = "typed: grok-4.6; live: Grok Voice Think Fast 2.0"
+            else:
+                live = f"typed+live pipeline: {settings.xai_model}"
+            return "REAL", "xai", f"xAI API key set ({live})"
+        return (
+            "PARTIAL",
+            "xai",
+            "configured xAI but EV_XAI_API_KEY is empty — chat/live will "
             "fail at request time; fill the key in .env",
         )
     if provider == "local":
@@ -292,7 +325,10 @@ def _check_wake() -> tuple[str, str, str]:
 def _check_embeddings() -> tuple[str, str, str]:
     provider = settings.embedding_provider
     if provider == "granite":
-        if _file("granite-embedding-97m-multilingual-r2.onnx") and _pkg("onnxruntime"):
+        present = _file("embed-granite-r2.onnx") or _file(
+            "granite-embedding-97m-multilingual-r2.onnx"
+        )
+        if present and _pkg("onnxruntime"):
             return "REAL", "granite-r2", "weights present"
         return (
             "PARTIAL",

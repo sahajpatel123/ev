@@ -771,8 +771,9 @@ hard timeouts, bounded output, traversal rejection, size caps, owner-trust
 gate, and full access-log audit per call. This is a process-level jail (not an
 OS/container boundary); see `docs/SECURITY.md` §13 before exposing it to
 untrusted or external code. The `execute_command` action spec is declared in
-the formal registry for the future approval-gated executor; the current
-execution surface is the direct owner-trust endpoint above. Direction:
+the formal registry for the confirmation-gated executor; the current
+execution surface accepts only fixed named operations from
+`app/tools/operations.py` and rejects raw command strings. Direction:
 versioned drafts and per-call approval UI.
 
 ### 11.5 Action dispatcher & rollback — **Built**

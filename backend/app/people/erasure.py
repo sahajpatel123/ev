@@ -13,7 +13,14 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.compliance.models import DataErasureRecord
-from app.models import FaceEnrollment, FaceSample, PublicFigureCache, RecognitionLog
+from app.models import (
+    Entity,
+    FaceEnrollment,
+    FaceSample,
+    ObservationRecord,
+    PublicFigureCache,
+    RecognitionLog,
+)
 from app.services.access_log import log_access
 from app.utils.text import utcnow
 
@@ -64,6 +71,29 @@ async def erase_person(
         .all()
     )
     now = utcnow()
+    entity = await session.get(Entity, entity_id)
+    world_observations = []
+    if entity is not None:
+        world_observations = list(
+            (
+                await session.execute(
+                    select(ObservationRecord).where(
+                        ObservationRecord.subject_type == "person",
+                        ObservationRecord.subject == entity.name,
+                        ObservationRecord.deleted_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for observation in world_observations:
+            observation.deleted_at = now
+            observation.metadata_ = {
+                **(observation.metadata_ or {}),
+                "forgotten": True,
+                "forget_reason": reason,
+            }
     for row in enrollments:
         row.status = "deleted"
         row.ciphertext = None
@@ -96,6 +126,7 @@ async def erase_person(
         "face_enrollments_processed": len(enrollments),
         "face_enrollment_ids": [str(row.id) for row in enrollments],
         "public_figure_cache_deleted": len(cache_ids),
+        "world_observations_forgotten": len(world_observations),
         "backup_purge_required": bool(enrollments),
     }
     session.add(DataErasureRecord(actor=actor, reason=reason, manifest=manifest))

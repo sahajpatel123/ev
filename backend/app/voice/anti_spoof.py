@@ -65,6 +65,89 @@ def compute_audio_sha256(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def acoustic_liveness_score(raw: bytes, *, min_duration: float = 0.35) -> float | None:
+    """Server-side speech-quality gate used when the ASVspoof ONNX is absent.
+
+    This is computed from the audio itself (RMS, duration, spectral entropy).
+    It rejects silence and pure tones; it is not a client-trusted string and
+    it is not a full replay countermeasure. When the 2 MB liveness ONNX is
+    present, :class:`AudioLivenessModel` wins.
+    """
+
+    try:
+        waveform, rate = decode_waveform(raw)
+    except (ValueError, OSError, RuntimeError):
+        return None
+    if not waveform or rate <= 0:
+        return None
+    duration = len(waveform) / float(rate)
+    if duration < min_duration:
+        return 0.05
+    energy = math.sqrt(sum(sample * sample for sample in waveform) / len(waveform))
+    if energy < 0.004 or energy > 0.6:
+        return 0.08
+    try:
+        import numpy as np
+
+        samples = np.asarray(waveform, dtype=np.float32)
+        # Cap the FFT window so enrollment stays cheap on long clips.
+        window = samples[: min(len(samples), rate * 2)]
+        spec = np.abs(np.fft.rfft(window * np.hanning(len(window))))
+        power = np.square(spec[1:])  # drop DC
+        total = float(power.sum()) or 1.0
+        probability = power / total
+        entropy = float(-(probability * np.log(probability + 1e-12)).sum() / math.log(len(probability)))
+    except ImportError:
+        # Coarse spectral spread without numpy: bin |sample| by a 16-band
+        # folded index. Pure tones concentrate; speech does not.
+        bands = [0.0] * 16
+        for index, sample in enumerate(waveform[:: max(1, len(waveform) // 2048)][:2048]):
+            bands[index % 16] += abs(sample)
+        total = sum(bands) or 1.0
+        entropy = 0.0
+        for value in bands:
+            if value <= 0:
+                continue
+            band_p = value / total
+            entropy -= band_p * math.log(band_p)
+        entropy /= math.log(16)
+    if entropy < 0.35:
+        return 0.12
+    score = 0.5 + 0.35 * min(1.0, entropy) + 0.1 * min(1.0, duration / 2.0)
+    return max(0.0, min(0.99, round(score, 3)))
+
+
+def acoustic_liveness_available() -> bool:
+    """The acoustic bootstrap has no weights; it is always computable."""
+    return True
+
+
+def follow_up_liveness(
+    raw: bytes,
+    *,
+    owner_verified: bool = False,
+    speaker_matched: bool = False,
+) -> tuple[bool, float, str]:
+    """Liveness for an already-open always-on turn (acoustic fallback).
+
+    Enrollment/verify keep the 350 ms floor. Follow-up uses a shorter floor
+    because VAD already found speech. Silence and dead air still fail.
+    """
+
+    score = acoustic_liveness_score(raw, min_duration=0.08)
+    if score is None:
+        return False, 0.0, "liveness audio undecodable"
+    if score >= 0.5:
+        return True, score, "acoustic liveness accepted"
+    # 0.05 = too short, 0.08 = silence/energy. Pure-tone 0.12 on an
+    # already-verified owner turn is inconclusive, not an impostor.
+    if score <= 0.08:
+        return False, score, "acoustic liveness rejected"
+    if owner_verified and speaker_matched:
+        return True, score, "owner-verified follow-up"
+    return False, score, "acoustic liveness rejected"
+
+
 @dataclass(frozen=True)
 class AudioFingerprint:
     """A fingerprint that is known to be computed server-side."""
@@ -379,11 +462,19 @@ class LivenessGate:
         model = self.liveness_model
         live_score = model.score(raw)
         if live_score is None:
+            live_score = acoustic_liveness_score(raw)
+            if live_score is None:
+                self.last_degraded = True
+                return False, 0.0, "liveness model unavailable; failing closed (degraded)"
             self.last_degraded = True
-            return False, 0.0, "liveness model unavailable; failing closed (degraded)"
-        self.last_degraded = False
+        else:
+            self.last_degraded = False
         if live_score < self.model_threshold:
-            return False, round(float(live_score), 3), "passive liveness rejected"
+            return False, round(float(live_score), 3), (
+                "passive liveness rejected"
+                if not self.last_degraded
+                else "acoustic liveness rejected"
+            )
 
         resolved_transcript = transcript
         if expected_phrase and resolved_transcript is None and asr is not None:

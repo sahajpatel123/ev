@@ -23,6 +23,7 @@ from app.models import (
     DeadLetter,
     Device,
     FocusDesignation,
+    OwnerIdentity,
     Prediction,
     RuntimeEvent,
     RuntimeHeartbeat,
@@ -41,8 +42,11 @@ from app.schemas import (
 )
 from app.services.access_log import log_access
 from app.utils.text import utcnow
+from app.voice.lifecycle import is_sleep_phrase
 
 RUNTIME_STATES = ("idle", "verifying", "awake", "processing", "responding", "follow_up")
+RUNTIME_LISTENING_STATES = frozenset({"awake", "follow_up"})
+RUNTIME_BUSY_STATES = frozenset({"processing", "responding"})
 
 LEGAL_TRANSITIONS: dict[str, set[str]] = {
     "idle": {"verifying"},
@@ -77,6 +81,24 @@ def _state_timeout(state: str) -> timedelta:
             "follow_up": settings.runtime_followup_timeout_seconds,
         }.get(state, 0)
     )
+
+
+def listening_idle_timeout() -> timedelta:
+    """Long idle lock for awake/follow_up. The short follow-up value is a hint."""
+
+    return timedelta(
+        seconds=max(
+            int(settings.runtime_session_timeout_seconds),
+            int(settings.runtime_awake_timeout_seconds),
+            int(settings.runtime_followup_timeout_seconds),
+        )
+    )
+
+
+def listening_idle_expired(updated_at: datetime | None, now: datetime | None = None) -> bool:
+    now = now or utcnow()
+    stamp = _aware(updated_at) or now
+    return now - stamp > listening_idle_timeout()
 
 
 async def record_runtime_event(
@@ -131,6 +153,8 @@ def runtime_policy() -> dict:
         "notify_emergency_priority_threshold": settings.notify_emergency_priority_threshold,
         "notify_dedup_window_seconds": settings.notify_dedup_window_seconds,
         "notify_max_attempts": settings.notify_max_attempts,
+        "notify_device_routing": settings.notify_device_routing,
+        "notify_boot_beacon": settings.notify_boot_beacon,
         "urgent_priority_threshold": settings.runtime_urgent_priority_threshold,
         "focus_urgent_threshold": settings.runtime_focus_urgent_threshold,
         "verify_timeout_seconds": settings.runtime_verify_timeout_seconds,
@@ -138,6 +162,7 @@ def runtime_policy() -> dict:
         "processing_timeout_seconds": settings.runtime_processing_timeout_seconds,
         "respond_timeout_seconds": settings.runtime_respond_timeout_seconds,
         "followup_timeout_seconds": settings.runtime_followup_timeout_seconds,
+        "session_timeout_seconds": settings.runtime_session_timeout_seconds,
         "heartbeat_grace_seconds": settings.runtime_heartbeat_grace_seconds,
         "dlq_max_attempts": settings.runtime_dlq_max_attempts,
         "daemon_tick_seconds": settings.runtime_daemon_tick_seconds,
@@ -223,16 +248,23 @@ async def active_session(session: AsyncSession) -> RuntimeSession | None:
 
 
 async def expire_stale(session: AsyncSession, now: datetime | None = None) -> RuntimeSession | None:
-    """Timeout or quiet-hours-expire any active session that should return to idle."""
+    """Timeout or quiet-hours-expire any active session that should return to idle.
+
+    Listening states (`awake`, `follow_up`) use the long idle lock. The short
+    follow-up timeout is a REST hint and must not close the door.
+    """
     now = now or utcnow()
     current = await active_session(session)
     if current is None:
         return None
     updated_at = _aware(current.updated_at) or now
-    if current.state in ("verifying", "awake", "processing", "responding", "follow_up"):
+    if current.state in ("verifying", *RUNTIME_BUSY_STATES):
         if now - updated_at > _state_timeout(current.state):
             await transition(session, current, "idle", reason=f"{current.state}_timeout")
-        elif current.state in ("awake", "follow_up") and quiet_hours_active(now):
+    elif current.state in RUNTIME_LISTENING_STATES:
+        if listening_idle_expired(updated_at, now):
+            await transition(session, current, "idle", reason="silence-lock")
+        elif quiet_hours_active(now):
             await transition(session, current, "idle", reason="quiet_hours")
     return current
 
@@ -483,8 +515,8 @@ async def handle_utterance(
     from app.voice.pipeline import run_chat_tts_pipeline, transcribe_input
     from app.voice.sensitive import REVERIFY_PURPOSE, classify_sensitive
 
-    now = utcnow()
-    if runtime_session.ended_at is not None:
+    await expire_stale(session, utcnow())
+    if runtime_session.ended_at is not None or runtime_session.state == "idle":
         raise VoiceError(
             "Runtime voice session ended — wake EVIE again",
             status=428,
@@ -496,24 +528,9 @@ async def handle_utterance(
             status=403,
             code="not_verified",
         )
-    if follow_up:
-        if runtime_session.state != "follow_up":
-            raise VoiceError(
-                f"Follow-up only valid from follow_up state (current: {runtime_session.state})",
-                status=409,
-                code="invalid_state",
-            )
-        updated_at = _aware(runtime_session.updated_at) or now
-        if now - updated_at > timedelta(seconds=settings.runtime_followup_timeout_seconds):
-            await transition(session, runtime_session, "idle", reason="follow_up_expired")
-            raise VoiceError(
-                "30-second follow-up window expired — wake EVIE again",
-                status=428,
-                code="follow_up_expired",
-            )
-    elif runtime_session.state != "awake":
+    if runtime_session.state not in RUNTIME_LISTENING_STATES:
         raise VoiceError(
-            f"Utterance only valid from awake state (current: {runtime_session.state})",
+            f"Utterance only valid from a listening state (current: {runtime_session.state})",
             status=409,
             code="invalid_state",
         )
@@ -526,6 +543,32 @@ async def handle_utterance(
         audio_ref=audio_ref,
         language=language,
     )
+    if is_sleep_phrase(transcript.text):
+        from app.voice.contracts import SpeechStyle
+
+        await transition(session, runtime_session, "idle", reason="sleep phrase")
+        spoken_style = SpeechStyle()
+        style: SpeechStyle | None = spoken_style
+        try:
+            tts = await runtime.synthesizer.synthesize("Goodnight.", style=spoken_style)
+        except Exception:  # noqa: BLE001 - text reply is enough
+            tts = None
+            style = None
+        from app.ev.fleet import tts_playback_device
+
+        tts_target = await tts_playback_device(session)
+        return {
+            "transcript": transcript,
+            "reply": "Goodnight.",
+            "conversation_id": None,
+            "tts": tts,
+            "tts_device_id": str(tts_target.id) if tts_target is not None else None,
+            "style": style,
+            "model": None,
+            "context_tokens": 0,
+            "memory_deltas": [],
+            "state": runtime_session.state,
+        }
     sensitive_purpose = classify_sensitive(transcript.text)
     reverified = False
     if sensitive_purpose is not None:
@@ -590,15 +633,20 @@ async def handle_utterance(
         device_id=runtime_session.device_id,
         session_id=runtime_session.id,
     )
+    from app.ev.fleet import tts_playback_device
+
+    tts_target = await tts_playback_device(session)
     return {
         "transcript": outcome.transcript,
         "reply": outcome.reply,
         "conversation_id": outcome.conversation_id,
         "tts": outcome.tts,
+        "tts_device_id": str(tts_target.id) if tts_target is not None else None,
         "style": outcome.style,
         "model": outcome.model,
         "context_tokens": outcome.context_tokens,
         "memory_deltas": outcome.memory_deltas,
+        "state": runtime_session.state,
     }
 
 
@@ -869,22 +917,73 @@ async def arbitrate_wake(
     )
 
 
+async def resolve_runtime_device(session: AsyncSession, device_id: str) -> Device:
+    """Accept a registered UUID or the Mac client's ``mac-<host>`` string.
+
+    Unknown UUID strings still 404 (they are not a hostname). A stable
+    non-UUID device id is resolved by name and upserted so the payload the
+    menu-bar app already sends can heartbeat without a pre-registered row.
+    """
+
+    try:
+        uid = UUID(str(device_id))
+    except (ValueError, TypeError, AttributeError):
+        uid = None
+    if uid is not None:
+        device = await session.get(Device, uid)
+        if device is None or device.revoked_at is not None:
+            raise KeyError(f"Device {device_id} not found or revoked")
+        return device
+    name = str(device_id).strip()
+    if not name:
+        raise KeyError("Device id is empty")
+    row = (
+        await session.execute(
+            select(Device)
+            .where(Device.name == name, Device.revoked_at.is_(None))
+            .order_by(Device.created_at.desc())
+        )
+    ).scalars().first()
+    if row is not None:
+        return row
+    owner = (
+        await session.execute(select(OwnerIdentity).order_by(OwnerIdentity.created_at.asc()).limit(1))
+    ).scalar_one_or_none()
+    device = Device(
+        name=name,
+        capabilities=["voice", "wake", "heartbeat"],
+        device_type="mac" if name.startswith("mac-") else "unknown",
+        platform="apple" if name.startswith("mac-") else None,
+        last_seen_at=utcnow(),
+        owner_id=owner.id if owner is not None else None,
+        paired_at=utcnow() if owner is not None else None,
+    )
+    session.add(device)
+    await session.flush()
+    return device
+
+
 async def record_heartbeat(
     session: AsyncSession,
     data: RuntimeHeartbeatCreate,
     now: datetime | None = None,
 ) -> RuntimeHeartbeat:
     now = now or utcnow()
-    device = await session.get(Device, data.device_id)
-    if device is None or device.revoked_at is not None:
-        raise KeyError(f"Device {data.device_id} not found or revoked")
+    device = await resolve_runtime_device(session, str(data.device_id))
     device.last_seen_at = now
+    battery = data.battery_percent if data.battery_percent is not None else data.battery_pct
+    storage = (
+        data.storage_free_bytes
+        if data.storage_free_bytes is not None
+        else data.storage_free_b
+    )
     heartbeat = RuntimeHeartbeat(
         device_id=device.id,
         reported_at=now,
         status=data.status,
         listener_state=data.listener_state,
-        battery_percent=data.battery_percent,
+        battery_percent=battery,
+        storage_free_bytes=storage,
         latency_ms=data.latency_ms,
         details=data.details,
     )
@@ -899,11 +998,20 @@ async def record_heartbeat(
         payload={
             "status": data.status,
             "listener_state": data.listener_state,
-            "battery_percent": data.battery_percent,
+            "battery_percent": battery,
+            "storage_free_bytes": storage,
             "latency_ms": data.latency_ms,
         },
         device_id=device.id,
         session_id=current.id if current is not None else None,
+    )
+    from app.ev.workbench import persist_heartbeat_power
+
+    await persist_heartbeat_power(
+        session,
+        device_id=str(device.name or device.id),
+        battery_percent=battery,
+        storage_free_bytes=storage,
     )
     await session.flush()
     return heartbeat
@@ -924,7 +1032,29 @@ async def route_action(
     if issues:
         raise ValueError(f"Invalid action payload: {'; '.join(issues)}")
     requires_approval = force_requires_approval or bool(spec["requires_approval"])
+    from app.ev.policy import authorize, infer_channel, should_enforce
+
+    auth_channel = infer_channel(requested_by, "action")
     current = await active_session(session)
+    decision = await authorize(
+        session,
+        data.action_type,
+        actor=requested_by,
+        arguments=data.payload or {},
+        device_id=device_id,
+        channel=auth_channel,
+        spec=spec,
+        session_id=str(current.id) if current else None,
+    )
+    if should_enforce(decision, name=data.action_type, channel=auth_channel):
+        # A disconnected provider prevents execution, but it should not erase
+        # the user's auditable queued action.  The adapter will return the
+        # same honest `not_connected` result when the action is approved and
+        # executed; only policy refusals reject creation outright.
+        if decision.effect in {"refuse", "reject", "deny"}:
+            raise ValueError(decision.reason)
+        if decision.confirmation_required:
+            requires_approval = True
     approved = data.auto_approve and not requires_approval
     action = ApprovedAction(
         action_type=data.action_type,
@@ -965,6 +1095,8 @@ async def route_action(
             "undoable": bool(spec["undoable"]),
             "permission": spec["permission"],
             "read_only": bool(spec["read_only"]),
+            "risk_class": decision.risk_class,
+            "policy_effect": decision.effect,
         },
     )
     return action
@@ -984,14 +1116,32 @@ async def decide_action(
     if action.status != "pending":
         raise ValueError(f"Action is already {action.status}")
     now = utcnow()
+    from app.ev.confirm import (
+        confirmation_expired,
+        expire_action,
+        payload_tampered,
+        pol_meta,
+        release_parked_hold,
+    )
+
     if decision == "approve":
-        action.status = "approved"
-        action.approved_at = now
-        action.approved_by = actor
+        if confirmation_expired(action.payload, now=now):
+            expire_action(action, reason="confirmation_expired", now=now)
+            await session.flush()
+            await release_parked_hold(action, spoken="That confirmation expired.")
+        elif payload_tampered(action.payload):
+            expire_action(action, reason="confirmation_target_mismatch", now=now)
+            await session.flush()
+            await release_parked_hold(action, spoken="That confirmation no longer matches the target.")
+        else:
+            action.status = "approved"
+            action.approved_at = now
+            action.approved_by = actor
     else:
         action.status = "denied"
         action.denied_at = now
         action.denied_reason = reason or "denied"
+        await release_parked_hold(action, spoken="Cancelled.")
     action.updated_at = now
     await session.flush()
     await record_runtime_event(
@@ -1011,6 +1161,13 @@ async def decide_action(
         resource_ids=[action.id],
         details={"decision": decision, "reason": reason},
     )
+    if action.status == "denied" and action.denied_reason in {
+        "confirmation_expired",
+        "confirmation_target_mismatch",
+    }:
+        raise ValueError(action.denied_reason.replace("_", " "))
+    if decision == "approve" and action.status == "approved" and pol_meta(action.payload).get("resume_on_approve"):
+        return await execute_action(session, action.id, actor=actor)
     return action
 
 
@@ -1026,14 +1183,69 @@ async def execute_action(
         raise KeyError(f"Action {action_id} not found")
     if action.status != "approved":
         raise ValueError("Only approved actions can be executed")
+    from app.ev.confirm import (
+        deliver_parked_result,
+        payload_tampered,
+        pol_meta,
+        tool_arguments,
+    )
+    from app.ev.policy import ROUTED_CAPABILITIES, Confirmation, canonical_target
+
+    if payload_tampered(action.payload):
+        raise ValueError("confirmation target mismatch")
     action.status = "executed"
     action.executed_at = utcnow()
     action.result = result or {}
     action.updated_at = utcnow()
+    args = tool_arguments(action.payload)
+    meta = pol_meta(action.payload)
+    should_dispatch = action.action_type in ROUTED_CAPABILITIES or bool(meta)
+    dispatched_via_tool = False
+    provider_unavailable = False
+
+    if should_dispatch:
+        from app.ev.tools import dispatch as dispatch_tool
+
+        bound = None
+        if action.approved_at is not None:
+            stored_target = str(meta.get("target") or "") or canonical_target(
+                action.action_type, args
+            )
+            bound = Confirmation(
+                factor="http_approve",
+                confirmed=True,
+                target=stored_target,
+                issued_at=action.approved_at,
+                session_id=str(meta.get("live_session_id") or action.session_id or "") or None,
+            )
+        tool = await dispatch_tool(
+            session,
+            action.action_type,
+            args,
+            actor=actor,
+            allow_sensitive=True,
+            channel="action",
+            confirmation=bound,
+            live_session_id=str(meta.get("live_session_id") or action.session_id or "") or None,
+            audit_endpoint="POST /v1/runtime/actions/{id}/execute",
+        )
+        dispatched_via_tool = True
+        action.result = tool.result or {"error": tool.error}
+        provider_unavailable = bool(
+            isinstance(action.result, dict)
+            and action.result.get("error") == "not_connected"
+        )
+        if isinstance(action.result, dict) and action.result.get("error"):
+            action.error = str(action.result.get("error"))
+    if meta:
+        await deliver_parked_result(action, action.result or {})
     await session.flush()
     # Real dispatch for deliverable actions; the receipt lives in the
     # notifications ledger (never derived from the caller-supplied result).
-    if action.action_type in ("notification", "send_message"):
+    if (
+        action.action_type in ("notification", "send_message", "present", "hud_card")
+        and (not dispatched_via_tool or provider_unavailable)
+    ):
         from app.notify.service import dispatch_action
 
         try:
@@ -1359,10 +1571,16 @@ async def _asr_tts_checks() -> list[dict]:
 
     try:
         synthesizer = get_synthesizer()
-        if synthesizer.name == "meta":
+        if settings.voice_tts_provider == "openai_compat" and not settings.voice_tts_base_url:
+            # get_synthesizer() falls back to the meta double so speech still
+            # works, but the *configured* remote provider is unprovisioned. The
+            # health check must report that rather than "ok" from the fallback.
+            tts_status = "degraded"
+            tts_detail: dict = {"reason": "base_url not configured"}
+        elif synthesizer.name == "meta":
             await synthesizer.synthesize("ev health probe", style=SpeechStyle())
             tts_status = "ok"
-            tts_detail: dict = {"probe": "meta"}
+            tts_detail = {"probe": "meta"}
         elif settings.voice_tts_base_url:
             tts_status = "ok"
             tts_detail = {}
@@ -1464,6 +1682,37 @@ async def runtime_health(session: AsyncSession) -> dict:
     )
     checks.extend(await _asr_tts_checks())
 
+    from app.notify.registry import FLEET_DEVICES
+    from app.notify.routing import device_reachability
+
+    fleet_rows = list(
+        (
+            await session.execute(
+                select(Device).where(Device.revoked_at.is_(None))
+            )
+        ).scalars().all()
+    )
+    fleet_names = {row.name for row in fleet_rows}
+    push_ready = sum(1 for row in fleet_rows if row.push_token)
+    reachable = sum(
+        1 for row in fleet_rows if device_reachability(row, now) == "online"
+    )
+    registry_status = (
+        "ok"
+        if {spec["name"] for spec in FLEET_DEVICES} <= fleet_names
+        else "degraded"
+    )
+    checks.append(
+        {
+            "name": "device_registry",
+            "status": registry_status,
+            "registered": len(fleet_rows),
+            "reachable": reachable,
+            "push_ready": push_ready,
+            "expected": [spec["name"] for spec in FLEET_DEVICES],
+        }
+    )
+
     try:
         from app.notify.service import notify_status
 
@@ -1510,6 +1759,7 @@ async def runtime_health(session: AsyncSession) -> dict:
 
 async def daemon_tick(session: AsyncSession) -> dict:
     """One 24/7 runtime daemon tick: expire stale sessions, retry DLQs, report health."""
+    from app.notify.routing import assign_life_actions, reconcile_life_jobs
     from app.notify.service import deliver_dlq_escalations, deliver_pending_alerts
 
     before = await active_session(session)
@@ -1527,9 +1777,23 @@ async def daemon_tick(session: AsyncSession) -> dict:
     re_enqueued = sum(1 for letter in retrying_rows if _re_enqueue_dead_letter(letter))
     health = await runtime_health(session)
     digest = await maybe_build_digest(session)
+    from app.ev.hardware import poll_print_jobs
+    from app.ev.workbench import fused_sense_pass, maybe_calibration_tick, poll_public_feeds
+
+    calibration_tick = await maybe_calibration_tick(session)
+    print_poll = await poll_print_jobs(session)
+    feed_poll = await poll_public_feeds(session)
+    sense_pass = await fused_sense_pass(session)
     recalibration = await maybe_recalibrate_filter(session)
     notifications = await deliver_pending_alerts(session)
     dlq_escalations = await deliver_dlq_escalations(session)
+    life_routing = await assign_life_actions(session)
+    life_reconciled = await reconcile_life_jobs(session)
+    from app.ev.timers import due_scan
+    from app.ev.workshop import scan_empties
+
+    timers = await due_scan(session)
+    empties = await scan_empties(session, emit=True)
     await record_runtime_event(
         session,
         kind="daemon",
@@ -1542,7 +1806,17 @@ async def daemon_tick(session: AsyncSession) -> dict:
             "notifications_suppressed": notifications.get("suppressed", 0),
             "notifications_failed": notifications.get("failed", 0),
             "dlq_escalations": len(dlq_escalations),
+            "life_assigned": life_routing["assigned"],
+            "life_unrouted": life_routing["unrouted"],
+            "life_executed": life_reconciled["executed"],
+            "life_failed": life_reconciled["failed"],
+            "timers_fired": timers.get("fired", 0),
+            "empties_emitted": empties.get("emitted", 0),
             "overall": health["overall"],
+            "calibration_tick": calibration_tick,
+            "print_poll": print_poll,
+            "feed_poll": feed_poll,
+            "sense_pass": {k: sense_pass.get(k) for k in ("callout", "stored", "candidates")},
         },
     )
 
@@ -1550,11 +1824,55 @@ async def daemon_tick(session: AsyncSession) -> dict:
         "expired_session_id": str(expired_session_id) if expired_session_id else None,
         "re_enqueued": re_enqueued,
         "digest": digest,
+        "calibration_tick": calibration_tick,
+        "print_poll": print_poll,
+        "feed_poll": feed_poll,
+        "sense_pass": sense_pass,
         "filter_recalibration": recalibration,
         "notifications": notifications,
         "dlq_escalations": len(dlq_escalations),
+        "life_routing": life_routing,
+        "life_reconciled": life_reconciled,
+        "timers": timers,
+        "empties": empties,
         "health": health,
     }
+
+
+async def maybe_quiet_hours_end_digest(session: AsyncSession) -> dict | None:
+    """After quiet hours end, speak at most one digest summary if policy allows."""
+
+    from app.ev.alert_radar import list_alerts
+    from app.ev.assistant import get_profile
+    from app.ev.callouts import emit_callout
+    from app.notify.proactive import may_speak_proactive
+
+    if quiet_hours_active():
+        return None
+    profile = await get_profile(session)
+    today = utcnow().date().isoformat()
+    if profile.quiet_digest_spoken_on == today:
+        return None
+    decision = await may_speak_proactive(
+        session, emergency=False, fingerprint=f"quiet-end-digest:{today}"
+    )
+    if not decision.allowed:
+        return None
+    pending = await list_alerts(session, status="pending", limit=50)
+    count = len(pending)
+    text = (
+        f"Quiet hours ended. {count} items waiting."
+        if count
+        else "Quiet hours ended."
+    )
+    await emit_callout(session, str(text), source="quiet_hours_digest")
+    profile.quiet_digest_spoken_on = today
+    profile.updated_at = utcnow()
+    from app.ev.workbench import maybe_morning_brief_callout
+
+    morning = await maybe_morning_brief_callout(session)
+    await session.flush()
+    return {"spoken": True, "text": text, "morning_brief": morning}
 
 
 async def maybe_build_digest(session: AsyncSession) -> dict | None:
@@ -1564,9 +1882,13 @@ async def maybe_build_digest(session: AsyncSession) -> dict | None:
     delivered today (deduped through the append-only runtime event log), so the
     daemon never spams or double-delivers. Alerts are marked delivered only
     after the digest notification receipt proves backend delivery.
+    After quiet hours end, at most one spoken summary may fire.
     """
     from app.notify.service import build_and_deliver_digest
 
+    ended = await maybe_quiet_hours_end_digest(session)
+    if ended is not None:
+        return ended
     if not quiet_hours_active():
         return None
     if not settings.notify_digest_enabled:

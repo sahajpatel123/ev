@@ -35,8 +35,211 @@ from app.voice.contracts import (
 )
 
 # --------------------------------------------------------------------------- #
+# Hear classification: never a silent drop
+# --------------------------------------------------------------------------- #
+
+
+HEAR_CODES = frozenset(
+    {
+        "asr_no_speech",
+        "asr_empty_result",
+        "asr_degraded",
+        "asr_undecodable_audio",
+        "asr_empty_audio",
+        "asr_bad_base64",
+        "asr_audio_required",
+        "mic_denied",
+        "asr_device_unusable",
+    }
+)
+
+
+def classify_hear_failure(
+    *,
+    code: str | None = None,
+    empty_audio: bool = False,
+    undecodable: bool = False,
+    no_speech: bool = False,
+    empty_result: bool = False,
+    degraded: bool = False,
+    mic_denied: bool = False,
+    device_unusable: bool = False,
+) -> tuple[str, str]:
+    """Map a hear failure to a typed owner-visible (code, message)."""
+
+    if code and code in HEAR_CODES:
+        return code, hear_status_message(code)
+    if mic_denied:
+        return "mic_denied", hear_status_message("mic_denied")
+    if device_unusable:
+        return "asr_device_unusable", hear_status_message("asr_device_unusable")
+    if empty_audio:
+        return "asr_empty_audio", hear_status_message("asr_empty_audio")
+    if undecodable:
+        return "asr_undecodable_audio", hear_status_message("asr_undecodable_audio")
+    if degraded:
+        return "asr_degraded", hear_status_message("asr_degraded")
+    if no_speech:
+        return "asr_no_speech", hear_status_message("asr_no_speech")
+    if empty_result:
+        return "asr_empty_result", hear_status_message("asr_empty_result")
+    return "asr_empty_result", hear_status_message("asr_empty_result")
+
+
+def hear_failure_from_exception(exc: BaseException) -> tuple[str, str]:
+    """Map a capture/OS error to a typed hear failure (mic denied, unusable)."""
+
+    text = f"{type(exc).__name__} {exc}".lower()
+    if "denied" in text or "tcc" in text or "not permitted" in text:
+        return classify_hear_failure(mic_denied=True)
+    if "unavailable" in text or "no input" in text or "device" in text:
+        return classify_hear_failure(device_unusable=True)
+    return classify_hear_failure(device_unusable=True)
+
+
+def hear_status_message(code: str) -> str:
+    """Owner-facing line for a typed hear failure. Never an empty string."""
+
+    return {
+        "asr_no_speech": "I didn't hear any speech in that clip.",
+        "asr_empty_result": "I didn't catch that. Hold Push to talk and try again.",
+        "asr_degraded": "Speech recognition is unavailable. Check the ASR engine or weights.",
+        "asr_undecodable_audio": "I couldn't read that clip. Hold Push to talk and try again.",
+        "asr_empty_audio": "I couldn't read that clip. Hold Push to talk and try again.",
+        "asr_bad_base64": "I couldn't read that clip. Hold Push to talk and try again.",
+        "asr_audio_required": "I couldn't read that clip. Hold Push to talk and try again.",
+        "mic_denied": (
+            "Microphone permission is denied. Enable it in System Settings → "
+            "Privacy & Security → Microphone, then try again."
+        ),
+        "asr_device_unusable": (
+            "The microphone device is unusable. Pick another input and try again."
+        ),
+        "asr_timeout": "That took too long to hear. Try a shorter question.",
+        "asr_unreadable": "I didn't catch that. Hold Push to talk and try again.",
+    }.get(code, "I didn't catch that. Hold Push to talk and try again.")
+
+
+def pcm_rms(pcm: bytes) -> float:
+    """RMS of little-endian 16-bit PCM. 0.0 for empty or odd-length buffers."""
+
+    if len(pcm) < 4:
+        return 0.0
+    samples = array.array("h")
+    try:
+        samples.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+    except Exception:
+        return 0.0
+    if not samples:
+        return 0.0
+    acc = 0.0
+    for sample in samples:
+        acc += float(sample) * float(sample)
+    return math.sqrt(acc / len(samples))
+
+
+def wav_is_silent(raw: bytes, *, rms_floor: float = 180.0) -> bool:
+    """True when a WAV/PCM buffer is empty or below the speech-energy floor."""
+
+    try:
+        normalized = normalize_asr_audio(raw)
+        with wave.open(io.BytesIO(normalized), "rb") as wav:
+            pcm = wav.readframes(wav.getnframes())
+    except VoiceError:
+        return True
+    except Exception:
+        return True
+    return pcm_rms(pcm) < rms_floor
+
+
+def normalize_asr_audio(raw: bytes) -> bytes:
+    """Wrap PCM, convert containers, resample to 16 kHz mono 16-bit WAV.
+
+    Phone/Mac clips often arrive as raw PCM16, 44.1/48 kHz WAV, or m4a.
+    Every shipped transcriber must see the same 16 kHz contract — never
+    reject a readable clip as ``asr_undecodable_audio`` just for rate.
+    """
+
+    if not raw:
+        raise VoiceError(
+            hear_status_message("asr_empty_audio"),
+            status=422,
+            code="asr_empty_audio",
+        )
+    try:
+        from app.audio.capture import pcm_to_wav_bytes
+        from app.voice.speaker import decode_waveform, ensure_wav_bytes
+
+        wav = ensure_wav_bytes(raw)
+        values, rate = decode_waveform(wav)
+        if not values:
+            raise VoiceError(
+                hear_status_message("asr_empty_audio"),
+                status=422,
+                code="asr_empty_audio",
+            )
+        pcm = array.array(
+            "h",
+            (max(-32768, min(32767, int(round(sample * 32767)))) for sample in values),
+        )
+        return pcm_to_wav_bytes(pcm.tobytes(), 16000 if rate else 16000)
+    except VoiceError:
+        raise
+    except ValueError as exc:
+        raise VoiceError(
+            hear_status_message("asr_undecodable_audio"),
+            status=422,
+            code="asr_undecodable_audio",
+        ) from exc
+    except Exception as exc:
+        raise VoiceError(
+            hear_status_message("asr_undecodable_audio"),
+            status=422,
+            code="asr_undecodable_audio",
+        ) from exc
+
+
+# --------------------------------------------------------------------------- #
 # Audio input: fail closed, allowlisted refs only
 # --------------------------------------------------------------------------- #
+
+
+def clip_wav_to_max_seconds(raw: bytes, max_seconds: float | None = None) -> bytes:
+    """Keep the last ``max_seconds`` of a PCM WAV so ASR cannot run away.
+
+    A mislabeled 48 kHz float capture wrapped as 16 kHz int16 looks like a
+    multi-minute clip. Push-to-talk then sits in Whisper until the client
+    times out. Bounding duration is the server-side backstop; the Mac client
+    also converts to real 16 kHz PCM16 before upload.
+    """
+
+    limit = float(
+        max_seconds if max_seconds is not None else settings.voice_utterance_max_seconds
+    )
+    if limit <= 0 or not raw.startswith(b"RIFF"):
+        return raw
+    try:
+        with wave.open(io.BytesIO(raw), "rb") as src:
+            rate = src.getframerate()
+            channels = src.getnchannels()
+            width = src.getsampwidth()
+            nframes = src.getnframes()
+            if rate <= 0 or nframes <= 0:
+                return raw
+            max_frames = int(rate * limit)
+            if nframes <= max_frames:
+                return raw
+            src.setpos(nframes - max_frames)
+            frames = src.readframes(max_frames)
+    except (wave.Error, EOFError):
+        return raw
+    out = io.BytesIO()
+    with wave.open(out, "wb") as dst:
+        dst.setnchannels(channels)
+        dst.setsampwidth(width)
+        dst.setframerate(rate)
+        dst.writeframes(frames)
+    return out.getvalue()
 
 
 def _object_store_key(ref: str) -> str | None:
@@ -87,11 +290,11 @@ async def _read_audio(audio_b64: str | None, audio_ref: str | None) -> tuple[byt
             ) from exc
         if not raw:
             raise VoiceError(
-                "audio_b64 must not be empty",
+                hear_status_message("asr_empty_audio"),
                 status=422,
                 code="asr_empty_audio",
             )
-        return raw, "voice.wav"
+        return clip_wav_to_max_seconds(normalize_asr_audio(raw)), "voice.wav"
     if audio_ref:
         key = _object_store_key(audio_ref)
         if key is not None:
@@ -111,7 +314,7 @@ async def _read_audio(audio_b64: str | None, audio_ref: str | None) -> tuple[byt
                     status=404,
                     code="asr_audio_ref_missing",
                 ) from exc
-            return raw, Path(key).name
+            return clip_wav_to_max_seconds(normalize_asr_audio(raw)), Path(key).name
         path = _safe_local_path(audio_ref)
         if not path.is_file():
             raise VoiceError(
@@ -119,7 +322,7 @@ async def _read_audio(audio_b64: str | None, audio_ref: str | None) -> tuple[byt
                 status=404,
                 code="asr_audio_ref_missing",
             )
-        return path.read_bytes(), path.name
+        return clip_wav_to_max_seconds(normalize_asr_audio(path.read_bytes())), path.name
     raise VoiceError(
         "ASR requires audio_b64 or a readable audio_ref; real engines never "
         "accept a transcript hint in place of audio",
@@ -143,20 +346,17 @@ def _wav_pcm(data: bytes) -> tuple[array.array, int]:
             status=422,
             code="asr_undecodable_audio",
         ) from exc
-    if width != 2:
+    if width not in (1, 2):
         raise VoiceError(
-            "ASR requires 16-bit PCM WAV",
+            hear_status_message("asr_undecodable_audio"),
             status=422,
             code="asr_undecodable_audio",
         )
-    if rate != 16000:
-        raise VoiceError(
-            f"ASR requires 16 kHz audio (got {rate} Hz)",
-            status=422,
-            code="asr_undecodable_audio",
-        )
-    samples = array.array("h")
-    samples.frombytes(frames)
+    if width == 1:
+        samples = array.array("h", ((byte - 128) * 256 for byte in frames))
+    else:
+        samples = array.array("h")
+        samples.frombytes(frames)
     if channels > 1:
         samples = array.array(
             "h",
@@ -165,6 +365,16 @@ def _wav_pcm(data: bytes) -> tuple[array.array, int]:
                 for i in range(0, len(samples) - channels + 1, channels)
             ),
         )
+    if rate != 16000:
+        from app.voice.speaker import _resample
+
+        floated = [sample / 32768.0 for sample in samples]
+        resampled = _resample(floated, rate, 16000)
+        samples = array.array(
+            "h",
+            (max(-32768, min(32767, int(round(value * 32767)))) for value in resampled),
+        )
+        rate = 16000
     return samples, rate
 
 
@@ -386,6 +596,10 @@ class OpenAICompatTranscriber:
 # Legacy local Whisper (faster-whisper) — kept as an opt-in provider
 # --------------------------------------------------------------------------- #
 
+# Process-wide CTranslate2 weights. VoiceRuntime is constructed per request;
+# without this, every VAD segment reloads faster-whisper-base (~150 MB).
+_WHISPER_MODELS: dict[tuple, object] = {}
+
 
 class FasterWhisperTranscriber:
     """Local Whisper-class ASR via faster-whisper (CTranslate2).
@@ -410,6 +624,8 @@ class FasterWhisperTranscriber:
         model_factory=None,
     ) -> None:
         self.model_name = model or settings.voice_asr_model
+        if self.model_name in {"whisper-1", "gpt-4o-mini-transcribe", None, ""}:
+            self.model_name = "base"
         self.model_dir = model_dir or settings.voice_asr_model_dir
         self.device = device or settings.voice_asr_device
         self.compute_type = compute_type or settings.voice_asr_compute_type
@@ -417,6 +633,7 @@ class FasterWhisperTranscriber:
         self.vad_filter = (
             settings.voice_asr_vad_filter if vad_filter is None else vad_filter
         )
+        self.wake_no_speech_threshold = settings.voice_asr_wake_no_speech_threshold
         self._model_factory = model_factory
         self._model = None
 
@@ -431,6 +648,11 @@ class FasterWhisperTranscriber:
                 download_root=self.model_dir,
             )
             return self._model
+        key = (self.model_name, self.device, self.compute_type, self.model_dir)
+        cached = _WHISPER_MODELS.get(key)
+        if cached is not None:
+            self._model = cached
+            return cached
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
@@ -443,6 +665,7 @@ class FasterWhisperTranscriber:
             compute_type=self.compute_type,
             download_root=self.model_dir,
         )
+        _WHISPER_MODELS[key] = self._model
         return self._model
 
     async def _resolve_audio(self, audio_b64: str | None, audio_ref: str | None) -> str:
@@ -451,17 +674,84 @@ class FasterWhisperTranscriber:
             handle.write(audio)
             return handle.name
 
-    def _transcribe_sync(self, path: str, language: str) -> Transcript:
+    def _transcribe_sync(self, path: str, language: str, *, wake_mode: bool = False) -> Transcript:
         model = self._load_model()
-        segments, info = model.transcribe(path, language=language, vad_filter=self.vad_filter)
-        text = "".join(segment.text for segment in segments).strip()
+        kwargs: dict = {
+            "language": language,
+            # Talk clips are already user-cut (≤15s). Silero VAD on a short
+            # hold often deletes the whole buffer and the Mac app then shows
+            # a red EVAPIError instead of a reply.
+            "vad_filter": False,
+        }
+        if wake_mode:
+            kwargs.update(
+                condition_on_previous_text=False,
+                # 0.1 suppressed real short wake clips (measured: the owner's
+                # "EVIE" came back empty on 2.5-6 s takes). Whisper's own
+                # default (0.6) keeps real speech; the wake engine gates weak
+                # aliases ("Eve"/"evil") on the per-segment no_speech_prob
+                # below instead of on this suppression threshold.
+                no_speech_threshold=self.wake_no_speech_threshold,
+                beam_size=1,
+                temperature=0.0,
+                initial_prompt="EVIE. Hey EVIE.",
+            )
+        else:
+            # A single beam is enough for already-cut Talk clips and is
+            # what keeps ASR inside a human reply interval.
+            kwargs.update(
+                condition_on_previous_text=False,
+                beam_size=1,
+                temperature=0.0,
+            )
+        try:
+            segments, info = model.transcribe(path, **kwargs)
+        except TypeError:
+            kwargs.pop("condition_on_previous_text", None)
+            kwargs.pop("beam_size", None)
+            kwargs.pop("temperature", None)
+            kwargs.pop("initial_prompt", None)
+            kwargs.pop("no_speech_threshold", None)
+            segments, info = model.transcribe(path, **kwargs)
+        seg_list = list(segments)
+        text = "".join(segment.text for segment in seg_list).strip()
+        # Best speech evidence across segments: min no_speech_prob (Whisper's
+        # own hallucination signal, 0..1, >0.6 ≈ silence). Real "EVIE" clips
+        # score ~0.2-0.4; silence hallucinations score ~0.8+.
+        no_speech_prob: float | None = None
+        avg_logprob = getattr(info, "avg_logprob", None)
+        for segment in seg_list:
+            value = getattr(segment, "no_speech_prob", None)
+            if value is not None:
+                no_speech_prob = (
+                    min(no_speech_prob, float(value))
+                    if no_speech_prob is not None
+                    else float(value)
+                )
+            if avg_logprob is None:
+                segment_avg = getattr(segment, "avg_logprob", None)
+                if segment_avg is not None:
+                    avg_logprob = segment_avg
+        details = {
+            "engine": "faster-whisper",
+            "no_speech_prob": no_speech_prob,
+            "avg_logprob": float(avg_logprob) if avg_logprob is not None else None,
+        }
         if not text:
+            if wake_mode:
+                details["reason"] = "empty"
+                return Transcript(
+                    text="",
+                    confidence=0.0,
+                    language=language,
+                    provider=self.name,
+                    details=details,
+                )
             raise VoiceError(
                 "ASR returned an empty transcript",
                 status=502,
                 code="asr_empty_result",
             )
-        avg_logprob = getattr(info, "avg_logprob", None)
         confidence = (
             math.exp(max(-10.0, float(avg_logprob))) if avg_logprob is not None else 0.0
         )
@@ -472,7 +762,7 @@ class FasterWhisperTranscriber:
             language=language,
             provider=self.name,
             duration_ms=int(duration * 1000) if duration is not None else None,
-            details={"engine": "faster-whisper"},
+            details=details,
         )
 
     async def transcribe(
@@ -482,11 +772,14 @@ class FasterWhisperTranscriber:
         audio_b64: str | None = None,
         text_hint: str | None = None,
         language: str = "en",
+        wake_mode: bool = False,
     ) -> Transcript:
         language = language or self.language or "en"
         path = await self._resolve_audio(audio_b64, audio_ref)
         try:
-            return await asyncio.to_thread(self._transcribe_sync, path, language)
+            return await asyncio.to_thread(
+                self._transcribe_sync, path, language, wake_mode=wake_mode
+            )
         except ModelUnavailableError:
             return Transcript(
                 text="",

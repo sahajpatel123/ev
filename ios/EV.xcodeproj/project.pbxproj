@@ -7,83 +7,86 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A1000000000000000000BF01 /* EVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR01 /* EVApp.swift */; };
-		A1000000000000000000BF02 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR02 /* AppDelegate.swift */; };
-		A1000000000000000000BF03 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR03 /* AppConfig.swift */; };
-		A1000000000000000000BF04 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR04 /* HealthKitManager.swift */; };
-		A1000000000000000000BF05 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR05 /* NotificationManager.swift */; };
-		A1000000000000000000BF06 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR06 /* AppState.swift */; };
-		A1000000000000000000BF07 /* EVClient in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000PRD01 /* EVClient */; };
-		A1000000000000000000BF08 /* EVUI in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000PRD02 /* EVUI */; };
-		A1000000000000000000BF09 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR10 /* ShareViewController.swift */; };
-		A1000000000000000000BF10 /* EVClient in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000PRD01 /* EVClient */; };
-		A1000000000000000000BF11 /* EVWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR13 /* EVWatchApp.swift */; };
-		A1000000000000000000BF12 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR14 /* ContentView.swift */; };
-		A1000000000000000000BF13 /* EVClient in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000PRD01 /* EVClient */; };
-		A1000000000000000000BF14 /* EVUI in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000PRD02 /* EVUI */; };
-		A1000000000000000000BF15 /* ComplicationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR17 /* ComplicationController.swift */; };
-		A1000000000000000000BF16 /* EVClient in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000PRD01 /* EVClient */; };
-		A1000000000000000000BF17 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR07 /* Assets.xcassets */; };
-		A1000000000000000000BF18 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000FR15 /* Assets.xcassets */; };
-		A1000000000000000000BF19 /* EVShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A4000000000000000000FR21 /* EVShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		A1000000000000000000BF20 /* EVWatchApp.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A4000000000000000000FR22 /* EVWatchApp.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		A1000000000000000000BF21 /* EVWatchExtension.appex in Embed Watch Extension */ = {isa = PBXBuildFile; fileRef = A4000000000000000000FR23 /* EVWatchExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A1000000000000000000AB01 /* EVApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F101 /* EVApp.swift */; };
+		A1000000000000000000AB02 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F102 /* AppDelegate.swift */; };
+		A1000000000000000000AB03 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F103 /* AppConfig.swift */; };
+		A1000000000000000000AB04 /* HealthKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F104 /* HealthKitManager.swift */; };
+		A1000000000000000000AB05 /* NotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F105 /* NotificationManager.swift */; };
+		A1000000000000000000AB06 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F106 /* AppState.swift */; };
+		A1000000000000000000AB22 /* LifeAccess.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F124 /* LifeAccess.swift */; };
+		A1000000000000000000AB23 /* AppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F125 /* AppIntents.swift */; };
+		A1000000000000000000AB24 /* CallKitManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F126 /* CallKitManager.swift */; };
+		A1000000000000000000AB07 /* EVClient in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000C501 /* EVClient */; };
+		A1000000000000000000AB08 /* EVUI in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000C502 /* EVUI */; };
+		A1000000000000000000AB09 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F110 /* ShareViewController.swift */; };
+		A1000000000000000000AB10 /* EVClient in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000C501 /* EVClient */; };
+		A1000000000000000000AB11 /* EVWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F113 /* EVWatchApp.swift */; };
+		A1000000000000000000AB12 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F114 /* ContentView.swift */; };
+		A1000000000000000000AB13 /* EVClient in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000C501 /* EVClient */; };
+		A1000000000000000000AB14 /* EVUI in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000C502 /* EVUI */; };
+		A1000000000000000000AB15 /* ComplicationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F117 /* ComplicationController.swift */; };
+		A1000000000000000000AB16 /* EVClient in Frameworks */ = {isa = PBXBuildFile; productRef = A6000000000000000000C501 /* EVClient */; };
+		A1000000000000000000AB17 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F107 /* Assets.xcassets */; };
+		A1000000000000000000AB18 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2000000000000000000F115 /* Assets.xcassets */; };
+		A1000000000000000000AB19 /* EVShareExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A4000000000000000000F121 /* EVShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A1000000000000000000AB20 /* EVWatchApp.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = A4000000000000000000F122 /* EVWatchApp.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A1000000000000000000AB21 /* EVWatchExtension.appex in Embed Watch Extension */ = {isa = PBXBuildFile; fileRef = A4000000000000000000F123 /* EVWatchExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		A5000000000000000000PRX01 /* PBXContainerItemProxy */ = {
+		A5000000000000000000C201 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = A3000000000000000000PRJ01 /* Project object */;
+			containerPortal = A30000000000000000000B01 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = A7000000000000000000TG02;
+			remoteGlobalIDString = A7000000000000000000C102;
 			remoteInfo = EVShareExtension;
 		};
-		A5000000000000000000PRX02 /* PBXContainerItemProxy */ = {
+		A5000000000000000000C202 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = A3000000000000000000PRJ01 /* Project object */;
+			containerPortal = A30000000000000000000B01 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = A7000000000000000000TG03;
+			remoteGlobalIDString = A7000000000000000000C103;
 			remoteInfo = EVWatchApp;
 		};
-		A5000000000000000000PRX03 /* PBXContainerItemProxy */ = {
+		A5000000000000000000C203 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = A3000000000000000000PRJ01 /* Project object */;
+			containerPortal = A30000000000000000000B01 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = A7000000000000000000TG04;
+			remoteGlobalIDString = A7000000000000000000C104;
 			remoteInfo = EVWatchExtension;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		A8000000000000000000PH04 /* Embed App Extensions */ = {
+		A80000000000000000001104 /* Embed App Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				A1000000000000000000BF19 /* EVShareExtension.appex in Embed App Extensions */,
+				A1000000000000000000AB19 /* EVShareExtension.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH05 /* Embed Watch Content */ = {
+		A80000000000000000001105 /* Embed Watch Content */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
 			dstSubfolderSpec = 16;
 			files = (
-				A1000000000000000000BF20 /* EVWatchApp.app in Embed Watch Content */,
+				A1000000000000000000AB20 /* EVWatchApp.app in Embed Watch Content */,
 			);
 			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH12 /* Embed Watch Extension */ = {
+		A80000000000000000001112 /* Embed Watch Extension */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				A1000000000000000000BF21 /* EVWatchExtension.appex in Embed Watch Extension */,
+				A1000000000000000000AB21 /* EVWatchExtension.appex in Embed Watch Extension */,
 			);
 			name = "Embed Watch Extension";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -91,134 +94,140 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		A2000000000000000000FR01 /* EVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EVApp.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR02 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR03 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR04 /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR05 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR06 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR07 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		A2000000000000000000FR08 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		A2000000000000000000FR09 /* EVApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EVApp.entitlements; sourceTree = "<group>"; };
-		A2000000000000000000FR10 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR11 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		A2000000000000000000FR12 /* EVShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EVShareExtension.entitlements; sourceTree = "<group>"; };
-		A2000000000000000000FR13 /* EVWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EVWatchApp.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR14 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR15 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		A2000000000000000000FR16 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		A2000000000000000000FR17 /* ComplicationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComplicationController.swift; sourceTree = "<group>"; };
-		A2000000000000000000FR18 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		A2000000000000000000FR19 /* EVWatchExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EVWatchExtension.entitlements; sourceTree = "<group>"; };
-		A4000000000000000000FR20 /* EVApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EVApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A4000000000000000000FR21 /* EVShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EVShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		A4000000000000000000FR22 /* EVWatchApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EVWatchApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A4000000000000000000FR23 /* EVWatchExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EVWatchExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A2000000000000000000F101 /* EVApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EVApp.swift; sourceTree = "<group>"; };
+		A2000000000000000000F102 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		A2000000000000000000F103 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
+		A2000000000000000000F104 /* HealthKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HealthKitManager.swift; sourceTree = "<group>"; };
+		A2000000000000000000F105 /* NotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationManager.swift; sourceTree = "<group>"; };
+		A2000000000000000000F106 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		A2000000000000000000F124 /* LifeAccess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LifeAccess.swift; sourceTree = "<group>"; };
+		A2000000000000000000F125 /* AppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntents.swift; sourceTree = "<group>"; };
+		A2000000000000000000F126 /* CallKitManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CallKitManager.swift; sourceTree = "<group>"; };
+		A2000000000000000000F107 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A2000000000000000000F108 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000F109 /* EVApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EVApp.entitlements; sourceTree = "<group>"; };
+		A2000000000000000000F110 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		A2000000000000000000F111 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000F112 /* EVShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EVShareExtension.entitlements; sourceTree = "<group>"; };
+		A2000000000000000000F113 /* EVWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EVWatchApp.swift; sourceTree = "<group>"; };
+		A2000000000000000000F114 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A2000000000000000000F115 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A2000000000000000000F116 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000F117 /* ComplicationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComplicationController.swift; sourceTree = "<group>"; };
+		A2000000000000000000F118 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A2000000000000000000F119 /* EVWatchExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EVWatchExtension.entitlements; sourceTree = "<group>"; };
+		A4000000000000000000F120 /* EVApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EVApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A4000000000000000000F121 /* EVShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EVShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A4000000000000000000F122 /* EVWatchApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EVWatchApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A4000000000000000000F123 /* EVWatchExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = EVWatchExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		A8000000000000000000PH02 /* Frameworks */ = {
+		A80000000000000000001102 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF07 /* EVClient in Frameworks */,
-				A1000000000000000000BF08 /* EVUI in Frameworks */,
+				A1000000000000000000AB07 /* EVClient in Frameworks */,
+				A1000000000000000000AB08 /* EVUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH07 /* Frameworks */ = {
+		A80000000000000000001107 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF10 /* EVClient in Frameworks */,
+				A1000000000000000000AB10 /* EVClient in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH10 /* Frameworks */ = {
+		A80000000000000000001110 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF13 /* EVClient in Frameworks */,
-				A1000000000000000000BF14 /* EVUI in Frameworks */,
+				A1000000000000000000AB13 /* EVClient in Frameworks */,
+				A1000000000000000000AB14 /* EVUI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH14 /* Frameworks */ = {
+		A80000000000000000001114 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF16 /* EVClient in Frameworks */,
+				A1000000000000000000AB16 /* EVClient in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		A3000000000000000000GR01 = {
+		A30000000000000000000A01 = {
 			isa = PBXGroup;
 			children = (
-				A3000000000000000000GR02 /* EVApp */,
-				A3000000000000000000GR03 /* EVShareExtension */,
-				A3000000000000000000GR04 /* EVWatchApp */,
-				A3000000000000000000GR05 /* EVWatchExtension */,
-				A3000000000000000000GR06 /* Products */,
+				A30000000000000000000A02 /* EVApp */,
+				A30000000000000000000A03 /* EVShareExtension */,
+				A30000000000000000000A04 /* EVWatchApp */,
+				A30000000000000000000A05 /* EVWatchExtension */,
+				A30000000000000000000A06 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		A3000000000000000000GR02 /* EVApp */ = {
+		A30000000000000000000A02 /* EVApp */ = {
 			isa = PBXGroup;
 			children = (
-				A2000000000000000000FR01 /* EVApp.swift */,
-				A2000000000000000000FR02 /* AppDelegate.swift */,
-				A2000000000000000000FR03 /* AppConfig.swift */,
-				A2000000000000000000FR04 /* HealthKitManager.swift */,
-				A2000000000000000000FR05 /* NotificationManager.swift */,
-				A2000000000000000000FR06 /* AppState.swift */,
-				A2000000000000000000FR07 /* Assets.xcassets */,
-				A2000000000000000000FR08 /* Info.plist */,
-				A2000000000000000000FR09 /* EVApp.entitlements */,
+				A2000000000000000000F101 /* EVApp.swift */,
+				A2000000000000000000F102 /* AppDelegate.swift */,
+				A2000000000000000000F103 /* AppConfig.swift */,
+				A2000000000000000000F104 /* HealthKitManager.swift */,
+				A2000000000000000000F105 /* NotificationManager.swift */,
+				A2000000000000000000F106 /* AppState.swift */,
+				A2000000000000000000F124 /* LifeAccess.swift */,
+				A2000000000000000000F125 /* AppIntents.swift */,
+				A2000000000000000000F126 /* CallKitManager.swift */,
+				A2000000000000000000F107 /* Assets.xcassets */,
+				A2000000000000000000F108 /* Info.plist */,
+				A2000000000000000000F109 /* EVApp.entitlements */,
 			);
 			path = EVApp;
 			sourceTree = "<group>";
 		};
-		A3000000000000000000GR03 /* EVShareExtension */ = {
+		A30000000000000000000A03 /* EVShareExtension */ = {
 			isa = PBXGroup;
 			children = (
-				A2000000000000000000FR10 /* ShareViewController.swift */,
-				A2000000000000000000FR11 /* Info.plist */,
-				A2000000000000000000FR12 /* EVShareExtension.entitlements */,
+				A2000000000000000000F110 /* ShareViewController.swift */,
+				A2000000000000000000F111 /* Info.plist */,
+				A2000000000000000000F112 /* EVShareExtension.entitlements */,
 			);
 			path = EVShareExtension;
 			sourceTree = "<group>";
 		};
-		A3000000000000000000GR04 /* EVWatchApp */ = {
+		A30000000000000000000A04 /* EVWatchApp */ = {
 			isa = PBXGroup;
 			children = (
-				A2000000000000000000FR13 /* EVWatchApp.swift */,
-				A2000000000000000000FR14 /* ContentView.swift */,
-				A2000000000000000000FR15 /* Assets.xcassets */,
-				A2000000000000000000FR16 /* Info.plist */,
+				A2000000000000000000F113 /* EVWatchApp.swift */,
+				A2000000000000000000F114 /* ContentView.swift */,
+				A2000000000000000000F115 /* Assets.xcassets */,
+				A2000000000000000000F116 /* Info.plist */,
 			);
 			path = EVWatchApp;
 			sourceTree = "<group>";
 		};
-		A3000000000000000000GR05 /* EVWatchExtension */ = {
+		A30000000000000000000A05 /* EVWatchExtension */ = {
 			isa = PBXGroup;
 			children = (
-				A2000000000000000000FR17 /* ComplicationController.swift */,
-				A2000000000000000000FR18 /* Info.plist */,
-				A2000000000000000000FR19 /* EVWatchExtension.entitlements */,
+				A2000000000000000000F117 /* ComplicationController.swift */,
+				A2000000000000000000F118 /* Info.plist */,
+				A2000000000000000000F119 /* EVWatchExtension.entitlements */,
 			);
 			path = EVWatchExtension;
 			sourceTree = "<group>";
 		};
-		A3000000000000000000GR06 /* Products */ = {
+		A30000000000000000000A06 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A4000000000000000000FR20 /* EVApp.app */,
-				A4000000000000000000FR21 /* EVShareExtension.appex */,
-				A4000000000000000000FR22 /* EVWatchApp.app */,
-				A4000000000000000000FR23 /* EVWatchExtension.appex */,
+				A4000000000000000000F120 /* EVApp.app */,
+				A4000000000000000000F121 /* EVShareExtension.appex */,
+				A4000000000000000000F122 /* EVWatchApp.app */,
+				A4000000000000000000F123 /* EVWatchExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -226,38 +235,38 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		A7000000000000000000TG01 /* EVApp */ = {
+		A7000000000000000000C101 /* EVApp */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A9000000000000000000CL02 /* Build configuration list for PBXNativeTarget "EVApp" */;
+			buildConfigurationList = A90000000000000000001202 /* Build configuration list for PBXNativeTarget "EVApp" */;
 			buildPhases = (
-				A8000000000000000000PH01 /* Sources */,
-				A8000000000000000000PH02 /* Frameworks */,
-				A8000000000000000000PH03 /* Resources */,
-				A8000000000000000000PH04 /* Embed App Extensions */,
-				A8000000000000000000PH05 /* Embed Watch Content */,
+				A80000000000000000001101 /* Sources */,
+				A80000000000000000001102 /* Frameworks */,
+				A80000000000000000001103 /* Resources */,
+				A80000000000000000001104 /* Embed App Extensions */,
+				A80000000000000000001105 /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				A5000000000000000000DEP01 /* PBXTargetDependency */,
-				A5000000000000000000DEP02 /* PBXTargetDependency */,
+				A5000000000000000000C301 /* PBXTargetDependency */,
+				A5000000000000000000C302 /* PBXTargetDependency */,
 			);
 			name = EVApp;
 			packageProductDependencies = (
-				A6000000000000000000PRD01 /* EVClient */,
-				A6000000000000000000PRD02 /* EVUI */,
+				A6000000000000000000C501 /* EVClient */,
+				A6000000000000000000C502 /* EVUI */,
 			);
 			productName = EVApp;
-			productReference = A4000000000000000000FR20 /* EVApp.app */;
+			productReference = A4000000000000000000F120 /* EVApp.app */;
 			productType = "com.apple.product-type.application";
 		};
-		A7000000000000000000TG02 /* EVShareExtension */ = {
+		A7000000000000000000C102 /* EVShareExtension */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A9000000000000000000CL03 /* Build configuration list for PBXNativeTarget "EVShareExtension" */;
+			buildConfigurationList = A90000000000000000001203 /* Build configuration list for PBXNativeTarget "EVShareExtension" */;
 			buildPhases = (
-				A8000000000000000000PH06 /* Sources */,
-				A8000000000000000000PH07 /* Frameworks */,
-				A8000000000000000000PH08 /* Resources */,
+				A80000000000000000001106 /* Sources */,
+				A80000000000000000001107 /* Frameworks */,
+				A80000000000000000001108 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -265,42 +274,42 @@
 			);
 			name = EVShareExtension;
 			packageProductDependencies = (
-				A6000000000000000000PRD01 /* EVClient */,
+				A6000000000000000000C501 /* EVClient */,
 			);
 			productName = EVShareExtension;
-			productReference = A4000000000000000000FR21 /* EVShareExtension.appex */;
+			productReference = A4000000000000000000F121 /* EVShareExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
-		A7000000000000000000TG03 /* EVWatchApp */ = {
+		A7000000000000000000C103 /* EVWatchApp */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A9000000000000000000CL04 /* Build configuration list for PBXNativeTarget "EVWatchApp" */;
+			buildConfigurationList = A90000000000000000001204 /* Build configuration list for PBXNativeTarget "EVWatchApp" */;
 			buildPhases = (
-				A8000000000000000000PH09 /* Sources */,
-				A8000000000000000000PH10 /* Frameworks */,
-				A8000000000000000000PH11 /* Resources */,
-				A8000000000000000000PH12 /* Embed Watch Extension */,
+				A80000000000000000001109 /* Sources */,
+				A80000000000000000001110 /* Frameworks */,
+				A80000000000000000001111 /* Resources */,
+				A80000000000000000001112 /* Embed Watch Extension */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				A5000000000000000000DEP03 /* PBXTargetDependency */,
+				A5000000000000000000C303 /* PBXTargetDependency */,
 			);
 			name = EVWatchApp;
 			packageProductDependencies = (
-				A6000000000000000000PRD01 /* EVClient */,
-				A6000000000000000000PRD02 /* EVUI */,
+				A6000000000000000000C501 /* EVClient */,
+				A6000000000000000000C502 /* EVUI */,
 			);
 			productName = EVWatchApp;
-			productReference = A4000000000000000000FR22 /* EVWatchApp.app */;
+			productReference = A4000000000000000000F122 /* EVWatchApp.app */;
 			productType = "com.apple.product-type.application.watchapp2";
 		};
-		A7000000000000000000TG04 /* EVWatchExtension */ = {
+		A7000000000000000000C104 /* EVWatchExtension */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = A9000000000000000000CL05 /* Build configuration list for PBXNativeTarget "EVWatchExtension" */;
+			buildConfigurationList = A90000000000000000001205 /* Build configuration list for PBXNativeTarget "EVWatchExtension" */;
 			buildPhases = (
-				A8000000000000000000PH13 /* Sources */,
-				A8000000000000000000PH14 /* Frameworks */,
-				A8000000000000000000PH15 /* Resources */,
+				A80000000000000000001113 /* Sources */,
+				A80000000000000000001114 /* Frameworks */,
+				A80000000000000000001115 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -308,37 +317,37 @@
 			);
 			name = EVWatchExtension;
 			packageProductDependencies = (
-				A6000000000000000000PRD01 /* EVClient */,
+				A6000000000000000000C501 /* EVClient */,
 			);
 			productName = EVWatchExtension;
-			productReference = A4000000000000000000FR23 /* EVWatchExtension.appex */;
+			productReference = A4000000000000000000F123 /* EVWatchExtension.appex */;
 			productType = "com.apple.product-type.watchkit2-extension";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		A3000000000000000000PRJ01 /* Project object */ = {
+		A30000000000000000000B01 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1500;
 				LastUpgradeCheck = 1500;
 				TargetAttributes = {
-					A7000000000000000000TG01 = {
+					A7000000000000000000C101 = {
 						CreatedOnToolsVersion = 15.0;
 					};
-					A7000000000000000000TG02 = {
+					A7000000000000000000C102 = {
 						CreatedOnToolsVersion = 15.0;
 					};
-					A7000000000000000000TG03 = {
+					A7000000000000000000C103 = {
 						CreatedOnToolsVersion = 15.0;
 					};
-					A7000000000000000000TG04 = {
+					A7000000000000000000C104 = {
 						CreatedOnToolsVersion = 15.0;
 					};
 				};
 			};
-			buildConfigurationList = A9000000000000000000CL01 /* Build configuration list for PBXProject "EV" */;
+			buildConfigurationList = A90000000000000000001201 /* Build configuration list for PBXProject "EV" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -346,47 +355,47 @@
 				en,
 				Base,
 			);
-			mainGroup = A3000000000000000000GR01;
+			mainGroup = A30000000000000000000A01;
 			packageReferences = (
-				A5000000000000000000PKG01 /* XCLocalSwiftPackageReference "EVClient" */,
+				A5000000000000000000C401 /* XCLocalSwiftPackageReference "EVClient" */,
 			);
-			productRefGroup = A3000000000000000000GR06 /* Products */;
+			productRefGroup = A30000000000000000000A06 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				A7000000000000000000TG01 /* EVApp */,
-				A7000000000000000000TG02 /* EVShareExtension */,
-				A7000000000000000000TG03 /* EVWatchApp */,
-				A7000000000000000000TG04 /* EVWatchExtension */,
+				A7000000000000000000C101 /* EVApp */,
+				A7000000000000000000C102 /* EVShareExtension */,
+				A7000000000000000000C103 /* EVWatchApp */,
+				A7000000000000000000C104 /* EVWatchExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		A8000000000000000000PH03 /* Resources */ = {
+		A80000000000000000001103 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF17 /* Assets.xcassets in Resources */,
+				A1000000000000000000AB17 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH08 /* Resources */ = {
+		A80000000000000000001108 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH11 /* Resources */ = {
+		A80000000000000000001111 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF18 /* Assets.xcassets in Resources */,
+				A1000000000000000000AB18 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH15 /* Resources */ = {
+		A80000000000000000001115 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -396,66 +405,69 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A8000000000000000000PH01 /* Sources */ = {
+		A80000000000000000001101 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF01 /* EVApp.swift in Sources */,
-				A1000000000000000000BF02 /* AppDelegate.swift in Sources */,
-				A1000000000000000000BF03 /* AppConfig.swift in Sources */,
-				A1000000000000000000BF04 /* HealthKitManager.swift in Sources */,
-				A1000000000000000000BF05 /* NotificationManager.swift in Sources */,
-				A1000000000000000000BF06 /* AppState.swift in Sources */,
+				A1000000000000000000AB01 /* EVApp.swift in Sources */,
+				A1000000000000000000AB02 /* AppDelegate.swift in Sources */,
+				A1000000000000000000AB03 /* AppConfig.swift in Sources */,
+				A1000000000000000000AB04 /* HealthKitManager.swift in Sources */,
+				A1000000000000000000AB05 /* NotificationManager.swift in Sources */,
+				A1000000000000000000AB06 /* AppState.swift in Sources */,
+				A1000000000000000000AB22 /* LifeAccess.swift in Sources */,
+				A1000000000000000000AB23 /* AppIntents.swift in Sources */,
+				A1000000000000000000AB24 /* CallKitManager.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH06 /* Sources */ = {
+		A80000000000000000001106 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF09 /* ShareViewController.swift in Sources */,
+				A1000000000000000000AB09 /* ShareViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH09 /* Sources */ = {
+		A80000000000000000001109 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF11 /* EVWatchApp.swift in Sources */,
-				A1000000000000000000BF12 /* ContentView.swift in Sources */,
+				A1000000000000000000AB11 /* EVWatchApp.swift in Sources */,
+				A1000000000000000000AB12 /* ContentView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A8000000000000000000PH13 /* Sources */ = {
+		A80000000000000000001113 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A1000000000000000000BF15 /* ComplicationController.swift in Sources */,
+				A1000000000000000000AB15 /* ComplicationController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		A5000000000000000000DEP01 /* PBXTargetDependency */ = {
+		A5000000000000000000C301 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = A7000000000000000000TG02 /* EVShareExtension */;
-			targetProxy = A5000000000000000000PRX01 /* PBXContainerItemProxy */;
+			target = A7000000000000000000C102 /* EVShareExtension */;
+			targetProxy = A5000000000000000000C201 /* PBXContainerItemProxy */;
 		};
-		A5000000000000000000DEP02 /* PBXTargetDependency */ = {
+		A5000000000000000000C302 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = A7000000000000000000TG03 /* EVWatchApp */;
-			targetProxy = A5000000000000000000PRX02 /* PBXContainerItemProxy */;
+			target = A7000000000000000000C103 /* EVWatchApp */;
+			targetProxy = A5000000000000000000C202 /* PBXContainerItemProxy */;
 		};
-		A5000000000000000000DEP03 /* PBXTargetDependency */ = {
+		A5000000000000000000C303 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = A7000000000000000000TG04 /* EVWatchExtension */;
-			targetProxy = A5000000000000000000PRX03 /* PBXContainerItemProxy */;
+			target = A7000000000000000000C104 /* EVWatchExtension */;
+			targetProxy = A5000000000000000000C203 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		AA000000000000000000CF01 /* Debug */ = {
+		AA0000000000000000001301 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -485,7 +497,7 @@
 			};
 			name = Debug;
 		};
-		AA000000000000000000CF02 /* Release */ = {
+		AA0000000000000000001302 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -508,7 +520,7 @@
 			};
 			name = Release;
 		};
-		AA000000000000000000CF03 /* Debug */ = {
+		AA0000000000000000001303 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -531,7 +543,7 @@
 			};
 			name = Debug;
 		};
-		AA000000000000000000CF04 /* Release */ = {
+		AA0000000000000000001304 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -554,7 +566,7 @@
 			};
 			name = Release;
 		};
-		AA000000000000000000CF05 /* Debug */ = {
+		AA0000000000000000001305 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = EVShareExtension/EVShareExtension.entitlements;
@@ -576,7 +588,7 @@
 			};
 			name = Debug;
 		};
-		AA000000000000000000CF06 /* Release */ = {
+		AA0000000000000000001306 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = EVShareExtension/EVShareExtension.entitlements;
@@ -598,7 +610,7 @@
 			};
 			name = Release;
 		};
-		AA000000000000000000CF07 /* Debug */ = {
+		AA0000000000000000001307 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -616,7 +628,7 @@
 			};
 			name = Debug;
 		};
-		AA000000000000000000CF08 /* Release */ = {
+		AA0000000000000000001308 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -634,7 +646,7 @@
 			};
 			name = Release;
 		};
-		AA000000000000000000CF09 /* Debug */ = {
+		AA0000000000000000001309 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = EVWatchExtension/EVWatchExtension.entitlements;
@@ -652,7 +664,7 @@
 			};
 			name = Debug;
 		};
-		AA000000000000000000CF10 /* Release */ = {
+		AA0000000000000000001310 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = EVWatchExtension/EVWatchExtension.entitlements;
@@ -673,47 +685,47 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		A9000000000000000000CL01 /* Build configuration list for PBXProject "EV" */ = {
+		A90000000000000000001201 /* Build configuration list for PBXProject "EV" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AA000000000000000000CF01 /* Debug */,
-				AA000000000000000000CF02 /* Release */,
+				AA0000000000000000001301 /* Debug */,
+				AA0000000000000000001302 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A9000000000000000000CL02 /* Build configuration list for PBXNativeTarget "EVApp" */ = {
+		A90000000000000000001202 /* Build configuration list for PBXNativeTarget "EVApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AA000000000000000000CF03 /* Debug */,
-				AA000000000000000000CF04 /* Release */,
+				AA0000000000000000001303 /* Debug */,
+				AA0000000000000000001304 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A9000000000000000000CL03 /* Build configuration list for PBXNativeTarget "EVShareExtension" */ = {
+		A90000000000000000001203 /* Build configuration list for PBXNativeTarget "EVShareExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AA000000000000000000CF05 /* Debug */,
-				AA000000000000000000CF06 /* Release */,
+				AA0000000000000000001305 /* Debug */,
+				AA0000000000000000001306 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A9000000000000000000CL04 /* Build configuration list for PBXNativeTarget "EVWatchApp" */ = {
+		A90000000000000000001204 /* Build configuration list for PBXNativeTarget "EVWatchApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AA000000000000000000CF07 /* Debug */,
-				AA000000000000000000CF08 /* Release */,
+				AA0000000000000000001307 /* Debug */,
+				AA0000000000000000001308 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		A9000000000000000000CL05 /* Build configuration list for PBXNativeTarget "EVWatchExtension" */ = {
+		A90000000000000000001205 /* Build configuration list for PBXNativeTarget "EVWatchExtension" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				AA000000000000000000CF09 /* Debug */,
-				AA000000000000000000CF10 /* Release */,
+				AA0000000000000000001309 /* Debug */,
+				AA0000000000000000001310 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -721,24 +733,24 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
-		A5000000000000000000PKG01 /* XCLocalSwiftPackageReference "EVClient" */ = {
+		A5000000000000000000C401 /* XCLocalSwiftPackageReference "EVClient" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = EVClient;
 		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		A6000000000000000000PRD01 /* EVClient */ = {
+		A6000000000000000000C501 /* EVClient */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A5000000000000000000PKG01 /* XCLocalSwiftPackageReference "EVClient" */;
+			package = A5000000000000000000C401 /* XCLocalSwiftPackageReference "EVClient" */;
 			productName = EVClient;
 		};
-		A6000000000000000000PRD02 /* EVUI */ = {
+		A6000000000000000000C502 /* EVUI */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A5000000000000000000PKG01 /* XCLocalSwiftPackageReference "EVClient" */;
+			package = A5000000000000000000C401 /* XCLocalSwiftPackageReference "EVClient" */;
 			productName = EVUI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
-	rootObject = A3000000000000000000PRJ01 /* Project object */;
+	rootObject = A30000000000000000000B01 /* Project object */;
 }

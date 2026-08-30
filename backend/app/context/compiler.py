@@ -101,6 +101,8 @@ class ContextCompiler:
         rollup_summary: str | None = None,
         open_questions: list[str] | None = None,
         open_conflicts: list[str] | None = None,
+        relationship_text: str | None = None,
+        memory_intent: str | None = None,
     ) -> ContextPlan:
         parts: list[str] = []
         used = 0
@@ -120,6 +122,9 @@ class ContextCompiler:
             return True
 
         push("strategy", strategy_text)
+
+        if relationship_text:
+            push("relationship", relationship_text)
 
         state_text = (
             f"USER STATE: activity={user_state.activity}; project={user_state.active_project}; "
@@ -170,14 +175,22 @@ class ContextCompiler:
                 live_section.truncated = live_section.items_dropped > 0
 
         if rollup_summary:
-            chunk = rollup_summary
+            chunk = (
+                "ROLLUP SUMMARY (long-run background; may be unrelated to the "
+                "current question):\n"
+                f"{rollup_summary}"
+            )
             if used + token_estimate(chunk) > budget:
                 reserve = max(0, budget - used - 1)
                 if reserve > 0:
                     chunk = chunk[: reserve * 4]
             push("rollup_summary", chunk)
 
-        header = "RETRIEVED MEMORY (newest/highest score first):"
+        header = (
+            "RETRIEVED MEMORY (use silently unless the owner asked what you remember):"
+            if memory_intent == "explicit_recall"
+            else "RETRIEVED MEMORY (candidate background; use only what the current question needs):"
+        )
         parts.append(header)
         used += token_estimate(header)
         memory_section = SectionPlan(
@@ -185,11 +198,7 @@ class ContextCompiler:
         )
         sections.append(memory_section)
         for memory in memories:
-            line = (
-                f"- [{memory.memory_type}] (score {memory.score:.2f}, "
-                f"{memory.event_time.date().isoformat() if memory.event_time else '?'}, "
-                f"conf {memory.confidence:.2f}): {memory.text}"
-            )
+            line = f"- {memory.text}"
             if used + token_estimate(line) > budget:
                 memory_section.items_dropped += 1
                 continue
@@ -201,7 +210,7 @@ class ContextCompiler:
 
         open_conflicts = open_conflicts or []
         if open_conflicts:
-            header = "OPEN CONFLICTS (ask which version is current instead of picking one):"
+            header = "OPEN CONFLICTS (mention only if the current question touches one):"
             conflict_section: SectionPlan | None = None
             if push("open_conflicts", header):
                 conflict_section = sections[-1]
@@ -220,7 +229,7 @@ class ContextCompiler:
 
         history = history or []
         if history:
-            header = "CONVERSATION HISTORY (continuous window, oldest first):"
+            header = "PRIOR CONVERSATION (background reference only; do NOT continue these topics unless the current message explicitly refers to them):"
             history_section: SectionPlan | None = None
             if push("conversation_history", header):
                 history_section = sections[-1]
@@ -240,7 +249,7 @@ class ContextCompiler:
 
         open_questions = open_questions or []
         if open_questions:
-            header = "OPEN QUESTIONS (answer these when relevant or when resuming):"
+            header = "OPEN QUESTIONS (address only if the current message explicitly resumes one):"
             question_section: SectionPlan | None = None
             if push("open_questions", header):
                 question_section = sections[-1]
@@ -263,6 +272,10 @@ class ContextCompiler:
             used_tokens=used,
             budget=budget,
             sections=sections,
+            metadata={
+                "memory_intent": memory_intent,
+                "token_breakdown": {section.name: section.tokens for section in sections},
+            },
         )
 
     def compile_progressive(
@@ -278,6 +291,8 @@ class ContextCompiler:
         rollup_summary: str | None = None,
         open_questions: list[str] | None = None,
         open_conflicts: list[str] | None = None,
+        relationship_text: str | None = None,
+        memory_intent: str | None = None,
         shallow_k: int = 10,
         deep_k: int = 40,
     ) -> ContextPlan:
@@ -300,6 +315,8 @@ class ContextCompiler:
             rollup_summary=rollup_summary,
             open_questions=open_questions,
             open_conflicts=open_conflicts,
+            relationship_text=relationship_text,
+            memory_intent=memory_intent,
         )
         deep_requested = wants_deep_dive(message or "") and len(memories) > shallow_k
         headroom = shallow.remaining_tokens >= budget * 0.15
@@ -314,6 +331,8 @@ class ContextCompiler:
                 rollup_summary=rollup_summary,
                 open_questions=open_questions,
                 open_conflicts=open_conflicts,
+                relationship_text=relationship_text,
+                memory_intent=memory_intent,
             )
             plan.metadata = {
                 "progressive": True,
@@ -321,6 +340,8 @@ class ContextCompiler:
                 "attempts": 2,
                 "shallow_k": shallow_k,
                 "deep_k": deep_k,
+                "memory_intent": memory_intent,
+                "token_breakdown": {section.name: section.tokens for section in plan.sections},
             }
             return plan
         shallow.metadata = {
@@ -329,6 +350,8 @@ class ContextCompiler:
             "attempts": 1,
             "shallow_k": shallow_k,
             "deep_requested": deep_requested,
+            "memory_intent": memory_intent,
+            "token_breakdown": {section.name: section.tokens for section in shallow.sections},
         }
         return shallow
 

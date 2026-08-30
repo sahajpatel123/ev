@@ -32,6 +32,7 @@ deadline.
 | HUD alerts | `GET /v1/hud/alerts` | `ev.hud.alert.v1` |
 | HUD focus | `GET /v1/hud/focus` | `ev.hud.focus.v1` |
 | HUD ops card | `GET /v1/hud/ops` | `ev.hud.ops.v1` |
+| HUD lookouts | `POST /v1/runtime/lookouts`, `ev://present` | `ev.hud.lookout.v1` |
 | Route briefing | `GET /v1/hud/route` | `ev.hud.route.v1` |
 | Tactical briefing | `POST /v1/tactical/brief` | `ev.hud.briefing.v1` |
 | Tactical quick card | `POST /v1/tactical/prepare`, `GET /v1/tactical/quick` | `ev.hud.quickcard.v1` |
@@ -45,8 +46,8 @@ All card/briefing/quickcard payloads pass through `HUD_SCHEMAS` and
 `test_ev_hud_twin.py`, `test_tactical_quickcard.py`) enforce 100% schema
 conformance. Canonical JSON-Schema files live in `docs/schemas/` for
 `ev.hud.card.v1`, `ev.hud.quickcard.v1`, `ev.hud.briefing.v1`,
-`ev.hud.focus.v1`, `ev.hud.route.v1`, `ev.hud.alert.v1`, and
-`ev.hud.ops.v1`.
+`ev.hud.focus.v1`, `ev.hud.route.v1`, `ev.hud.alert.v1`,
+`ev.hud.ops.v1`, and `ev.hud.lookout.v1`.
 
 ## Tactical briefings
 
@@ -66,7 +67,10 @@ conformance. Canonical JSON-Schema files live in `docs/schemas/` for
 ## Radars
 
 - **Health radar** (`app.ev.health_radar`): readiness score, z-score
-  anomalies, trends, morning brief from real `health_snapshots`.
+  anomalies, Helio/HealthKit aliases (HR, HRV, SpO2, stress, resp rate),
+  clinical emergency bands, morning brief from real `health_snapshots`.
+  The iPhone reads Apple Health (Amazfit Helio via Zepp) and POSTs
+  `/v1/health/snapshot`. A clinical flag opens a vitals lookout + pulse.
 - **Alert radar** (`app.ev.alert_radar`): watchlist matching over events,
   memories, **and live events** (screen/audio/location/calendar/health derived
   fields only), with dedup, priority routing, digest batching, and a labeled

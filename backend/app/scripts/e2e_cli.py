@@ -189,12 +189,16 @@ def main() -> int:
         # Web workbench smoke: /app serves the SPA with a strict CSP.
         with urllib.request.urlopen(f"{base_url}/app", timeout=10) as web_resp:
             web_body = web_resp.read(4096)
-            if web_resp.status != 200 or b"EV \xe2\x80\x94 Workbench" not in web_body:
-                raise RuntimeError("web workbench /app did not serve the SPA")
+            if web_resp.status != 200 or b"I\xe2\x80\x99m in your menu bar" not in web_body:
+                raise RuntimeError("web /app did not serve the EVIE presence page")
             csp = web_resp.headers.get("Content-Security-Policy", "")
             if "default-src 'self'" not in csp:
-                raise RuntimeError("web workbench CSP missing default-src 'self'")
-        print("ok: web workbench /app + CSP")
+                raise RuntimeError("web presence CSP missing default-src 'self'")
+        with urllib.request.urlopen(f"{base_url}/app/ops", timeout=10) as ops_resp:
+            ops_body = ops_resp.read(4096)
+            if ops_resp.status != 200 or b"EV \xe2\x80\x94 Workbench" not in ops_body:
+                raise RuntimeError("web /app/ops did not serve the operator console")
+        print("ok: web presence /app + ops console + CSP")
         attachment = Path(tmp) / "note.txt"
         attachment.write_text("E2E attachment capture integrity check.", encoding="utf-8")
         checks.insert(1, (["attach", str(attachment)], "attached ", "attach failed"))

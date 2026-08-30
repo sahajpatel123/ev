@@ -116,5 +116,8 @@ async def test_search_web_disabled_fails_closed(
     )
     assert resp.status_code == 200, resp.text
     payload = resp.json()
-    assert payload["ok"] is False
-    assert "disabled" in payload["error"]
+    # Capability-theater contract: honest degraded result with an exact next_step.
+    assert payload["ok"] is True
+    assert payload["result"]["degraded"] is True
+    assert "EV_SEARCH_PROVIDER" in payload["result"]["next_step"]
+    assert payload["result"]["count"] == 0
