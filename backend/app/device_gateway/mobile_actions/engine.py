@@ -7,7 +7,9 @@ import time
 from datetime import datetime, timedelta
 from typing import Any
 
-from . import ACTION_TTL_S, NATIVE_BROKER_VERSION, apps as app_registry, registry as reg, store
+from . import ACTION_TTL_S, NATIVE_BROKER_VERSION, store
+from . import apps as app_registry
+from . import registry as reg
 from .strategy import route
 from .trust import (
     classify_utterance,

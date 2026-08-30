@@ -46,9 +46,7 @@ def _is_ephemeral_ui_text(text: str) -> bool:
         return True
     if re.search(r"\b(prefer|always|whenever)\b", blob, re.I):
         return False
-    if re.search(r"\b(?:e\d+|frame_\d+|window_\d+|element_ref|frame_id|snapshot_id)\b", blob, re.I):
-        return True
-    return False
+    return bool(re.search(r"\b(?:e\d+|frame_\d+|window_\d+|element_ref|frame_id|snapshot_id)\b", blob, re.I))
 
 DECISION_RE = re.compile(
     _SENTENCE_START

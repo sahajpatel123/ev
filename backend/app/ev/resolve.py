@@ -11,7 +11,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Generic, Literal, TypeVar
+from typing import Any, Literal, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil import parser as date_parser
@@ -81,7 +81,7 @@ def owner_tz() -> ZoneInfo:
 
 
 @dataclass(frozen=True)
-class Match(Generic[T]):
+class Match[T]:
     status: MatchStatus
     item: T | None
     score: float
@@ -137,7 +137,7 @@ def score_label(query: str, label: str, *, extra: Sequence[str] = ()) -> float:
     return min(1.0, max(contained, subset) + hint)
 
 
-def pick_unique(
+def pick_unique[T](
     query: str,
     items: Sequence[T],
     *,

@@ -12,8 +12,8 @@ from __future__ import annotations
 import contextlib
 import re
 import time
-from uuid import UUID
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -138,15 +138,12 @@ class TurnController:
         try:
             from app.models import Event
 
-            row = await self.session.get(Event, tid)
+            await self.session.get(Event, tid)
             return None  # transcript resolution is not indexed yet; row unused
         except Exception:
             with contextlib.suppress(Exception):
                 await self.session.rollback()
             return None
-        except Exception:
-            pass
-        return None
 
     async def _recent_owner_context_texts(self) -> list[str]:
         """Read recent owner text for pronoun-only cancel resolution.

@@ -116,19 +116,20 @@ def _swap_usage() -> dict | None:
             meminfo = handle.read()
     except OSError:
         return None
-    total = used = None
+    total: float | None = None
+    free: float | None = None
     for line in meminfo.splitlines():
         if line.startswith("SwapTotal:"):
             total = float(line.split()[1]) / 1024.0
         elif line.startswith("SwapFree:"):
             free = float(line.split()[1]) / 1024.0
-            used = total - free
-    if total is None or used is None:
+    if total is None or free is None:
         return None
+    used = total - free
     return {
         "total_mb": round(total, 1),
         "used_mb": round(used, 1),
-        "free_mb": round(total - used, 1),
+        "free_mb": round(free, 1),
     }
 
 

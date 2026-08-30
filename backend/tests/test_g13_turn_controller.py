@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,7 +59,8 @@ async def test_g13_exact_owner_failures(db_session: AsyncSession):
 
 @pytest.mark.asyncio
 async def test_g13_write_read_via_turn_controller(db_session: AsyncSession):
-    from sqlalchemy import text, select
+    from sqlalchemy import select, text
+
     from app.models import Goal, Project
     # Clean — use Python filtering for cross-DB compatibility (SQLite vs Postgres)
     for proj in (await db_session.execute(select(Project).where(Project.title == "Luna Control Test"))).scalars().all():
@@ -71,10 +74,8 @@ async def test_g13_write_read_via_turn_controller(db_session: AsyncSession):
     await db_session.execute(text("DELETE FROM commitments WHERE description LIKE '%Luna%' OR description LIKE '%luna%'"))
     await db_session.execute(text("DELETE FROM events WHERE event_type='mission_control.checked'"))
     # JSON cleanup best-effort (may differ per DB)
-    try:
+    with contextlib.suppress(Exception):
         await db_session.execute(text("DELETE FROM events WHERE lower(content->>'title') LIKE '%luna%' OR lower(content->>'description') LIKE '%luna%'"))
-    except Exception:
-        pass
     await db_session.commit()
 
     tc = TurnController(db_session, actor=ACTOR)
@@ -107,10 +108,8 @@ async def test_g13_write_read_via_turn_controller(db_session: AsyncSession):
     for g in (await db_session.execute(select(Goal).where(Goal.title.ilike("prove luna routing")))).scalars().all():
         await db_session.execute(text("DELETE FROM goals WHERE id = :gid"), {"gid": str(g.id)})
     await db_session.execute(text("DELETE FROM commitments WHERE description LIKE '%Luna%' OR description LIKE '%luna%'"))
-    try:
+    with contextlib.suppress(Exception):
         await db_session.execute(text("DELETE FROM events WHERE lower(content->>'title') LIKE '%luna%' OR lower(content->>'description') LIKE '%luna%'"))
-    except Exception:
-        pass
     await db_session.execute(text("DELETE FROM events WHERE event_type='mission_control.checked'"))
     await db_session.commit()
 

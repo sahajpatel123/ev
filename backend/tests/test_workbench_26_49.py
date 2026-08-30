@@ -7,28 +7,20 @@ import struct
 from datetime import timedelta
 from uuid import uuid4
 
-import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.ev import tools
-from app.ev.assistant import last_calibration_report
 from app.ev.callouts import list_callouts
-from app.ev.diagnostics import run_calibration
 from app.ev.hud import validate_hud
+from app.ev.interaction import build_strategy
 from app.ev.workbench import (
     fused_sense_pass,
-    handle_calibrate,
-    last_diagnostics_payload,
     maybe_calibration_tick,
 )
-from app.filter.envelope import GroundingMaterial
 from app.filter.output_filter import apply_safety, run_output_filter
-from app.ev.interaction import build_strategy
 from app.models import (
-    Alert,
-    Callout,
     Delegate,
     Entity,
     Integration,

@@ -11,16 +11,16 @@ from pathlib import Path
 import pytest
 from httpx import AsyncClient
 
-from app.audio.capture import MicrophoneDeniedError, MicrophoneUnavailableError, pcm_to_wav_bytes
+from app.audio.capture import MicrophoneDeniedError, MicrophoneUnavailableError
 from app.config import settings
 from app.voice.asr import (
+    _read_audio,
+    _wav_pcm,
     classify_hear_failure,
     hear_failure_from_exception,
     hear_status_message,
     normalize_asr_audio,
     wav_is_silent,
-    _read_audio,
-    _wav_pcm,
 )
 from app.voice.contracts import Transcript, VoiceError
 from app.voice.lifecycle import VoiceRuntime
@@ -163,7 +163,6 @@ async def test_read_audio_normalizes_44100_before_transcribe() -> None:
 @pytest.mark.asyncio
 async def test_transcribe_input_text_and_empty_audio() -> None:
     from app.voice.asr import EchoTranscriber
-    from app.voice.pipeline import transcribe_input
 
     heard = await transcribe_input(EchoTranscriber(), text="hello evie")
     assert heard.text == "hello evie"
@@ -316,8 +315,9 @@ def test_client_capture_is_16khz_mono_pcm() -> None:
 
 @pytest.mark.asyncio
 async def test_empty_pipeline_reply_is_recovered(db_session, monkeypatch) -> None:
-    from app.ev.assistant import get_profile
     from types import SimpleNamespace
+
+    from app.ev.assistant import get_profile
 
     class _EmptyChat:
         async def __call__(self, *args, **kwargs):

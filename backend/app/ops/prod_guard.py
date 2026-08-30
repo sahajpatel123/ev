@@ -50,9 +50,7 @@ def is_production_database() -> bool:
     # Check live fingerprint: if state_epoch table exists and has rows, and
     # settings.environment == production, treat as production (covers cases
     # where URL is overridden but DB is still live).
-    if os.environ.get("EV_ENV", "").lower() == "production" and _is_production_url(url):
-        return True
-    return False
+    return bool(os.environ.get("EV_ENV", "").lower() == "production" and _is_production_url(url))
 
 
 def assert_not_production_for_destructive(operation: str = "destructive DDL") -> None:

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+from collections import deque as _deque
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,8 +43,6 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 
 # F1.1 stage telemetry: bounded, per-stage latency rings (no owner content).
-from collections import deque as _deque
-
 _STAGE_MS: dict[str, Any] = {}
 _STAGE_MAX = 256
 

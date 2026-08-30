@@ -14,7 +14,13 @@ from uuid import UUID
 
 from httpx import AsyncClient
 
-from app.voice.live.events import BargeInEvent, ErrorEvent, FinalTranscriptEvent, ReplyEvent, TtsChunkEvent
+from app.voice.live.events import (
+    BargeInEvent,
+    ErrorEvent,
+    FinalTranscriptEvent,
+    ReplyEvent,
+    TtsChunkEvent,
+)
 from app.voice.live.session import LiveSession
 from app.voice.live.transport import serve_live_websocket
 from tests.test_voice_lifecycle import grant_voice_consent

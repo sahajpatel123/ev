@@ -116,7 +116,13 @@ async def health_summary(session: AsyncSession) -> dict:
     from sqlalchemy import select as _select
 
     from app.everywhere.approvals import PENDING_STATES
-    from app.models import ApprovedAction, DeviceRoutedAction, LifeOutboundAction, Notification, OwnerHandoffContext
+    from app.models import (
+        ApprovedAction,
+        DeviceRoutedAction,
+        LifeOutboundAction,
+        Notification,
+        OwnerHandoffContext,
+    )
 
     pending_approvals = (
         await session.execute(

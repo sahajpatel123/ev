@@ -6,10 +6,7 @@ approval-aware, offline-queued. No model routes devices.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import timedelta
-from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -18,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import Device, DeviceRoutedAction
 from app.utils.text import utcnow
 
-from .capabilities import KNOWN_CAPABILITY_BASES  # for validation truth
 from .devices import presence_state
 
 # Allowed routed capabilities (canonical truth). Unknown are rejected (B5).
@@ -215,7 +211,7 @@ async def create_routed_action(
 
     resolved = await _resolve_target(session, capability=cap, requesting_device=requesting_device)
     target_device = resolved.get("target") if isinstance(resolved.get("target"), Device) else None
-    presence = resolved.get("presence")
+    resolved.get("presence")
 
     # If target offline, queue if policy permits (B7). For our safe caps, queue.
     if resolved.get("error_code") == "TARGET_DEVICE_OFFLINE" and target_device is not None:

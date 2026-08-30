@@ -805,8 +805,7 @@ async def audio_diag_d2(
     frame = 16000 * 2 // 50  # 20 ms of int16le
 
     async def gen():
-        index = 0
-        for off in range(0, len(pcm), frame):
+        for index, off in enumerate(range(0, len(pcm), frame)):
             chunk = pcm[off : off + frame]
             if len(chunk) < 2:
                 break
@@ -819,7 +818,6 @@ async def audio_diag_d2(
                 "response_id": "d2-known",
             }
             yield json.dumps(payload) + "\n"
-            index += 1
             await asyncio.sleep(0.02)
 
     return StreamingResponse(gen(), media_type="application/x-ndjson", headers={"Cache-Control": "no-store"})

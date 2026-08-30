@@ -9,7 +9,7 @@ See docs/WAKE_W0_AUDIT.md and PROJECT-HEAD directive 28 sections.
 """
 
 from .arbitration import WakeArbitration
-from .directed import DirectedSpeechChecker, DirectedResult
+from .directed import DirectedResult, DirectedSpeechChecker
 from .speaker_stage import SpeakerStage
 
 __all__ = ["DirectedSpeechChecker", "DirectedResult", "SpeakerStage", "WakeArbitration"]

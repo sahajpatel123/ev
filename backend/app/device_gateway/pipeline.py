@@ -357,7 +357,7 @@ _ROUTED_NOTIFY = re.compile(r"\bnotify\b.*\bmac\b|\bmac\b.*\bnotify\b|\bnotifica
 
 def _detect_routed_capability(text: str) -> tuple[str, dict] | None:
     raw = (text or "").strip()
-    low = raw.lower()
+    raw.lower()
     # Notify capability has priority over ping (more specific)
     if _ROUTED_NOTIFY.search(raw):
         # Extract message after notify/colon
@@ -452,7 +452,7 @@ async def run_trusted_device_turn(
                 owner_scope=ctx_scope,
             )
             await session.commit()
-        except Exception as exc:  # noqa: BLE001 - broker failure is truthful
+        except Exception:  # noqa: BLE001 - broker failure is truthful
             await session.rollback()
             return {
                 "reply": "I couldn't route that to the other device. Try again.",
@@ -518,7 +518,6 @@ async def run_trusted_device_turn(
         # and text looks like a pronoun follow-up without explicit title
         low = effective_text.lower()
         has_pronoun = bool(__import__("re").search(r"\bits\b|\bit\b|\bthat\b|\bthis\b", low))
-        has_title = False
         # Quick check: if effective_text already contains a known project word, don't rewrite
         # (prevents stealing explicit titles)
         try:

@@ -283,7 +283,6 @@ class LiveSession:
                 from app.db import SessionLocal
                 from app.ev.owner_turn import create_owner_turn
                 from app.ev.turn_gate import (
-                    create_realtime_response_payload,
                     handle_owner_turn,
                 )
                 from app.utils.text import utcnow

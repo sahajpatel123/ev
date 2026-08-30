@@ -14,8 +14,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app import __version__
 from app.api import (
     assistant,
-    everywhere,
-    life,
     backup,
     companion,
     compliance,
@@ -23,9 +21,11 @@ from app.api import (
     ears,
     edith,
     ev,
+    everywhere,
     filter,
     identity,
     integrations,
+    life,
     maintenance,
     ops,
     people,

@@ -12,22 +12,17 @@ LAWS UNDER TEST:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ActorContext
-
 from app.everywhere.sync import (
     changes,
-    current_cursor,
     format_v2_cursor,
     parse_cursor,
     state_epoch,
 )
-from app.life import service as life
-from datetime import datetime, timezone
-
 from app.models import Event
 
 MASTER = "master"
@@ -64,7 +59,7 @@ async def test_late_arrival_historical_event_is_delivered(db_session):
     next changes(cursor=N) MUST deliver it (old time-keyed cursors missed it).
     """
     # Existing stream: one current event -> cursor after it.
-    base = await _insert_event(
+    await _insert_event(
         db_session, etype="note", at_iso="2026-08-25T10:00:00+00:00", seq=900
     )
     await db_session.commit()
@@ -107,7 +102,7 @@ async def test_same_timestamp_events_get_unique_ordered_positions(db_session):
     await db_session.commit()
     cursor = format_v2_cursor(await state_epoch(db_session), 999)
     out = await changes(db_session, _master_ctx(), cursor=cursor, limit=200)
-    got = [e["content"]["title"] for e in out["events"]]
+    [e["content"]["title"] for e in out["events"]]
     for i in range(5):
         assert f"note_same_{i}" in " ".join(e["content"].get("title","") for e in out["events"])
     seqs = [e["stream_seq"] for e in out["events"]]
@@ -130,7 +125,7 @@ def test_parse_cursor_versions():
 
 @pytest.mark.asyncio
 async def test_duplicate_stream_seq_rejected_by_unique_index(db_session):
-    a = await _insert_event(
+    await _insert_event(
         db_session, etype="project.dup_a", at_iso="2026-08-25T09:30:00+00:00", seq=7777
     )
     await db_session.commit()
@@ -140,8 +135,8 @@ async def test_duplicate_stream_seq_rejected_by_unique_index(db_session):
         content={"title": "dup"},
         privacy_level="normal",
         sha256="dup-sha",
-        occurred_at=datetime(2026, 8, 25, 9, 30, tzinfo=timezone.utc),
-        ingested_at=datetime(2026, 8, 25, 9, 31, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 8, 25, 9, 30, tzinfo=UTC),
+        ingested_at=datetime(2026, 8, 25, 9, 31, tzinfo=UTC),
         stream_seq=7777,  # collision
     )
     db_session.add(b)
@@ -161,12 +156,12 @@ async def test_concurrent_position_assignment_is_unique(db_session):
     e1 = Event(
         source="everywhere", event_type="note.c1", content={"i": 1},
         privacy_level="normal", sha256="c1",
-        occurred_at=datetime(2026, 8, 25, 9, 40, tzinfo=timezone.utc), ingested_at=datetime(2026, 8, 25, 9, 40, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 8, 25, 9, 40, tzinfo=UTC), ingested_at=datetime(2026, 8, 25, 9, 40, tzinfo=UTC),
     )
     e2 = Event(
         source="everywhere", event_type="note.c2", content={"i": 2},
         privacy_level="normal", sha256="c2",
-        occurred_at=datetime(2026, 8, 25, 9, 41, tzinfo=timezone.utc), ingested_at=datetime(2026, 8, 25, 9, 41, tzinfo=timezone.utc),
+        occurred_at=datetime(2026, 8, 25, 9, 41, tzinfo=UTC), ingested_at=datetime(2026, 8, 25, 9, 41, tzinfo=UTC),
     )
     db_session.add(e1)
     await db_session.commit()

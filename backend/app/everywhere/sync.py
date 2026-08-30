@@ -17,11 +17,11 @@ Laws:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, select, tuple_
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ActorContext

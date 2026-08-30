@@ -470,7 +470,7 @@ async def device_action_route(
     if result.get("ok") is not True and result.get("error_code") == "TARGET_DEVICE_OFFLINE":
         # Queue case is handled as ok True with queued flag; this is hard no-target
         raise HTTPException(status_code=409, detail={"error_code": "TARGET_DEVICE_OFFLINE", "capability": body.capability})
-    status_code = result.get("status") or "ROUTED"
+    result.get("status") or "ROUTED"
     # Surface QUEUED as 202 but keep payload truthful
     await session.commit()
     return {"ok": True, **result}
@@ -529,7 +529,6 @@ async def device_action_claim(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
-    from sqlalchemy import select as _select
 
     from app.everywhere.device_actions import claim_action
     from app.models import Device
@@ -560,7 +559,6 @@ async def device_action_complete(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
-    from sqlalchemy import select as _select
 
     from app.everywhere.device_actions import complete_action
     from app.models import Device
@@ -707,9 +705,9 @@ async def diagnostics(
     hs = await health_summary(session)
     universe = await capability_universe(session)
     # State epoch + cursor + context revision
-    from app.everywhere.sync import current_cursor, state_epoch
     from sqlalchemy import select as _select
 
+    from app.everywhere.sync import current_cursor, state_epoch
     from app.models import DeviceRoutedAction
 
     epoch = await state_epoch(session)

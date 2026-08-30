@@ -6,6 +6,9 @@ import json
 
 import pytest
 
+pytest.importorskip("PIL")
+pytest.importorskip("numpy")
+
 from app.vision import corpus
 from app.vision.eval import load_coco_spotcheck
 

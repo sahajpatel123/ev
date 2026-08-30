@@ -1,9 +1,8 @@
 """Backup coverage regression: canonical tables must survive round-trip."""
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Commitment, ConsentRecord, Goal, Project
 
 @pytest.mark.asyncio
 async def test_backup_includes_canonical(tmp_path, db_session: AsyncSession):
@@ -12,16 +11,16 @@ async def test_backup_includes_canonical(tmp_path, db_session: AsyncSession):
 
     # create canonical rows
     p = await life.create_project(db_session, actor="master", title="BackupCanary", priority="HIGH")
-    pid = p["project"]["id"]
+    p["project"]["id"]
     g = await life.create_goal(db_session, actor="master", title="BackupGoal", project_ref="BackupCanary")
-    gid = g["goal"]["id"]
+    g["goal"]["id"]
     c = await life.create_commitment(db_session, actor="master", description="BackupCommit")
-    cid = c["commitment"]["id"]
+    c["commitment"]["id"]
     await grant_consent(db_session, track="voice_enrollment", purpose="test", scope={}, source="test")
     await db_session.commit()
 
     # create backup via service
-    from app.services.backup import create_backup, verify_backup, load_backup
+    from app.services.backup import create_backup, load_backup, verify_backup
     passphrase = "test-passphrase-123"
     dest = str(tmp_path / "test.evbackup")
     result = await create_backup(db_session, passphrase=passphrase, destination=dest)
@@ -42,7 +41,8 @@ async def test_backup_includes_canonical(tmp_path, db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_isolated_restore_drill(tmp_path, db_session: AsyncSession):
     """Restore drill into non-production sqlite must preserve canonical rows."""
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
     from app.db import Base
     from app.services.backup import create_backup, restore_backup
 
@@ -60,7 +60,7 @@ async def test_isolated_restore_drill(tmp_path, db_session: AsyncSession):
     # ensure at least one project/consent in source
     from app.life import service as life
     from app.training.consent import grant_consent
-    p = await life.create_project(db_session, actor="master", title="DrillCanary", priority="HIGH")
+    await life.create_project(db_session, actor="master", title="DrillCanary", priority="HIGH")
     await grant_consent(db_session, track="voice_enrollment", purpose="test", scope={}, source="test-drill")
     await db_session.commit()
     await create_backup(db_session, passphrase=passphrase, destination=dest)
