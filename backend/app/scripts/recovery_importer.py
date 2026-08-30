@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
-from sqlalchemy import Table
 from sqlalchemy.engine import CursorResult
 
 BACKUP_DEFAULT = str(
@@ -349,9 +348,7 @@ async def cmd_diff(args: argparse.Namespace) -> None:
     async with SessionLocal() as s:
         for model in (Project, Goal, Commitment, Memory, Device):
             rows = (await s.execute(select(model))).scalars().all()
-            prod_rows[model.__tablename__] = [str(getattr(r, "id")) for r in rows]
-            if model is Project:
-                {str(getattr(r, "id")): getattr(r, "title") for r in rows}
+            prod_rows[model.__tablename__] = [str(cast(Any, r).id) for r in rows]
 
     drill_eng = await _engine(drill_url)
     from sqlalchemy.ext.asyncio import AsyncSession as AS
@@ -363,7 +360,7 @@ async def cmd_diff(args: argparse.Namespace) -> None:
         for model in (Project, Goal, Commitment, Memory, Device):
             rows = (await s.execute(select(model))).scalars().all()
             pre_rows[model.__tablename__] = {
-                str(getattr(r, "id")): {
+                str(cast(Any, r).id): {
                     "title": getattr(r, "title", None) or getattr(r, "description", None)
                     or getattr(r, "name", None),
                     "status": getattr(r, "status", None) or getattr(r, "state", None),
