@@ -15,6 +15,7 @@ from app.models import Device, OwnerIdentity
 from app.utils.text import sha256_hex, utcnow
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "clients" / "web"
+_ALLOWED_ASSETS = {"app.js", "style.css", "pcm-worklet.js"}
 _LOOPBACK_CLIENT_HOSTS = {"127.0.0.1", "::1"}
 _LOOPBACK_HOST_NAMES = {"127.0.0.1", "localhost", "::1"}
 

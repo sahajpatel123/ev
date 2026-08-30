@@ -338,3 +338,16 @@ Every `/v1/chat` response includes `filter_report`, and streaming chat emits a
 - Clients negotiate capabilities via `GET /v1/health` (`capabilities` field).
 - Model/provider selection is per-request (`model` nullable) and never encoded into
   client logic.
+
+## 15. Hands-free voice (additive)
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| GET | `/v1/voice/live/status` | Wake/ASR/TTS readiness and blockers |
+| GET | `/v1/voice/live/diagnostics` | Status plus owner enrollment |
+| WS | `/v1/voice/live` | Always-on PCM stream (auth is the first JSON frame) |
+| POST | `/v1/ears/wake` | Delivery of a VAD-segmented, wake-gated utterance from the ears process |
+
+Auth on the WebSocket is `{type:"auth", token, device_id}` as the first text
+frame, not a query parameter. Binary frames are 16 kHz mono PCM16. See
+`docs/VOICE.md` §13.

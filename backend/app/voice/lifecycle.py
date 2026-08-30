@@ -259,7 +259,9 @@ class VoiceRuntime:
         self.master_key = master_key
         self.actor = actor
         self.wake_engine = wake_engine or configured_wake_engine()
-        self.verifier = verifier or default_speaker_verifier()
+        # Lazy: property `verifier` resolves/validates on first use so hash
+        # doubles and missing models do not kill VoiceRuntime construction.
+        self._verifier = verifier
         self.transcriber = transcriber or get_transcriber()
         try:
             self.synthesizer = synthesizer or get_synthesizer()
@@ -302,6 +304,14 @@ class VoiceRuntime:
         self.continuity_conversation_id = settings.voice_continuity_conversation_id
         self.replay_guard = ReplayGuard(session)
         self._interrupts: dict[str, asyncio.Event] = {}
+
+    @property
+    def verifier(self) -> SpeakerVerifier:
+        """The speaker verifier, resolved (and validated) on first real use."""
+
+        if self._verifier is None:
+            self._verifier = default_speaker_verifier()
+        return self._verifier
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -1308,6 +1318,169 @@ class VoiceRuntime:
             challenge_nonce=challenge.nonce,
             challenge_phrase=challenge.phrase,
             message="Wake accepted. Speak the challenge phrase to verify ownership.",
+        )
+
+    async def handle_hands_free_wake(
+        self,
+        *,
+        device_id: str,
+        wake_word: str = "evie",
+        wake_confidence: float = 0.0,
+        wake_audio_b64: str | None = None,
+        priority: float = 0.5,
+    ) -> WakeOutcome:
+        """Open a session for a wake phrase an always-on client already heard.
+
+        Hands-free activation is Siri's model, not a login: the wake phrase
+        itself is the credential, so there is no spoken challenge. Ownership is
+        established *passively* from the wake audio when a voiceprint is
+        enrolled (``live_verify_speaker``); with no enrollment the session runs
+        unverified on a single-user install (``live_allow_unenrolled``).
+
+        Either way the session is only as trusted as what verified it:
+        sensitive commands still hit the re-verification gate in
+        :meth:`handle_utterance`, and the speaker confidence is recorded on the
+        row so downstream policy can see how EVIE decided.
+        """
+
+        await self._expire_stale()
+        from app.ev.ev_sense import quiet_hours_active
+
+        if quiet_hours_active(utcnow()) and priority < settings.runtime_urgent_priority_threshold:
+            await self._log(
+                "refusal",
+                "refused",
+                device_id=device_id,
+                reason="quiet hours",
+                wake_word=wake_word,
+                priority=priority,
+            )
+            return WakeOutcome(
+                session_id=None,
+                state=VoiceState.IDLE,
+                owner_enrolled=(await self._current_enrollment()) is not None,
+                message="EVIE is resting during quiet hours. Urgent requests only.",
+            )
+
+        existing = await self._active_session(device_id)
+        if existing is not None and existing.owner_verified:
+            return WakeOutcome(
+                session_id=str(existing.id),
+                state=existing.state,
+                owner_enrolled=True,
+                message="Voice session already active",
+            )
+        if existing is not None:
+            existing.state = VoiceState.ENDED
+            existing.ended_at = utcnow()
+            existing.end_reason = "superseded by hands-free wake"
+
+        enrollment = await self._current_enrollment()
+        speaker_confidence: float | None = None
+        verified = False
+        reason = ""
+        if enrollment is not None:
+            await self._require_voice_consent()
+            self._enforce_remote_voiceprint_gate()
+            if settings.live_verify_speaker and wake_audio_b64:
+                payload = await self._decrypt_enrollment(enrollment)
+                decision = await self.verifier.verify(
+                    {"audio_b64": wake_audio_b64},
+                    enrolled_payload=payload,
+                    threshold=enrollment.threshold,
+                )
+                speaker_confidence = round(decision.confidence, 4)
+                verified = decision.verified
+                reason = decision.reason or ("ok" if decision.verified else "score_below_threshold")
+            elif not settings.live_verify_speaker:
+                verified = True
+                reason = "passive verification disabled"
+            else:
+                reason = "no wake audio to verify"
+        elif settings.live_allow_unenrolled:
+            verified = True
+            reason = "no voiceprint enrolled (unverified single-user session)"
+        else:
+            await self._log(
+                "refusal",
+                "refused",
+                device_id=device_id,
+                reason="no owner voiceprint enrolled",
+                wake_word=wake_word,
+            )
+            return WakeOutcome(
+                session_id=None,
+                state=VoiceState.IDLE,
+                owner_enrolled=False,
+                message=(
+                    "No owner voiceprint enrolled. Enroll one, or set "
+                    "EV_LIVE_ALLOW_UNENROLLED=true for an unverified session."
+                ),
+            )
+
+        if not verified:
+            await self._log(
+                "verify",
+                "rejected",
+                device_id=device_id,
+                reason=reason,
+                wake_word=wake_word,
+                speaker_confidence=speaker_confidence,
+            )
+            return WakeOutcome(
+                session_id=None,
+                state=VoiceState.IDLE,
+                owner_enrolled=enrollment is not None,
+                message=f"Voice did not match the enrolled owner ({reason}).",
+            )
+
+        service = EventService(self.session, actor=self.actor)
+        wake_event = await service.create(
+            EventCreate(
+                source="voice",
+                event_type="voice.wake",
+                content={
+                    "wake_word": wake_word,
+                    "confidence": wake_confidence,
+                    "mode": "hands_free",
+                    "speaker_confidence": speaker_confidence,
+                },
+                metadata={"device_id": device_id},
+                device_id=device_id,
+                privacy_level="sensitive",
+            ),
+            request_id=None,
+        )
+        now = utcnow()
+        row = VoiceSession(
+            device_id=device_id,
+            wake_word=wake_word,
+            state=VoiceState.AWAKE,
+            wake_confidence=wake_confidence,
+            wake_event_id=wake_event.id,
+            owner_verified=True,
+            verified_at=now,
+            speaker_confidence=speaker_confidence,
+            expires_at=now + timedelta(seconds=self.session_timeout_seconds),
+        )
+        self.session.add(row)
+        await self.session.flush()
+        await self._log(
+            "wake",
+            "accepted",
+            session_id=row.id,
+            device_id=device_id,
+            reason="hands-free wake",
+            wake_word=wake_word,
+            wake_confidence=wake_confidence,
+            speaker_confidence=speaker_confidence,
+            verification=reason,
+        )
+        return WakeOutcome(
+            session_id=str(row.id),
+            state=VoiceState.AWAKE,
+            owner_enrolled=enrollment is not None,
+            message=f"Hands-free session open ({reason})." if reason else "Hands-free session open.",
         )
 
     async def recent_client_owned_session(self) -> VoiceSession | None:
@@ -2787,9 +2960,18 @@ class VoiceRuntime:
         language: str = "en",
         conversation_id=None,
         follow_up: bool = False,
+        transcript: Transcript | None = None,
         push_to_talk: bool = False,
         from_ears: bool = False,
     ) -> UtteranceOutcome:
+        """Run one turn.
+
+        ``transcript`` is a server-internal shortcut for callers that already
+        decoded the audio with a real engine in this process (the hands-free
+        loop transcribes while endpointing, so re-running ASR would only burn
+        CPU). It is never accepted over HTTP.
+        """
+
         await self._expire_stale()
         row = await self._get_session(session_id)
         await self._validate_utterance_row(

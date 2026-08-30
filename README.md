@@ -49,6 +49,25 @@ The web workbench is served at <http://localhost:8000/app> (same-origin API;
 store the master key in the connection panel). Tests and the eval suite set
 their own dev vault keys, so `make test` / `make eval` work without this step.
 
+### Hands-free "EVIE"
+
+Say **EVIE** (or "hey EVIE") with the mic open. The server spots the name,
+listens to the command, answers, then keeps the mic open for a follow-up —
+no button.
+
+```sh
+cd backend
+uv sync --extra voice --extra mic --extra dev
+uv run python -m app.voice.models_setup
+# API already running on :8000
+uv run python -m clients.hands_free --api-key "$EV_MASTER_KEY"
+```
+
+Or open `/app` and use the Hands-free panel. On a Mac, the menu-bar app has a
+**Hands-free — say “EVIE”** toggle; permissions are documented in
+[macos/README.md](macos/README.md). Status:
+`GET /v1/voice/live/status`. Details: [docs/VOICE.md](docs/VOICE.md) §13.
+
 ### 3. Full stack (Docker Compose)
 
 ```sh
@@ -190,6 +209,8 @@ ev/
     clients/
       cli/               # `ev` command-line client (capture, ask, audit, identity, queue/sync, ...)
       web/               # self-contained web workbench served at /app
+      hands_free/        # always-on "EVIE" listener (mic → /v1/voice/live → speaker)
+      ears/              # on-device VAD + wake process (posts /v1/ears/wake)
       collectors/        # macOS perception agent (screen, audio scene, location)
       device_listener.py # always-on device listener / fleet ear
     tests/               # 99 test modules; CI runs lint + mypy + pytest + eval gates
@@ -207,6 +228,8 @@ make lint         # ruff check
 make typecheck    # mypy
 make eval         # eval gates: contract, retrieval, filter, voice, latency, restore drill, roadmap
 make update-contract  # re-lock the API contract manifest after deliberate changes
+make voice-models     # download Vosk + Piper for hands-free "EVIE"
+make hands-free       # always-on listener (needs API + models)
 ```
 
 CI is configured to run lint, typecheck, the full test suite, and the eval gates

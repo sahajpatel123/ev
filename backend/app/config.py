@@ -181,7 +181,9 @@ class Settings(BaseSettings):
     # Voice wake word. phrase = deterministic text-hint/frame matcher (dev/test);
     # porcupine = Picovoice Porcupine (custom "EVIE" .ppn model or built-in keyword);
     # silero_vad = Silero VAD gate layered over a local keyword engine.
-    voice_wake_provider: str = "phrase"  # phrase | porcupine | silero_vad
+    # auto = use the best real engine whose model is installed (vosk today),
+    # falling back to the deterministic phrase double when none is.
+    voice_wake_provider: str = "auto"  # auto | vosk | phrase | porcupine | silero_vad
     voice_wake_access_key: str | None = None  # Picovoice access key
     voice_wake_model_path: str | None = None  # custom "EVIE" .ppn file
     voice_wake_porcupine_library_path: str | None = None
@@ -303,7 +305,9 @@ class Settings(BaseSettings):
     # Voice ASR (speech-to-text). echo = offline transcript hints (dev/test);
     # openai_compat = any OpenAI-compatible /audio/transcriptions endpoint.
     # faster_whisper = local Whisper-class transcription (faster-whisper).
-    voice_asr_provider: str = "echo"  # echo | openai_compat | faster_whisper
+    # auto = first real engine whose weights are installed (vosk, then
+    # parakeet), else the echo double that refuses audio outright.
+    voice_asr_provider: str = "auto"  # auto | vosk | echo | openai_compat | faster_whisper | parakeet
     voice_asr_base_url: str | None = None
     voice_asr_api_key: str | None = None
     voice_asr_model: str = "whisper-1"
@@ -322,7 +326,9 @@ class Settings(BaseSettings):
     # meta = offline SSML metadata (dev/test); openai_compat = any
     # OpenAI-compatible /audio/speech endpoint.
     # piper = local Piper neural TTS (ONNX voice).
-    voice_tts_provider: str = "meta"  # meta | openai_compat | piper
+    # auto = local Piper voice when installed, else the metadata-only double
+    # (clients then speak the reply with the platform voice).
+    voice_tts_provider: str = "auto"  # auto | meta | openai_compat | piper
     # TURN AUTHORITY V2 canary (reversible): VAD becomes a sensor; the
     # application explicitly creates responses after a logical owner turn
     # yields (speech_stopped + bounded grace, no continuation).
@@ -678,6 +684,35 @@ class Settings(BaseSettings):
     opencode_format_retries: int = 1
     # --- END AGENT OPENCODE ---
 
+    # --- HANDS-FREE VOICE (append-only) -------------------------------------
+    # Always-on "EVIE" activation: one continuous audio stream per device runs a
+    # grammar-restricted wake spotter, endpoints the command, answers, then
+    # holds the mic open for follow-ups — the Siri interaction model. See
+    # docs/VOICE.md § Hands-free.
+    #
+    # Vosk (Kaldi) is the local speech runtime backing both stages. The model is
+    # a directory, not a file: `uv run python -m app.voice.models_setup`.
+    voice_vosk_model_path: str | None = None  # None = ~/.ev/models/vosk-model-small-en-us-0.15
+    voice_wake_phrases: list[str] | None = None  # None = the built-in EVIE phrase set
+    voice_wake_vosk_threshold: float = 0.55  # min word confidence for a confirmed wake
+
+    # Endpointing and turn-taking, all in audio time so behavior is identical
+    # live and in tests.
+    live_frame_ms: int = 20  # expected client frame size
+    live_endpoint_silence_ms: int = 900  # trailing silence that closes a command
+    live_min_speech_ms: int = 240  # ignore shorter blips as noise
+    live_max_utterance_ms: int = 20_000  # hard cap on one command
+    live_wake_grace_ms: int = 7_000  # after a bare "EVIE", wait this long for the command
+    live_follow_up_ms: int = 12_000  # open mic after a reply (no wake word needed)
+    live_barge_in_ms: int = 400  # sustained speech during playback interrupts EVIE
+    live_speech_threshold: float = 0.5  # VAD probability treated as speech
+    live_ring_seconds: float = 30.0  # rolling capture buffer per connection
+    # Wake audio is verified against the enrolled voiceprint when one exists.
+    # With no enrollment the session runs unverified (single-user local install);
+    # sensitive commands still require explicit re-verification.
+    live_allow_unenrolled: bool = True
+    live_verify_speaker: bool = True
+    # --- END HANDS-FREE VOICE ---
     # --- AGENT 12 CONDUIT (WAVE LIFE) -----------------------------------------
     # Real Apple-life bridges (Messages/Contacts/FaceTime/Mail) via Agent 18's
     # EVLifeHelper, plus the iPhone device-proxy actuator queue. The helper is

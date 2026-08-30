@@ -575,7 +575,7 @@ enum EVSmokeTest {
         Task {
             let statuses = await PermissionCenter.statuses()
             for status in statuses {
-                print("\(status.kind.rawValue): \(status.state.rawValue)")
+                print("\(status.kind.title): \(status.state.rawValue)")
                 print("  breaks: \(status.whatBreaks)")
                 print("  settings: \(status.settingsURL?.absoluteString ?? "none")")
             }

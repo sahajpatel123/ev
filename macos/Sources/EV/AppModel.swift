@@ -97,6 +97,8 @@ final class AppModel: ObservableObject {
     let queue: OfflineCaptureQueue
     let hotkey = GlobalHotkey()
     let player = TTSPlayer()
+    let handsFree = HandsFreeSession()
+    private var pushToTalkActive = false
     let live = LiveConversation()
 
     private var heartbeatTask: Task<Void, Never>?
@@ -180,6 +182,13 @@ final class AppModel: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        handsFree.configure(baseURL: config.baseURL, token: config.apiKey)
+        handsFree.onStateChange = { [weak self] state in
+            self?.applyHandsFree(state)
+        }
+        Task { @MainActor [handsFree] in
+            handsFree.startIfEnabled()
+        }
         startupState = .booting
         // SAFE STARTUP: no mic/camera/live until device auth is valid
         live.attach(self)
@@ -1046,6 +1055,29 @@ final class AppModel: ObservableObject {
                 status = .listening
             }
             pendingAssistantID = nil
+        }
+    }
+
+    // MARK: - Hands-free
+
+    /// Project the always-on loop onto the menu-bar glyph.
+    ///
+    /// Push-to-talk keeps priority: a hands-free `idle` arriving mid-turn must
+    /// not relabel a recording or thinking push-to-talk exchange.
+    private func applyHandsFree(_ state: HandsFreeState) {
+        guard !pushToTalkActive else { return }
+        switch state {
+        case .off, .connecting:
+            // Only give back what hands-free claimed; offline stays offline.
+            if status != .offline {
+                status = .listening
+            }
+        case .idle, .waking, .listening, .followUp:
+            status = .listening
+        case .thinking:
+            status = .thinking
+        case .speaking:
+            status = .speaking
         }
     }
 

@@ -981,6 +981,12 @@
     "/v1/voice/enrollments/{enrollment_id}/rollback": [
       "post"
     ],
+    "/v1/voice/hands-free/diagnostics": [
+      "get"
+    ],
+    "/v1/voice/hands-free/status": [
+      "get"
+    ],
     "/v1/voice/live/open": [
       "post"
     ],

@@ -74,6 +74,14 @@ let package = Package(
             name: "EVAuthCheck",
             dependencies: ["EVAuth"],
             path: "Sources/EVAuthCheck"
+                .linkedFramework("Contacts"),
+                .linkedFramework("CoreBluetooth"),
+                .linkedFramework("CoreLocation"),
+                .linkedFramework("EventKit"),
+                .linkedFramework("IOKit"),
+                .linkedFramework("Speech"),
+                .linkedFramework("UserNotifications"),
+            ]
         ),
         .executableTarget(
             name: "EVNotificationHelper",

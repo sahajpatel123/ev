@@ -1852,6 +1852,351 @@ async function voiceAudioTest() {
 }
 
 // --------------------------------------------------------------------------- #
+// Hands-free: always-on "EVIE" stream over WS /v1/voice/hands-free
+// --------------------------------------------------------------------------- #
+
+const HF_STATE_LABELS = {
+  off: "off",
+  connecting: "connecting",
+  idle: "listening for “EVIE”",
+  waking: "heard you",
+  listening: "listening",
+  thinking: "thinking",
+  speaking: "speaking",
+  follow_up: "go ahead",
+  closed: "off",
+};
+
+const handsFree = {
+  socket: null,
+  stream: null,
+  context: null,
+  worklet: null,
+  sink: null,
+  source: null,
+  playing: null,
+  speaking: null,
+  running: false,
+  state: "off",
+};
+
+function hfSetState(state) {
+  handsFree.state = state;
+  const orb = $("hf-orb");
+  orb.dataset.state = state;
+  $("hf-orb-label").textContent = HF_STATE_LABELS[state] || state;
+  $("hf-toggle").textContent = handsFree.running ? "Stop listening" : "Start listening";
+  if (state === "off" || state === "idle") {
+    $("hf-caption").textContent = "";
+  }
+}
+
+function hfLog(role, text) {
+  const log = $("hf-log");
+  const line = document.createElement("div");
+  line.className = `hf-line hf-${role}`;
+  line.innerHTML = `<span class="hf-role">${escapeHtml(role)}</span> ${escapeHtml(text)}`;
+  log.append(line);
+  while (log.childElementCount > 24) {
+    log.removeChild(log.firstElementChild);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+function hfLiveUrl() {
+  const base = baseUrl() || window.location.origin;
+  return base.replace(/^http/, "ws") + "/v1/voice/hands-free";
+}
+
+function hfStopPlayback() {
+  if (handsFree.playing) {
+    try {
+      handsFree.playing.stop();
+    } catch (error) {
+      /* already stopped */
+    }
+    handsFree.playing = null;
+  }
+  if (handsFree.speaking && window.speechSynthesis) {
+    window.speechSynthesis.cancel();
+    handsFree.speaking = null;
+  }
+}
+
+function hfSend(payload) {
+  if (handsFree.socket && handsFree.socket.readyState === WebSocket.OPEN) {
+    handsFree.socket.send(JSON.stringify(payload));
+  }
+}
+
+function hfPlaybackFinished() {
+  hfSend({ type: "playback_finished" });
+}
+
+async function hfPlayAudio(b64, contentType) {
+  const bytes = Uint8Array.from(atob(b64), (char) => char.charCodeAt(0));
+  const context = handsFree.context || new AudioContext();
+  const buffer = await context.decodeAudioData(bytes.buffer.slice(0));
+  const source = context.createBufferSource();
+  source.buffer = buffer;
+  source.connect(context.destination);
+  source.onended = () => {
+    if (handsFree.playing === source) {
+      handsFree.playing = null;
+      hfPlaybackFinished();
+    }
+  };
+  hfStopPlayback();
+  handsFree.playing = source;
+  source.start();
+}
+
+function hfSpeakLocally(text) {
+  if (!$("hf-speak").checked || !window.speechSynthesis) {
+    hfPlaybackFinished();
+    return;
+  }
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.onend = () => {
+    handsFree.speaking = null;
+    hfPlaybackFinished();
+  };
+  utterance.onerror = () => {
+    handsFree.speaking = null;
+    hfPlaybackFinished();
+  };
+  hfStopPlayback();
+  handsFree.speaking = utterance;
+  window.speechSynthesis.speak(utterance);
+}
+
+function hfRenderEngines(status) {
+  $("hf-engines-body").textContent = JSON.stringify(status, null, 2);
+  if (status.ready) {
+    return true;
+  }
+  $("hf-result").textContent =
+    "EVIE cannot hear yet: " + (status.blockers || []).join(" | ");
+  $("hf-engines").open = true;
+  return false;
+}
+
+function hfHandleEvent(message) {
+  const data = message.data || {};
+  switch (message.type) {
+    case "ready":
+      hfRenderEngines(data);
+      break;
+    case "state":
+      hfSetState(data.state);
+      break;
+    case "level":
+      $("hf-level").style.width = `${Math.round((data.level || 0) * 100)}%`;
+      break;
+    case "wake":
+      if (data.stage === "pending") {
+        $("hf-caption").textContent = "…";
+      }
+      break;
+    case "partial":
+      $("hf-caption").textContent = data.text || "…";
+      break;
+    case "transcript":
+      $("hf-caption").textContent = data.text || "";
+      hfLog("you", data.text || "");
+      break;
+    case "reply":
+      hfLog("evie", data.text || "");
+      if (data.speak_locally) {
+        hfSpeakLocally(data.text || "");
+      }
+      break;
+    case "audio":
+      hfPlayAudio(data.audio_b64, data.content_type).catch((error) => {
+        showError($("hf-result"), error);
+        hfPlaybackFinished();
+      });
+      break;
+    case "barge_in":
+      hfStopPlayback();
+      $("hf-result").textContent = "interrupted — go ahead";
+      break;
+    case "dismissed":
+      $("hf-caption").textContent = "";
+      $("hf-result").textContent = `ignored (${data.reason})`;
+      break;
+    case "conversation_end":
+      $("hf-result").textContent = `conversation closed (${data.reason})`;
+      break;
+    case "session":
+      $("hf-result").textContent = data.message || "session open";
+      break;
+    case "error":
+      $("hf-result").textContent = `${data.code}: ${data.message}`;
+      break;
+    default:
+      break;
+  }
+}
+
+function hfMicErrorMessage(error) {
+  // Name the actual failure: "permission denied" is wrong (and unfixable) when
+  // the real problem is a missing device or a busy one.
+  const name = (error && error.name) || "Error";
+  const detail = (error && error.message) || String(error);
+  const hints = {
+    NotAllowedError:
+      "microphone blocked for this site — click the mic icon in the address bar (or Settings > Privacy > Microphone) and allow it",
+    SecurityError:
+      "microphone blocked: this page must be served over HTTPS or from localhost",
+    NotFoundError: "no microphone found — connect an input device and try again",
+    NotReadableError:
+      "the microphone is in use by another app or unreadable — close the other app and try again",
+    OverconstrainedError:
+      "no microphone matched the requested format (16 kHz mono) — try a different input device",
+    AbortError: "microphone capture was aborted by the system",
+  };
+  return `${hints[name] || "microphone unavailable"} [${name}: ${detail}]`;
+}
+
+async function hfStart() {
+  const result = $("hf-result");
+  result.textContent = "";
+  if (!navigator.mediaDevices || !window.AudioWorkletNode) {
+    result.textContent =
+      "this browser cannot capture audio here (needs HTTPS or localhost)";
+    return;
+  }
+  hfSetState("connecting");
+  let status;
+  try {
+    status = await api("/v1/voice/hands-free/status");
+  } catch (error) {
+    hfSetState("off");
+    showError(result, error);
+    return;
+  }
+  if (!hfRenderEngines(status)) {
+    hfSetState("off");
+    return;
+  }
+  const rate = (status.audio && status.audio.sample_rate) || 16000;
+  const frameSamples = Math.round((rate * ((status.audio && status.audio.frame_ms) || 20)) / 1000);
+  try {
+    handsFree.stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+  } catch (error) {
+    hfSetState("off");
+    result.textContent = hfMicErrorMessage(error);
+    return;
+  }
+  handsFree.context = new AudioContext({ sampleRate: rate });
+  await handsFree.context.audioWorklet.addModule("/app/pcm-worklet.js");
+  handsFree.source = handsFree.context.createMediaStreamSource(handsFree.stream);
+  handsFree.worklet = new AudioWorkletNode(handsFree.context, "pcm-frame-processor", {
+    processorOptions: { targetRate: rate, frameSamples },
+  });
+  // A muted sink keeps the graph pulling frames without echoing the mic.
+  handsFree.sink = handsFree.context.createGain();
+  handsFree.sink.gain.value = 0;
+  handsFree.source.connect(handsFree.worklet);
+  handsFree.worklet.connect(handsFree.sink);
+  handsFree.sink.connect(handsFree.context.destination);
+
+  const socket = new WebSocket(hfLiveUrl());
+  socket.binaryType = "arraybuffer";
+  handsFree.socket = socket;
+  socket.onopen = () => {
+    socket.send(
+      JSON.stringify({ type: "auth", token: store.key, device_id: "web-hands-free" })
+    );
+    handsFree.running = true;
+    hfSetState("idle");
+    handsFree.worklet.port.onmessage = (event) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(event.data);
+      }
+    };
+  };
+  socket.onmessage = (event) => {
+    try {
+      hfHandleEvent(JSON.parse(event.data));
+    } catch (error) {
+      showError(result, error);
+    }
+  };
+  socket.onclose = () => {
+    if (handsFree.running) {
+      result.textContent = "live stream closed";
+    }
+    hfStop();
+  };
+  socket.onerror = () => {
+    result.textContent = "live stream error — is the API reachable?";
+  };
+}
+
+function hfStop() {
+  handsFree.running = false;
+  hfStopPlayback();
+  if (handsFree.worklet) {
+    handsFree.worklet.port.onmessage = null;
+    handsFree.worklet.disconnect();
+    handsFree.worklet = null;
+  }
+  if (handsFree.source) {
+    handsFree.source.disconnect();
+    handsFree.source = null;
+  }
+  if (handsFree.sink) {
+    handsFree.sink.disconnect();
+    handsFree.sink = null;
+  }
+  if (handsFree.stream) {
+    handsFree.stream.getTracks().forEach((track) => track.stop());
+    handsFree.stream = null;
+  }
+  if (handsFree.context) {
+    handsFree.context.close().catch(() => {});
+    handsFree.context = null;
+  }
+  if (handsFree.socket) {
+    const socket = handsFree.socket;
+    handsFree.socket = null;
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+      socket.close();
+    }
+  }
+  $("hf-level").style.width = "0%";
+  hfSetState("off");
+}
+
+function hfToggle() {
+  if (handsFree.running || handsFree.state === "connecting") {
+    hfStop();
+    return;
+  }
+  hfStart().catch((error) => {
+    hfStop();
+    showError($("hf-result"), error);
+  });
+}
+
+async function hfRefreshEngines() {
+  try {
+    hfRenderEngines(await api("/v1/voice/hands-free/diagnostics"));
+  } catch (error) {
+    $("hf-engines-body").textContent = String(error);
+  }
+}
+
+// --------------------------------------------------------------------------- #
 // People (Agent 7 roster)
 // --------------------------------------------------------------------------- #
 
@@ -2576,6 +2921,12 @@ document.addEventListener("DOMContentLoaded", () => {
   $("voice-session-refresh").addEventListener("click", voiceSessionRefresh);
   $("voice-retry").addEventListener("click", voiceRetry);
   $("voice-audio-test").addEventListener("click", voiceAudioTest);
+  $("hf-toggle").addEventListener("click", hfToggle);
+  $("hf-engines").addEventListener("toggle", (event) => {
+    if (event.target.open) {
+      hfRefreshEngines();
+    }
+  });
   $("people-refresh").addEventListener("click", peopleRefresh);
   $("people-enroll").addEventListener("click", peopleEnroll);
   $("people-correct").addEventListener("click", peopleCorrectRecognition);
@@ -2590,6 +2941,8 @@ document.addEventListener("DOMContentLoaded", () => {
   renderOnboardingList();
   renderWizard();
   renderVoiceSessionStatus({});
+  hfSetState("off");
+  startConsoleLoop();
   updateClock();
   setInterval(updateClock, 1000);
   autoConnectLocal().then(() => {
@@ -2632,6 +2985,10 @@ window.EV = {
   voiceSessionRefresh,
   voiceRetry,
   voiceAudioTest,
+  hfToggle,
+  hfStart,
+  hfStop,
+  hfRefreshEngines,
   peopleRefresh,
   peopleEnroll,
   peopleCorrectRecognition,
