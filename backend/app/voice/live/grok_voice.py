@@ -1580,9 +1580,7 @@ class GrokVoiceBridge:
         last_emit = self._last_audio_emit_at
         if last_emit and (now - last_emit) < _SELF_ECHO_QUARANTINE_S:
             return True
-        if now < self._echo_until:
-            return True
-        return False
+        return now < self._echo_until
 
     async def append_pcm(self, pcm: bytes) -> None:
         if not pcm or self._closed:
@@ -1829,9 +1827,7 @@ class GrokVoiceBridge:
 
     def _output_is_stale(self, event: dict) -> bool:
         rid = _event_response_id(event)
-        if rid and rid in self._cancelled_response_ids:
-            return True
-        return False
+        return bool(rid and rid in self._cancelled_response_ids)
 
     async def _truncate_assistant_item(self, audio_played_ms: int | None) -> None:
         if self._ws is None or not self._assistant_item_id:
@@ -2865,17 +2861,16 @@ class GrokVoiceBridge:
             # User started a turn. Do not send response.cancel — that errors
             # with "no active response" and can kill the next spoken answer.
             self._ensure_open_turn()
-            if self._turn_authority_v2:
+            if self._turn_authority_v2 and self._v2_pending_commit is not None and not self._v2_pending_commit.done():
                 # CONTINUATION: speech restarted inside the grace window — the
                 # owner was still forming the thought. Cancel any pending
                 # commit; floor stays OWNER. (TA05)
-                if self._v2_pending_commit is not None and not self._v2_pending_commit.done():
-                    self._v2_pending_commit.cancel()
-                    self._v2_pending_commit = None
-                    logger.info(
-                        "realtime_trace event=ta.continuation_detected turn=%s",
-                        self._open_turn_id,
-                    )
+                self._v2_pending_commit.cancel()
+                self._v2_pending_commit = None
+                logger.info(
+                    "realtime_trace event=ta.continuation_detected turn=%s",
+                    self._open_turn_id,
+                )
             return
         if kind in _SPEECH_STOPPED_TYPES:
             self._commit_open_turn(item_id=_event_item_id(event))

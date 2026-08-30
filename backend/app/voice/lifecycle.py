@@ -1609,8 +1609,8 @@ class VoiceRuntime:
         # FAIL-CLOSED MODEL VALIDATION (§4): ON must refuse to activate if model missing/dummy/fails or speaker profile missing; remain SHADOW.
         if gate == "ON":
             try:
-                from pathlib import Path
                 import hashlib
+                from pathlib import Path
 
                 model_path = Path(str(settings.voice_wake_openwakeword_model_path or "")).expanduser()
                 if not model_path.is_file():

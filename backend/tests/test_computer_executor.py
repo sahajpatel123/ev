@@ -36,10 +36,7 @@ class FakeMac:
         self.calls.append((command, dict(arguments or {})))
         if command == "inspect_ui":
             return {"ok": True, "app": self.frontmost, "window_title": "w", "elements": [{"role": "AXButton", "title": "Play"}]}
-        if command in self.responses:
-            out = dict(self.responses[command])
-        else:
-            out = {"ok": True}
+        out = dict(self.responses[command]) if command in self.responses else {"ok": True}
         if out.get("set_frontmost"):
             self.frontmost = out.pop("set_frontmost")
         return out

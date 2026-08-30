@@ -314,17 +314,26 @@ async def handle_computer_tool(
             arguments["action"] = normalize_app_action(arguments.get("action"))
         app_name = str(arguments.get("app") or "").lower()
         action = str(arguments.get("action") or "")
-        if "notes" in app_name and action in {"create", "append"}:
-            if not arguments.get("value") and not arguments.get("query") and not arguments.get("text"):
-                body = _notes_body_from_goal(_goal_text(state))
-                if body:
-                    arguments["value"] = body
-        if "calculator" in app_name and action not in {"status", "read"}:
-            if not arguments.get("query") and not arguments.get("value"):
-                expr = _calculator_expression(_goal_text(state))
-                if expr:
-                    arguments["query"] = expr
-                    arguments["action"] = "search"
+        if (
+            "notes" in app_name
+            and action in {"create", "append"}
+            and not arguments.get("value")
+            and not arguments.get("query")
+            and not arguments.get("text")
+        ):
+            body = _notes_body_from_goal(_goal_text(state))
+            if body:
+                arguments["value"] = body
+        if (
+            "calculator" in app_name
+            and action not in {"status", "read"}
+            and not arguments.get("query")
+            and not arguments.get("value")
+        ):
+            expr = _calculator_expression(_goal_text(state))
+            if expr:
+                arguments["query"] = expr
+                arguments["action"] = "search"
         result = await _live_command(
             live,
             "app_action",

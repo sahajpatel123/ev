@@ -1362,11 +1362,19 @@ async def run_ears(
                 # Light local directed pre-filter (authoritative check is server-side)
                 # "Evie is..." and "Did you see Evie?" must not trigger upload.
                 _lower = _heard_tmp.strip().lower()
-                if _lower and not _lower.lstrip().startswith(("evie", "hey evie", "hi evie", "ok evie", "hello evie")):
+                if (
+                    _lower
+                    and not _lower.lstrip().startswith(
+                        ("evie", "hey evie", "hi evie", "ok evie", "hello evie")
+                    )
+                    and "evie" in _lower
+                    and not _lower.strip().startswith("evie")
+                ):
                     # Not anchored at head → likely conversational mention
-                    if "evie" in _lower and not _lower.strip().startswith("evie"):
-                        LOGGER.info("ears local directed pre-filter: not anchored — skipping upload (server will also cancel)")
-                        return
+                    LOGGER.info(
+                        "ears local directed pre-filter: not anchored — skipping upload (server will also cancel)"
+                    )
+                    return
             except Exception:  # noqa: BLE001
                 pass
             heard = (detection.details or {}).get("transcript") or ""

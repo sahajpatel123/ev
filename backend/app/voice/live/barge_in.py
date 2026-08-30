@@ -45,10 +45,7 @@ def parse_interrupt_request(message: dict | None) -> InterruptRequest:
     reason = str(payload.get("reason") or payload.get("interruption_reason") or "").strip()
     if not reason:
         action = str(payload.get("action") or "").strip().lower()
-        if action == "cancel":
-            reason = REASON_CLIENT_CANCEL
-        else:
-            reason = REASON_CLIENT_BARGE_IN
+        reason = REASON_CLIENT_CANCEL if action == "cancel" else REASON_CLIENT_BARGE_IN
     return InterruptRequest(
         reason=reason,
         audio_played_ms=played,

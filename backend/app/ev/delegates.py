@@ -232,10 +232,8 @@ def permission_allowed(permission: str, scopes: list[str]) -> bool:
     for scope in scopes:
         allowed_perms |= SCOPE_TO_PERMISSION.get(scope, set())
         allowed_perms.add(scope)
-    if permission in allowed_perms:
-        return True
     # Read-only memory stays owner-only unless briefing/research implied it.
-    return False
+    return permission in allowed_perms
 
 
 async def scope_blocked(

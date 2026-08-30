@@ -34,7 +34,7 @@ def _overlay_manager(entry: dict, readiness: dict) -> dict:
 
 def _register():
     # Turn controller — Luna
-    turn_info = turn_control_model_info()
+    turn_control_model_info()
     register_capability(
         RegisteredCapability(
             name="evie.turn_controller",
@@ -57,7 +57,7 @@ def _register():
         )
     )
     # Manager — DeepSeek scaffolded
-    mgr = manager_model_info()
+    manager_model_info()
     register_capability(
         RegisteredCapability(
             name="evie.manager",

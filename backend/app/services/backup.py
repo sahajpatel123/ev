@@ -356,7 +356,15 @@ async def _wipe_data_tables(session: AsyncSession) -> None:
     await session.execute(delete(Memory))
     await session.execute(delete(Entity))
     # G1 life state + consent (must be wiped with events; not derived memories)
-    from app.models import Commitment, ConsentRecord, DeviceRoutedAction, Goal, GoalStep, OwnerHandoffContext, Project
+    from app.models import (
+        Commitment,
+        ConsentRecord,
+        DeviceRoutedAction,
+        Goal,
+        GoalStep,
+        OwnerHandoffContext,
+        Project,
+    )
 
     await session.execute(delete(GoalStep))
     await session.execute(delete(Commitment))

@@ -35,7 +35,6 @@ from app.db import SessionLocal, get_session
 from app.models import Device, VoiceSession
 from app.utils.text import sha256_hex, utcnow
 from app.voice.contracts import VoiceError
-from app.voice.lifecycle import VoiceRuntime, VoiceState
 from app.voice.hands_free_loop import (
     LiveConfig,
     LiveEvent,
@@ -43,6 +42,7 @@ from app.voice.hands_free_loop import (
     LiveTurn,
     LiveVoiceLoop,
 )
+from app.voice.lifecycle import VoiceRuntime, VoiceState
 from app.voice.vosk_engine import WakeSignal
 
 LOGGER = logging.getLogger("ev.voice.live.ws")

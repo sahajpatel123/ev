@@ -8,16 +8,11 @@ through the actual provider websocket and verifies the full chain.
 """
 
 import asyncio
-import base64
-import json
 
 import pytest
 from sqlalchemy import text
 
 from app.config import settings
-from app.voice.live.grok_voice import GrokVoiceBridge
-from app.voice.live.session import LiveSession
-from app.voice.live.transport import _grok_tool_runner
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,10 +36,9 @@ async def test_g18_session_update_has_cutover(db_session, monkeypatch):
     monkeypatch.setattr("app.config.settings.turn_gate_enabled", True)
 
     # Directly call grok_session_update and inspect — no API key needed for payload generation
-    from app.voice.live.grok_voice import grok_session_update
-
     # Build a minimal manifest
     from app.db import SessionLocal
+    from app.voice.live.grok_voice import grok_session_update
 
     async with SessionLocal() as s:
         from app.ev.capabilities import build_runtime_projection
@@ -74,7 +68,7 @@ async def test_g18_session_update_has_cutover(db_session, monkeypatch):
 
 async def test_g18_live_audio_e2e_via_gate(db_session):
     """Live audio E2E via TurnGate — same TurnController as text gateway, but through OwnerTurn."""
-    from sqlalchemy import text, select
+    from sqlalchemy import select
 
     from app.ev.owner_turn import create_owner_turn
     from app.ev.turn_gate import handle_owner_turn
@@ -111,7 +105,7 @@ async def test_g18_live_audio_e2e_via_gate(db_session):
     await db_session.execute(text("DELETE FROM events WHERE event_type='mission_control.checked'"))
     await db_session.commit()
     # Clean up if we created
-    for proj in (await db_session.execute(select(Project).where(Project.title == "Personal Fitness"))).scalars().all():
+    for _proj in (await db_session.execute(select(Project).where(Project.title == "Personal Fitness"))).scalars().all():
         # Only clean if it was created in this test and not the original owner data (check created_at recent)
         # For test DB, keep it; for live, it would already exist, so do not delete
         pass

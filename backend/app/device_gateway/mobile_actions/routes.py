@@ -13,7 +13,12 @@ from ..sandbox import is_sandbox_device
 from ..security import origin_allowed
 from . import BRIDGE_NAME, BRIDGE_PROTOCOL, BRIDGE_VERSION
 from .bridge import import_url, signed_shortcut
-from .engine import apply_confirmation_utterance, confirm_action, native_execute_action, status_snapshot
+from .engine import (
+    apply_confirmation_utterance,
+    confirm_action,
+    native_execute_action,
+    status_snapshot,
+)
 from .service import (
     apply_handshake,
     cancel_action,

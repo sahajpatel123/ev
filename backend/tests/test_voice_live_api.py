@@ -24,8 +24,8 @@ from app.main import app
 from app.models import Device, VoiceSession
 from app.utils.text import sha256_hex
 from app.voice.contracts import Transcript, VoiceError
-from app.voice.lifecycle import VoiceState
 from app.voice.hands_free_loop import LiveConfig, LiveTurn
+from app.voice.lifecycle import VoiceState
 from app.voice.vosk_engine import (
     DEFAULT_WAKE_PHRASES,
     VoskStreamingRecognizer,

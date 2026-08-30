@@ -7,6 +7,7 @@ unrelated turns.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import math
 import re
@@ -263,9 +264,7 @@ def _supported(query: str, parts: dict[str, float], text: str) -> bool:
         return True
     if parts["phrase"] >= 1.0:
         return True
-    if _named_value_query(query) and parts["naming"] >= 1.0 and parts["speaker"] >= 1.0:
-        return True
-    return False
+    return bool(_named_value_query(query) and parts["naming"] >= 1.0 and parts["speaker"] >= 1.0)
 
 
 async def build_explicit_recall_payload(
@@ -663,9 +662,7 @@ def _memory_supported(query: str, text: str) -> bool:
     left = simple_tokens(query) - _STOP
     if left and text_tokens and (left & text_tokens):
         return True
-    if _named_value_query(query) and (_NAMING_LANG.search(text) or _PROPER.search(text)):
-        return True
-    return False
+    return bool(_named_value_query(query) and (_NAMING_LANG.search(text) or _PROPER.search(text)))
 
 
 async def _search_entities(
@@ -717,10 +714,8 @@ async def _expand_neighbors(session: AsyncSession, top_events: list[dict]) -> li
         if conversation_id:
             from uuid import UUID
 
-            try:
+            with contextlib.suppress(ValueError):
                 stmt = stmt.where(Event.conversation_id == UUID(str(conversation_id)))
-            except ValueError:
-                pass
         nearby = list((await session.execute(stmt)).scalars().all())
         for event in nearby:
             key = str(event.id)

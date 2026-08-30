@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 
 from app.ev import camera_runtime  # noqa: F401  - registers camera projector
 from app.ev.computer import classify_ui_risk, handle_computer_tool
@@ -542,7 +541,12 @@ def test_open_app_returns_music_control_route() -> None:
 
 
 def test_ordinal_mismatch_is_rejected_before_execution() -> None:
-    from app.ev.computer_runtime import constraint_violation, ensure_state, note_goal, reset_computer_states
+    from app.ev.computer_runtime import (
+        constraint_violation,
+        ensure_state,
+        note_goal,
+        reset_computer_states,
+    )
 
     reset_computer_states()
     state = ensure_state("ord")

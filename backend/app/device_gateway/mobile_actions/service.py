@@ -14,20 +14,9 @@ from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from . import ACTION_TTL_S, BRIDGE_PROTOCOL, BRIDGE_VERSION, NATIVE_BROKER_VERSION
-from . import apps as app_registry
+from . import ACTION_TTL_S, BRIDGE_PROTOCOL, BRIDGE_VERSION, store
 from . import registry as reg
-from . import store
 from .strategy import route
-from .trust import (
-    classify_utterance,
-    confirmation_ttl_s,
-    freeze_hash,
-    is_negated,
-    mutate_duration_seconds,
-    pending_query_spoken,
-    wants_draft,
-)
 
 _DURATION_WORDS = {
     "a": 1,
@@ -1071,9 +1060,7 @@ def complete_action(
         state = "executed"
         executed = True
         if not result:
-            if str(row.get("operation")) in {"call_contact", "facetime_contact", "start_directions", "open_maps"}:
-                result = "SYSTEM_UI_OPENED"
-            elif str(row.get("operation")) == "message_contact":
+            if str(row.get("operation")) in {"call_contact", "facetime_contact", "start_directions", "open_maps"} or str(row.get("operation")) == "message_contact":
                 result = "SYSTEM_UI_OPENED"
             elif str(row.get("operation")) in {"create_timer", "create_reminder", "create_alarm", "create_calendar_event"}:
                 result = "CREATED"

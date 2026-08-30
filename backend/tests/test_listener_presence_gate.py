@@ -48,7 +48,7 @@ def test_legacy_tick_backchannel_is_never_scheduled_as_speech() -> None:
     session = _session()
     # A tick carrying a legacy backchannel payload must be ignored: no
     # speech task may exist afterwards.
-    from app.voice.live.engine import EngineTick, TURN_KEEP_LISTENING, TurnDecision
+    from app.voice.live.engine import TURN_KEEP_LISTENING, EngineTick, TurnDecision
 
     decision = TurnDecision(action=TURN_KEEP_LISTENING)
     tick = EngineTick(

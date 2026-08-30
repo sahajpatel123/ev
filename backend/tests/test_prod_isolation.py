@@ -1,6 +1,8 @@
 """Production isolation regression: destructive DDL must not touch live DB."""
 import os
+
 import pytest
+
 
 def test_production_drop_all_refused():
     """Direct drop_all against production URL must hard-fail."""
@@ -8,6 +10,7 @@ def test_production_drop_all_refused():
     os.environ["EV_DATABASE_URL"] = "postgresql+psycopg://ev:ev@localhost:5432/ev"
     # Need to reload settings to pick up new URL
     import importlib
+
     import app.config
     importlib.reload(app.config)
     from app.config import settings
@@ -19,7 +22,6 @@ def test_production_drop_all_refused():
     # Also via Base.metadata guard
     from app.db import Base
     try:
-        Base.metadata.drop_all  # this is the guarded wrapper
         # The wrapper itself will raise when called with a bind, but just checking the function exists
         assert callable(Base.metadata.drop_all)
     finally:
@@ -31,6 +33,7 @@ def test_isolated_drop_all_allowed(tmp_path):
     isolated = f"sqlite+aiosqlite:///{tmp_path}/isolated_test.db"
     os.environ["EV_DATABASE_URL"] = isolated
     import importlib
+
     import app.config
     importlib.reload(app.config)
     from app.config import settings
@@ -40,9 +43,11 @@ def test_isolated_drop_all_allowed(tmp_path):
     # Should not raise
     assert_not_production_for_destructive("test isolated")
     # create_all/drop_all on sqlite should succeed
-    from app.db import Base
     import asyncio
+
     from sqlalchemy.ext.asyncio import create_async_engine
+
+    from app.db import Base
     async def _run():
         engine = create_async_engine(isolated)
         async with engine.begin() as conn:
