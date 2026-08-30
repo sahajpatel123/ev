@@ -224,6 +224,14 @@ class LiveSession:
         self._durable_jobs_cancelled = False
         self._asr_partial_interval_ms = asr_partial_interval_ms
         self.asr_feed: LiveAsrFeed | None = None
+        self.transport_ws: Any | None = None
+        self.memory_scope: str | None = None
+        self.auth_revision: int | None = None
+        self.device_role: str | None = None
+        self.device_label: str | None = None
+        self.instance_id: str | None = None
+        self.gateway_origin: str | None = None
+        self.client_instance_id: str | None = None
         if transcriber is not None:
             self.asr_feed = LiveAsrFeed(
                 transcriber,
@@ -369,14 +377,14 @@ class LiveSession:
             and self.grok_voice is not None
             and event.model
         )
-        if persist_user:
+        if isinstance(event, FinalTranscriptEvent):
             from_s2s = event.provider in {"openai-realtime", "grok-voice"}
             await self._maybe_local_intent(event.text, from_grok=from_s2s)
             if self.grok_voice is not None or from_s2s:
                 self._schedule_relationship_turn(
                     "user",
                     event.text,
-                    transcript_source=getattr(event, "transcript_source", None),
+                    transcript_source=event.transcript_source,
                 )
             # G1.6 TurnGate: authoritative control plane (shadow until cutover, then direct)
             from app.config import settings as _gate_settings
@@ -418,7 +426,7 @@ class LiveSession:
                 ):
                     self._discard_outbound(lambda queued: queued is event, first_only=True)
                     return
-        if persist_assistant:
+        if isinstance(event, ReplyEvent) and persist_assistant:
             extra = None
             if getattr(event, "interrupted", False):
                 from app.voice.live.barge_in import interrupt_metadata
@@ -506,7 +514,9 @@ class LiveSession:
     def _discard_outbound(self, predicate, *, first_only: bool = False) -> bool:
         """Remove queued disposable events while preserving FIFO order."""
 
-        queue = self.outbound._queue
+        queue = getattr(self.outbound, "_queue", None)
+        if queue is None:
+            return False
         kept = []
         removed = 0
         for queued in queue:
@@ -518,9 +528,12 @@ class LiveSession:
             return False
         queue.clear()
         queue.extend(kept)
+        wakeup_next = getattr(self.outbound, "_wakeup_next", None)
+        putters = getattr(self.outbound, "_putters", None)
         for _ in range(removed):
             self.outbound.task_done()
-            self.outbound._wakeup_next(self.outbound._putters)
+            if callable(wakeup_next) and putters is not None:
+                wakeup_next(putters)
         return True
 
     async def emit_all(self, events: list[LiveEvent]) -> None:
