@@ -16,10 +16,10 @@ Method = Literal["native_broker", "web_handoff", "shortcuts_bridge", "app_url", 
 Verification = Literal["strong", "medium", "weak"]
 Confirm = Literal["none", "voice_ok", "required", "system_ui", "block"]
 
-CLASS_NAVIGATE = 0
-CLASS_REVERSIBLE = 1
-CLASS_COMMUNICATION = 2
-CLASS_BLOCKED = 3
+CLASS_NAVIGATE: ClassLevel = 0
+CLASS_REVERSIBLE: ClassLevel = 1
+CLASS_COMMUNICATION: ClassLevel = 2
+CLASS_BLOCKED: ClassLevel = 3
 
 
 @dataclass(frozen=True)
