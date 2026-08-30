@@ -105,10 +105,23 @@ seed:
 	$(call backend-run, EV_DATABASE_URL="$${EV_DATABASE_URL:-postgresql+psycopg://ev:ev@localhost:5432/ev}" uv run python -m app.scripts.seed)
 
 postgres-e2e:
-	docker compose up -d --build
+	# Infra first — never start api/worker before migrate. API lifespan
+	# create_all races DROP SCHEMA + alembic and yields DuplicateTable.
+	docker compose up -d --build db redis minio
+	@echo "Waiting for Postgres to accept connections..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 30; do \
+		docker compose exec -T db pg_isready -U ev >/dev/null 2>&1 && break; \
+		sleep 1; \
+	done
 	@if [ "$${E2E_RESET_DB:-0}" = "1" ]; then echo "Resetting local dev Postgres schema (E2E_RESET_DB=1)"; docker compose exec -T db psql -U ev -d ev -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null; fi
 	$(call backend-run, EV_DATABASE_URL="$${EV_DATABASE_URL:-postgresql+psycopg://ev:ev@localhost:5432/ev}" uv run alembic upgrade head)
 	$(call backend-run, EV_DATABASE_URL="$${EV_DATABASE_URL:-postgresql+psycopg://ev:ev@localhost:5432/ev}" uv run python -m app.scripts.seed)
+	docker compose up -d --build api worker scheduler runtime
+	@echo "Waiting for API health..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 30 35 40 45 60; do \
+		curl -sf "$${EV_E2E_BASE_URL:-http://127.0.0.1:8000}/v1/health" >/dev/null 2>&1 && break; \
+		sleep 1; \
+	done
 	export EV_E2E_BASE_URL=http://127.0.0.1:8000; export EV_E2E_MASTER_KEY="$${EV_MASTER_KEY:-e2e-key}"; $(call backend-run, uv run python -m app.scripts.e2e_cli)
 
 compliance-sweep:

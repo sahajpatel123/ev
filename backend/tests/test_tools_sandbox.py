@@ -249,12 +249,15 @@ def test_escape_13_fork_bomb_blocked_by_process_limit() -> None:
 
 def test_escape_14_memory_bomb_blocked_by_watchdog() -> None:
     # macOS refuses to lower RLIMIT_AS, so the sandbox enforces memory with a
-    # live RSS watchdog that SIGKILLs the process group over budget.
+    # live RSS watchdog that SIGKILLs the process group over budget. Linux can
+    # enforce via RLIMIT_AS and/or the same watchdog (/proc RSS). Either path
+    # must raise SandboxError(memory limit) — never assume Darwin-only.
     with pytest.raises(SandboxError, match="memory limit"):
         run_command(
             "python3 -c \"import time; x = bytearray(512 * 1024 * 1024); time.sleep(10)\"",
             timeout_seconds=15,
             memory_limit_mb=256,
+            isolation="process",
         )
 
 
