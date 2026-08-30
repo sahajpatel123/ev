@@ -272,11 +272,20 @@ def _temporal_window(query: str) -> tuple[datetime | None, datetime | None]:
         for item in resolved
         if conversation_time_requested(item.expression)
     ]
-    starts = [_as_utc(item.start) for item in kept if item.start is not None]
-    ends = [_as_utc(item.end) for item in kept if item.end is not None]
-    starts = [item for item in starts if item is not None]
-    ends = [item for item in ends if item is not None]
-    return (min(starts) if starts else None, max(ends) if ends else None)
+    starts_clean: list[datetime] = []
+    ends_clean: list[datetime] = []
+    for item in kept:
+        if item.start is not None:
+            start = _as_utc(item.start)
+            if start is not None:
+                starts_clean.append(start)
+        if item.end is not None:
+            end = _as_utc(item.end)
+            if end is not None:
+                ends_clean.append(end)
+    if not starts_clean or not ends_clean:
+        return None, None
+    return min(starts_clean), max(ends_clean)
 
 
 def _dedupe(rows: list[RetrievedMemory]) -> list[RetrievedMemory]:

@@ -59,12 +59,18 @@ def mac_voice_golden_fingerprint() -> dict[str, Any]:
     """Normalized Mac OpenAI Realtime contract. Transport stays frozen PCM/WS."""
 
     payload = grok_session_update(provider="openai", function_tools=[])
-    session = payload.get("session") if isinstance(payload, dict) else {}
-    audio = session.get("audio") if isinstance(session, dict) else {}
-    inp = audio.get("input") if isinstance(audio, dict) else {}
-    out = audio.get("output") if isinstance(audio, dict) else {}
-    vad = inp.get("turn_detection") if isinstance(inp, dict) else {}
-    tx = inp.get("transcription") if isinstance(inp, dict) else {}
+    session_raw = payload.get("session") if isinstance(payload, dict) else None
+    session: dict[str, Any] = session_raw if isinstance(session_raw, dict) else {}
+    audio_raw = session.get("audio")
+    audio: dict[str, Any] = audio_raw if isinstance(audio_raw, dict) else {}
+    inp_raw = audio.get("input")
+    inp: dict[str, Any] = inp_raw if isinstance(inp_raw, dict) else {}
+    out_raw = audio.get("output")
+    out: dict[str, Any] = out_raw if isinstance(out_raw, dict) else {}
+    vad_raw = inp.get("turn_detection")
+    vad: dict[str, Any] = vad_raw if isinstance(vad_raw, dict) else {}
+    tx_raw = inp.get("transcription")
+    tx: dict[str, Any] = tx_raw if isinstance(tx_raw, dict) else {}
     instructions = str(session.get("instructions") or "")
     return {
         "endpoint": "mac",
@@ -94,20 +100,27 @@ def iphone_voice_fingerprint(session: dict[str, Any] | None = None) -> dict[str,
     from app.device_gateway.webrtc_live import phone_webrtc_session
 
     sess = session or phone_webrtc_session()
-    audio = sess.get("audio") if isinstance(sess, dict) else {}
-    inp = audio.get("input") if isinstance(audio, dict) else {}
-    out = audio.get("output") if isinstance(audio, dict) else {}
-    vad = inp.get("turn_detection") if isinstance(inp, dict) else {}
-    tx = inp.get("transcription") if isinstance(inp, dict) else {}
-    nr = inp.get("noise_reduction") if isinstance(inp, dict) else None
-    instructions = str(sess.get("instructions") or "")
+    sess_dict: dict[str, Any] = sess if isinstance(sess, dict) else {}
+    audio_raw = sess_dict.get("audio")
+    audio: dict[str, Any] = audio_raw if isinstance(audio_raw, dict) else {}
+    inp_raw = audio.get("input")
+    inp: dict[str, Any] = inp_raw if isinstance(inp_raw, dict) else {}
+    out_raw = audio.get("output")
+    out: dict[str, Any] = out_raw if isinstance(out_raw, dict) else {}
+    vad_raw = inp.get("turn_detection")
+    vad: dict[str, Any] = vad_raw if isinstance(vad_raw, dict) else {}
+    tx_raw = inp.get("transcription")
+    tx: dict[str, Any] = tx_raw if isinstance(tx_raw, dict) else {}
+    nr_raw = inp.get("noise_reduction")
+    nr: Any = nr_raw if isinstance(nr_raw, dict) else None
+    instructions = str(sess_dict.get("instructions") or "")
     return {
         "endpoint": "iphone",
         "transport": "openai_realtime_webrtc",
-        "model": sess.get("model"),
+        "model": sess_dict.get("model"),
         "voice": out.get("voice"),
         "instructions_hash": _hash_text(instructions),
-        "output_modalities": sess.get("output_modalities"),
+        "output_modalities": sess_dict.get("output_modalities"),
         "input_format": inp.get("format"),
         "output_format": out.get("format"),
         "noise_reduction": nr,
@@ -120,7 +133,7 @@ def iphone_voice_fingerprint(session: dict[str, Any] | None = None) -> dict[str,
         "vad_threshold": vad.get("threshold") if isinstance(vad, dict) else None,
         "silence_duration_ms": vad.get("silence_duration_ms") if isinstance(vad, dict) else None,
         "prefix_padding_ms": vad.get("prefix_padding_ms") if isinstance(vad, dict) else None,
-        "tool_choice": sess.get("tool_choice"),
+        "tool_choice": sess_dict.get("tool_choice"),
         "audio_backend": getattr(settings, "phone_audio_backend", "webrtc_strict"),
         "mobile_contract": MOBILE_CONVERSATION_CONTRACT in instructions,
     }

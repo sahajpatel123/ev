@@ -126,8 +126,8 @@ async def handle_user_text(
         )
 
     if wants_code_recall(raw):
-        value = await recall_fact(session, "satellite_code")
-        reply = value if value else "No sandbox satellite code is stored yet."
+        recalled = await recall_fact(session, "satellite_code")
+        reply = recalled if recalled else "No sandbox satellite code is stored yet."
         return await _finish(
             session,
             device=device,

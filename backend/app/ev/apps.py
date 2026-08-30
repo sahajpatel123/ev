@@ -187,7 +187,7 @@ def macos_life_from_rows(provider_rows: dict[str, Integration]) -> Integration |
     rows = []
     for slug in MACOS_LIFE_ADAPTERS:
         row = provider_rows.get(slug)
-        if is_macos_life_row(row):
+        if row is not None and is_macos_life_row(row):
             rows.append(row)
     return _prefer_helper_row(rows)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -92,7 +93,8 @@ async def calibrate(
         audit_endpoint="POST /v1/diagnostics/calibrate",
     )
     payload = tool.result if isinstance(tool.result, dict) else {}
-    report_payload = payload.get("report") if isinstance(payload.get("report"), dict) else payload
+    report_raw = payload.get("report")
+    report_payload: dict[str, Any] = report_raw if isinstance(report_raw, dict) else payload
     if not tool.ok or not report_payload.get("checks"):
         error = str(tool.error or payload.get("error") or "diagnostics unavailable")
         status = 503 if error in {"not_connected", "unavailable"} else 403

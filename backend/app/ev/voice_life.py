@@ -39,7 +39,8 @@ def requires_biometric(name: str, args: dict | None = None) -> bool:
         return "lock" in action
     if name == "actuate":
         verb = str(args.get("verb") or "").lower()
-        nested = args.get("args") if isinstance(args.get("args"), dict) else {}
+        raw_nested = args.get("args")
+        nested = raw_nested if isinstance(raw_nested, dict) else {}
         if verb == "home_act" and "lock" in str(nested.get("action") or "").lower():
             return True
         if verb == "drone.cmd":
@@ -342,10 +343,14 @@ async def place_call(
     if isinstance(outcome, dict) and outcome.get("error") in {"timeout", "cancelled"}:
         return outcome
 
-    payload = getattr(outcome, "result", None) or {}
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
-    delivery = payload.get("delivery") if isinstance(payload.get("delivery"), dict) else {}
-    helper_evidence = delivery.get("evidence") if isinstance(delivery.get("evidence"), dict) else {}
+    raw_payload = getattr(outcome, "result", None)
+    payload = raw_payload if isinstance(raw_payload, dict) else {}
+    raw_data = payload.get("data")
+    data = raw_data if isinstance(raw_data, dict) else payload
+    raw_delivery = payload.get("delivery")
+    delivery = raw_delivery if isinstance(raw_delivery, dict) else {}
+    raw_helper_evidence = delivery.get("evidence")
+    helper_evidence = raw_helper_evidence if isinstance(raw_helper_evidence, dict) else {}
     opened = (
         data.get("opened") is True
         or payload.get("opened") is True

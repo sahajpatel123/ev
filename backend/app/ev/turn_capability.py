@@ -12,7 +12,7 @@ STATE_TOOLS = frozenset({
     "life_commitment_create", "life_commitment_update", "life_commitment_query",
     "life_relationship_set", "mission_control",
 })
-MANAGER_TOOLS = frozenset()  # No direct tools yet; scaffolded
+MANAGER_TOOLS: frozenset[str] = frozenset()  # No direct tools yet; scaffolded
 
 def _overlay_turn(entry: dict, readiness: dict) -> dict:
     entry.setdefault("fallback_reason", None)

@@ -568,14 +568,15 @@ async def restore_backup(
         gid = str(data["id"])
         if gid in existing_goal_ids:
             continue
-        pid = data.get("project_id")
-        if pid and str(pid) not in existing_project_ids:
-            pid = None
+        raw_project_id = data.get("project_id")
+        goal_project_id: str | None = str(raw_project_id) if raw_project_id else None
+        if goal_project_id and goal_project_id not in existing_project_ids:
+            goal_project_id = None
         session.add(
             Goal(
                 id=UUID(gid),
                 actor=str(data.get("actor") or "master"),
-                project_id=UUID(str(pid)) if pid else None,
+                project_id=UUID(goal_project_id) if goal_project_id else None,
                 parent_goal_id=UUID(str(data["parent_goal_id"])) if data.get("parent_goal_id") else None,
                 title=str(data.get("title") or "restored"),
                 description=str(data.get("description") or ""),

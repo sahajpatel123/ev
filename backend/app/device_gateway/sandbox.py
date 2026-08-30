@@ -138,6 +138,6 @@ async def clear_cross_platform_sandbox(
 
     ns = namespace or settings.sandbox_namespace or SANDBOX_NAMESPACE
     result = await session.execute(delete(SandboxFact).where(SandboxFact.namespace == ns))
-    count = int(result.rowcount or 0)
+    count = int(getattr(result, "rowcount", 0) or 0)
     emit("sandbox.cleared", namespace=ns, count=count)
     return count

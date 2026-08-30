@@ -135,7 +135,7 @@ async def set_context(
         )
         session.add(row)
         await session.flush()
-        return {"ok": True, **public_context(row)}
+        return {"ok": True, **(public_context(row) or {})}
 
     # Update with version bump (server ordering)
     row.focused_type = (focused_type or row.focused_type or "project")[:32] if (focused_type or row.focused_type) else row.focused_type
@@ -166,7 +166,7 @@ async def set_context(
     row.updated_at = now
     row.expires_at = now + ttl
     await session.flush()
-    return {"ok": True, **public_context(row)}
+    return {"ok": True, **(public_context(row) or {})}
 
 
 async def clear_context(session: AsyncSession) -> None:
