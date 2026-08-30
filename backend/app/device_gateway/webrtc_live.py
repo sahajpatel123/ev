@@ -719,10 +719,10 @@ async def run_phone_tool(
             device_label=str(getattr(live, "device_label", None) or "This iPhone"),
         )
         return json.dumps(payload)
-    result = await live.run_live_tool(name, args, call_id)
-    if not isinstance(result, str):
+    tool_result = await live.run_live_tool(name, args, call_id)
+    if not isinstance(tool_result, str):
         return json.dumps({"ok": False, "error": "tool_result_invalid"})
-    return result
+    return tool_result
 
 
 def public_audio_status() -> dict[str, Any]:

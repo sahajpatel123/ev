@@ -411,7 +411,10 @@ def native_execute_action(*, action_id: str, device_id: str) -> dict[str, Any]:
         return {"ok": False, "error": "INVALID_TOKEN", "run": {"kind": "noop"}}
     svc = _svc()
     origin = str(row.get("origin") or "").rstrip("/")
-    run = row.get("authorized_run") if isinstance(row.get("authorized_run"), dict) else svc._authorized_run(row, origin=origin)
+    authorized_raw = row.get("authorized_run")
+    run: dict[str, Any] = (
+        authorized_raw if isinstance(authorized_raw, dict) else svc._authorized_run(row, origin=origin)
+    )
     run = enrich_run(run, str(row.get("operation") or ""), dict(row.get("normalized") or {}))
     store.update_action(action_id, state="executing", resolved_at=time.time(), authorized_run=run, claimed=True)
     store.consume_action_token(str(row.get("action_token") or ""))

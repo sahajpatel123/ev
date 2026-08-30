@@ -210,6 +210,13 @@ class LiveSession:
             dict(capability_manifest) if isinstance(capability_manifest, dict) else None
         )
         self._camera_state = self._normalize_camera_state(camera_state)
+        self.memory_scope: str | None = None
+        self.auth_revision: int | None = None
+        self.device_role: str | None = None
+        self.device_label: str | None = None
+        self.instance_id: str | None = None
+        self.gateway_origin: str | None = None
+        self.client_instance_id: str | None = None
         self._look_frame_queues: dict[str, asyncio.Queue] = {}
         self._look_frame_order: list[str] = []
         self._last_capture_status: str | None = None
@@ -225,13 +232,6 @@ class LiveSession:
         self._asr_partial_interval_ms = asr_partial_interval_ms
         self.asr_feed: LiveAsrFeed | None = None
         self.transport_ws: Any | None = None
-        self.memory_scope: str | None = None
-        self.auth_revision: int | None = None
-        self.device_role: str | None = None
-        self.device_label: str | None = None
-        self.instance_id: str | None = None
-        self.gateway_origin: str | None = None
-        self.client_instance_id: str | None = None
         if transcriber is not None:
             self.asr_feed = LiveAsrFeed(
                 transcriber,

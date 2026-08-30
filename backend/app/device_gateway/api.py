@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -413,7 +414,7 @@ async def heartbeat(
     note_presence(device.id, instance_id=data.instance_id, state="ready")
     lease = await heartbeat_lease(session, device_id=device.id, instance_id=data.instance_id)
     await session.commit()
-    payload = {"ok": True, "lease": lease_public(lease)}
+    payload: dict[str, Any] = {"ok": True, "lease": lease_public(lease)}
     if lease is not None and not lease_belongs(lease, device_id=device.id, instance_id=data.instance_id):
         payload["conversation_moved"] = True
         payload["response_device_id"] = str(lease.device_id)
