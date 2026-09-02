@@ -1,24 +1,24 @@
 {
-  "web_build": "2026.08.22.23",
+  "web_build": "2026.09.02.03",
   "web_protocol": 1,
   "api_protocol": "1",
   "web_protocol_min": 1,
   "web_protocol_max": 1,
-  "generated_at": "2026-08-21T21:02:50.818108+00:00",
+  "generated_at": "2026-09-02T03:20:39.401158+00:00",
   "files": {
-    "index.html": "e35978bbf7e56ae189b7efd04397e946a1c68d876795716f4abd5b4155677843",
-    "app.js": "84b7ff14f66a9efdfeb199e91dbcdf2b372f4c05e6a6837937c8b2e9ef900167",
-    "sw.js": "793302288ba1e9a2074e5147dc78ba4221c120f124d4ea0de5170b1a8c043999",
+    "index.html": "fc2e01db4e2829663e262ef1e7dae44a895bf3bca6df65eb2960f1a3c37fff5e",
+    "app.js": "3af0767b50e40e772b05e7b179ecb93798283411d412e5a65416614753ae9601",
+    "sw.js": "a736df2e0349cb4a6e1e6a72427f5244289e8f220b8d7480b65e55e1039753ed",
     "audio.js": "b4ea7059ac3a7d0afb0e8cace26bbbc7fd93ddb5bd4993be46aa67c26ef757d1",
-    "webrtc.js": "c6ef6ace3cb97522e926d6a4769273b8f50030fc5a091d95815c2e418b1fb58a",
+    "webrtc.js": "d959073c07590a73922ee6f7b88a7859594623707c1338589d2416323f553048",
     "mobile-actions.js": "580d5f3febb87285b9c6eb1be42c0138d6cfb5004d9a93615ffd403a9070fa2a",
     "presence.js": "921ad81867d8f78b05a191b02eeb81bb437d93b6c39294085b7e04395b68bf1b",
     "orb.js": "971ed6b4fef6703f76430c8fa66dab6c35a80f2f726014e2695033345e565199",
     "pcm-worklet.js": "153f30b0616ef32a560af572642f7246b72b5d5593bef27ed8ec10690c24c6c5",
     "playback-worklet.js": "5d8b3f5de004e81b9cd2599aefb53574c09301690483ab756335fe16641b28f2",
     "feedback.js": "4275ff2d47aaa4e3baf0741951f8decfbb4abf393ea72b14c08c29f8914226e9",
-    "style.css": "84a3655cc2d0d172bebda1e19c6858cb917ba78df42c242d0bb3ed1341ea298e",
+    "style.css": "7a733452246087eccfa58b91548522d3e9bdb67da147e9caf266c1ef65b76bea",
     "manifest.webmanifest": "2adb4ce4ceda7ca22df030c7bca54a609e3d11b445709f981324907844ee4f47"
   },
-  "asset_manifest_hash": "35c79ab6d0ae7d0c78fa25a2458b53b1a84002c84311c76738bce17462732267"
+  "asset_manifest_hash": "fa9832bf20b14fdf233012bbda0b372ba809c2f8a15b5dea245e468bec07da41"
 }

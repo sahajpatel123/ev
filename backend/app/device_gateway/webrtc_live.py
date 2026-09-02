@@ -101,12 +101,13 @@ def resolve_phone_audio_backend(requested: str | None = None) -> str:
 
 
 _OWNER_STATE_CHANNEL_CONTRACT = (
-    "OWNER STATE CHANNEL: Projects, goals, commitments, and mission-control "
-    "questions are answered by Evie Core. When the owner asks about their "
-    "projects, goals, commitments, status, or what changed, call "
+    "OWNER STATE CHANNEL: Projects, goals, commitments, mission-control, "
+    "weather, calendar, contacts, notifications/inbox, and visual memory "
+    "are answered by Evie Core. When the owner asks about those, call "
     "evie_state_query with their exact words, then speak ONLY the canonical "
-    "result it returns. Never claim you lack access to this data — the "
-    "canonical result is authoritative."
+    "result it returns. Never invent a forecast, calendar, contact list, or "
+    "Health numbers. HealthKit is never sent to a model. Never claim you "
+    "lack access to Core data — the canonical result is authoritative."
 )
 
 
@@ -115,8 +116,9 @@ def _evie_state_query_spec() -> dict[str, Any]:
         "name": "evie_state_query",
         "description": (
             "Authoritative Evie Core lookup for the owner's projects, goals, "
-            "commitments, status, or recent changes. Pass the owner's exact "
-            "words. Returns the canonical answer to speak."
+            "commitments, status, recent changes, weather, calendar, contacts, "
+            "notifications, or visual memory. Pass the owner's exact words. "
+            "Returns the canonical answer to speak. Do not invent those facts."
         ),
         "parameters": {
             "type": "object",
@@ -134,6 +136,57 @@ def _evie_state_query_spec() -> dict[str, Any]:
                 },
             },
             "required": ["query_text"],
+        },
+    }
+
+
+def _evie_look_spec() -> dict[str, Any]:
+    return {
+        "name": "evie_look",
+        "description": (
+            "Use a trusted iPhone camera. Prefer the owner's best camera. "
+            "Actions: look_once, observe, capture_photo, record_clip, ocr. "
+            "Never claim success without a server receipt."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["look_once", "observe", "capture_photo", "record_clip", "ocr"],
+                },
+                "query_text": {"type": "string"},
+            },
+            "required": ["action"],
+        },
+    }
+
+
+def _evie_home_action_spec() -> dict[str, Any]:
+    return {
+        "name": "evie_home_action",
+        "description": (
+            "Route a safe Home Station action: device.echo, mac.notify, "
+            "mac.echo, computer.open_calculator, computer.close_calculator. "
+            "Never expose shell, credentials, payments, or arbitrary URLs."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "capability": {
+                    "type": "string",
+                    "enum": [
+                        "device.echo",
+                        "device.ping",
+                        "mac.notify",
+                        "mac.echo",
+                        "computer.open_calculator",
+                        "computer.close_calculator",
+                    ],
+                },
+                "arguments": {"type": "object"},
+            },
+            "required": ["capability"],
         },
     }
 
@@ -157,15 +210,23 @@ def phone_webrtc_session(*, device: Device | None = None) -> dict[str, Any]:
             manifest["origin_device_id"] = str(device.id)
             manifest["response_device_id"] = str(device.id)
             manifest["device_role"] = device.role
-        # Scoped broker tool (trusted phone sessions only): deliberately NOT
-        # routed through the global allowlist so the G1 realtime surface
-        # stays frozen; this is a single canonical TurnGate entry point.
-        tools = [_evie_state_query_spec() | {"type": "function"}]
+        # Trusted phones keep evie_state_query as the Core broker and add
+        # server-validated phone, perception, and Home Station tools.
+        from app.device_gateway.mobile_actions.tool import phone_action_function_spec
+
+        tools = [
+            _evie_state_query_spec() | {"type": "function"},
+            phone_action_function_spec(device),
+            _evie_look_spec() | {"type": "function"},
+            _evie_home_action_spec() | {"type": "function"},
+        ]
         instructions = (
             openai_realtime_instructions(capability_manifest=manifest)
             + capability_instructions(manifest)
             + "\n"
             + MOBILE_CONVERSATION_CONTRACT
+            + "\n"
+            + MOBILE_ACTION_CONTRACT
             + "\n"
             + _OWNER_STATE_CHANNEL_CONTRACT
         )
@@ -573,6 +634,9 @@ def attach_phone_control_live(
     )
     live.instance_id = instance_id
     live.gateway_origin = gateway_origin
+    live.surface = "phone"
+    live.client_generation = 0
+    live.lease_id = ""
     live.run_live_tool = _grok_tool_runner(
         actor=actor,
         device_id=device.id,
@@ -701,6 +765,103 @@ async def run_phone_tool(
                 "spoken": spoken,
                 "executed": bool(result.get("ok")),
                 "verified": bool(result.get("ok")),
+            }
+        )
+    if name == "evie_look":
+        from app.db import SessionLocal
+        from app.everywhere.endpoint_profile import resolve_camera_target
+        from app.models import Device as DeviceRow
+
+        action = str((args or {}).get("action") or "look_once")
+        query_text = str((args or {}).get("query_text") or action)
+        async with SessionLocal() as db:
+            drow = (
+                await db.execute(select(DeviceRow).where(DeviceRow.id == UUID(str(live.device_id))))
+            ).scalars().first()
+            if drow is None or drow.revoked_at is not None:
+                return compact_live_tool_json(
+                    {"ok": False, "error_code": "DEVICE_REVOKED", "spoken": "This device is no longer trusted."}
+                )
+            routed = await resolve_camera_target(db, origin=drow, text=query_text)
+            target = routed["device"]
+            from . import camera as cam
+
+            request_id = cam.new_request(
+                origin_device_id=str(drow.id),
+                target_device_id=str(target.id),
+            )
+            same = str(target.id) == str(drow.id)
+            if not same:
+                from app.everywhere.inbox import push_inbox
+
+                await push_inbox(
+                    db,
+                    device_id=target.id,
+                    kind="camera_request",
+                    title="Evie needs this camera",
+                    body="Look was routed to this iPhone.",
+                    payload={"request_id": request_id, "action": action},
+                )
+            await db.commit()
+        spoken = (
+            "Looking with this iPhone now."
+            if same
+            else f"I routed look to {routed.get('display_name') or 'the preferred camera'}."
+        )
+        return compact_live_tool_json(
+            {
+                "ok": True,
+                "needs_camera": same,
+                "camera_request_id": request_id,
+                "camera_action": action,
+                "action": action,
+                "camera_target_device_id": str(target.id),
+                "reason": routed.get("reason"),
+                "permission": routed.get("permission"),
+                "freshness": routed.get("freshness"),
+                "provenance": routed.get("provenance"),
+                "spoken": spoken,
+                "executed": False,
+                "verified": False,
+            }
+        )
+    if name == "evie_home_action":
+        from app.db import SessionLocal
+        from app.everywhere.device_actions import create_routed_action
+        from app.models import Device as DeviceRow
+
+        cap = str((args or {}).get("capability") or "")
+        extra = (args or {}).get("arguments") if isinstance((args or {}).get("arguments"), dict) else {}
+        async with SessionLocal() as db:
+            drow = (
+                await db.execute(select(DeviceRow).where(DeviceRow.id == UUID(str(live.device_id))))
+            ).scalars().first()
+            if drow is None or drow.revoked_at is not None:
+                return compact_live_tool_json(
+                    {"ok": False, "error_code": "DEVICE_REVOKED", "spoken": "This device is no longer trusted."}
+                )
+            broker = await create_routed_action(
+                db,
+                requesting_device=drow,
+                capability=cap,
+                arguments=extra or {"text": cap},
+                action_id=f"home-{drow.id}-{call_id}"[:80],
+                owner_scope="master",
+            )
+            await db.commit()
+        status = broker.get("status") or ""
+        executed = status == "SUCCEEDED"
+        queued = bool(broker.get("queued") or status in {"QUEUED", "ROUTED"})
+        spoken = broker.get("message") or (
+            "Queued for Home Station." if queued else ("Done." if executed else "I could not complete that on the Mac.")
+        )
+        return compact_live_tool_json(
+            {
+                **broker,
+                "spoken": spoken,
+                "executed": executed,
+                "verified": executed,
+                "queued": queued,
             }
         )
     if name == "phone_action":

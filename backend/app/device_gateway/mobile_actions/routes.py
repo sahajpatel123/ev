@@ -224,6 +224,13 @@ async def mobile_actions_complete(action_id: str, data: CompleteBody, request: R
 
         row = get_action(action_id)
         await _push_live((row or {}).get("session_id"), card)
+        if row:
+            from app.db import SessionLocal
+            from app.device_gateway.durable_actions import upsert_action
+
+            async with SessionLocal() as db:
+                await upsert_action(db, row)
+                await db.commit()
     return result
 
 
@@ -234,6 +241,19 @@ async def mobile_actions_native_execute(
     device: Device = Depends(require_gateway_device),
 ) -> dict:
     _require_origin(request)
+    from .store import get_action
+
+    row = get_action(action_id)
+    if row is None:
+        from app.db import SessionLocal
+        from app.device_gateway.durable_actions import load_action
+
+        async with SessionLocal() as db:
+            loaded = await load_action(db, action_id)
+        if loaded is not None:
+            from .store import restore_action
+
+            restore_action(loaded)
     return native_execute_action(action_id=action_id, device_id=str(device.id))
 
 
@@ -263,7 +283,19 @@ async def mobile_actions_confirm(
     device: Device = Depends(require_gateway_device),
 ) -> dict:
     _require_origin(request)
-    return confirm_action(action_id=action_id, device_id=str(device.id), origin=gateway_origin(request))
+    result = confirm_action(action_id=action_id, device_id=str(device.id), origin=gateway_origin(request))
+    if result.get("ok") and result.get("action_id"):
+        from app.db import SessionLocal
+        from app.device_gateway.durable_actions import upsert_action
+
+        from .store import get_action
+
+        row = get_action(action_id)
+        if row:
+            async with SessionLocal() as db:
+                await upsert_action(db, row)
+                await db.commit()
+    return result
 
 
 @router.post("/mobile-actions/{action_id}/cancel")

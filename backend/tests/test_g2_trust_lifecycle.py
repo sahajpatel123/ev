@@ -266,7 +266,7 @@ async def test_stale_sandbox_session_is_rebuilt_on_promotion(db_session):
 
 # ---------------------------------------------------------------------------
 # SANDBOX-ESCAPE ELIMINATION (WebRTC path): trusted owner phones get OWNER
-# instructions + the single canonical broker tool; sandbox stays sandbox.
+# instructions plus the server-validated phone capability tools; sandbox stays sandbox.
 # ---------------------------------------------------------------------------
 
 
@@ -288,7 +288,9 @@ def test_owner_phone_webrtc_session_has_no_sandbox_instructions():
     assert SANDBOX_LIVE_INSTRUCTIONS[:40] not in cfg["instructions"]
     tool_names = [t.get("name") for t in cfg.get("tools", [])]
     assert "evie_state_query" in tool_names
-    assert "phone_action" not in tool_names
+    assert "phone_action" in tool_names
+    assert "evie_look" in tool_names
+    assert "evie_home_action" in tool_names
 
 
 def test_sandbox_phone_webrtc_session_unchanged():

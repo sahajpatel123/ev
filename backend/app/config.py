@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     # shadow = plan/validate/risk only (mutations never double-execute).
     # on = existing tool names route through the internal executor.
     computer_executor_v2: str = "off"
+    # Owner laptop files via Talk (Desktop/Documents/Downloads, …). Off on
+    # production :8000. The Talk sidecar sets EV_LAPTOP_FILES=true.
+    laptop_files: bool = False
+    laptop_files_root: str | None = None
     # F3 capability router: off | shadow | on. off = direct legacy routing.
     capability_router_v2: str = "off"
     # F4 model-surface reduction: legacy | shadow | on.
@@ -82,6 +86,16 @@ class Settings(BaseSettings):
     memory_scoring_v2: str = "off"
     # F5 prospective context: off | shadow | on.
     prospective_context_v1: str = "off"
+    # Luna coding broker: Realtime stays the mouth; GPT-5.6 Luna writes/runs
+    # inside EV_CODE_WORKSPACE. Default on so "Evie, write a script" is real.
+    code_enabled: bool = True
+    code_workspace: str | None = None
+    code_projects: str = ""
+    code_projects_root: str | None = None
+    code_model: str = "gpt-5.6-luna"
+    code_max_steps: int = 12
+    code_command_timeout_seconds: int = 20
+    code_max_file_bytes: int = 256_000
     memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
     memory_curator_enabled: bool = True
     memory_curator_version: str = "1.1"
@@ -95,7 +109,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.08.22.23"
+    pwa_build: str = "2026.09.02.03"
     phone_audio_backend: str = "webrtc_strict"  # webrtc_strict | webrtc | pcm_ws | encoded | auto
     phone_asr_model: str = "gpt-4o-transcribe"
     phone_asr_language: str = "en"
@@ -238,7 +252,7 @@ class Settings(BaseSettings):
     # WAKE W1: wake_chunk 1.5s + pre-roll 1.0s gives ~1-2s useful pre-roll on
     # accepted wake (ring 10s provides the history; stable mic never restarted per wake).
     ears_wake_chunk_s: float = 1.5
-    ears_idle_min_rms: float = 140.0
+    ears_idle_min_rms: float = 800.0
     ears_idle_min_peak: int = 600
 
     # Wake threshold used by the ears process (tuned against ambient audio).

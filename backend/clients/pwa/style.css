@@ -105,6 +105,13 @@ html, body {
   letter-spacing: -0.03em;
   font-weight: 520;
 }
+.trust-line {
+  margin: 4px 0 0;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .user-line, .reply {
   min-height: 1.3em;
   margin: 8px 0 0;

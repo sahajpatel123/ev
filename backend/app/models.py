@@ -362,6 +362,8 @@ class Device(Base):
     auth_revision: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
+    # --- iPhone parity (additive): server-owned hardware/permission evidence.
+    endpoint_profile: Mapped[dict | None] = mapped_column(JSONType, default=None)
 
     @property
     def push_platform(self) -> str | None:
@@ -401,6 +403,8 @@ class ConversationLease(Base):
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_activity: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(64))
+    client_generation: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class ActiveConversationState(Base):
@@ -2476,6 +2480,83 @@ class Commitment(Base):
         DateTime(timezone=True), default=utcnow, onupdate=utcnow
     )
     fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PhoneTurnReceipt(Base):
+    """Durable phone conversation receipts. Clients cannot self-grant authority."""
+
+    __tablename__ = "phone_turn_receipts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    device_id: Mapped[UUID] = mapped_column(ForeignKey("devices.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(32), default="final_transcript")
+    transcript: Mapped[str] = mapped_column(Text, default="")
+    session_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    lease_id: Mapped[str | None] = mapped_column(String(64))
+    provider_item_id: Mapped[str | None] = mapped_column(String(128))
+    provider_response_id: Mapped[str | None] = mapped_column(String(128))
+    action_calls: Mapped[list] = mapped_column(JSONType, default=list)
+    evidence: Mapped[dict] = mapped_column(JSONType, default=dict)
+    durable: Mapped[bool] = mapped_column(Boolean, default=True)
+    life_mutation: Mapped[bool] = mapped_column(Boolean, default=False)
+    trusted_owner: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class PhoneActionRecord(Base):
+    """Durable native phone actions. In-memory maps are not the authority."""
+
+    __tablename__ = "phone_action_records"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    action_id: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    device_id: Mapped[UUID] = mapped_column(ForeignKey("devices.id"), index=True)
+    operation: Mapped[str] = mapped_column(String(64), default="")
+    state: Mapped[str] = mapped_column(String(32), default="created", index=True)
+    result: Mapped[str | None] = mapped_column(String(64))
+    executed: Mapped[bool] = mapped_column(Boolean, default=False)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DeviceInboxItem(Base):
+    """Per-device inbox for routed results, transfers, and offline explanations."""
+
+    __tablename__ = "device_inbox_items"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    device_id: Mapped[UUID] = mapped_column(ForeignKey("devices.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(64), default="notice", index=True)
+    title: Mapped[str] = mapped_column(String(160), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class OfflineQueueItem(Base):
+    """Offline captures/requests. Queued is never executed."""
+
+    __tablename__ = "offline_queue_items"
+    __table_args__ = (
+        UniqueConstraint("device_id", "idempotency_key", name="uq_offline_queue_device_key"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    device_id: Mapped[UUID] = mapped_column(ForeignKey("devices.id"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), index=True)
+    kind: Mapped[str] = mapped_column(String(64), default="request")
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    state: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    replayed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class StateEpoch(Base):

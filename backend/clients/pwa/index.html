@@ -9,13 +9,13 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.08.22.23">
+  <meta name="evie-build" content="2026.09.02.03">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.08.22.23">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.09.02.03">
   <title>Evie</title>
 </head>
 <body>
@@ -23,15 +23,19 @@
   <main class="stage">
     <section id="welcome" class="sheet welcome" hidden>
       <p class="lead">Pair this phone with Home Station.</p>
+      <p class="quiet">This iPhone starts as PAIRED_SANDBOX. Owner trust is approved from the Mac.</p>
+      <p class="quiet" id="install-hint" hidden>On iPhone Safari: Share → Add to Home Screen, then open Evie from the home screen. Tailscale stays on.</p>
       <label class="field">One-time pairing code
         <input id="pair-token" autocomplete="off" autocapitalize="off" spellcheck="false">
       </label>
       <button type="button" id="pair-btn" class="dock-primary">Pair this device</button>
+      <dl class="meta" id="welcome-status"></dl>
     </section>
 
     <section id="ready-ui" class="presence-surface" hidden>
       <canvas id="orb" class="presence" width="360" height="360" aria-label="Evie"></canvas>
       <p class="mood" id="mood">Ready</p>
+      <p class="quiet" id="update-line" hidden></p>
       <p class="user-line" id="user-line"></p>
       <p class="reply" id="reply"></p>
       <article class="mobile-action-card" id="mobile-action-card" hidden>
@@ -62,6 +66,7 @@
     <nav id="more-rail" class="rail" hidden>
       <button type="button" data-surface="devices">Devices</button>
       <button type="button" data-surface="activity">Activity</button>
+      <button type="button" data-surface="inbox">Inbox</button>
     </nav>
 
     <section id="conversation-sheet" class="sheet" hidden>
@@ -81,6 +86,12 @@
       <ol id="activity" class="timeline"></ol>
     </section>
 
+    <section id="inbox-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="inbox-sheet" aria-label="Close">✕</button>
+      <h2>Inbox</h2>
+      <ol id="inbox-list" class="timeline"></ol>
+    </section>
+
     <section id="settings-sheet" class="sheet" hidden>
       <h2>Privacy</h2>
       <dl class="meta" id="privacy-meta"></dl>
@@ -98,6 +109,13 @@
         <button type="button" data-appearance="system" class="on">System</button>
         <button type="button" data-appearance="light">Light</button>
         <button type="button" data-appearance="dark">Dark</button>
+      </div>
+      <h3>This iPhone camera</h3>
+      <p class="quiet">Tell Evie which phone has the better camera. Never inferred from the device name.</p>
+      <div class="segment" id="camera-role">
+        <button type="button" data-camera-role="pro">16 Pro preferred</button>
+        <button type="button" data-camera-role="standard">SE fallback</button>
+        <button type="button" data-camera-role="unknown" class="on">Not set</button>
       </div>
       <h3>Settings</h3>
       <dl class="meta" id="settings-meta"></dl>
@@ -142,12 +160,12 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.08.22.23"></script>
-  <script src="/evie/presence.js?v=2026.08.22.23"></script>
-  <script src="/evie/orb.js?v=2026.08.22.23"></script>
-  <script src="/evie/feedback.js?v=2026.08.22.23"></script>
-  <script src="/evie/webrtc.js?v=2026.08.22.23"></script>
-  <script src="/evie/mobile-actions.js?v=2026.08.22.23"></script>
-  <script src="/evie/app.js?v=2026.08.22.23"></script>
+  <script src="/evie/audio.js?v=2026.09.02.03"></script>
+  <script src="/evie/presence.js?v=2026.09.02.03"></script>
+  <script src="/evie/orb.js?v=2026.09.02.03"></script>
+  <script src="/evie/feedback.js?v=2026.09.02.03"></script>
+  <script src="/evie/webrtc.js?v=2026.09.02.03"></script>
+  <script src="/evie/mobile-actions.js?v=2026.09.02.03"></script>
+  <script src="/evie/app.js?v=2026.09.02.03"></script>
 </body>
 </html>

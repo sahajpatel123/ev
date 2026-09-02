@@ -18,6 +18,7 @@ struct WebCoreContainer: UIViewRepresentable {
         config.userContentController = user
         let view = WKWebView(frame: .zero, configuration: config)
         view.navigationDelegate = context.coordinator
+        view.uiDelegate = context.coordinator
         context.coordinator.webView = view
         view.load(URLRequest(url: AppOrigin.homeURL))
         return view

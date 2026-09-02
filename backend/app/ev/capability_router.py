@@ -94,11 +94,12 @@ SEMANTIC_CANDIDATES: dict[str, list[str]] = {
     for capability in (
         "calendar_read", "calendar_add", "set_reminder", "start_timer",
         "send_message", "place_call", "list_messages", "list_mail", "resolve_contact",
-        "get_weather", "search_web", "calculate", "get_person", "get_health_trends",
+        "get_weather", "heading_out", "search_web", "calculate", "get_person", "get_health_trends",
         "get_gear_status", "brief_me", "home_status", "home_act", "calibrate",
         "list_protocols", "present", "app_action",
         "computer_status", "open_app", "activate_app", "close_app", "list_apps",
         "ui_action", "inspect_ui", "open_url", "screen_look",
+        "code",
     )
 }
 
@@ -107,6 +108,8 @@ ALWAYS_AVAILABLE_SEMANTIC = frozenset(
     {
         "calculate", "search_web", "get_person", "get_health_trends",
         "get_gear_status", "brief_me", "calibrate", "list_protocols", "present",
+        "heading_out",
+        "code",
     }
 )
 
@@ -120,6 +123,7 @@ SEMANTIC_MUTATING_TOOLS = frozenset(
         "calendar_add",
         "set_reminder",
         "home_act",
+        "code",
     }
 )
 
@@ -131,6 +135,9 @@ SEMANTIC_MUTATING_TOOLS = frozenset(
 GOAL_SEMANTIC_HINTS: tuple[tuple[str, str], ...] = (
     ("add a calendar", "calendar_add"),
     ("schedule ", "calendar_add"),
+    ("take a photo", "capture_photo"),
+    ("take a picture", "capture_photo"),
+    ("record a video", "record_video"),
     ("watch this", "observe_camera"),
     ("tell me when", "observe_camera"),
     ("am i ready", "get_health_trends"),
@@ -141,6 +148,22 @@ GOAL_SEMANTIC_HINTS: tuple[tuple[str, str], ...] = (
     ("type ", "ui_action"),
     ("press", "ui_action"),
     ("scroll", "ui_action"),
+    ("in chrome", "app_action"),
+    ("in google chrome", "app_action"),
+    ("google chrome", "app_action"),
+    ("in safari", "app_action"),
+    ("in notes", "app_action"),
+    ("create a note", "app_action"),
+    ("write a note", "app_action"),
+    ("in spotify", "app_action"),
+    ("heading out", "heading_out"),
+    ("headed out", "heading_out"),
+    ("gotta go", "heading_out"),
+    ("got to go", "heading_out"),
+    ("on my way out", "heading_out"),
+    ("time to go", "heading_out"),
+    ("time to leave", "heading_out"),
+    ("going out", "heading_out"),
     ("weather", "get_weather"),
     ("forecast", "get_weather"),
     ("timer", "start_timer"),
@@ -154,6 +177,10 @@ GOAL_SEMANTIC_HINTS: tuple[tuple[str, str], ...] = (
     ("capital of", "search_web"),
     ("stock market", "search_web"),
     ("search the web", "search_web"),
+    ("search it on the web", "search_web"),
+    ("on the web", "search_web"),
+    ("give me info", "search_web"),
+    ("what this is about", "search_web"),
     ("sleep", "get_health_trends"),
     ("hrv", "get_health_trends"),
     ("readiness", "get_health_trends"),
@@ -387,6 +414,8 @@ async def _semantic_available(capability: str, session: Any, device_scope: str) 
     if capability == "get_weather":
         # Provider-backed service; gateway availability governs.
         return True, "provider_service"
+    if capability == "heading_out":
+        return True, "core_service"
     if capability in ALWAYS_AVAILABLE_SEMANTIC:
         return True, "core_service"
     if capability == "start_timer":
@@ -537,9 +566,12 @@ async def route_action(goal: ActionGoal, *, session: Any = None) -> CapabilityRo
     from app.memory.intent import classify_retrieval
 
     classification = classify_retrieval(goal.goal)
+    from app.ev.computer_strategy import looks_like_computer_task
+
     if (
         goal.semantic_intent is None
         and goal.target is None
+        and not looks_like_computer_task(goal.goal)
         and classification.intent
         not in {
             RetrievalIntent.NONE,
@@ -650,6 +682,7 @@ def _verification_contract_for(capability: str) -> str:
         "list_messages": "semantic_api_rows",
         "list_mail": "semantic_api_rows",
         "get_weather": "provider_payload",
+        "heading_out": "provider_payload",
         "start_timer": "canonical_timer_row",
         "computer_status": "live_readiness_state",
         "open_app": "observe_after_expected_effect",

@@ -7,8 +7,8 @@ import base64
 import json
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,6 +88,9 @@ class PairRequest(BaseModel):
     instance_id: str = ""
     role: str | None = None
     memory_scope: str | None = None
+    hardware: dict = Field(default_factory=dict)
+    permissions: dict = Field(default_factory=dict)
+    native_shell: bool = False
 
 
 class HelloRequest(BaseModel):
@@ -97,6 +100,10 @@ class HelloRequest(BaseModel):
     capabilities: list[str] = Field(default_factory=list)
     network: str | None = None
     foreground: bool = True
+    platform: str | None = None
+    hardware: dict = Field(default_factory=dict)
+    permissions: dict = Field(default_factory=dict)
+    native_shell: bool = False
 
 
 class TextRequest(BaseModel):
@@ -112,6 +119,8 @@ class ClaimRequest(BaseModel):
     media_backend: str | None = None
     output_sample_rate: int | None = None
     session_id: str | None = None
+    lease_id: str | None = None
+    client_generation: int | None = None
 
 
 class SdpOffer(BaseModel):
@@ -119,12 +128,16 @@ class SdpOffer(BaseModel):
     session_id: str
     sdp: str
     attempt_id: str | None = None
+    lease_id: str | None = None
+    client_generation: int | None = None
 
 
 class LiveSessionRef(BaseModel):
     instance_id: str
     session_id: str
     attempt_id: str | None = None
+    lease_id: str | None = None
+    client_generation: int | None = None
 
 
 class LiveToolRequest(BaseModel):
@@ -133,6 +146,8 @@ class LiveToolRequest(BaseModel):
     name: str
     call_id: str
     arguments: dict = Field(default_factory=dict)
+    lease_id: str | None = None
+    client_generation: int | None = None
 
 
 class LookFrameRequest(BaseModel):
@@ -142,6 +157,10 @@ class LookFrameRequest(BaseModel):
     error: str | None = None
     permission: str | None = None
     last: bool = True
+    instance_id: str = ""
+    lease_id: str | None = None
+    client_generation: int | None = None
+    action: str | None = None
 
 
 class AudioIncident(BaseModel):
@@ -178,6 +197,59 @@ class MisheardRequest(BaseModel):
 class CameraResult(BaseModel):
     request_id: str
     jpeg_b64: str
+    action: str | None = None
+
+
+class TurnReceiptRequest(BaseModel):
+    instance_id: str = ""
+    session_id: str
+    lease_id: str | None = None
+    client_generation: int | None = None
+    request_id: str
+    transcript: str = ""
+    provider_item_id: str | None = None
+    provider_response_id: str | None = None
+    kind: str = "final_transcript"
+    action_calls: list[dict] = Field(default_factory=list)
+
+
+class QueueEnqueueRequest(BaseModel):
+    idempotency_key: str
+    kind: str = "request"
+    payload: dict = Field(default_factory=dict)
+    ttl_seconds: int = 86400
+
+
+class QueueReplayRequest(BaseModel):
+    idempotency_key: str
+
+
+class InboxAckRequest(BaseModel):
+    item_id: str
+
+
+class HealthkitSnapshotRequest(BaseModel):
+    snapshot: dict = Field(default_factory=dict)
+    captured_at: str | None = None
+    available: bool | None = None
+    reason: str | None = None
+
+
+class CalendarSnapshotRequest(BaseModel):
+    events: list[dict] = Field(default_factory=list)
+    captured_at: str | None = None
+
+
+class ContactsSnapshotRequest(BaseModel):
+    contacts: list[dict] = Field(default_factory=list)
+    captured_at: str | None = None
+
+
+class PushRegisterRequest(BaseModel):
+    token: str = ""
+    bundle_id: str | None = None
+    delivery: str = "apns"
+    authorization: str | None = None
 
 
 class MarkHomeStationRequest(BaseModel):
@@ -192,6 +264,13 @@ class RenameRequest(BaseModel):
 class RevokeRequest(BaseModel):
     device_id: UUID
     reason: str = "owner_revoked"
+
+
+def _stash_profile(device: Device, key: str, value: dict) -> dict:
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    profile[key] = value
+    device.endpoint_profile = profile
+    return profile
 
 
 def _check_origin(request: Request) -> None:
@@ -265,8 +344,16 @@ async def pair(
         capabilities=data.capabilities,
         client_version=data.client_version or PWA_BUILD,
         protocol_version=data.protocol_version,
-        platform=data.platform,
+        platform=(data.platform or "web")[:32],
     )
+    # Client-supplied role/memory_scope never grants owner trust.
+    device.memory_scope = "sandbox"
+    if data.platform:
+        device.platform = data.platform[:32]
+    if data.hardware or data.permissions:
+        from app.everywhere.endpoint_profile import merge_endpoint_profile
+
+        merge_endpoint_profile(device, hardware=data.hardware, permissions=data.permissions)
     access = issue_access_token(device)
     await session.commit()
     emit("device.paired", device_id=str(device.id), role=device.role)
@@ -290,10 +377,14 @@ async def refresh_session(
 ) -> dict:
     _check_origin(request)
     del session
+    from .status import device_status_payload
+
     return {
         "access_token": issue_access_token(device),
         "device": _device_public(device),
         "memory_scope": memory_scope_of(device),
+        "status": device_status_payload(device),
+        "auth_revision": int(getattr(device, "auth_revision", 1) or 1),
     }
 
 
@@ -332,6 +423,12 @@ async def hello(
         )
     device.client_version = (data.client_build or device.client_version or "")[:64] or device.client_version
     device.protocol_version = str(data.protocol_version)[:16]
+    if data.platform:
+        device.platform = data.platform[:32]
+    if data.hardware or data.permissions:
+        from app.everywhere.endpoint_profile import merge_endpoint_profile
+
+        merge_endpoint_profile(device, hardware=data.hardware, permissions=data.permissions)
     ignored_capabilities: list[str] = []
     if data.capabilities:
         from app.everywhere.capabilities import validate_capabilities
@@ -345,9 +442,13 @@ async def hello(
     await session.commit()
     snap = health_snapshot()
     trusted_owner_hello = not is_sandbox_device(device)
+    from .status import device_status_payload
+
+    status = device_status_payload(device)
     return {
         "ok": True,
         "device": _device_public(device),
+        "status": status,
         "ignored_capabilities": ignored_capabilities,
         "backend_sha": runtime_git_sha(),
         "session_context": {
@@ -362,6 +463,8 @@ async def hello(
             "auth_revision": int(getattr(device, "auth_revision", 1) or 1),
             "turngate_bound": True,
             "protocol_version": PROTOCOL_VERSION,
+            "next_action": status["next_action"],
+            "product": "EvieShell+PWA",
         },
         "environment": "SANDBOX" if is_sandbox_device(device) else "OWNER",
         "memory_scope": memory_scope_of(device),
@@ -402,6 +505,17 @@ async def hello(
     }
 
 
+@router.get("/status")
+async def device_status(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    _check_origin(request)
+    from .status import device_status_payload
+
+    return {"ok": True, **device_status_payload(device), "device": _device_public(device)}
+
+
 @router.post("/heartbeat")
 async def heartbeat(
     data: ClaimRequest,
@@ -418,6 +532,17 @@ async def heartbeat(
         payload["conversation_moved"] = True
         payload["response_device_id"] = str(lease.device_id)
         emit("conversation.transferred", device_id=str(device.id), to_device_id=str(lease.device_id))
+        from app.everywhere.inbox import push_inbox
+
+        await push_inbox(
+            session,
+            device_id=device.id,
+            kind="conversation_moved",
+            title="Conversation moved",
+            body="Evie is speaking on another device.",
+            payload={"to_device_id": str(lease.device_id)},
+        )
+        await session.commit()
     return payload
 
 
@@ -473,7 +598,7 @@ async def user_text(
             session,
             device=device,
             text=data.text or "",
-            idempotency_key=getattr(data, "idempotency_key", None),
+            idempotency_key=data.request_id or getattr(data, "idempotency_key", None),
         )
         await session.commit()
         return result
@@ -504,7 +629,13 @@ async def live_open(
     """Open the existing live voice session without lowering /v1/voice/live/open trust."""
 
     _check_origin(request)
-    await claim_lease(session, device_id=device.id, instance_id=data.instance_id, method="manual")
+    lease = await claim_lease(
+        session,
+        device_id=device.id,
+        instance_id=data.instance_id,
+        method=data.method,
+        client_generation=int(data.client_generation or 0),
+    )
     runtime = VoiceRuntime(session, master_key=settings.master_key, actor=f"device:{device.name}")
     try:
         outcome = await runtime.open_live_session(device_id=str(device.id))
@@ -548,6 +679,9 @@ async def live_open(
         "greeting": "Sandbox pipeline. I'm here." if is_sandbox_device(device) else outcome.greeting,
         "output_sample_rate": data.output_sample_rate,
         "mobile_voice_status": "OWNER FAILURE / CONNECTION CONVERGENCE",
+        "lease": lease_public(lease),
+        "lease_id": lease.lease_id,
+        "auth_revision": int(getattr(device, "auth_revision", 1) or 1),
     }
     new_live = None
     if backend in WEBRTC_BACKENDS:
@@ -563,6 +697,11 @@ async def live_open(
             from .live_fence import fence_sandbox_lives
 
             await fence_sandbox_lives(except_live=new_live)
+        from .live_fence import fence_phone_lives
+
+        await fence_phone_lives(except_live=new_live)
+        new_live.client_generation = int(data.client_generation or 0)
+        new_live.lease_id = lease.lease_id
         payload["sdp_path"] = "/v1/device-gateway/live/webrtc/sdp"
         payload["client_secret_path"] = "/v1/device-gateway/live/webrtc/client-secret"
         payload["control_events_path"] = "/v1/device-gateway/live/events"
@@ -576,8 +715,8 @@ async def live_open(
             session_id=str(outcome.session_id),
             instance_id=data.instance_id,
         )
+    lease.session_id = str(outcome.session_id)
     await session.commit()
-    emit("phone.voice_started", device_id=str(device.id), session_id=str(outcome.session_id), backend=backend)
     return payload
 
 
@@ -586,11 +725,21 @@ async def live_webrtc_sdp(
     data: SdpOffer,
     request: Request,
     device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Proxy SDP. Browser never receives a provider credential."""
 
     _check_origin(request)
-    assert_session_owns(device=device, session_id=data.session_id)
+    from .live_authority import assert_live_authority
+
+    await assert_live_authority(
+        session,
+        device=device,
+        session_id=data.session_id,
+        instance_id=data.instance_id,
+        lease_id=data.lease_id,
+        client_generation=data.client_generation,
+    )
     answer = await proxy_phone_sdp(
         device=device,
         offer_sdp=data.sdp,
@@ -622,11 +771,21 @@ async def live_webrtc_client_secret(
     data: LiveSessionRef,
     request: Request,
     device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Option B: short-lived ek_ for direct browser WebRTC. Permanent key stays here."""
 
     _check_origin(request)
-    assert_session_owns(device=device, session_id=data.session_id)
+    from .live_authority import assert_live_authority
+
+    await assert_live_authority(
+        session,
+        device=device,
+        session_id=data.session_id,
+        instance_id=data.instance_id,
+        lease_id=data.lease_id,
+        client_generation=data.client_generation,
+    )
     minted = await mint_ephemeral_secret(device=device)
     emit("phone.webrtc_client_secret", device_id=str(device.id), session_id=data.session_id[:12])
     return minted
@@ -636,10 +795,23 @@ async def live_webrtc_client_secret(
 async def live_control_events(
     request: Request,
     session_id: str,
+    instance_id: str = "",
+    lease_id: str | None = None,
+    client_generation: int | None = None,
     device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
-    assert_session_owns(device=device, session_id=session_id)
+    from .live_authority import assert_live_authority
+
+    await assert_live_authority(
+        session,
+        device=device,
+        session_id=session_id,
+        instance_id=instance_id,
+        lease_id=lease_id,
+        client_generation=client_generation,
+    )
     events = await drain_control_events(session_id)
     return {"events": events}
 
@@ -649,9 +821,19 @@ async def live_tool(
     data: LiveToolRequest,
     request: Request,
     device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
-    assert_session_owns(device=device, session_id=data.session_id)
+    from .live_authority import assert_live_authority
+
+    await assert_live_authority(
+        session,
+        device=device,
+        session_id=data.session_id,
+        instance_id=data.instance_id,
+        lease_id=data.lease_id,
+        client_generation=data.client_generation,
+    )
     output = await run_phone_tool(
         session_id=data.session_id,
         name=data.name,
@@ -666,9 +848,19 @@ async def live_look_frame(
     data: LookFrameRequest,
     request: Request,
     device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
-    assert_session_owns(device=device, session_id=data.session_id)
+    from .live_authority import assert_live_authority
+
+    await assert_live_authority(
+        session,
+        device=device,
+        session_id=data.session_id,
+        instance_id=data.instance_id,
+        lease_id=data.lease_id,
+        client_generation=data.client_generation,
+    )
     await inject_look_frame(
         data.session_id,
         {
@@ -679,7 +871,317 @@ async def live_look_frame(
             "last": data.last,
         },
     )
-    return {"ok": True}
+    vision = None
+    if data.jpeg_b64 and not is_sandbox_device(device) and device.revoked_at is None:
+        from .phone_look import ingest_phone_frame
+
+        vision = await ingest_phone_frame(
+            session,
+            device=device,
+            request_id=data.request_id,
+            jpeg_b64=data.jpeg_b64,
+            action=data.action or "look",
+        )
+        await session.commit()
+    return {
+        "ok": True,
+        "vision": vision,
+        "persisted_to_memory_os": bool(vision and vision.get("persisted_to_memory_os")),
+    }
+
+
+@router.post("/live/turn-receipt")
+async def live_turn_receipt(
+    data: TurnReceiptRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from .live_authority import assert_live_authority
+    from .turn_receipts import record_turn_receipt
+
+    await assert_live_authority(
+        session,
+        device=device,
+        session_id=data.session_id,
+        instance_id=data.instance_id,
+        lease_id=data.lease_id,
+        client_generation=data.client_generation,
+    )
+    receipt = await record_turn_receipt(
+        session,
+        device=device,
+        idempotency_key=data.request_id,
+        transcript=data.transcript,
+        session_id=data.session_id,
+        lease_id=data.lease_id,
+        provider_item_id=data.provider_item_id,
+        provider_response_id=data.provider_response_id,
+        action_calls=data.action_calls,
+        kind=data.kind,
+    )
+    await session.commit()
+    return receipt
+
+
+@router.get("/inbox")
+async def device_inbox(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.inbox import list_inbox
+
+    items = await list_inbox(session, device_id=device.id)
+    from .status import _notifications_public
+
+    note = _notifications_public(device)
+    public = [
+        {
+            **item,
+            "delivery": "in_app_poll",
+            "push_delivery": note["push_delivery"],
+        }
+        for item in items
+    ]
+    return {
+        "ok": True,
+        "items": public,
+        "inbox_channel": "in_app_poll",
+        "push_delivery": note["push_delivery"],
+        "push_registered": note["push_registered"],
+    }
+
+
+@router.post("/inbox/ack")
+async def device_inbox_ack(
+    data: InboxAckRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.inbox import ack_inbox
+
+    item = await ack_inbox(session, device_id=device.id, item_id=data.item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Inbox item not found")
+    await session.commit()
+    return {"ok": True, "item": item}
+
+
+@router.post("/queue", response_model=None)
+async def offline_enqueue(
+    data: QueueEnqueueRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict | JSONResponse:
+    _check_origin(request)
+    from app.everywhere.offline_queue import enqueue
+
+    result = await enqueue(
+        session,
+        device=device,
+        idempotency_key=data.idempotency_key,
+        kind=data.kind,
+        payload=data.payload,
+        ttl_seconds=data.ttl_seconds,
+    )
+    await session.commit()
+    status = int(result.get("status") or 201)
+    if status in {201, 409, 422}:
+        return JSONResponse(result, status_code=status)
+    return result
+
+
+@router.post("/queue/replay")
+async def offline_replay(
+    data: QueueReplayRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.offline_queue import replay
+
+    result = await replay(session, device=device, idempotency_key=data.idempotency_key)
+    await session.commit()
+    status = int(result.get("status") or 200)
+    if status in {404, 422}:
+        raise HTTPException(status_code=status, detail=result)
+    return result
+
+
+@router.get("/queue")
+async def offline_list(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.offline_queue import list_pending
+
+    return {"ok": True, "items": await list_pending(session, device_id=device.id)}
+
+
+@router.post("/healthkit/snapshot")
+async def healthkit_snapshot(
+    data: HealthkitSnapshotRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    available = data.available if data.available is not None else bool(data.snapshot)
+    freshness = "reported" if available else "unavailable"
+    profile["healthkit"] = {
+        "snapshot": data.snapshot if available else {},
+        "captured_at": data.captured_at,
+        "freshness": freshness,
+        "sent_to_model": False,
+        "available": bool(available),
+        "reason": data.reason or (None if available else "no_entitlement"),
+    }
+    device.endpoint_profile = profile
+    await session.commit()
+    return {"ok": True, "freshness": freshness, "sent_to_model": False, "available": bool(available)}
+
+
+@router.post("/push/register")
+async def push_register(
+    data: PushRegisterRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    delivery = (data.delivery or "").strip().lower() or "apns"
+    token = (data.token or "").strip()
+    if delivery == "poll" or (not token and delivery != "apns"):
+        _stash_profile(
+            device,
+            "notifications",
+            {
+                "delivery": "poll",
+                "authorization": (data.authorization or "granted")[:32],
+                "registered_at": utcnow().isoformat(),
+            },
+        )
+        await session.commit()
+        return {"ok": True, "registered": False, "delivery": "poll"}
+    if len(token) < 8:
+        raise HTTPException(status_code=422, detail="Invalid push token")
+    device.push_token = token[:4096]
+    device.push_bundle_id = (data.bundle_id or "com.ev.evie.shell")[:256]
+    from app.utils.text import utcnow as _utcnow
+
+    device.push_token_updated_at = _utcnow()
+    _stash_profile(
+        device,
+        "notifications",
+        {
+            "delivery": "apns",
+            "authorization": (data.authorization or "granted")[:32],
+            "registered_at": utcnow().isoformat(),
+        },
+    )
+    await session.commit()
+    return {"ok": True, "registered": True, "delivery": "apns"}
+
+
+@router.post("/calendar/snapshot")
+async def calendar_snapshot(
+    data: CalendarSnapshotRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    events = []
+    for item in (data.events or [])[:20]:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()[:120]
+        if not title:
+            continue
+        events.append({"title": title, "start": str(item.get("start") or "")[:64]})
+    _stash_profile(
+        device,
+        "calendar",
+        {
+            "events": events,
+            "captured_at": data.captured_at,
+            "sent_to_model": False,
+        },
+    )
+    await session.commit()
+    return {"ok": True, "count": len(events), "sent_to_model": False}
+
+
+@router.post("/contacts/snapshot")
+async def contacts_snapshot(
+    data: ContactsSnapshotRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    people = []
+    for item in (data.contacts or [])[:20]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()[:80]
+        if name:
+            people.append({"name": name})
+    _stash_profile(
+        device,
+        "contacts",
+        {
+            "contacts": people,
+            "captured_at": data.captured_at,
+            "sent_to_model": False,
+        },
+    )
+    await session.commit()
+    return {"ok": True, "count": len(people), "sent_to_model": False}
+
+
+@router.get("/sync/bootstrap")
+async def phone_sync_bootstrap(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.sync import bootstrap as bootstrap_snapshot
+
+    from .auth import actor_for
+
+    payload = await bootstrap_snapshot(session, actor_for(device))
+    await session.commit()
+    return {"ok": True, **payload}
+
+
+@router.get("/sync/changes")
+async def phone_sync_changes(
+    request: Request,
+    cursor: str | None = Query(default=None),
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.sync import changes as sync_changes
+
+    from .auth import actor_for
+
+    result = await sync_changes(session, actor_for(device), cursor=cursor, limit=50)
+    if result.get("ok"):
+        await session.commit()
+    return result
 
 
 @router.post("/live/close")
@@ -862,6 +1364,7 @@ async def camera_result(
     data: CameraResult,
     request: Request,
     device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
     try:
@@ -873,7 +1376,26 @@ async def camera_result(
     except ValueError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
     emit("camera.completed", device_id=str(device.id), request_id=data.request_id[:32])
-    return {"ok": True, "camera": meta, "persisted_to_memory_os": False}
+    vision = None
+    if not is_sandbox_device(device):
+        from .phone_look import ingest_phone_frame
+
+        vision = await ingest_phone_frame(
+            session,
+            device=device,
+            request_id=data.request_id,
+            jpeg_b64=data.jpeg_b64,
+            action=data.action or "look",
+        )
+        await session.commit()
+    return {
+        "ok": True,
+        "camera": meta,
+        "persisted_to_memory_os": bool(vision and vision.get("persisted_to_memory_os")),
+        "vision": vision,
+        "ocr_text": (vision or {}).get("ocr_text"),
+        "provenance": "phone_camera" if vision else None,
+    }
 
 
 @router.get("/camera/{request_id}")

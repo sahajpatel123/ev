@@ -29,7 +29,9 @@
 	<key>NSContactsUsageDescription</key>
 	<string>Evie uses Contacts to find people you ask her to call or message. You can allow only selected contacts.</string>
 	<key>NSCalendarsUsageDescription</key>
-	<string>Evie adds events you ask her to put on your calendar.</string>
+	<string>Evie can read upcoming events when you ask what's on your calendar, and add events you ask her to put there.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Evie can read upcoming events on this iPhone when you ask what's on your calendar. Event details stay on device unless you ask.</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
 	<string>Evie adds events you ask her to put on your calendar.</string>
 	<key>NSRemindersUsageDescription</key>
@@ -38,10 +40,16 @@
 	<string>Evie creates reminders you ask for on this iPhone.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Evie uses your location when you ask where you are or for directions.</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Evie can show a read-only snapshot of Health data you choose to share. Nothing is sent to a model without your Home Station policy.</string>
 	<key>NSUserNotificationsUsageDescription</key>
 	<string>Evie can notify you for timers and reminders she created.</string>
 	<key>NSAlarmKitUsageDescription</key>
 	<string>Evie can set timers and alarms you ask for.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

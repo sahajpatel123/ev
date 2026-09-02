@@ -450,6 +450,7 @@
   function EvieWebRTC(opts) {
     this.api = opts.api;
     this.instanceId = opts.instanceId;
+    this.leaseId = opts.leaseId || "";
     this.audioEl = opts.audioEl;
     this.onState = opts.onState || function () {};
     this.onTranscript = opts.onTranscript || function () {};
@@ -466,6 +467,7 @@
     this.sessionId = null;
     this.poll = 0;
     this.statsTimer = 0;
+    this.leaseTimer = 0;
     this.closed = true;
     this.playing = false;
     this.runtime = "IDLE";
@@ -502,6 +504,29 @@
     this.onHealth(this.snapshot());
   };
 
+  EvieWebRTC.prototype._liveBody = function _liveBody(extra) {
+    return Object.assign({
+      instance_id: this.instanceId,
+      session_id: this.sessionId,
+      lease_id: this.leaseId,
+      client_generation: this.generation,
+    }, extra || {});
+  };
+
+  EvieWebRTC.prototype._startLeaseHeartbeat = function _startLeaseHeartbeat(stillThis) {
+    const self = this;
+    if (this.leaseTimer) window.clearInterval(this.leaseTimer);
+    this.leaseTimer = window.setInterval(function () {
+      if (!stillThis()) return;
+      self.api("/v1/device-gateway/heartbeat", {
+        method: "POST",
+        body: JSON.stringify(self._liveBody()),
+      }).then(function (body) {
+        if (body && body.conversation_moved) self.onState("moved");
+      }).catch(function () {});
+    }, 12000);
+  };
+
   EvieWebRTC.prototype.start = async function start(opened, options) {
     const opts = options || {};
     const generation = this.generation + 1;
@@ -509,6 +534,7 @@
     this.generation = generation;
     this.closed = false;
     this.sessionId = opened.session_id;
+    this.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id) || this.leaseId || "";
     this.responses = new MobileResponseController();
     this.sessionCreated = false;
     this.sessionUpdated = false;
@@ -522,6 +548,7 @@
     this.diag.token_mode = this.signaling === "ephemeral_direct" ? "ephemeral" : "server";
     const self = this;
     const stillThis = function () { return !self.closed && self.generation === generation; };
+    this._startLeaseHeartbeat(stillThis);
     const fail = function (stage, err, extra) {
       const wrapped = err instanceof Error ? err : new Error(String(err || "failed"));
       self.diag.fail(stage, wrapped, extra);
@@ -575,6 +602,7 @@
           try { self.pc.restartIce(); return; } catch (_e) {}
         }
         self._setRuntime("FAILED");
+        self.onState("failed");
       }
       self.onHealth(self.snapshot());
     };
@@ -663,11 +691,7 @@
       if (this.signaling === "ephemeral_direct") {
         const minted = await this.api("/v1/device-gateway/live/webrtc/client-secret", {
           method: "POST",
-          body: JSON.stringify({
-            instance_id: this.instanceId,
-            session_id: this.sessionId,
-            attempt_id: this.attemptId,
-          }),
+          body: JSON.stringify(this._liveBody({ attempt_id: this.attemptId })),
         });
         const callsUrl = minted.calls_url;
         if (!callsUrl || !minted.value) fail("M09", new Error("Ephemeral credential missing"));
@@ -694,12 +718,10 @@
       } else {
         const answer = await this.api("/v1/device-gateway/live/webrtc/sdp", {
           method: "POST",
-          body: JSON.stringify({
-            instance_id: this.instanceId,
-            session_id: this.sessionId,
+          body: JSON.stringify(this._liveBody({
             sdp: localSdp,
             attempt_id: this.attemptId,
-          }),
+          })),
         });
         answerSdp = answer.sdp;
         this.diag.http_status = answer.provider_status || 201;
@@ -868,6 +890,15 @@
       });
       this._setRuntime("PROCESSING");
       this.onState("thinking");
+      this.api("/v1/device-gateway/live/turn-receipt", {
+        method: "POST",
+        body: JSON.stringify(this._liveBody({
+          request_id: (this.attemptId || "turn") + ":" + (msg.item_id || Date.now()),
+          transcript: msg.transcript,
+          provider_item_id: msg.item_id || "",
+          kind: "final_transcript",
+        })),
+      }).catch(function () { /* receipt is server authority; client failure is retried next turn */ });
     }
     if (type === "response.output_audio_transcript.delta" && msg.delta) this.onCaption(msg.delta, false);
     if (type === "response.output_audio_transcript.done" && (msg.transcript || msg.text)) {
@@ -900,13 +931,11 @@
     try {
       const result = await this.api("/v1/device-gateway/live/tool", {
         method: "POST",
-        body: JSON.stringify({
-          instance_id: this.instanceId,
-          session_id: this.sessionId,
+        body: JSON.stringify(this._liveBody({
           name: msg.name,
           call_id: msg.call_id,
           arguments: args,
-        }),
+        })),
       });
       this._send({
         type: "conversation.item.create",
@@ -915,6 +944,13 @@
       this._send({ type: "response.create" });
       let parsed = {};
       try { parsed = JSON.parse(result.output || "{}"); } catch (_err) { parsed = {}; }
+      if (parsed.needs_camera) {
+        await self.onCamera({
+          type: "camera_request",
+          request_id: parsed.camera_request_id,
+          action: parsed.camera_action || parsed.action || args.action || "look_once",
+        });
+      }
       if (parsed.card && window.EvieMobileActions) window.EvieMobileActions.present(parsed);
       this.onHud({ kind: "result", name: msg.name, ok: true, phone_action: parsed });
     } catch (err) {
@@ -956,7 +992,10 @@
     const tick = async function () {
       if (self.closed || !self.sessionId) return;
       try {
-        const body = await self.api("/v1/device-gateway/live/events?session_id=" + encodeURIComponent(self.sessionId));
+        const body = await self.api("/v1/device-gateway/live/events?session_id=" + encodeURIComponent(self.sessionId)
+          + "&instance_id=" + encodeURIComponent(self.instanceId || "")
+          + "&lease_id=" + encodeURIComponent(self.leaseId || "")
+          + "&client_generation=" + encodeURIComponent(String(self.generation || 0)));
         const events = (body && body.events) || [];
         for (let i = 0; i < events.length; i += 1) {
           const ev = events[i];
@@ -1055,6 +1094,8 @@
     this._setRuntime("ENDED");
     if (this.poll) window.clearTimeout(this.poll);
     this.poll = 0;
+    if (this.leaseTimer) window.clearInterval(this.leaseTimer);
+    this.leaseTimer = 0;
     if (this.statsTimer) window.clearTimeout(this.statsTimer);
     this.statsTimer = 0;
     if (this.dc) {

@@ -17,11 +17,36 @@ logger = logging.getLogger("ev.camera")
 JPEG_SOI = b"\xff\xd8"
 MAX_JPEG_BYTES = 1_500_000
 MIN_JPEG_BYTES = 64
-VISION_TOOLS = frozenset({"look", "observe_camera"})
+VISION_TOOLS = frozenset({"look", "observe_camera", "capture_photo", "record_video"})
 OBSERVE_MAX_SECONDS = 8.0
 OBSERVE_MAX_FRAMES = 5
 OBSERVE_DEFAULT_SECONDS = 4.0
-OBSERVE_DEFAULT_INTERVAL = 1.5
+OBSERVE_DEFAULT_INTERVAL = 1.0
+RECORD_MIN_SECONDS = 2.0
+RECORD_MAX_SECONDS = 30.0
+RECORD_DEFAULT_SECONDS = 8.0
+RECORD_MAX_POSTERS = 4
+VISION_ARGUMENT_ALIASES = {
+    "duration": "duration_seconds",
+    "seconds": "duration_seconds",
+    "length": "duration_seconds",
+    "clip_seconds": "duration_seconds",
+}
+DARK_EXCUSE_RE = (
+    "too dark",
+    "too dim",
+    "a bit dark",
+    "a bit darker",
+    "cannot see",
+    "can't see",
+    "could not see",
+    "couldn't see",
+    "unreadable",
+    "poor lighting",
+    "not enough light",
+    "image is dark",
+    "photo is dark",
+)
 
 _PENDING: dict[str, list[CameraObservation]] = {}
 
@@ -44,6 +69,16 @@ class LookFrame:
     t2_capture_start_ms: float | None = None
     t3_captured_ms: float | None = None
     encoded_bytes: int = 0
+    labels: list[str] | None = None
+    ocr_text: str | None = None
+    luminance: float | None = None
+    face_count: int | None = None
+    person_count: int | None = None
+    lighting: str | None = None
+    colors: list[str] | None = None
+    saved_path: str | None = None
+    media_kind: str | None = None
+    duration_ms: int | None = None
 
 
 @dataclass
@@ -144,6 +179,124 @@ def validate_jpeg(data: bytes | None) -> tuple[bytes, int | None, int | None] | 
         return None
     width, height = jpeg_dimensions(data) or (None, None)
     return data, width, height
+
+
+def _as_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        item = value.strip()
+        return [item] if item else []
+    if not isinstance(value, list):
+        return []
+    names: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text and text.lower() not in {name.lower() for name in names}:
+            names.append(text)
+    return names[:8]
+
+
+def name_rgb_color(r: float, g: float, b: float) -> str:
+    """Name one 0–255 RGB sample. Matches the Mac camera color buckets."""
+
+    red = max(0.0, min(255.0, float(r))) / 255.0
+    green = max(0.0, min(255.0, float(g))) / 255.0
+    blue = max(0.0, min(255.0, float(b))) / 255.0
+    peak = max(red, green, blue)
+    floor = min(red, green, blue)
+    chroma = peak - floor
+    light = (peak + floor) / 2.0
+    sat = 0.0 if peak <= 1e-6 else chroma / peak
+    if peak < 0.18:
+        return "black"
+    if floor > 0.82:
+        return "white"
+    if sat < 0.18:
+        if light > 0.72:
+            return "white"
+        if light < 0.28:
+            return "black"
+        return "gray"
+    if chroma <= 1e-6:
+        return "gray"
+    if peak == red:
+        hue = (green - blue) / chroma
+    elif peak == green:
+        hue = 2.0 + (blue - red) / chroma
+    else:
+        hue = 4.0 + (red - green) / chroma
+    hue = (hue / 6.0) % 1.0
+    if light < 0.28 and sat < 0.55:
+        return "brown"
+    if hue < 0.04 or hue >= 0.93:
+        return "red" if light > 0.35 else "brown"
+    if hue < 0.10:
+        return "orange" if light > 0.45 else "brown"
+    if hue < 0.18:
+        return "yellow"
+    if hue < 0.45:
+        return "green"
+    if hue < 0.55:
+        return "cyan"
+    if hue < 0.73:
+        return "blue"
+    if hue < 0.85:
+        return "purple"
+    return "pink"
+
+
+def dominant_color_names(samples: list[tuple[float, float, float]]) -> list[str]:
+    """Return up to three color names from RGB samples, most common first."""
+
+    counts: dict[str, int] = {}
+    for sample in samples:
+        if len(sample) < 3:
+            continue
+        name = name_rgb_color(sample[0], sample[1], sample[2])
+        counts[name] = counts.get(name, 0) + 1
+    ranked = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    minimum = max(1, int(len(samples) * 0.06))
+    names = [name for name, count in ranked if count >= minimum]
+    return names[:3] or ([ranked[0][0]] if ranked else [])
+
+
+def parse_look_frame_meta(message: dict[str, Any]) -> dict[str, Any]:
+    """Client-side vision metadata that travels with a look_frame."""
+
+    labels = _as_string_list(message.get("labels") or message.get("objects"))
+    colors = _as_string_list(message.get("colors") or message.get("dominant_colors"))
+    ocr = str(message.get("ocr_text") or message.get("ocr") or "").strip() or None
+    lighting = str(message.get("lighting") or "").strip() or None
+    saved = str(message.get("saved_path") or message.get("path") or "").strip() or None
+    kind = str(message.get("media_kind") or message.get("kind") or "").strip().lower() or None
+    luminance = None
+    raw_lum = message.get("luminance")
+    try:
+        if raw_lum is not None:
+            luminance = float(raw_lum)
+    except (TypeError, ValueError):
+        luminance = None
+    if lighting is None:
+        lighting = lighting_from_luminance(luminance)
+
+    def _int(key: str) -> int | None:
+        try:
+            value = message.get(key)
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "labels": labels,
+        "colors": colors,
+        "ocr_text": ocr,
+        "luminance": luminance,
+        "face_count": _int("face_count"),
+        "person_count": _int("person_count"),
+        "lighting": lighting,
+        "saved_path": saved,
+        "media_kind": kind,
+        "duration_ms": _int("duration_ms") or _int("clip_duration_ms"),
+    }
 
 
 def decode_frame_payload(raw: str | None) -> bytes | None:
@@ -338,15 +491,35 @@ def overlay_vision_entry(entry: dict[str, Any], readiness: CameraReadiness) -> d
     return out
 
 
+def lighting_from_luminance(value: float | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        luminance = float(value)
+    except (TypeError, ValueError):
+        return None
+    if luminance >= 0.18:
+        return "normally lit"
+    if luminance >= 0.10:
+        return "moderately lit"
+    return "dim"
+
+
+def looks_like_dark_excuse(text: str | None) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return any(token in lowered for token in DARK_EXCUSE_RE)
+
+
 def camera_operator_line(readiness: CameraReadiness | dict[str, Any] | None) -> str:
     raw = readiness.as_dict() if isinstance(readiness, CameraReadiness) else dict(readiness or {})
     if raw.get("capture_ready") and raw.get("realtime_image_input_ready"):
         return (
-            "CAMERA / VISUAL PERCEPTION: AVAILABLE. Look through the owner's Mac "
-            "camera when visual context is needed. Capture a current observation, "
-            "reason over that image, and use bounded observation when change over "
-            "time matters. The owner does not need an extra confirmation for "
-            "normal visual perception."
+            "CAMERA: AVAILABLE. Look to see the current scene, capture_photo to "
+            "take and save a still, record_video to save a clip, and "
+            "observe_camera for a few seconds of change. The owner does not "
+            "need an extra confirmation for normal camera use."
         )
     if raw.get("permission") == "denied":
         return (
@@ -376,18 +549,42 @@ def camera_model_instructions(readiness: CameraReadiness | dict[str, Any] | None
     line = camera_operator_line(raw)
     if available:
         return (
-            f"{line} If answering correctly requires seeing something in the "
-            "owner's physical environment, call look. Do not claim you cannot "
-            "see, and do not guess. The owner does not need to say camera or "
-            "look. Examples that require look: what am I holding, read this, "
-            "what color is this, does this look damaged, which port should I "
-            "use, look at me. Do not call look for weather, timers, or other "
-            "non-visual questions. For change over a few seconds, call "
-            "observe_camera. After look returns, a camera image may have been "
-            "added to this conversation. Describe only what you can actually "
-            "see. If no image is present, say you could not receive a camera "
-            "frame. Never invent visual contents. Never pass a permission "
-            "argument."
+            f"{line} If answering requires seeing the room, a person, clothing, "
+            "or what they are holding, or they ask you to memorize or remember "
+            "something they are showing, call look. Read printed names and "
+            "titles on whatever they are holding. That look is stored across app restarts — "
+            "never say you cannot memorize a glance or that you cannot guarantee "
+            "future recall. If they ask about the Mac "
+            "screen, window, desktop, display, or which app is open, do not "
+            "call look — that is computer. If the "
+            "owner asks to take a photo, picture, or selfie of the room, call "
+            "capture_photo. "
+            "If they ask to record a video or film something, call record_video. "
+            "Do not open the Camera app for those jobs. Do not guess. Do not "
+            "claim you cannot see. After look, capture_photo, record_video, or "
+            "observe_camera returns, attached images are already in the "
+            "conversation. Speak two to four natural sentences about people, "
+            "clothing and its colors, pose, objects, and the overall scene. If "
+            "a garment or object is visible, name its color from the image; "
+            "labels may miss it. Listed colors are scene hints, not a reason "
+            "to hedge. For a recorded clip, say what they are doing. Do not "
+            "read the function JSON aloud. Mention printed text only when the "
+            "output actually includes it. Missing text is not a failure and is "
+            "not what 'how was the image' means. Do not say the photo is too "
+            "dark, darkened, blurry, or unreadable when people, objects, or "
+            "colors are visible. After describing, mention saved_path if "
+            "present. Follow-up questions about that image must keep describing "
+            "what was seen; do not look again unless they ask to look again. "
+            "If they ask later about a photo, clip, what they were wearing, "
+            "what they asked you to remember from a look, whether you memorized "
+            "or remembered something they showed, or when you last saw an object, "
+            "that is search_memory, not a new "
+            "look, unless they ask to look now. Do not say you have no record "
+            "until search_memory returns empty evidence. When they are heading "
+            "out, leaving the house, or gotta go, that is one heading-out beat, "
+            "not separate weather and calendar chats. Never invent visual "
+            "contents that contradict the attached image. Never pass a "
+            "permission argument."
         )
     if raw.get("permission") == "denied":
         return (
@@ -401,12 +598,96 @@ def camera_model_instructions(readiness: CameraReadiness | dict[str, Any] | None
     )
 
 
+def camera_image_prompt(name: str, *, index: int = 0, total: int = 1) -> str:
+    """Text that travels with each Realtime input_image for a camera tool."""
+
+    count = max(int(total or 1), 1)
+    slot = index + 1
+    if name in {"look", "capture_photo"}:
+        kind = (
+            "photo you just took with the owner's camera"
+            if name == "capture_photo"
+            else "current photo from the owner's MacBook camera"
+        )
+        return (
+            f"This is a {kind}. Look at the image and describe it in natural "
+            "speech: people, clothing, pose, objects, colors, and the setting. "
+            "Do not only list labels. Mention printed text only if you can read "
+            "it. Missing text is not a failure. Do not say it is too dark, "
+            "darkened, or that you cannot see the image when people, objects, "
+            "or colors are visible. This look is stored as memory. If they asked "
+            "you to remember what they showed, say you will remember it. Never "
+            "say you cannot guarantee future recall. Follow-up questions about this image should "
+            "talk about those visual facts, not darkness or missing text. Do "
+            "not name people unless enrolled."
+        )
+    if name in {"screen_look", "see", "click", "double_click", "right_click", "drag", "ui_action"}:
+        return "Window screenshot from the owner's Mac. Describe only visible UI."
+    if name == "record_video":
+        lead = f"Frame {slot} of {count} from " if count > 1 else ""
+        return (
+            f"{lead}a video the owner just recorded on the camera. Look at this "
+            "frame together with the others. Describe the clip as if you watched "
+            "it: who is in it, clothing, objects, colors, and what they are doing. "
+            "Do not only say the clip was saved. Do not name people unless enrolled."
+        )
+    return (
+        f"Camera observation {slot} from a bounded watch. "
+        "Describe people, objects, and colors in this frame. Compare "
+        "with other frames. Object color is not room brightness."
+    )
+
+
 def clamp_observe_duration(seconds: float | int | None) -> float:
     try:
         value = float(seconds) if seconds is not None else OBSERVE_DEFAULT_SECONDS
     except (TypeError, ValueError):
         value = OBSERVE_DEFAULT_SECONDS
     return min(max(value, 1.0), OBSERVE_MAX_SECONDS)
+
+
+def coerce_vision_arguments(
+    name: str,
+    arguments: dict[str, Any] | None,
+    properties: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Keep a camera call running when the model copies look/capture fields.
+
+    Live models often pass ``detail`` or ``duration`` on ``record_video``.
+    Those extras must not abort recording.
+    """
+
+    args = dict(arguments or {})
+    if name not in VISION_TOOLS:
+        return args
+    props = dict(properties or {})
+    if not props:
+        from app.ev.tools import get_spec
+
+        props = ((get_spec(name) or {}).get("parameters") or {}).get("properties") or {}
+    for alias, canonical in VISION_ARGUMENT_ALIASES.items():
+        if alias not in args:
+            continue
+        if canonical in props and canonical not in args:
+            args[canonical] = args.pop(alias)
+        elif alias not in props:
+            args.pop(alias, None)
+    if "duration_seconds" in props and "duration_seconds" in args:
+        try:
+            args["duration_seconds"] = float(args["duration_seconds"])
+        except (TypeError, ValueError):
+            args.pop("duration_seconds", None)
+    if not props:
+        return args
+    return {key: value for key, value in args.items() if key in props}
+
+
+def clamp_record_duration(seconds: float | int | None) -> float:
+    try:
+        value = float(seconds) if seconds is not None else RECORD_DEFAULT_SECONDS
+    except (TypeError, ValueError):
+        value = RECORD_DEFAULT_SECONDS
+    return min(max(value, RECORD_MIN_SECONDS), RECORD_MAX_SECONDS)
 
 
 def now_mono() -> float:
@@ -419,7 +700,7 @@ def _register() -> None:
     register_capability(
         RegisteredCapability(
             name="camera",
-            description="Mac camera observation",
+            description="Mac camera look, photo capture, and video recording",
             tools=VISION_TOOLS,
             overlay=overlay_vision_entry,
             readiness_key="camera",

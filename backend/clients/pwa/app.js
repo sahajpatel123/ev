@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.08.22.23";
+const CLIENT_BUILD = "2026.09.02.03";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -68,6 +68,12 @@ const state = {
   preflight: {},
   history: [],
   activity: [],
+  inbox: [],
+  status: null,
+  queue: [],
+  syncCursor: null,
+  drainedCaptures: {},
+  cameraRole: "unknown",
   userLine: "",
   caption: "",
   mood: "Connecting to Evie…",
@@ -203,6 +209,11 @@ function render() {
   textOf($("device-role"), prettyRole(device.role) || "—");
   textOf($("home-station"), homeLine(hello));
   textOf($("environment"), hello.environment || "SANDBOX");
+  const status = hello.status || hello.session_context || state.status || {};
+  state.status = status;
+  const trust = status.trust_state || (hello.session_context && hello.session_context.trust_state) || hello.environment || "";
+  const next = status.next_action || (hello.session_context && hello.session_context.next_action) || "";
+  textOf($("trust-line"), [trust, prettyRole(device.role), next && next !== "ready" ? ("next: " + next) : ""].filter(Boolean).join(" · "));
   textOf($("sandbox-banner"), "Personal memory off");
   textOf($("user-line"), state.userLine);
   textOf($("reply"), state.caption);
@@ -217,6 +228,10 @@ function render() {
   fillPrivacy(hello, device);
   fillMobileActions(hello);
   fillDevices(hello, device);
+  fillInbox();
+  fillWelcomeStatus();
+  refreshInstallHint();
+  showUpdateLine();
   textOf($("audio-badge"), "Audio · " + backendLabel());
   const health = state.voiceHealth && state.voiceHealth.health;
   textOf($("voice-health"), health
@@ -371,9 +386,16 @@ function fillMobileActions(hello) {
 }
 
 function fillSettings(hello, device) {
+  const status = hello.status || hello.session_context || state.status || {};
   fillDl("settings-meta", [
     ["Device", device.display_name || prettyRole(device.role) || "—"],
     ["Role", prettyRole(device.role) || "—"],
+    ["Trust", status.trust_state || hello.environment || "—"],
+    ["Owner scope", status.owner_scope || status.scope || "—"],
+    ["Auth revision", String(status.auth_revision || device.auth_revision || "—")],
+    ["Next action", status.next_action || "—"],
+    ["Backend", status.backend_build || hello.backend_sha || "—"],
+    ["Product", status.product || "Tailscale PWA"],
     ["Connection", state.conn],
     ["Home Station", homeLine(hello)],
     ["PWA build", CLIENT_BUILD + (state.updateAvailable ? " · update available" : "")],
@@ -381,7 +403,25 @@ function fillSettings(hello, device) {
     ["Signaling", hello.signaling_version || "unified-calls-v1"],
     ["Design", DESIGN_VERSION],
     ["Protocol", PROTOCOL_VERSION],
+    ["HealthKit", healthkitLine(status)],
+    ["Notifications", notificationLine(status)],
+    ["Sync cursor", state.syncCursor ? "yes" : "none"],
+    ["Install", isStandalonePwa() ? "Home Screen" : "Safari tab"],
+    ["Camera role", cameraRoleLabel()],
   ]);
+}
+
+function healthkitLine(status) {
+  const hk = (status && status.healthkit) || {};
+  const freshness = hk.freshness || "unavailable";
+  return freshness + " · never sent to a model";
+}
+
+function notificationLine(status) {
+  const note = (status && status.notifications) || {};
+  const delivery = note.push_delivery || "poll";
+  const inbox = note.inbox_channel || "in_app_poll";
+  return delivery + " capability · inbox " + inbox;
 }
 
 function fillPrivacy(hello, device) {
@@ -392,6 +432,8 @@ function fillPrivacy(hello, device) {
     ["Microphone", state.capture === "none" ? "Ask on Talk" : "Allowed"],
     ["Camera", $("camera-sheet").hidden ? "Ask on Look" : "Allowed"],
     ["This phone", prettyRole(device.role) || "Companion"],
+    ["HealthKit", "Unavailable in this build · never sent to a model"],
+    ["Notifications", "In-app poll until APNs is entitled"],
   ]);
 }
 
@@ -415,6 +457,190 @@ function fillDevices(hello, device) {
     el.appendChild(sub);
     root.appendChild(el);
   });
+}
+
+function fillWelcomeStatus() {
+  const status = state.status || (state.hello && state.hello.status) || {};
+  fillDl("welcome-status", status.trust_state ? [
+    ["Trust", status.trust_state],
+    ["Next", status.next_action || "—"],
+    ["Product", "Tailscale PWA"],
+  ] : []);
+}
+
+function fillInbox() {
+  const list = $("inbox-list");
+  if (!list) return;
+  while (list.firstChild) list.removeChild(list.firstChild);
+  (state.inbox || []).forEach((item) => {
+    const li = document.createElement("li");
+    const via = item.delivery || item.push_delivery || "in_app_poll";
+    li.textContent = (item.title || item.kind || "notice") + " — " + (item.body || "") + " · " + via;
+    list.appendChild(li);
+  });
+}
+
+async function refreshInbox() {
+  if (!state.deviceToken) return;
+  try {
+    const body = await api("/v1/device-gateway/inbox");
+    state.inbox = body.items || [];
+    fillInbox();
+  } catch (_err) {}
+}
+
+async function enqueueOffline(kind, payload, key) {
+  const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
+  const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
+  try {
+    const body = await api("/v1/device-gateway/queue", {
+      method: "POST",
+      body: JSON.stringify({ idempotency_key: idem, kind: kind, payload: payload }),
+    });
+    item.state = (body.item && body.item.state) || (body.status === 201 ? "pending" : "accepted");
+    item.executed = !!body.executed;
+  } catch (err) {
+    if (err && err.status === 409) {
+      item.state = "duplicate";
+      item.executed = !!(err.body && err.body.executed);
+    } else {
+      item.state = err && err.status === 422 ? "rejected" : "queued_local";
+    }
+  }
+  state.queue.push(item);
+  return item;
+}
+
+function nativePost(payload) {
+  if (!(window.EvieNativeShell && window.EvieNativeShell.post)) return Promise.resolve(null);
+  return Promise.race([
+    window.EvieNativeShell.post(payload).catch(() => null),
+    new Promise((resolve) => setTimeout(() => resolve(null), 2500)),
+  ]);
+}
+
+async function drainPendingCapture() {
+  const pending = await nativePost({ type: "pending_capture" });
+  const note = pending && String(pending.note || "").trim();
+  if (!note) return;
+  const key = pending.idempotency_key || "";
+  await enqueueOffline("siri_capture", { text: note, executed: false }, key);
+}
+
+async function postNativeSnapshots() {
+  const hk = await nativePost({ type: "healthkit_snapshot" });
+  if (hk) {
+    try {
+      await api("/v1/device-gateway/healthkit/snapshot", {
+        method: "POST",
+        body: JSON.stringify({
+          snapshot: hk.snapshot || {},
+          captured_at: new Date().toISOString(),
+          available: !!hk.available,
+          reason: hk.reason || "no_entitlement",
+        }),
+      });
+    } catch (_err) {}
+  } else {
+    try {
+      await api("/v1/device-gateway/healthkit/snapshot", {
+        method: "POST",
+        body: JSON.stringify({
+          snapshot: {},
+          captured_at: new Date().toISOString(),
+          available: false,
+          reason: "no_entitlement",
+        }),
+      });
+    } catch (_err) {}
+  }
+  const cal = await nativePost({ type: "calendar_snapshot" });
+  if (cal && Array.isArray(cal.events) && cal.events.length) {
+    try {
+      await api("/v1/device-gateway/calendar/snapshot", {
+        method: "POST",
+        body: JSON.stringify({ events: cal.events, captured_at: new Date().toISOString() }),
+      });
+    } catch (_err) {}
+  }
+  const book = await nativePost({ type: "contacts_snapshot" });
+  if (book && Array.isArray(book.contacts) && book.contacts.length) {
+    try {
+      await api("/v1/device-gateway/contacts/snapshot", {
+        method: "POST",
+        body: JSON.stringify({ contacts: book.contacts, captured_at: new Date().toISOString() }),
+      });
+    } catch (_err) {}
+  }
+  const note = await nativePost({ type: "notification_status" });
+  try {
+    await api("/v1/device-gateway/push/register", {
+      method: "POST",
+      body: JSON.stringify({
+        token: "",
+        delivery: "poll",
+        bundle_id: "com.ev.evie.shell",
+        authorization: (note && note.authorization) || "undetermined",
+      }),
+    });
+  } catch (_err) {}
+}
+
+async function pullEverywhere() {
+  try {
+    const boot = await api("/v1/device-gateway/sync/bootstrap");
+    if (boot && boot.sync_cursor_str) state.syncCursor = boot.sync_cursor_str;
+    else if (boot && typeof boot.sync_cursor === "string") state.syncCursor = boot.sync_cursor;
+    if (state.syncCursor) {
+      await api("/v1/device-gateway/sync/changes?cursor=" + encodeURIComponent(state.syncCursor)).catch(() => {});
+    }
+  } catch (_err) {}
+}
+
+async function replayOfflineQueue() {
+  if (!state.deviceToken) return;
+  try {
+    const listed = await api("/v1/device-gateway/queue");
+    const items = listed.items || [];
+    const trust = (state.status && state.status.trust_state) || "";
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      if (!item || item.state !== "pending") continue;
+      const text = item.kind === "siri_capture" && item.payload && item.payload.text;
+      const mark = item.idempotency_key || text || "";
+      if (text && trust === "TRUSTED_OWNER_DEVICE" && mark && !state.drainedCaptures[mark]) {
+        try {
+          await sendText(text);
+          state.drainedCaptures[mark] = true;
+        } catch (_err) {
+          continue;
+        }
+      }
+      if (item.idempotency_key) {
+        try {
+          await api("/v1/device-gateway/queue/replay", {
+            method: "POST",
+            body: JSON.stringify({ idempotency_key: item.idempotency_key }),
+          });
+        } catch (_err) {}
+      }
+    }
+  } catch (_err) {}
+}
+
+async function syncPhoneLife() {
+  await drainPendingCapture().catch(() => {});
+  await postNativeSnapshots().catch(() => {});
+  await pullEverywhere().catch(() => {});
+  await replayOfflineQueue().catch(() => {});
+  await refreshInbox().catch(() => {});
+  try {
+    const snap = await api("/v1/device-gateway/status");
+    if (snap) {
+      state.status = snap;
+      if (state.hello) state.hello.status = snap;
+    }
+  } catch (_err) {}
 }
 
 function pushHistory(role, text) {
@@ -449,7 +675,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "settings-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -813,16 +1039,28 @@ async function loadToken() {
 
 async function api(path, opts = {}) {
   const headers = Object.assign({ "content-type": "application/json" }, opts.headers || {});
-  const bearer = state.accessToken || state.deviceToken;
+  const useDevice = !!opts._useDeviceToken;
+  const bearer = useDevice ? state.deviceToken : (state.accessToken || state.deviceToken);
   if (bearer) headers.Authorization = "Bearer " + bearer;
   const res = await fetch(path, Object.assign({}, opts, { headers }));
   const body = await res.json().catch(() => ({}));
   if (res.status === 401 && state.deviceToken && !opts._retried) {
-    const refreshed = await api("/v1/device-gateway/session", { method: "POST", _retried: true }).catch(() => null);
+    const refreshed = await api("/v1/device-gateway/session", {
+      method: "POST",
+      _retried: true,
+      _useDeviceToken: true,
+    }).catch(() => null);
     if (refreshed && refreshed.access_token) {
       state.accessToken = refreshed.access_token;
+      await idbPut("access_token", refreshed.access_token).catch(() => {});
+      if (refreshed.device) state.device = refreshed.device;
+      if (refreshed.status) state.status = refreshed.status;
       return api(path, Object.assign({}, opts, { _retried: true }));
     }
+    await idbDel("device_token").catch(() => {});
+    await idbDel("access_token").catch(() => {});
+    state.deviceToken = null;
+    state.accessToken = null;
   }
   if (!res.ok) {
     const err = new Error(detailOf(body, res.statusText || "request failed"));
@@ -838,6 +1076,79 @@ async function api(path, opts = {}) {
     throw err;
   }
   return body;
+}
+
+function detectPlatform() {
+  if (window.EvieNativeShell) return "ios";
+  const ua = navigator.userAgent || "";
+  if (/iPhone|iPad|iPod/.test(ua)) return "ios";
+  return "web";
+}
+
+function isStandalonePwa() {
+  return !!(window.navigator.standalone || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches));
+}
+
+function cameraRoleLabel() {
+  if (state.cameraRole === "pro") return "preferred (16 Pro)";
+  if (state.cameraRole === "standard") return "fallback (SE)";
+  return "not set";
+}
+
+function cameraHardware() {
+  if (state.cameraRole === "pro") {
+    return { camera_quality: "pro", camera_preference_rank: 0, provenance: "owner_declared" };
+  }
+  if (state.cameraRole === "standard") {
+    return { camera_quality: "standard", camera_preference_rank: 10, provenance: "owner_declared" };
+  }
+  return { camera_quality: "unknown", camera_preference_rank: 50, provenance: "undeclared" };
+}
+
+function refreshInstallHint() {
+  const el = $("install-hint");
+  if (!el) return;
+  const ios = detectPlatform() === "ios" || /iPhone|iPad|iPod/.test(navigator.userAgent || "");
+  el.hidden = !(ios && !isStandalonePwa());
+}
+
+function showUpdateLine() {
+  const el = $("update-line");
+  if (!el) return;
+  if (state.updateAvailable && state.updateAvailable.latest) {
+    el.hidden = false;
+    el.textContent = "Update available · tap to reload (" + state.updateAvailable.latest + ")";
+  } else {
+    el.hidden = true;
+    el.textContent = "";
+  }
+}
+
+async function nativeSnapshot() {
+  if (!(window.EvieNativeShell && window.EvieNativeShell.post)) {
+    return {
+      capabilities: ["foreground_voice", "camera", "text", "notification"],
+      hardware: cameraHardware(),
+      permissions: {},
+      native_shell: false,
+      standalone: isStandalonePwa(),
+    };
+  }
+  const reply = await window.EvieNativeShell.post({ type: "capabilities" }).catch(() => null);
+  const caps = (reply && reply.endpoint_capabilities) || (reply && reply.capabilities) || [];
+  const endpoint = ["foreground_voice", "camera", "text", "notification", "microphone", "location", "clipboard"];
+  caps.forEach((name) => {
+    if (endpoint.indexOf(name) === -1 && ["foreground_voice", "camera", "text", "notification", "microphone", "location", "clipboard"].indexOf(name) >= 0) {
+      endpoint.push(name);
+    }
+  });
+  return {
+    capabilities: endpoint,
+    hardware: Object.assign(cameraHardware(), (reply && reply.hardware) || {}),
+    permissions: (reply && (reply.permissions || reply.permission_evidence)) || {},
+    native_shell: true,
+    standalone: isStandalonePwa(),
+  };
 }
 
 // ---- Boot-stage diagnostics (semantic separation: auth ≠ compatibility) ----
@@ -930,6 +1241,7 @@ async function hello() {
   }
 
   // ---- A01 AUTH_REQUEST -------------------------------------------------
+  const native = await nativeSnapshot();
   let body;
   try {
     body = await api("/v1/device-gateway/hello", {
@@ -938,8 +1250,12 @@ async function hello() {
         protocol_version: PROTOCOL_VERSION,
         client_build: CLIENT_BUILD,
         instance_id: state.instanceId,
-        capabilities: ["foreground_voice", "camera", "text"],
+        capabilities: native.capabilities,
         foreground: !document.hidden,
+        platform: detectPlatform(),
+        hardware: native.hardware,
+        permissions: native.permissions,
+        native_shell: !!native.native_shell,
       }),
     });
   } catch (err) {
@@ -978,12 +1294,14 @@ async function hello() {
     state.updateAvailable = { latest: body.latest_web_build };
     pushActivity("Update available · server build " + body.latest_web_build);
     backgroundUpdateServiceWorker();
+    showUpdateLine();
   }
   try {
     sessionStorage.removeItem("evie_build_reload");
   } catch (_err) {}
   state.hello = body;
   state.device = body.device;
+  state.status = body.status || body.session_context || null;
   state.mediaBackend = body.recommended_backend || "auto";
   // A12: native capability handshake is optional and must never block READY.
   if (window.EvieMobileActions) {
@@ -1001,12 +1319,14 @@ async function hello() {
   }
   setMood("Ready");
   setConn("READY");
+  await syncPhoneLife().catch(() => {});
 }
 
 async function pair() {
   const token = $("pair-token").value.trim();
   if (!token) return;
   setConn("AUTHENTICATING");
+  const native = await nativeSnapshot();
   const body = await api("/v1/device-gateway/pair", {
     method: "POST",
     body: JSON.stringify({
@@ -1014,13 +1334,18 @@ async function pair() {
       protocol_version: PROTOCOL_VERSION,
       client_version: CLIENT_BUILD,
       instance_id: state.instanceId,
-      capabilities: ["foreground_voice", "camera", "text"],
+      capabilities: native.capabilities,
+      platform: detectPlatform(),
+      hardware: native.hardware,
+      permissions: native.permissions,
+      native_shell: !!native.native_shell,
     }),
   });
   state.deviceToken = body.device_token;
   state.accessToken = body.access_token;
   state.device = body.device;
   await saveToken(body.device_token);
+  await idbPut("access_token", body.access_token).catch(() => {});
   if (window.EvieNativeShell && window.EvieNativeShell.post) {
     window.EvieNativeShell.post({ type: "bind_session", token: body.device_token });
   }
@@ -1029,12 +1354,14 @@ async function pair() {
 }
 
 async function sendText(text) {
+  const requestId = crypto.randomUUID();
   const body = await api("/v1/device-gateway/text", {
     method: "POST",
     body: JSON.stringify({
       text,
       instance_id: state.instanceId,
-      request_id: crypto.randomUUID(),
+      request_id: requestId,
+      idempotency_key: requestId,
     }),
   });
   state.caption = body.reply || "";
@@ -1050,9 +1377,10 @@ async function sendText(text) {
 }
 
 async function captureCamera(body, facing) {
+  const action = (body && (body.camera_action || body.action)) || "look_once";
   $("camera-sheet").hidden = false;
-  textOf($("camera-copy"), "Opening perception");
-  setMood("Camera");
+  textOf($("camera-copy"), action === "record_clip" ? "Recording a short clip" : "Opening perception");
+  setMood(action === "record_clip" ? "Clip" : "Camera");
   const video = $("preview");
   const canvas = $("snap");
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -1062,7 +1390,11 @@ async function captureCamera(body, facing) {
   video.srcObject = stream;
   video.hidden = false;
   await video.play();
-  await new Promise((r) => requestAnimationFrame(r));
+  if (action === "record_clip") {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  } else {
+    await new Promise((r) => requestAnimationFrame(r));
+  }
   canvas.width = Math.min(video.videoWidth || 640, 1280);
   canvas.height = Math.min(video.videoHeight || 480, 720);
   canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -1074,7 +1406,7 @@ async function captureCamera(body, facing) {
   if (body && body.camera_request_id) {
     await api("/v1/device-gateway/camera/result", {
       method: "POST",
-      body: JSON.stringify({ request_id: body.camera_request_id, jpeg_b64: jpeg }),
+      body: JSON.stringify({ request_id: body.camera_request_id, jpeg_b64: jpeg, action: action }),
     });
   }
   if (state.talking) setMood("Listening");
@@ -1210,7 +1542,7 @@ async function handleLiveMessage(gen, ev) {
 
 async function handleCameraRequest(msg) {
   try {
-    const jpeg = await captureCamera(null);
+    const jpeg = await captureCamera(msg);
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify({
         type: "look_frame",
@@ -1219,14 +1551,20 @@ async function handleCameraRequest(msg) {
         last: true,
       }));
     } else if (state.sessionId) {
+      const live = state.webrtc && state.webrtc._liveBody
+        ? state.webrtc._liveBody({ request_id: msg.request_id, jpeg_b64: jpeg, last: true, action: msg.action || "look_once" })
+        : {
+            session_id: state.sessionId,
+            instance_id: state.instanceId,
+            lease_id: state.leaseId,
+            request_id: msg.request_id,
+            jpeg_b64: jpeg,
+            last: true,
+            action: msg.action || "look_once",
+          };
       await api("/v1/device-gateway/live/look-frame", {
         method: "POST",
-        body: JSON.stringify({
-          session_id: state.sessionId,
-          request_id: msg.request_id,
-          jpeg_b64: jpeg,
-          last: true,
-        }),
+        body: JSON.stringify(live),
       });
     }
   } catch (_err) {
@@ -1275,9 +1613,11 @@ async function talk() {
         instance_id: state.instanceId,
         method: "manual",
         media_backend: "webrtc_strict",
+        client_generation: (state.sessionGen || 0) + 1,
       }),
     });
     state.sessionId = opened.session_id;
+    state.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id);
     const want = opened.media_backend || "webrtc_strict";
     const strict = opened.strict_webrtc === true || want === "webrtc_strict" || !opened.ws_ticket;
     if ((want === "webrtc" || want === "webrtc_strict") && window.RTCPeerConnection && window.EvieWebRTC) {
@@ -1346,6 +1686,7 @@ async function startWebRTC(opened) {
   const rtc = new window.EvieWebRTC({
     api: api,
     instanceId: state.instanceId,
+    leaseId: state.leaseId || opened.lease_id,
     audioEl: $("webrtc-out"),
     onState: (label) => {
       if (label === "listening") setMood("Listening");
@@ -1752,6 +2093,12 @@ async function resetLocal(unpair) {
 
 async function boot() {
   await ensureAudioModules();
+  try {
+    const storedRole = localStorage.getItem("evie_camera_role");
+    if (storedRole === "pro" || storedRole === "standard" || storedRole === "unknown") {
+      state.cameraRole = storedRole;
+    }
+  } catch (_err) {}
   const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const Presence = window.EviePresence || window.EvieOrb;
   state.orb = new Presence($("orb"));
@@ -1759,6 +2106,11 @@ async function boot() {
   state.orb.start();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/evie/sw.js", { scope: "/evie/" }).catch(() => {});
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (!state.updateAvailable) return;
+      if (!oneShot("evie_sw_controller")) return;
+      location.reload();
+    });
   }
   $("pair-btn").addEventListener("click", () => pair().catch((err) => {
     state.caption = String(err.message || err);
@@ -1800,9 +2152,10 @@ async function boot() {
       conversation: "conversation-sheet",
       devices: "devices-sheet",
       activity: "activity-sheet",
+      inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["conversation-sheet", "devices-sheet", "activity-sheet", "settings-sheet"].forEach((id) => {
+    ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -1868,6 +2221,24 @@ async function boot() {
     if (window.EvieMobileActions) window.EvieMobileActions.cancel();
   });
   $("retry-btn").addEventListener("click", () => hello().catch(() => scheduleReconnect()));
+  document.querySelectorAll("[data-camera-role]").forEach((btn) => {
+    btn.classList.toggle("on", btn.getAttribute("data-camera-role") === state.cameraRole);
+    btn.addEventListener("click", () => {
+      state.cameraRole = btn.getAttribute("data-camera-role") || "unknown";
+      try { localStorage.setItem("evie_camera_role", state.cameraRole); } catch (_err) {}
+      document.querySelectorAll("[data-camera-role]").forEach((other) => {
+        other.classList.toggle("on", other === btn);
+      });
+      hello().catch(() => {});
+      render();
+    });
+  });
+  const updateLine = $("update-line");
+  if (updateLine) {
+    updateLine.addEventListener("click", () => {
+      updateServiceWorkerOnce().catch(() => location.reload());
+    });
+  }
   $("copy-voice-diag-btn").addEventListener("click", () => copyVoiceDiagnostic());
   $("retry-voice-btn").addEventListener("click", () => {
     (state.talking ? stopTalk() : Promise.resolve()).then(() => talk()).catch((err) => {
@@ -1901,6 +2272,9 @@ async function boot() {
   }));
   document.addEventListener("visibilitychange", () => {
     if (document.hidden && state.talking) { /* keep live; do not auto-stop */ }
+    if (!document.hidden) {
+      syncPhoneLife().catch(() => {});
+    }
     if (!document.hidden && window.EvieMobileActions) {
       const checkpoint = window.EvieMobileActions.onForeground();
       if (checkpoint && state.talking && state.webrtc && state.webrtc.pc) {
@@ -1914,11 +2288,36 @@ async function boot() {
   });
   try {
     state.deviceToken = await loadToken();
+    const storedAccess = await idbGet("access_token");
+    if (storedAccess) state.accessToken = storedAccess;
     if (state.deviceToken && window.EvieNativeShell && window.EvieNativeShell.post) {
       window.EvieNativeShell.post({ type: "bind_session", token: state.deviceToken });
     }
-    if (state.deviceToken) await hello();
-    else setConn("DISCONNECTED");
+    if (state.deviceToken) {
+      try {
+        const refreshed = await api("/v1/device-gateway/session", {
+          method: "POST",
+          _useDeviceToken: true,
+          _retried: true,
+        });
+        if (refreshed && refreshed.access_token) {
+          state.accessToken = refreshed.access_token;
+          await idbPut("access_token", refreshed.access_token).catch(() => {});
+          state.device = refreshed.device || state.device;
+          state.status = refreshed.status || state.status;
+        }
+      } catch (err) {
+        if (err && err.status === 401) {
+          await idbDel("device_token").catch(() => {});
+          await idbDel("access_token").catch(() => {});
+          state.deviceToken = null;
+          state.accessToken = null;
+          bootFail("A00", "DEVICE_REVOKED", "This phone is no longer trusted.", { status: 401 });
+          return;
+        }
+      }
+      await hello();
+    } else setConn("DISCONNECTED");
   } catch (_err) {
     setConn("DISCONNECTED");
   }
