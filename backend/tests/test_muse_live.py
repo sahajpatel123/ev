@@ -463,6 +463,14 @@ async def test_owner_facing_sidecar_calculate_and_research_and_memory() -> None:
         mid = await client.get("http://127.0.0.1:18000/v1/health")
         assert _spark_calls(mid.json()) == spark0
 
+        combined = await _sidecar_chat(
+            client, bearer, "Open Calculator and calculate 19 times 47"
+        )
+        assert combined.status_code == 200, combined.text
+        assert "893" in (combined.json().get("reply") or "").replace(",", "")
+        after_combined = await client.get("http://127.0.0.1:18000/v1/health")
+        assert _spark_calls(after_combined.json()) == spark0
+
         research = await _sidecar_chat(
             client, bearer, "research the current weather in Surat, one short sentence"
         )

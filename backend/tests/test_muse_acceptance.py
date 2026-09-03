@@ -414,6 +414,33 @@ async def test_v1_chat_calculate_is_executor_zero_spark(
 
 
 @pytest.mark.asyncio
+async def test_v1_chat_open_calculator_and_calculate_is_zero_spark(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.gateway.muse import muse_counters_snapshot, reset_muse_counters
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "meta_model_api_key", None)
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+
+    def boom_provider():
+        raise AssertionError("Spark must not glue deterministic computer pieces")
+
+    monkeypatch.setattr("app.api.core.get_chat_provider", boom_provider)
+    reset_muse_counters()
+    chat = await client.post(
+        "/v1/chat", json={"message": "Open Calculator and calculate 19 times 47"}
+    )
+    assert chat.status_code == 200, chat.text
+    reply = (chat.json().get("reply") or "").replace(",", "")
+    assert "893" in reply
+    assert muse_counters_snapshot()["spark_calls"] == 0
+
+
+@pytest.mark.asyncio
 async def test_muse_live_stream_failure_is_voice_error_not_nameerror(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

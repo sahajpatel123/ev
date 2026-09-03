@@ -1234,48 +1234,54 @@ async def _maybe_deterministic_action_reply(
     allow_sensitive: bool,
     request_id: str | None,
 ) -> str | None:
-    """Speak calculate/open_app receipts without Spark when the tool already ran."""
+    """Speak calculate/open_app receipts without Spark.
+
+    Combined turns such as "Open Calculator and calculate 19 times 47"
+    run every deterministic piece. Spark is not used to glue them.
+    """
 
     from app.ev.briefing import extract_expression
     from app.ev.computer import _calculator_expression
-    from app.ev.tool_select import resolve_live_action
+    from app.ev.tool_select import OPEN_APP_RE
     from app.ev.tools import dispatch, life_success_reply
 
-    resolved = resolve_live_action(message)
-    if resolved is None:
+    open_match = OPEN_APP_RE.search(message or "")
+    expression = extract_expression(message) or _calculator_expression(message or "")
+    if not open_match and not expression:
         return None
-    name, arguments = resolved
-    if name not in {"calculate", "open_app"}:
-        return None
-    if name == "calculate":
-        expression = extract_expression(message) or _calculator_expression(message)
-        if not expression:
-            return None
-        arguments = {"expression": expression}
-    response = await dispatch(
-        session,
-        name,
-        arguments,
-        actor=actor,
-        allow_sensitive=allow_sensitive,
-        request_id=request_id,
-        device_id=device_id,
-        channel="voice" if actor == "voice" else "action",
-    )
-    payload = response.result if isinstance(response.result, dict) else {}
-    if name == "calculate" and payload.get("result") is not None:
-        value = payload["result"]
-        try:
-            number = float(value)
-            shown: object = int(number) if number.is_integer() else number
-        except (TypeError, ValueError):
-            shown = value
-        return str(shown)
-    spoken = (payload.get("spoken") or "").strip()
-    if spoken:
-        return spoken
-    shaped = life_success_reply({**payload, "_tool": name}, tool_name=name).strip()
-    return shaped or None
+
+    async def _run(name: str, arguments: dict) -> dict:
+        response = await dispatch(
+            session,
+            name,
+            arguments,
+            actor=actor,
+            allow_sensitive=allow_sensitive,
+            request_id=request_id,
+            device_id=device_id,
+            channel="voice" if actor == "voice" else "action",
+        )
+        return response.result if isinstance(response.result, dict) else {}
+
+    parts: list[str] = []
+    if open_match:
+        payload = await _run("open_app", {"name": open_match.group("name")})
+        spoken = (payload.get("spoken") or "").strip()
+        if not spoken:
+            spoken = life_success_reply({**payload, "_tool": "open_app"}, tool_name="open_app").strip()
+        if spoken:
+            parts.append(spoken)
+    if expression:
+        payload = await _run("calculate", {"expression": expression})
+        value = payload.get("result")
+        if value is not None:
+            try:
+                number = float(value)
+                shown: object = int(number) if number.is_integer() else number
+            except (TypeError, ValueError):
+                shown = value
+            parts.append(str(shown))
+    return " ".join(parts).strip() or None
 
 
 async def run_chat_pipeline(
