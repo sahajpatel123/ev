@@ -366,6 +366,42 @@ async def test_laptop_file_rewrite_fails_closed_without_muse_key(
         await laptop_files._intelligent_rewrite("", "write hello", create=True)
 
 
+def test_memory_enrichment_uses_spark_and_fails_closed_without_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.memory.llm_extractor import ENRICHMENT_PROVIDERS, LLMExtractor
+
+    assert "meta_muse_spark" in ENRICHMENT_PROVIDERS
+    monkeypatch.setenv("EV_LLM_EXTRACTION_ENABLED", "true")
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "meta_model_api_key", None)
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    assert LLMExtractor().available is False
+
+    class Spark:
+        name = "meta_muse_spark"
+
+    assert LLMExtractor(provider=Spark()).available is True
+
+
+@pytest.mark.asyncio
+async def test_look_polish_fails_closed_without_muse_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev import look
+    from app.gateway.muse import MuseProviderUnavailable
+
+    monkeypatch.setattr(
+        "app.ev.look.get_chat_provider",
+        lambda: (_ for _ in ()).throw(MuseProviderUnavailable("missing")),
+    )
+    out = await look._polish_spoken("A red mug is on the desk.", {"ocr_text": "mug"})
+    assert out == "A red mug is on the desk."
+
+
 @pytest.mark.asyncio
 async def test_voice_memory_fallback_uses_muse_not_whisper(
     monkeypatch: pytest.MonkeyPatch,

@@ -30,7 +30,7 @@ from app.utils.text import fingerprint, normalize_text
 ALLOWED_MEMORY_TYPES = {"decision", "preference", "goal", "fact", "observation", "episodic"}
 ALLOWED_SOURCE_TYPES = {"explicit", "inferred", "derived"}
 ALLOWED_ENTITY_TYPES = {"person", "place", "project", "topic", "other"}
-ENRICHMENT_PROVIDERS = {"deepseek", "local", "xai"}
+ENRICHMENT_PROVIDERS = {"deepseek", "local", "xai", "meta_muse_spark", "muse", "muse_spark"}
 TYPED_TYPES = {"decision", "preference", "goal", "fact"}
 
 _OUTPUT_SHAPE = (
@@ -304,9 +304,13 @@ class LLMExtractor:
         if not llm_extraction_enabled():
             return False
         if self.provider is None:
+            from app.gateway.muse import MuseProviderUnavailable
             from app.gateway.providers import get_chat_provider
 
-            self.provider = get_chat_provider()
+            try:
+                self.provider = get_chat_provider()
+            except MuseProviderUnavailable:
+                return False
         return (
             self.provider is not None
             and getattr(self.provider, "name", "") in ENRICHMENT_PROVIDERS
