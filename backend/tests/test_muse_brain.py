@@ -27,6 +27,7 @@ def test_health_snapshot_reports_muse_counters() -> None:
     assert "muse" in snap
     assert snap["muse"]["reasoning_effort"] == "high"
     assert "spark_calls" in snap["muse"]
+    assert "spark_reasoning_tokens" in snap["muse"]
 
 
 def test_muse_spark_is_registered() -> None:
@@ -353,6 +354,59 @@ def test_muse_spark_payload_drops_legacy_thinking() -> None:
     assert payload["reasoning_effort"] == "high"
     assert "temperature" not in payload
     assert "thinking" not in payload
+
+
+@pytest.mark.asyncio
+async def test_muse_spark_structured_omits_strict_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.contracts import ChatMessage
+    from app.gateway.muse_spark import MuseSparkProvider
+
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "model": "muse-spark-1.3-contributor",
+                "choices": [{"message": {"content": '{"route":"CONVERSATION","operation":"UNKNOWN"}'}}],
+                "usage": {
+                    "prompt_tokens": 8,
+                    "completion_tokens": 4,
+                    "completion_tokens_details": {"reasoning_tokens": 12},
+                },
+            }
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            captured["payload"] = json
+            return _Resp()
+
+    monkeypatch.setattr("app.gateway.muse_spark.httpx.AsyncClient", _Client)
+    reset_muse_counters()
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="test-key",
+        default_model="muse-spark-1.3-contributor",
+    )
+    result = await provider.chat_structured(
+        [ChatMessage(role="user", content="hi")],
+        schema={"type": "object", "properties": {"route": {"type": "string"}}},
+    )
+    schema = captured["payload"]["response_format"]["json_schema"]
+    assert "strict" not in schema
+    assert result.text
+    assert muse_counters_snapshot()["spark_reasoning_tokens"] == 12
 
 
 def test_phone_asr_seam_left_on_openai_realtime() -> None:

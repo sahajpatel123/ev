@@ -27,6 +27,7 @@ _COUNTERS: dict[str, Any] = {
     "spark_input_tokens": 0,
     "spark_output_tokens": 0,
     "spark_cached_tokens": 0,
+    "spark_reasoning_tokens": 0,
     "voice_calls": 0,
     "voice_audio_ms": 0,
 }
@@ -127,11 +128,14 @@ def note_spark_call(*, usage: dict | None = None, model: str | None = None) -> N
     completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
     details = usage.get("prompt_tokens_details") if isinstance(usage.get("prompt_tokens_details"), dict) else {}
     cached = int(details.get("cached_tokens") or usage.get("cached_tokens") or 0)
+    out_details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+    reasoning = int(out_details.get("reasoning_tokens") or usage.get("reasoning_tokens") or 0)
     with _LOCK:
         _COUNTERS["spark_calls"] += 1
         _COUNTERS["spark_input_tokens"] += prompt
         _COUNTERS["spark_output_tokens"] += completion
         _COUNTERS["spark_cached_tokens"] += cached
+        _COUNTERS["spark_reasoning_tokens"] += reasoning
 
 
 def note_voice_call(*, audio_ms: int = 0) -> None:
@@ -148,6 +152,7 @@ def muse_counters_snapshot() -> dict[str, Any]:
             "spark_input_tokens": int(_COUNTERS["spark_input_tokens"]),
             "spark_output_tokens": int(_COUNTERS["spark_output_tokens"]),
             "spark_cached_tokens": int(_COUNTERS["spark_cached_tokens"]),
+            "spark_reasoning_tokens": int(_COUNTERS["spark_reasoning_tokens"]),
             "voice_calls": int(_COUNTERS["voice_calls"]),
             "voice_audio_ms": audio_ms,
             "voice_audio_minutes": round(audio_ms / 60000.0, 4),

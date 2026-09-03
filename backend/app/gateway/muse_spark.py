@@ -187,7 +187,8 @@ class MuseSparkProvider(DeepSeekProvider):
                 "type": "json_schema",
                 "json_schema": {
                     "name": schema_name,
-                    "strict": True,
+                    # Omit strict. Meta defaults false; TurnIntent does not
+                    # list every property in required, which 400s under strict.
                     "schema": schema,
                 },
             },
