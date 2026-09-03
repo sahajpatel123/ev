@@ -263,6 +263,18 @@ async def test_owner_facing_talk_sidecar_health_is_muse_not_openai_or_grok() -> 
     assert manager.get("provider") == "meta_muse_spark"
     assert providers.get("live") != "openai-realtime"
     assert providers.get("chat") != "xai"
+    muse = models.get("muse") or {}
+    assert muse.get("reasoning_effort") == "high"
+    runtime = body.get("runtime") or {}
+    checks = {row.get("name"): row for row in (runtime.get("checks") or []) if isinstance(row, dict)}
+    tts = checks.get("tts") or {}
+    if tts:
+        assert tts.get("provider") == "edge_tts"
+
+
+def _spark_calls(body: dict) -> int:
+    muse = ((body.get("models") or {}).get("muse") or {})
+    return int(muse.get("spark_calls") or 0)
 
 
 @pytest.mark.asyncio
@@ -308,3 +320,65 @@ async def test_owner_facing_sidecar_local_intent_does_not_need_spark() -> None:
     reply = (resp.json().get("reply") or "").strip()
     assert reply
     assert "unavailable" not in reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_owner_facing_sidecar_spark_counters_and_composed_hearing() -> None:
+    """Typed chat on :18000 must move Spark counters; local intent must not.
+
+    Also compose Muse Voice file ASR → /v1/chat so owner-facing proof is not
+    only a text ping. TTSPlayer stays on the Mac client; the sidecar mouth is
+    Edge TTS.
+    """
+
+    import base64
+
+    import httpx
+
+    from app.voice.muse_voice import MuseVoiceTranscriber
+
+    bearer = _sidecar_bearer()
+    headers = {"Authorization": f"Bearer {bearer}"}
+    async with httpx.AsyncClient(timeout=90) as client:
+        before = await client.get("http://127.0.0.1:18000/v1/health")
+        assert before.status_code == 200, before.text
+        assert (before.json().get("providers") or {}).get("chat") == "meta_muse_spark"
+        spark0 = _spark_calls(before.json())
+
+        local = await client.post(
+            "http://127.0.0.1:18000/v1/chat",
+            headers=headers,
+            json={"message": "are you there"},
+        )
+        assert local.status_code == 200, local.text
+        mid = await client.get("http://127.0.0.1:18000/v1/health")
+        assert _spark_calls(mid.json()) == spark0
+
+        conv = await client.post(
+            "http://127.0.0.1:18000/v1/chat",
+            headers=headers,
+            json={"message": "Reply with the single word pong."},
+        )
+        assert conv.status_code == 200, conv.text
+        after = await client.get("http://127.0.0.1:18000/v1/health")
+        assert _spark_calls(after.json()) >= spark0 + 1
+        model = (conv.json().get("model") or "").lower()
+        assert "grok" not in model
+        assert "luna" not in model
+        assert "deepseek" not in model
+
+    wav_bytes, _pcm = _spoken_wav_pcm("are you there")
+    heard = await MuseVoiceTranscriber().transcribe(
+        audio_b64=base64.b64encode(wav_bytes).decode("ascii")
+    )
+    assert (heard.text or "").strip()
+    assert heard.provider == "meta_muse_voice"
+    async with httpx.AsyncClient(timeout=60) as client:
+        composed = await client.post(
+            "http://127.0.0.1:18000/v1/chat",
+            headers=headers,
+            json={"message": heard.text},
+        )
+    assert composed.status_code == 200, composed.text
+    assert (composed.json().get("reply") or "").strip()
+    assert "unavailable" not in (composed.json().get("reply") or "").lower()

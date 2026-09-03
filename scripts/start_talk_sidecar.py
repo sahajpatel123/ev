@@ -114,6 +114,64 @@ def refuse_muse_without_key() -> None:
         raise SystemExit(2)
 
 
+def talk_listen_pids() -> list[int]:
+    """PIDs listening on Talk's port. Never used to touch production :8000."""
+
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["lsof", "-nP", "-tiTCP:18000", "-sTCP:LISTEN"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    pids: list[int] = []
+    for raw in (proc.stdout or "").split():
+        try:
+            pid = int(raw)
+        except ValueError:
+            continue
+        if pid > 1:
+            pids.append(pid)
+    return pids
+
+
+def stop_existing_talk_sidecar() -> None:
+    """Replace the current Talk process so Muse can bind :18000.
+
+    Called only after refuse_muse_without_key(). Does not touch ev.api :8000.
+    """
+
+    import signal
+    import time
+
+    me = os.getpid()
+    for pid in talk_listen_pids():
+        if pid == me:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+    deadline = time.time() + 8.0
+    while time.time() < deadline:
+        left = [pid for pid in talk_listen_pids() if pid != me]
+        if not left:
+            return
+        time.sleep(0.2)
+    for pid in talk_listen_pids():
+        if pid == me:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            continue
+
+
 def main() -> None:
     load(REPO / ".env")
     load(REPO / "backend" / ".env")
@@ -122,6 +180,7 @@ def main() -> None:
     secrets = Path(os.environ.get("EV_SECRETS_FILE", str(Path.home() / ".ev/secrets/production.env"))).expanduser()
     load(secrets)
     refuse_muse_without_key()
+    stop_existing_talk_sidecar()
     daemonize()
     SUPPORT.mkdir(parents=True, exist_ok=True)
     # Keep EV_DATABASE_URL and EV_VOICE_LIVE_MODE from .env so Talk sees the

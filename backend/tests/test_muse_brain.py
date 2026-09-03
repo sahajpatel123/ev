@@ -426,6 +426,17 @@ def test_talk_sidecar_refuses_muse_without_meta_key(monkeypatch: pytest.MonkeyPa
     assert mod.meta_key_loaded() is True
 
 
+def test_talk_sidecar_replaces_port_only_after_meta_key_gate() -> None:
+    from pathlib import Path
+
+    source = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py").read_text()
+    main = source.split("def main() -> None:", 1)[1]
+    assert main.index("refuse_muse_without_key()") < main.index("stop_existing_talk_sidecar()")
+    assert main.index("stop_existing_talk_sidecar()") < main.index("daemonize()")
+    assert "tiTCP:8000" not in source
+    assert "kickstart" not in source
+
+
 @pytest.mark.asyncio
 async def test_muse_spark_complete_raw_strips_reasoning_and_non_auto_tool_choice(
     monkeypatch: pytest.MonkeyPatch,
