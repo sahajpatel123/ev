@@ -366,6 +366,83 @@ async def test_laptop_file_rewrite_fails_closed_without_muse_key(
         await laptop_files._intelligent_rewrite("", "write hello", create=True)
 
 
+@pytest.mark.asyncio
+async def test_voice_memory_fallback_uses_muse_not_whisper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.voice.contracts import Transcript
+    from app.voice.live import voice_memory
+
+    monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-must-not-be-used")
+    openai_calls = {"n": 0}
+
+    class MuseEngine:
+        async def transcribe(self, audio_b64=None, **kwargs):
+            return Transcript(text="Open Calculator", confidence=1.0)
+
+    class BoomOpenAI:
+        def __init__(self, *args, **kwargs):
+            openai_calls["n"] += 1
+            raise AssertionError("OpenAI Whisper must not hear while Muse is the ear")
+
+    monkeypatch.setattr("app.voice.asr.get_transcriber", lambda: MuseEngine())
+    monkeypatch.setattr("app.voice.asr.OpenAICompatTranscriber", BoomOpenAI)
+    text = await voice_memory.transcribe_utterance_pcm(b"\x00\x01" * 200)
+    assert text == "Open Calculator"
+    assert openai_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_voice_memory_muse_hearing_fails_closed_not_whisper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.voice.live import voice_memory
+
+    monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-must-not-be-used")
+    openai_calls = {"n": 0}
+
+    class BoomMuse:
+        async def transcribe(self, audio_b64=None, **kwargs):
+            raise RuntimeError("muse down")
+
+    class BoomOpenAI:
+        def __init__(self, *args, **kwargs):
+            openai_calls["n"] += 1
+            raise AssertionError("Whisper must not substitute for Muse Voice")
+
+        async def transcribe(self, *args, **kwargs):
+            raise AssertionError("Whisper must not substitute for Muse Voice")
+
+    monkeypatch.setattr("app.voice.asr.get_transcriber", lambda: BoomMuse())
+    monkeypatch.setattr("app.voice.asr.OpenAICompatTranscriber", BoomOpenAI)
+    text = await voice_memory.transcribe_utterance_pcm(b"\x00\x01" * 200)
+    assert text == ""
+    assert openai_calls["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_multi_step_computer_executor_does_not_call_spark() -> None:
+    from app.ev.computer_executor import ComputerExecutor, reset_fence
+    from tests.test_computer_executor import FakeMac, _request
+
+    reset_muse_counters()
+    reset_fence()
+    mac = FakeMac(responses={"open_app": {"ok": True, "set_frontmost": "Calculator"}})
+    executor = ComputerExecutor(live=mac)
+    first = await executor.execute(
+        _request("navigate", "open_app", target="Calculator", args={"name": "Calculator"})
+    )
+    second = await executor.execute(
+        _request("act", "ui_action", args={"action": "press", "element_ref": "e1"})
+    )
+    assert first.family == "navigate"
+    assert second.family == "act"
+    assert muse_counters_snapshot()["spark_calls"] == 0
+    reset_fence()
+
+
 def test_live_transport_uses_pipeline_mouth_when_s2s_off(monkeypatch: pytest.MonkeyPatch) -> None:
     import inspect
 
