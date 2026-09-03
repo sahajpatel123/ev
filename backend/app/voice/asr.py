@@ -1316,4 +1316,8 @@ def get_transcriber() -> Transcriber:
         return ParakeetTdtTranscriber()
     if provider == "echo":
         return EchoTranscriber()
+    if provider in ("meta_muse_voice", "muse_voice"):
+        from app.voice.muse_voice import MuseVoiceTranscriber
+
+        return MuseVoiceTranscriber()
     raise RuntimeError(f"unknown voice_asr_provider {provider!r}")

@@ -35,6 +35,11 @@ if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
     os.environ["EV_OPENCODE_API_KEY"] = ""
     os.environ["EV_VOICE_LIVE_BRAIN"] = "pipeline"
     os.environ["EV_BRAVE_SEARCH_API_KEY"] = ""
+    if os.environ.get("EV_TEST_USE_LIVE_MUSE") != "1":
+        os.environ["EV_META_MODEL_API_KEY"] = ""
+        os.environ["META_MODEL_API_KEY"] = ""
+        os.environ["MODEL_API_KEY"] = ""
+        os.environ["EV_INTELLIGENCE_PROVIDER"] = ""
 # Health/queue probes ping Redis; default redis://localhost:6379/0 is the
 # owner instance. Port 9 refuses immediately. Opt in with EV_TEST_USE_LIVE_REDIS=1.
 if os.environ.get("EV_TEST_USE_LIVE_REDIS") != "1":

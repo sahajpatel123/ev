@@ -74,6 +74,10 @@ SYSTEM_PROMPT = (
 def curator_available() -> bool:
     if not settings.memory_curator_enabled:
         return False
+    from app.gateway.muse import muse_intelligence_active, muse_key_loaded
+
+    if muse_intelligence_active():
+        return muse_key_loaded()
     return bool((settings.deepseek_api_key or "").strip())
 
 
@@ -305,21 +309,40 @@ async def _apply(session: AsyncSession, event: Event, payload: dict[str, Any]) -
 
 
 async def _call_deepseek(prompt: str) -> tuple[str, int]:
+    """Reasoning call for the curator. Writer ownership stays with MemoryWriter.
+
+    Named for the historical DeepSeek path. Normal routing uses Muse Spark
+    when intelligence_provider is Muse; DeepSeek remains legacy-only.
+    """
+
     from app.contracts import ChatMessage
+    from app.gateway.muse import muse_intelligence_active, muse_spark_model
     from app.gateway.providers import DeepSeekProvider
 
-    provider = DeepSeekProvider(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
-        default_model=settings.deepseek_model,
-    )
-    result = await provider.chat(
-        [
-            ChatMessage(role="system", content=SYSTEM_PROMPT),
-            ChatMessage(role="user", content=prompt),
-        ],
-        temperature=0.0,
-    )
+    if muse_intelligence_active():
+        from app.gateway.muse_spark import muse_spark_provider
+
+        provider = muse_spark_provider()
+        result = await provider.chat(
+            [
+                ChatMessage(role="system", content=SYSTEM_PROMPT),
+                ChatMessage(role="user", content=prompt),
+            ],
+            model=muse_spark_model(),
+        )
+    else:
+        provider = DeepSeekProvider(
+            api_key=settings.deepseek_api_key,
+            base_url=settings.deepseek_base_url,
+            default_model=settings.deepseek_model,
+        )
+        result = await provider.chat(
+            [
+                ChatMessage(role="system", content=SYSTEM_PROMPT),
+                ChatMessage(role="user", content=prompt),
+            ],
+            temperature=0.0,
+        )
     text = getattr(result, "text", None) or ""
     usage = getattr(result, "usage", None) or {}
     tokens = int((usage.get("total_tokens") if isinstance(usage, dict) else 0) or 0)
@@ -364,7 +387,7 @@ async def run_job(session: AsyncSession, job: MemoryCurationJob) -> None:
         _mark_retryable(
             job,
             error_class="provider_unavailable",
-            detail="deepseek_unavailable",
+            detail="curator_provider_unavailable",
             events=events,
         )
         if job.kind == "remember":

@@ -189,6 +189,17 @@ class OpenAICompatibleProvider(StreamingChatProvider):
     def _thinking_payload(self) -> dict | None:
         return None
 
+    def _payload_extras(self) -> dict:
+        return {}
+
+    def _apply_provider_payload(self, payload: dict, *, temperature: float) -> dict:
+        payload["temperature"] = temperature
+        thinking = self._thinking_payload()
+        if thinking is not None:
+            payload["thinking"] = thinking
+        payload.update(self._payload_extras())
+        return payload
+
 
 class DeepSeekProvider(OpenAICompatibleProvider):
     """DeepSeek via the OpenAI-compatible chat completions API."""
@@ -251,11 +262,8 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         payload: dict = {
             "model": model or self.default_model,
             "messages": [self._message_payload(m) for m in messages],
-            "temperature": temperature,
         }
-        thinking = self._thinking_payload()
-        if thinking is not None:
-            payload["thinking"] = thinking
+        payload = self._apply_provider_payload(payload, temperature=temperature)
         if tools:
             payload["tools"] = [
                 {
@@ -355,13 +363,10 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         payload: dict = {
             "model": resolved_model,
             "messages": [self._message_payload(m) for m in messages],
-            "temperature": temperature,
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        thinking = self._thinking_payload()
-        if thinking is not None:
-            payload["thinking"] = thinking
+        payload = self._apply_provider_payload(payload, temperature=temperature)
         tool_buffers: dict[int, dict[str, str]] = {}
         final_usage: dict = {}
         finish_reason: str | None = None
@@ -530,6 +535,9 @@ class XAIProvider(DeepSeekProvider):
     supports_media = True
     supports_tools = True
 
+    def _thinking_payload(self) -> dict | None:
+        return None
+
 
 def _deepseek_factory() -> DeepSeekProvider:
     return DeepSeekProvider(
@@ -591,8 +599,21 @@ register_provider("opencode", _opencode_factory)
 # --- END AGENT OPENCODE ---
 
 
+def _muse_spark_factory() -> ChatProvider:
+    from app.gateway.muse_spark import muse_spark_provider
+
+    return muse_spark_provider()
+
+
+register_provider("meta_muse_spark", _muse_spark_factory)
+register_provider("muse", _muse_spark_factory)
+register_provider("muse_spark", _muse_spark_factory)
+
+
 def get_chat_provider() -> ChatProvider:
-    name = settings.chat_provider
+    from app.gateway.muse import configured_intelligence_provider
+
+    name = configured_intelligence_provider() or settings.chat_provider
     factory = PROVIDER_REGISTRY.get(name)
     if factory is None:
         known = ", ".join(sorted(PROVIDER_REGISTRY))

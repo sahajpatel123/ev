@@ -23,7 +23,7 @@ Routes:
 - STATE_MUTATION: create/update canonical state
 - MISSION_CONTROL: status or what-changed
 - ACTION: device/gear action (not life state)
-- DELEGATED_JOB: complex work for DeepSeek (research, planning, coding, analysis)
+- DELEGATED_JOB: complex work requiring planning (Spark proposes; existing executor acts)
 - RESEARCH_MISSION: research task
 - CLARIFICATION: ambiguous, need question
 - UNSUPPORTED: not supported
@@ -577,7 +577,42 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
         _record_metrics(latency, usage={"route_source": "DETERMINISTIC", "fallback": "rule_based"})
         record_route_source("DETERMINISTIC")
         return intent
-    use_luna_api = bool((settings.openai_api_key or "").strip())
+    use_spark = False
+    try:
+        from app.gateway.muse import muse_intelligence_active, muse_key_loaded
+
+        use_spark = muse_intelligence_active()
+    except Exception:
+        use_spark = False
+    if use_spark:
+        if not muse_key_loaded():
+            return TurnIntent(
+                route="CLARIFICATION",
+                operation="UNKNOWN",
+                needs_clarification=True,
+                clarification_question="Intelligence provider is unavailable.",
+                confidence=0.0,
+            )
+        try:
+            intent = await _call_luna(turn, context)
+            latency = (time.perf_counter() - start) * 1000
+            if not isinstance(intent, TurnIntent):
+                intent = TurnIntent.model_validate(intent)
+            _record_metrics(latency, usage={"model": "muse-spark-1.3-contributor", "route_source": "SPARK"})
+            record_route_source("SPARK")
+            return intent
+        except Exception:
+            _record_metrics((time.perf_counter() - start) * 1000, error=True)
+            return TurnIntent(
+                route="CLARIFICATION",
+                operation="UNKNOWN",
+                needs_clarification=True,
+                clarification_question="Intelligence provider is unavailable.",
+                confidence=0.0,
+            )
+    use_luna_api = bool((settings.openai_api_key or "").strip()) and (
+        (getattr(settings, "turn_control_provider", None) or "openai").strip().lower() == "openai"
+    )
     if use_luna_api:
         try:
             intent = await _call_luna(turn, context)
@@ -619,24 +654,76 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
 
 
 async def _call_luna(turn: str, context: dict | None) -> TurnIntent:
-    """Call Luna (OpenAI) via Responses API with structured output — primary control path."""
+    """Structured TurnIntent. Muse Spark is the normal brain; OpenAI is legacy."""
 
-    # Determine requested vs fallback models
+    from app.gateway.muse import muse_intelligence_active
+
+    if muse_intelligence_active():
+        intent = await _call_spark_intent(turn, context)
+        _record_luna_model("muse-spark-1.3-contributor", "muse-spark-1.3-contributor", success=True)
+        return intent
+
     requested = (getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-5.6-luna"
     fallback = (getattr(settings, "turn_control_fallback_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-4o-mini").strip()
-    # Try primary first, then fallback on model-not-found
-    for attempt_model in [requested, fallback] if requested != fallback else [requested]:
+    models = [requested]
+    if fallback and fallback != requested:
+        models.append(fallback)
+    for attempt_model in models:
         ok, intent, meta = await _call_responses_api(turn, context, model=attempt_model, requested=requested)
         if ok and intent:
             _record_luna_model(requested, attempt_model, success=True)
             return intent
         if ok is False and meta and meta.get("code") == "model_not_found":
             continue
-        # For other errors, still try fallback if not already
-        if attempt_model == requested and fallback != requested:
+        if attempt_model == requested and fallback and fallback != requested:
             continue
         raise RuntimeError(f"Luna call failed for {attempt_model}: {meta}")
     raise RuntimeError("Luna unavailable")
+
+
+async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
+    """Muse Spark emits the existing TurnIntent contract. No second classifier."""
+
+    import json
+
+    from app.contracts import ChatMessage, ToolSpec
+    from app.gateway.muse import muse_spark_model
+    from app.gateway.muse_spark import muse_spark_provider
+
+    provider = muse_spark_provider()
+    ctx = ""
+    if isinstance(context, dict) and context:
+        ctx = "\nContext (task-scoped, already filtered):\n" + json.dumps(context)[:2000]
+    messages = [
+        ChatMessage(role="system", content=LUNA_SYSTEM_PROMPT),
+        ChatMessage(role="user", content=f"Owner turn:\n{turn}{ctx}"),
+    ]
+    tool = ToolSpec(
+        name=EMIT_INTENT_TOOL["name"],
+        description=EMIT_INTENT_TOOL["description"],
+        parameters=EMIT_INTENT_TOOL["parameters"],
+    )
+    result = await provider.chat_with_tools(messages, [tool], model=muse_spark_model())
+    if result.tool_calls:
+        return TurnIntent.model_validate(result.tool_calls[0].arguments)
+    text = (result.text or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].strip()
+    if text:
+        return TurnIntent.model_validate(json.loads(text))
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": EMIT_INTENT_TOOL["parameters"]["properties"],
+        "required": ["route", "operation"],
+    }
+    structured = await provider.chat_structured(messages, schema=schema, schema_name="turn_intent")
+    text = (structured.text or "").strip()
+    if text:
+        return TurnIntent.model_validate(json.loads(text))
+    raise RuntimeError("spark_intent_missing")
 
 
 # Luna model tracking for truthful telemetry (requested vs effective)

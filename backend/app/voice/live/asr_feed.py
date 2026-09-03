@@ -225,6 +225,10 @@ def resolve_live_transcriber(configured=None):
     from app.voice.asr import get_transcriber
 
     primary = configured if configured is not None else get_transcriber()
+    # Muse Voice is the cloud hearing adapter. Never silently wrap it with
+    # local Whisper or OpenAI Realtime.
+    if getattr(primary, "name", None) in {"meta_muse_voice", "muse_voice"}:
+        return primary
     if not transcriber_refuses_pcm(primary):
         return primary
     return LivePcmTranscriber(primary, fallback_factory=_faster_whisper_live_fallback)
@@ -277,6 +281,27 @@ class LiveAsrFeed:
         self._last_partial_at: float = 0.0
         self._unusable_notified = False
 
+    def _native_stream(self) -> bool:
+        return bool(getattr(self.transcriber, "native_live_stream", False))
+
+    async def _on_native_partial(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        self._last_partial = text
+        if self.on_partial is not None:
+            await self.on_partial(text)
+
+    async def _on_native_final(self, text: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        self._last_partial = text
+        self._final_text = text
+        self._final_ready.set()
+        if self.on_partial is not None:
+            await self.on_partial(text)
+
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
@@ -292,6 +317,20 @@ class LiveAsrFeed:
         self._final_ready.clear()
         self._speech_active = True
         self._last_partial_at = self._clock()
+        if self._native_stream():
+            starter = getattr(self.transcriber, "start_live", None)
+            if callable(starter):
+                starter(
+                    self._loop,
+                    on_partial=self._on_native_partial,
+                    on_final=self._on_native_final,
+                    on_unusable=self.on_unusable,
+                    sample_rate=self.sample_rate,
+                )
+            if self._buffer:
+                feeder = getattr(self.transcriber, "feed_live", None)
+                if callable(feeder):
+                    feeder(bytes(self._buffer))
 
     def note_idle(self, pcm: bytes) -> None:
         """Keep a short pre-speech ring so word onsets are not clipped."""
@@ -311,6 +350,11 @@ class LiveAsrFeed:
         remaining = self.max_buffer_bytes - len(self._buffer)
         if remaining > 0:
             self._buffer.extend(pcm[:remaining])
+        if self._native_stream():
+            feeder = getattr(self.transcriber, "feed_live", None)
+            if callable(feeder):
+                feeder(pcm[:remaining] if remaining > 0 else b"")
+            return
         if self._final_task is not None and not self._final_task.done():
             # Speech resumed after a final transcription started (VAD jitter):
             # the final may be stale; drop it, we will emit fresh partials.
@@ -339,6 +383,11 @@ class LiveAsrFeed:
         """
 
         self._speech_active = False
+        if self._native_stream():
+            ender = getattr(self.transcriber, "end_live", None)
+            if callable(ender):
+                ender()
+            return
         if not self._buffer:
             return
         if self._partial_task is not None and not self._partial_task.done():
@@ -356,6 +405,10 @@ class LiveAsrFeed:
         """The user interrupted / a new turn started: drop in-flight work."""
 
         self._abort_workers()
+        if self._native_stream():
+            aborter = getattr(self.transcriber, "abort_live", None)
+            if callable(aborter):
+                aborter()
         self._buffer.clear()
         if clear_pre_roll:
             self._pre_roll.clear()

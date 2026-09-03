@@ -136,7 +136,7 @@ def routing_candidates() -> list[str]:
 
     candidates: set[str] = set()
     primary = settings.chat_provider
-    if primary in ("deepseek", "local", "echo", "mock", "xai"):
+    if primary in ("deepseek", "local", "echo", "mock", "xai", "meta_muse_spark", "muse", "muse_spark"):
         candidates.add(primary)
     if settings.deepseek_api_key or os.getenv("EV_DEEPSEEK_API_KEY"):
         candidates.add("deepseek")
@@ -170,6 +170,18 @@ def select_provider(
     """
 
     configured = configured or settings.chat_provider
+    from app.gateway.muse import MUSE_SPARK_PROVIDERS, configured_intelligence_provider
+
+    primary = (configured_intelligence_provider() or configured or "").strip()
+    if primary.lower() in MUSE_SPARK_PROVIDERS:
+        return ProviderSelection(
+            provider=primary,
+            reason="muse_spark_single_brain",
+            evidence={
+                "note": "normal Evie intelligence is Muse Spark; no silent substitute",
+                "configured": configured,
+            },
+        )
     candidates = routing_candidates()
     if len(candidates) < 2:
         return ProviderSelection(

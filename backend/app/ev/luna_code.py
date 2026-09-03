@@ -597,6 +597,47 @@ async def run_code_job(
     budget = max(30.0, min(budget, 600.0))
     try:
         workspace = str(workspace_root())
+        from app.gateway.muse import muse_api_key, muse_intelligence_active, muse_spark_model
+
+        spark_on = muse_intelligence_active()
+        spark_key = muse_api_key()
+        if spark_on:
+            if not spark_key:
+                return _finish_code_job(
+                    _fail(
+                        "spark_unavailable",
+                        "Coding intelligence is unavailable: META_MODEL_API_KEY is missing.",
+                    ),
+                    request=request,
+                    workspace=workspace,
+                    session_key=job_key,
+                )
+            model = muse_spark_model()
+            try:
+                result = await _spark_code_loop(
+                    luna_goal,
+                    model=model,
+                    budget_s=budget,
+                    live=live,
+                    prior=prior,
+                )
+                result.setdefault("brain", model)
+                result.setdefault("actor", actor)
+                result.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
+                return _finish_code_job(
+                    result, request=request, workspace=workspace, session_key=job_key
+                )
+            except Exception as exc:  # noqa: BLE001 - coding must fail honest
+                logger.warning("luna_code.spark_failed error_type=%s", type(exc).__name__)
+                return _finish_code_job(
+                    _fail(
+                        "spark_unavailable",
+                        "Coding intelligence is unavailable.",
+                    ),
+                    request=request,
+                    workspace=workspace,
+                    session_key=job_key,
+                )
         key = (getattr(settings, "openai_api_key", None) or "").strip()
         model = (
             str(getattr(settings, "code_model", None) or "").strip()
@@ -707,6 +748,114 @@ def execute_code_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     except CodeJailError as exc:
         return {"ok": False, "error": "code_jail", "detail": str(exc)}
     return {"ok": False, "error": "unknown_code_tool", "name": name}
+
+
+async def _spark_code_loop(
+    goal: str,
+    *,
+    model: str,
+    budget_s: float,
+    live: bool,
+    prior: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Muse Spark coding loop. Jail tools remain the only actuators."""
+
+    from app.gateway.muse_spark import muse_spark_provider, responses_tools_to_chat_tools
+
+    configured = int(getattr(settings, "code_max_steps", 24) or 24)
+    max_steps = max(1, min(32, configured))
+    if live:
+        max_steps = min(20, max_steps)
+    projects = list_projects()
+    catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:12]) or "(none)"
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": LUNA_CODE_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"Owner request:\n{goal}\n\n"
+                f"Selected project: {workspace_root()}\n"
+                f"Allowed projects: {catalog}\n"
+                f"{_prior_hint(prior)}"
+                "Relative paths only. Search, then patch. New work may be several files. "
+                "Use the language this repo already speaks. Run a check before you stop."
+            ),
+        },
+    ]
+    files_changed: list[str] = []
+    runs: list[dict[str, Any]] = []
+    spoken = ""
+    deadline = time.monotonic() + max(20.0, budget_s)
+    tools = responses_tools_to_chat_tools(LUNA_CODE_TOOLS)
+    provider = muse_spark_provider()
+    for _step in range(max_steps):
+        if time.monotonic() >= deadline:
+            break
+        data = await provider.complete_raw(messages, tools=tools, model=model)
+        choice = ((data.get("choices") or [{}])[0].get("message") or {})
+        messages.append(choice)
+        calls = choice.get("tool_calls") or []
+        text = str(choice.get("content") or "").strip()
+        if text:
+            spoken = text
+        if not calls:
+            break
+        for call in calls:
+            fn = call.get("function") or {}
+            name = str(fn.get("name") or "")
+            raw_args = fn.get("arguments") or "{}"
+            try:
+                parsed = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+            except json.JSONDecodeError:
+                parsed = {}
+            result = execute_code_tool(name, parsed if isinstance(parsed, dict) else {})
+            if name in {"write_file", "replace_in_file"} and result.get("ok"):
+                path = str(result.get("path") or "")
+                if path and path not in files_changed:
+                    files_changed.append(path)
+            if name == "run_command":
+                runs.append(
+                    {
+                        "argv": result.get("argv"),
+                        "exit_code": result.get("exit_code"),
+                        "ok": result.get("ok"),
+                        "stdout": (result.get("stdout") or "")[:500],
+                        "stderr": (result.get("stderr") or "")[:300],
+                    }
+                )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(call.get("id") or ""),
+                    "content": json.dumps(result, default=str)[:16_000],
+                }
+            )
+    ok = bool(files_changed or (runs and any(item.get("ok") for item in runs)))
+    if not spoken:
+        last_out = ""
+        for item in reversed(runs):
+            last_out = str(item.get("stdout") or "").strip()
+            if last_out:
+                break
+        if files_changed:
+            spoken = f"I edited {', '.join(files_changed)} in {workspace_root().name}."
+            if last_out:
+                spoken = f"{spoken} Output: {last_out[:180]}"
+        elif ok:
+            spoken = f"I ran that in {workspace_root().name}."
+            if last_out:
+                spoken = f"{spoken} Output: {last_out[:180]}"
+        else:
+            spoken = "I couldn't finish a verified coding change."
+    return {
+        "ok": ok,
+        "spoken": spoken[:500],
+        "files_changed": files_changed,
+        "runs": runs[-6:],
+        "brain": model,
+        "workspace": str(workspace_root()),
+        "degraded": not ok,
+    }
 
 
 async def _luna_loop(

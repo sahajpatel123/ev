@@ -68,15 +68,15 @@ def test_xai_factory_uses_settings(monkeypatch) -> None:
 
 
 def test_grok_voice_enabled_follows_xai_key_not_typed_provider(monkeypatch) -> None:
-    """Live Grok Voice is independent of EV_CHAT_PROVIDER (DeepSeek typed chat)."""
+    """S2S is off unless EV_VOICE_LIVE_BRAIN explicitly selects openai/xai."""
 
     monkeypatch.setattr(settings, "voice_live_brain", "auto")
     monkeypatch.setattr(settings, "chat_provider", "deepseek")
     monkeypatch.setattr(settings, "openai_api_key", "")
     monkeypatch.setattr(settings, "xai_api_key", "k")
-    assert grok_voice_enabled() is True
+    assert grok_voice_enabled() is False
     monkeypatch.setattr(settings, "chat_provider", "echo")
-    assert grok_voice_enabled() is True
+    assert grok_voice_enabled() is False
     monkeypatch.setattr(settings, "xai_api_key", "")
     assert grok_voice_enabled() is False
     monkeypatch.setattr(settings, "xai_api_key", "k")
@@ -185,16 +185,18 @@ def test_xai_session_keeps_ev_daily_functions_alongside_provider_search() -> Non
     assert session["tool_choice"] == "auto"
 
 
-def test_live_realtime_prefers_openai_when_both_keys(monkeypatch) -> None:
+def test_live_realtime_requires_explicit_s2s_brain(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "auto")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     monkeypatch.setattr(settings, "xai_api_key", "xai-test")
-    assert live_realtime_provider() == "openai"
+    assert live_realtime_provider() is None
     monkeypatch.setattr(settings, "voice_live_brain", "xai")
     assert live_realtime_provider() == "xai"
     monkeypatch.setattr(settings, "voice_live_brain", "openai")
     monkeypatch.setattr(settings, "openai_api_key", "")
     assert live_realtime_provider() is None
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    assert live_realtime_provider() == "openai"
 
 
 def test_openai_realtime_url_pins_mini() -> None:

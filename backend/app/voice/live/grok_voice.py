@@ -560,19 +560,23 @@ def _function_tools_from_payload(raw_tools: Any) -> tuple[list[dict], bool]:
 def grok_voice_enabled() -> bool:
     """True when live conversation should speak through a realtime S2S model.
 
-    Typed chat stays on ``EV_CHAT_PROVIDER`` (DeepSeek). Spoken live turns use
-    OpenAI Realtime (``gpt-realtime-2.1-mini``) when that key is set, otherwise
-    Grok Voice, unless the owner forced ``EV_VOICE_LIVE_BRAIN=pipeline``.
+    Normal Muse path is pipeline (ASR + Spark text + existing TTS). S2S
+    (OpenAI Realtime / Grok Voice) is an explicit rollback only.
     """
 
     return live_realtime_provider() is not None
 
 
 def live_realtime_provider() -> str | None:
-    """``openai``, ``xai``, or ``None`` (local ASR + chat + TTS)."""
+    """``openai``, ``xai``, or ``None`` (Muse ASR + chat + existing TTS).
+
+    Normal production is pipeline (no S2S). OpenAI Realtime and Grok Voice
+    remain behind an explicit ``EV_VOICE_LIVE_BRAIN=openai|xai`` rollback.
+    ``auto`` does not open a second mouth.
+    """
 
     brain = (settings.voice_live_brain or "auto").strip().lower()
-    if brain == "pipeline":
+    if brain in {"pipeline", "muse", "off", "auto", ""}:
         return None
     openai_key = bool((settings.openai_api_key or "").strip())
     xai_key = bool((settings.xai_api_key or "").strip())
@@ -580,11 +584,6 @@ def live_realtime_provider() -> str | None:
         return "openai" if openai_key else None
     if brain == "xai":
         return "xai" if xai_key else None
-    if brain == "auto":
-        if openai_key:
-            return "openai"
-        if xai_key:
-            return "xai"
     return None
 
 

@@ -220,6 +220,15 @@ async def stream_chat_tts_pipeline(
 
     async def run_llm() -> None:
         try:
+            intel = (getattr(settings, "intelligence_provider", None) or "").strip() or settings.chat_provider
+            if intel in {"meta_muse_spark", "muse", "muse_spark"}:
+                model = settings.muse_spark_model
+            elif settings.chat_provider == "xai":
+                model = settings.xai_model
+            elif settings.chat_provider == "deepseek":
+                model = settings.deepseek_model
+            else:
+                model = None
             pipeline = await asyncio.wait_for(
                 run_chat_pipeline(
                     ChatRequest(
@@ -227,13 +236,7 @@ async def stream_chat_tts_pipeline(
                         conversation_id=thread.id,
                         device_id=device_id,
                         allow_sensitive_tools=True,
-                        model=(
-                            settings.xai_model
-                            if settings.chat_provider == "xai"
-                            else settings.deepseek_model
-                            if settings.chat_provider == "deepseek"
-                            else None
-                        ),
+                        model=model,
                     ),
                     session,
                     actor,
