@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -527,7 +528,7 @@ async def heartbeat(
     note_presence(device.id, instance_id=data.instance_id, state="ready")
     lease = await heartbeat_lease(session, device_id=device.id, instance_id=data.instance_id)
     await session.commit()
-    payload = {"ok": True, "lease": lease_public(lease)}
+    payload: dict[str, Any] = {"ok": True, "lease": lease_public(lease)}
     if lease is not None and not lease_belongs(lease, device_id=device.id, instance_id=data.instance_id):
         payload["conversation_moved"] = True
         payload["response_device_id"] = str(lease.device_id)
@@ -1307,8 +1308,7 @@ async def audio_diag_d2(
     frame = 16000 * 2 // 50  # 20 ms of int16le
 
     async def gen():
-        index = 0
-        for off in range(0, len(pcm), frame):
+        for index, off in enumerate(range(0, len(pcm), frame)):
             chunk = pcm[off : off + frame]
             if len(chunk) < 2:
                 break
@@ -1321,7 +1321,6 @@ async def audio_diag_d2(
                 "response_id": "d2-known",
             }
             yield json.dumps(payload) + "\n"
-            index += 1
             await asyncio.sleep(0.02)
 
     return StreamingResponse(gen(), media_type="application/x-ndjson", headers={"Cache-Control": "no-store"})

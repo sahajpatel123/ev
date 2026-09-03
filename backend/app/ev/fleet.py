@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -14,7 +15,7 @@ from app.models import Device, Event, FeatureGate
 from app.notify.routing import best_reachable_device, device_reachability
 from app.utils.text import utcnow
 
-DEFAULT_PREFS = {
+DEFAULT_PREFS: dict[str, Any] = {
     "nickname": "EVIE",
     "quiet_hours": {"start": None, "end": None},
     "hud_layout": {},

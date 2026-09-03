@@ -46,12 +46,12 @@ def _gc_locked(now: float) -> None:
         elif float(row.get("exp") or 0) < now - 600:
             expired.append(action_id)
     for action_id in expired:
-        row = _ACTIONS.get(action_id)
-        if row is None:
+        expired_row = _ACTIONS.get(action_id)
+        if expired_row is None:
             continue
-        _ACTION_TOKENS.pop(str(row.get("action_token") or ""), None)
-        _COMPLETION_TOKENS.pop(str(row.get("completion_token") or ""), None)
-        if row.get("state") == "expired" and float(row.get("exp") or 0) < now - 600:
+        _ACTION_TOKENS.pop(str(expired_row.get("action_token") or ""), None)
+        _COMPLETION_TOKENS.pop(str(expired_row.get("completion_token") or ""), None)
+        if expired_row.get("state") == "expired" and float(expired_row.get("exp") or 0) < now - 600:
             _ACTIONS.pop(action_id, None)
     for token, meta in list(_DOWNLOAD_TOKENS.items()):
         if float(meta.get("exp") or 0) < now:
@@ -66,7 +66,7 @@ def put_handshake(device_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     native = bool(payload.get("native_shell") or payload.get("native_broker"))
     os_version = str(payload.get("os_version") or "")[:32]
     broker_version = str(payload.get("broker_version") or payload.get("native_broker_version") or "")[:32]
-    row = {
+    row: dict[str, Any] = {
         "device_id": device_id,
         "native_shell": native,
         "broker_version": broker_version,
@@ -258,7 +258,8 @@ def capability_hash(handshake: dict[str, Any]) -> str:
 def public_row(row: dict[str, Any]) -> dict[str, Any]:
     """Never include tokens or raw contact databases."""
 
-    receipt = row.get("receipt") if isinstance(row.get("receipt"), dict) else {}
+    receipt_raw = row.get("receipt")
+    receipt: dict[str, Any] = receipt_raw if isinstance(receipt_raw, dict) else {}
     return {
         "action_id": row.get("action_id"),
         "target_device": row.get("device_id"),

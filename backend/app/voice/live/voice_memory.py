@@ -9,9 +9,12 @@ from __future__ import annotations
 import base64
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Awaitable, Callable
+from typing import Any
+
+from app.voice.contracts import Transcriber
 
 logger = logging.getLogger("ev.voice.live.grok")
 
@@ -173,7 +176,7 @@ async def transcribe_utterance_pcm(
     wav = pcm_to_wav_bytes(pcm, sample_rate)
     audio_b64 = base64.b64encode(wav).decode("ascii")
     if (settings.openai_api_key or "").strip():
-        engine = OpenAICompatTranscriber(
+        engine: Transcriber = OpenAICompatTranscriber(
             base_url="https://api.openai.com/v1",
             api_key=settings.openai_api_key,
             model="whisper-1",

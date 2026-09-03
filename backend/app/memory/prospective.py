@@ -280,7 +280,7 @@ async def _planned_items(session: AsyncSession, now, horizon_end) -> list[Prospe
             if not routine.schedule:
                 continue
             try:
-                nxt = _aware(next_run_after(routine.schedule, now, tz=routine.timezone))
+                nxt = _aware(next_run_after(routine.schedule, now, timezone=routine.timezone or "UTC"))
             except Exception:  # noqa: BLE001 - bad cron must not break planning
                 continue
             if nxt is None or nxt > horizon_end:

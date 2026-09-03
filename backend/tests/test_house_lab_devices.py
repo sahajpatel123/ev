@@ -35,7 +35,7 @@ from app.models import (
     VoiceSession,
 )
 from app.notify.routing import best_reachable_device
-from app.utils.text import sha256_hex, utcnow
+from app.utils.text import utcnow
 
 
 async def _unlock(session: AsyncSession) -> None:
@@ -67,8 +67,8 @@ async def test_runtime_utterance_includes_routed_tts_device(client: AsyncClient)
         _verified_runtime_session,
         enroll_owner,
         grant_voice_consent,
-        register_device,
         heartbeat,
+        register_device,
     )
 
     await grant_voice_consent(client)
@@ -598,7 +598,8 @@ async def test_panic_revokes_device_token(client: AsyncClient) -> None:
     panicked = await client.post(f"/v1/devices/{device_id}/panic")
     assert panicked.status_code == 200, panicked.text
     assert panicked.json()["revoked"] is True
-    from httpx import ASGITransport, AsyncClient as Raw
+    from httpx import ASGITransport
+    from httpx import AsyncClient as Raw
 
     from app.main import app
 

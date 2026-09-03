@@ -835,3 +835,32 @@ async def test_run_ears_blocks_delivery_without_consent() -> None:
     )
     assert stats.wake_hits == 1
     assert stats.utterances_sent == 0
+
+
+def test_default_ears_wake_stays_on_the_phrase_double_without_a_model(
+    monkeypatch, tmp_path
+) -> None:
+    from app.config import settings
+    from clients.ears.main import EarConfig, default_ears_wake
+    from clients.ears.wake import PhraseFallbackWake
+
+    monkeypatch.setattr(settings, "voice_vosk_model_path", str(tmp_path / "missing"))
+    engine = default_ears_wake(EarConfig())
+    assert isinstance(engine, PhraseFallbackWake)
+
+
+def test_default_ears_wake_uses_vosk_when_the_model_is_installed() -> None:
+    from pathlib import Path
+
+    from app.config import settings
+    from clients.ears.main import EarConfig, default_ears_wake
+
+    model = Path(settings.voice_vosk_model_path or Path.home() / ".ev/models/vosk-model-small-en-us-0.15")
+    if not (model / "conf" / "model.conf").is_file():
+        pytest.skip("Vosk model is not installed")
+    try:
+        import vosk  # noqa: F401
+    except ImportError:
+        pytest.skip("vosk is not installed")
+    engine = default_ears_wake(EarConfig())
+    assert engine.name == "vosk"

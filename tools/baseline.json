@@ -1,0 +1,26 @@
+{
+  "_comment": "Measured by tools/baseline.py. Refresh with `make baseline-write` when a change legitimately moves these numbers, and update the baseline table in AGENTS.md to match.",
+  "drift_budget": 0.25,
+  "metrics": {
+    "app_python_modules": 416,
+    "app_python_lines": 149439,
+    "app_subpackages": 31,
+    "client_python_modules": 28,
+    "client_python_lines": 8033,
+    "test_modules": 206,
+    "test_functions": 2338,
+    "api_routers": 23,
+    "api_route_decorators": 425,
+    "contract_paths": 341,
+    "contract_operations": 372,
+    "settings_fields": 362,
+    "orm_tables": 102,
+    "alembic_migrations": 22,
+    "docs_markdown_files": 73,
+    "env_example_keys": 276,
+    "env_api_first_keys": 35,
+    "swift_files": 100,
+    "swift_lines": 30281,
+    "fleet_size": 20
+  }
+}

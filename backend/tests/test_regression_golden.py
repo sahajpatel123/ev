@@ -9,11 +9,7 @@ See docs/FROZEN_CONTRACTS.md for the human contract.
 
 from __future__ import annotations
 
-import pathlib
-import re
-
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ActorContext
@@ -75,9 +71,9 @@ async def test_golden_g1(db_session: AsyncSession):
     # What Changed / Mission Control should not error on recovered state
     from app.life.situation import snapshot as life_snapshot
 
-    snap = await life_snapshot(session=db_session, actor=MASTER)  # type: ignore[call-arg]
+    await life_snapshot(session=db_session, actor=MASTER)  # type: ignore[call-arg]
     # life.situation.snapshot signature varies; fallback to service import
-    assert snap is not None or True  # smoke: no exception
+    assert True  # smoke: no exception
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +196,7 @@ async def two_trusted_devices(db_session: AsyncSession):
 @pytest.mark.asyncio
 async def test_golden_g2_cross_device(db_session: AsyncSession, two_trusted_devices):
     """Mac create → phone read → phone field read → phone mutate → Mac readback."""
-    from app.everywhere.sync import changes, state_epoch
+    from app.everywhere.sync import state_epoch
     from app.life import service as life
 
     mac, phone = two_trusted_devices

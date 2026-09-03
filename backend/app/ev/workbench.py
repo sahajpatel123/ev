@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import re
-from typing import Any
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -1055,6 +1055,21 @@ async def handle_why_did_you_ping(session: AsyncSession) -> dict:
 # Watchlist / feeds
 # --------------------------------------------------------------------------- #
 
+_WATCHLIST_KINDS = frozenset(
+    {"topic", "project", "person", "product", "company", "deadline", "date"}
+)
+
+
+def _watchlist_kind(kind: str) -> Literal[
+    "topic", "project", "person", "product", "company", "deadline", "date"
+]:
+    if kind in _WATCHLIST_KINDS:
+        return cast(
+            Literal["topic", "project", "person", "product", "company", "deadline", "date"],
+            kind,
+        )
+    return "topic"
+
 
 async def handle_watchlist_add(
     session: AsyncSession,
@@ -1066,7 +1081,7 @@ async def handle_watchlist_add(
 
     item = await alert_radar.upsert_watch_item(
         session,
-        WatchlistCreate(kind=kind, value=value, priority=0.6, sources=["voice"]),
+        WatchlistCreate(kind=_watchlist_kind(kind), value=value, priority=0.6, sources=["voice"]),
     )
     spoken = f"Watching {item.value}."
     return {

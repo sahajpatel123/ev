@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from app.device_gateway import PWA_BUILD
 import subprocess
 from pathlib import Path
 
+from app.device_gateway import PWA_BUILD
 from app.device_gateway.mobile_voice import (
     MOBILE_CONVERSATION_CONTRACT,
     config_diff,

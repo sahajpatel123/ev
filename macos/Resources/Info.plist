@@ -69,5 +69,76 @@
 	<string>EV captures a window screenshot only when you ask it to look at or operate the screen, and only after Screen Recording permission is granted.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>EV uses on-device speech recognition for quick dictation capture when you enable it.</string>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>EV</string>
+    <key>CFBundleExecutable</key>
+    <string>EV</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ev.suit</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>EV</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 EV — personal memory companion</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>EV listens continuously through your microphone for the wake word "EVIE", and records what you say next when it hears it or when you press ⇧⌘E. Audio is used for wake detection, speaker verification, and your request, and is sent only to the EV backend you configure (127.0.0.1 by default).</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>EV turns the audio that follows the wake word "EVIE" into text so it can answer you. Recognition runs against the EV backend you configure (127.0.0.1 by default).</string>
+    <key>NSCameraUsageDescription</key>
+    <string>EV uses the camera only when you explicitly capture a photo or video note.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>EV uses screen content only when you enable ambient context collectors, and never sends raw pixels to any model.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>EV sends Apple events only when an action you asked for has to drive another app, such as opening a note or a calendar entry.</string>
+    <key>NSContactsUsageDescription</key>
+    <string>EV looks up people in Contacts only when you ask it to remember, find, or message someone.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>EV reads and creates calendar events only when you ask it to check or add something to your schedule.</string>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>EV reads and creates calendar events only when you ask it to check or add something to your schedule.</string>
+    <key>NSRemindersUsageDescription</key>
+    <string>EV reads and creates reminders only when you ask it to remember a task or check what is due.</string>
+    <key>NSRemindersFullAccessUsageDescription</key>
+    <string>EV reads and creates reminders only when you ask it to remember a task or check what is due.</string>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>EV uses Bluetooth only to reach accessories you have chosen to connect, such as a headset or speaker.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>EV uses Bluetooth only to reach accessories you have chosen to connect, such as a headset or speaker.</string>
+    <key>NSLocationWhenInUseUsageDescription</key>
+    <string>EV uses your location only for place context you have enabled, such as "what happened near me".</string>
+    <key>NSLocationUsageDescription</key>
+    <string>EV uses your location only for place context you have enabled, such as "what happened near me".</string>
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.ev.suit.notify</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>ev</string>
+            </array>
+        </dict>
+    </array>
 </dict>
 </plist>

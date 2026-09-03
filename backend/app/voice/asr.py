@@ -1294,8 +1294,155 @@ def _resolve_vocab_path(model_name: str) -> str | None:
     return str(vocab) if vocab.is_file() else None
 
 
+class VoskTranscriber:
+    """Local streaming ASR on the Vosk (Kaldi) runtime.
+
+    Shares one acoustic model with the always-on wake spotter, so the hands-free
+    pipeline holds a single copy of the weights. Emits real partial hypotheses
+    while decoding and degrades (never fabricates) when the model is absent.
+    """
+
+    name = "vosk"
+
+    def __init__(self, *, model_path: str | None = None, chunk_ms: int | None = None) -> None:
+        self.model_path = model_path
+        self.chunk_ms = chunk_ms or settings.voice_asr_stream_chunk_ms
+
+    def _recognizer(self, sample_rate: int):
+        from app.voice.vosk_engine import VoskStreamingRecognizer
+
+        return VoskStreamingRecognizer(model_path=self.model_path, sample_rate=sample_rate)
+
+    def _degraded(self, language: str, reason: str, audio_ref: str | None) -> Transcript:
+        return Transcript(
+            text="",
+            confidence=0.0,
+            language=language,
+            provider=self.name,
+            degraded=True,
+            audio_ref=audio_ref,
+            details={"reason": reason},
+        )
+
+    def _decode_sync(self, pcm: array.array, sample_rate: int):
+        recognizer = self._recognizer(sample_rate)
+        recognizer.feed(pcm.tobytes())
+        return recognizer.final()
+
+    async def transcribe(
+        self,
+        *,
+        audio_ref: str | None = None,
+        audio_b64: str | None = None,
+        text_hint: str | None = None,
+        language: str = "en",
+    ) -> Transcript:
+        from app.voice.contracts import ModelUnavailableError
+
+        audio, _filename = await _read_audio(audio_b64, audio_ref)
+        pcm, rate = _wav_pcm(audio)
+        try:
+            result = await asyncio.to_thread(self._decode_sync, pcm, rate)
+        except ModelUnavailableError as exc:
+            return self._degraded(language, str(exc), audio_ref)
+        if not result.text:
+            raise VoiceError(
+                "No speech detected in audio",
+                status=422,
+                code="asr_no_speech",
+            )
+        return Transcript(
+            text=result.text,
+            confidence=result.confidence,
+            language=language,
+            provider=self.name,
+            duration_ms=int(len(pcm) / rate * 1000),
+            audio_ref=audio_ref,
+            details={"engine": "vosk", "words": len(result.words)},
+        )
+
+    async def stream(
+        self,
+        *,
+        audio_ref: str | None = None,
+        audio_b64: str | None = None,
+        text_hint: str | None = None,
+        language: str = "en",
+    ) -> AsyncIterator[Transcript | TranscriptPartial]:
+        from app.voice.contracts import ModelUnavailableError
+
+        audio, _filename = await _read_audio(audio_b64, audio_ref)
+        pcm, rate = _wav_pcm(audio)
+        try:
+            recognizer = await asyncio.to_thread(self._recognizer, rate)
+        except ModelUnavailableError as exc:
+            yield self._degraded(language, str(exc), audio_ref)
+            return
+        frame = max(1, int(rate * self.chunk_ms / 1000))
+        started = time.monotonic()
+        sequence = 0
+        try:
+            for start in range(0, len(pcm), frame):
+                chunk = pcm[start : start + frame]
+                if not chunk:
+                    continue
+                hypothesis = await asyncio.to_thread(recognizer.feed, chunk.tobytes())
+                if not hypothesis:
+                    continue
+                sequence += 1
+                yield TranscriptPartial(
+                    text=hypothesis,
+                    provider=self.name,
+                    sequence=sequence,
+                    stable=False,
+                    confidence=0.0,
+                    timestamp_ms=int((time.monotonic() - started) * 1000),
+                )
+            result = await asyncio.to_thread(recognizer.final)
+        except ModelUnavailableError as exc:
+            yield self._degraded(language, str(exc), audio_ref)
+            return
+        if not result.text:
+            raise VoiceError(
+                "No speech detected in audio",
+                status=422,
+                code="asr_no_speech",
+            )
+        yield Transcript(
+            text=result.text,
+            confidence=result.confidence,
+            language=language,
+            provider=self.name,
+            duration_ms=int(len(pcm) / rate * 1000),
+            audio_ref=audio_ref,
+            details={"engine": "vosk", "streaming": True, "words": len(result.words)},
+        )
+
+
+def real_asr_available() -> bool:
+    """True when an engine that can transcribe real audio is installed."""
+
+    from app.voice.vosk_engine import vosk_available
+
+    if vosk_available():
+        return True
+    if settings.voice_asr_provider == "openai_compat" and settings.voice_asr_base_url:
+        return True
+    return os.path.isfile(_resolve_onnx_path(settings.voice_asr_engine))
+
+
 def get_transcriber() -> Transcriber:
     provider = settings.voice_asr_provider
+    if provider == "auto":
+        from app.voice.vosk_engine import vosk_available
+
+        if vosk_available():
+            return VoskTranscriber()
+        if os.path.isfile(_resolve_onnx_path(settings.voice_asr_engine)):
+            return ParakeetTranscriber()
+        return EchoTranscriber()
+    if provider == "vosk":
+        return VoskTranscriber()
     if provider == "openai_compat":
         if not settings.voice_asr_base_url:
             raise RuntimeError("EV_VOICE_ASR_BASE_URL is required for openai_compat ASR")

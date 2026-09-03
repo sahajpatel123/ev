@@ -116,10 +116,23 @@ seed:
 	$(call backend-run, EV_DATABASE_URL="$${EV_DATABASE_URL:-postgresql+psycopg://ev:ev@localhost:5432/ev}" uv run python -m app.scripts.seed)
 
 postgres-e2e:
-	docker compose up -d --build
+	# Infra first — never start api/worker before migrate. API lifespan
+	# create_all races DROP SCHEMA + alembic and yields DuplicateTable.
+	docker compose up -d --build db redis minio
+	@echo "Waiting for Postgres to accept connections..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 30; do \
+		docker compose exec -T db pg_isready -U ev >/dev/null 2>&1 && break; \
+		sleep 1; \
+	done
 	@if [ "$${E2E_RESET_DB:-0}" = "1" ]; then echo "Resetting local dev Postgres schema (E2E_RESET_DB=1)"; docker compose exec -T db psql -U ev -d ev -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;" >/dev/null; fi
 	$(call backend-run, EV_DATABASE_URL="$${EV_DATABASE_URL:-postgresql+psycopg://ev:ev@localhost:5432/ev}" uv run alembic upgrade head)
 	$(call backend-run, EV_DATABASE_URL="$${EV_DATABASE_URL:-postgresql+psycopg://ev:ev@localhost:5432/ev}" uv run python -m app.scripts.seed)
+	docker compose up -d --build api worker scheduler runtime
+	@echo "Waiting for API health..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 30 35 40 45 60; do \
+		curl -sf "$${EV_E2E_BASE_URL:-http://127.0.0.1:8000}/v1/health" >/dev/null 2>&1 && break; \
+		sleep 1; \
+	done
 	export EV_E2E_BASE_URL=http://127.0.0.1:8000; export EV_E2E_MASTER_KEY="$${EV_MASTER_KEY:-e2e-key}"; $(call backend-run, uv run python -m app.scripts.e2e_cli)
 
 compliance-sweep:
@@ -299,3 +312,39 @@ opencode-status:
 
 opencode-agent-cost:
 	$(call backend-run, uv run python -m app.scripts.opencode_agent_cost)
+
+# --- HANDS-FREE VOICE (append-only) -----------------------------------------
+.PHONY: voice-models hands-free hands-free-up hands-free-down
+
+voice-models:
+	cd backend && uv sync --extra voice --extra dev && uv run python -m app.voice.models_setup
+
+hands-free:
+	$(call backend-run, uv run python -m clients.hands_free --api-url "$${EV_API_URL:-http://127.0.0.1:8000}" --api-key "$${EV_API_KEY:-$${EV_MASTER_KEY}}")
+
+hands-free-up:
+	@mkdir -p "$$HOME/Library/Logs/ev"
+	@plutil -lint launchd/ev.hands_free.plist >/dev/null
+	@cp launchd/ev.hands_free.plist "$$HOME/Library/LaunchAgents/"
+	@launchctl bootout "gui/$$UID/ev.hands_free" 2>/dev/null || true
+	@sleep 1
+	@launchctl bootstrap "gui/$$UID" "$$HOME/Library/LaunchAgents/ev.hands_free.plist"
+	@launchctl enable "gui/$$UID/ev.hands_free"
+	@echo "[ev] ev.hands_free loaded; logs: $$HOME/Library/Logs/ev/hands_free.*.log"
+
+hands-free-down:
+	@launchctl bootout "gui/$$UID/ev.hands_free" 2>/dev/null || true
+	@rm -f "$$HOME/Library/LaunchAgents/ev.hands_free.plist"
+	@echo "[ev] ev.hands_free removed"
+# --- AGENT 0 ANALYST ---
+# Workspace ground truth. Stdlib only; runs on a bare checkout before uv sync.
+.PHONY: baseline baseline-write baseline-check
+
+baseline:
+	@python3 tools/baseline.py
+
+baseline-write:
+	@python3 tools/baseline.py --write
+
+baseline-check:
+	@python3 tools/baseline.py --check

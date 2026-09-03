@@ -67,10 +67,7 @@ def _attach_in_string(action_uuid: str, name: str) -> dict[str, Any]:
 
 
 def _dict_item(key: str, value: dict[str, Any] | str) -> dict[str, Any]:
-    if isinstance(value, str):
-        serialized = _text(value)
-    else:
-        serialized = value
+    serialized = _text(value) if isinstance(value, str) else value
     return {
         "WFItemType": 0,
         "WFKey": _text(key),
@@ -410,7 +407,7 @@ def workflow_dict(*, resolve_url: str, device_id: str) -> dict[str, Any]:
     )
     if_kind("self_test", u["if_kind_self"], [])
 
-    complete_status = _text("executed")
+    _text("executed")
     actions.append(
         _action(
             "is.workflow.actions.downloadurl",

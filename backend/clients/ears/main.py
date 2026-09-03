@@ -944,7 +944,25 @@ def _configure_engine(cfg: EarConfig):
         set_scene_classifier(default_scene_classifier())
 
 
+def _vosk_model_on_disk() -> bool:
+    """True when the Vosk model directory is present — no voice-stack import.
+
+    Importing ``app.voice`` pulls in the lifecycle and blows the ears process
+    RSS budget, so the default path checks the filesystem first and only loads
+    the real engine when the model is actually there.
+    """
+
+    configured = settings.voice_vosk_model_path
+    path = (
+        Path(configured).expanduser()
+        if configured
+        else Path.home() / ".ev" / "models" / "vosk-model-small-en-us-0.15"
+    )
+    return (path / "conf" / "model.conf").is_file()
+
+
 def default_ears_wake(cfg: EarConfig):
+    """Real wake engine when a model is on disk; otherwise the light offline double."""
     """Real wake engine when configured; otherwise the local on-device spotter.
 
     Siri-style strictness (owner law, 2026-08-29): the always-on wake responds
@@ -973,6 +991,14 @@ def default_ears_wake(cfg: EarConfig):
             verifier_path=cfg.wake_verifier_path,
             threshold=cfg.wake_threshold,
         )
+    if _vosk_model_on_disk():
+        try:
+            import vosk  # noqa: F401
+        except ImportError:
+            return PhraseFallbackWake()
+        from app.voice.vosk_engine import VoskWakeEngine
+
+        return VoskWakeEngine(threshold=cfg.wake_threshold)
     return PhraseFallbackWake()
 
 
@@ -1398,11 +1424,19 @@ async def run_ears(
                 # Light local directed pre-filter (authoritative check is server-side)
                 # "Evie is..." and "Did you see Evie?" must not trigger upload.
                 _lower = _heard_tmp.strip().lower()
-                if _lower and not _lower.lstrip().startswith(("evie", "hey evie", "hi evie", "ok evie", "hello evie")):
+                if (
+                    _lower
+                    and not _lower.lstrip().startswith(
+                        ("evie", "hey evie", "hi evie", "ok evie", "hello evie")
+                    )
+                    and "evie" in _lower
+                    and not _lower.strip().startswith("evie")
+                ):
                     # Not anchored at head → likely conversational mention
-                    if "evie" in _lower and not _lower.strip().startswith("evie"):
-                        LOGGER.info("ears local directed pre-filter: not anchored — skipping upload (server will also cancel)")
-                        return
+                    LOGGER.info(
+                        "ears local directed pre-filter: not anchored — skipping upload (server will also cancel)"
+                    )
+                    return
             except Exception:  # noqa: BLE001
                 pass
             heard = (detection.details or {}).get("transcript") or ""

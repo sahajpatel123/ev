@@ -49,6 +49,11 @@ if os.environ.get("EV_TEST_USE_LIVE_MAC") != "1":
     os.environ["EV_MESSAGING_PROVIDER"] = "local"
 os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
 os.environ.setdefault("EV_EMBEDDING_DIM", "64")
+# The suite authenticates with these literal values, so they are set rather
+# than defaulted: a developer or CI runner with EV_MASTER_KEY exported for a
+# real install must not turn every request into a 401.
+os.environ["EV_MASTER_KEY"] = "test-key"
+os.environ["EV_VAULT_KEY"] = "test-vault-key-0123456789abcdef"
 os.environ["EV_VOICEPRINT_PROVIDER"] = "hash"
 os.environ["EV_VOICEPRINT_MODEL_DIR"] = f"{_TMP}/no-campp"
 os.environ["EV_ML_MODEL_DIR"] = f"{_TMP}/models"
@@ -83,8 +88,24 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db import Base, engine
 from app.main import app
+
+
+@pytest.fixture(autouse=True)
+def offline_voice_engines(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the voice providers to the offline doubles CI resolves `auto` to.
+
+    `auto` picks the real Vosk/Piper engines whenever a developer has the
+    speech models installed, which would otherwise make the outcome of every
+    voice test depend on the machine it runs on. Tests that want a specific
+    engine (including `auto`) set the provider themselves.
+    """
+
+    monkeypatch.setattr(settings, "voice_wake_provider", "phrase")
+    monkeypatch.setattr(settings, "voice_asr_provider", "echo")
+    monkeypatch.setattr(settings, "voice_tts_provider", "meta")
 
 
 @pytest.fixture(autouse=True)

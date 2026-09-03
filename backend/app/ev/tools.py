@@ -3443,7 +3443,7 @@ async def _run_computer_goal(
             session, capability, inner_args,
             actor=actor, live_session_id=live_session_id, device_id=device_id,
         )
-    return await dispatch(
+    response = await dispatch(
         session,
         capability,
         inner_args,
@@ -3453,6 +3453,7 @@ async def _run_computer_goal(
         request_id=f"computer-{goal_text[:24]}",
         audit_endpoint="POST /v1/gateway/tools(computer)",
     )
+    return response.result if response.result is not None else response.model_dump()
 
 
 async def _run_ui_sequence(
@@ -3913,21 +3914,21 @@ async def _handle(
         if place and "weather" not in query.lower():
             query = f"weather in {place}"
         results = await weather_results(query, limit=3)
-        payload = [
+        weather_results_list = [
             {"title": r.title, "url": r.url, "snippet": r.snippet}
             for r in results
         ]
         from app.ev.workbench import weather_hud
 
-        first = payload[0] if payload else {}
+        first = weather_results_list[0] if weather_results_list else {}
         spoken = str(first.get("snippet") or first.get("title") or "No weather.")
         return {
             "ok": True,
             "count": len(results),
             "place": place or None,
-            "results": payload,
+            "results": weather_results_list,
             "spoken": spoken,
-            "hud": weather_hud(payload),
+            "hud": weather_hud(weather_results_list),
         }
     if name == "heading_out":
         from app.ev.workbench import handle_heading_out

@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 import re
 import struct
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -287,11 +287,12 @@ async def poll_print_jobs(session: AsyncSession) -> dict:
         }.get(raw_status, raw_status)
         if status not in {"queued", "printing", "done", "failed"}:
             status = "printing"
+        print_status = cast(Literal["queued", "printing", "done", "failed"], status)
         remaining = result.get("filament_remaining_g")
         job = await maker.update_print_job(
             session,
             job.id,
-            PrintJobStatusUpdate(status=status, error_log=result.get("error")),
+            PrintJobStatusUpdate(status=print_status, error_log=result.get("error")),
         )
         if remaining is not None:
             job.details = {**(job.details or {}), "filament_remaining_g": remaining}

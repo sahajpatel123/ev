@@ -24,6 +24,8 @@ from app.identity import service as identity_service
 from app.models import VoiceSession
 from app.schemas import (
     ConsentOut,
+    EarsWakeRequest,
+    EarsWakeResponse,
     MemoryDelta,
     SpeechStyleOut,
     TtsOut,
@@ -32,6 +34,8 @@ from app.schemas import (
     VoiceEnrollmentDetailOut,
     VoiceEnrollResponse,
     VoiceExportOut,
+    VoiceLiveOpenRequest,
+    VoiceLiveOpenResponse,
     VoicePartialOut,
     VoicePrintExportOut,
     VoiceRevokeRequest,
@@ -39,8 +43,6 @@ from app.schemas import (
     VoiceSessionVerifyRequest,
     VoiceSessionVerifyResponse,
     VoiceStatusOut,
-    VoiceLiveOpenRequest,
-    VoiceLiveOpenResponse,
     VoiceUtteranceRequest,
     VoiceUtteranceResponse,
     VoiceWakeRequest,
@@ -48,17 +50,15 @@ from app.schemas import (
 )
 from app.utils.text import utcnow
 from app.voice.lifecycle import VoiceError, VoiceRuntime
-from app.voice.speaker import default_speaker_verifier
 
 router = APIRouter(prefix="/v1/voice", tags=["voice"])
 
 
 def _runtime(session: AsyncSession) -> VoiceRuntime:
-    return VoiceRuntime(
-        session,
-        master_key=settings.master_key,
-        verifier=default_speaker_verifier(),
-    )
+    # The verifier resolves lazily inside the runtime: enrollment and
+    # verification still fail closed on a non-production encoder, but a request
+    # that never verifies a voiceprint no longer needs one to exist.
+    return VoiceRuntime(session, master_key=settings.master_key)
 
 
 def _http(exc: VoiceError) -> HTTPException:
@@ -807,3 +807,123 @@ async def end_session(
         ended_at=status.ended_at,
         end_reason=status.end_reason,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Ears delivery: the always-on process posts wake-passing utterances here
+# --------------------------------------------------------------------------- #
+
+ears_router = APIRouter(prefix="/v1/ears", tags=["ears"])
+
+_OFFLINE_WAKE = frozenset({"phrase", "multi-stage", "phrase-fallback"})
+
+
+def _pcm_from_ears(data: EarsWakeRequest) -> bytes | None:
+    if not data.frames_b64:
+        return None
+    try:
+        pcm = base64.b64decode(data.frames_b64)
+    except (ValueError, TypeError):
+        return None
+    return pcm or None
+
+
+def _wav_b64(pcm: bytes | None, sample_rate: int) -> str | None:
+    if not pcm:
+        return None
+    from app.voice.hands_free_loop import wav_bytes
+
+    payload = pcm if pcm[:4] == b"RIFF" else wav_bytes(pcm, sample_rate)
+    return base64.b64encode(payload).decode("ascii")
+
+
+@ears_router.post("/wake", response_model=EarsWakeResponse)
+async def ears_wake(
+    data: EarsWakeRequest,
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_actor_context),
+) -> EarsWakeResponse:
+    """Accept a VAD-segmented utterance the ears process already gated on "EVIE".
+
+    The client is authenticated and has already spotted the wake phrase on
+    device. This endpoint re-checks the wake when the server can hear real
+    audio, opens a hands-free session, and runs the utterance through the
+    normal voice lifecycle. The response stays the Agent 3 contract
+    (``accepted`` + ``message``); reply audio is persisted on the session for
+    the duplex ``/v1/voice/live`` path.
+    """
+
+    if not data.consent:
+        return EarsWakeResponse(accepted=False, message="consent_not_granted")
+    pcm = _pcm_from_ears(data)
+    if pcm is None and not data.audio_ref:
+        return EarsWakeResponse(accepted=False, message="no audio")
+
+    from app.voice.asr import get_transcriber
+    from app.voice.wake import default_wake_engine
+
+    device_id = str(ctx.device_id) if ctx.is_device else data.device_id
+    engine = default_wake_engine()
+    detection = await engine.detect(
+        frames=pcm,
+        audio_ref=data.audio_ref,
+        sample_rate=data.sample_rate,
+        device_id=device_id,
+        text_hint=data.text_hint,
+    )
+    hears_audio = getattr(engine, "name", "") not in _OFFLINE_WAKE
+    triggered = detection.triggered
+    if not triggered and not hears_audio:
+        # Phrase doubles cannot hear speech. An authenticated ears process
+        # already gated the segment; trust its confidence.
+        triggered = data.wake_confidence >= settings.ears_wake_threshold
+    if not triggered:
+        return EarsWakeResponse(accepted=False, message="wake not confirmed")
+
+    runtime = _runtime(session)
+    try:
+        outcome = await runtime.handle_hands_free_wake(
+            device_id=device_id,
+            wake_word=detection.wake_word or "evie",
+            wake_confidence=detection.confidence or data.wake_confidence,
+            wake_audio_b64=_wav_b64(pcm, data.sample_rate),
+        )
+    except VoiceError as exc:
+        await session.commit()
+        raise _http(exc) from exc
+    if outcome.session_id is None:
+        await session.commit()
+        return EarsWakeResponse(accepted=False, message=outcome.message)
+
+    session_row = await session.get(VoiceSession, UUID(outcome.session_id))
+    owner = await identity_service.get_owner(session)
+    if session_row is not None and owner is not None:
+        session_row.owner_id = owner.id
+
+    transcriber = get_transcriber()
+    note = outcome.message or "wake accepted"
+    try:
+        if getattr(transcriber, "name", "") == "echo":
+            if data.text_hint:
+                await runtime.handle_utterance(
+                    session_id=UUID(outcome.session_id),
+                    text=data.text_hint,
+                    ctx=ctx,
+                )
+            else:
+                note = f"{note}; session open, ASR cannot transcribe audio"
+        else:
+            await runtime.handle_utterance(
+                session_id=UUID(outcome.session_id),
+                audio_b64=_wav_b64(pcm, data.sample_rate),
+                audio_ref=data.audio_ref,
+                ctx=ctx,
+            )
+    except VoiceError as exc:
+        await session.commit()
+        return EarsWakeResponse(
+            accepted=True,
+            message=f"{note}; utterance failed: {exc.message}",
+        )
+    await session.commit()
+    return EarsWakeResponse(accepted=True, message=note)

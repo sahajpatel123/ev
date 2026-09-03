@@ -141,6 +141,16 @@ def _check_chat() -> tuple[str, str, str]:
 
 def _check_asr() -> tuple[str, str, str]:
     provider = settings.voice_asr_provider
+    if provider in ("auto", "vosk"):
+        from app.voice.vosk_engine import vosk_available, vosk_status
+
+        if vosk_available():
+            return "REAL", "vosk", vosk_status().get("model_path") or "model present"
+        hint = (
+            "install: `cd backend && uv sync --extra voice` then "
+            "`uv run python -m app.voice.models_setup`"
+        )
+        return ("PARTIAL" if provider == "vosk" else "DOUBLE", "vosk", hint)
     if provider in ("parakeet", "parakeet_tdt"):
         engine = settings.voice_asr_engine if provider == "parakeet" else settings.voice_asr_alt_engine
         explicit = settings.voice_asr_onnx_path
@@ -182,6 +192,18 @@ def _check_asr() -> tuple[str, str, str]:
 
 def _check_tts() -> tuple[str, str, str]:
     provider = settings.voice_tts_provider
+    if provider in ("auto", "piper"):
+        from app.voice.tts import piper_binary_path, piper_voice_path
+
+        voice = piper_voice_path()
+        binary = piper_binary_path()
+        if voice and binary:
+            return "REAL", "piper", f"{binary} + {voice}"
+        hint = (
+            "install: `cd backend && uv sync --extra voice` then "
+            "`uv run python -m app.voice.models_setup`"
+        )
+        return ("PARTIAL" if provider == "piper" else "DOUBLE", "piper", hint)
     if provider == "kokoro":
         engine = settings.voice_tts_engine
         present = _file(f"tts-{engine}.onnx")
@@ -300,6 +322,16 @@ def _check_vision() -> tuple[str, str, str]:
 
 def _check_wake() -> tuple[str, str, str]:
     provider = settings.voice_wake_provider
+    if provider in ("auto", "vosk"):
+        from app.voice.vosk_engine import vosk_available, vosk_status
+
+        if vosk_available():
+            return "REAL", "vosk", vosk_status().get("model_path") or "model present"
+        hint = (
+            "install: `cd backend && uv sync --extra voice` then "
+            "`uv run python -m app.voice.models_setup`"
+        )
+        return ("PARTIAL" if provider == "vosk" else "DOUBLE", "vosk", hint)
     if provider == "openwakeword":
         configured = settings.voice_wake_openwakeword_model_path
         path = Path(configured).expanduser() if configured else MODEL_DIR / "wake-openwakeword.onnx"

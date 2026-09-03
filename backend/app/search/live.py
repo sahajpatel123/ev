@@ -296,8 +296,8 @@ async def weather_results(
                 ),
             )
         ]
-    geo = await geocode(place)
-    if geo is None or geo.get("latitude") is None:
+    resolved_geo = await geocode(place)
+    if resolved_geo is None or resolved_geo.get("latitude") is None:
         return [
             _result(
                 f"Could not geocode {place}",
@@ -305,7 +305,7 @@ async def weather_results(
                 f"Open-Meteo geocoding returned no match for {place!r}.",
             )
         ]
-    return await _forecast_results(geo, limit=limit)
+    return await _forecast_results(resolved_geo, limit=limit)
 
 
 async def _forecast_results(geo: dict, *, limit: int = 3) -> list:

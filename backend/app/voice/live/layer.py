@@ -239,7 +239,8 @@ def tool_result_is_successful(result: dict[str, Any] | None) -> bool:
 
     if not isinstance(result, dict):
         return False
-    body = result.get("result") if isinstance(result.get("result"), dict) else result
+    result_body_raw = result.get("result")
+    body = result_body_raw if isinstance(result_body_raw, dict) else result
     if result.get("ok") is False or body.get("ok") is False:
         return False
     return not (body.get("degraded") or body.get("error"))

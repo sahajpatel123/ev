@@ -722,7 +722,6 @@ async def test_f11_stale_cache_law(db_session: AsyncSession) -> None:
     assert any("short technical answers" in i.text for i in env1.items)
 
     # Owner corrects: new preference version supersedes the old (§15 law).
-    from app.models import Memory as MemoryRow
 
     db_session.add(_seed_memory(
         text="The owner now prefers detailed answers with code examples.",

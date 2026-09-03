@@ -7,6 +7,7 @@ on-demand window screenshots without a second controller or a shell.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import time
@@ -229,9 +230,8 @@ def parse_owner_computer_goal(text: str, *, goal_id: str | None = None) -> Compu
     )
     lower = raw.lower()
     for needle, name in _APP_HINTS:
-        if re.search(rf"\b{re.escape(needle)}\b", lower):
-            if name not in goal.target_apps:
-                goal.target_apps.append(name)
+        if re.search(rf"\b{re.escape(needle)}\b", lower) and name not in goal.target_apps:
+            goal.target_apps.append(name)
     match = re.search(
         r"(?:the\s+|my\s+)?([A-Za-z0-9][\w &'’\-]{0,48}?)\s+playlist",
         raw,
@@ -883,9 +883,12 @@ def _is_continuation_request(text: str, existing: ComputerGoal | None) -> bool:
         return False
     if len(raw) > 96:
         return False
-    if any(re.search(rf"\b{re.escape(name.lower())}\b", raw.lower()) for _, name in _APP_HINTS):
-        if existing.playlist and "playlist" not in raw.lower():
-            return False
+    if (
+        any(re.search(rf"\b{re.escape(name.lower())}\b", raw.lower()) for _, name in _APP_HINTS)
+        and existing.playlist
+        and "playlist" not in raw.lower()
+    ):
+        return False
     return bool(_CONTINUATION_RE.search(raw))
 
 
@@ -1216,14 +1219,17 @@ def ingest_app_action_result(state: ComputerState | None, result: dict[str, Any]
                 f"Observed index {index}."
             )
             return
-        if goal.find_only and result.get("player_state") in {"playing", "playing"}:
+        if (
+            goal.find_only
+            and result.get("player_state") in {"playing"}
+            and str(result.get("action") or "").lower().startswith("play")
+        ):
             # find-only must not complete via play
-            if str(result.get("action") or "").lower().startswith("play"):
-                goal.status = "failed"
-                goal.verified = False
-                goal.failure_reason = "played_when_find_only"
-                result["verified"] = False
-                return
+            goal.status = "failed"
+            goal.verified = False
+            goal.failure_reason = "played_when_find_only"
+            result["verified"] = False
+            return
         goal.status = "complete"
         goal.verified = True
         goal.failure_reason = None
@@ -1389,14 +1395,14 @@ def stamp_computer_receipt(
             state.non_progress_streak += 1
         fallbacks = list(out.get("suggested_fallbacks") or [])
         if not fallbacks and name == "open_app":
-            control = out.get("control") if isinstance(out.get("control"), dict) else control_for_app(
-                str(out.get("app") or out.get("name") or "")
+            raw_control = out.get("control")
+            control = (
+                raw_control
+                if isinstance(raw_control, dict)
+                else control_for_app(str(out.get("app") or out.get("name") or ""))
             )
             preferred = control.get("preferred")
-            if preferred == "semantic_adapter":
-                fallbacks = ["app_action"]
-            else:
-                fallbacks = ["inspect_ui"]
+            fallbacks = ["app_action"] if preferred == "semantic_adapter" else ["inspect_ui"]
         out = computer_envelope(
             out,
             method=str(out.get("method") or method),
@@ -1597,20 +1603,17 @@ def remember_snapshot(state: ComputerState | None, payload: dict[str, Any]) -> N
     if snapshot_id:
         state.snapshot_id = snapshot_id
     generation = payload.get("generation")
-    try:
-        state.generation = int(generation)
-    except (TypeError, ValueError):
-        pass
+    if generation is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            state.generation = int(generation)
     state.app_name = str(payload.get("app") or payload.get("active_app") or state.app_name or "") or None
     state.bundle_id = str(payload.get("bundle_id") or state.bundle_id or "") or None
     state.foreground_app = state.app_name
     state.window_title = str(payload.get("window") or payload.get("window_title") or "") or None
     state.dialog_present = bool(payload.get("dialog_present"))
     pid = payload.get("pid")
-    try:
+    with contextlib.suppress(TypeError, ValueError):
         state.pid = int(pid) if pid is not None else state.pid
-    except (TypeError, ValueError):
-        pass
     elements = payload.get("elements")
     if isinstance(elements, list):
         state.elements = {

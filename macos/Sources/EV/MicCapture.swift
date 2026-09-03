@@ -23,7 +23,16 @@ final class MicCapture: NSObject {
     private var tapInstalled = false
 
     func requestPermission() async -> Bool {
-        await MicrophoneAuthorization.requestAccess()
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            return true
+        case .notDetermined:
+            return await AppForeground.withActivation {
+                await AVCaptureDevice.requestAccess(for: .audio)
+            }
+        default:
+            return false
+        }
     }
 
     func start() async -> Bool {

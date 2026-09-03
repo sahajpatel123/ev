@@ -445,7 +445,7 @@ def _provider_state(
     if provider == "macos_life":
         from app.ev.apps import macos_life_from_rows
 
-        row = macos_life_from_rows(provider_rows)
+        row = macos_life_from_rows(dict(provider_rows))
         if row is None:
             return {
                 "availability": "not_connected",
@@ -1187,7 +1187,7 @@ async def build_runtime_projection(
         clock = now or utcnow()
         actor_name = str(actor or "master")
         device_value = str(device_id) if device_id is not None else None
-        diagnostics = {
+        diagnostics: dict[str, Any] = {
             "session_id": str(session_id) if session_id is not None else None,
             "actor": actor_name,
             "device_id": device_value,

@@ -218,7 +218,7 @@ async def test_device_identity_is_server_derived_not_client_claimed(
     ctx = _ctx(phone)
     claimed_other = "not-a-real-device-uuid"
 
-    created = await life.create_goal(
+    await life.create_goal(
         db_session,
         actor=ctx.data_scope,
         title="G2 provenance proof",

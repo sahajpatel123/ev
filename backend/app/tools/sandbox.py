@@ -182,8 +182,21 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
 
 
 def _rss_kb(pid: int) -> int:
-    """RSS in KiB of one process (0 when unreadable)."""
+    """RSS in KiB of one process (0 when unreadable).
 
+    Linux prefers ``/proc/<pid>/status`` VmRSS so the watchdog does not depend
+    on macOS ``ps`` semantics. Falls back to ``ps -o rss=`` elsewhere.
+    """
+
+    if os.name == "posix":
+        status_path = f"/proc/{pid}/status"
+        try:
+            with open(status_path, encoding="utf-8") as handle:
+                for line in handle:
+                    if line.startswith("VmRSS:"):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            pass
     try:
         out = subprocess.run(
             ["ps", "-o", "rss=", "-p", str(pid)],
@@ -203,12 +216,10 @@ def _memory_watchdog(
     """Kill the process group when the command's RSS exceeds the budget.
 
     macOS refuses to lower RLIMIT_AS, so a live RSS watchdog is the portable
-    hard memory limit: it polls ``ps`` and SIGKILLs the whole group.
+    hard memory limit. On Linux, RLIMIT_AS usually works too; the watchdog
+    still runs as a second line of defense using ``/proc`` RSS.
     """
 
-    if shutil.which("ps") is None:
-        logger.warning("ps unavailable; sandbox memory watchdog disabled")
-        return None
     limit_kb = memory_mb * 1024
     killed: list[bool] = [False]
 
@@ -313,6 +324,23 @@ def _run_argv(
         watchdog = _memory_watchdog(proc, memory_mb)
         stdout, stderr = proc.communicate(timeout=timeout_seconds)
         if watchdog is not None and watchdog[1][0]:
+            raise SandboxError(
+                f"command exceeded the sandbox memory limit of {memory_mb}MB"
+            )
+        # Linux RLIMIT_AS may SIGKILL / abort before the RSS watchdog trips.
+        # Treat that as the same memory-limit failure the test contracts on.
+        if proc.returncode and proc.returncode < 0:
+            sig = -proc.returncode
+            if sig in {signal.SIGKILL, signal.SIGSEGV, signal.SIGABRT}:
+                raise SandboxError(
+                    f"command exceeded the sandbox memory limit of {memory_mb}MB"
+                )
+        stderr_text = (stderr or b"").decode("utf-8", errors="replace").lower()
+        if proc.returncode != 0 and (
+            "memoryerror" in stderr_text
+            or "cannot allocate memory" in stderr_text
+            or "killed" in stderr_text
+        ):
             raise SandboxError(
                 f"command exceeded the sandbox memory limit of {memory_mb}MB"
             )

@@ -14,8 +14,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app import __version__
 from app.api import (
     assistant,
-    everywhere,
-    life,
     backup,
     companion,
     compliance,
@@ -23,9 +21,11 @@ from app.api import (
     ears,
     edith,
     ev,
+    everywhere,
     filter,
     identity,
     integrations,
+    life,
     maintenance,
     ops,
     people,
@@ -34,6 +34,7 @@ from app.api import (
     tools,
     training,
     voice,
+    voice_live,
     web,
     world_model,
 )
@@ -172,7 +173,8 @@ app.include_router(routines.router)
 app.include_router(runtime.router)
 app.include_router(training.router)
 app.include_router(voice.router)
-app.include_router(ears.router)
+app.include_router(ears.router)  # always-on ears delivery (/v1/ears/wake)
+app.include_router(voice_live.router)  # hands-free EVIE loop (/v1/voice/hands-free)
 app.include_router(people.router)  # AGENT 7 ROSTER
 app.include_router(life.router)
 app.include_router(everywhere.router)  # G2 Evie Everywhere: one Evie, many devices

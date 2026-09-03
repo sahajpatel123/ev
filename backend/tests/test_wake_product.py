@@ -6,11 +6,8 @@ Covers §4-43 productization without adding architecture.
 from __future__ import annotations
 
 import array
-import asyncio
-import base64
 import json
 import pathlib
-import time
 
 import pytest
 
@@ -124,7 +121,6 @@ def test_speaker_fusion_progressive() -> None:
     # Simulate progressive scores: fast 0.71 (weak one-word), full 0.88 (strong 2s command)
     fast = 0.71
     full = 0.88
-    wake_conf = 0.82
     # Final decision: weighted fusion, thresholds from calibration, not LLM
     # Simple deterministic fusion: max(fast, full) or mean weighted to full
     fused = 0.3 * fast + 0.7 * full  # full dominates
@@ -301,8 +297,9 @@ async def test_connection_stability_10_cycles_no_duplicate_leases(db_session) ->
             assert cur.lease_id == lease.lease_id
             # No duplicate lease rows for same owner_key (unique constraint would fail if duplicate insert)
             # End cycle cleanly (simulate conversation end → return to idle)
-            from app.utils.text import utcnow
             from datetime import timedelta
+
+            from app.utils.text import utcnow
             lease.expires_at = utcnow() - timedelta(seconds=1)
             await db_session.commit()
         cur = await current_lease(db_session)
@@ -332,7 +329,7 @@ def test_self_wake_suppressed() -> None:
     """§31: Evie saying 'Evie' in own response must not self-wake."""
     # TTS playback half-duplex gate already tested, here verify transcript containing Evie in assistant reply is not treated as wake
     from backend.app.wake.directed import DirectedSpeechChecker
-    from app.voice.speech import should_drop_as_echo, last_spoken
+
 
     chk = DirectedSpeechChecker()
     # Assistant says "Hi, I'm Evie, how can I help?" — not a wake
@@ -351,9 +348,9 @@ def test_privacy_ring_volatile() -> None:
 def test_live_mic_marker_pid_liveness() -> None:
     """ONE mic owner: ears stands down only for a LIVE owner PID, and a
     stale marker whose PID is gone must never wedge the always-on listener."""
-    from clients.ears.main import EV_LIVE_MIC_MARKER, ev_live_owns_mic
-
     import os
+
+    from clients.ears.main import EV_LIVE_MIC_MARKER, ev_live_owns_mic
 
     assert not ev_live_owns_mic(), "no marker -> ears owns the mic"
     try:

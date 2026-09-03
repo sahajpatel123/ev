@@ -17,11 +17,11 @@ Laws:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, select, tuple_
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import ActorContext
@@ -193,11 +193,12 @@ async def changes(
     """
     limit = max(1, min(int(limit or DEFAULT_PAGE_LIMIT), MAX_PAGE_LIMIT))
     parsed = parse_cursor(cursor)
-    if parsed == "invalid" or parsed["kind"] == "invalid":
+    if not isinstance(parsed, dict):
         return {"ok": False, "error": "CURSOR_INVALID", "reset_required": True}
 
     # STATE EPOCH LAW: foreign-lineage cursors can never be continued.
     current_epoch = await state_epoch(session)
+    epoch_str = current_epoch or ""
 
     if parsed["kind"] in {"legacy", "v1"}:
         return {
@@ -222,7 +223,7 @@ async def changes(
     if parsed["kind"] == "v2":
         cursor_seq = int(parsed["seq"])
         filters.append(Event.stream_seq > cursor_seq)
-    elif parsed is not None and parsed.get("kind") == "none":
+    elif parsed.get("kind") == "none":
         pass  # no cursor -> full visible stream (bounded)
     else:
         cursor_seq = None
@@ -238,15 +239,16 @@ async def changes(
     rows = rows[:limit]
     events = [_public_event(e) for e in rows]
     last = rows[-1] if rows else None
+    next_cursor: str | None
     if last is not None and int(getattr(last, "stream_seq", 0) or 0) > 0:
-        next_cursor = format_v2_cursor(current_epoch, int(last.stream_seq))
+        next_cursor = format_v2_cursor(epoch_str, int(last.stream_seq))
     elif rows:
         # Pre-migration rows without positions: fall back to the caller's
         # cursor so nothing is silently marked delivered.
-        next_cursor = cursor or format_v2_cursor(current_epoch, 0)
+        next_cursor = cursor or format_v2_cursor(epoch_str, 0)
     else:
         next_cursor = (
-            format_v2_cursor(current_epoch, cursor_seq)
+            format_v2_cursor(epoch_str, cursor_seq)
             if cursor_seq is not None
             else cursor
         )
@@ -282,7 +284,7 @@ async def _advance_device_cursor(session: AsyncSession, ctx: ActorContext, curso
     if ctx.device is None or not cursor:
         return
     parsed = parse_cursor(cursor)
-    if parsed is None or parsed == "invalid" or parsed.get("kind") == "v2":
+    if not isinstance(parsed, dict) or parsed.get("kind") == "v2":
         return
     at = parsed.get("at")
     eid = parsed.get("id")

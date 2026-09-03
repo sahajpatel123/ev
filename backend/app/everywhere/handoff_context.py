@@ -14,8 +14,6 @@ privacy-respecting, centrally ordered. Once resolved, canonical read still via C
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any
-from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -137,7 +135,7 @@ async def set_context(
         )
         session.add(row)
         await session.flush()
-        return {"ok": True, **public_context(row)}
+        return {"ok": True, **(public_context(row) or {})}
 
     # Update with version bump (server ordering)
     row.focused_type = (focused_type or row.focused_type or "project")[:32] if (focused_type or row.focused_type) else row.focused_type
@@ -168,7 +166,7 @@ async def set_context(
     row.updated_at = now
     row.expires_at = now + ttl
     await session.flush()
-    return {"ok": True, **public_context(row)}
+    return {"ok": True, **(public_context(row) or {})}
 
 
 async def clear_context(session: AsyncSession) -> None:
@@ -191,9 +189,7 @@ def _looks_pronoun(text: str) -> bool:
     if any(p in low for p in (" its ", " it's ", " its?", " its.", " 'it ", " it?")):
         return True
     # explicit priority query without title
-    if ("what is its priority" in low) or ("what is its priority?" in low) or ("tell me its priority" in low):
-        return True
-    return False
+    return bool("what is its priority" in low or "what is its priority?" in low or "tell me its priority" in low)
 
 
 async def resolve_pronoun(
@@ -208,7 +204,7 @@ async def resolve_pronoun(
     row = await get_context(session)
     if row is None or _expired(row):
         return {"ok": False, "error_code": "AMBIGUOUS_CONTEXT", "reason": "expired", "clarify": True, "message": AMBIGUOUS_MSG}
-    low = (text or "").lower()
+    (text or "").lower()
     # If text explicitly names an entity, don't use context (low-confidence override)
     # For now if text contains more than 3 words besides pronoun, treat as potential explicit
     # But spec C4: if two plausible entities, ask clarification.
@@ -216,12 +212,11 @@ async def resolve_pronoun(
     # Ambiguity: two plausible recent entities with same type
     if len(refs) >= 2:
         # If recent refs have 2+ projects, ambiguous
-        types = [r.get("type") for r in refs]
+        [r.get("type") for r in refs]
         project_refs = [r for r in refs if (r.get("type") or "project") == "project"]
-        if len(project_refs) >= 2:
+        if len(project_refs) >= 2 and _looks_pronoun(text):
             # Check if both could match pronoun: if pronoun query and 2 recent projects
-            if _looks_pronoun(text):
-                return {"ok": False, "error_code": "AMBIGUOUS_CONTEXT", "reason": "multiple_candidates", "clarify": True, "message": AMBIGUOUS_MSG, "candidates": project_refs[:2]}
+            return {"ok": False, "error_code": "AMBIGUOUS_CONTEXT", "reason": "multiple_candidates", "clarify": True, "message": AMBIGUOUS_MSG, "candidates": project_refs[:2]}
 
     # High-confidence single focus
     if row.focused_id and row.focused_title:

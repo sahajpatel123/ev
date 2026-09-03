@@ -502,6 +502,26 @@ async def handle_computer_tool(
                 if expr:
                     arguments["query"] = expr
                     arguments["action"] = "search"
+        if (
+            "notes" in app_name
+            and action in {"create", "append"}
+            and not arguments.get("value")
+            and not arguments.get("query")
+            and not arguments.get("text")
+        ):
+            body = _notes_body_from_goal(_goal_text(state))
+            if body:
+                arguments["value"] = body
+        if (
+            "calculator" in app_name
+            and action not in {"status", "read"}
+            and not arguments.get("query")
+            and not arguments.get("value")
+        ):
+            expr = _calculator_expression(_goal_text(state))
+            if expr:
+                arguments["query"] = expr
+                arguments["action"] = "search"
         result = await _live_command(
             live,
             "app_action",
@@ -689,7 +709,10 @@ async def handle_computer_tool(
                     )
                     _record(state, name, arguments, stale, started, request_id=request_id)
                     return stale
-            if classify_ui_risk(arguments, state.elements.get(str(arguments.get("element_ref") or ""))) == "high":
+            element = None
+            if state is not None:
+                element = state.elements.get(str(arguments.get("element_ref") or ""))
+            if classify_ui_risk(arguments, element) == "high":
                 # Explicit owner command still proceeds; record the risk in the result.
                 arguments = {**arguments, "risk": "high"}
         result = await _live_command(
@@ -863,7 +886,8 @@ def _shape_lifecycle(name: str, arguments: dict, result: dict, *, source: str) -
     app_name = str(body.get("name") or body.get("app") or arguments.get("name") or "")
     display = display_app_name(app_name) if app_name else "the app"
     if name == "list_apps":
-        apps = body.get("apps") if isinstance(body.get("apps"), list) else []
+        raw_apps = body.get("apps")
+        apps = raw_apps if isinstance(raw_apps, list) else []
         spoken = body.get("spoken") or (f"I found {len(apps)} apps." if ok else "I couldn't list apps.")
         return {
             **body,
@@ -955,7 +979,8 @@ def _shape_ui(name: str, arguments: dict, result: dict, *, state, call_id: str |
         "evidence": evidence_base(source="mac_control", accepted=ok, observed=ok, now=utcnow()),
     }
     if name == "inspect_ui":
-        elements = out.get("elements") if isinstance(out.get("elements"), list) else []
+        raw_elements = out.get("elements")
+        elements = raw_elements if isinstance(raw_elements, list) else []
         if len(elements) > 12:
             out["elements"] = elements[:12]
         compact_live = str(out.get("compact") or "")
@@ -1182,7 +1207,8 @@ def _record(
             "computer.app_opened",
             extra={"app": result.get("name") or result.get("app")},
         )
-    goal_meta = result.get("goal") if isinstance(result.get("goal"), dict) else {}
+    raw_goal = result.get("goal")
+    goal_meta = raw_goal if isinstance(raw_goal, dict) else {}
     if result.get("verified") and goal_meta.get("status") == "complete":
         log_computer(
             "computer.goal_completed",

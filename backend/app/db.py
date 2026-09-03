@@ -22,7 +22,9 @@ class Base(DeclarativeBase):
 # EV_ENV. Tests use an isolated sqlite DB (see tests/conftest.py); any
 # manual script that inherits the production URL will hard-fail here.
 try:
-    from app.ops.prod_guard import assert_not_production_for_destructive as _assert_not_prod  # noqa: E402
+    from app.ops.prod_guard import (
+        assert_not_production_for_destructive as _assert_not_prod,  # noqa: E402
+    )
 
     _orig_drop_all = Base.metadata.drop_all
     _orig_create_all = Base.metadata.create_all
