@@ -167,3 +167,20 @@ def reset_muse_counters() -> None:
     with _LOCK:
         for key in list(_COUNTERS):
             _COUNTERS[key] = 0
+
+
+def refuse_legacy_cloud_brain(name: str | None = None) -> None:
+    """Block leftover OpenAI / xAI / DeepSeek / OpenCode brains while Muse is on.
+
+    Spark itself is allowed. A missing name is treated as a legacy caller
+    (Luna Responses, raw chat completions) and is refused.
+    """
+
+    if not muse_intelligence_active():
+        return
+    label = (name or "").strip().lower()
+    if label in MUSE_SPARK_PROVIDERS:
+        return
+    raise MuseProviderUnavailable(
+        "legacy cloud brain is blocked while Muse Spark is the general intelligence"
+    )

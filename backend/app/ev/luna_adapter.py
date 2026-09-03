@@ -742,6 +742,9 @@ def luna_model_probe() -> dict:
 
 async def _call_responses_api(turn: str, context: dict | None, *, model: str, requested: str):
     """Direct POST /v1/responses with json_schema for TurnIntent."""
+    from app.gateway.muse import refuse_legacy_cloud_brain
+
+    refuse_legacy_cloud_brain("openai")
     import httpx
 
     key = (getattr(settings, "openai_api_key", None) or "").strip()

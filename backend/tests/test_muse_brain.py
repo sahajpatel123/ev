@@ -647,6 +647,38 @@ def test_leftover_xai_chat_cannot_win_while_a_muse_slot_is_on(
 
 
 @pytest.mark.asyncio
+async def test_legacy_xai_provider_cannot_chat_while_muse_is_brain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.gateway.providers import XAIProvider
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    provider = XAIProvider(
+        base_url="https://api.x.ai/v1",
+        api_key="xai-must-not-be-used",
+        default_model="grok-4.6",
+    )
+    with pytest.raises(MuseProviderUnavailable):
+        await provider.chat([ChatMessage(role="user", content="hi")])
+
+
+@pytest.mark.asyncio
+async def test_luna_responses_api_blocked_while_muse_is_brain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.luna_adapter import _call_responses_api
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-must-not-be-used")
+    with pytest.raises(MuseProviderUnavailable):
+        await _call_responses_api(
+            "hello", None, model="gpt-5.6-luna", requested="gpt-5.6-luna"
+        )
+
+
+@pytest.mark.asyncio
 async def test_coding_loop_uses_spark_not_openai_when_muse_on(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
