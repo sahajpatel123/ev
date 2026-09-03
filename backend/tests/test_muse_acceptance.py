@@ -491,3 +491,23 @@ def test_live_transport_uses_pipeline_mouth_when_s2s_off(monkeypatch: pytest.Mon
     source = inspect.getsource(transport)
     assert "make_pipeline_responder" in source
     assert "use_grok = grok_voice_enabled()" in source
+
+
+def test_vision_analyze_fails_closed_without_muse_instead_of_raising() -> None:
+    import inspect
+
+    from app.ev import vision
+
+    source = inspect.getsource(vision.analyze_attachment)
+    assert "MuseProviderUnavailable" in source
+    assert "Intelligence provider is unavailable" in source
+
+
+def test_diagnostics_calibration_pings_spark_not_grok() -> None:
+    import inspect
+
+    from app.ev import diagnostics
+
+    source = inspect.getsource(diagnostics.run_calibration)
+    assert "muse_spark_model" in source
+    assert "muse_intelligence_active" in source

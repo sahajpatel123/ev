@@ -310,7 +310,13 @@ async def analyze_attachment(
     if event is None or event.tombstoned_at is not None:
         raise PermissionError("Attachment's source event is unavailable")
 
-    provider = provider or get_chat_provider()
+    if provider is None:
+        from app.gateway.muse import MuseProviderUnavailable
+
+        try:
+            provider = get_chat_provider()
+        except MuseProviderUnavailable:
+            provider = None
     privacy = event.privacy_level or "normal"
     if not permission:
         raise PermissionError(
@@ -390,7 +396,7 @@ async def analyze_attachment(
         )
         derived_text_used = True
 
-    if model_allowed and media:
+    if model_allowed and media and provider is not None:
         system = (
             "You are EV's perception layer. Describe only what the user has "
             "explicitly shared. Do not speculate about identity or location; "
@@ -441,7 +447,9 @@ async def analyze_attachment(
             labels = _suggest_labels_from_ocr(derived)
         request_id_value = request_id
     else:
-        if not model_allowed:
+        if provider is None:
+            summary = "Intelligence provider is unavailable."
+        elif not model_allowed:
             summary = (
                 "Perception blocked: the source event's privacy level does not "
                 "permit model processing."
@@ -463,7 +471,7 @@ async def analyze_attachment(
     payload = _perception_payload(
         summary=summary,
         labels=labels,
-        provider=provider.name,
+        provider=(getattr(provider, "name", None) or "none"),
         raw_sent=raw_sent,
         actor=actor,
         attachment=attachment,
