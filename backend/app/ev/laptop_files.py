@@ -2,8 +2,9 @@
 
 The realtime voice model is not the editor. It states a file goal; this
 module (and MacControlService.file_op) touches the disk. Intelligent edits
-use GPT-5.6 Luna, then DeepSeek. The sandbox jail is a different path and
-never substitutes for the owner's Desktop/Documents/Downloads.
+use Muse Spark when it is the configured brain. OpenAI Luna then DeepSeek
+remain legacy-only. The sandbox jail is a different path and never
+substitutes for the owner's Desktop/Documents/Downloads.
 """
 
 from __future__ import annotations
@@ -2043,6 +2044,33 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
             f"Instruction: {instruction[:2000]}\n---\nCURRENT FILE:\n{current[:MAX_FILE_BYTES]}"
         )
     )
+    from app.gateway.muse import MuseProviderUnavailable, muse_intelligence_active, muse_key_loaded
+
+    if muse_intelligence_active():
+        if not muse_key_loaded():
+            raise RuntimeError("file_intelligence_unavailable")
+        try:
+            from app.contracts import ChatMessage
+            from app.gateway.muse import muse_spark_model
+            from app.gateway.muse_spark import muse_spark_provider
+
+            result = await muse_spark_provider().chat(
+                [
+                    ChatMessage(
+                        role="system",
+                        content='You edit local files for Evie. Reply with JSON {"content": "..."} only.',
+                    ),
+                    ChatMessage(role="user", content=prompt),
+                ],
+                model=muse_spark_model(),
+            )
+        except MuseProviderUnavailable as exc:
+            raise RuntimeError("file_intelligence_unavailable") from exc
+        parsed = _parse_content_json(result.text or "")
+        if parsed is None:
+            raise RuntimeError("file_intelligence_unavailable")
+        return parsed, "spark"
+
     luna = await _call_chat_model(
         provider="openai",
         model=(getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-5.6-luna",

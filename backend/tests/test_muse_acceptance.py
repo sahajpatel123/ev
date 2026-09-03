@@ -316,6 +316,56 @@ async def test_v1_chat_uses_spark_not_grok(client, monkeypatch: pytest.MonkeyPat
     assert body.get("model") == "muse-spark-1.3-contributor"
 
 
+@pytest.mark.asyncio
+async def test_laptop_file_rewrite_uses_spark_not_luna_when_muse_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.contracts import ChatResult
+    from app.ev import laptop_files
+
+    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_key_loaded", lambda: True)
+    legacy = {"n": 0}
+
+    class _Prov:
+        async def chat(self, messages, **kwargs):
+            return ChatResult(
+                text='{"content":"hello from spark\\n"}',
+                usage={},
+                model="muse-spark-1.3-contributor",
+            )
+
+    async def boom_legacy(*args, **kwargs):
+        legacy["n"] += 1
+        raise AssertionError("Luna/DeepSeek must not rewrite files while Muse is the brain")
+
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    monkeypatch.setattr(laptop_files, "_call_chat_model", boom_legacy)
+    text, source = await laptop_files._intelligent_rewrite(
+        "", "write a note that says hello", create=True
+    )
+    assert source == "spark"
+    assert "hello from spark" in text
+    assert legacy["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_laptop_file_rewrite_fails_closed_without_muse_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev import laptop_files
+
+    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_key_loaded", lambda: False)
+
+    async def boom_legacy(*args, **kwargs):
+        raise AssertionError("legacy file intelligence must not run")
+
+    monkeypatch.setattr(laptop_files, "_call_chat_model", boom_legacy)
+    with pytest.raises(RuntimeError, match="file_intelligence_unavailable"):
+        await laptop_files._intelligent_rewrite("", "write hello", create=True)
+
+
 def test_live_transport_uses_pipeline_mouth_when_s2s_off(monkeypatch: pytest.MonkeyPatch) -> None:
     import inspect
 
