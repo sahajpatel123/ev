@@ -256,6 +256,66 @@ def test_calculate_is_deterministic_not_spark() -> None:
     assert muse_counters_snapshot()["spark_calls"] == 0
 
 
+@pytest.mark.asyncio
+async def test_v1_chat_fails_closed_without_muse_key(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "meta_model_api_key", None)
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    chat = await client.post("/v1/chat", json={"message": "hello there, how are you today"})
+    assert chat.status_code == 503, chat.text
+    detail = str(chat.json().get("detail") or "").lower()
+    assert "unavailable" in detail
+    assert chat.headers.get("x-error-code") == "muse_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_v1_chat_uses_spark_not_grok(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.contracts import ChatResult
+    from app.ev.turn_intent import TurnIntent
+    from app.gateway.streaming import ChatStreamChunk
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "meta_model_api_key", "test-key")
+    monkeypatch.setattr(settings, "xai_api_key", "xai-must-not-be-used")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-must-not-be-used")
+    grok = {"n": 0}
+
+    class Spark:
+        name = "meta_muse_spark"
+        supports_tools = True
+        default_model = "muse-spark-1.3-contributor"
+
+        async def chat(self, messages, **kwargs):
+            return ChatResult(text="hello from spark", usage={}, model=self.default_model)
+
+        async def chat_with_tools(self, messages, tools, **kwargs):
+            return await self.chat(messages)
+
+        async def stream_chat(self, messages, **kwargs):
+            yield ChatStreamChunk(text="hello from spark", done=True, model=self.default_model)
+
+    async def fake_spark_intent(turn, context):
+        return TurnIntent(route="CONVERSATION", operation="UNKNOWN", confidence=0.9)
+
+    async def boom_grok(*args, **kwargs):
+        grok["n"] += 1
+        raise AssertionError("Grok must not be the typed-chat brain")
+
+    monkeypatch.setattr("app.api.core.get_chat_provider", lambda: Spark())
+    monkeypatch.setattr("app.ev.luna_adapter._call_spark_intent", fake_spark_intent)
+    monkeypatch.setattr("app.gateway.providers.XAIProvider.chat", boom_grok)
+    resp = await client.post("/v1/chat", json={"message": "hello there, how are you today"})
+    assert resp.status_code == 200, resp.text
+    assert grok["n"] == 0
+    body = resp.json()
+    assert "spark" in (body.get("reply") or "").lower()
+    assert body.get("model") == "muse-spark-1.3-contributor"
+
+
 def test_live_transport_uses_pipeline_mouth_when_s2s_off(monkeypatch: pytest.MonkeyPatch) -> None:
     import inspect
 

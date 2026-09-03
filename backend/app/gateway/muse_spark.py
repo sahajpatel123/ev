@@ -59,6 +59,27 @@ class MuseSparkProvider(DeepSeekProvider):
     def _payload_extras(self) -> dict:
         return {"reasoning_effort": muse_spark_reasoning_effort()}
 
+    def _raise_if_auth_rejected(self, exc: BaseException) -> None:
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if status in {401, 403}:
+            raise MuseProviderUnavailable("Muse Spark credential was rejected") from exc
+
+    async def _complete(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str | None,
+        temperature: float,
+        tools: Sequence[ToolSpec] | None = None,
+    ) -> ChatResult:
+        try:
+            return await super()._complete(
+                messages, model=model, temperature=temperature, tools=tools
+            )
+        except httpx.HTTPStatusError as exc:
+            self._raise_if_auth_rejected(exc)
+            raise
+
     def _apply_provider_payload(self, payload: dict, *, temperature: float) -> dict:
         # Spark samples at provider default (1.0). Do not send a competing
         # temperature; reasoning_effort=high is the one fixed intelligence knob.
@@ -100,15 +121,19 @@ class MuseSparkProvider(DeepSeekProvider):
         model: str | None = None,
         temperature: float = 0.7,
     ) -> AsyncIterator:
-        async for chunk in super().stream_chat(
-            messages, model=model, temperature=temperature
-        ):
-            if getattr(chunk, "done", False):
-                note_spark_call(
-                    usage=getattr(chunk, "usage", None) or {},
-                    model=getattr(chunk, "model", None),
-                )
-            yield chunk
+        try:
+            async for chunk in super().stream_chat(
+                messages, model=model, temperature=temperature
+            ):
+                if getattr(chunk, "done", False):
+                    note_spark_call(
+                        usage=getattr(chunk, "usage", None) or {},
+                        model=getattr(chunk, "model", None),
+                    )
+                yield chunk
+        except httpx.HTTPStatusError as exc:
+            self._raise_if_auth_rejected(exc)
+            raise
 
     async def complete_raw(
         self,

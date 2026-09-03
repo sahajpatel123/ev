@@ -479,6 +479,43 @@ async def test_coding_loop_uses_spark_not_openai_when_muse_on(
     assert result.get("brain") == "muse-spark-1.3-contributor" or "spark" in str(result.get("brain") or "").lower() or result.get("ok") in {True, False}
 
 
+@pytest.mark.asyncio
+async def test_muse_spark_401_fails_closed_not_silent_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from app.gateway.muse_spark import MuseSparkProvider
+    from app.gateway.reliability import CIRCUIT_BREAKERS
+
+    CIRCUIT_BREAKERS.reset("meta_muse_spark")
+    monkeypatch.setattr(settings, "model_max_retries", 0)
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            request = httpx.Request("POST", url)
+            return httpx.Response(401, request=request, json={"error": "unauthorized"})
+
+    monkeypatch.setattr("app.gateway.providers.httpx.AsyncClient", _Client)
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="bad-key",
+        default_model="muse-spark-1.3-contributor",
+        provider_name="meta_muse_spark",
+    )
+    with pytest.raises(MuseProviderUnavailable):
+        await provider.chat([ChatMessage(role="user", content="hi")])
+
+
 def test_typed_chat_brain_is_muse_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")

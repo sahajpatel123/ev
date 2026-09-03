@@ -70,6 +70,10 @@ def main() -> None:
     daemonize()
     load(REPO / ".env")
     load(REPO / "backend" / ".env")
+    # Production secrets overlay (META_MODEL_API_KEY). setdefault so an
+    # explicit operator env still wins; config.py aliases the Meta names.
+    secrets = Path(os.environ.get("EV_SECRETS_FILE", str(Path.home() / ".ev/secrets/production.env"))).expanduser()
+    load(secrets)
     SUPPORT.mkdir(parents=True, exist_ok=True)
     # Keep EV_DATABASE_URL and EV_VOICE_LIVE_MODE from .env so Talk sees the
     # same archive and shadow surface the owner actually uses.
