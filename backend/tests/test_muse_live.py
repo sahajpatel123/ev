@@ -373,6 +373,9 @@ async def test_owner_facing_sidecar_spark_counters_and_composed_hearing() -> Non
     )
     assert (heard.text or "").strip()
     assert heard.provider == "meta_muse_voice"
+    from app.gateway.muse import muse_counters_snapshot
+
+    assert muse_counters_snapshot()["voice_calls"] >= 1
     async with httpx.AsyncClient(timeout=60) as client:
         composed = await client.post(
             "http://127.0.0.1:18000/v1/chat",
@@ -380,8 +383,37 @@ async def test_owner_facing_sidecar_spark_counters_and_composed_hearing() -> Non
             json={"message": heard.text},
         )
     assert composed.status_code == 200, composed.text
-    assert (composed.json().get("reply") or "").strip()
-    assert "unavailable" not in (composed.json().get("reply") or "").lower()
+    reply = (composed.json().get("reply") or "").strip()
+    assert reply
+    assert "unavailable" not in reply.lower()
+
+    conv_wav, _ = _spoken_wav_pcm("Reply with the single word pong")
+    conv_heard = await MuseVoiceTranscriber().transcribe(
+        audio_b64=base64.b64encode(conv_wav).decode("ascii")
+    )
+    assert (conv_heard.text or "").strip()
+    async with httpx.AsyncClient(timeout=90) as client:
+        spark_turn = await client.post(
+            "http://127.0.0.1:18000/v1/chat",
+            headers=headers,
+            json={"message": conv_heard.text},
+        )
+        health = await client.get("http://127.0.0.1:18000/v1/health")
+    assert spark_turn.status_code == 200, spark_turn.text
+    spark_reply = (spark_turn.json().get("reply") or "").strip()
+    assert spark_reply
+    assert "unavailable" not in spark_reply.lower()
+    assert "grok" not in (spark_turn.json().get("model") or "").lower()
+    assert (health.json().get("providers") or {}).get("live") == "pipeline"
+
+    from app.voice.contracts import SpeechStyle
+    from app.voice.tts import EdgeTTSSynthesizer
+
+    mouth = EdgeTTSSynthesizer(voice="en-GB-SoniaNeural")
+    spoken = await mouth.synthesize(spark_reply[:80] or reply[:80], style=SpeechStyle())
+    assert spoken.audio
+    assert len(spoken.audio) > 200
+    assert mouth.name == "edge_tts"
 
 
 @pytest.mark.asyncio
