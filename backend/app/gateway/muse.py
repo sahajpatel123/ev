@@ -88,14 +88,18 @@ def muse_asr_realtime_url() -> str:
 def configured_intelligence_provider() -> str:
     """Primary general-intelligence provider name.
 
-    ``EV_INTELLIGENCE_PROVIDER`` wins when set so typed chat and the live
-    pipeline share one brain without rewriting /v1/chat.
+    Any Muse Spark slot wins over leftover xAI / DeepSeek / OpenAI values in
+    the other slots. Explicit rollback requires clearing Muse from
+    intelligence, chat, and turn-control — not leaving one Muse flag on.
     """
 
     intel = (getattr(settings, "intelligence_provider", None) or "").strip()
-    if intel:
-        return intel
-    return (settings.chat_provider or "").strip()
+    chat = (settings.chat_provider or "").strip()
+    turn = (getattr(settings, "turn_control_provider", None) or "").strip()
+    for name in (intel, chat, turn):
+        if name.lower() in MUSE_SPARK_PROVIDERS:
+            return name
+    return intel or chat
 
 
 def muse_intelligence_active() -> bool:

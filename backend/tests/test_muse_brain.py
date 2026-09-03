@@ -629,6 +629,23 @@ def test_intelligence_provider_overrides_chat_provider(monkeypatch: pytest.Monke
     assert configured_intelligence_provider() == "meta_muse_spark"
 
 
+def test_leftover_xai_chat_cannot_win_while_a_muse_slot_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active
+
+    monkeypatch.setattr(settings, "chat_provider", "xai")
+    monkeypatch.setattr(settings, "intelligence_provider", "xai")
+    monkeypatch.setattr(settings, "turn_control_provider", "meta_muse_spark")
+    assert configured_intelligence_provider() == "meta_muse_spark"
+    assert muse_intelligence_active() is True
+
+    monkeypatch.setattr(settings, "intelligence_provider", "xai")
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "turn_control_provider", "openai")
+    assert configured_intelligence_provider() == "meta_muse_spark"
+
+
 @pytest.mark.asyncio
 async def test_coding_loop_uses_spark_not_openai_when_muse_on(
     tmp_path, monkeypatch: pytest.MonkeyPatch

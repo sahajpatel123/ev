@@ -311,10 +311,12 @@ class LLMExtractor:
                 self.provider = get_chat_provider()
             except MuseProviderUnavailable:
                 return False
-        return (
-            self.provider is not None
-            and getattr(self.provider, "name", "") in ENRICHMENT_PROVIDERS
-        )
+        name = getattr(self.provider, "name", "")
+        from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_intelligence_active
+
+        if muse_intelligence_active():
+            return bool(self.provider is not None and name in MUSE_SPARK_PROVIDERS)
+        return bool(self.provider is not None and name in ENRICHMENT_PROVIDERS)
 
     async def _call(
         self,

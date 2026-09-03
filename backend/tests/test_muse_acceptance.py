@@ -587,6 +587,11 @@ def test_memory_enrichment_uses_spark_and_fails_closed_without_key(
 
     assert LLMExtractor(provider=Spark()).available is True
 
+    class XAI:
+        name = "xai"
+
+    assert LLMExtractor(provider=XAI()).available is False
+
 
 @pytest.mark.asyncio
 async def test_look_polish_fails_closed_without_muse_key(

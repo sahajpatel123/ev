@@ -220,9 +220,10 @@ async def stream_chat_tts_pipeline(
 
     async def run_llm() -> None:
         try:
-            intel = (getattr(settings, "intelligence_provider", None) or "").strip() or settings.chat_provider
-            if intel in {"meta_muse_spark", "muse", "muse_spark"}:
-                model = settings.muse_spark_model
+            from app.gateway.muse import muse_intelligence_active, muse_spark_model
+
+            if muse_intelligence_active():
+                model = muse_spark_model()
             elif settings.chat_provider == "xai":
                 model = settings.xai_model
             elif settings.chat_provider == "deepseek":
