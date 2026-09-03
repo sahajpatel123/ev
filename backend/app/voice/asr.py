@@ -498,6 +498,14 @@ class OpenAICompatTranscriber:
         text_hint: str | None = None,
         language: str = "en",
     ) -> Transcript:
+        from app.gateway.muse import muse_hearing_active
+
+        if muse_hearing_active():
+            raise VoiceError(
+                "legacy Whisper ASR is blocked while Muse Voice is hearing",
+                status=503,
+                code="muse_unavailable",
+            )
         audio, filename = await _read_audio(audio_b64, audio_ref)
         content_type = {
             ".wav": "audio/wav",

@@ -200,6 +200,10 @@ class OpenAICompatSynthesizer:
         self._client = client
 
     async def synthesize(self, text: str, *, style: SpeechStyle) -> SynthesisResult:
+        if (settings.voice_tts_provider or "").strip().lower() == "edge_tts":
+            raise RuntimeError(
+                "OpenAI TTS is blocked while Edge TTS is the Talk mouth"
+            )
         if not remote_processing_allowed("voice_tts"):
             raise RuntimeError(
                 "Remote TTS is denied by regional policy; set EV_ALLOW_REMOTE_TTS=true"

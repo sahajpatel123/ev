@@ -2105,6 +2105,9 @@ async def _call_chat_model(
 ) -> str | None:
     if not api_key or not model:
         return None
+    from app.gateway.muse import refuse_legacy_cloud_brain
+
+    refuse_legacy_cloud_brain(provider)
     import httpx
 
     models = [model]

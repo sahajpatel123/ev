@@ -656,6 +656,40 @@ async def test_voice_memory_fallback_uses_muse_not_whisper(
 
 
 @pytest.mark.asyncio
+async def test_openai_whisper_transcriber_blocked_while_muse_is_hearing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.voice.asr import OpenAICompatTranscriber
+    from app.voice.contracts import VoiceError
+
+    monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
+    engine = OpenAICompatTranscriber(
+        base_url="https://api.openai.com/v1",
+        api_key="sk-must-not-be-used",
+        model="whisper-1",
+    )
+    with pytest.raises(VoiceError) as raised:
+        await engine.transcribe(audio_b64="AAAA")
+    assert raised.value.code == "muse_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_openai_tts_blocked_while_edge_is_the_mouth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.voice.contracts import SpeechStyle
+    from app.voice.tts import OpenAICompatSynthesizer
+
+    monkeypatch.setattr(settings, "voice_tts_provider", "edge_tts")
+    mouth = OpenAICompatSynthesizer(
+        base_url="https://api.openai.com/v1",
+        api_key="sk-must-not-be-used",
+    )
+    with pytest.raises(RuntimeError, match="Edge TTS is the Talk mouth"):
+        await mouth.synthesize("pong", style=SpeechStyle())
+
+
+@pytest.mark.asyncio
 async def test_voice_memory_muse_hearing_fails_closed_not_whisper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

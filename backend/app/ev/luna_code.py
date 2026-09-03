@@ -882,6 +882,9 @@ async def _luna_loop(
     live: bool,
     prior: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from app.gateway.muse import refuse_legacy_cloud_brain
+
+    refuse_legacy_cloud_brain("openai")
     import httpx
 
     key = (getattr(settings, "openai_api_key", None) or "").strip()

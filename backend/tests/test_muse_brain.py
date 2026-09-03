@@ -679,6 +679,38 @@ async def test_luna_responses_api_blocked_while_muse_is_brain(
 
 
 @pytest.mark.asyncio
+async def test_luna_code_loop_blocked_while_muse_is_brain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.luna_code import _luna_loop
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-must-not-be-used")
+    with pytest.raises(MuseProviderUnavailable):
+        await _luna_loop("write hello.py", model="gpt-5.6-luna", budget_s=30, live=False)
+
+
+@pytest.mark.asyncio
+async def test_file_rewrite_legacy_http_blocked_while_muse_is_brain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.laptop_files import _call_chat_model
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    with pytest.raises(MuseProviderUnavailable):
+        await _call_chat_model(
+            provider="openai",
+            model="gpt-5.6-luna",
+            fallback="",
+            prompt="write hi",
+            api_key="sk-must-not-be-used",
+            base_url="https://api.openai.com/v1",
+        )
+
+
+@pytest.mark.asyncio
 async def test_coding_loop_uses_spark_not_openai_when_muse_on(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
