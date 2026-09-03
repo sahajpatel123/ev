@@ -1225,6 +1225,59 @@ async def _maybe_deterministic_core_reply(
     return spoken or None
 
 
+async def _maybe_deterministic_action_reply(
+    session: AsyncSession,
+    message: str,
+    *,
+    actor: str,
+    device_id: UUID | None,
+    allow_sensitive: bool,
+    request_id: str | None,
+) -> str | None:
+    """Speak calculate/open_app receipts without Spark when the tool already ran."""
+
+    from app.ev.briefing import extract_expression
+    from app.ev.computer import _calculator_expression
+    from app.ev.tool_select import resolve_live_action
+    from app.ev.tools import dispatch, life_success_reply
+
+    resolved = resolve_live_action(message)
+    if resolved is None:
+        return None
+    name, arguments = resolved
+    if name not in {"calculate", "open_app"}:
+        return None
+    if name == "calculate":
+        expression = extract_expression(message) or _calculator_expression(message)
+        if not expression:
+            return None
+        arguments = {"expression": expression}
+    response = await dispatch(
+        session,
+        name,
+        arguments,
+        actor=actor,
+        allow_sensitive=allow_sensitive,
+        request_id=request_id,
+        device_id=device_id,
+        channel="voice" if actor == "voice" else "action",
+    )
+    payload = response.result if isinstance(response.result, dict) else {}
+    if name == "calculate" and payload.get("result") is not None:
+        value = payload["result"]
+        try:
+            number = float(value)
+            shown: object = int(number) if number.is_integer() else number
+        except (TypeError, ValueError):
+            shown = value
+        return str(shown)
+    spoken = (payload.get("spoken") or "").strip()
+    if spoken:
+        return spoken
+    shaped = life_success_reply({**payload, "_tool": name}, tool_name=name).strip()
+    return shaped or None
+
+
 async def run_chat_pipeline(
     data: ChatRequest,
     session: AsyncSession,
@@ -1610,6 +1663,7 @@ async def run_chat_pipeline(
     )
     receipts: list = []
     core_reply = None
+    action_reply = None
     if not decision.blocked and local is None:
         core_reply = await _maybe_deterministic_core_reply(
             session,
@@ -1617,6 +1671,15 @@ async def run_chat_pipeline(
             actor=actor,
             device_id=device_id,
         )
+        if core_reply is None:
+            action_reply = await _maybe_deterministic_action_reply(
+                session,
+                data.message,
+                actor=actor,
+                device_id=device_id,
+                allow_sensitive=data.allow_sensitive_tools or source == "voice",
+                request_id=request_id,
+            )
 
     if decision.blocked:
         final_draft = (
@@ -1647,6 +1710,16 @@ async def run_chat_pipeline(
             await text_delta_callback(result.text)
     elif core_reply is not None:
         result = ChatResult(text=core_reply)
+        report = OutputReport(
+            draft=result.text,
+            final_text=result.text,
+            flags=decision.flags,
+        )
+        envelope_hash = None
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
+    elif action_reply is not None:
+        result = ChatResult(text=action_reply)
         report = OutputReport(
             draft=result.text,
             final_text=result.text,

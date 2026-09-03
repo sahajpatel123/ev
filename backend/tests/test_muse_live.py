@@ -454,11 +454,14 @@ async def test_owner_facing_sidecar_calculate_and_research_and_memory() -> None:
     async with httpx.AsyncClient(timeout=120) as client:
         health = await client.get("http://127.0.0.1:18000/v1/health")
         assert (health.json().get("providers") or {}).get("chat") == "meta_muse_spark"
+        spark0 = _spark_calls(health.json())
         calc = await _sidecar_chat(client, bearer, "calculate 19 times 47")
         assert calc.status_code == 200, calc.text
         calc_reply = (calc.json().get("reply") or "")
         assert "893" in calc_reply.replace(",", "")
         assert "grok" not in (calc.json().get("model") or "").lower()
+        mid = await client.get("http://127.0.0.1:18000/v1/health")
+        assert _spark_calls(mid.json()) == spark0
 
         research = await _sidecar_chat(
             client, bearer, "research the current weather in Surat, one short sentence"
