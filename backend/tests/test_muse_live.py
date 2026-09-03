@@ -5,7 +5,9 @@ Never print, log, or assert the credential value.
 
 from __future__ import annotations
 
+import io
 import os
+import shutil
 
 import pytest
 
@@ -15,6 +17,75 @@ pytestmark = pytest.mark.skipif(
     os.environ.get("EV_TEST_USE_LIVE_MUSE") != "1" or not muse_api_key(),
     reason="live Muse probes require EV_TEST_USE_LIVE_MUSE=1 and META_MODEL_API_KEY",
 )
+
+
+@pytest.fixture(autouse=True)
+def _allow_remote_asr_for_live_muse(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EV_ALLOW_REMOTE_ASR", "true")
+
+
+def _spoken_wav_pcm(text: str) -> tuple[bytes, bytes]:
+    """macOS `say` → 16 kHz mono PCM16 WAV bytes and raw PCM."""
+
+    import subprocess
+    import tempfile
+    import wave
+    from pathlib import Path
+
+    say = shutil.which("say")
+    if not say:
+        pytest.skip("macOS say is required for live Muse Voice acceptance audio")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "spoken.wav"
+        proc = subprocess.run(
+            [
+                say,
+                "-o",
+                str(path),
+                "--file-format=WAVE",
+                "--data-format=LEI16@16000",
+                text,
+            ],
+            check=False,
+            capture_output=True,
+        )
+        if proc.returncode != 0 or not path.is_file():
+            pytest.skip("macOS say could not synthesize live Muse Voice audio")
+        wav_bytes = path.read_bytes()
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wav:
+        assert wav.getnchannels() == 1
+        assert wav.getsampwidth() == 2
+        pcm = wav.readframes(wav.getnframes())
+    return wav_bytes, pcm
+
+
+def _sidecar_bearer() -> str:
+    """Read Talk auth from repo overlay/.env without printing the value."""
+
+    from pathlib import Path
+
+    names = ("EV_API_KEY", "EV_MASTER_KEY")
+    for path in (
+        Path("/Users/sahajpatel/Code/ev/.env"),
+        Path.home() / ".ev/secrets/production.env",
+    ):
+        if not path.is_file():
+            continue
+        for raw in path.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key = key.strip()
+            val = val.strip().strip("'").strip('"')
+            if key in names and val:
+                return val
+    pytest.skip("no Talk sidecar bearer in overlay or .env")
+
+
+def _semantic_hit(transcript: str, needles: tuple[str, ...]) -> bool:
+    blob = (transcript or "").lower()
+    return any(n.lower() in blob for n in needles)
 
 
 @pytest.mark.asyncio
@@ -89,32 +160,78 @@ async def test_live_spark_stream_and_structured_intent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_muse_voice_file_transcribe() -> None:
+async def test_live_muse_voice_file_transcribe_bounded_set() -> None:
     import base64
-    import io
-    import math
-    import struct
-    import wave
 
     from app.voice.muse_voice import MuseVoiceTranscriber
 
-    rate = 16000
-    frames = b"".join(
-        struct.pack("<h", int(4000 * math.sin(2 * math.pi * 440 * i / rate)))
-        for i in range(rate)
+    phrases = (
+        ("Open Calculator", ("calculator", "calculate")),
+        ("Open Calculator now", ("calculator", "calculate")),
+        (
+            "Can you tell me what we were working on yesterday after lunch",
+            ("yesterday", "lunch", "working"),
+        ),
+        ("git commit dash m fix the spark loop", ("git", "commit", "spark")),
+        ("Hey Evie what priority is Canary", ("evie", "canary", "priority")),
+        ("Abre Calculator por favor", ("calculator", "calculadora", "abre")),
     )
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(rate)
-        wav.writeframes(frames)
     transcriber = MuseVoiceTranscriber()
-    result = await transcriber.transcribe(
-        audio_b64=base64.b64encode(buffer.getvalue()).decode("ascii")
+    hits = 0
+    for spoken, needles in phrases:
+        wav_bytes, _pcm = _spoken_wav_pcm(spoken)
+        result = await transcriber.transcribe(
+            audio_b64=base64.b64encode(wav_bytes).decode("ascii")
+        )
+        text = (result.text or "").strip()
+        assert text
+        assert result.details.get("diarization_is_owner_auth") is False
+        if _semantic_hit(text, needles):
+            hits += 1
+    assert hits >= 4, f"semantic transcripts too weak ({hits}/6)"
+
+
+@pytest.mark.asyncio
+async def test_live_muse_voice_stream_partial_final_endpoint_no_duplicate() -> None:
+    import asyncio
+
+    from app.voice.muse_voice import MuseVoiceTranscriber
+
+    _wav, pcm = _spoken_wav_pcm("Open Calculator")
+    finals: list[str] = []
+    errors: list[object] = []
+
+    async def on_final(text: str) -> None:
+        finals.append(text)
+
+    async def on_unusable(exc) -> None:
+        errors.append(exc)
+
+    transcriber = MuseVoiceTranscriber()
+    loop = asyncio.get_running_loop()
+    transcriber.start_live(
+        loop,
+        on_partial=None,
+        on_final=on_final,
+        on_unusable=on_unusable,
+        sample_rate=16000,
     )
-    assert (result.text or "").strip()
-    assert result.details.get("diarization_is_owner_auth") is False
+    frame = 3200  # 100 ms of PCM16 @ 16 kHz
+    try:
+        await asyncio.sleep(0.4)
+        for i in range(0, len(pcm), frame):
+            transcriber.feed_live(pcm[i : i + frame])
+            await asyncio.sleep(0.05)
+        transcriber.end_live()
+        for _ in range(80):
+            if finals or errors:
+                break
+            await asyncio.sleep(0.1)
+    finally:
+        transcriber.abort_live()
+    assert not errors, f"live Muse Voice failed: {type(errors[0]).__name__}"
+    assert len(finals) == 1
+    assert _semantic_hit(finals[0], ("calculator", "calculate"))
 
 
 @pytest.mark.asyncio
@@ -146,3 +263,48 @@ async def test_owner_facing_talk_sidecar_health_is_muse_not_openai_or_grok() -> 
     assert manager.get("provider") == "meta_muse_spark"
     assert providers.get("live") != "openai-realtime"
     assert providers.get("chat") != "xai"
+
+
+@pytest.mark.asyncio
+async def test_owner_facing_sidecar_typed_chat_is_spark_not_grok() -> None:
+    import httpx
+
+    bearer = _sidecar_bearer()
+    async with httpx.AsyncClient(timeout=60) as client:
+        health = await client.get("http://127.0.0.1:18000/v1/health")
+        assert health.status_code == 200, health.text
+        providers = (health.json().get("providers") or {})
+        assert providers.get("chat") == "meta_muse_spark"
+        assert providers.get("live") == "pipeline"
+        resp = await client.post(
+            "http://127.0.0.1:18000/v1/chat",
+            headers={"Authorization": f"Bearer {bearer}"},
+            json={"message": "Reply with the single word pong."},
+        )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "pong" in (body.get("reply") or "").lower()
+    model = (body.get("model") or "").lower()
+    assert "grok" not in model
+    assert "luna" not in model
+    assert "deepseek" not in model
+    assert "muse-spark" in model or "spark" in model
+
+
+@pytest.mark.asyncio
+async def test_owner_facing_sidecar_local_intent_does_not_need_spark() -> None:
+    import httpx
+
+    bearer = _sidecar_bearer()
+    async with httpx.AsyncClient(timeout=30) as client:
+        health = await client.get("http://127.0.0.1:18000/v1/health")
+        assert (health.json().get("providers") or {}).get("chat") == "meta_muse_spark"
+        resp = await client.post(
+            "http://127.0.0.1:18000/v1/chat",
+            headers={"Authorization": f"Bearer {bearer}"},
+            json={"message": "are you there"},
+        )
+    assert resp.status_code == 200, resp.text
+    reply = (resp.json().get("reply") or "").strip()
+    assert reply
+    assert "unavailable" not in reply.lower()

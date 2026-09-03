@@ -309,8 +309,6 @@ class _MuseLiveSession:
                             task.cancel()
                             with contextlib.suppress(Exception):
                                 await task
-        except MuseProviderUnavailable:
-            raise
         except Exception as exc:  # noqa: BLE001 - surface as typed ASR failure
             if not self._abort.is_set():
                 await self._fail(

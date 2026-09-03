@@ -272,6 +272,55 @@ async def test_v1_chat_fails_closed_without_muse_key(client, monkeypatch: pytest
 
 
 @pytest.mark.asyncio
+async def test_v1_chat_local_intent_does_not_require_muse_key(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "meta_model_api_key", None)
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    chat = await client.post("/v1/chat", json={"message": "are you there"})
+    assert chat.status_code == 200, chat.text
+    reply = (chat.json().get("reply") or "").lower()
+    assert reply.strip()
+    assert "unavailable" not in reply
+
+
+@pytest.mark.asyncio
+async def test_muse_live_stream_failure_is_voice_error_not_nameerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.voice.contracts import VoiceError
+    from app.voice.muse_voice import _MuseLiveSession
+
+    errors: list[VoiceError] = []
+
+    async def on_unusable(exc: VoiceError) -> None:
+        errors.append(exc)
+
+    monkeypatch.setattr("app.voice.muse_voice.remote_processing_allowed", lambda track: True)
+
+    def boom(*args, **kwargs):
+        raise OSError("muse websocket unreachable")
+
+    monkeypatch.setattr("app.voice.muse_voice.websockets.connect", boom)
+    session = _MuseLiveSession(
+        api_key="test-key",
+        model="muse-voice-transcribe-1.0",
+        encoding="PCM_16KHZ",
+        on_partial=None,
+        on_final=None,
+        on_unusable=on_unusable,
+    )
+    await session.run()
+    assert errors
+    assert isinstance(errors[0], VoiceError)
+    assert errors[0].code == "asr_unusable"
+
+
+@pytest.mark.asyncio
 async def test_v1_chat_uses_spark_not_grok(client, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.contracts import ChatResult
     from app.ev.turn_intent import TurnIntent

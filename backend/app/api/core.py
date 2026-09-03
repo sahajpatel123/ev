@@ -1393,7 +1393,10 @@ async def run_chat_pipeline(
 
     open_conflicts = await open_conflict_lines(session, limit=8)
 
-    provider = get_chat_provider()
+    # Do not construct Spark (or any chat provider) until this turn actually
+    # needs intelligence. Deterministic Core / local companion intents must
+    # stay zero-LLM even when META_MODEL_API_KEY is missing.
+    provider = None
     perception_lines: list[str] = []
     perception_provenance: list[ProvenanceItem] = []
     chat_media_refs: list[dict] = []
@@ -1436,6 +1439,8 @@ async def run_chat_pipeline(
             ]
         else:
             try:
+                if provider is None:
+                    provider = get_chat_provider()
                 perception_event = await vision.analyze_attachment(
                     session,
                     data.attachment_id,
@@ -1693,6 +1698,8 @@ async def run_chat_pipeline(
         )
         if on_turn_ready is not None:
             await on_turn_ready(strategy)
+        if provider is None:
+            provider = get_chat_provider()
         gateway = ModelGateway(provider)
         chat_messages = [
             ChatMessage(role="system", content=system_prompt),
