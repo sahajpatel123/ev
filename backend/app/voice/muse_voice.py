@@ -355,13 +355,13 @@ class _MuseLiveSession:
                 return
             if kind == "transcript":
                 text = str(event.get("transcript") or "").strip()
-                if not text:
-                    continue
-                if event.get("final"):
-                    await self._emit_final(text)
-                elif self.on_partial is not None:
+                if text and self.on_partial is not None:
                     await self.on_partial(text)
-            if kind in {"speechEnd", "speechComplete"} and event.get("transcript"):
+                continue
+            # ENDPOINTING: speechEnd is a boundary only. The committed turn
+            # text is speechComplete (Meta may post-process after speechEnd).
+            # PUSH_TO_TALK uses transcript.final on the file endpoint, not here.
+            if kind == "speechComplete":
                 await self._emit_final(str(event.get("transcript") or "").strip())
 
     async def _emit_final(self, text: str) -> None:

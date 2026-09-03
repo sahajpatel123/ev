@@ -40,10 +40,12 @@ async def test_muse_live_protocol_partial_final_endpoint_no_duplicate() -> None:
     class _WS:
         def __init__(self) -> None:
             self._messages = [
+                '{"type":"speechStart","turnId":1}',
                 '{"type":"transcript","transcript":"Open Calc","final":false}',
                 '{"type":"transcript","transcript":"Open Calculator","final":true}',
-                '{"type":"speechEnd","transcript":"Open Calculator"}',
-                '{"type":"speaker","speaker":"A"}',
+                '{"type":"speechEnd","turnId":1}',
+                '{"type":"speechComplete","turnId":1,"transcript":"Open Calculator"}',
+                '{"type":"speaker","label":"A"}',
             ]
 
         def __aiter__(self):
@@ -55,7 +57,7 @@ async def test_muse_live_protocol_partial_final_endpoint_no_duplicate() -> None:
             return self._messages.pop(0)
 
     await session._receive(_WS())
-    assert partials == ["Open Calc"]
+    assert partials == ["Open Calc", "Open Calculator"]
     assert finals == ["Open Calculator"]
     assert session._got_final is True
 
@@ -100,8 +102,9 @@ async def test_muse_live_protocol_speech_end_before_final_is_not_duplicated() ->
     class _WS:
         def __init__(self) -> None:
             self._messages = [
-                '{"type":"speechEnd","transcript":"Open Calculator"}',
-                '{"type":"transcript","transcript":"Open Calculator","final":true}',
+                '{"type":"speechEnd","turnId":1}',
+                '{"type":"transcript","transcript":"open calculator","final":true}',
+                '{"type":"speechComplete","turnId":1,"transcript":"Open Calculator"}',
             ]
 
         def __aiter__(self):
