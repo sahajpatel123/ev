@@ -220,3 +220,25 @@ def test_memory_writer_stays_writer_when_spark_curates() -> None:
     assert "MemoryWriter" in source
     assert "muse_intelligence_active" in inspect.getsource(curator._call_deepseek)
     assert inspect.isclass(MemoryWriter)
+
+
+def test_calculate_is_deterministic_not_spark() -> None:
+    reset_muse_counters()
+    action = resolve_live_action("calculate 19 times 47")
+    assert action is not None
+    assert action[0] == "calculate"
+    assert muse_counters_snapshot()["spark_calls"] == 0
+
+
+def test_live_transport_uses_pipeline_mouth_when_s2s_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    import inspect
+
+    from app.voice.live import transport
+
+    monkeypatch.setattr(settings, "voice_live_brain", "pipeline")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-present")
+    monkeypatch.setattr(settings, "xai_api_key", "xai-present")
+    assert grok_voice_enabled() is False
+    source = inspect.getsource(transport)
+    assert "make_pipeline_responder" in source
+    assert "use_grok = grok_voice_enabled()" in source

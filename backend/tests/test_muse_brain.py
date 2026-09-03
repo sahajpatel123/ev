@@ -403,3 +403,17 @@ def test_typed_chat_brain_is_muse_when_configured(monkeypatch: pytest.MonkeyPatc
     assert provider.name == "meta_muse_spark"
     assert provider.default_model == "muse-spark-1.3-contributor"
 
+
+def test_health_manager_is_spark_when_muse_is_primary(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.ev.model_router import health_snapshot, manager_model_info
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "meta_model_api_key", "test-key")
+    info = manager_model_info()
+    assert info.provider == "meta_muse_spark"
+    assert info.model == "muse-spark-1.3-contributor"
+    snap = health_snapshot()
+    assert snap["manager"]["provider"] == "meta_muse_spark"
+    assert snap["muse"]["reasoning_effort"] == "high"
+

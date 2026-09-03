@@ -228,9 +228,19 @@ async def health() -> dict:
 
     from app.db import SessionLocal
     from app.ev.laptop_files import laptop_files_allowed
+    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active
 
     async with SessionLocal() as session:
         migrations = await migration_parity(session)
+
+    models = {
+        **model_health(),
+        "turn_control_metrics": luna_metrics_snapshot(),
+    }
+    # Muse Spark is the normal manager/brain. Do not overwrite that slot with
+    # the legacy DeepSeek manager stub while Muse is the configured intelligence.
+    if not muse_intelligence_active():
+        models["manager"] = DeepSeekManagerAdapter().health()
 
     return {
         # G1.1: schema/migration drift degrades health visibly. Observability
@@ -263,16 +273,12 @@ async def health() -> dict:
             "plugins",
         ],
         "providers": {
-            "chat": settings.chat_provider,
+            "chat": configured_intelligence_provider() or settings.chat_provider,
             "live": live_label,
             "embeddings": settings.embedding_provider,
             "storage": settings.object_store_backend,
         },
-        "models": {
-            **model_health(),
-            "turn_control_metrics": luna_metrics_snapshot(),
-            "manager": DeepSeekManagerAdapter().health(),
-        },
+        "models": models,
         "migrations": migrations,
         "git": {"sha": RUNTIME_GIT_SHA},
         "runtime": {
