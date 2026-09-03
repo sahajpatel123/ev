@@ -89,10 +89,15 @@ secret-looking keys (client ids/secrets belong in environment variables, see
    in both places. There is **no per-integration path**; the state parameter
    binds the callback to the integration.
 5. Copy the **Client ID** and **Client secret**.
-6. Enable the **Google Calendar API** for the project.
+6. Enable the **Google Calendar API** for the project. For Gmail envelope
+   ingest, also enable the **Gmail API**. Mail uses a separate OAuth consent
+   (`gmail.readonly`) with the same client id/secret; those scopes are **not**
+   added to the calendar provider, so an existing calendar grant is not forced
+   to re-consent.
 
 No calendar-write scope is requested: only `calendar.readonly` (plus `openid`
-and `email` for account identification).
+and `email` for account identification). Gmail list is metadata-only
+(Subject/From/Date); send stays on the headless Mail.app helper.
 
 ### 4.2 Where the secret goes
 

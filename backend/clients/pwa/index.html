@@ -9,13 +9,13 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.09.02.03">
+  <meta name="evie-build" content="2026.09.02.06">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.09.02.03">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.09.02.06">
   <title>Evie</title>
 </head>
 <body>
@@ -35,6 +35,7 @@
     <section id="ready-ui" class="presence-surface" hidden>
       <canvas id="orb" class="presence" width="360" height="360" aria-label="Evie"></canvas>
       <p class="mood" id="mood">Ready</p>
+      <p class="quiet camera-role-line" id="camera-role-line" hidden></p>
       <p class="quiet" id="update-line" hidden></p>
       <p class="user-line" id="user-line"></p>
       <p class="reply" id="reply"></p>
@@ -50,6 +51,18 @@
         </div>
       </article>
       <p class="action-card" id="action-card" hidden></p>
+      <article id="camera-ask" class="camera-ask" hidden>
+        <p class="camera-ask-title">Which iPhone is this?</p>
+        <p class="quiet">Tap one. Evie uses this for Look — it is not inferred from the name.</p>
+        <button type="button" data-camera-role="pro">This is the 16 Pro</button>
+        <button type="button" data-camera-role="standard">This is the SE</button>
+      </article>
+      <nav id="quick-row" class="quick-row" hidden>
+        <button type="button" data-quick="weather">Weather</button>
+        <button type="button" data-quick="today">Today</button>
+        <button type="button" data-quick="inbox">Inbox</button>
+        <button type="button" data-quick="chat">Chat</button>
+      </nav>
 
       <div class="dock" id="command-dock">
         <button type="button" id="look-btn" class="dock-side" aria-label="Look">Look</button>
@@ -64,12 +77,15 @@
     </section>
 
     <nav id="more-rail" class="rail" hidden>
+      <button type="button" data-surface="conversation">Chat</button>
       <button type="button" data-surface="devices">Devices</button>
       <button type="button" data-surface="activity">Activity</button>
       <button type="button" data-surface="inbox">Inbox</button>
+      <button type="button" data-surface="privacy">Settings</button>
     </nav>
 
     <section id="conversation-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="conversation-sheet" aria-label="Close">✕</button>
       <h2>Conversation</h2>
       <ol id="history" class="timeline"></ol>
     </section>
@@ -93,7 +109,26 @@
     </section>
 
     <section id="settings-sheet" class="sheet" hidden>
-      <h2>Privacy</h2>
+      <button type="button" class="sheet-close sheet-x" data-close="settings-sheet" aria-label="Close">✕</button>
+      <h2>This iPhone</h2>
+      <h3>Camera</h3>
+      <p class="quiet">Tap the phone you are holding. Look prefers the 16 Pro when both are on.</p>
+      <p class="quiet" id="camera-role-status">Current: not set</p>
+      <div class="choice-list" id="camera-role">
+        <button type="button" data-camera-role="pro" aria-pressed="false">
+          <strong>iPhone 16 Pro</strong>
+          <span>Preferred camera for Look</span>
+        </button>
+        <button type="button" data-camera-role="standard" aria-pressed="false">
+          <strong>iPhone SE</strong>
+          <span>Fallback camera</span>
+        </button>
+        <button type="button" data-camera-role="unknown" aria-pressed="true">
+          <strong>Not set yet</strong>
+          <span>Evie will not prefer this camera</span>
+        </button>
+      </div>
+      <h3>Privacy</h3>
       <dl class="meta" id="privacy-meta"></dl>
       <h3>Autonomy</h3>
       <p class="quiet">Low-risk actions run after a clear command. Apple Messages and calls use the system’s own confirmation. High-risk actions stay blocked.</p>
@@ -110,14 +145,7 @@
         <button type="button" data-appearance="light">Light</button>
         <button type="button" data-appearance="dark">Dark</button>
       </div>
-      <h3>This iPhone camera</h3>
-      <p class="quiet">Tell Evie which phone has the better camera. Never inferred from the device name.</p>
-      <div class="segment" id="camera-role">
-        <button type="button" data-camera-role="pro">16 Pro preferred</button>
-        <button type="button" data-camera-role="standard">SE fallback</button>
-        <button type="button" data-camera-role="unknown" class="on">Not set</button>
-      </div>
-      <h3>Settings</h3>
+      <h3>Status</h3>
       <dl class="meta" id="settings-meta"></dl>
       <button type="button" id="self-test-btn" class="secondary">Evie system check</button>
       <ol id="self-test" class="self-test" hidden></ol>
@@ -160,12 +188,12 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.09.02.03"></script>
-  <script src="/evie/presence.js?v=2026.09.02.03"></script>
-  <script src="/evie/orb.js?v=2026.09.02.03"></script>
-  <script src="/evie/feedback.js?v=2026.09.02.03"></script>
-  <script src="/evie/webrtc.js?v=2026.09.02.03"></script>
-  <script src="/evie/mobile-actions.js?v=2026.09.02.03"></script>
-  <script src="/evie/app.js?v=2026.09.02.03"></script>
+  <script src="/evie/audio.js?v=2026.09.02.06"></script>
+  <script src="/evie/presence.js?v=2026.09.02.06"></script>
+  <script src="/evie/orb.js?v=2026.09.02.06"></script>
+  <script src="/evie/feedback.js?v=2026.09.02.06"></script>
+  <script src="/evie/webrtc.js?v=2026.09.02.06"></script>
+  <script src="/evie/mobile-actions.js?v=2026.09.02.06"></script>
+  <script src="/evie/app.js?v=2026.09.02.06"></script>
 </body>
 </html>

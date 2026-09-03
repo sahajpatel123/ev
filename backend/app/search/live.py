@@ -89,6 +89,11 @@ _WORLD_HINTS = (
     "where are the ",
     "who is the ",
     "who was the ",
+    "on the web",
+    "search the web",
+    "give me info",
+    "what this ",
+    "what that ",
 )
 
 
@@ -403,6 +408,77 @@ async def duckduckgo_results(query: str) -> list:
     ]
 
 
+async def duckduckgo_html_results(query: str, *, limit: int = 5) -> list:
+    """Cited web hits from DuckDuckGo HTML — no API key.
+
+    Instant Answer is often empty for books, products, and named works.
+    This scrape is the same public HTML the Mac first-result path already uses.
+    """
+    import html as html_lib
+
+    async with _client() as client:
+        try:
+            resp = await client.get(
+                "https://html.duckduckgo.com/html/",
+                params={"q": query},
+                headers={
+                    "User-Agent": _USER_AGENT,
+                    "Accept": "text/html,application/xhtml+xml",
+                },
+            )
+            resp.raise_for_status()
+            body = resp.text or ""
+        except (httpx.HTTPError, ValueError):
+            return []
+    results = []
+    seen: set[str] = set()
+    href_re = re.compile(
+        r'(?:uddg=([^&"]+)|class="result__a"[^>]*href="([^"]+)")',
+        re.I,
+    )
+    snippet_re = re.compile(
+        r'class="result__snippet"[^>]*>(.*?)</(?:a|td|div|span)>',
+        re.I | re.S,
+    )
+    snippets = [
+        re.sub(r"<[^>]+>", " ", html_lib.unescape(match.group(1)))
+        for match in snippet_re.finditer(body)
+    ]
+    snippets = [re.sub(r"\s+", " ", item).strip() for item in snippets if item.strip()]
+    for index, match in enumerate(href_re.finditer(body)):
+        raw = html_lib.unescape(match.group(1) or match.group(2) or "")
+        raw = raw.replace("&amp;", "&")
+        try:
+            from urllib.parse import unquote
+
+            raw = unquote(raw)
+        except Exception:
+            pass
+        lower = raw.lower()
+        if not lower.startswith("http"):
+            continue
+        if any(
+            skip in lower
+            for skip in (
+                "duckduckgo.com",
+                "google.com/search",
+                "bing.com",
+                "yahoo.com",
+                "/redirect",
+            )
+        ):
+            continue
+        if raw in seen:
+            continue
+        seen.add(raw)
+        title = re.sub(r"^https?://(www\.)?", "", raw).split("?")[0][:120]
+        snippet = snippets[index] if index < len(snippets) else ""
+        results.append(_result(title or query, raw, snippet[:400] or title))
+        if len(results) >= max(1, min(int(limit), 10)):
+            break
+    return results
+
+
 class LiveSearchProvider:
     """No-key live lookup. Weather always works; other queries use public APIs."""
 
@@ -420,10 +496,23 @@ class LiveSearchProvider:
                 base_url=settings.brave_search_base_url,
                 timeout_seconds=settings.search_timeout_seconds,
             ).search(query, limit=limit)
-        results = await duckduckgo_results(query)
-        if len(results) < limit:
-            results.extend(await wikipedia_results(query, limit=limit - len(results)))
-        return results[:limit]
+        merged: list = []
+        seen: set[str] = set()
+
+        def _take(batch: list) -> None:
+            for item in batch:
+                url = str(getattr(item, "url", "") or "")
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                merged.append(item)
+
+        _take(await duckduckgo_html_results(query, limit=limit))
+        if len(merged) < limit:
+            _take(await duckduckgo_results(query))
+        if len(merged) < limit:
+            _take(await wikipedia_results(query, limit=limit - len(merged)))
+        return merged[:limit]
 
 
 async def live_grounding_text(message: str) -> str | None:

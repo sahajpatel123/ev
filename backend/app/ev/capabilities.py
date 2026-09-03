@@ -40,13 +40,29 @@ PROVIDER_OVERRIDES: dict[str, str] = {
     "camera_replay": "camera",
     "look": "vision",
     "observe_camera": "vision",
+    "capture_photo": "vision",
+    "record_video": "vision",
     "computer_status": "computer",
     "list_apps": "computer",
+    "open_app": "computer",
+    "close_app": "computer",
     "activate_app": "computer",
+    "open_url": "computer",
     "inspect_ui": "computer",
     "ui_action": "computer",
     "screen_look": "computer",
     "app_action": "computer",
+    "read": "computer",
+    "see": "computer",
+    "click": "computer",
+    "double_click": "computer",
+    "right_click": "computer",
+    "type": "computer",
+    "paste": "computer",
+    "key": "computer",
+    "scroll": "computer",
+    "drag": "computer",
+    "computer": "computer",
     "drone": "drone",
     "estimate_print": "printer",
     "print_start": "printer",
@@ -55,6 +71,7 @@ PROVIDER_OVERRIDES: dict[str, str] = {
     "ticket_hold": "tickets",
     "ticket_buy": "tickets",
     "execute_command": "software",
+    "code": "software",
 }
 
 INTEGRATION_PROVIDERS = frozenset(
@@ -939,9 +956,20 @@ async def _build_runtime_projection(
     except Exception:  # noqa: BLE001 - overlay must not fail the manifest
         helper_ready = False
     computer_state = dict(getattr(live, "_computer_state", {}) or {}) if live is not None else {}
+    mac_device = False
+    if selected_device is not None:
+        platform = str(selected_device.get("platform") or "").lower()
+        device_type = str(selected_device.get("device_type") or "").lower()
+        caps = {str(item).lower() for item in (selected_device.get("capabilities") or [])}
+        mac_device = (
+            platform in {"macos", "darwin", "mac"}
+            or platform.startswith("mac")
+            or device_type in {"mac", "macos", "computer"}
+            or bool(caps & {"computer", "computer_control"})
+        )
     computer_readiness = readiness_from_computer_state(
         computer_state,
-        client_connected=live is not None,
+        client_connected=live is not None or mac_device,
         helper_ready=helper_ready,
         realtime_provider=realtime_provider,
         device_id=str(bound_device_id or device_id or "") or None,

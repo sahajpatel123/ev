@@ -287,6 +287,13 @@ _LIVE_RESULT_KEEP = (
     "target",
     "action",
     "ui_changed",
+    "files_changed",
+    "project",
+    "workspace",
+    "brain",
+    "degraded",
+    "pending",
+    "runs",
     "failure_reason",
     "working",
     "surface_pid",
@@ -309,7 +316,63 @@ _LIVE_RESULT_KEEP = (
     "keys",
     "image_delivered",
     "model_image_delivered",
+    "labels",
+    "lighting",
+    "colors",
+    "visual_facts",
+    "follow_up",
+    "frames_summary",
+    "saved_path",
+    "ocr_text",
+    "local_ocr",
+    "media_kind",
+    "files_changed",
+    "project",
+    "brain",
+    "degraded",
+    "lines",
+    "grounding",
+    "life_shelf",
+    "results",
 )
+
+
+_LIVE_GOAL_KEEP = (
+    "goal_id",
+    "status",
+    "verified",
+    "must_continue",
+    "completion_claim_allowed",
+    "requested_outcome",
+    "failure_reason",
+    "observed",
+    "target_apps",
+    "strategy",
+    "milestone",
+)
+
+
+def _slim_live_goal(goal: Any) -> dict[str, Any] | None:
+    if not isinstance(goal, dict):
+        return None
+    out = {key: goal[key] for key in _LIVE_GOAL_KEEP if key in goal and goal[key] is not None}
+    observed = out.get("observed")
+    if isinstance(observed, dict):
+        out["observed"] = {
+            key: observed[key]
+            for key in ("app", "action", "query", "url", "title", "track", "playlist")
+            if observed.get(key) not in (None, "")
+        }
+    for key in ("requested_outcome", "remaining"):
+        text = str(out.get(key) or "")
+        if len(text) > 240:
+            out[key] = text[:240]
+        elif not text:
+            out.pop(key, None)
+    remaining = str(goal.get("remaining") or "")
+    if remaining and "remaining" not in out:
+        out["remaining"] = remaining[:240]
+    return out
 
 
 def compact_live_tool_json(payload: dict[str, Any], *, limit: int = _LIVE_TOOL_JSON_LIMIT) -> str:
@@ -317,12 +380,46 @@ def compact_live_tool_json(payload: dict[str, Any], *, limit: int = _LIVE_TOOL_J
 
     Never slice a JSON string. A truncated ``{"ok": true, "elements": ...``
     prefix made the live Music turn look successful while the backend logged
-    ``result=failed``.
+    ``result=failed``. A successful Chrome search must not be rewritten as
+    ``must_continue: true`` just because the overlay was large.
     """
 
     slim: dict[str, Any] = dict(payload)
+    slim.pop("working", None)
+    slim.pop("receipts", None)
+    slim.pop("suggested_fallbacks", None)
+    memory_tool = str(slim.get("name") or "") in {
+        "search_memory",
+        "recall",
+        "recall_history",
+    }
+    if not memory_tool:
+        slim.pop("evidence", None)
     result = slim.get("result")
-    if isinstance(result, dict):
+    if memory_tool and isinstance(result, dict):
+        hits: list[str] = []
+        raw_hits = result.get("lines") or result.get("results") or result.get("evidence") or []
+        for item in raw_hits[:4]:
+            if isinstance(item, str):
+                text = " ".join(item.split()).strip()
+            elif isinstance(item, dict):
+                text = " ".join(str(item.get("text") or "").split()).strip()
+            else:
+                continue
+            if text:
+                hits.append(text[:240])
+        spoken = str(result.get("spoken") or slim.get("spoken") or "").strip()
+        slim["result"] = {
+            "count": result.get("count"),
+            "grounding": result.get("grounding"),
+            "life_shelf": result.get("life_shelf"),
+            "spoken": spoken[:400] or None,
+            "hits": hits,
+        }
+        if spoken:
+            slim["spoken"] = spoken[:400]
+        slim.pop("evidence", None)
+    elif isinstance(result, dict):
         kept = {
             key: result[key]
             for key in _LIVE_RESULT_KEEP
@@ -349,6 +446,15 @@ def compact_live_tool_json(payload: dict[str, Any], *, limit: int = _LIVE_TOOL_J
         slim.setdefault("executed", result.get("executed"))
         slim.setdefault("must_continue", result.get("must_continue"))
         slim.setdefault("completion_claim_allowed", result.get("completion_claim_allowed"))
+        slim.setdefault("url", result.get("url"))
+        slim.setdefault("query", result.get("query"))
+        slim.setdefault("action", result.get("action"))
+        slim.setdefault("app", result.get("app"))
+        slim.setdefault("spoken", result.get("spoken"))
+        slim.setdefault("error", result.get("error"))
+    goal = _slim_live_goal(slim.get("goal"))
+    if goal is not None:
+        slim["goal"] = goal
     blob = json.dumps(slim, default=str, separators=(",", ":"))
     try:
         json.loads(blob)
@@ -356,17 +462,38 @@ def compact_live_tool_json(payload: dict[str, Any], *, limit: int = _LIVE_TOOL_J
         blob = ""
     if blob and len(blob) <= limit:
         return blob
+    verified = slim.get("verified") is True or (goal or {}).get("verified") is True
+    executed = slim.get("executed")
+    if executed is None:
+        executed = slim.get("ok") if not verified else True
+    must_continue = slim.get("must_continue")
+    if must_continue is None:
+        must_continue = (goal or {}).get("must_continue")
+    if verified:
+        must_continue = False
+    error = slim.get("error")
+    if verified:
+        error = None
+    elif not error:
+        error = "tool_output_compacted"
     fallback = {
-        "ok": bool(slim.get("ok")),
+        "ok": True if verified else bool(slim.get("ok")),
         "name": slim.get("name"),
-        "executed": slim.get("executed", slim.get("ok")),
-        "verified": False,
-        "completion_claim_allowed": False,
-        "must_continue": True,
+        "executed": bool(executed) if executed is not None else verified,
+        "verified": verified,
+        "completion_claim_allowed": bool(
+            slim.get("completion_claim_allowed") if slim.get("completion_claim_allowed") is not None else verified
+        ),
+        "must_continue": bool(must_continue) if must_continue is not None else (not verified),
         "spoken": str(slim.get("spoken") or "")[:280],
-        "error": slim.get("error") or "tool_output_compacted",
-        "goal": slim.get("goal"),
+        "error": error,
+        "url": slim.get("url"),
+        "query": slim.get("query"),
+        "action": slim.get("action"),
+        "app": slim.get("app"),
+        "goal": goal,
     }
+    fallback = {key: value for key, value in fallback.items() if value is not None}
     return json.dumps(fallback, default=str, separators=(",", ":"))
 
 

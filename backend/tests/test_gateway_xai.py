@@ -676,6 +676,49 @@ async def test_realtime_duplicate_call_id_dispatches_once() -> None:
         bridge.close()
 
 
+async def test_openai_skips_continuation_create_while_response_active() -> None:
+    fake = _FakeRealtime()
+
+    async def connect(url: str, additional_headers=None):
+        del url, additional_headers
+        return fake
+
+    async def on_tool(name: str, arguments: dict, call_id: str) -> str:
+        del name, arguments, call_id
+        return json.dumps({"ok": True, "spoken": "done", "verified": True})
+
+    bridge = GrokVoiceBridge(
+        on_event=_ignore_event,
+        on_tool=on_tool,
+        connect=connect,
+        api_key="test",
+        provider="openai",
+        approved_tool_specs=[_function_spec("start_timer")],
+    )
+    try:
+        await bridge.start()
+        await _acknowledge_session(bridge, fake)
+        fake.sent.clear()
+        bridge._response_active = True
+        await fake.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "name": "start_timer",
+                    "call_id": "active-resp",
+                    "arguments": json.dumps({"value": "tea"}),
+                }
+            )
+        )
+        await _wait_until(lambda: len(_function_output_items(fake)) == 1)
+        assert [
+            item.get("type") for item in fake.sent if item.get("type") == "response.create"
+        ] == []
+        assert bridge._continuation_sent is True
+    finally:
+        bridge.close()
+
+
 async def test_realtime_tool_failure_is_false_and_never_evidence() -> None:
     events: list = []
     fake = _FakeRealtime()
@@ -1882,6 +1925,68 @@ async def test_grok_voice_ignores_barge_in_while_assistant_is_speaking() -> None
     assert not any(isinstance(event, BargeInEvent) for event in events)
     assert not any(item.get("type") == "response.cancel" for item in fake.sent)
     bridge.close()
+
+
+async def test_slow_tool_does_not_block_pcm_event_pump() -> None:
+    events: list = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def connect(url: str, additional_headers=None):
+        del url, additional_headers
+        return fake
+
+    async def on_tool(name: str, arguments: dict, call_id: str) -> str:
+        del name, arguments, call_id
+        started.set()
+        await release.wait()
+        return json.dumps({"ok": True, "spoken": "done"})
+
+    fake = _FakeRealtime()
+    bridge = GrokVoiceBridge(
+        on_event=lambda event: events.append(event) or asyncio.sleep(0),
+        on_tool=on_tool,
+        connect=connect,
+        api_key="test",
+        provider="openai",
+        approved_tool_specs=[_function_spec("start_timer")],
+    )
+    try:
+        await bridge.start()
+        await _acknowledge_session(bridge, fake)
+        await fake.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "name": "start_timer",
+                    "call_id": "slow-call",
+                    "arguments": json.dumps({"value": "tea"}),
+                }
+            )
+        )
+        await _wait_until(lambda: started.is_set(), ticks=400)
+        pcm = b"\x00\x01" * 2400
+        await fake.incoming.put(
+            json.dumps(
+                {
+                    "type": "response.output_audio.delta",
+                    "delta": base64.b64encode(pcm).decode("ascii"),
+                }
+            )
+        )
+        await _wait_until(
+            lambda: any(isinstance(event, TtsChunkEvent) for event in events),
+            ticks=400,
+        )
+        assert not any(
+            item.get("item", {}).get("call_id") == "slow-call"
+            for item in _function_output_items(fake)
+        )
+        release.set()
+        await _wait_until(lambda: len(_function_output_items(fake)) == 1, ticks=400)
+    finally:
+        release.set()
+        bridge.close()
 
 
 async def test_grok_voice_pong_answers_ping() -> None:

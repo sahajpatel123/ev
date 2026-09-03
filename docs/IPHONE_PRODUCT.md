@@ -40,7 +40,7 @@ Clients cannot promote themselves. Promotion and revocation bump `auth_revision`
 
 ## Remaining work (honest)
 
-**Software for the Tailscale PWA path is in the tree.** Automated + broker-check gates pass. PWA pin: `2026.09.02.03`.
+**Software for the Tailscale PWA path is in the tree.** Automated + broker-check gates pass. PWA pin: `2026.09.02.06`.
 
 Still owner/device:
 

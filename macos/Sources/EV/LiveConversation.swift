@@ -27,6 +27,7 @@ final class LiveConversation {
     private var computerRequestTask: Task<Void, Never>?
     private var computerStateTask: Task<Void, Never>?
     private var lastComputerFingerprint = ""
+    private var ownerTurnWatch: Task<Void, Never>?
     private var cameraLifecycleObservers: [NSObjectProtocol] = []
     private var audioGraphObservers: [NSObjectProtocol] = []
     private var lastPartialRenderAt = Date.distantPast
@@ -66,12 +67,22 @@ final class LiveConversation {
     /// Every connectOnce increments this; stale generation callbacks must not
     /// mutate the new generation's state (providerReady, player, etc).
     private var generation = 0
+    /// Awake greeting from `POST /v1/voice/live/open`. Spoken once via a
+    /// short cue after the provider is ready so the GUI player is proven
+    /// on app-open (Realtime otherwise waits for user VAD).
+    private var pendingOpenGreeting: String?
+    private var suppressCueTranscript = false
     /// Watchdog for provably broken session: speech accepted but no response.
     private var responseWatchdog: Task<Void, Never>?
     private var playbackResponseID: String?
     private var playbackProviderResponseID: String?
     nonisolated(unsafe) private weak var playbackPlayer: TTSPlayer?
     private static let traceLock = NSLock()
+    /// Boot milestones that happen before ``start()`` (auth, placeholder skip).
+    nonisolated static func bootTrace(_ event: String, _ reason: String = "") {
+        st(event, reason)
+    }
+
     nonisolated private static func st(_ event: String, _ reason: String = "") {
         let now = DispatchTime.now().uptimeNanoseconds
         lockFreeInitLaunch(now)
@@ -130,21 +141,29 @@ final class LiveConversation {
         model.player.onPlayingChange = { [weak self] playing in
             Task { @MainActor in
                 guard let self else { return }
-                // The client player owns physical playback truth: this report
-                // is the backend mic gate's authority (speaker ownership law).
-                self.connection?.sendPlayback(active: playing)
-                // INTERRUPTION V1: detection arms only while the speaker is
-                // physically playing (feature off -> monitor is nil).
                 if playing {
+                    self.connection?.sendPlayback(active: true)
+                    Self.st("ST15_PLAYBACK_GATE", "closed")
                     self.installEscapeStop()
                 } else {
                     self.removeEscapeStop()
+                    // Local shouldMuteCapture holds the 1.5s acoustic tail.
+                    // Delaying this report stacked a second mute on the
+                    // backend and made turn 2 wait ~2s after she finished.
+                    self.connection?.sendPlayback(active: false)
+                    Self.st("ST15_PLAYBACK_GATE", "open")
                 }
                 guard let model = self.model else { return }
                 if playing {
                     model.status = .speaking
                 } else if model.status == .speaking {
                     model.status = .listening
+                    // Drop the response latch when PCM is done. Leaving it
+                    // set made later server-VAD "thinking" phases light the
+                    // orb after a finished greeting.
+                    self.playbackResponseID = nil
+                    self.playbackProviderResponseID = nil
+                    self.assistantID = nil
                 }
             }
         }
@@ -161,9 +180,20 @@ final class LiveConversation {
         // ONE mic owner: publish ownership so the launchd-respawned ears
         // stands down instead of reopening the input mid-conversation.
         EarsProcess.LiveMicOwnerMarker.set()
+        Self.st("ST00_BUILD", "\(BuildInfo.gitSHA) \(BuildInfo.buildTimestamp)")
         loopTask = Task { [weak self] in
             await self?.runLoop()
         }
+        startOwnerTurnFileWatch()
+    }
+
+    /// Owner text on the live socket (menu Ask field, soak file drop).
+    func sendOwnerUtterance(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let connection else { return }
+        publishComputerStateNow(deviceId: model?.cameraState.deviceId)
+        Self.st("ST21_OWNER_TURN", "chars=\(trimmed.count)")
+        connection.sendText(trimmed)
     }
 
     func stop() {
@@ -174,6 +204,8 @@ final class LiveConversation {
         computerRequestTask = nil
         computerStateTask?.cancel()
         computerStateTask = nil
+        ownerTurnWatch?.cancel()
+        ownerTurnWatch = nil
         loopTask?.cancel()
         loopTask = nil
         tearDownChannel()
@@ -373,7 +405,7 @@ final class LiveConversation {
         }
     }
 
-    private func fulfillLookCapture(deviceId: String?, requestId: String?) async {
+    private func fulfillLookCapture(deviceId: String?, requestId: String?, persist: Bool = false) async {
         guard let model else { return }
         guard let connection else {
             model.lastError = "Camera look is unavailable until the live session connects."
@@ -381,18 +413,26 @@ final class LiveConversation {
         }
         let permission = CameraManager.shared.permissionState()
         do {
-            let frame = try await CameraManager.shared.captureFrame()
-            connection.sendLookFrame(
+            let frame = try await CameraManager.shared.captureFrame(forSave: persist)
+            var savedPath: String?
+            var attachmentId: String?
+            if persist {
+                let saved = CameraManager.shared.savePhoto(frame.jpeg)
+                savedPath = saved.path
+                attachmentId = await uploadCameraMedia(
+                    filename: saved.filename,
+                    contentType: "image/jpeg",
+                    data: frame.jpeg,
+                    eventType: "camera.capture"
+                )
+            }
+            sendCameraFrame(
+                frame,
                 requestId: requestId,
-                jpeg: frame.jpeg,
-                width: frame.width,
-                height: frame.height,
-                error: nil,
-                permission: frame.permission,
                 deviceId: deviceId ?? model.cameraState.deviceId,
-                sequence: 0,
-                last: true,
-                cameraName: frame.cameraName
+                savedPath: savedPath,
+                attachmentId: attachmentId,
+                mediaKind: persist ? "photo" : "frame"
             )
         } catch {
             let code: String
@@ -445,7 +485,15 @@ final class LiveConversation {
                     deviceId: resolvedDeviceId,
                     sequence: index,
                     last: last,
-                    cameraName: frame.cameraName
+                    cameraName: frame.cameraName,
+                    luminance: frame.luminance,
+                    labels: frame.labels,
+                    ocrText: frame.ocrText,
+                    faceCount: frame.faceCount,
+                    personCount: frame.personCount,
+                    lighting: frame.lighting,
+                    colors: frame.colors,
+                    mediaKind: "frame"
                 )
             case .failure(let error):
                 let code = (error as? CameraManager.CaptureError)?.code ?? "capture_failed"
@@ -464,52 +512,258 @@ final class LiveConversation {
         }
     }
 
+    private func fulfillRecord(deviceId: String?, requestId: String?, durationMs: Int?) async {
+        guard let model else { return }
+        guard let connection else { return }
+        let permission = CameraManager.shared.permissionState()
+        do {
+            let seconds = TimeInterval(durationMs ?? 8000) / 1000
+            let clip = try await CameraManager.shared.recordClip(duration: seconds)
+            let posters = clip.posterJPEGs
+            if posters.isEmpty {
+                connection.sendLookFrame(
+                    requestId: requestId,
+                    jpeg: nil,
+                    width: clip.width,
+                    height: clip.height,
+                    error: nil,
+                    permission: clip.permission,
+                    deviceId: deviceId ?? model.cameraState.deviceId,
+                    sequence: 0,
+                    last: true,
+                    cameraName: clip.cameraName,
+                    luminance: clip.luminance,
+                    labels: clip.labels,
+                    ocrText: clip.ocrText,
+                    faceCount: clip.faceCount,
+                    personCount: clip.personCount,
+                    lighting: clip.lighting,
+                    colors: clip.colors,
+                    savedPath: clip.savedPath,
+                    mediaKind: "video",
+                    clipDurationMs: Int(clip.duration * 1000)
+                )
+            } else {
+                for (index, jpeg) in posters.enumerated() {
+                    let last = index == posters.count - 1
+                    connection.sendLookFrame(
+                        requestId: requestId,
+                        jpeg: jpeg,
+                        width: clip.width,
+                        height: clip.height,
+                        error: nil,
+                        permission: clip.permission,
+                        deviceId: deviceId ?? model.cameraState.deviceId,
+                        sequence: index,
+                        last: last,
+                        cameraName: clip.cameraName,
+                        luminance: clip.luminance,
+                        labels: clip.labels,
+                        ocrText: clip.ocrText,
+                        faceCount: clip.faceCount,
+                        personCount: clip.personCount,
+                        lighting: clip.lighting,
+                        colors: clip.colors,
+                        savedPath: clip.savedPath,
+                        mediaKind: "video",
+                        clipDurationMs: Int(clip.duration * 1000)
+                    )
+                }
+                if let lastJpeg = posters.last {
+                    presentCameraVisor(
+                        jpeg: lastJpeg,
+                        mediaKind: "video",
+                        savedPath: clip.savedPath
+                    )
+                }
+            }
+        } catch {
+            let code = (error as? CameraManager.CaptureError)?.code ?? "capture_failed"
+            model.lastError = error.localizedDescription
+            connection.sendLookFrame(
+                requestId: requestId,
+                jpeg: nil,
+                width: nil,
+                height: nil,
+                error: code,
+                permission: permission,
+                deviceId: deviceId ?? model.cameraState.deviceId,
+                last: true,
+                mediaKind: "video"
+            )
+        }
+    }
+
+    private func sendCameraFrame(
+        _ frame: CameraManager.Frame,
+        requestId: String?,
+        deviceId: String?,
+        sequence: Int = 0,
+        last: Bool = true,
+        savedPath: String? = nil,
+        attachmentId: String? = nil,
+        mediaKind: String? = "frame"
+    ) {
+        connection?.sendLookFrame(
+            requestId: requestId,
+            jpeg: frame.jpeg,
+            width: frame.width,
+            height: frame.height,
+            error: nil,
+            permission: frame.permission,
+            deviceId: deviceId,
+            attachmentId: attachmentId,
+            sequence: sequence,
+            last: last,
+            cameraName: frame.cameraName,
+            luminance: frame.luminance,
+            labels: frame.labels,
+            ocrText: frame.ocrText,
+            faceCount: frame.faceCount,
+            personCount: frame.personCount,
+            lighting: frame.lighting,
+            colors: frame.colors,
+            savedPath: savedPath,
+            mediaKind: mediaKind
+        )
+        presentCameraVisor(
+            jpeg: frame.jpeg,
+            mediaKind: mediaKind,
+            savedPath: savedPath
+        )
+    }
+
+    private func presentCameraVisor(jpeg: Data?, mediaKind: String?, savedPath: String?) {
+        guard let jpeg, !jpeg.isEmpty else { return }
+        let title: String
+        switch mediaKind {
+        case "video":
+            title = "Clip"
+        case "photo":
+            title = "Photo"
+        default:
+            title = "Look"
+        }
+        PresenceController.shared.showVisor(
+            jpeg: jpeg,
+            title: title,
+            message: savedPath ?? ""
+        )
+    }
+
+    private func uploadCameraMedia(
+        filename: String,
+        contentType: String,
+        data: Data,
+        eventType: String
+    ) async -> String? {
+        guard let model, !data.isEmpty else { return nil }
+        do {
+            let response = try await model.client.attach(
+                filename: filename,
+                contentType: contentType,
+                data: data,
+                source: "macos",
+                eventType: eventType,
+                privacyLevel: "normal",
+                deviceID: model.config.deviceID
+            )
+            return response.attachment.id
+        } catch {
+            return nil
+        }
+    }
+
     private func fulfillComputer(_ event: LiveVoiceEvent) {
         let command = event.command ?? event.action ?? ""
         let requestId = event.requestId ?? "computer-\(Int(Date().timeIntervalSince1970 * 1000))"
-        let arguments = event.argumentObject
+        let argumentData = Self.jsonData(event.argumentObject)
         let deviceId = event.deviceId ?? model?.cameraState.deviceId
-        computerRequestTask = Task.detached(priority: .userInitiated) { [weak self] in
+        let argKeys = event.argumentObject.keys.sorted().joined(separator: ",")
+        Self.st(
+            "ST24_COMPUTER_REQUEST",
+            "cmd=\(command) keys=\(argKeys) q=\(event.argumentObject["query"] as? String ?? "")"
+        )
+        // Capture the socket, not `self`. A weak conversation pointer can be
+        // nil on MainActor after a reconnect hop, which drops the Mac receipt
+        // and makes Talk claim the action never verified. Send the result on
+        // this worker the same way headless e2e does — hopping to MainActor
+        // is not required for the websocket and can stall the receipt.
+        let connection = self.connection
+        // Computer work (AX traversal, screenshots) is heavy and can starve the
+        // audio queue if run at userInitiated. Lower to utility so the 1500 ms
+        // lead playback and mic tap keep their realtime budget during tool turns.
+        computerRequestTask = Task.detached(priority: .utility) { [weak self] in
             if command == "cancel" {
                 MacControlService.shared.cancel(requestId: requestId)
             }
+            let arguments = Self.dictionary(fromJSON: argumentData)
+            let started = Date()
             let result = MacControlService.shared.handle(
                 command: command,
                 arguments: arguments,
                 requestId: requestId
             )
-            let jpeg = result["jpeg"] as? Data
             var payload = result
-            payload.removeValue(forKey: "jpeg")
+            let jpeg = payload.removeValue(forKey: "jpeg") as? Data
             let snapshot = payload
-            let device = deviceId
-            let cmd = command
-            let rid = requestId
-            let conversation = self
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            connection?.sendComputerResult(
+                requestId: requestId,
+                command: command,
+                result: snapshot,
+                jpeg: jpeg,
+                deviceId: deviceId
+            )
+            let error = snapshot["error"] as? String ?? ""
+            let executed = snapshot["executed"] as? Bool ?? false
+            let verified = snapshot["verified"] as? Bool ?? false
             await MainActor.run {
-                if let error = snapshot["error"] as? String, error == "accessibility_denied" {
-                    conversation?.model?.needsComputerAccessibility = true
-                    conversation?.model?.lastError =
+                LiveConversation.st(
+                    "ST24_COMPUTER_RESULT",
+                    "cmd=\(command) ms=\(ms) exec=\(executed) verified=\(verified) err=\(error) spoken=\((snapshot["spoken"] as? String ?? "").prefix(80))"
+                )
+                if error == "accessibility_denied" {
+                    self?.model?.needsComputerAccessibility = true
+                    self?.model?.lastError =
                         "I can open apps, but macOS hasn't given EV Accessibility access yet. Open Permissions and enable it."
                 }
-                conversation?.connection?.sendComputerResult(
-                    requestId: rid,
-                    command: cmd,
-                    result: snapshot,
-                    jpeg: jpeg,
-                    deviceId: device
-                )
+            }
+        }
+    }
+
+    nonisolated private static func jsonData(_ object: [String: Any]) -> Data {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object)
+        else { return Data("{}".utf8) }
+        return data
+    }
+
+    nonisolated private static func dictionary(fromJSON data: Data) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    }
+
+    private func startOwnerTurnFileWatch() {
+        ownerTurnWatch?.cancel()
+        let url = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/EV/owner-turn.txt")
+        ownerTurnWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                guard let self, self.isActive else { continue }
+                guard FileManager.default.fileExists(atPath: url.path) else { continue }
+                let raw = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+                try? FileManager.default.removeItem(at: url)
+                await MainActor.run { self.sendOwnerUtterance(raw) }
             }
         }
     }
 
     private func startComputerStateWatch(deviceId: String?) {
         computerStateTask?.cancel()
-        lastComputerFingerprint = ""
-        publishComputerStateIfChanged(deviceId: deviceId)
         computerStateTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
                 await MainActor.run {
                     self?.publishComputerStateIfChanged(deviceId: deviceId)
                 }
@@ -517,8 +771,13 @@ final class LiveConversation {
         }
     }
 
+    private func publishComputerStateNow(deviceId: String?) {
+        lastComputerFingerprint = ""
+        publishComputerStateIfChanged(deviceId: deviceId)
+    }
+
     private func publishComputerStateIfChanged(deviceId: String?) {
-        let snap = MacControlService.shared.permissionSnapshot()
+        let snap = MacControlService.shared.permissionFlags()
         let fp = [
             String(describing: snap["accessibility_permission"] ?? ""),
             String(describing: snap["generic_ui_control_ready"] ?? false),
@@ -533,6 +792,16 @@ final class LiveConversation {
                 model?.lastError = nil
             }
         }
+    }
+
+    private func cueAppOpenGreeting(on connection: LiveVoiceConnection) {
+        pendingOpenGreeting = nil
+        suppressCueTranscript = true
+        Self.st("ST14B_GREET_SENT", "chars=3")
+        // Always cue on first ready. Reused backend sessions omit greeting,
+        // and Realtime stays silent until it hears a turn — then a later
+        // computer-state refresh became a phantom spoken reply.
+        connection.sendText("Hi.")
     }
 
     private func runLoop() async {
@@ -575,8 +844,14 @@ final class LiveConversation {
                 Self.st("ST16_UNEXPECTED_DISCONNECT", rendered)
                 Self.st("ST17_RECONNECT_BEGIN", rendered)
                 model.noteLiveDisconnected(reason: rendered, willReconnect: true)
-                model.lastError = rendered
-                model.status = .offline
+                // Transient transport loss is not OFFLINE. Keep the ear glyph
+                // stable while runLoop reconnects; flipping offline/listening
+                // is the menu-bar wiggle the owner sees at launch.
+                if model.player.isPlaying {
+                    model.status = .speaking
+                } else {
+                    model.status = .listening
+                }
                 isActive = false
                 model.isLiveActive = false
                 tearDownChannel()
@@ -612,6 +887,7 @@ final class LiveConversation {
             let opened = try await model.client.openLiveVoice(deviceId: deviceId)
             phase = "ST12"
             Self.st("ST12_BACKEND_SESSION_OPENED")
+            pendingOpenGreeting = opened.greeting
             model.noteLiveSessionOpened(sessionID: opened.sessionId, deviceID: deviceId)
             let connection = LiveVoiceConnection(
                 baseURL: model.client.baseURL,
@@ -647,14 +923,11 @@ final class LiveConversation {
             model.isLiveActive = true
             model.isLiveMuted = false
             model.isLivePaused = false
-            // UI readiness law: don't claim LISTENING while provider not ready.
-            // Show CONNECTING until ST14, then LISTENING.
-            model.status = providerReadyForForward ? .listening : .offline
-            if !providerReadyForForward {
-                model.lastError = nil
-                // Will flip to listening at ST14.
-            } else {
-                model.lastError = nil
+            model.lastError = nil
+            // Mic is already running locally. Stay listening — do not flash
+            // OFFLINE while the provider handshake finishes (ST14).
+            if model.status != .speaking && model.status != .thinking {
+                model.status = .listening
             }
             phase = "CONSUME_EVENTS"
 
@@ -670,11 +943,32 @@ final class LiveConversation {
                         deviceId: deviceId,
                         cameraName: nil
                     )
-                    connection.sendComputerState(
-                        MacControlService.shared.permissionSnapshot(),
-                        deviceId: deviceId
-                    )
-                    startComputerStateWatch(deviceId: deviceId)
+                    cueAppOpenGreeting(on: connection)
+                    // live_refresh from computer-state can cancel the first
+                    // spoken reply. Wait until greeting PCM is playing —
+                    // a 6s silent fallback let the model speak on its own.
+                    Task { @MainActor [weak self] in
+                        var heardPlayback = false
+                        for _ in 0..<150 {
+                            try? await Task.sleep(nanoseconds: 100_000_000)
+                            guard let self, self.generation == myGen else { return }
+                            if self.model?.player.isPlaying == true {
+                                heardPlayback = true
+                                break
+                            }
+                        }
+                        guard let self, self.generation == myGen else { return }
+                        guard heardPlayback else {
+                            Self.st("ST14C_COMPUTER_STATE_DEFERRED", "no playback yet")
+                            self.startComputerStateWatch(deviceId: deviceId)
+                            return
+                        }
+                        self.connection?.sendComputerState(
+                            MacControlService.shared.permissionFlags(),
+                            deviceId: deviceId
+                        )
+                        self.startComputerStateWatch(deviceId: deviceId)
+                    }
                 }
                 guard generation == myGen else { break }
                 await handle(event, for: myGen)
@@ -763,10 +1057,11 @@ final class LiveConversation {
         // FIX 1: bounded retry with ghost-lease elimination (P0 voice reliability).
         // Hardware format 0Hz/0ch or -10867 no longer leaves a ghost .live lease.
         for attempt in 0...retryBudget {
+            // Stop capture before retrying the input graph. Playback lives on
+            // its own engine — do not bind(to: nil) here (that ends the voice
+            // session and chops speech on every mic retry).
             microphone.stop()
             microphoneStarted = false
-            // Stop capture before changing the playback graph (-10867 safety).
-            model?.player.bind(to: nil)
             guard AudioInputLease.acquire(.live) else {
                 model?.noteMicrophoneCaptureFailed("already in use")
                 return false
@@ -858,7 +1153,7 @@ final class LiveConversation {
         switch event.type {
         case "ready":
             model.lastError = nil
-            model.status = .listening
+            setStatusPreservingPlayback(.listening)
             model.isLivePaused = false
             if let conversationId = event.conversationId, !conversationId.isEmpty {
                 model.conversationId = conversationId
@@ -887,20 +1182,39 @@ final class LiveConversation {
             if let text = event.text, !text.isEmpty {
                 lastPartialRenderAt = .distantPast
                 model.lastError = nil
-                model.transcript = text
-                model.messages.append(
-                    AppModel.ChatMessage(id: UUID().uuidString, role: "user", text: text, streaming: false)
-                )
+                let cue = suppressCueTranscript
+                    && text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: ".!?"))
+                        .lowercased() == "hi"
+                if cue {
+                    suppressCueTranscript = false
+                } else {
+                    model.transcript = text
+                    model.messages.append(
+                        AppModel.ChatMessage(id: UUID().uuidString, role: "user", text: text, streaming: false)
+                    )
+                    Self.st("ST22_USER_HEARD", "chars=\(text.count)")
+                    publishComputerStateNow(deviceId: event.deviceId ?? model.cameraState.deviceId)
+                }
                 let id = UUID().uuidString
                 assistantID = id
                 let responseID = event.providerResponseId ?? "local-\(generation)-\(id)"
-                playbackResponseID = responseID
-                playbackProviderResponseID = event.providerResponseId
-                model.player.beginResponse(responseID)
+                // Greeting PCM can start before this event. A new player id
+                // would invalidatePlayback and chop the first sentence; the
+                // thinking glyph would also wiggle waveform → ear.
+                if playbackResponseID == nil {
+                    playbackResponseID = responseID
+                    playbackProviderResponseID = event.providerResponseId
+                    model.player.beginResponse(responseID)
+                } else if playbackProviderResponseID == nil,
+                          let providerID = event.providerResponseId,
+                          !providerID.isEmpty {
+                    playbackProviderResponseID = providerID
+                }
                 model.messages.append(
                     AppModel.ChatMessage(id: id, role: "assistant", text: "", streaming: true)
                 )
-                model.status = .thinking
+                setStatusPreservingPlayback(.thinking)
                 startResponseWatchdog(for: generation)
             }
         case "backchannel":
@@ -909,6 +1223,22 @@ final class LiveConversation {
         case "tts_chunk":
             cancelResponseWatchdog()
             model.lastError = nil
+            // Greeting / cue replies can emit PCM before a final_transcript.
+            // Dropping those chunks left app-open speech silent on the GUI.
+            if playbackResponseID == nil {
+                let id = assistantID ?? UUID().uuidString
+                if assistantID == nil {
+                    assistantID = id
+                    model.messages.append(
+                        AppModel.ChatMessage(id: id, role: "assistant", text: "", streaming: true)
+                    )
+                }
+                let responseID = event.providerResponseId ?? "open-\(generation)-\(id)"
+                playbackResponseID = responseID
+                playbackProviderResponseID = event.providerResponseId
+                model.player.beginResponse(responseID)
+                setStatusPreservingPlayback(.thinking)
+            }
             if let text = event.text, !text.isEmpty, let id = assistantID,
                let index = model.messages.firstIndex(where: { $0.id == id }),
                model.messages[index].text.isEmpty {
@@ -916,16 +1246,41 @@ final class LiveConversation {
             }
             guard var responseID = playbackResponseID else { break }
             if let providerID = event.providerResponseId, !providerID.isEmpty {
-                if let acceptedProvider = playbackProviderResponseID, acceptedProvider != providerID {
+                let lane = LivePlaybackLane.decide(
+                    acceptedProviderId: playbackProviderResponseID,
+                    incomingProviderId: providerID,
+                    queuedFrames: model.player.pendingFramesPublic
+                )
+                switch lane {
+                case .drop:
+                    // Historical drop path — now mapped to adopt to avoid
+                    // losing tool continuation audio (glitch). Treat as adopt.
+                    playbackProviderResponseID = providerID
+                    model.player.holdToolGapMute(seconds: 8.0)
+                    Self.st("ST15C_PLAYBACK_LANE_ADOPT_DROP", "tool-continuation")
+                case .enqueue:
                     break
-                }
-                if playbackProviderResponseID == nil {
-                    model.player.cancelResponse(responseID)
-                    responseID = providerID
+                case .adoptProviderId:
+                    // Adopt the provider id without swapping the player lane.
+                    // cancelResponse + beginResponse would drop primed greeting PCM.
+                    // Hold mic across tool gap so ambient noise doesn't split the answer.
+                    // 8s covers computer/camera round-trips (5-15s); the
+                    // player re-holds on underrun if the gap runs longer.
+                    playbackProviderResponseID = providerID
+                    model.player.holdToolGapMute(seconds: 8.0)
+                    Self.st("ST15C_PLAYBACK_LANE_ADOPT", "tool-continuation")
+                case .rollToNewResponse:
+                    // Tool continuation is a new Realtime response. The
+                    // preamble lane is starved; keep one player node by
+                    // rolling instead of dropping the spoken result.
+                    model.player.finishResponse(responseID)
                     playbackResponseID = providerID
                     playbackProviderResponseID = providerID
                     model.player.beginResponse(providerID)
+                    responseID = providerID
+                    Self.st("ST15D_PLAYBACK_LANE_ROLL", "continuation")
                 }
+                if lane == .drop { break }
             }
             if let b64 = event.audioB64, !b64.isEmpty {
                 model.player.enqueueBase64PCM(
@@ -936,23 +1291,40 @@ final class LiveConversation {
                     sequence: event.index
                 )
             } else if let ref = event.audioRef, !ref.isEmpty {
-                do {
-                    let data = try await model.client.voiceAudio(ref: ref)
-                    model.player.enqueuePCM(
-                        data,
-                        contentType: event.contentType,
-                        sampleRate: Double(event.sampleRate ?? 16_000),
-                        responseID: responseID,
-                        sequence: event.index
-                    )
-                } catch {
-                    model.lastError = "TTS download failed: \(error.localizedDescription)"
+                // Fetch off the MainActor: awaiting network here blocks
+                // handle() for every later tts_chunk on the same actor and
+                // was heard as stutter whenever audioRef TTS was used. The
+                // player queue stays ordered via sequence numbers; fetch
+                // tasks complete in order in practice (same host, same
+                // payload class) and a rare reorder only bumps the gap
+                // counter, never drops speech.
+                let client = model.client
+                let player = model.player
+                let contentType = event.contentType
+                let sampleRate = Double(event.sampleRate ?? 16_000)
+                let sequence = event.index
+                Task.detached(priority: .userInitiated) {
+                    do {
+                        let data = try await client.voiceAudio(ref: ref)
+                        player.enqueuePCM(
+                            data,
+                            contentType: contentType,
+                            sampleRate: sampleRate,
+                            responseID: responseID,
+                            sequence: sequence
+                        )
+                    } catch {
+                        await MainActor.run { [weak self] in
+                            self?.model?.lastError = "TTS download failed: \(error.localizedDescription)"
+                        }
+                    }
                 }
             }
         case "reply":
             cancelResponseWatchdog()
             model.lastError = nil
             if let text = event.text {
+                Self.st("ST23_ASSISTANT_TEXT", "chars=\(text.count)")
                 if let id = assistantID, let index = model.messages.firstIndex(where: { $0.id == id }) {
                     model.messages[index].text = text
                     model.messages[index].streaming = false
@@ -967,7 +1339,7 @@ final class LiveConversation {
                 model.player.finishResponse(responseID)
             }
             if !model.player.isPlaying {
-                model.status = .listening
+                setStatusPreservingPlayback(.listening)
                 connection?.sendPlayback(active: false)
             }
         case "barge_in":
@@ -989,17 +1361,16 @@ final class LiveConversation {
             if event.code == "realtime_disconnect" {
                 providerReadyForForward = false
                 Self.st("ST16_PROVIDER_LOST_FORWARD_CLOSED", event.text ?? "")
-                model.player.stop()
                 model.noteLiveDisconnected(
                     reason: "Realtime provider disconnected; backend is retrying upstream.",
                     willReconnect: true
                 )
-                model.lastError = "Realtime voice disconnected. I’ll keep this session and reconnect."
+                // The EV socket stays open. Already-queued speech must finish;
+                // stopping the player here is the mid-sentence chop.
                 break
             }
             if event.code == "realtime_connect" {
                 model.lastError = nil
-                model.player.stop()
                 if let connection {
                     _ = startMicrophone(on: connection)
                 }
@@ -1034,6 +1405,10 @@ final class LiveConversation {
                 CameraManager.shared.cancelObserve()
                 break
             }
+            if action == "record_stop" {
+                CameraManager.shared.cancelRecording()
+                break
+            }
             if action == "observe" {
                 fulfillObserve(
                     deviceId: event.deviceId,
@@ -1041,6 +1416,22 @@ final class LiveConversation {
                     durationMs: event.durationMs,
                     intervalMs: event.intervalMs,
                     maxFrames: event.maxFrames
+                )
+                break
+            }
+            if action == "record" {
+                await fulfillRecord(
+                    deviceId: event.deviceId,
+                    requestId: event.requestId,
+                    durationMs: event.durationMs
+                )
+                break
+            }
+            if action == "capture_save" {
+                await fulfillLookCapture(
+                    deviceId: event.deviceId,
+                    requestId: event.requestId,
+                    persist: true
                 )
                 break
             }
@@ -1198,17 +1589,44 @@ final class LiveConversation {
             .filter { !$0.isEmpty && $0.allSatisfy { $0.isLetter || $0.isNumber || "_-.".contains($0) } }
     }
 
+    /// Menu-bar glyph: never leave speaking while PCM is in the player.
+    private func setStatusPreservingPlayback(_ next: AppModel.Status) {
+        guard let model else { return }
+        if model.player.isPlaying {
+            if model.status != .speaking {
+                model.status = .speaking
+            }
+            return
+        }
+        model.status = next
+    }
+
     private func apply(phase: String?) {
         guard let model, let phase else { return }
+        if model.player.isPlaying {
+            model.status = .speaking
+            return
+        }
         switch phase {
         case "thinking", "reasoning":
-            model.status = .thinking
+            // Server VAD emits thinking on room tone. That flashed the
+            // preparing orb without a user turn. Only a latched response
+            // (transcript or greeting PCM) may show thinking.
+            if assistantID != nil || playbackResponseID != nil {
+                model.status = .thinking
+            }
         case "speaking", "speaking_and_listening":
-            model.status = model.player.isPlaying ? .speaking : .listening
-        case "interrupted":
+            // Playback owns the waveform. Mapping these to listening flashed
+            // ear ↔ waveform at the start of every reply.
+            if assistantID != nil || playbackResponseID != nil,
+               model.status != .thinking && model.status != .speaking {
+                model.status = .thinking
+            }
+        case "interrupted", "listening", "idle", "armed", "waiting",
+             "user_speaking", "user_pausing":
             model.status = .listening
         default:
-            if model.status != .speaking || !model.player.isPlaying {
+            if model.status != .speaking && model.status != .thinking {
                 model.status = .listening
             }
         }
@@ -1236,7 +1654,8 @@ final class LiveConversation {
         // happens only on explicit stop or proven engine failure. This prevents
         // WebSocket reconnect from thrashing the AVAudioEngine.
         providerReadyForForward = false
-        model?.player.cancelResponse(playbackResponseID)
+        // Already-scheduled PCM should finish. cancelResponse would chop the
+        // sentence on a transient socket loss. New chunks use a new response id.
         playbackResponseID = nil
         playbackProviderResponseID = nil
         // Keep capture alive — do not touch microphone engine or AudioInputLease.
@@ -1258,13 +1677,14 @@ final class LiveConversation {
     private func startResponseWatchdog(for gen: Int) {
         responseWatchdog?.cancel()
         responseWatchdog = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            try? await Task.sleep(nanoseconds: 25_000_000_000)
             guard !Task.isCancelled else { return }
             guard let self, self.generation == gen else { return }
-            // Provably broken: thinking with no audio started
+            // Slow first audio is not a dead socket. Drop the thinking glyph
+            // only — tearing the channel down was a boot-loop.
             if self.model?.status == .thinking, !(self.model?.player.isPlaying ?? false) {
-                Self.st("WDOG_NO_RESPONSE", "10s no response after final_transcript gen \(gen)")
-                self.tearDownChannel(for: gen)
+                Self.st("WDOG_NO_RESPONSE", "25s no audio after final_transcript gen \(gen)")
+                self.model?.status = .listening
             }
         }
     }

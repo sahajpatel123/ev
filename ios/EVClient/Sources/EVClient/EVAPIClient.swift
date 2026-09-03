@@ -106,12 +106,25 @@ public struct EVAPIClient: Sendable {
     public let session: URLSession
 
     /// Voice turns (ASR + chat + TTS) can exceed URLSession.shared's 60s default.
+    /// HTTP only — never reuse this session for the live WebSocket. A 180s
+    /// resource timeout will kill a conversation that is still open.
     public static let voiceSession: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 90
         config.timeoutIntervalForResource = 180
         config.waitsForConnectivity = false
         config.httpMaximumConnectionsPerHost = 8
+        return URLSession(configuration: config)
+    }()
+
+    /// Long-lived `WS /v1/voice/live`. Resource timeout is 7 days (URLSession's
+    /// default) so an idle listening socket is not torn down mid-conversation.
+    public static let liveSocketSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 90
+        config.timeoutIntervalForResource = 7 * 24 * 3600
+        config.waitsForConnectivity = false
+        config.httpMaximumConnectionsPerHost = 4
         return URLSession(configuration: config)
     }()
 

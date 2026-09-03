@@ -16,7 +16,7 @@ import time
 from app.config import settings
 from app.db import init_db
 from app.services.runtime import record_dead_letter_sync
-from app.workers.jobs import run_live_rebuild, run_live_retention
+from app.workers.jobs import run_life_stream_tick, run_live_rebuild, run_live_retention
 
 
 async def tick_once() -> dict:
@@ -48,18 +48,25 @@ class LiveMaintenance:
             retention_interval_seconds or settings.live_retention_interval_seconds
         )
         self.rebuild_interval = rebuild_interval_seconds or settings.live_rebuild_interval_seconds
+        self.life_interval = max(5, int(getattr(settings, "life_stream_interval_seconds", 20) or 20))
         # Negative infinity: the scheduler runs each job once at startup, then
         # every ``*_interval_seconds`` after that.
         self._last_retention_run: float = float("-inf")
         self._last_rebuild_run: float = float("-inf")
+        self._last_life_run: float = float("-inf")
 
     def due(self, now: float | None = None) -> dict[str, bool]:
         """Which maintenance jobs are due at monotonic time ``now``."""
         now = time.monotonic() if now is None else now
-        return {
+        due = {
             "retention": now - self._last_retention_run >= self.retention_interval,
             "rebuild": now - self._last_rebuild_run >= self.rebuild_interval,
         }
+        from app.services.life_stream_daemon import life_stream_should_run
+
+        if life_stream_should_run():
+            due["life_stream"] = now - self._last_life_run >= self.life_interval
+        return due
 
     def run_due(self, now: float | None = None) -> dict:
         """Run each due job once; failures go to the dead-letter queue."""
@@ -90,6 +97,18 @@ class LiveMaintenance:
                     error=results["rebuild_error"],
                 )
             self._last_rebuild_run = now
+        if due.get("life_stream"):
+            try:
+                results["life_stream"] = run_life_stream_tick()
+            except Exception as exc:  # noqa: BLE001 - worker boundary: record and keep going
+                results["life_stream_error"] = f"{type(exc).__name__}: {exc}"
+                record_dead_letter_sync(
+                    queue="scheduler",
+                    job_id="life-stream",
+                    payload={"cadence_seconds": self.life_interval},
+                    error=results["life_stream_error"],
+                )
+            self._last_life_run = now
         return results
 
 

@@ -177,8 +177,11 @@ class EarConfig:
     echo_tail_s: float = 0.6
     # WAKE W1: 1.5s wake_chunk + 1.0s pre-roll → ~1-2s handoff (ring 10s; mic stable, never restarted per wake)
     wake_chunk_s: float = 1.5
-    idle_min_rms: float = 140.0
+    idle_min_rms: float = 800.0
     idle_min_peak: int = 600
+    # 20 ms peak below this skips EnergyVad while idle. Room-tone clicks on
+    # this Mac sit at 400–1800; speech onsets are typically >8k.
+    idle_vad_skip_peak: int = 2500
     wake_model_path: str | None = None
     wake_verifier_path: str | None = None
     wake_threshold: float = 0.5
@@ -238,10 +241,54 @@ def idle_clip_worth_spotting(
     min_rms: float,
     min_peak: int,
 ) -> bool:
-    """True when a clip is loud enough to be speech, not room tone."""
+    """True when a clip has sustained energy, not a click or room tone.
+
+    A single-sample peak used to pass MacBook Air room tone (rms ~400–700,
+    peak 3k–5k) into faster-whisper every 1.5 s at ~150% CPU. Whisper idle
+    spotting keys off RMS. ``min_rms <= 0`` disables the RMS gate (tests).
+    """
 
     peak, rms = pcm_peak_rms(samples)
-    return rms >= min_rms or peak >= min_peak
+    if min_rms <= 0 and min_peak <= 0:
+        return True
+    if min_rms > 0:
+        return rms >= min_rms
+    return peak >= min_peak
+
+
+def next_loud_event_spot(vad_quiet: bool, event_open: bool) -> tuple[bool, bool]:
+    """One whisper pass per loud stretch.
+
+    ``StreamingSegmenter`` emits a new 1.5 s window every time max_segment
+    hits while energy stays high. Spotting each window was 3× Whisper on
+    one clap. Wait for RMS to fall below the idle gate before the next
+    attempt. Returns ``(run_spotter, event_open)``.
+    """
+
+    if vad_quiet:
+        return False, False
+    if event_open:
+        return False, True
+    return True, True
+
+
+def idle_block_can_skip_vad(
+    *,
+    listening: bool,
+    segmenter_active: bool,
+    block_peak: int,
+    skip_below: int,
+) -> bool:
+    """Skip EnergyVad on digital silence / faint hiss while idle.
+
+    EnergyVad's default floor is 80, so MacBook room tone (20 ms rms
+    100–400) looked like continuous speech, the segmenter emitted every
+    1.5 s, and the loop spent ~7% CPU spawning no-op ingest tasks.
+    """
+
+    if listening or segmenter_active:
+        return False
+    return block_peak < skip_below
 
 
 def build_config(args: argparse.Namespace | None = None) -> EarConfig:
@@ -1052,6 +1099,7 @@ async def run_ears(
     echo_guard = False
     ingest_busy = False
     pending_segment = None
+    loud_event_open = False
     ingest_tasks: set[asyncio.Task] = set()
     live_channel: EarsLiveChannel | None = None
     live_player: EarsLivePlayer | None = None
@@ -1077,11 +1125,12 @@ async def run_ears(
         segmenter.max_samples = max(1, int(seconds * cfg.sample_rate))
 
     def _echo_hold(on: bool) -> None:
-        nonlocal echo_guard, pending_segment
+        nonlocal echo_guard, pending_segment, loud_event_open
         echo_guard = on
         # Playback and the post-play tail are never owner speech. Drop any
         # segment that formed on the edge of TTS so it cannot be replayed.
         pending_segment = None
+        loud_event_open = False
         segmenter._reset()
         if not on:
             with contextlib.suppress(Exception):
@@ -1197,10 +1246,42 @@ async def run_ears(
 
     async def handle_segment(segment) -> None:
         nonlocal last_report, last_cpu, listening, pending_segment, session_id
-        nonlocal live_channel, live_sse_fallback
+        nonlocal live_channel, live_sse_fallback, loud_event_open
         stats.segments += 1
         duration = len(segment.samples) / max(1, cfg.sample_rate)
         peak, rms = pcm_peak_rms(segment.samples)
+        # WAKE CASCADE W1-W2: MIC→RING(10s)→VAD→Stage1(high-recall)→Stage2(precision)
+        # →Speaker fast→Arbitration→Realtime→Full-utterance+directed check.
+        vad_quiet = not idle_clip_worth_spotting(
+            segment.samples,
+            min_rms=cfg.idle_min_rms,
+            min_peak=cfg.idle_min_peak,
+        )
+        whisper_spotter = str(getattr(wake, "name", "") or "") == "whisper-spotter"
+        if whisper_spotter:
+            run_spotter, loud_event_open = next_loud_event_spot(vad_quiet, loud_event_open)
+            if not run_spotter:
+                if vad_quiet:
+                    LOGGER.debug(
+                        "ears quiet chunk rms=%.0f peak=%s (need rms>=%.0f) — skip expensive spotter",
+                        rms,
+                        peak,
+                        cfg.idle_min_rms,
+                    )
+                else:
+                    pending_segment = None
+                    LOGGER.debug(
+                        "ears coalesce loud event rms=%.0f — skip overlapping whisper window",
+                        rms,
+                    )
+                return
+        elif vad_quiet:
+            LOGGER.debug(
+                "ears quiet chunk rms=%.0f peak=%s (need rms>=%.0f) — skip expensive spotter",
+                rms,
+                peak,
+                cfg.idle_min_rms,
+            )
         LOGGER.info(
             "ears chunk duration=%.2fs samples=%d rms=%.0f peak=%s listening=%s",
             duration,
@@ -1209,25 +1290,6 @@ async def run_ears(
             peak,
             listening,
         )
-        # WAKE CASCADE W1-W2: MIC→RING(10s)→VAD→Stage1(high-recall)→Stage2(precision)
-        # →Speaker fast→Arbitration→Realtime→Full-utterance+directed check.
-        # VAD IS NOT A HARD GATE (§4): quiet/far/hoarse owner wake must survive
-        # to KWS. Reduce compute via threshold adjustment, not early drop.
-        vad_quiet = not idle_clip_worth_spotting(
-            segment.samples,
-            min_rms=cfg.idle_min_rms,
-            min_peak=cfg.idle_min_peak,
-        )
-        if vad_quiet:
-            LOGGER.debug(
-                "ears quiet chunk rms=%.0f peak=%s (need rms>=%.0f or peak>=%s) — still spotting (VAD soft gate)",
-                rms,
-                peak,
-                cfg.idle_min_rms,
-                cfg.idle_min_peak,
-            )
-            # Do NOT return — Stage-1 must see quiet/far-field wakes; VAD only
-            # provides timing/confidence adjustment, never a drop before KWS.
         if cfg.stuck_loop_drop and await asyncio.to_thread(
             looks_stuck_loop,
             segment.samples,
@@ -1524,7 +1586,7 @@ async def run_ears(
 
     LOGGER.info(
         "ears started device=%s rate=%d ring=%.1fs wake=%s vad=%s "
-        "consent=%s dry_run=%s wake_chunk=%.1fs idle_rms=%.0f idle_peak=%s",
+        "consent=%s dry_run=%s wake_chunk=%.1fs idle_rms=%.0f idle_peak=%s idle_vad_skip=%s",
         cfg.device or "default",
         cfg.sample_rate,
         cfg.ring_seconds,
@@ -1535,9 +1597,10 @@ async def run_ears(
         cfg.wake_chunk_s,
         cfg.idle_min_rms,
         cfg.idle_min_peak,
+        cfg.idle_vad_skip_peak,
     )
     async def run_loop() -> None:
-        nonlocal last_heartbeat
+        nonlocal last_heartbeat, loud_event_open
         consecutive_errors = 0
         last_app_check = time.monotonic()
         while not stop.is_set():
@@ -1596,6 +1659,22 @@ async def run_ears(
                     # segmenter below still watches for wake in idle mode, but
                     # an open live door receives every block unmodified.
                     channel.offer_pcm(pcm16_bytes(block))
+                if not listening and not segmenter.active:
+                    block_peak = 0
+                    for sample in block:
+                        value = int(sample)
+                        if value < 0:
+                            value = -value
+                        if value > block_peak:
+                            block_peak = value
+                    if idle_block_can_skip_vad(
+                        listening=False,
+                        segmenter_active=False,
+                        block_peak=block_peak,
+                        skip_below=cfg.idle_vad_skip_peak,
+                    ):
+                        consecutive_errors = 0
+                        continue
                 try:
                     probability = await vad.block_probability(block, cfg.sample_rate)
                 except Exception as exc:  # model failure → degrade, never crash loop
@@ -1609,6 +1688,31 @@ async def run_ears(
                         pre_roll = window[:extra]
                 segment = segmenter.push(block, probability, pre_roll_samples=pre_roll)
                 if segment is None:
+                    continue
+                if (
+                    not listening
+                    and str(getattr(wake, "name", "") or "") == "whisper-spotter"
+                ):
+                    vad_quiet = not idle_clip_worth_spotting(
+                        segment.samples,
+                        min_rms=cfg.idle_min_rms,
+                        min_peak=cfg.idle_min_peak,
+                    )
+                    run_spotter, loud_event_open = next_loud_event_spot(
+                        vad_quiet, loud_event_open
+                    )
+                    if not run_spotter:
+                        consecutive_errors = 0
+                        continue
+                elif (
+                    not listening
+                    and not idle_clip_worth_spotting(
+                        segment.samples,
+                        min_rms=cfg.idle_min_rms,
+                        min_peak=cfg.idle_min_peak,
+                    )
+                ):
+                    consecutive_errors = 0
                     continue
                 _spawn_segment(segment)
                 consecutive_errors = 0

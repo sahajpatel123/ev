@@ -405,6 +405,131 @@ def weather_hud(results: list[dict]) -> dict:
     )
 
 
+async def handle_heading_out(
+    session: AsyncSession,
+    *,
+    notify_to: str | None = None,
+    notify_text: str | None = None,
+    place: str | None = None,
+    actor: str = "owner",
+    live_session_id: str | None = None,
+    device_id=None,
+) -> dict:
+    """Weather + next commitment + leave-by + optional late text, one spoken beat."""
+
+    from dateutil import parser as date_parser
+
+    from app.ev import navigation
+    from app.ev.travel import owner_coarse_origin
+    from app.search.live import weather_results
+
+    route = await navigation.route_briefing(session)
+    origin = place or await owner_coarse_origin(session)
+    weather_payload: list[dict] = []
+    weather_spoken = ""
+    try:
+        query = f"weather in {origin}" if origin else "weather"
+        results = await weather_results(query, limit=2)
+        weather_payload = [
+            {"title": r.title, "url": r.url, "snippet": r.snippet} for r in results
+        ]
+        first = weather_payload[0] if weather_payload else {}
+        weather_spoken = str(first.get("snippet") or first.get("title") or "").strip()
+    except Exception:  # noqa: BLE001 - calendar still useful without weather
+        weather_spoken = ""
+
+    destination = route.destination
+    leave_by = route.leave_by
+    travel = route.travel_time_minutes
+    notes = list(route.notes or [])
+    leave_phrase = ""
+    if leave_by:
+        try:
+            when = date_parser.parse(str(leave_by))
+            leave_phrase = when.strftime("%-I:%M %p")
+        except (ValueError, TypeError, OverflowError):
+            leave_phrase = str(leave_by)
+
+    bits: list[str] = []
+    if weather_spoken:
+        bits.append(weather_spoken.rstrip(".") + ".")
+    elif any(str(note).lower().startswith("weather") for note in notes):
+        bits.append(next(str(note) for note in notes if str(note).lower().startswith("weather")))
+    if destination:
+        next_line = f"Next is {destination}"
+        if leave_phrase:
+            next_line += f". Leave by {leave_phrase}"
+        if travel:
+            next_line += f". About {int(travel)} minutes of travel"
+        bits.append(next_line.rstrip(".") + ".")
+    else:
+        bits.append("Nothing on the calendar is pulling you out the door.")
+    for note in notes:
+        text = str(note).strip()
+        if text and "weather" not in text.lower() and "provenance" not in text.lower():
+            if destination and destination in text:
+                continue
+            bits.append(text if text.endswith(".") else text + ".")
+
+    message_result: dict | None = None
+    if notify_to:
+        from app.ev.tools import dispatch
+
+        body = (notify_text or "I'm heading out and may be late.").strip()[:400]
+        inner = await dispatch(
+            session,
+            "send_message",
+            {"to": notify_to, "text": body},
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            channel="voice",
+        )
+        payload = inner.result if getattr(inner, "result", None) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        message_result = {
+            "ok": bool(inner.ok),
+            "to": notify_to,
+            "text": body,
+            "spoken": payload.get("spoken"),
+            "error": inner.error,
+            "needs_confirmation": bool(
+                payload.get("needs_confirmation") or inner.error == "confirmation_required"
+            ),
+        }
+        if message_result["needs_confirmation"]:
+            bits.append(f"I still need confirmation to text {notify_to}.")
+        elif inner.ok:
+            bits.append(f"I texted {notify_to} that you're heading out.")
+        else:
+            bits.append(
+                str(payload.get("spoken") or inner.error or f"I could not text {notify_to}.")
+            )
+
+    spoken = " ".join(bit for bit in bits if bit).strip()[:700]
+    evidence = {
+        "weather": weather_payload,
+        "destination": destination,
+        "leave_by": leave_by,
+        "travel_time_minutes": travel,
+        "origin": origin,
+        "notes": notes,
+        "message": message_result,
+    }
+    return {
+        "ok": True,
+        "spoken": spoken or "I checked the weather and the calendar.",
+        "weather": weather_payload,
+        "route": route.model_dump(mode="json") if hasattr(route, "model_dump") else {},
+        "leave_by": leave_by,
+        "destination": destination,
+        "message": message_result,
+        "evidence": evidence,
+        "hud": hud_card("Heading out", spoken, evidence, priority=0.8),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Brief
 # --------------------------------------------------------------------------- #

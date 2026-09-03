@@ -62,6 +62,10 @@ html[data-theme="dark"] {
   --talk-ink: #161410;
 }
 * { box-sizing: border-box; }
+button, input {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
 html, body {
   margin: 0;
   min-height: 100dvh;
@@ -104,6 +108,7 @@ html, body {
   font-size: 28px;
   letter-spacing: -0.03em;
   font-weight: 520;
+  transition: opacity 160ms ease;
 }
 .trust-line {
   margin: 4px 0 0;
@@ -383,6 +388,101 @@ html, body {
   font-weight: 520;
 }
 .segment button.on { background: var(--talk); color: var(--talk-ink); }
+.choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.choice-list button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  min-height: 56px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  border: 1px solid var(--stroke);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  touch-action: manipulation;
+}
+.choice-list button strong { font-size: 16px; font-weight: 600; }
+.choice-list button span { font-size: 13px; color: var(--muted); font-weight: 400; }
+.choice-list button.on {
+  background: var(--talk);
+  color: var(--talk-ink);
+  border-color: var(--talk);
+}
+.choice-list button.on span { color: color-mix(in srgb, var(--talk-ink) 65%, transparent); }
+.camera-ask {
+  width: 100%;
+  max-width: 34em;
+  margin: 12px 0 0;
+  padding: 16px;
+  border: 1px solid var(--stroke);
+  border-radius: 20px;
+  background: var(--elevated);
+  text-align: left;
+  box-shadow: var(--shadow);
+}
+.camera-ask .camera-ask-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.camera-ask .quiet { margin: 8px 0 0; }
+.camera-ask button {
+  display: block;
+  width: 100%;
+  min-height: 52px;
+  margin-top: 10px;
+  border-radius: 14px;
+  border: 1px solid var(--stroke);
+  background: var(--talk);
+  color: var(--talk-ink);
+  font: inherit;
+  font-weight: 600;
+  touch-action: manipulation;
+}
+.camera-ask button[data-camera-role="standard"] {
+  background: var(--paper);
+  color: var(--ink);
+}
+.camera-role-line {
+  min-height: 44px;
+  margin: 4px 0 0;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+.quick-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin: 10px 0 0;
+}
+.quick-row button {
+  min-height: 44px;
+  padding: 0 6px;
+  border-radius: 14px;
+  border: 1px solid var(--stroke);
+  background: var(--elevated);
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  backdrop-filter: blur(var(--blur));
+}
+.quick-row button:active {
+  transform: translateY(1px) scale(0.98);
+}
 .rail {
   position: fixed;
   left: 16px;
@@ -515,10 +615,10 @@ html, body {
   to { transform: translate3d(0, 0, 0); }
 }
 .sheet.from-right {
-  animation: sheet-from-right 380ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
+  animation: sheet-from-right 280ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
 }
 .sheet.from-left {
-  animation: sheet-from-left 380ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
+  animation: sheet-from-left 280ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
 }
 @media (prefers-contrast: more) {
   .dock-side, .sheet, .node, .meta, .diag, .segment, .self-test:not(:empty) {

@@ -149,6 +149,11 @@ def test_compiler_does_not_dump_crm_scores() -> None:
 def test_live_instructions_include_memory_behavior() -> None:
     text = live_memory_instructions({"relationship": "RELATIONSHIP: owner is Sahaj."})
     assert "Remember broadly" in MEMORY_BEHAVIOR
+    assert "already know them" in MEMORY_BEHAVIOR.lower()
+    assert "first meeting" in MEMORY_BEHAVIOR.lower()
+    assert "no history with them" in MEMORY_BEHAVIOR.lower()
+    assert "only when they named the person" not in MEMORY_BEHAVIOR.lower()
+    assert "cannot reliably pull" not in MEMORY_BEHAVIOR.lower()
     assert "Sahaj" in text
     assert "would you like to know more" not in text.lower()
     assert "automatic offers to elaborate" in text.lower()
@@ -160,6 +165,8 @@ def test_realtime_session_update_carries_memory_behavior() -> None:
         capability_manifest={"live_tool_projection": [], "capabilities": []},
     )["session"]["instructions"]
     assert "continuous relationship" in instructions.lower()
+    assert "already know this owner" in instructions.lower()
+    assert "no history with them" in instructions.lower()
 
 
 @pytest.mark.asyncio

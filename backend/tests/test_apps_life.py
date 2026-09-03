@@ -47,6 +47,9 @@ def test_app_and_url_allowlists_are_narrow() -> None:
     assert parse_owner_url("https://example.com/path") == "https://example.com/path"
     assert parse_owner_url("file:///etc/passwd") is None
     assert parse_owner_url("javascript:alert(1)") is None
+    assert parse_owner_url("spotify:search:lofi") == "spotify:search:lofi"
+    assert parse_owner_url("mailto:owner@example.com") == "mailto:owner@example.com"
+    assert parse_owner_url("spotify:") is None
     assert resolve_live_action("open Safari") == ("open_app", {"name": "Safari"})
     assert resolve_live_action("can you open safari for me") == (
         "open_app",

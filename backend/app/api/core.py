@@ -227,6 +227,7 @@ async def health() -> dict:
     }.get(live or "", "pipeline")
 
     from app.db import SessionLocal
+    from app.ev.laptop_files import laptop_files_allowed
 
     async with SessionLocal() as session:
         migrations = await migration_parity(session)
@@ -301,6 +302,7 @@ async def health() -> dict:
             "memory": await _memory_health(),
             "device_gateway": _device_gateway_health(),
             "everywhere": await _everywhere_health(),
+            "laptop_files": laptop_files_allowed(),
         },
         "voice": _voice_health(),
         "capability_authority": capability_diagnostics(),

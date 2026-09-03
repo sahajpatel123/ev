@@ -192,6 +192,19 @@ class Extractor:
         if event.event_type == "message.assistant":
             return candidates
 
+        from app.memory.live_life import is_live_life_event
+
+        # iMessage / Mail / Contacts stay on the on-demand locator. Promoting
+        # them to general memories would dump the firehose into casual turns.
+        if is_live_life_event(event):
+            return candidates
+
+        from app.ev.laptop_files import is_system_confirmation
+        from app.memory.visual import is_memory_hedge_scene
+
+        if is_system_confirmation(text) or is_memory_hedge_scene(text):
+            return candidates
+
         # The Event row is the timeline. Do not promote every utterance to a
         # semantic memory. Hypotheticals and questions are not owner facts.
         if is_hypothetical(text) or FORGET_INTENT.search(text or ""):
@@ -331,6 +344,8 @@ class Extractor:
                 candidates.append(hypothesis)
 
         # Inferred observation when the user shared something unstructured.
+        from app.memory.visual import wants_keep_visible
+
         if (
             text
             and not typed_found
@@ -338,6 +353,7 @@ class Extractor:
             and not text.strip().endswith("?")
             and not is_hypothetical(text)
             and not _is_ephemeral_ui_text(text)
+            and not wants_keep_visible(text)
         ):
             candidates.append(
                 MemoryCandidate(

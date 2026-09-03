@@ -311,10 +311,24 @@ async def serve_live_websocket(
                     return
                 continue
             try:
+                payload = event.as_dict()
                 await asyncio.wait_for(
-                    websocket.send_json(event.as_dict()), timeout=2.0
+                    websocket.send_json(payload), timeout=10.0
                 )
-            except (TimeoutError, WebSocketDisconnect, RuntimeError):
+            except TimeoutError:
+                logger.warning(
+                    "live send timed out; retrying the same event so speech is not dropped"
+                )
+                try:
+                    await asyncio.wait_for(
+                        websocket.send_json(payload), timeout=10.0
+                    )
+                except TimeoutError:
+                    logger.warning("live send timed out twice; dropping this event")
+                    continue
+                except (WebSocketDisconnect, RuntimeError):
+                    return
+            except (WebSocketDisconnect, RuntimeError):
                 return
             if getattr(event, "fatal", False):
                 live.close()
@@ -363,6 +377,13 @@ async def _handle_client_frame(live: Any, payload: dict | bytes) -> None:
     client socket that sent any control).
     """
 
+    if isinstance(payload, dict) and (payload.get("type") or "").strip() == "keepalive":
+        with contextlib.suppress(Exception):
+            from app.voice.live.events import KeepaliveEvent
+
+            now = getattr(live, "now", lambda: 0)
+            await live.emit(KeepaliveEvent(at_ms=now() if callable(now) else 0))
+        return
     try:
         await live.handle_client(payload)
     except asyncio.CancelledError:
@@ -667,6 +688,25 @@ async def bind_live_session(
     return live_session
 
 
+def bind_memory_tool_query(name: str, arguments: dict, transcript: str) -> dict:
+    """Keep a brokered owner utterance. Fill query from ASR only when missing.
+
+    Overwriting a set query with ``_last_input_transcript`` made live book
+    recall search a stale echo ("eat here… uncle and aunt") instead of the
+    keep. Mini function calls with an empty query still get the transcript.
+    """
+
+    args = dict(arguments or {})
+    if name not in {"recall", "recall_history", "search_memory"}:
+        return args
+    if str(args.get("query") or "").strip():
+        return args
+    raw = (transcript or "").strip()
+    if raw:
+        args["query"] = raw[:1000]
+    return args
+
+
 def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool = False):
     """Execute EV life tools when a live model or the pipeline intent resolver asks.
 
@@ -713,9 +753,11 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool
         # provider, device, and delegate-scope context. ``dispatch`` is the
         # canonical authorization/execution boundary and rechecks all of it.
         await live.push_progress(name)
-        args = dict(arguments or {})
         grok = getattr(live, "grok_voice", None)
         transcript = str(getattr(grok, "_last_input_transcript", "") or "").strip()
+        args = bind_memory_tool_query(name, arguments, transcript)
+        if name == "code" and call_id != "owner-code-exec":
+            return await live.begin_background_code_job(args, call_id)
         if name in COMPUTER_TOOLS:
             from app.ev.computer_runtime import (
                 allowed_computer_arguments,
@@ -758,7 +800,15 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool
                 channel="voice",
                 live_session_id=live.session_id,
             )
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception:
+                # Visual keeps used to put datetime into evidence.when. The
+                # pack was right; persist then crashed and live Evie never
+                # spoke the book. Still return the spoken result.
+                logger.exception("live tool persist failed name=%s", name)
+                with contextlib.suppress(Exception):
+                    await db.rollback()
         body = result.result if isinstance(result.result, dict) else {}
         if name in COMPUTER_TOOLS:
             successful = (
@@ -766,6 +816,13 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool
                 and body.get("ok") is not False
                 and not body.get("degraded")
             )
+        elif name in {"recall", "recall_history", "search_memory"}:
+            # A list evidence pack is a hit even if policy stamping failed.
+            successful = bool(
+                body.get("ok") is True
+                or int(body.get("count") or 0) > 0
+                or (isinstance(body.get("evidence"), list) and body.get("evidence"))
+            ) and not body.get("degraded")
         else:
             successful = bool(result.ok and tool_result_is_successful(body))
         if result.error == "confirmation_required" or body.get("confirmation_required"):

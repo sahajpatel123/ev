@@ -93,8 +93,11 @@ class Settings(BaseSettings):
     code_projects: str = ""
     code_projects_root: str | None = None
     code_model: str = "gpt-5.6-luna"
-    code_max_steps: int = 12
-    code_command_timeout_seconds: int = 20
+    code_max_steps: int = 24
+    code_command_timeout_seconds: int = 60
+    code_live_job_seconds: float = 240.0
+    code_chat_job_seconds: float = 300.0
+    code_http_timeout_seconds: float = 60.0
     code_max_file_bytes: int = 256_000
     memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
     memory_curator_enabled: bool = True
@@ -109,7 +112,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.09.02.03"
+    pwa_build: str = "2026.09.02.06"
     phone_audio_backend: str = "webrtc_strict"  # webrtc_strict | webrtc | pcm_ws | encoded | auto
     phone_asr_model: str = "gpt-4o-transcribe"
     phone_asr_language: str = "en"
@@ -704,6 +707,11 @@ class Settings(BaseSettings):
     life_confirm_unknown: bool = True
     life_helper_timeout_seconds: float = 20.0
     life_helper_max_output_bytes: int = 65_536
+    # Headless live-memory follower (iMessage/contacts deltas). Off in CI.
+    # Also auto-runs when messaging_provider=macos_life and a helper path is set.
+    life_stream_enabled: bool = False
+    life_stream_interval_seconds: int = 20
+    life_stream_cursor_path: str = "~/.ev/life_stream_cursor.json"
     # --- END AGENT 12 CONDUIT (WAVE LIFE) ---
 
     # --- EV VOICE CONTROL PLAN (foundation, additive) ------------------------

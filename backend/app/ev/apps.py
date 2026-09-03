@@ -26,6 +26,21 @@ from app.models import Integration
 from app.utils.text import utcnow
 
 ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+APP_URL_SCHEMES = frozenset(
+    {
+        "mailto",
+        "maps",
+        "message",
+        "sms",
+        "tel",
+        "facetime",
+        "spotify",
+        "notes",
+        "music",
+        "itms",
+        "itmss",
+    }
+)
 MACOS_LIFE_ADAPTERS = ("messaging", "phone", "mail", "contacts")
 PROTECTED_QUIT = frozenset(
     {
@@ -117,11 +132,21 @@ def parse_owner_url(raw: str) -> str | None:
     if not text or any(ch.isspace() for ch in text):
         return None
     if "://" not in text:
-        text = "https://" + text
+        scheme = text.split(":", 1)[0].lower() if ":" in text else ""
+        if scheme not in APP_URL_SCHEMES:
+            text = "https://" + text
     parsed = urlparse(text)
-    if parsed.scheme.lower() not in ALLOWED_URL_SCHEMES:
+    scheme = parsed.scheme.lower()
+    if scheme in ALLOWED_URL_SCHEMES:
+        if not parsed.netloc or "." not in parsed.netloc:
+            return None
+        return text
+    if scheme not in APP_URL_SCHEMES:
         return None
-    if not parsed.netloc or "." not in parsed.netloc:
+    remainder = (parsed.netloc or "") + (parsed.path or "") + (parsed.query or "")
+    if not remainder:
+        return None
+    if scheme == "mailto" and "@" not in (parsed.path or parsed.netloc or ""):
         return None
     return text
 
@@ -250,7 +275,7 @@ async def open_url(session: AsyncSession, args: dict, *, actor: str) -> dict:
         return {
             "ok": False,
             "error": "invalid_url",
-            "spoken": "I can only open http or https links.",
+            "spoken": "I can only open web links and a few app links.",
         }
     row = await find_macos_life_integration(session)
     path = helper_path_for(row)

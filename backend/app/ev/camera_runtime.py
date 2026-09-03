@@ -31,6 +31,7 @@ VISION_ARGUMENT_ALIASES = {
     "seconds": "duration_seconds",
     "length": "duration_seconds",
     "clip_seconds": "duration_seconds",
+    "objective": "prompt",
 }
 DARK_EXCUSE_RE = (
     "too dark",
@@ -46,6 +47,9 @@ DARK_EXCUSE_RE = (
     "not enough light",
     "image is dark",
     "photo is dark",
+    "not clearly",
+    "too blurry",
+    "can't make it out",
 )
 
 _PENDING: dict[str, list[CameraObservation]] = {}
@@ -551,7 +555,9 @@ def camera_model_instructions(readiness: CameraReadiness | dict[str, Any] | None
         return (
             f"{line} If answering requires seeing the room, a person, clothing, "
             "or what they are holding, or they ask you to memorize or remember "
-            "something they are showing, call look. Read printed names and "
+            "something they are showing, call look. Open camera and remember, "
+            "remember the item they are showing, or this is my phone are look, "
+            "never computer, Photo Booth, Camera.app, or place_call. Read printed names and "
             "titles on whatever they are holding. That look is stored across app restarts — "
             "never say you cannot memorize a glance or that you cannot guarantee "
             "future recall. If they ask about the Mac "
@@ -614,8 +620,8 @@ def camera_image_prompt(name: str, *, index: int = 0, total: int = 1) -> str:
             "speech: people, clothing, pose, objects, colors, and the setting. "
             "Do not only list labels. Mention printed text only if you can read "
             "it. Missing text is not a failure. Do not say it is too dark, "
-            "darkened, or that you cannot see the image when people, objects, "
-            "or colors are visible. This look is stored as memory. If they asked "
+            "darkened, blurry, or that you cannot see the image clearly when people, objects, "
+            "or colors are visible. If they named the object, use that name. This look is stored as memory. If they asked "
             "you to remember what they showed, say you will remember it. Never "
             "say you cannot guarantee future recall. Follow-up questions about this image should "
             "talk about those visual facts, not darkness or missing text. Do "

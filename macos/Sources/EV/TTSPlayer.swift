@@ -15,15 +15,28 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private static let sourceBytesPerSample = 2
     private static let sourceBytesPerFrame = sourceChannels * sourceBytesPerSample
     private static let aggregationMs = 160
-    private static let startupPrebufferMs = 280
-    private static let targetLeadMs = 500
+    // Cold-start prime: ~250 ms of real audio before the first word. The
+    // provider streams at ~1x realtime over WAN, so the sustainable riding
+    // lead can never exceed what was banked before play starts. An 80 ms
+    // prime rode at ~80-150 ms and every routine arrival jitter (>100 ms)
+    // ran the node dry — 4-6 underruns/second on EVERY response, heard as
+    // constant jitter with and without tools. 250 ms absorbs normal jitter
+    // (±150-200 ms) for ~170 ms of extra first-word latency, still prompt.
+    // Mid-response restarts NEVER re-prime (starvedResume in
+    // maybeStartPlayback): only true provider gaps re-buffer, one chunk.
+    private static let startupPrebufferMs = 250
+    /// Steady PlayerNode lead ceiling after the ~250 ms prime. 500 ms ran dry
+    /// on ~14–20 s replies (underruns with overflow=0). 900 ms absorbs
+    /// provider/WS bursts without delaying the first word and keeps the
+    /// voice crisp (1500 ms added 0.6 s perceived latency).
+    private static let targetLeadMs = 900
     /// Safety valve only. A realtime provider generates audio FASTER than
     /// realtime (a 30 s answer can arrive in ~3 s), so the hold buffer must
     /// absorb whole-response bursts — bounded speech latency is maintained by
     /// the scheduled-lead gate, not by dropping speech. 60 s of backlog is
     /// impossible in practice and means a broken client.
     private static let hardCeilingMs = 60000
-    private static let echoTail: TimeInterval = 0.25
+    private static let echoTail: TimeInterval = 1.5
 
     private let audioQueue = DispatchQueue(label: "com.ev.audio.playback", qos: .userInitiated)
     private let queueKey = DispatchSpecificKey<UInt8>()
@@ -47,11 +60,39 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private var sourceRate: Double?
     private var partialFrameBytes = Data()
     private var aggregatePCM = Data()
+    private var aggregateHead = 0
     private var converter: AVAudioConverter?
     private var converterSourceRate: Double?
     private var pendingBuffers = 0
     private var pendingFrames = 0
     private var reportedPlaying = false
+
+    // Head-pointer ring for aggregatePCM — `removeFirst` on Data is O(n) and
+    // copies up to 1.9 MB (60 s backlog) per 160 ms chunk, which stalls the
+    // userInitiated audioQueue during tool bursts and was heard as lag with
+    // and without tools. Head pointer makes take O(1).
+    private var aggregateAvailable: Int { aggregatePCM.count - aggregateHead }
+    private func takeAggregate(_ count: Int) -> Data {
+        let end = aggregateHead + count
+        let data = aggregatePCM.subdata(in: aggregateHead..<end)
+        aggregateHead = end
+        if aggregateHead > 8192 && aggregateHead > aggregatePCM.count / 2 {
+            aggregatePCM.removeSubrange(0..<aggregateHead)
+            aggregateHead = 0
+        }
+        if aggregateHead == aggregatePCM.count {
+            aggregatePCM.removeAll(keepingCapacity: true)
+            aggregateHead = 0
+        }
+        return data
+    }
+    private func takeAllAggregate() -> Data {
+        guard aggregateHead < aggregatePCM.count else { return Data() }
+        let data = aggregatePCM.subdata(in: aggregateHead..<aggregatePCM.count)
+        aggregatePCM.removeAll(keepingCapacity: true)
+        aggregateHead = 0
+        return data
+    }
 
     // Minimal per-response counters (directive §9). All touched on the serial
     // audio queue only. Frame counts are source-rate frames; lead and age are
@@ -84,8 +125,10 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private var mirroredPlayedFrames = 0
     private var mirroredSpeaking = false
     private var captureMuteUntil = Date.distantPast
+    private var toolGapMuteUntil = Date.distantPast
     private var lastAssistantChunkAt = Date.distantPast
     private var referencePCM = Data()
+    private var referenceHead = 0
     private let referenceKeepBytes = 16_000 * 2 * 4
 
     override init() {
@@ -105,17 +148,37 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         return mirroredPendingFrames
     }
 
-    /// True only while speaker frames are queued, plus the acoustic tail.
+    /// True only while speaker frames are queued, plus the acoustic tail or
+    /// a tool-gap hold. Tool gaps (provider silent 0.3-3s while running EV
+    /// memory/computer tools) must keep the mic muted else ambient noise
+    /// triggers provider VAD and splits the answer into two colliding streams.
     /// Safe for the realtime microphone callback.
+    /// Do not use `AVAudioPlayerNode.isPlaying` — mute follows queued frames.
     var shouldMuteCapture: Bool {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return mirroredSpeaking || Date() < captureMuteUntil
+        return mirroredSpeaking || Date() < captureMuteUntil || Date() < toolGapMuteUntil
+    }
+
+    /// Hold mic muted across a provider tool gap (called from LiveConversation
+    /// when a tool continuation is adopted, and auto-extended on underrun).
+    /// Memory tools finish in ~0.3-3s but computer/camera tools round-trip
+    /// through the Mac client and can take 5-15s. A short hold reopens the
+    /// mic mid-tool; room noise then triggers provider VAD and a spurious
+    /// second response collides with the continuation → glitch on every
+    /// tool turn. Default covers long tools without hiding explicit
+    /// barge-in (Escape/Stop bypasses the mic gate).
+    func holdToolGapMute(seconds: TimeInterval = 8.0) {
+        stateLock.lock()
+        let until = Date().addingTimeInterval(seconds)
+        if until > toolGapMuteUntil { toolGapMuteUntil = until }
+        stateLock.unlock()
     }
 
     func playbackSnapshot() -> PlaybackSnapshot {
         stateLock.lock()
-        let pcm = referencePCM
+        let pcm = referenceHead <= 0 ? referencePCM
+            : referencePCM.subdata(in: referenceHead..<referencePCM.count)
         let speaking = mirroredSpeaking
         let pending = mirroredPendingFrames
         let played = mirroredPlayedFrames
@@ -146,6 +209,7 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         let maxQueueAgeMs: Int
         let invalidFrameCount: Int
         let sequenceGapCount: Int
+        let engineRestartCount: Int
     }
 
     func metrics() -> PlaybackMetrics {
@@ -162,7 +226,8 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
                 currentScheduledLeadMs: scheduledLeadMs(),
                 maxQueueAgeMs: maxQueueAgeMs,
                 invalidFrameCount: invalidOrIncompleteFrameCount,
-                sequenceGapCount: sequenceGapCount
+                sequenceGapCount: sequenceGapCount,
+                engineRestartCount: engineRestartCount
             )
         }
     }
@@ -215,6 +280,10 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         timer.setEventHandler { [weak self] in
             self?.audioQueue.async { [weak self] in
                 guard let self, sessionActive, !responseFinished else { return }
+                // Completions cannot exist until play() has been called.
+                // Using lastCompletionAt from init/invalidate here restarts
+                // the engine during the startup prime and chops the first word.
+                guard playerStarted else { return }
                 guard pendingBuffers > 0, scheduledLeadMs() >= 300 else { return }
                 guard Date().timeIntervalSince(lastCompletionAt) > 1.2 else { return }
                 // Give up if repeated restarts are not restoring completions;
@@ -466,28 +535,66 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         maybeStartPlayback()
     }
 
-    /// Schedule full aggregated blocks while the PlayerNode-scheduled lead is
-    /// below the steady target. The gate reads SCHEDULED audio only — the
+    /// Schedule aggregated audio promptly while the PlayerNode-scheduled lead
+    /// is below the steady target. The gate reads SCHEDULED audio only — the
     /// aggregate is a waiting room, not scheduled audio; counting it here
     /// would stall scheduling forever once it exceeded the target. `force`
     /// bypasses the gate (response tail: everything remaining must be
     /// scheduled, including the sub-block remainder).
+    ///
+    /// CONTINUITY LAW: `aggregationMs` is the MAXIMUM buffer size (converter
+    /// and node efficiency), never a minimum batch. The provider streams
+    /// ~1x realtime in 80-100 ms drips; requiring a full 160 ms lump before
+    /// scheduling anything starved the node between drips — 4-6 underruns
+    /// per second on every response, heard as constant jitter with and
+    /// without tools (tts-metrics `underruns` ≈ 5× `played_s`). So every
+    /// arrival above a small anti-sliver floor is scheduled immediately and
+    /// the lead rides at ~250 ms, absorbing WS/WAN/MainActor jitter. Only
+    /// the lead target (bursts) or a true provider gap (tools) parks audio
+    /// here.
     private func drainAggregated(rate: Double, force: Bool = false) {
-        let targetBytes = Int(rate * Double(Self.sourceBytesPerFrame) * Double(Self.aggregationMs) / 1000)
-        let alignedTarget = max(Self.sourceBytesPerFrame, targetBytes - targetBytes % Self.sourceBytesPerFrame)
-        while aggregatePCM.count >= alignedTarget || (force && aggregatePCM.count > 0) {
+        let maxBytes = Int(rate * Double(Self.sourceBytesPerFrame) * Double(Self.aggregationMs) / 1000)
+        let alignedMax = max(Self.sourceBytesPerFrame, maxBytes - maxBytes % Self.sourceBytesPerFrame)
+        // Anti-sliver floor: never schedule less than ~20 ms per buffer, but
+        // never hold audio while the node is dry — the starvation refill in
+        // the completion callback flushes any remainder via takeAllAggregate.
+        let frameBytes = Self.sourceBytesPerFrame
+        let minBytes = max(frameBytes, Int(rate * Double(frameBytes) * 20.0 / 1000.0) / frameBytes * frameBytes)
+        while aggregateAvailable >= minBytes || (force && aggregateAvailable > 0) {
             if !force, scheduledLeadMs() >= Self.targetLeadMs { break }
-            let take = min(alignedTarget, aggregatePCM.count)
-            let chunk = Data(aggregatePCM.prefix(take))
-            aggregatePCM.removeFirst(take)
+            let take = min(alignedMax, aggregateAvailable)
+            let alignedTake = max(frameBytes, take - take % frameBytes)
+            let chunk = takeAggregate(alignedTake)
+            schedulePCM(chunk, sourceRate: rate)
+        }
+        // First-word prime: schedule the remainder so startupPrebufferMs is
+        // duration of real audio, not "two full 160 ms blocks" (~320 ms).
+        if !force, !playerStarted, aggregateAvailable > 0,
+           scheduledLeadMs() < Self.startupPrebufferMs {
+            let chunk = takeAllAggregate()
             schedulePCM(chunk, sourceRate: rate)
         }
     }
 
     private func maybeStartPlayback() {
-        guard !playerStarted, pendingBuffers > 0 else { return }
-        guard responseFinished || scheduledLeadMs() >= Self.startupPrebufferMs else { return }
+        guard pendingBuffers > 0 else { return }
+        if playerStarted { return }
+        // Cold start needs a real prime (~250 ms) so the first word does not
+        // stutter on the second chunk and the ride has jitter margin.
+        let primed = responseFinished || scheduledLeadMs() >= Self.startupPrebufferMs
+        // Mid-response restart: ANY newly scheduled audio restarts output at
+        // once. After a true provider gap (tool silence) waiting for a fuller
+        // prime only extends the silence; after scheduling jitter the next
+        // drip is already here. Glitch protection across gaps is the mic mute
+        // (toolGapMuteUntil), not a delayed start.
+        let starvedResume = underrunEvents > 0 && !responseFinished && scheduledLeadMs() > 0
+        // Mid-word jitter: resume immediately even before the lead crosses
+        // the prime (completion just fired, next drip already scheduled).
+        let recentHole = Date().timeIntervalSince(lastCompletionAt) < 0.35
+        let resumeHole = underrunEvents > 0 && !responseFinished && recentHole
+        guard primed || resumeHole || starvedResume else { return }
         playerStarted = true
+        lastCompletionAt = Date()
         playerNode.play()
     }
 
@@ -544,29 +651,47 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
                 // Near-starvation: schedule a partial remainder rather than
                 // let the PlayerNode run dry while ordered audio still waits
                 // in the aggregate. Ordered, contiguous, non-duplicated.
-                if pendingBuffers == 0, let rate = self.sourceRate, !aggregatePCM.isEmpty {
-                    let chunk = aggregatePCM
-                    aggregatePCM.removeAll(keepingCapacity: true)
+                if pendingBuffers == 0, let rate = self.sourceRate, aggregateAvailable > 0 {
+                    let chunk = takeAllAggregate()
                     schedulePCM(chunk, sourceRate: rate)
                 }
                 maybeStartPlayback()
                 if pendingBuffers == 0 {
-                    if !responseFinished { underrunEvents += 1 }
-                    setSpeaking(false)
-                    if responseFinished, !responseSummaryLogged {
-                        responseSummaryLogged = true
-                        logCounters(reason: "response-complete")
-                    }
-                    if responseFinished, ephemeralSession, !liveSessionOwned {
-                        ephemeralSession = false
-                        sessionActive = false
-                        if engine.isRunning { engine.stop() }
+                    if !responseFinished {
+                        // Mid-response hole: keep speaking/mute latched and
+                        // allow maybeStartPlayback to call play() on the next
+                        // chunk. Flipping speaking off here wiggled the menu
+                        // bar and unmuted the mic into Evie's own voice.
+                        underrunEvents += 1
+                        playerStarted = false
+                        // Tool-gap underrun: provider is silent 0.3-15s while
+                        // running memory/computer tools. The adopt-time hold
+                        // (8s) can expire mid-gap on long tools; re-hold here
+                        // so room noise cannot open the mic and split the
+                        // continuation into a colliding second stream.
+                        stateLock.lock()
+                        let until = Date().addingTimeInterval(8.0)
+                        if until > toolGapMuteUntil { toolGapMuteUntil = until }
+                        stateLock.unlock()
+                        updateMirrors(speaking: true)
+                    } else {
+                        setSpeaking(false)
+                        if !responseSummaryLogged {
+                            responseSummaryLogged = true
+                            logCounters(reason: "response-complete")
+                        }
+                        if ephemeralSession, !liveSessionOwned {
+                            ephemeralSession = false
+                            sessionActive = false
+                            if engine.isRunning { engine.stop() }
+                        }
                     }
                 } else {
                     updateMirrors(speaking: true)
                 }
             }
         }
+        maybeStartPlayback()
     }
 
     private func noteLeadSample() {
@@ -586,7 +711,7 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     /// is the latency the owner would experience; used for the ceiling only.
     private func totalBacklogMs() -> Int {
         guard let rate = sourceRate, rate > 0 else { return scheduledLeadMs() }
-        let aggregateFrames = aggregatePCM.count / Self.sourceBytesPerFrame
+        let aggregateFrames = aggregateAvailable / Self.sourceBytesPerFrame
         return scheduledLeadMs() + Int(Double(aggregateFrames) * 1000 / rate)
     }
 
@@ -603,6 +728,44 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         NSLog(
             "EV_TTS[\(reason)] received=\(receivedMs)ms scheduled=\(scheduledMs)ms played=\(playedMs)ms lead(min/max/cur)=\(minScheduledLeadMs == Int.max ? 0 : minScheduledLeadMs)/\(maxScheduledLeadMs)/\(scheduledLeadMs())ms backlog=\(totalBacklogMs())ms queueAgeMax=\(maxQueueAgeMs)ms overflow=\(overflowEvents) dropped=\(droppedFrames) underruns=\(underrunEvents) gaps=\(sequenceGapCount) invalid=\(invalidOrIncompleteFrameCount) restarts=\(engineRestartCount)"
         )
+        writeTtsMetrics(
+            reason: reason,
+            receivedMs: receivedMs,
+            scheduledMs: scheduledMs,
+            playedMs: playedMs
+        )
+    }
+
+    /// Durable playback evidence for live soaks (underruns/glitches).
+    private func writeTtsMetrics(reason: String, receivedMs: Int, scheduledMs: Int, playedMs: Int) {
+        let payload: [String: Any] = [
+            "reason": reason,
+            "received_ms": receivedMs,
+            "scheduled_ms": scheduledMs,
+            "played_ms": playedMs,
+            "underruns": underrunEvents,
+            "overflow": overflowEvents,
+            "dropped": droppedFrames,
+            "restarts": engineRestartCount,
+            "ts_ms": Int(Date().timeIntervalSince1970 * 1000),
+        ]
+        guard JSONSerialization.isValidJSONObject(payload),
+              let line = try? JSONSerialization.data(withJSONObject: payload)
+        else { return }
+        let logs = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory())
+        let dir = logs.appendingPathComponent("Logs/EV", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("tts-metrics.jsonl")
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        var out = line
+        out.append(0x0A)
+        try? handle.write(contentsOf: out)
     }
 
     private func durationMs(frames: Int) -> Int {
@@ -645,12 +808,14 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         sourceRate = nil
         partialFrameBytes.removeAll(keepingCapacity: true)
         aggregatePCM.removeAll(keepingCapacity: true)
+        aggregateHead = 0
         converter = nil
         converterSourceRate = nil
         pendingBuffers = 0
         pendingFrames = 0
         outstanding = []
         lastSequence = nil
+        lastCompletionAt = Date()
         responseSummaryLogged = false
         overflowLogged = false
         stallRestartStreak = 0
@@ -713,23 +878,47 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         }
         guard let converter else { return nil }
         let ratio = playerFormat.sampleRate / sourceRate
-        let capacity = AVAudioFrameCount(ceil(Double(source.frameLength) * ratio)) + 64
-        guard let destination = AVAudioPCMBuffer(pcmFormat: playerFormat, frameCapacity: capacity) else {
-            return nil
-        }
-        var error: NSError?
+        var pieces: [AVAudioPCMBuffer] = []
         var provided = false
-        let status = converter.convert(to: destination, error: &error) { _, inputStatus in
-            if provided {
-                inputStatus.pointee = .noDataNow
-                return nil
+        for _ in 0..<4 {
+            let capacity = AVAudioFrameCount(ceil(Double(source.frameLength) * ratio)) + 64
+            guard let destination = AVAudioPCMBuffer(pcmFormat: playerFormat, frameCapacity: capacity) else {
+                break
             }
-            provided = true
-            inputStatus.pointee = .haveData
-            return source
+            var error: NSError?
+            let status = converter.convert(to: destination, error: &error) { _, inputStatus in
+                if provided {
+                    inputStatus.pointee = .noDataNow
+                    return nil
+                }
+                provided = true
+                inputStatus.pointee = .haveData
+                return source
+            }
+            if status == .error || error != nil { break }
+            if destination.frameLength > 0 {
+                pieces.append(destination)
+            }
+            if status != .haveData { break }
         }
-        guard status != .error, error == nil, destination.frameLength > 0 else { return nil }
-        return destination
+        return Self.concatPCM(pieces, format: playerFormat)
+    }
+
+    private static func concatPCM(_ pieces: [AVAudioPCMBuffer], format: AVAudioFormat) -> AVAudioPCMBuffer? {
+        let total = pieces.reduce(0) { $0 + Int($1.frameLength) }
+        guard total > 0,
+              let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(total)),
+              let dest = out.floatChannelData?[0]
+        else { return nil }
+        var cursor = 0
+        for piece in pieces {
+            guard let src = piece.floatChannelData?[0] else { continue }
+            let count = Int(piece.frameLength)
+            dest.advanced(by: cursor).update(from: src, count: count)
+            cursor += count
+        }
+        out.frameLength = AVAudioFrameCount(cursor)
+        return cursor > 0 ? out : nil
     }
 
     private func floatBuffer(from pcm: Data, sampleRate: Double) -> AVAudioPCMBuffer? {
@@ -757,8 +946,16 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private func rememberPlaybackReference(_ pcm: Data) {
         stateLock.lock()
         referencePCM.append(pcm)
-        if referencePCM.count > referenceKeepBytes {
-            referencePCM.removeFirst(referencePCM.count - referenceKeepBytes)
+        // Head-pointer trim: removeFirst on Data is O(n) and copies up to
+        // 128KB per 80-160ms chunk on the audio queue — jitter during tool
+        // bursts. Same O(1) pattern as the aggregate ring above.
+        let available = referencePCM.count - referenceHead
+        if available > referenceKeepBytes {
+            referenceHead += available - referenceKeepBytes
+            if referenceHead > 8192 && referenceHead > referencePCM.count / 2 {
+                referencePCM.removeSubrange(0..<referenceHead)
+                referenceHead = 0
+            }
         }
         stateLock.unlock()
         VoiceLevelMeter.shared.ingestOutputPCM16(pcm)

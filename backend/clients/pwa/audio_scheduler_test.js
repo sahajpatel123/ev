@@ -75,7 +75,29 @@ assert.strictEqual(stale, false);
 assert.ok(engine.metrics.duplicateDropped >= 1);
 assert.ok(engine.metrics.outOfOrderDropped >= 1);
 assert.ok(engine.metrics.staleDropped >= 1);
-assert.strictEqual(audio.AUDIO_ENGINE_VERSION, "3");
+assert.strictEqual(audio.AUDIO_ENGINE_VERSION, "4");
+assert.ok(audio.PRIME_S >= 0.2, "cold prime must cover WAN jitter, got " + audio.PRIME_S);
+
+// Tool-continuation adopt: a new response id while audio is still draining
+// must NOT flush (no generation bump) and must reset the seq dedup map, or
+// the restarted chunk counter reads as duplicates and the post-tool answer
+// goes silent / chops mid-word.
+const cont = new audio.EvieAudioPlaybackEngine();
+cont.socketGeneration = 2;
+cont.beginTurn({ responseId: "pre", socketGeneration: 2 });
+const genBefore = cont.generation;
+assert.strictEqual(cont._accept({ seq: 0, socketGeneration: 2, responseId: "pre" }), true);
+assert.strictEqual(cont._accept({ seq: 1, socketGeneration: 2, responseId: "pre" }), true);
+cont.playing = true; // preamble still draining when continuation opens
+assert.strictEqual(cont._accept({ seq: 0, socketGeneration: 2, responseId: "cont" }), true);
+assert.strictEqual(cont.generation, genBefore, "adopt must not flush/bump generation");
+assert.strictEqual(cont.responseId, "cont");
+assert.strictEqual(cont._accept({ seq: 1, socketGeneration: 2, responseId: "cont" }), true);
+assert.strictEqual(cont.metrics.duplicateDropped || 0, 0, "continuation seq must not read as duplicate");
+// True new turn while idle still flushes via beginTurn.
+cont.playing = false;
+assert.strictEqual(cont._accept({ seq: 0, socketGeneration: 2, responseId: "next" }), true);
+assert.ok(cont.generation > genBefore, "idle new id must begin a fresh turn");
 
 const odd = new Uint8Array([0x00, 0x10, 0xFF]);
 const first = audio.int16BytesToFloat32(odd);

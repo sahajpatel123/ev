@@ -32,7 +32,14 @@ from app.audio.vad import (
     segment_utterances,
 )
 from app.voice.contracts import WakeDetection
-from clients.ears.main import EarConfig, idle_clip_worth_spotting, pcm_peak_rms, run_ears
+from clients.ears.main import (
+    EarConfig,
+    idle_block_can_skip_vad,
+    idle_clip_worth_spotting,
+    next_loud_event_spot,
+    pcm_peak_rms,
+    run_ears,
+)
 
 
 class FakeIndata:
@@ -223,9 +230,56 @@ def test_idle_clip_skips_room_tone_keeps_speech() -> None:
     peak, rms = pcm_peak_rms(silence)
     assert peak == 0
     assert rms == 0.0
-    assert idle_clip_worth_spotting(silence, min_rms=140.0, min_peak=600) is False
+    assert idle_clip_worth_spotting(silence, min_rms=800.0, min_peak=600) is False
     speech = _speech_block(seed=3, length=16000)
-    assert idle_clip_worth_spotting(speech, min_rms=140.0, min_peak=600) is True
+    assert idle_clip_worth_spotting(speech, min_rms=800.0, min_peak=600) is True
+
+
+def test_idle_clip_skips_click_peak_without_rms() -> None:
+    """A one-sample spike is room-mic junk, not 'Evie' — must not wake Whisper."""
+    click = _silence_block(16000)
+    click[8000] = 20000
+    peak, rms = pcm_peak_rms(click)
+    assert peak >= 20000
+    assert rms < 800
+    assert idle_clip_worth_spotting(click, min_rms=800.0, min_peak=600) is False
+
+
+def test_one_whisper_pass_per_loud_stretch() -> None:
+    run, open_ = next_loud_event_spot(vad_quiet=True, event_open=False)
+    assert (run, open_) == (False, False)
+    run, open_ = next_loud_event_spot(vad_quiet=False, event_open=False)
+    assert (run, open_) == (True, True)
+    run, open_ = next_loud_event_spot(vad_quiet=False, event_open=True)
+    assert (run, open_) == (False, True)
+    run, open_ = next_loud_event_spot(vad_quiet=True, event_open=True)
+    assert (run, open_) == (False, False)
+    run, open_ = next_loud_event_spot(vad_quiet=False, event_open=False)
+    assert (run, open_) == (True, True)
+
+
+def test_idle_block_skips_vad_on_hiss_not_during_speech() -> None:
+    assert idle_block_can_skip_vad(
+        listening=False, segmenter_active=False, block_peak=0, skip_below=400
+    )
+    assert idle_block_can_skip_vad(
+        listening=False, segmenter_active=False, block_peak=200, skip_below=400
+    )
+    assert not idle_block_can_skip_vad(
+        listening=False, segmenter_active=False, block_peak=800, skip_below=400
+    )
+    assert idle_block_can_skip_vad(
+        listening=False, segmenter_active=False, block_peak=1797, skip_below=2500
+    )
+    assert not idle_block_can_skip_vad(
+        listening=False, segmenter_active=False, block_peak=8000, skip_below=2500
+    )
+    assert not idle_block_can_skip_vad(
+        listening=True, segmenter_active=False, block_peak=0, skip_below=400
+    )
+    assert not idle_block_can_skip_vad(
+        listening=False, segmenter_active=True, block_peak=0, skip_below=400
+    )
 
 
 async def test_streaming_segmenter_applies_pre_and_post_roll() -> None:

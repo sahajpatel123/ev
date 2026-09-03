@@ -40,6 +40,7 @@ def ensure_tree() -> Path:
         root / "cards" / "episodes",
         root / "cache",
         root / "diagnostics",
+        root / "catalog",
     ):
         part.mkdir(parents=True, exist_ok=True)
         with suppress(OSError):

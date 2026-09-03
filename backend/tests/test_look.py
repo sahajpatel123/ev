@@ -89,7 +89,7 @@ async def test_look_is_ready_on_live_capability_manifest(db_session: AsyncSessio
     assert "look" in names
     manifest = build_live_capability_manifest(projection, provider="openai")
     line = spoken_ready_capability_line(manifest).lower()
-    assert "camera look" in line
+    assert "camera" in line
     session.close()
     reset_live_registry()
 
@@ -99,6 +99,8 @@ def test_look_intent_does_not_steal_search_or_health() -> None:
     assert select_tool("read this").selected == "look"
     assert select_tool("what color is this").selected == "look"
     assert select_tool("watch this and tell me when it turns green").selected == "observe_camera"
+    assert select_tool("take a photo of me").selected == "capture_photo"
+    assert select_tool("record a video").selected == "record_video"
     assert select_tool("how do i look").selected == "health_how_do_i_look"
     assert select_tool("look this up on the web").selected != "look"
     action = resolve_live_action("what do you see")

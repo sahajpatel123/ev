@@ -18,6 +18,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -28,16 +29,19 @@ from uuid import uuid4
 
 from app.config import settings
 from app.ev.camera_runtime import (
+    VISION_TOOLS,
     build_realtime_image_item,
+    camera_image_prompt,
+    coerce_vision_arguments,
     log_camera,
     pop_observations,
 )
 from app.ev.computer_strategy import (
-    REQUIRED_COMPUTER_TOOLS,
+    COMPUTER_SCHEMA_TOOLS,
     evaluate_provider_computer_schema,
     looks_like_computer_task,
 )
-from app.ev.tool_select import LIVE_VOICE_TOOLS, SHADOW_VOICE_TOOLS
+from app.ev.tool_select import F4_TARGET_SURFACE, LIVE_VOICE_TOOLS, SHADOW_VOICE_TOOLS
 from app.voice.live.barge_in import (
     delivered_assistant_text,
     generated_duration_ms,
@@ -73,6 +77,40 @@ from app.voice.live.voice_memory import (
 
 logger = logging.getLogger("ev.voice.live.grok")
 
+# Shadow and F4 hide search_memory / recall_history from the advertised
+# surface. Instructions still tell the model to call search_memory; honor
+# those owner-memory reads rather than returning empty and sounding ungrounded.
+_UNADVERTISED_MEMORY_TOOLS = frozenset(
+    {
+        "search_memory",
+        "search_decisions",
+        "search_timeline",
+        "recall_history",
+        "recall",
+        "get_person",
+    }
+)
+_LIVE_HISTORY_GROUNDING = (
+    "You already know this owner well. Their people, chats, photos, notes, "
+    "mail, and contacts are already on your shelves — that life is not new, "
+    "and this is not a first meeting. Speak a bit experienced. If a SHADOW "
+    "MEMORY block is attached to this turn, that block is the evidence pack "
+    "for stored people, chats, photos, notes, and contacts. Answer from "
+    "matching lines. Call recall_history when you still need a specific "
+    "detail and search_memory is not listed. Do not say you have no reliable "
+    "record when that block, the relationship card, or those tools already "
+    "returned matching lines. Never say you have no history with them, that "
+    "you cannot know their life, or that their data is new. Only a missing "
+    "answer to the specific question they just asked may be that you cannot "
+    "find that particular record. When they ask about people they know, "
+    "WhatsApp, chats, or conversations with someone, that is yours already — "
+    "call recall if it is listed, otherwise recall_history or search_memory, "
+    "then answer from the pack. That is not small talk. When they ask what "
+    "they preferred, decided, solved, named, or where they left off, call "
+    "search_memory and answer from that pack; an empty chats drawer is not "
+    "having no history with them. "
+)
+
 # A process-local fingerprint makes a stale launchd worker visible.  Do not
 # derive this at health-check time: the point is to report the code that was
 # loaded into this process, not whatever happens to be on disk now.
@@ -82,15 +120,197 @@ _COMPUTER_EXECUTION_INSTRUCTIONS = (
     "with the supported operation — do not inspect dozens of Accessibility "
     "nodes first. Preserve ordinals. Do not speak successful completion."
 )
+_COMPUTER_EXECUTION_INSTRUCTIONS_SHADOW = (
+    "The computer goal is not verified. Call a listed computer function now. "
+    "Prefer app_action when a semantic adapter is listed. Otherwise use read "
+    "or see, then click, type, key, or open_url. Do not call inspect_ui, "
+    "ui_action, or screen_look. Preserve ordinals. Do not speak successful "
+    "completion."
+)
 _COMPUTER_SPEECH_INSTRUCTIONS = (
     "Speak only the truthful outcome from the latest function output. "
     "Do not claim success unless verified is true. Do not mention budgets, "
     "tools, or schemas."
 )
+_MEMORY_LIVE_TOOLS = frozenset(
+    {
+        "recall",
+        "recall_history",
+        "search_memory",
+        "search_decisions",
+        "search_timeline",
+        "get_person",
+    }
+)
+_MEMORY_SPEECH_INSTRUCTIONS = (
+    "The latest function output is the owner's life record. If count is "
+    "above zero, or spoken or lines name people or chats, tell them in a "
+    "few sentences. Never say you have no direct record or that you do not "
+    "know them. Do not mention tools, JSON, or verification."
+)
 REALTIME_BRIDGE_VERSION = "ev-realtime-barge-in-v1"
 REALTIME_BRIDGE_SOURCE_FINGERPRINT = hashlib.sha256(
     Path(__file__).read_bytes()
 ).hexdigest()[:16]
+# Mini's ungrounded memory paraphrases — cancel the auto-response, then the
+# transcript broker speaks the stored pack. Do not match ordinary "I don't know"
+# world-knowledge answers.
+_MEMORY_UNGROUNDED_HEDGE_RE = re.compile(
+    r"("
+    r"cannot tell because|"
+    r"(?:do not|don't|dont) have (?:a |any |that |this |the )?"
+    r"(?:direct |reliable |particular )?(?:record|memory tool)|"
+    r"have that in (?:my |the )?record|"
+    r"not (?:in|on) (?:my |the |that )?record|"
+    r"no (?:direct |reliable |particular )?record"
+    r"(?:\s+(?:from which|of that|of this|of what))?|"
+    r"cannot find that (?:particular )?record|"
+    r"i (?:do not|don't|dont) know,? if you tell me|"
+    r"if you tell me i (?:could|can|would)|"
+    r"you(?:'ll| will) have to tell me|"
+    r"no history with (?:you|them|this)|"
+    r"must tell me first|"
+    r"dedicated memory (?:tool|mechanism)|"
+    r"don'?t have a dedicated memory|"
+    r"no memory (?:tool|mechanism) available|"
+    r"can'?t store or save things permanently|"
+    r"unless the system provides a memory"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def is_memory_ungrounded_hedge(text: str | None) -> bool:
+    """True when Mini is refusing owner-history instead of using stored evidence."""
+
+    return bool(_MEMORY_UNGROUNDED_HEDGE_RE.search((text or "").strip()))
+
+
+_KEEP_MISROUTE_TOOLS = frozenset({"computer", "place_call", "open_app", "open_url"})
+
+
+def remap_keep_sight_call(
+    name: str,
+    arguments: dict | None,
+    *,
+    last_transcript: str = "",
+) -> tuple[str, dict]:
+    """Show-and-remember is look, even if Mini opened Photo Booth or heard 'phone'."""
+
+    from app.memory.visual import wants_keep_visible
+
+    args = dict(arguments or {})
+    asked = " ".join(
+        str(part or "").strip()
+        for part in (
+            args.get("prompt"),
+            args.get("objective"),
+            args.get("goal"),
+            last_transcript,
+        )
+        if str(part or "").strip()
+    )
+    if name == "look":
+        if not str(args.get("prompt") or "").strip():
+            prompt = str(args.get("objective") or last_transcript or "").strip()
+            if prompt:
+                args["prompt"] = prompt[:400]
+        return name, args
+    if name in _KEEP_MISROUTE_TOOLS and (
+        wants_keep_visible(last_transcript) or wants_keep_visible(asked)
+    ):
+        prompt = str(last_transcript or asked).strip()[:400]
+        return "look", {"prompt": prompt, "focus": "auto"}
+    return name, args
+
+
+def is_life_record_prompt_leak(text: str | None) -> bool:
+    """True when Mini is reading the injected life-record label aloud."""
+
+    blob = (text or "").lstrip().lower()
+    return blob.startswith("(life record") or blob.startswith("life record —")
+
+
+def life_record_force_line(pending: str | None) -> str:
+    """Scene-bearing line from a keep/history pack, not the generic keep header."""
+
+    raw = " ".join(str(pending or "").split()).strip()
+    if not raw:
+        return ""
+    blob = raw.lower()
+    if (
+        "asked evie to remember" in blob
+        or "you asked me to remember" in blob
+        or "they said:" in blob
+    ):
+        from app.memory.visual import recall_spoken_from_keep
+
+        line = recall_spoken_from_keep(raw)
+        if line:
+            return line if line.endswith((".", "!", "?")) else line + "."
+    parts = [
+        part.strip()
+        for part in re.split(r"(?<=[.!?])\s+", raw)
+        if part.strip()
+        and not re.fullmatch(
+            r"i(?:'ll| will) remember that[.!]?",
+            part.strip(),
+            flags=re.IGNORECASE,
+        )
+    ]
+    cues = (
+        "see ",
+        "that's a",
+        "that's the",
+        "holding",
+        "whatsapp",
+        "prefer",
+        "decided",
+        "you asked me",
+    )
+    for part in parts:
+        item = part.lower()
+        if "asked evie to remember" in item:
+            continue
+        if any(cue in item for cue in cues):
+            if part.endswith((".", "!", "?")):
+                return part
+            return part + "."
+    if len(parts) >= 2:
+        return ". ".join(part.rstrip(".!?") for part in parts[:2]) + "."
+    first = parts[0] if parts else raw
+    if first.endswith((".", "!", "?")):
+        return first
+    return first + "."
+
+
+def _defer_shadow_to_owner_memory_broker(text: str) -> bool:
+    """True when the transcript broker owns this turn, not SHADOW MEMORY.
+
+    Shadow packs omit camera keeps and much of owner-history. Mini then
+    hedges "no direct record" even though search_memory / look already
+    have the row. Recall was already deferred; keep and owner-history
+    must be too.
+    """
+
+    from app.ev.laptop_files import is_system_confirmation
+    from app.ev.tool_select import resolve_live_action
+    from app.memory.life_archive.locate import classify_shelf, is_owner_history_query
+    from app.memory.visual import (
+        is_keep_recall_query,
+        is_visual_recall_query,
+        wants_keep_visible,
+    )
+
+    if is_system_confirmation(text) or wants_keep_visible(text):
+        return True
+    if is_keep_recall_query(text) or is_visual_recall_query(text) or is_owner_history_query(text):
+        return True
+    if classify_shelf(text) in {"chats", "people", "familiarity"}:
+        return True
+    resolved = resolve_live_action(text)
+    return resolved is not None and resolved[0] in {"recall", "recall_history", "search_memory"}
+
 
 OnLiveEvent = Callable[[LiveEvent], Awaitable[None]]
 OnToolCall = Callable[[str, dict, str], Awaitable[str]]
@@ -120,10 +340,19 @@ _LONG_FORM_DIAGNOSTIC_INSTRUCTIONS = (
 # Assistant transcript deltas are UI metadata, not audio. Keep them from
 # competing with PCM delivery on the client's main actor.
 _OUTPUT_TRANSCRIPT_MIN_INTERVAL_S = 0.08
-# Keep provider reads independent from client/audio playout.  A short bounded
-# handoff is enough to absorb a burst without turning it into seconds of stale
-# audio in the websocket library's internal receive buffer.
-_UPSTREAM_EVENT_QUEUE_MAX = 8
+# Tool-gap mic gate: provider is silent while EV runs tools. Memory tools
+# finish in ~0.3-3s, but computer/camera tools round-trip through the Mac
+# client (screenshots, AX traversal) and can take 5-15s. A short fixed gate
+# reopens the mic mid-tool; room noise then triggers provider VAD and a
+# spurious second response collides with the tool continuation audio — heard
+# as breaking/glitching on EVERY tool turn. Hold long, refresh on progress.
+_TOOL_GAP_GATE_S = 15.0
+_TOOL_GAP_CONTINUATION_GATE_S = 5.0
+# Keep provider reads independent from client/audio playout. A blocked recv
+# cannot answer websocket pings (ping_timeout=20s) and starves TTS after ~20s.
+# 96 gives headroom for a fast 30s burst without dropping deltas; the
+# _drop_upstream_non_audio path already protects PCM under pressure.
+_UPSTREAM_EVENT_QUEUE_MAX = 96
 
 _AUDIO_DELTA_TYPES = frozenset(
     {
@@ -404,19 +633,56 @@ def grok_voice_instructions(
     return (
         f"{block}\n"
         "You are in a live spoken conversation. Hear the owner and answer "
-        "in your voice immediately, calmly and clearly. One question at a time. "
-        "Answer ordinary chat directly. Use a listed EV function when the owner "
+        "in your voice immediately, casually, concisely, and clearly. Keep words brief: "
+        "do not speak too much, and never repeat yourself, rephrase the same point, "
+        "or restate the question. One question at a time. "
+        "Answer ordinary chat directly. People they know, WhatsApp, chats, or "
+        "past conversations are not ordinary chat: call recall if it is listed, "
+        "otherwise recall_history or search_memory, then answer from the pack. "
+        "Use a listed EV function when the owner "
         "asks you to act or needs current information (text, call, remind, look "
-        "something up, show, timer, open, close, look at the camera). "
+        "something up, show, timer, open, close, look at the camera, heading out). "
         "When they ask what you see, to look at something in view, what they "
-        "are holding, or to read a label, call look if it is listed. "
+        "are holding, what they are wearing now, to read a label, or to "
+        "memorize or remember something they are showing you, call look if it "
+        "is listed. Read any printed name or title on what they are showing. That "
+        "look is stored as memory — say you will remember it. Never say you "
+        "cannot memorize a glance or that you cannot guarantee future recall. "
+        "Looks persist across app restarts. "
+        "When they ask about a photo or clip you already took, what they were "
+        "wearing earlier, what they asked you to remember from a look, whether "
+        "you memorized or remembered something they showed, or when you last saw "
+        "an object, call search_memory — "
+        "do not look again unless they ask to look now or you still need to "
+        "identify what they are holding. When they ask what they preferred, "
+        "decided, solved, named, or where they left off, call search_memory. "
+        "Do not say you have no record until "
+        "search_memory returns empty evidence, and never treat that as having "
+        "no history with them. "
+        + _LIVE_HISTORY_GROUNDING
+        + "When they say they are heading out, leaving the house, or gotta go, "
+        "call heading_out once for weather, the next calendar thing, leave-by, "
+        "and an optional late text. "
+        "When they ask to take a photo or picture, call capture_photo. "
+        "When they ask to record a video, call record_video. "
+        "After a camera function returns, look at the attached images and "
+        "describe people, clothing and its colors, held objects, and the scene "
+        "in natural speech. If a garment or object is visible, name its color "
+        "from the image; labels may miss it. Listed colors are scene hints, "
+        "not a reason to hedge. If they asked you to remember a name or title, "
+        "read it from the image and treat it as stored. For a recorded clip, "
+        "say what they are doing. "
+        "Missing printed text is not a failure. Then mention saved_path if "
+        "present. "
         "When they ask for a timer that should ring, call the listed timer "
         "function first with minutes (1 means one minute) and do not only say "
         "you will set it. "
         "When they ask to open or close a named app or an https link, call the "
         "listed open or close function first. "
         "Call only listed functions with their declared parameters; never invent "
-        "a function name or argument. If EV asks for confirmation, say the hold "
+        "a function name or argument. When you call a function, call it "
+        "first with no spoken preamble — speak only after its output "
+        "arrives, as one continuous reply. If EV asks for confirmation, say the hold "
         "line and wait; never claim completion before verified evidence. "
         "If they only said your name, say Yes? and wait. Do not wait for a "
         "wake word — the app is already open. Prefer short sentences. Prefer "
@@ -436,17 +702,21 @@ def openai_realtime_instructions(
 ) -> str:
     """Instructions for the OpenAI Realtime function-calling session."""
 
-    from app.ev.personality import spoken_identity
+    from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS, spoken_identity
     from app.ev.protocols import spoken_ready_capability_line
 
     who = spoken_identity(name or settings.persona_name)
     instructions = (
         f"You are {who}. Pronounce your name as the two letter names E V, never E-y or Evie. Never present as ChatGPT, OpenAI, Grok, xAI, or DeepSeek.\n"
+        + SPEECH_STYLE_INSTRUCTIONS
+        + "\n"
         "VOICE AND CONSISTENCY LAW: You are ONE person with ONE voice. Keep the "
-        "same tone, persona, and speaking style for the entire conversation. "
-        "Answer each question exactly ONCE, in a single take — never give two "
+        "same tone, persona, and speaking style for the entire conversation: "
+        "casual, relaxed, concise, and direct. Keep answers brief — do not speak "
+        "too much. Answer each question exactly ONCE, in a single take — never give two "
         "different answers to the same utterance, never re-answer or revise "
-        "something you already said. Short owner backchannels ('mm', 'yeah', "
+        "something you already said, and never repeat the same point in multiple ways. "
+        "Short owner backchannels ('mm', 'yeah', "
         "'okay') are not questions: stay quiet unless they clearly address you "
         "or ask something. "
         "This is a spoken conversation. Hear the person and answer out loud "
@@ -462,33 +732,73 @@ def openai_realtime_instructions(
         "interprets and Evie Core owns truth — only claim Done/Created/Saved "
         "when evie_turn returns ok true, and never contradict its "
         "canonical_data. "
-        "Pure conversation — greetings, opinions, chat, general questions — "
+        "Pure conversation — greetings, opinions, and small talk — "
         "needs NO function call: answer immediately out loud. "
+        "Questions about their people, WhatsApp, chats, or past conversations "
+        "are not small talk: call recall if it is listed, otherwise "
+        "recall_history or search_memory, then answer from the evidence pack. "
+        "You already have those shelves. "
         "This includes opening, closing, inspecting, or operating apps on this "
         "Mac: call the matching listed computer functions before speaking, and "
         "keep calling them until the owner's goal is verified or blocked. "
         "Speech is never execution evidence. Do not say a track is playing, a "
         "playlist was found, or a click happened unless the function output "
         "has verified true. "
-        "When they ask what you see, what they are holding, to read something "
-        "in view, what color something is, or whether something looks right, "
-        "and camera look is listed as ready, call look. Do not guess. Do not "
-        "claim you cannot see. The owner does not need to say camera. That is "
-        "one current frame, not a stream. For change over a few seconds, call "
-        "observe_camera. Never invent visual contents if no image is present. "
+        "When they ask what you see, what they are holding, what they are "
+        "wearing now, to read something in view, what color something is, "
+        "whether something looks right, or to memorize or remember something "
+        "they are showing you, and camera look is listed as ready, "
+        "call look. Read any printed name or title on what they are showing. That "
+        "look is stored as memory — say you will remember it. Never say you "
+        "cannot memorize a glance or that you cannot guarantee future recall. "
+        "Looks persist across app restarts. Do not guess. Do not claim you cannot see. The owner does "
+        "not need to say camera. That is one current frame, not a stream. For "
+        "change over a few seconds, call observe_camera. When they ask to take "
+        "a photo, picture, or selfie, call capture_photo. When they ask to "
+        "record a video or film something, call record_video. Do not open the "
+        "Camera app for those jobs. After look, capture_photo, record_video, "
+        "or observe_camera returns, attached images are already in this "
+        "conversation. Speak two to four natural sentences about what you see: "
+        "people, clothing and its colors, pose, held objects, and the setting. "
+        "If a garment or object is visible, name its color from the image; "
+        "labels may miss objects. Listed colors are scene hints, "
+        "not a reason to hedge. For a recorded clip, say what is happening "
+        "across the frames. Do not read the function JSON aloud. Mention "
+        "printed text only when you can see it. Missing text is not a failure "
+        "and is not what 'how was the image' or 'overall' means. Do not say "
+        "the image is too dark, darkened, blurry, or unreadable when people, "
+        "objects, or colors are visible. After describing, mention saved_path "
+        "if the result includes one. Follow-up questions about that image must "
+        "keep describing what was seen; do not look again unless they ask to "
+        "look again. Later questions about a photo, clip, what they were "
+        "wearing earlier, what they asked you to remember from a look, whether "
+        "you memorized or remembered something they showed, or when you last saw "
+        "an object — call search_memory. "
+        "When they ask what they preferred, decided, solved, named, or where "
+        "they left off, call search_memory. "
+        "If they show something now and ask when you last saw it, look if you "
+        "still need to identify it, then search_memory. Do not say you have "
+        "no record until search_memory returns empty evidence, and never treat "
+        "that as having no history with them. "
+        + _LIVE_HISTORY_GROUNDING
+        + "When they say they are heading out, leaving, or gotta go, call "
+        "heading_out once instead of weather, calendar, and message separately. "
+        "Never invent visual contents "
+        "if no image or facts are present. Do not name people unless enrolled. "
         "For an owner action, the function call must be the first output item: emit "
         "no spoken audio, acknowledgement, promise, or assistant message before it. "
+        "The same holds for memory, recall, and camera tools: call first with "
+        "no spoken preamble such as 'let me check' — speak only AFTER the "
+        "function output arrives, so the reply is one continuous turn. "
         "Never answer with a promise, plan, or conversational acknowledgement such "
         "as 'I'll set that' or 'let me do that' without first making the function "
         "call. For timers and other single-shot tools, call each matching function "
-        "at most once for one owner request. For computer-control goals you may "
-        "call inspect_ui, ui_action, screen_look, app_action, open_app, activate_app, "
-        "list_apps, and close_app multiple times: observe, act, verify, continue. "
-        "Prefer app_action for Music playlists, tracks, and playback. Preserve "
-        "ordinals: first stays first, second stays second. Do not stop "
-        "after merely opening an app if the owner asked you to do something inside "
-        "it. After a non-computer function output arrives, treat that request as "
-        "handled: do not repeat the same function call, and give the short spoken "
+        "at most once for one owner request. "
+        + _computer_loop_instructions()
+        + "After a non-computer function output arrives, treat that request as "
+        "handled: do not repeat the same function call. Camera tools are "
+        "different: describe the attached images in natural speech rather than "
+        "reading the function output. For other tools, give the short spoken "
         "answer from the returned result, including a truthful failure if it failed. "
         "Treat function output as authoritative. For computer tools, executed "
         "and verified are different: opening an app is not completion of a "
@@ -509,8 +819,9 @@ def openai_realtime_instructions(
         "Do not wait for a wake word — the app is open. Prefer action over essay. "
         "When asked what you can do, use the live operator sheet in partner "
         "language, never raw function IDs. Mention refusals only when asked. "
-        "SPEECH STYLE: Speak clearly and continuously at a normal-to-brisk "
-        "conversational pace. Avoid unnecessary pauses, hesitation, fillers, "
+        "SPEECH STYLE: Speak in a casual, relaxed, and concise conversational tone "
+        "at a normal-to-brisk pace. Keep it tight: do not speak too much, and never "
+        "repeat phrases or restate questions. Avoid unnecessary pauses, hesitation, fillers, "
         "dramatic pacing, or prolonged silence. Keep pauses only where needed "
         "for intelligibility."
         + _sandbox_instruction_suffix(capability_manifest)
@@ -584,17 +895,24 @@ def grok_voice_tools(specs: list[dict] | None = None, *, mode: str | None = None
 
     Surface modes (EV VOICE CONTROL PLAN §5–6):
     - supervised (default): the full LIVE_VOICE_TOOLS surface;
-    - shadow: only SHADOW_VOICE_TOOLS survive (UI verbs + recall_history +
-      generic capabilities; raw per-app computer names are removed);
+    - shadow: only SHADOW_VOICE_TOOLS survive (UI verbs + app_action +
+      recall_history + generic capabilities; inspect_ui/ui_action/screen_look
+      are removed);
     - autonomous: no tools at all.
     """
 
     mode = _live_surface_mode(mode)
     if mode == "autonomous":
         return []
-    wanted = set(GROK_VOICE_TOOL_NAMES)
-    if mode == "shadow":
+    # F4 ON is the model-facing broker set. Shadow's verb allowlist does not
+    # include those brokers; intersecting the two advertises nothing and live
+    # Evie cannot call `computer`.
+    if (getattr(settings, "model_surface_v2", "legacy") or "legacy").strip().lower() == "on":
+        wanted = set(F4_TARGET_SURFACE)
+    elif mode == "shadow":
         wanted = set(SHADOW_VOICE_TOOLS)
+    else:
+        wanted = set(GROK_VOICE_TOOL_NAMES)
     blocked = {"execute_command", "drone", "print_start", "camera_replay", "ticket_buy"}
     payload: list[dict] = []
     source_specs = specs or []
@@ -619,6 +937,35 @@ def grok_voice_tools(specs: list[dict] | None = None, *, mode: str | None = None
             }
         )
     return payload
+
+
+def _hidden_memory_tool_spec(name: str, specs: list[dict] | None) -> dict | None:
+    """Resolve search_memory (and kin) in shadow even when they are not advertised."""
+    for item in specs or []:
+        if isinstance(item, dict) and str(item.get("name") or "") == name:
+            parameters = item.get("parameters")
+            if parameters is not None and not isinstance(parameters, dict):
+                continue
+            return {
+                "type": "function",
+                "name": name,
+                "description": item.get("description") or "",
+                "parameters": parameters or {"type": "object", "properties": {}},
+            }
+    from app.ev.tools import get_spec
+
+    raw = get_spec(name)
+    if not isinstance(raw, dict):
+        return None
+    parameters = raw.get("parameters")
+    if parameters is not None and not isinstance(parameters, dict):
+        return None
+    return {
+        "type": "function",
+        "name": name,
+        "description": raw.get("description") or "",
+        "parameters": parameters or {"type": "object", "properties": {}},
+    }
 
 
 def approved_live_tool_specs(manifest: dict | None) -> list[dict]:
@@ -709,6 +1056,39 @@ def _manifest_allows_search(manifest: dict | None) -> bool:
     return False
 
 
+def _computer_loop_instructions() -> str:
+    """Mode-aware computer-control loop. Shadow advertises UI verbs, not raw primitives."""
+
+    if _live_surface_mode() == "shadow":
+        return (
+            "For computer-control goals you may call read, see, click, "
+            "double_click, right_click, type, paste, key, scroll, drag, "
+            "app_action, open_app, activate_app, list_apps, close_app, and "
+            "open_url multiple times: observe, act, verify, continue. Do not "
+            "call inspect_ui, ui_action, or screen_look — they are not listed. "
+            "Prefer app_action when the app has a semantic adapter (Music, "
+            "Safari, Notes, Finder, Calculator, Chrome, Spotify). Otherwise "
+            "read the Accessibility tree, then click/type/key; see when the "
+            "tree is blind (Electron, Figma). Use open_url with https or app "
+            "URIs such as spotify:search:lofi (that opens the default browser "
+            "or app, not necessarily Safari). To operate inside Safari, "
+            "open_app Safari first, then app_action or read/click/type. "
+            "Do not stop after merely opening an app if the owner asked you "
+            "to do something inside it. Preserve ordinals: first stays "
+            "first, second stays second. "
+        )
+    return (
+        "For computer-control goals you may "
+        "call inspect_ui, ui_action, screen_look, app_action, open_app, activate_app, "
+        "list_apps, and close_app multiple times: observe, act, verify, continue. "
+        "Prefer app_action for Music, Safari, Notes, Finder, Calculator, "
+        "Spotify, and Chrome when a semantic adapter is listed. Preserve "
+        "ordinals: first stays first, second stays second. Do not stop "
+        "after merely opening an app if the owner asked you to do something inside "
+        "it. "
+    )
+
+
 def grok_session_update(
     *,
     provider: str | None = None,
@@ -739,15 +1119,17 @@ def grok_session_update(
     if kind == "openai":
         voice = (settings.openai_realtime_voice or "marin").strip() or "marin"
         # OWNER LAW (S2S latency): server VAD creates the response the moment
-        # speech ends. The TurnGate still records canonical OwnerTurns in
-        # parallel but no longer gates the spoken reply behind Luna/Core.
+        # speech ends — except when THIS bridge must attach per-turn state
+        # first. Shadow injects SHADOW MEMORY onto response.create for the
+        # current spoken turn; V2 commits after a bounded silence grace.
+        # Supervised stays create_response=true (frozen live path).
         turn_detection = {
             "type": "server_vad",
             "threshold": 0.5,
             "prefix_padding_ms": 200,
             "silence_duration_ms": 400,
             "interrupt_response": False,
-            "create_response": True,
+            "create_response": not (turn_authority_v2 or mode == "shadow"),
         }
         return {
             "type": "session.update",
@@ -949,6 +1331,7 @@ class GrokVoiceBridge:
         self._playback_since = 0.0
         self._echo_until = 0.0
         self._playback_silent_after = 0.0
+        self._tool_gap_gate_until = 0.0
         self._last_audio_emit_at = 0.0
         self._mic_gate_logged = False
         self._assistant_open = False
@@ -1004,7 +1387,10 @@ class GrokVoiceBridge:
         self._shadow_mode = _live_surface_mode() == "shadow"
         self._shadow_base_instructions = ""
         self._last_shadow_block = ""
+        self._shadow_response_for_turn: str | None = None
         self._handled_tool_calls: set[str] = set()
+        self._tool_queue: asyncio.Queue[dict] = asyncio.Queue()
+        self._tool_worker: asyncio.Task[Any] | None = None
         self._tool_response_ids: set[str] = set()
         self._pending_confirmation_calls: dict[str, str] = {}
         self._turn_audio_bytes = 0
@@ -1012,8 +1398,12 @@ class GrokVoiceBridge:
         self._response_id: str | None = None
         self._tool_boundary_pending = False
         self._continuation_sent = False
+        self._honesty_speech = False
+        self._pending_life_record = ""
+        self._life_record_forced = False
         self._last_input_transcript = ""
         self._last_input_transcript_at = 0.0
+        self._last_partial_transcript = ""
         self._owner_turns: dict[str, UserAudioTurn] = {}
         self._open_turn_id: str | None = None
         self._pcm_prefix = bytearray()
@@ -1256,6 +1646,8 @@ class GrokVoiceBridge:
             "computer_control_ready": (self._computer_schema_eval or {}).get(
                 "computer_control_ready"
             ),
+            "voice_live_mode": _live_surface_mode(),
+            "shadow_mode": self._shadow_mode,
             "tool_schema_generation": (self._computer_schema_eval or {}).get(
                 "computer_tool_schema_hash"
             ),
@@ -1295,14 +1687,18 @@ class GrokVoiceBridge:
         return block or None
 
     async def _maybe_refresh_shadow(self, text: str) -> None:
-        """Refresh session instructions with a fresh SHADOW MEMORY block.
+        """xAI shadow path: session.update is best-effort (no create_response knob).
 
-        Fires after a completed owner transcript so the provider's next
-        auto-created response sees the injected history. Deduplicated on the
-        block text; runs only in shadow mode.
+        OpenAI shadow does not use this — it owns response.create on the
+        current spoken turn via ``_commit_shadow_spoken_turn``.
         """
 
-        if not self._shadow_mode or self._ws is None or not self._shadow_base_instructions:
+        if (
+            not self._shadow_mode
+            or self._provider == "openai"
+            or self._ws is None
+            or not self._shadow_base_instructions
+        ):
             return
         block = await self._build_shadow_block(text)
         if not block or block == self._last_shadow_block:
@@ -1312,8 +1708,6 @@ class GrokVoiceBridge:
             "type": "session.update",
             "session": {"instructions": f"{self._shadow_base_instructions}\n\n{block}"},
         }
-        if self._provider == "openai":
-            payload["session"]["type"] = "realtime"  # GA Realtime requirement
         sent = await self._send(payload)
         logger.warning(
             "realtime_trace event=shadow.session_update provider=%s sent=%s chars=%s",
@@ -1321,6 +1715,56 @@ class GrokVoiceBridge:
             sent,
             len(block),
         )
+
+    async def _commit_shadow_spoken_turn(self, text: str) -> None:
+        """OpenAI shadow: attach SHADOW MEMORY to THIS turn, then answer.
+
+        ``create_response`` is false in shadow, so the provider will not
+        auto-answer on VAD. Waiting until the transcript exists is what
+        makes "why did I pick Postgres?" grounded with zero function calls
+        on the current spoken turn — session.update after the fact is too late.
+        """
+
+        if not self._shadow_mode or self._provider != "openai" or self._ws is None:
+            return
+        if self._response_active:
+            return
+        turn_id = self._open_turn_id
+        if turn_id and self._shadow_response_for_turn == turn_id:
+            return
+        if _defer_shadow_to_owner_memory_broker(text):
+            # People/chats/keeps/owner-history are the transcript broker.
+            # SHADOW MEMORY will deny from a thin pack ("never invent").
+            self._shadow_response_for_turn = turn_id or "owner-memory"
+            return
+        block = await self._build_shadow_block(text)
+        create: dict[str, Any] = {"type": "response.create"}
+        if block:
+            self._last_shadow_block = block
+            instructions = (
+                f"{self._shadow_base_instructions}\n\n{block}\n\n"
+                "Answer from SHADOW MEMORY. Do not call recall. Do not say "
+                "you have no record or that you cannot tell."
+                if self._shadow_base_instructions
+                else (
+                    f"{block}\n\nAnswer from SHADOW MEMORY. Do not call recall. "
+                    "Do not say you have no record or that you cannot tell."
+                )
+            )
+            response: dict[str, Any] = {"instructions": instructions}
+            if self._response_tool_choice_supported:
+                response["tool_choice"] = "none"
+            create["response"] = response
+        if turn_id:
+            self._shadow_response_for_turn = turn_id
+        sent = await self._send(create)
+        logger.warning(
+            "realtime_trace event=shadow.response_create sent=%s chars=%s",
+            sent,
+            len(block or ""),
+        )
+        if not sent and turn_id and self._shadow_response_for_turn == turn_id:
+            self._shadow_response_for_turn = None
 
     async def _response_create_for_user_text(self, text: str) -> dict[str, Any]:
         """EV VOICE CONTROL PLAN §5: shadow-aware response.create."""
@@ -1341,7 +1785,13 @@ class GrokVoiceBridge:
     ) -> dict[str, Any]:
         create: dict[str, Any] = {"type": "response.create"}
         if must_continue:
-            response: dict[str, Any] = {"instructions": _COMPUTER_EXECUTION_INSTRUCTIONS}
+            response: dict[str, Any] = {
+                "instructions": (
+                    _COMPUTER_EXECUTION_INSTRUCTIONS_SHADOW
+                    if self._shadow_mode
+                    else _COMPUTER_EXECUTION_INSTRUCTIONS
+                )
+            }
             if self._response_tool_choice_supported:
                 response["tool_choice"] = "required"
             create["response"] = response
@@ -1489,6 +1939,7 @@ class GrokVoiceBridge:
         self._response_id = None
         self._turn_audio_bytes = 0
         self._turn_audio_chunks = 0
+        self._shadow_response_for_turn = None
         if not await self._send(session_update):
             return False
         if self._ws is None:
@@ -1570,6 +2021,14 @@ class GrokVoiceBridge:
         #    response.done says or how long ago our last chunk was sent.
         #    response.done and backend send completion can NEVER open the mic.
         if self._playback_active:
+            return True
+        # 1b. Tool-gap hold: provider is silent while we run EV tools / computer
+        # actions. Without this gate, ambient mic noise during the gap would
+        # trigger provider VAD and create a spurious second response that
+        # collides with the tool continuation → stutter/glitch. Normal gap is
+        # 0.3-3s; hold covers it without hiding intentional barge-in (Escape key
+        # sends explicit barge_in control bypassing this gate).
+        if now < self._tool_gap_gate_until:
             return True
         # 2. Post-playback acoustic tail after authoritative completion.
         if now < self._playback_silent_after:
@@ -1697,6 +2156,7 @@ class GrokVoiceBridge:
         raw = (text or "").strip()
         if not raw or self._closed or self._ws is None:
             return False
+        self._honesty_speech = True
         if not await self._send(
             {
                 "type": "conversation.item.create",
@@ -1727,6 +2187,67 @@ class GrokVoiceBridge:
         if self._response_tool_choice_supported:
             response["tool_choice"] = "none"
         return await self._send({"type": "response.create", "response": response})
+
+    async def speak_life_record(self, text: str) -> bool:
+        """Speak stored people/chats in the realtime voice.
+
+        ``speak_ack`` is a one-line confirmation. Memory answers are a short
+        telling from the evidence pack. Mini must not treat that pack as a
+        missing record.
+        """
+
+        raw = (text or "").strip()
+        if not raw or self._closed or self._ws is None:
+            return False
+        self._honesty_speech = True
+        self._pending_life_record = raw
+        self._life_record_forced = False
+        logger.warning(
+            "realtime_trace event=speak_life_record chars=%s",
+            len(raw),
+        )
+        if not await self._send(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                # Mini treats "(life record — do not deny)" as a
+                                # question about whether she has the row, then
+                                # says she does not. File receipts already work
+                                # with this confirmation envelope.
+                                "(system confirmation — speak this to the owner now) "
+                                + raw
+                            ),
+                        }
+                    ],
+                },
+            }
+        ):
+            return False
+        response: dict[str, Any] = {
+            "instructions": (
+                "Your ONLY job is to speak the owner-facing line from the "
+                "latest user item, verbatim, in your normal voice. Never read "
+                "the parenthetical label. Speak only the text after the closing "
+                "parenthesis. Two to four sentences if the record has them, "
+                "otherwise the whole line. You already have this record. Never "
+                "say you have no direct record, that you do not have that in "
+                "record, that you cannot tell, that you do not know, or that "
+                "they must tell you first. No tools, no JSON, no questions."
+            )
+        }
+        if self._response_tool_choice_supported:
+            response["tool_choice"] = "none"
+        sent = await self._send({"type": "response.create", "response": response})
+        if sent:
+            self._response_active = True
+            self._audio_accepting = True
+        return sent
 
     async def interrupt_for_user(
         self,
@@ -2169,8 +2690,37 @@ class GrokVoiceBridge:
         try:
             while not self._closed and self._upstream_events is queue:
                 event = await queue.get()
+                kind = ""
                 try:
-                    await self._handle_upstream(event)
+                    if not isinstance(event, dict):
+                        logger.error(
+                            "realtime_trace event=event_handler.bad_event provider=%s type=%s",
+                            self._provider,
+                            type(event).__name__,
+                        )
+                        continue
+                    kind = str(event.get("type") or "")
+                    item = event.get("item") if isinstance(event.get("item"), dict) else {}
+                    # Computer/tool dispatch can take seconds. Do not stall
+                    # PCM on that await or first speech arrives in a burst.
+                    if kind == "response.function_call_arguments.done":
+                        self._spawn_tool(event)
+                    elif kind == "response.output_item.done" and str(
+                        item.get("type") or ""
+                    ) == "function_call":
+                        self._spawn_tool(item)
+                    else:
+                        await self._handle_upstream(event)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    # One bad provider event must not kill PCM, VAD, or the
+                    # next owner transcript. Reconnect is worse than skip.
+                    logger.exception(
+                        "realtime_trace event=event_handler.item_failed provider=%s type=%s",
+                        self._provider,
+                        kind or type(event).__name__,
+                    )
                 finally:
                     queue.task_done()
         except asyncio.CancelledError:
@@ -2198,6 +2748,41 @@ class GrokVoiceBridge:
                     queue.task_done()
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
+        self._cancel_tool_worker()
+
+    def _spawn_tool(self, event: dict) -> None:
+        """Run function calls on a sibling worker so PCM is not stalled."""
+
+        if self._tool_worker is None or self._tool_worker.done():
+            self._tool_worker = asyncio.create_task(
+                self._tool_loop(), name="ev-realtime-tools"
+            )
+        self._tool_queue.put_nowait(event)
+
+    async def _tool_loop(self) -> None:
+        while not self._closed:
+            event = await self._tool_queue.get()
+            try:
+                await self._run_tool(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - one tool must not kill the pump
+                logger.exception("realtime_trace event=tool_worker.failed")
+            finally:
+                self._tool_queue.task_done()
+
+    def _cancel_tool_worker(self) -> None:
+        worker = self._tool_worker
+        self._tool_worker = None
+        while True:
+            try:
+                self._tool_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            else:
+                self._tool_queue.task_done()
+        if worker is not None and worker is not asyncio.current_task() and not worker.done():
+            worker.cancel()
 
     def _discard_queued_audio_events(self) -> None:
         """Remove provider audio still waiting behind a cancelled response."""
@@ -2219,6 +2804,28 @@ class GrokVoiceBridge:
         for event in retained:
             queue.put_nowait(event)
 
+    def _drop_upstream_non_audio(self) -> None:
+        """Make room for PCM deltas without blocking the provider recv loop."""
+
+        queue = self._upstream_events
+        if queue is None:
+            return
+        kept: list[dict] = []
+        while True:
+            try:
+                event = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            queue.task_done()
+            kind = str(event.get("type") or "")
+            if kind in _AUDIO_DELTA_TYPES:
+                kept.append(event)
+        for event in kept:
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                break
+
     async def _recv_loop(self) -> None:
         ws = self._ws
         if ws is None:
@@ -2232,7 +2839,23 @@ class GrokVoiceBridge:
                     queue = self._upstream_events
                     if queue is None:
                         return
-                    await queue.put(event)
+                    try:
+                        queue.put_nowait(event)
+                    except asyncio.QueueFull:
+                        kind = str(event.get("type") or "")
+                        if kind in _AUDIO_DELTA_TYPES:
+                            self._drop_upstream_non_audio()
+                            try:
+                                queue.put_nowait(event)
+                            except asyncio.QueueFull:
+                                logger.warning(
+                                    "realtime_trace event=upstream.queue_full dropped=audio"
+                                )
+                        else:
+                            logger.warning(
+                                "realtime_trace event=upstream.queue_full dropped_type=%s",
+                                kind,
+                            )
                 if self._ws is not ws:
                     return
         except asyncio.CancelledError:
@@ -2538,6 +3161,9 @@ class GrokVoiceBridge:
             # omitting it made every tools refresh fail with
             # missing_required_parameter: 'session.type'.
             session_payload["type"] = "realtime"
+        if self._shadow_mode:
+            self._shadow_base_instructions = text
+            self._last_shadow_block = ""
         new_names = tuple(self.advertised_tool_names)
         tools_changed = new_names != previous_names or new_names != self._upstream_tool_names
         if tools_changed:
@@ -2570,6 +3196,17 @@ class GrokVoiceBridge:
         if not spoken:
             return
         if final:
+            from app.ev.laptop_files import is_system_confirmation
+
+            if is_system_confirmation(spoken):
+                # speak_ack injects a user item so Mini will say the receipt.
+                # That text is not a new owner turn — do not overwrite the
+                # last transcript or dispatch computer/look on it.
+                logger.info(
+                    "realtime_trace event=input_transcript.ignored_confirmation chars=%s",
+                    len(spoken),
+                )
+                return
             now = time.monotonic()
             if (
                 spoken == self._last_input_transcript
@@ -2621,14 +3258,18 @@ class GrokVoiceBridge:
                 )
             )
             if self._shadow_mode:
-                # EV VOICE CONTROL PLAN §5: inject history before the next
-                # provider response. Best-effort and non-blocking.
+                # OpenAI: await inject + response.create for THIS turn.
+                # xAI: best-effort session.update (no create_response knob).
                 with contextlib.suppress(Exception):
-                    asyncio.create_task(
-                        self._maybe_refresh_shadow(spoken),
-                        name="ev-shadow-recall",
-                    )
+                    if self._provider == "openai":
+                        await self._commit_shadow_spoken_turn(spoken)
+                    else:
+                        asyncio.create_task(
+                            self._maybe_refresh_shadow(spoken),
+                            name="ev-shadow-recall",
+                        )
             return
+        self._last_partial_transcript = spoken
         await self._on_event(
             PartialTranscriptEvent(
                 at_ms=self._now(),
@@ -2643,6 +3284,8 @@ class GrokVoiceBridge:
         kind = str(event.get("type") or "")
         if kind in _SPEECH_STARTED_TYPES:
             self._health_increment("speech_started", timestamp="last_speech_started_at")
+            self._last_partial_transcript = ""
+            self._honesty_speech = False
         elif kind in _SPEECH_STOPPED_TYPES:
             self._health_increment("speech_stopped", timestamp="last_speech_stopped_at")
         elif kind in _INPUT_TRANSCRIPT_TYPES and "completed" in kind:
@@ -2653,6 +3296,7 @@ class GrokVoiceBridge:
             )
         elif kind == "response.done":
             self._health_increment("provider_responses_done")
+            self._honesty_speech = False
         if self._output_is_stale(event) and (
             kind in _AUDIO_DELTA_TYPES
             or kind in _TRANSCRIPT_DELTA_TYPES
@@ -2834,7 +3478,7 @@ class GrokVoiceBridge:
                 )
             if computer_schema_mismatch and not self._schema_refresh_attempted:
                 advertised_computer = [
-                    name for name in expected if name in REQUIRED_COMPUTER_TOOLS
+                    name for name in expected if name in COMPUTER_SCHEMA_TOOLS
                 ]
                 if advertised_computer:
                     self._schema_refresh_attempted = True
@@ -2879,7 +3523,9 @@ class GrokVoiceBridge:
             return
         if kind in _SPEECH_STOPPED_TYPES:
             self._commit_open_turn(item_id=_event_item_id(event))
-            if self._turn_authority_v2:
+            # Shadow owns response.create after the transcript so history
+            # lands on the current turn. V2 grace-commit would answer first.
+            if self._turn_authority_v2 and not self._shadow_mode:
                 self._schedule_v2_turn_commit()
             return
         if kind in _AUDIO_COMMITTED_TYPES:
@@ -2903,6 +3549,10 @@ class GrokVoiceBridge:
                 str(event.get("response_id") or created.get("id") or event.get("id") or "")
                 or None
             )
+            if not self._continuation_sent:
+                hint = (self._last_partial_transcript or "").strip()
+                if hint:
+                    await self._emit_user_transcript(hint, final=False)
             return
         if kind == "response.cancelled":
             self._out_pcm.clear()
@@ -2915,6 +3565,7 @@ class GrokVoiceBridge:
             self._audio_accepting = False
             self._tool_boundary_pending = False
             self._continuation_sent = False
+            self._honesty_speech = False
             self._response_id = None
             self._turn_audio_bytes = 0
             self._turn_audio_chunks = 0
@@ -2953,6 +3604,38 @@ class GrokVoiceBridge:
             delta = str(event.get("delta") or event.get("text") or "")
             if delta:
                 self._reply_text += delta
+                leaking_prompt = is_life_record_prompt_leak(self._reply_text)
+                from app.memory.visual import is_clarity_hedge
+
+                if (
+                    is_memory_ungrounded_hedge(self._reply_text)
+                    or leaking_prompt
+                    or (
+                        self._honesty_speech
+                        and bool(self._pending_life_record)
+                        and is_clarity_hedge(self._reply_text)
+                    )
+                ):
+                    logger.warning(
+                        "realtime_trace event=memory_hedge.cancelled chars=%s honesty=%s leak=%s",
+                        len(self._reply_text),
+                        self._honesty_speech,
+                        leaking_prompt,
+                    )
+                    self._audio_accepting = False
+                    force_ack = (
+                        self._honesty_speech
+                        and bool(self._pending_life_record)
+                        and not self._life_record_forced
+                    )
+                    pending = self._pending_life_record
+                    await self.cancel()
+                    if force_ack:
+                        self._life_record_forced = True
+                        line = life_record_force_line(pending)
+                        if line:
+                            await self.speak_ack(line)
+                    return
                 now = time.monotonic()
                 if now - self._last_output_transcript_emit_at < _OUTPUT_TRANSCRIPT_MIN_INTERVAL_S:
                     return
@@ -2964,6 +3647,7 @@ class GrokVoiceBridge:
                         sequence=self._chunk_index,
                         stable=False,
                         confidence=0.0,
+                        role="assistant",
                     )
                 )
             return
@@ -2975,13 +3659,17 @@ class GrokVoiceBridge:
             await self._buffer_audio(event)
             return
         if kind == "response.function_call_arguments.done":
-            await self._run_tool(event)
+            # Never run tools inline on the audio loop: dispatch (DB +
+            # memory/computer round-trips) can take seconds and would stall
+            # PCM emission behind it → stutter on every tool turn. The
+            # sibling worker owns tool execution; audio keeps flowing.
+            self._spawn_tool(event)
             return
         if kind == "response.output_item.done":
             raw_item = event.get("item")
             item = raw_item if isinstance(raw_item, dict) else {}
             if str(item.get("type") or "") == "function_call":
-                await self._run_tool(item)
+                self._spawn_tool(item)
             return
         if kind in {"response.output_audio.done", "response.audio.done"}:
             await self._flush_audio(force=True)
@@ -3272,6 +3960,12 @@ class GrokVoiceBridge:
             self._response_id = response_id
         raw_args = event.get("arguments")
         arguments, argument_error = _decode_function_arguments(raw_args)
+        if argument_error is None:
+            name, arguments = remap_keep_sight_call(
+                name,
+                arguments,
+                last_transcript=str(self._last_input_transcript or ""),
+            )
         logger.warning(
             "realtime_trace event=response.function_call_arguments.done provider=%s function_name=%s call_id_fingerprint=%s arguments_json_valid=%s argument_keys=%s argument_count=%s",
             self._provider,
@@ -3282,6 +3976,11 @@ class GrokVoiceBridge:
             len(arguments),
         )
         self._pending_tools += 1
+        # Hold mic across tool gap so ambient noise doesn't create a spurious
+        # provider VAD turn that collides with continuation audio → glitch.
+        # Computer/camera tools round-trip through the Mac client and can
+        # take 5-15s; a short gate reopens mid-tool on EVERY such turn.
+        self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_GATE_S
         output = "{}"
         if argument_error:
             self._function_call_error = True
@@ -3371,7 +4070,19 @@ class GrokVoiceBridge:
         pending_confirmation = _function_output_is_pending(output)
         if pending_confirmation and call_id:
             self._pending_confirmation_calls[call_id] = name
-        if name in {"look", "observe_camera", "screen_look", "ui_action"}:
+        if name in {
+            "look",
+            "observe_camera",
+            "capture_photo",
+            "record_video",
+            "screen_look",
+            "ui_action",
+            "see",
+            "click",
+            "double_click",
+            "right_click",
+            "drag",
+        }:
             output = await self._deliver_camera_images(name, call_id, output)
         self._pending_tools = max(0, self._pending_tools - 1)
         output_sent = await self._send_function_output(call_id, output)
@@ -3428,28 +4139,78 @@ class GrokVoiceBridge:
                     and output_payload.get("cancelled")
                 )
             )
-            create = self._response_create_after_tool(
-                must_continue=must_continue and not terminal_speech,
-                terminal_speech=terminal_speech or (not must_continue),
+            if name in _MEMORY_LIVE_TOOLS:
+                memory_response: dict[str, Any] = {
+                    "instructions": _MEMORY_SPEECH_INSTRUCTIONS
+                }
+                if self._response_tool_choice_supported:
+                    memory_response["tool_choice"] = "none"
+                create = {"type": "response.create", "response": memory_response}
+            else:
+                create = self._response_create_after_tool(
+                    must_continue=must_continue and not terminal_speech,
+                    terminal_speech=terminal_speech or (not must_continue),
+                )
+            skip_create = bool(
+                self._response_active
+                and self._provider == "openai"
+                and not self._shadow_mode
+                and not self._turn_authority_v2
             )
-            continuation_sent = await self._send(create)
-            if continuation_sent:
+            continuation_sent = False
+            if skip_create:
+                # Frozen OpenAI path: server_vad create_response=true already
+                # continues after function_call_output. A second create while
+                # the tool-calling response is still open errors with
+                # conversation_already_has_active_response.
                 self._continuation_sent = True
                 self._audio_accepting = True
+                # Keep mic muted through the continuation start so room noise
+                # cannot trigger a spurious VAD turn that collides with the
+                # answer audio → glitch. Covers slow first-chunk delivery.
+                self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_CONTINUATION_GATE_S
+            else:
+                continuation_sent = await self._send(create)
+                if continuation_sent:
+                    self._continuation_sent = True
+                    self._audio_accepting = True
+                    self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_CONTINUATION_GATE_S
             logger.warning(
-                "realtime_trace event=response.create.continuation provider=%s function_name=%s call_id_fingerprint=%s sent=%s",
+                "realtime_trace event=response.create.continuation provider=%s function_name=%s call_id_fingerprint=%s sent=%s skipped=%s",
                 self._provider,
                 name,
                 _safe_id_fingerprint(call_id),
                 continuation_sent,
+                skip_create,
             )
+
+    def _honor_unadvertised_memory_tool(self, name: str) -> bool:
+        """Run owner-memory lookups even when the live surface hid the name.
+
+        Shadow advertises recall_history instead of search_memory. F4 advertises
+        recall instead of both. The model is still instructed to call
+        search_memory; rejecting that call is what sounded like no record.
+        """
+        if name not in _UNADVERTISED_MEMORY_TOOLS:
+            return False
+        if name in self._upstream_tool_names:
+            return False
+        if self._shadow_mode:
+            return True
+        return any(
+            listed in self._upstream_tool_names
+            for listed in ("recall", "recall_history", "search_memory")
+        )
 
     def _validate_function_call(self, name: str, arguments: dict) -> tuple[dict, str | None]:
         if not name:
             return {}, "Realtime returned an empty function name."
         if not self._upstream_session_ready:
             return {}, "Realtime provider has not acknowledged the session tool projection."
-        if self._provider_mismatch or name not in self._upstream_tool_names:
+        honor_hidden_memory = self._honor_unadvertised_memory_tool(name)
+        if self._provider_mismatch or (
+            name not in self._upstream_tool_names and not honor_hidden_memory
+        ):
             return {}, f"Realtime provider did not acknowledge live function '{name}'."
         specs = grok_voice_tools(self._tool_specs)
         spec = next(
@@ -3460,6 +4221,8 @@ class GrokVoiceBridge:
             ),
             None,
         )
+        if spec is None and honor_hidden_memory:
+            spec = _hidden_memory_tool_spec(name, self._tool_specs)
         if spec is None:
             return {}, f"Unknown or unapproved live function '{name}'."
         from app.gateway.validation import validate_arguments
@@ -3467,7 +4230,9 @@ class GrokVoiceBridge:
         parameters = spec.get("parameters") or {}
         args = dict(arguments or {})
         properties = parameters.get("properties") or {}
-        if name in REQUIRED_COMPUTER_TOOLS and properties:
+        if name in VISION_TOOLS:
+            args = coerce_vision_arguments(name, args, properties)
+        elif name in COMPUTER_SCHEMA_TOOLS and properties:
             args = {key: value for key, value in args.items() if key in properties}
         effective, issues = validate_arguments(args, parameters)
         if issues:
@@ -3489,6 +4254,7 @@ class GrokVoiceBridge:
         if not isinstance(body, dict):
             body = {}
         delivered = 0
+        total = len(observations)
         for index, observation in enumerate(observations):
             event_id = f"cam-{call_id}-{index}"
             item = build_realtime_image_item(
@@ -3496,13 +4262,7 @@ class GrokVoiceBridge:
                 mime=observation.mime,
                 detail=observation.detail,
                 event_id=event_id,
-                prompt=(
-                "Camera observation from the owner's MacBook."
-                if name == "look"
-                else "Window screenshot from the owner's Mac. Describe only visible UI."
-                if name == "screen_look"
-                else f"Camera observation {index + 1} from a bounded watch."
-            ),
+                prompt=camera_image_prompt(name, index=index, total=total),
             )
             log_camera(
                 "camera.realtime_image_sent",
@@ -3530,6 +4290,7 @@ class GrokVoiceBridge:
                     extra={"error": "realtime_image_send_failed"},
                 )
         image_ok = delivered > 0
+        saved = bool(body.get("saved_path"))
         compact = {
             "ok": bool(body.get("ok") and image_ok) if observations else bool(body.get("ok")),
             "name": name,
@@ -3545,19 +4306,49 @@ class GrokVoiceBridge:
             "frame_id": body.get("frame_id"),
             "app": body.get("app"),
             "window": body.get("window"),
-            "local_ocr": body.get("local_ocr"),
+            "labels": body.get("labels"),
+            "colors": body.get("colors"),
+            "visual_facts": body.get("visual_facts"),
+            "follow_up": body.get("follow_up"),
+            "frames_summary": body.get("frames_summary"),
+            "lighting": body.get("lighting"),
+            "saved_path": body.get("saved_path"),
             "source": body.get("source"),
+            "media_kind": body.get("media_kind"),
+            "duration_s": body.get("duration_s"),
+            "describe_attached": True if name in VISION_TOOLS else None,
+            "remembered": body.get("remembered"),
+            "kept": body.get("kept"),
+            "memory_text": body.get("memory_text"),
         }
+        ocr = body.get("local_ocr") or body.get("ocr_text")
+        if ocr:
+            compact["local_ocr"] = ocr
+        compact = {key: value for key, value in compact.items() if value not in (None, [], "")}
         if observations and not image_ok:
-            compact["ok"] = False
-            compact["spoken"] = (
-                "The camera frame was captured but the live model did not receive "
-                "the image. I did not see anything."
-            )
-            compact["error"] = "realtime_image_rejected"
-        if not observations and name in {"look", "observe_camera", "screen_look"}:
+            if name == "record_video" and saved:
+                compact["ok"] = True
+                compact["spoken"] = body.get("spoken") or compact.get("spoken")
+                compact.pop("error", None)
+            else:
+                compact["ok"] = False
+                compact["spoken"] = (
+                    "The camera frame was captured but the live model did not receive "
+                    "the image. I did not see anything."
+                )
+                compact["error"] = "realtime_image_rejected"
+        if not observations and name in {
+            "look",
+            "observe_camera",
+            "capture_photo",
+            "record_video",
+            "screen_look",
+            "see",
+        }:
             compact["image_delivered"] = False
             compact["model_image_delivered"] = False
+            if name == "record_video" and saved and body.get("ok"):
+                compact["ok"] = True
         log_camera(
             "camera.tool_completed",
             request_id=str(compact.get("request_id") or call_id),
@@ -3567,6 +4358,34 @@ class GrokVoiceBridge:
                 "image_delivered": image_ok,
             },
         )
+        if name == "look" and image_ok:
+            from app.memory.visual import (
+                is_clarity_hedge,
+                keep_owner_spoken,
+                wants_keep_visible,
+            )
+
+            last = str(self._last_input_transcript or "")
+            spoken = str(compact.get("spoken") or "")
+            keeping = bool(
+                compact.get("kept")
+                or compact.get("remembered")
+                or wants_keep_visible(last)
+            )
+            if keeping:
+                if is_clarity_hedge(spoken) or not spoken.strip():
+                    spoken = keep_owner_spoken(
+                        scene=spoken,
+                        ocr=compact.get("local_ocr") or compact.get("ocr_text"),
+                        labels=list(compact.get("labels") or []),
+                        colors=list(compact.get("colors") or []),
+                        keep_request=last,
+                        frame_ok=True,
+                    )
+                    compact["spoken"] = spoken
+                self._honesty_speech = True
+                self._pending_life_record = spoken
+                self._life_record_forced = False
         return json.dumps(compact, default=str, separators=(",", ":"))
 
     async def _send_function_output(self, call_id: str, output: str) -> bool:
@@ -3822,5 +4641,5 @@ async def _default_connect(url: str, additional_headers: dict | None = None):
         additional_headers=additional_headers or {},
         open_timeout=20,
         ping_interval=20,
-        ping_timeout=20,
+        ping_timeout=40,
     )

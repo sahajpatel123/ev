@@ -32,6 +32,15 @@ enum EarsProcess {
         static func clear() {
             try? FileManager.default.removeItem(at: url)
         }
+
+        static func isLiveOwnerAlive() -> Bool {
+            guard let raw = try? String(contentsOf: url, encoding: .utf8),
+                  let pid = Int32(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  pid > 0 else {
+                return false
+            }
+            return Darwin.kill(pid, 0) == 0 || Darwin.errno == EPERM
+        }
     }
 
     static func stop() {
@@ -53,6 +62,10 @@ enum EarsProcess {
     /// mic owner. KeepAlive=true will restart after kill; this kickstart
     /// guarantees it is alive immediately without waiting for throttle.
     static func ensureRunning() {
+        // kickstart -k kills the job. Never do that while EV.app's live
+        // session owns the mic — KeepAlive would respawn faster-whisper
+        // beside the Realtime tap.
+        if LiveMicOwnerMarker.isLiveOwnerAlive() { return }
         _ = runLaunchctl(["kickstart", "-k", domain])
     }
 

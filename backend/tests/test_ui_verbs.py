@@ -85,23 +85,30 @@ def test_ui_verbs_on_live_surfaces() -> None:
     assert "search_timeline" not in SHADOW_VOICE_TOOLS
     assert "inspect_ui" not in SHADOW_VOICE_TOOLS
     assert "ui_action" not in SHADOW_VOICE_TOOLS
-    assert "app_action" not in SHADOW_VOICE_TOOLS
+    assert "screen_look" not in SHADOW_VOICE_TOOLS
+    assert "app_action" in SHADOW_VOICE_TOOLS
     assert {"recall_history", "send_message", "place_call", "evie_turn"} <= SHADOW_VOICE_TOOLS
 
 
 def test_ui_verb_map_consistency() -> None:
-    # Every registered verb is either in the 1:1 map or handled explicitly
-    # (double_click / drag are multi-step in _handle).
-    assert {"double_click", "drag"} <= UI_VERBS
-    assert set(UI_VERB_MAP) | {"double_click", "drag"} == UI_VERBS
+    # Every registered verb maps onto one computer primitive.
+    assert set(UI_VERB_MAP) == UI_VERBS
     for canonical, _defaults in UI_VERB_MAP.values():
         assert canonical in {"inspect_ui", "screen_look", "ui_action"}, canonical
+    assert UI_VERB_MAP["double_click"][1]["action"] == "double_click"
+    assert UI_VERB_MAP["right_click"][1]["action"] == "right_click"
+    assert UI_VERB_MAP["drag"][1]["action"] == "drag"
 
 
 async def test_type_requires_text(db_session: AsyncSession) -> None:
     response = await dispatch(db_session, "type", {}, actor="master")
     assert response.ok is False
     assert "missing required argument" in (response.error or "")
+
+
+async def test_paste_without_text_is_schema_ok(db_session: AsyncSession) -> None:
+    response = await dispatch(db_session, "paste", {}, actor="master")
+    assert "missing required argument" not in (response.error or "")
 
 
 async def test_click_rejects_unknown_action(db_session: AsyncSession) -> None:

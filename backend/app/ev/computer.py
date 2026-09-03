@@ -43,7 +43,15 @@ from app.ev.computer_runtime import (
 from app.ev.computer_strategy import (
     adapter_for,
     control_for_app,
+    looks_like_opened_content_item,
+    media_query_from_goal,
+    navigation_url_from_text,
     normalize_app_action,
+    wants_first_on_page_item,
+    wants_first_result_text,
+    wants_play_media,
+    clean_computer_query,
+    _search_query_from_goal,
 )
 from app.integrations.life_helper import (
     LifeHelperError,
@@ -76,6 +84,7 @@ TOOL_COMMANDS = {
     "ui_action": "ui_action",
     "screen_look": "screen_look",
     "app_action": "app_action",
+    "file_op": "file_op",
 }
 
 
@@ -84,19 +93,60 @@ def _goal_text(state) -> str:
     return str(getattr(goal, "owner_request", "") or "")
 
 
-def _wants_open_first_result(state) -> bool:
+def _goal_hay(state, extra: str = "") -> str:
+    orig = ""
+    if state is not None:
+        orig = str(getattr(state, "original_owner_request", "") or "")
+    return " ".join(part for part in (orig, _goal_text(state), extra) if part)
+
+
+def _intent_text(state, extra: str = "") -> str:
+    """Prefer the owner's original request so a model rewrite cannot steal intent."""
+    orig = ""
+    if state is not None:
+        orig = str(getattr(state, "original_owner_request", "") or "")
+    if orig.strip():
+        return orig
+    return _goal_hay(state, extra)
+
+
+def _wants_open_first_result(state, extra: str = "") -> bool:
     goal = getattr(state, "goal", None) if state is not None else None
     if goal is not None and getattr(goal, "find_only", False):
         return False
-    lower = _goal_text(state).lower()
-    if re.search(r"don't open|do not open|just tell|don't click|do not click", lower):
+    return wants_first_result_text(_intent_text(state, extra))
+
+
+def _wants_first_on_page_item(state, extra: str = "") -> bool:
+    goal = getattr(state, "goal", None) if state is not None else None
+    if goal is not None and getattr(goal, "find_only", False):
         return False
-    return bool(
-        re.search(
-            r"first result|top result|open the first|click the (first|top)|open (the )?first",
-            lower,
-        )
-    )
+    orig = ""
+    if state is not None:
+        orig = str(getattr(state, "original_owner_request", "") or "")
+    if orig.strip():
+        if wants_first_on_page_item(orig) or wants_play_media(orig):
+            return True
+        if re.search(r"\b(playlist|spotify|\bsong\b|\btrack\b|apple music)\b", orig, re.I):
+            return wants_first_on_page_item(_goal_hay(state, extra))
+        return False
+    return wants_first_on_page_item(_goal_hay(state, extra))
+
+
+def _wants_play_media(state, extra: str = "") -> bool:
+    goal = getattr(state, "goal", None) if state is not None else None
+    if goal is not None and getattr(goal, "find_only", False):
+        return False
+    orig = ""
+    if state is not None:
+        orig = str(getattr(state, "original_owner_request", "") or "")
+    if orig.strip():
+        if wants_play_media(orig):
+            return True
+        if re.search(r"\b(playlist|spotify|\bsong\b|\btrack\b|apple music)\b", orig, re.I):
+            return wants_play_media(_goal_hay(state, extra))
+        return False
+    return wants_play_media(_goal_hay(state, extra))
 
 
 def _notes_body_from_goal(text: str) -> str:
@@ -187,6 +237,42 @@ async def handle_computer_tool(
         return stamp_computer_receipt(
             status, state, name=name, executed=True, request_id=request_id
         )
+    if name == "file_op":
+        from app.ev.laptop_files import run_file_goal
+
+        started = time.monotonic()
+        note_goal(state, str(arguments.get("goal") or arguments.get("context") or "") or None)
+        raw = await run_file_goal(arguments, live=live, request_id=request_id)
+        shaped = {
+            **raw,
+            "ok": bool(raw.get("ok")),
+            "executed": bool(raw.get("executed") if raw.get("executed") is not None else raw.get("ok")),
+            "verified": bool(raw.get("verified") if raw.get("verified") is not None else raw.get("ok")),
+            "spoken": str(raw.get("spoken") or ""),
+            "evidence": evidence_base(
+                source=str(raw.get("source") or "laptop_files"),
+                accepted=bool(raw.get("ok")),
+                observed=bool(raw.get("verified") or raw.get("ok")),
+                now=utcnow(),
+            ),
+        }
+        shaped = stamp_computer_receipt(
+            shaped,
+            state,
+            name=name,
+            executed=bool(shaped.get("executed")),
+            verified=bool(shaped.get("verified")),
+            request_id=request_id,
+        )
+        _record(state, name, arguments, shaped, started, request_id=request_id)
+        path = str(shaped.get("path") or raw.get("path") or "").strip()
+        action = str(shaped.get("action") or raw.get("action") or "").strip().lower()
+        if state is not None and shaped.get("ok"):
+            if action == "delete":
+                state.last_file_path = None
+            elif path:
+                state.last_file_path = path
+        return shaped
     note_goal(state, str(arguments.get("goal") or arguments.get("context") or "") or None)
     blocked = guard_loop(state, name, arguments)
     if blocked is not None:
@@ -285,6 +371,66 @@ async def handle_computer_tool(
             )
             _record(state, name, arguments, missing, started, request_id=request_id)
             return missing
+        from app.ev.computer_strategy import (
+            resolve_generic_computer_goal,
+            resolve_in_app_computer_goal,
+            wants_first_on_page_item,
+            wants_play_media,
+        )
+
+        orig = str(getattr(state, "original_owner_request", "") or "")
+        arg_goal = str(arguments.get("goal") or "")
+        goal_for_map = orig or arg_goal or _goal_text(state)
+        mapped = resolve_in_app_computer_goal(
+            goal_for_map,
+            arguments.get("app") or arguments.get("target_app"),
+        )
+        if mapped is None:
+            mapped = resolve_generic_computer_goal(
+                goal_for_map,
+                arguments.get("app") or arguments.get("target_app"),
+            )
+        if mapped is not None and mapped[0] in {"close_app", "open_app"}:
+            inner = dict(mapped[1])
+            inner.setdefault("goal", goal_for_map)
+            return await handle_computer_tool(
+                session,
+                mapped[0],
+                inner,
+                actor=actor,
+                live_session_id=live_session_id,
+                device_id=device_id,
+                request_id=request_id,
+            )
+        if mapped is not None and mapped[0] == "app_action":
+            mapped_action = str(mapped[1].get("action") or "")
+            current_action = str(arguments.get("action") or "")
+            owner_text = str(
+                getattr(state, "original_owner_request", "") or goal_for_map
+            )
+            steal_play = current_action in {"play", "open_item"} and not (
+                wants_play_media(owner_text) or wants_first_on_page_item(owner_text)
+            )
+            if mapped_action in {"search", "navigate"} and (
+                current_action
+                in {
+                    "new_tab",
+                    "close_tab",
+                    "next_tab",
+                    "previous_tab",
+                    "status",
+                    "",
+                }
+                or steal_play
+            ):
+                arguments["action"] = mapped_action
+                for key, value in mapped[1].items():
+                    if value not in (None, ""):
+                        arguments[key] = value
+            else:
+                for key, value in mapped[1].items():
+                    if value not in (None, "") and not arguments.get(key):
+                        arguments[key] = value
         if state is not None and state.goal is not None:
             if not arguments.get("playlist") and state.goal.playlist:
                 arguments["playlist"] = state.goal.playlist
@@ -314,6 +460,37 @@ async def handle_computer_tool(
             arguments["action"] = normalize_app_action(arguments.get("action"))
         app_name = str(arguments.get("app") or "").lower()
         action = str(arguments.get("action") or "")
+        this_goal = str(arguments.get("goal") or "")
+        if action in {"search", "navigate", "open_item"}:
+            for key in ("query", "url"):
+                raw_val = arguments.get(key)
+                if isinstance(raw_val, str) and raw_val.strip():
+                    cleaned = clean_computer_query(raw_val)
+                    if cleaned:
+                        arguments[key] = cleaned
+        if action == "new_tab" and this_goal:
+            query = _search_query_from_goal(this_goal)
+            if query or wants_first_result_text(this_goal):
+                dest_from_goal = navigation_url_from_text(query) if query else None
+                if dest_from_goal:
+                    arguments["action"] = "navigate"
+                    arguments["query"] = dest_from_goal
+                    action = "navigate"
+                elif query:
+                    arguments["action"] = "search"
+                    if not arguments.get("query"):
+                        arguments["query"] = query
+                    action = "search"
+        dest = navigation_url_from_text(
+            str(arguments.get("query") or arguments.get("url") or "")
+        )
+        if dest and action == "search" and any(
+            name in app_name for name in ("safari", "chrome")
+        ):
+            arguments["action"] = "navigate"
+            arguments["query"] = dest
+            arguments["url"] = dest
+            action = "navigate"
         if "notes" in app_name and action in {"create", "append"}:
             if not arguments.get("value") and not arguments.get("query") and not arguments.get("text"):
                 body = _notes_body_from_goal(_goal_text(state))
@@ -332,25 +509,88 @@ async def handle_computer_tool(
             request_id=request_id,
             timeout=22.0,
         )
+        if (
+            action == "navigate"
+            and dest
+            and result.get("ok") is not False
+            and not str(result.get("url") or "").strip()
+        ):
+            result = await _live_command(
+                live,
+                "app_action",
+                arguments,
+                request_id=f"{request_id}-retry" if request_id else None,
+                timeout=22.0,
+            )
         shaped = _shape_app_action(arguments, result, state=state)
         if (
             str(arguments.get("action") or "") == "search"
-            and "safari" in str(arguments.get("app") or "").lower()
-            and _wants_open_first_result(state)
+            and any(
+                name in str(arguments.get("app") or "").lower()
+                for name in ("safari", "chrome")
+            )
+            and _wants_open_first_result(state, this_goal)
+            and not navigation_url_from_text(str(arguments.get("query") or arguments.get("url") or ""))
             and state is not None
             and state.goal is not None
             and not state.goal.find_only
-            and shaped.get("verified") is not True
+            and result.get("ok") is not False
+            and result.get("executed") is True
         ):
-            nav_args = {"app": arguments.get("app") or "Safari", "action": "navigate"}
+            # Search loading the results page is not the owner's goal when they
+            # asked to open the first hit. Do not wait for a second computer()
+            # call — F4 often stops after one verified search.
+            nav_args = {
+                "app": arguments.get("app") or "Safari",
+                "action": "navigate",
+            }
+            search_q = str(arguments.get("query") or "").strip()
+            if search_q and not navigation_url_from_text(search_q):
+                nav_args["query"] = search_q
             nav = await _live_command(
                 live,
                 "app_action",
                 nav_args,
                 request_id=f"{request_id}-nav" if request_id else None,
-                timeout=32.0,
+                timeout=45.0,
             )
             shaped = _shape_app_action(nav_args, nav, state=state)
+        if (
+            str(arguments.get("action") or "") in {"search", "navigate"}
+            and (
+                _wants_first_on_page_item(state, this_goal)
+                or _wants_play_media(state, this_goal)
+            )
+            and state is not None
+            and state.goal is not None
+            and not state.goal.find_only
+            and shaped.get("ok") is not False
+            and shaped.get("executed") is True
+            and str(shaped.get("player_state") or "").lower() != "playing"
+            and not looks_like_opened_content_item(str(shaped.get("url") or ""))
+        ):
+            # Domain land or in-app search is not done when they asked to
+            # open/play a named or ordinal on-screen video.
+            app = str(arguments.get("app") or "Safari")
+            browser = any(name in app.lower() for name in ("safari", "chrome"))
+            item_args: dict[str, Any] = {
+                "app": app,
+                "action": "play" if browser or _wants_play_media(state, this_goal) else "open_item",
+            }
+            hay = _goal_hay(state, this_goal)
+            title = media_query_from_goal(hay)
+            if title:
+                item_args["query"] = title
+            else:
+                item_args["query"] = "first"
+            item = await _live_command(
+                live,
+                "app_action",
+                item_args,
+                request_id=f"{request_id}-item" if request_id else None,
+                timeout=55.0,
+            )
+            shaped = _shape_app_action(item_args, item, state=state)
         shaped = stamp_computer_receipt(
             shaped,
             state,
@@ -429,7 +669,7 @@ async def handle_computer_tool(
             return missing
         if name == "ui_action":
             action = str(arguments.get("action") or "").strip().lower()
-            if action in {"click_at", "screen_click"}:
+            if action in {"click_at", "screen_click", "drag"}:
                 stale = validate_frame_click(
                     state,
                     frame_id=str(arguments.get("frame_id") or ""),
@@ -471,7 +711,7 @@ async def handle_computer_tool(
         if query_miss:
             shaped.setdefault(
                 "next_hint",
-                "Target not in this snapshot. Try app_action for Music, scroll, or screen_look.",
+                "Target not in this snapshot. Try scroll, see, or (if listed) app_action.",
             )
         shaped = stamp_computer_receipt(
             shaped, state, name=name, executed=bool(shaped.get("ok")), request_id=request_id
@@ -519,6 +759,26 @@ async def computer_status(session: AsyncSession, *, live, state) -> dict:
         now=utcnow(),
     )
     log_computer("computer.state_observed", extra={"connected": payload.get("mac_client_connected")})
+    if live is not None:
+        listed = await _live_command(
+            live,
+            "list_apps",
+            {},
+            request_id=None,
+            timeout=8.0,
+        )
+        apps = listed.get("apps") if isinstance(listed, dict) else None
+        names: list[str] = []
+        if isinstance(apps, list):
+            for item in apps:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or "").strip()
+                    if name:
+                        names.append(name)
+        if names:
+            payload["installed_apps"] = names[:80]
+            payload["installed_app_count"] = int(listed.get("count") or len(names))
+            payload["catalog_stamp"] = listed.get("catalog_stamp")
     return payload
 
 
@@ -528,12 +788,25 @@ async def _live_command(live, command: str, arguments: dict, *, request_id: str 
         extra={"command": command, "request_id": request_id, "signature": action_signature(command, arguments)},
     )
     try:
-        return await live.request_computer(
+        result = await live.request_computer(
             command,
             arguments,
             timeout=timeout,
             request_id=request_id,
         )
+        log_computer(
+            "computer.action_returned",
+            extra={
+                "command": command,
+                "request_id": request_id,
+                "ok": result.get("ok") if isinstance(result, dict) else None,
+                "executed": result.get("executed") if isinstance(result, dict) else None,
+                "verified": result.get("verified") if isinstance(result, dict) else None,
+                "error": result.get("error") if isinstance(result, dict) else None,
+                "url": str((result or {}).get("url") or "")[:160],
+            },
+        )
+        return result
     except Exception as exc:  # noqa: BLE001 - native failure must not kill audio
         log_computer("computer.action_failed", extra={"command": command, "error": type(exc).__name__})
         return {
@@ -601,7 +874,10 @@ def _shape_lifecycle(name: str, arguments: dict, result: dict, *, source: str) -
             "evidence": evidence_base(source=source, accepted=ok, observed=ok, now=utcnow()),
         }
     if name == "close_app":
-        protected = str(body.get("bundle_id") or "").lower() in PROTECTED_QUIT
+        protected = (
+            str(body.get("bundle_id") or "").lower() in PROTECTED_QUIT
+            and body.get("closed_windows") is not True
+        )
         if protected:
             return {
                 "ok": False,
@@ -799,6 +1075,16 @@ def _shape_screen(result: dict, *, call_id: str | None, state) -> dict:
         "working": state.working_context() if state is not None else None,
         "evidence": evidence_base(source="mac_control", accepted=ok, observed=ok, now=utcnow()),
     }
+    try:
+        from app.ev.desk_scene import bind_visible_text
+
+        bind_visible_text(
+            str(compact.get("window") or ""),
+            str(compact.get("app") or ""),
+            str(body.get("ocr") or body.get("ocr_text") or ""),
+        )
+    except Exception:
+        pass
     return compact
 
 
@@ -881,6 +1167,7 @@ def _record(
         "ok": result.get("ok"),
         "executed": result.get("executed"),
         "verified": result.get("verified"),
+        "error": result.get("error"),
         "latency_ms": latency_ms,
         "call_id": request_id,
     }
@@ -888,6 +1175,8 @@ def _record(
         log_computer("computer.action_verified", extra=extra)
     elif result.get("executed"):
         log_computer("computer.action_executed", extra=extra)
+    else:
+        log_computer("computer.action_rejected", extra=extra)
     if name == "open_app" and result.get("ok"):
         log_computer(
             "computer.app_opened",
@@ -916,7 +1205,7 @@ async def open_url_via_live_or_helper(
         return {
             "ok": False,
             "error": "invalid_url",
-            "spoken": "I can only open http or https links.",
+            "spoken": "I can only open web links and a few app links.",
         }
     live = _live(live_session_id, str(device_id) if device_id else None)
     if live is not None:

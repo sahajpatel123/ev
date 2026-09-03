@@ -262,20 +262,23 @@ enum DeviceCredentialStore {
             return cached
         }
         cacheLock.unlock()
-        // One-time per process heal: exactly ONE UIFail-guarded data read that
-        // (a) validates the canonical item is silently readable, (b) provisions
-        // it from the 0600 mirror when absent, or (c) one-time replaces a
-        // poisoned foreign-ACL item. Zero prompts by construction.
-        healIfNeeded(for: deviceID)
         // K3 PRIMARY: 0600 mirror is the hot path — silent on every launch.
-        // File value is authoritative if both exist.
+        // Never block AppConfig / menu-bar boot on SecItemAdd or
+        // `/usr/bin/security` (those can sleep the process for tens of
+        // seconds with 0% CPU and no ST00). Return the file token and
+        // provision Keychain off the calling thread.
         if let token = loadFromFile(for: deviceID) {
             cacheLock.lock()
             cache[acct] = token
             cacheLock.unlock()
+            DispatchQueue.global(qos: .utility).async {
+                healIfNeeded(for: deviceID)
+            }
             return token
         }
-        // Mirror lost: whatever heal cached from the canonical item applies.
+        // Mirror missing: one-time heal may read Keychain (UIFail, no prompt)
+        // and is the only remaining credential source.
+        healIfNeeded(for: deviceID)
         cacheLock.lock()
         let healed = cache[acct]
         cacheLock.unlock()

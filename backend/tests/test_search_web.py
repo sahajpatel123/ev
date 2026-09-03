@@ -58,6 +58,23 @@ async def test_search_web_tool_dispatch_with_mock(
     assert response.result is not None
     assert response.result["count"] >= 1
     assert response.result["results"][0]["url"].startswith("https://")
+    assert response.result["spoken"]
+
+
+async def test_computer_web_research_dispatches_search_web(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "search_provider", "mock")
+    response = await dispatch(
+        db_session,
+        "computer",
+        {"goal": "search the web for AI and Machine Learning for Coders"},
+    )
+    assert response.ok is True, response.error
+    assert response.result is not None
+    assert response.result.get("count", 0) >= 1
+    assert "results" in response.result
+    assert response.result["results"][0]["url"].startswith("https://")
 
 
 async def test_search_web_tool_disabled_without_provider(
@@ -99,7 +116,7 @@ async def test_research_web_search_adds_cited_notes(
     db_session: AsyncSession, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "search_provider", "mock")
-    service = ResearchService(db_session, actor="tester")
+    service = ResearchService(db_session, actor="master")
     session = await service.create_session(
         ResearchSessionCreate(question="Which local embedding model is best?")
     )

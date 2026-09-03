@@ -1,0 +1,14 @@
+Desk Twin — Talk demo (quit Talk fully, then reopen after the sidecar reload)
+
+Stay on this Mac. Do not expect production :8000 to watch your Desktop.
+
+1. Drop a note on the desktop that says buy milk.
+2. Find the resume and open it.
+3. This belongs to the visa packet.
+4. Drop Sahaj_I-20.pdf (or any I-20 PDF) into Downloads. She should offer to file it without you saying Downloads.
+5. Yes.
+6. Also eggs.
+7. What's in the visa packet?
+8. Optional fragments: add that. no the other PDF. put it in visa. also bread.
+
+Proof: evie-note.txt still has milk and eggs (no evie-note-2.txt). Visa packet names the Patel resume and the I-20. Mic still hears turn 2 after she finishes speaking.

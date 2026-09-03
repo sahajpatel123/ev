@@ -19,6 +19,10 @@ import EVRuntime
 final class VoiceOrbOverlay: NSObject {
     static let shared = VoiceOrbOverlay()
 
+    // TEMP KILL-SWITCH (2026-09-01): orb animation disabled without removing code.
+    // To re-enable: change to `true` or delete the guards that check it.
+    static let isEnabled = false
+
     private var panel: NSPanel?
     private var hostView: VoiceOrbHostView?
     private var renderer: VoiceOrbRenderer?
@@ -40,6 +44,10 @@ final class VoiceOrbOverlay: NSObject {
     }
 
     func attach(_ model: AppModel) {
+        guard Self.isEnabled else {
+            hide()
+            return
+        }
         self.model = model
         if panel == nil {
             build()
@@ -56,6 +64,10 @@ final class VoiceOrbOverlay: NSObject {
     }
 
     func noteAppDidFinishLaunching() {
+        guard Self.isEnabled else {
+            hide()
+            return
+        }
         launchReady = true
         if model != nil || VoiceOrbDebug.forceVisible {
             if panel == nil {
@@ -71,6 +83,7 @@ final class VoiceOrbOverlay: NSObject {
     }
 
     func show() {
+        guard Self.isEnabled else { return }
         guard launchReady else { return }
         if lastSpeech == .preparing || lastSpeech == .speaking {
             reveal()
@@ -92,6 +105,7 @@ final class VoiceOrbOverlay: NSObject {
     }
 
     private func reveal() {
+        guard Self.isEnabled else { return }
         guard launchReady, let panel else { return }
         hideWork?.cancel()
         hideWork = nil
@@ -144,6 +158,7 @@ final class VoiceOrbOverlay: NSObject {
     }
 
     private func build() {
+        guard Self.isEnabled else { return }
         let size = defaultSize()
         let host = VoiceOrbHostView(frame: NSRect(origin: .zero, size: size))
         host.wantsLayer = false
@@ -281,6 +296,10 @@ final class VoiceOrbOverlay: NSObject {
     }
 
     private func pushState() {
+        guard Self.isEnabled else {
+            hide()
+            return
+        }
         if VoiceOrbDebug.forceVisible {
             applySpeech(.speaking)
             renderer?.setState(status: .speaking, audioLevel: 0, reduceMotion: false)
@@ -314,6 +333,7 @@ final class VoiceOrbOverlay: NSObject {
     }
 
     private func applySpeech(_ speech: VoiceOrbSpeechStatus) {
+        guard Self.isEnabled else { return }
         let previous = lastSpeech
         lastSpeech = speech
         guard launchReady else { return }

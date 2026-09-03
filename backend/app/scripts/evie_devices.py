@@ -17,17 +17,33 @@ def _base() -> str:
     return os.environ.get("EV_E2E_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
+def _key_from_env_file(path: Path) -> str:
+    if not path.exists():
+        return ""
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, _, value = stripped.partition("=")
+        if name.strip() == "EV_MASTER_KEY":
+            return value.strip().strip('"').strip("'")
+    return ""
+
+
 def _master() -> str:
+    """Same owner key the API uses: shell, then production overlay, then repo .env."""
     key = os.environ.get("EV_MASTER_KEY") or os.environ.get("EV_E2E_MASTER_KEY")
     if not key:
-        env_path = ROOT / ".env"
-        if env_path.exists():
-            for line in env_path.read_text().splitlines():
-                if line.startswith("EV_MASTER_KEY="):
-                    key = line.split("=", 1)[1].strip().strip('"')
-                    break
+        overlay = Path(os.environ.get("EV_SECRETS_FILE", "~/.ev/secrets/production.env")).expanduser()
+        key = _key_from_env_file(overlay)
     if not key:
-        raise SystemExit("EV_MASTER_KEY is not set")
+        key = _key_from_env_file(ROOT / ".env")
+    if not key:
+        raise SystemExit(
+            "EV_MASTER_KEY is not set. Pairing uses the Home Station owner key "
+            "(~/.ev/secrets/production.env or EV_MASTER_KEY in the environment). "
+            "Do not paste the key into chat."
+        )
     return key
 
 
@@ -60,7 +76,7 @@ def cmd_list(_args: argparse.Namespace) -> int:
         print(
             f"  {row.get('display_name')}  role={row.get('role')}  "
             f"scope={row.get('memory_scope')}  trust={row.get('trust_state')}  "
-            f"last_seen={row.get('last_seen')}  id={str(row.get('device_id') or '')[:8]}"
+            f"id={row.get('device_id')}"
         )
     return 0
 
@@ -74,6 +90,25 @@ def cmd_pair(args: argparse.Namespace) -> int:
     print(f"PAIRING CODE: {body.get('pairing_token')}")
     print(f"EXPIRES: {body.get('expires_at')}")
     print("Enter this one-time code in the Evie PWA. Do not reuse it.")
+    return 0
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    body = _request(
+        "POST",
+        "/v1/device-gateway/admin/promote-owner",
+        {"device_id": args.device_id, "reason": args.reason},
+    )
+    device = body.get("device") or {}
+    print(
+        "promoted",
+        device.get("display_name"),
+        "trust=",
+        device.get("trust_state"),
+        "revision=",
+        device.get("auth_revision"),
+    )
+    print("Reconnect the phone (Talk / Retry connection) so it picks up owner trust.")
     return 0
 
 
@@ -114,6 +149,9 @@ def main() -> int:
     p.add_argument("--name", default="Primary iPhone")
     s = sub.add_parser("pair-secondary")
     s.add_argument("--name", default="Secondary iPhone")
+    pr = sub.add_parser("promote")
+    pr.add_argument("device_id")
+    pr.add_argument("--reason", default="owner")
     r = sub.add_parser("revoke")
     r.add_argument("device_id")
     r.add_argument("--reason", default="owner_revoked")
@@ -128,6 +166,8 @@ def main() -> int:
         return cmd_list(args)
     if args.command in {"pair-primary", "pair-secondary"}:
         return cmd_pair(args)
+    if args.command == "promote":
+        return cmd_promote(args)
     if args.command == "revoke":
         return cmd_revoke(args)
     if args.command == "rename":

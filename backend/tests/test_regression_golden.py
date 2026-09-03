@@ -99,10 +99,17 @@ def test_golden_voice_startup_invariants():
     assert lc.count("AudioInputLease.release(.live)") >= 2, "lease must be released on failure paths"
     # Bounded retry: 0...retryBudget with retryBudget=1
     assert "retryBudget" in lc and "retryBudget: Int" in lc
-    # Ping 5s x3 not 15x2
+    # Keepalive JSON, not URLSession sendPing death (that chopped live TTS)
     lv = (repo / "ios/EVClient/Sources/EVClient/LiveVoice.swift").read_text()
-    assert "5_000_000_000" in lv and "strikes >= 3" in lv, "ping watchdog must be 5s x3"
-    assert "15_000_000_000" not in lv, "old 15s interval must be gone"
+    assert '"keepalive"' in lv and "linkLooksDead" in lv
+    assert "ping strikes=" not in lv
+    assert "setStatusPreservingPlayback" in lc
+    assert "Adopt the provider id without swapping the player lane" in lc
+    assert "Server VAD emits thinking on room tone" in lc
+    assert "Always cue on first ready" in lc
+    assert "ST14C_COMPUTER_STATE_DEFERRED" in lc
+    assert "ST15_PLAYBACK_GATE" in lc
+    assert "ST21_OWNER_TURN" in lc
     # Single reconnect authority
     assert lc.count("try? await Task.sleep(nanoseconds: 900_000_000)") == 1 or lc.count("900_000_000") >= 1
     # UI readiness: CONNECTING until ST14
@@ -132,8 +139,8 @@ def test_golden_voice_playback_buffer():
     # duration-based aggregationMs/targetLeadMs/hardCeilingMs — contract is
     # controlled lead, not a huge delay, and bounded buffering.
     assert "aggregationMs = 160" in tts
-    assert "startupPrebufferMs = 280" in tts
-    assert "targetLeadMs = 500" in tts
+    assert "startupPrebufferMs = 120" in tts
+    assert "targetLeadMs = 1500" in tts
     # Owner-proven (one word then silence): S2S providers generate whole
     # responses faster than realtime; the ceiling is a 60 s safety valve and
     # accepted-response speech is NEVER dropped. The E-fastgen continuity
@@ -146,6 +153,34 @@ def test_golden_voice_playback_buffer():
     # Dropped audio only at hard ceiling, never in normal jitter absorption
     assert "overflowEvents" in tts and "droppedFrames" in tts
     assert "E-fastgen" in smoke
+    assert "resumeHole" in tts
+    assert "echoTail: TimeInterval = 1.5" in tts
+    assert "guard playerStarted else { return }" in tts
+    assert "lastCompletionAt = Date()" in tts
+    evapp = (repo / "macos/Sources/EV/EVApp.swift").read_text()
+    assert 'case .listening, .thinking: return "ear"' in evapp
+    ears_main = (repo / "backend/clients/ears/main.py").read_text()
+    assert "def next_loud_event_spot" in ears_main
+    assert "def idle_block_can_skip_vad" in ears_main
+    assert "idle_vad_skip_peak: int = 2500" in ears_main
+    asr = (repo / "backend/app/voice/asr.py").read_text()
+    assert "local_files_only=True" in asr
+    vad = (repo / "backend/app/audio/vad.py").read_text()
+    assert "ears_idle_min_rms" in vad
+    live_ws = (repo / "ios/EVClient/Sources/EVClient/LiveVoice.swift").read_text()
+    assert "liveSocketSession" in (repo / "ios/EVClient/Sources/EVClient/EVAPIClient.swift").read_text()
+    assert '"keepalive"' in live_ws
+    assert "linkLooksDead" in live_ws
+    assert "keepaliveAckSeen" in live_ws
+    assert "ping strikes=" not in live_ws
+    transport = (repo / "backend/app/voice/live/transport.py").read_text()
+    assert "timeout=10.0" in transport
+    assert "retrying the same event" in transport
+    assert "KeepaliveEvent" in transport
+    events = (repo / "backend/app/voice/live/events.py").read_text()
+    assert "class KeepaliveEvent" in events
+    session = (repo / "backend/app/voice/live/session.py").read_text()
+    assert 'if kind == "keepalive"' in session
 
 
 # ---------------------------------------------------------------------------

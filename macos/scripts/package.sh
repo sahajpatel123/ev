@@ -130,16 +130,25 @@ echo "Packaged $APP"
 sync_api_env() {
     local dest="${HOME}/Library/Application Support/EV/api.env"
     mkdir -p "$(dirname "$dest")"
-    local url="http://127.0.0.1:8000"
+    local url=""
     local src="$ROOT/../.env"
-    if [[ -f "$src" ]]; then
-        local src_url
-        src_url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
-        if [[ -n "$src_url" ]]; then
-            url="$src_url"
+    # Keep the Talk URL this machine already uses. Resetting to :8000 after
+    # every package pointed the GUI at the stale production API (computer
+    # deny). An explicit EV_API_URL in the package environment still wins.
+    if [[ -n "${EV_API_URL:-}" ]]; then
+        url="$EV_API_URL"
+    else
+        url="$(defaults read com.ev.suit EV_API_URL 2>/dev/null || true)"
+        if [[ -z "$url" && -f "$dest" ]]; then
+            url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$dest" | tr -d "\"'")"
+        fi
+        if [[ -z "$url" && -f "$src" ]]; then
+            url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
+        fi
+        if [[ -z "$url" ]]; then
+            url="http://127.0.0.1:8000"
         fi
     fi
-    url="${EV_API_URL:-$url}"
     umask 077
     printf 'EV_API_URL=%s\n' "$url" > "$dest"
     # Keep legacy cleanup: remove any master/device secrets that may have

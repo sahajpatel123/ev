@@ -95,6 +95,7 @@ def _restore_gate():
         ("What did we decide about IIT?", RetrievalIntent.DECISION),
         ("Which model did I choose for the orchestrator?", RetrievalIntent.DECISION),
         ("What do I usually like for breakfast?", RetrievalIntent.CURRENT_PREFERENCE),
+        ("What did I prefer before?", RetrievalIntent.TEMPORAL_EXACT),
         ("What was I going to do about the garage?", RetrievalIntent.INTENTION),
         ("How has the fitness project been going?", RetrievalIntent.PROJECT_HISTORY),
         ("Who is Marcus?", RetrievalIntent.PERSON),

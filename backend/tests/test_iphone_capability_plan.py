@@ -392,10 +392,20 @@ def test_pwa_and_native_source_gates() -> None:
     assert "isStandalonePwa" in app_js
     assert "cameraHardware" in app_js
     assert "owner_declared" in app_js
+    assert "setCameraRole" in app_js
+    assert "paintCameraRole" in app_js
     assert "Add to Home Screen" in html
+    assert "Which iPhone is this?" in html
+    assert 'data-surface="privacy"' in html
+    assert 'data-quick="weather"' in html
+    assert "paintLive" in app_js
+    assert "choice-list" in html
+    assert "camera-ask" in html
     assert "record_clip" in app_js
     assert "parsed.needs_camera" in webrtc
     assert 'self.onState("failed")' in webrtc
+    assert "_gateMicForPlayback" in webrtc
+    assert "scheduleHealthRender" in app_js
     assert "hardware: native.hardware" in app_js
     assert "healthkit_snapshot" in broker
     assert "calendar_snapshot" in broker

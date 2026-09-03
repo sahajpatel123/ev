@@ -48,9 +48,9 @@ MEMORY_TOOLS = {"search_memory", "recall", "recall_history"}
 SEMANTIC_TOOLS = {
     "send_message", "place_call", "list_messages", "list_mail", "resolve_contact",
     "calendar_read", "calendar_add", "set_reminder", "start_timer",
-    "get_weather", "search_web", "calculate", "get_person", "get_health_trends",
+    "get_weather", "heading_out", "search_web", "calculate", "get_person", "get_health_trends",
     "get_gear_status", "brief_me", "home_status", "home_act", "calibrate",
-    "list_protocols", "present",
+    "list_protocols", "present", "code",
 }
 COMPUTER_TOOLS = {
     "computer", "computer_status", "list_apps", "open_app", "close_app",
@@ -60,7 +60,7 @@ COMPUTER_TOOLS = {
     "read", "see", "click", "double_click", "right_click",
     "type", "paste", "key", "scroll", "drag",
 }
-TRANSITIONAL_TOOLS = {"look", "observe_camera", "phone_action"}
+TRANSITIONAL_TOOLS = {"look", "observe_camera", "capture_photo", "record_video", "phone_action"}
 
 
 def test_all_48_tools_classified() -> None:
@@ -82,14 +82,11 @@ def test_all_48_tools_classified() -> None:
             seen[tool] = class_name
     unclassified = all_tools - set(seen)
     assert not unclassified, f"UNCLASSIFIED live tools: {sorted(unclassified)}"
-    assert len(seen) == 61  # 48 original + recall + computer + 11 VOICE CONTROL PLAN
-    # Destination counts (report data): CORE 13 (12 hidden + evie_turn broker),
-    # MEMORY 3 (search_memory/recall_history hidden -> recall broker), SEMANTIC 21,
-    # COMPUTER 21 (20 hidden + computer broker), TRANSITIONAL 3.
-    # F4 KEEP MODEL-FACING = evie_turn + recall + computer + transitional 3 = 6.
+    assert len(seen) == 65  # previous 64 + code broker
+    # Destination counts: CORE 13, MEMORY 3, SEMANTIC 23, COMPUTER 21, TRANSITIONAL 5.
     assert len(CORE_TOOLS) == 13 and len(MEMORY_TOOLS) == 3
-    assert len(SEMANTIC_TOOLS) == 21 and len(COMPUTER_TOOLS) == 21
-    assert len(TRANSITIONAL_TOOLS) == 3
+    assert len(SEMANTIC_TOOLS) == 23 and len(COMPUTER_TOOLS) == 21
+    assert len(TRANSITIONAL_TOOLS) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +147,8 @@ CORPUS: list[tuple[str, str, str | None]] = [
     ("What's the weather?", "semantic", "get_weather"),
     ("Will it rain tomorrow?", "semantic", "get_weather"),
     ("What's the forecast this weekend?", "semantic", "get_weather"),
+    ("I'm heading out.", "semantic", "heading_out"),
+    ("Gotta go, text Maya I'm late", "semantic", "heading_out"),
     ("Search the web for the SpaceX launch time", "semantic", "search_web"),
     ("Look up who won the match last night", "semantic", "search_web"),
     ("What's 18 times 7?", "semantic", "calculate"),
@@ -183,6 +182,8 @@ CORPUS: list[tuple[str, str, str | None]] = [
     ("Press the Play button in Spotify", "computer", "ui_action"),
     ("Look at the whiteboard", "transitional", "look"),
     ("What am I holding?", "transitional", "look"),
+    ("Take a photo of me", "transitional", "capture_photo"),
+    ("Record a video of this", "transitional", "record_video"),
     ("Watch this for a few seconds", "transitional", "observe_camera"),
     ("What's on my iPhone screen?", "transitional", "phone_action"),
     # Fresh conversational (no route needed — realtime speaks)
@@ -456,7 +457,8 @@ def test_mutation_set_covers_all_side_effect_tools() -> None:
 async def test_f4_hidden_candidates_have_routes(db_session: AsyncSession) -> None:
     from app.ev.capability_router import SEMANTIC_CANDIDATES
 
-    hidden = LIVE_VOICE_TOOLS - {"evie_turn", "look", "observe_camera", "phone_action",
+    hidden = LIVE_VOICE_TOOLS - {"evie_turn", "look", "observe_camera", "capture_photo",
+                                 "record_video", "phone_action",
                                  "search_memory"}
     # Every hidden semantic/computer tool is a known routing candidate.
     unroutable = [

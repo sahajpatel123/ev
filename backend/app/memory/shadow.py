@@ -290,12 +290,76 @@ async def build_shadow_envelope(
     k = int(config.get("k", 6))
     # Superseded/historical rows enter ONLY for explicitly historical intents
     # (as_of recall). Expansion (L2) must never silently mix versions (§11).
-    include_historical = bool(config.get("historical", False))
+    include_historical = bool(config.get("historical", False) or request.intent is RetrievalIntent.TEMPORAL_EXACT)
 
     classify_ms = (time.perf_counter() - started) * 1000.0
     note_shadow_classified(classify_ms, request.intent.value, level)
 
     t0 = time.perf_counter()
+    from app.memory.life_archive.locate import (
+        MAX_HITS,
+        life_shelf_for_memory_search,
+        locate_archive,
+        resolve_shelf,
+    )
+
+    shelf = life_shelf_for_memory_search(
+        request.query, await resolve_shelf(session, request.query)
+    )
+    if shelf is not None:
+        rows = await locate_archive(
+            session, request.query, shelf=shelf, k=min(k, MAX_HITS)
+        )
+        items = [
+            ShadowItem(
+                text=str(row.get("text") or "")[:300],
+                memory_type=str(row.get("memory_type") or "life"),
+                score=float(row.get("score") or 0.15),
+                ref=str(row.get("id") or ""),
+                kind="life",
+            )
+            for row in rows
+            if str(row.get("text") or "").strip()
+        ]
+        if not items:
+            note_shadow_retrieval((time.perf_counter() - t0) * 1000.0, 0, 0)
+            note_zero_retrieval_turn()
+            return None
+        envelope = ShadowMemoryEnvelope(
+            turn_id=request.turn_id,
+            query_fingerprint=query_fingerprint(request.query),
+            retrieval_intent=request.intent,
+            level=level,
+            generated_at=datetime.now(UTC),
+            memory_scope=request.memory_scope,
+            items=items,
+            escalations=0,
+            diagnosis={
+                "candidates": len(items),
+                "top_score": round(max(item.score for item in items), 4),
+                "escalated": False,
+                "life_shelf": shelf,
+            },
+        )
+        rendered = envelope.render(budget_tokens=LEVEL_TOKEN_BUDGETS.get(level, 300))
+        envelope.token_count = token_estimate(rendered)
+        retrieval_ms = (time.perf_counter() - t0) * 1000.0
+        envelope.diagnosis["retrieval_ms"] = round(retrieval_ms, 2)
+        note_shadow_retrieval(retrieval_ms, len(items), envelope.token_count)
+        log_memory(
+            "memory.shadow_envelope",
+            extra={
+                "turn_id": envelope.turn_id,
+                "intent": envelope.retrieval_intent.value,
+                "level": envelope.level,
+                "items": len(envelope.items),
+                "tokens": envelope.token_count,
+                "life_shelf": shelf,
+                "fingerprint": envelope.query_fingerprint,
+            },
+        )
+        return envelope
+
     hits = await _search_memories(
         session, request, k=k, min_score=min_score, include_historical=include_historical
     )

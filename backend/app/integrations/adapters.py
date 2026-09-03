@@ -1068,7 +1068,9 @@ class ContactsAdapter(Adapter):
                 raise KeyError(f"unknown action '{action}'")
             if spec.scope not in scopes:
                 raise PermissionError(f"scope '{spec.scope}' is not granted")
-            contacts = [item for item in (config.get("contacts") or []) if isinstance(item, dict)]
+            if "contacts" not in config or not isinstance(config["contacts"], list):
+                config["contacts"] = []
+            contacts = config["contacts"]
             if action == "contacts.list":
                 return {
                     "ok": True,
@@ -1111,11 +1113,75 @@ class ContactsAdapter(Adapter):
                     "simulated": True,
                     "error": None if contact else "not_found",
                 }
+            if action == "contacts.create":
+                from uuid import uuid4
+
+                new_contact = {
+                    "id": f"local-{uuid4()}",
+                    "name": str(args.get("name") or ""),
+                    "full_name": str(args.get("name") or ""),
+                    "phone": str(args.get("phone") or ""),
+                    "email": str(args.get("email") or ""),
+                    "company": str(args.get("company") or ""),
+                }
+                contacts.append(new_contact)
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "contact": new_contact,
+                    "created": True,
+                    "simulated": True,
+                }
+            if action == "contacts.update":
+                cid = str(args.get("id") or "")
+                query = str(args.get("query") or args.get("name") or "").lower()
+                target = None
+                for c in contacts:
+                    if cid and c.get("id") == cid:
+                        target = c
+                        break
+                    if query and query in str(c.get("name") or c.get("full_name") or "").lower():
+                        target = c
+                        break
+                if not target:
+                    target = {"id": cid or "local-updated", "name": str(args.get("name") or query)}
+                    contacts.append(target)
+                if args.get("name"):
+                    target["name"] = str(args["name"])
+                    target["full_name"] = str(args["name"])
+                if args.get("phone"):
+                    target["phone"] = str(args["phone"])
+                if args.get("email"):
+                    target["email"] = str(args["email"])
+                if args.get("company"):
+                    target["company"] = str(args["company"])
+                return {
+                    "ok": True,
+                    "mode": "local",
+                    "action": action,
+                    "contact": target,
+                    "updated": True,
+                    "simulated": True,
+                }
             raise KeyError(f"unknown action '{action}'")
-        _life_read_only_action(provider=config.get("provider"))
+        if action not in {"contacts.resolve", "contacts.list", "contacts.create", "contacts.update"}:
+            raise KeyError(f"unknown action '{action}'")
+        if action in {"contacts.create", "contacts.update"}:
+            if "contacts:act" not in scopes:
+                raise PermissionError("scope 'contacts:act' is not granted")
+        else:
+            if "contacts:read" not in scopes:
+                raise PermissionError("scope 'contacts:read' is not granted")
+        if config.get("provider") != "macos_life":
+            raise LifeHelperUnavailableError(
+                "no life provider configured for contacts; set EV_LIFE_HELPER_PATH and provider=macos_life"
+            )
         command = {
             "contacts.resolve": "contacts.resolve",
             "contacts.list": "contacts.list",
+            "contacts.create": "contacts.create",
+            "contacts.update": "contacts.update",
         }[action]
         result = await run_life_helper(
             command,
@@ -1268,6 +1334,10 @@ class MailAdapter(Adapter):
                     "message_id": message_id,
                 }
             raise KeyError(f"unknown action '{action}'")
+        if provider == "google":
+            return await self._act_google(
+                action=action, args=args, token=token, scopes=scopes, config=config
+            )
         _life_read_only_action(provider=provider)
         command = {
             "mail.list": "mail.list",
@@ -1295,6 +1365,165 @@ class MailAdapter(Adapter):
             **result.data,
             "delivery": result.delivery,
             "policy": policy,
+        }
+
+    async def refresh_token(
+        self,
+        *,
+        token: str,
+        refresh_token: str,
+        config: dict,
+    ) -> dict:
+        if config.get("provider") == "google":
+            provider = oauth.provider_for("mail")
+            if provider is None:  # pragma: no cover - mail always maps
+                raise oauth.OAuthProviderError("mail OAuth provider unavailable")
+            return await provider.refresh(refresh_token)
+        return await super().refresh_token(
+            token=token,
+            refresh_token=refresh_token,
+            config=config,
+        )
+
+    async def revoke_remote(
+        self,
+        *,
+        token: str,
+        config: dict,
+    ) -> dict:
+        if config.get("provider") == "google":
+            provider = oauth.provider_for("mail")
+            if provider is None:  # pragma: no cover - mail always maps
+                raise oauth.OAuthProviderError("mail OAuth provider unavailable")
+            return await provider.revoke(token)
+        return await super().revoke_remote(token=token, config=config)
+
+    async def _act_google(
+        self,
+        *,
+        action: str,
+        args: dict,
+        token: str,
+        scopes: list[str],
+        config: dict,
+    ) -> dict:
+        spec = self.action(action)
+        if spec is None:
+            raise KeyError(f"unknown action '{action}'")
+        if spec.scope not in scopes:
+            raise PermissionError(f"scope '{spec.scope}' is not granted")
+        if action == "mail.list":
+            limit = args.get("limit") or 15
+            try:
+                limit_n = int(limit)
+            except (TypeError, ValueError):
+                limit_n = 15
+            items = await self._list_gmail(token, config, limit=limit_n)
+            return {
+                "ok": True,
+                "mode": "google",
+                "action": action,
+                "items": items,
+            }
+        return {
+            "ok": False,
+            "mode": "google",
+            "action": action,
+            "sent": False,
+            "error": "gmail_send_not_enabled",
+        }
+
+    async def _list_gmail(
+        self,
+        token: str,
+        config: dict,
+        *,
+        limit: int = 15,
+    ) -> list[dict]:
+        """Inbox envelopes only: Subject/From/Date. Never bodies."""
+        del config
+        provider = oauth.provider_for("mail")
+        if provider is None:  # pragma: no cover - mail always maps
+            raise oauth.OAuthProviderError("mail OAuth provider unavailable")
+        if not token:
+            raise oauth.OAuthAuthError("gmail list requires an access token")
+        cap = max(1, min(int(limit or 15), 15))
+        list_url = f"{provider.api_base}/users/me/messages"
+        envelopes: list[dict] = []
+        async with _make_client() as client:
+            listed = await client.get(
+                list_url,
+                params={"maxResults": str(cap), "q": "in:inbox"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if listed.status_code in (401, 403):
+                raise oauth.OAuthAuthError("gmail provider rejected the access token")
+            if listed.status_code >= 400:
+                raise oauth.OAuthProviderError(
+                    f"gmail list failed (status {listed.status_code})"
+                )
+            try:
+                payload = listed.json()
+            except ValueError as exc:
+                raise oauth.OAuthProviderError(
+                    "gmail provider returned a non-JSON list response"
+                ) from exc
+            rows = payload.get("messages") if isinstance(payload, dict) else None
+            if not isinstance(rows, list):
+                return []
+            for row in rows[:cap]:
+                if not isinstance(row, dict):
+                    continue
+                message_id = str(row.get("id") or "").strip()
+                if not message_id:
+                    continue
+                meta = await client.get(
+                    f"{provider.api_base}/users/me/messages/{quote(message_id, safe='')}",
+                    params=[
+                        ("format", "metadata"),
+                        ("metadataHeaders", "Subject"),
+                        ("metadataHeaders", "From"),
+                        ("metadataHeaders", "Date"),
+                    ],
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if meta.status_code in (401, 403):
+                    raise oauth.OAuthAuthError("gmail provider rejected the access token")
+                if meta.status_code >= 400:
+                    continue
+                try:
+                    body = meta.json()
+                except ValueError:
+                    continue
+                envelopes.append(self._normalize_gmail_metadata(message_id, body))
+        return envelopes
+
+    @staticmethod
+    def _normalize_gmail_metadata(message_id: str, body: object) -> dict:
+        payload = body.get("payload") if isinstance(body, dict) else None
+        headers = payload.get("headers") if isinstance(payload, dict) else None
+        subject = ""
+        sender = ""
+        received = ""
+        if isinstance(headers, list):
+            for header in headers:
+                if not isinstance(header, dict):
+                    continue
+                name = str(header.get("name") or "").strip().lower()
+                value = str(header.get("value") or "").strip()
+                if name == "subject":
+                    subject = value[:256]
+                elif name == "from":
+                    sender = value[:256]
+                elif name == "date":
+                    received = value[:128]
+        text = f"{subject} from {sender}".strip()
+        return {
+            "id": message_id,
+            "subject": subject,
+            "sender": sender,
+            "received": received,
+            "text": text,
         }
 
 
@@ -1671,8 +1900,8 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
     ContactsAdapter(
         slug="contacts",
         name="Contacts",
-        description="Resolve and list the owner's Apple contacts (read-only).",
-        capabilities=("contacts:read",),
+        description="Resolve, list, create, and update the owner's Apple contacts.",
+        capabilities=("contacts:read", "contacts:act"),
         default_scopes=("contacts:read",),
         min_privacy="normal",
         privacy_kind="app",
@@ -1689,6 +1918,37 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
                 },
             ),
             AdapterAction("contacts.list", "contacts:read", "List all contacts"),
+            AdapterAction(
+                "contacts.create",
+                "contacts:act",
+                "Create a new contact",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "minLength": 1, "maxLength": 256},
+                        "phone": {"type": "string", "maxLength": 64},
+                        "email": {"type": "string", "maxLength": 256},
+                        "company": {"type": "string", "maxLength": 256},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            AdapterAction(
+                "contacts.update",
+                "contacts:act",
+                "Update an existing contact",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "maxLength": 256},
+                        "query": {"type": "string", "maxLength": 256},
+                        "name": {"type": "string", "maxLength": 256},
+                        "phone": {"type": "string", "maxLength": 64},
+                        "email": {"type": "string", "maxLength": 256},
+                        "company": {"type": "string", "maxLength": 256},
+                    },
+                },
+            ),
         ),
     ),
     PhoneAdapter(
@@ -1735,7 +1995,7 @@ BUILTIN_ADAPTERS: tuple[Adapter, ...] = (
     MailAdapter(
         slug="mail",
         name="Mail",
-        description="Read and send mail through the owner's Apple Mail account.",
+        description="Read Apple Mail locally, or Gmail metadata (subject/sender) via OAuth.",
         capabilities=("mail:read", "mail:act"),
         default_scopes=("mail:read",),
         min_privacy="normal",

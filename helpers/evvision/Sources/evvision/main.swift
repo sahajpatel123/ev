@@ -527,6 +527,22 @@ func captureCamera(persistPath: String?) async throws -> [String: Any] {
     guard session.isRunning else {
         throw EvError.engine("Camera session failed to start")
     }
+    if device.isExposureModeSupported(.continuousAutoExposure) {
+        try? device.lockForConfiguration()
+        device.exposureMode = .continuousAutoExposure
+        if device.isWhiteBalanceModeSupported(.continuousAutoWhiteBalance) {
+            device.whiteBalanceMode = .continuousAutoWhiteBalance
+        }
+        device.unlockForConfiguration()
+    }
+    let settleDeadline = Date().addingTimeInterval(1.0)
+    while Date() < settleDeadline {
+        if !device.isAdjustingExposure && !device.isAdjustingWhiteBalance {
+            try await Task.sleep(nanoseconds: 80_000_000)
+            break
+        }
+        try await Task.sleep(nanoseconds: 30_000_000)
+    }
     let delegate = PhotoDelegate()
     let data: Data?
     do {

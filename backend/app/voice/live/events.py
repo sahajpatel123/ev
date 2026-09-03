@@ -161,6 +161,7 @@ class PartialTranscriptEvent(LiveEvent):
     sequence: int
     stable: bool = False
     confidence: float = 0.0
+    role: str = "user"
 
     def __init__(
         self,
@@ -170,12 +171,14 @@ class PartialTranscriptEvent(LiveEvent):
         sequence: int,
         stable: bool = False,
         confidence: float = 0.0,
+        role: str = "user",
     ) -> None:
         super().__init__("partial", at_ms)
         self.text = text
         self.sequence = sequence
         self.stable = stable
         self.confidence = confidence
+        self.role = role or "user"
 
 
 @dataclass
@@ -374,6 +377,14 @@ class ConversationMovedEvent(LiveEvent):
         self.to_device_id = to_device_id
         self.reason = reason
         self.code = "audio_owner_lost"
+
+
+@dataclass
+class KeepaliveEvent(LiveEvent):
+    """Transport liveness ack. No conversation semantics."""
+
+    def __init__(self, *, at_ms: int) -> None:
+        super().__init__("keepalive", at_ms)
 
 
 @dataclass

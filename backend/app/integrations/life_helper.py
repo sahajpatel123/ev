@@ -51,6 +51,8 @@ CONFIRMATION_FIELD = {
 COMMAND_FLAGS: dict[str, tuple[tuple[str, str], ...]] = {
     "contacts.list": (),
     "contacts.resolve": (("query", "--query"),),
+    "contacts.create": (("name", "--name"), ("phone", "--phone"), ("email", "--email"), ("company", "--company")),
+    "contacts.update": (("id", "--id"), ("query", "--query"), ("name", "--name"), ("phone", "--phone"), ("email", "--email"), ("company", "--company")),
     "messages.list": (("limit", "--limit"),),
     "messages.send": (("to", "--to"), ("text", "--text")),
     "mail.list": (("limit", "--limit"),),

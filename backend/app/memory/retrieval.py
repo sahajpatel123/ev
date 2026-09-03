@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import math
 from datetime import UTC, datetime
 
@@ -13,7 +14,7 @@ from app.embeddings import (
     get_embedder,
 )
 from app.memory.entities import extract_entities_from_text
-from app.models import Memory, MemoryEntity, MemoryEvent
+from app.models import Event, Memory, MemoryEntity, MemoryEvent
 from app.training.personalization import calibration_multipliers
 from app.utils.text import simple_tokens
 
@@ -177,6 +178,15 @@ def _tokens_for_memory(m) -> frozenset:
     return tokens
 
 
+def _life_archive_memory_ids():
+    """Memories derived from the takeout ingest stay off the general retriever."""
+    return (
+        select(MemoryEvent.memory_id)
+        .join(Event, Event.id == MemoryEvent.event_id)
+        .where(Event.source == "life_archive")
+    )
+
+
 class Retriever:
     def __init__(self, session: AsyncSession, embeddings=None) -> None:
         self.session = session
@@ -254,7 +264,11 @@ class Retriever:
         current_filter = [] if include_historical else [Memory.is_current.is_(True)]
         stmt = (
             select(Memory)
-            .where(Memory.redacted.is_(False), *current_filter)
+            .where(
+                Memory.redacted.is_(False),
+                Memory.id.not_in(_life_archive_memory_ids()),
+                *current_filter,
+            )
             .order_by(Memory.importance.desc())
             .limit(settings.max_retrieval_memories * 4)
         )
@@ -334,6 +348,10 @@ class Retriever:
 
         t0 = _time.perf_counter()
         scored: list[RetrievedMemory] = []
+        # Yield to audio loop before CPU-heavy vectorization so a tool turn
+        # doesn't starve the realtime PCM pump (tool gap → glitch when scoring
+        # blocks 50-150ms on the main loop).
+        await asyncio.sleep(0)
         # F1.1: vectorized semantic cosine for the candidate batch (identical
         # math; removes the per-row Python loop from the hot path).
         semantic_vec: dict = {}
@@ -353,15 +371,22 @@ class Retriever:
                         vecs.append(m.embedding)
                         ids.append(m.id)
                 if vecs:
-                    mat = _np.asarray(vecs, dtype=_np.float64)
-                    norms = _np.linalg.norm(mat, axis=1)
-                    norms[norms == 0] = 1.0
-                    dots = mat @ qv
-                    cos = _np.clip(dots / (norms * qnorm), 0.0, 1.0)
-                    semantic_vec = dict(zip(ids, cos.tolist(), strict=False))
+                    # Offload matmul/norm to worker thread so the event loop
+                    # keeps pumping audio deltas during a recall tool call.
+                    def _matmul() -> dict:
+                        mat = _np.asarray(vecs, dtype=_np.float64)
+                        norms = _np.linalg.norm(mat, axis=1)
+                        norms[norms == 0] = 1.0
+                        dots = mat @ qv
+                        cos = _np.clip(dots / (norms * qnorm), 0.0, 1.0)
+                        return dict(zip(ids, cos.tolist(), strict=False))
+
+                    semantic_vec = await asyncio.to_thread(_matmul)
         except Exception:  # noqa: BLE001 - vectorization is an optimization only
             semantic_vec = {}
-        for m in memories:
+        # Yield again so audio drains before scoring loop.
+        await asyncio.sleep(0)
+        for idx, m in enumerate(memories):
             mem_version = m.embedding_model_version
             comparable = mem_version is None or mem_version == self.embedding_model_version
             semantic_raw = semantic_vec.get(m.id, raw_semantics.get(m.id, 0.0))
@@ -404,6 +429,8 @@ class Retriever:
             }
             score = sum(effective_weights[k] * components[k] for k in effective_weights)
             if score < min_score:
+                if idx % 32 == 0:
+                    await asyncio.sleep(0)
                 continue
             scored.append(
                 RetrievedMemory(
@@ -421,6 +448,8 @@ class Retriever:
                     source_event_ids=prov.get(m.id, []),
                 )
             )
+            if idx % 32 == 31:
+                await asyncio.sleep(0)
         scored.sort(key=lambda r: r.score, reverse=True)
         _note_stage("fusion_score", (_time.perf_counter() - t0) * 1000.0)
         if (
@@ -458,11 +487,23 @@ class Retriever:
         access: str = "model",
         include_sensitive: bool = False,
     ) -> list[dict]:
-        """Keyword+recency search over the raw event timeline."""
-        from app.models import Event
+        """Keyword+recency search over the conversation timeline.
+
+        Life-archive rows live on the locator path, not this scan.
+        """
+        from app.memory.live_life import LIVE_SOURCES
 
         query_tokens = simple_tokens(query)
-        stmt = select(Event).where(Event.tombstoned_at.is_(None)).order_by(Event.occurred_at.desc()).limit(2000)
+        stmt = (
+            select(Event)
+            .where(
+                Event.tombstoned_at.is_(None),
+                Event.source != "life_archive",
+                Event.source.notin_(tuple(LIVE_SOURCES)),
+            )
+            .order_by(Event.occurred_at.desc())
+            .limit(2000)
+        )
         if access == "model":
             stmt = stmt.where(Event.privacy_level != "never_send_to_model")
             if not include_sensitive:

@@ -275,13 +275,13 @@ enum MacControlProbe {
             latencyMs: 0
         )
 
-        let safari = call("open_url", ["url": "https://www.google.com/search?q=OpenAI"])
-        Thread.sleep(forTimeInterval: 1.2)
+        let safari = call("app_action", ["app": "Safari", "action": "search", "query": "OpenAI"])
+        Thread.sleep(forTimeInterval: 0.5)
         let safariInspect = call("inspect_ui", ["app": "Safari"])
         record(
             "F_safari_search",
             flag(safari.result),
-            "opened=\(flag(safari.result)) window=\(String(describing: safariInspect.result["window"])) method=apple_events",
+            "opened=\(flag(safari.result)) window=\(String(describing: safariInspect.result["window"])) url=\(String(describing: safari.result["url"] ?? "")) method=semantic_adapter",
             latencyMs: safari.ms
         )
         let safariScrollTarget = findRef(safariInspect.result) { role, _ in
@@ -386,12 +386,29 @@ enum MacControlProbe {
         let notes = call("open_app", ["name": "Notes"])
         Thread.sleep(forTimeInterval: 0.4)
         let notesInspect = call("inspect_ui", ["app": "Notes"])
-        _ = call("ui_action", ["action": "type", "value": "Evie multi-app note"])
+        let noteBody = findRef(notesInspect.result) { role, _ in
+            let lower = role.lowercased()
+            return lower.contains("textarea") || lower.contains("text area") || lower.contains("axtextarea")
+        }
+        if let noteBody {
+            _ = call("ui_action", ["action": "press", "element_ref": noteBody])
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        let notesTyped = call("ui_action", ["action": "type", "value": "Evie multi-app note"])
+        Thread.sleep(forTimeInterval: 0.35)
+        let notesAfter = call("inspect_ui", ["app": "Notes", "query": "Evie multi-app"])
+        let notesWrote = flag(notesTyped.result) && haystack(notesAfter.result).contains("evie multi-app")
         record(
             "J_multi_app",
             flag(notes.result) && flag(notesInspect.result),
-            "notes=\(flag(notes.result)) window=\(String(describing: notesInspect.result["window"]))",
+            "notes=\(flag(notes.result)) window=\(String(describing: notesInspect.result["window"])) body_ref=\(noteBody ?? "none")",
             latencyMs: notes.ms + notesInspect.ms
+        )
+        record(
+            "J_notes_type",
+            notesWrote || flag(notesTyped.result),
+            "typed=\(flag(notesTyped.result)) visible=\(notesWrote) compact=\(haystack(notesAfter.result).prefix(160))",
+            latencyMs: notesTyped.ms + notesAfter.ms
         )
 
         let fiveStep = verifiedType && blob2.contains("second line") && flag(opened.result)
@@ -434,7 +451,221 @@ enum MacControlProbe {
         )
         _ = call("app_action", ["app": "Music", "action": "pause"])
 
+        if NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.spotify.client") != nil {
+            let spotifyStatus = call("app_action", ["app": "Spotify", "action": "status"])
+            record(
+                "U_spotify_status",
+                flag(spotifyStatus.result),
+                "state=\(String(describing: spotifyStatus.result["player_state"] ?? "")) track=\(String(describing: spotifyStatus.result["track"] ?? "")) method=scripting_bridge",
+                latencyMs: spotifyStatus.ms
+            )
+            let spotifyURL = call("open_url", ["url": "spotify:search:lofi"])
+            record(
+                "U_spotify_search_url",
+                flag(spotifyURL.result),
+                "opened=\(flag(spotifyURL.result)) spoken=\(String(describing: spotifyURL.result["spoken"] ?? ""))",
+                latencyMs: spotifyURL.ms
+            )
+        } else {
+            record("U_spotify_status", true, "skipped_spotify_not_installed", latencyMs: 0)
+            record("U_spotify_search_url", true, "skipped_spotify_not_installed", latencyMs: 0)
+        }
+        if NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") != nil {
+            let chromeStatus = call("app_action", ["app": "Chrome", "action": "status"])
+            record(
+                "U_chrome_status",
+                flag(chromeStatus.result),
+                "url=\(String(describing: chromeStatus.result["url"] ?? "")) title=\(String(describing: chromeStatus.result["title"] ?? "")) method=apple_events",
+                latencyMs: chromeStatus.ms
+            )
+            let chromeSearch = call("app_action", ["app": "Chrome", "action": "search", "query": "OpenAI"])
+            Thread.sleep(forTimeInterval: 0.4)
+            let chromeAfter = call("app_action", ["app": "Chrome", "action": "status"])
+            let chromeURL = String(describing: chromeAfter.result["url"] ?? "").lowercased()
+            record(
+                "U_chrome_search",
+                flag(chromeSearch.result) && (chromeURL.contains("google") || chromeURL.contains("openai") || chromeURL.contains("search")),
+                "url=\(chromeURL) title=\(String(describing: chromeAfter.result["title"] ?? "")) method=apple_events",
+                latencyMs: chromeSearch.ms + chromeAfter.ms
+            )
+        } else {
+            record("U_chrome_status", true, "skipped_chrome_not_installed", latencyMs: 0)
+            record("U_chrome_search", true, "skipped_chrome_not_installed", latencyMs: 0)
+        }
+
         print("\(marker) SUMMARY failed=\(failed)")
+        return failed == 0 ? 0 : 1
+    }
+
+    static func runPlayMedia() -> Int32 {
+        setbuf(stdout, nil)
+        _ = NSApplication.shared
+        let started = Date()
+        let result = MacControlService.shared.handle(
+            command: "app_action",
+            arguments: ["app": "Safari", "action": "play", "query": "first"],
+            requestId: UUID().uuidString
+        )
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        let ok = result["ok"] as? Bool == true
+        let player = String(describing: result["player_state"] ?? "")
+        let url = String(describing: result["url"] ?? "")
+        let method = String(describing: result["method"] ?? "")
+        let spoken = String(describing: result["spoken"] ?? "")
+        print("\(marker) safari_play ok=\(ok) player=\(player) method=\(method) \(ms)ms url=\(url) spoken=\(spoken)")
+        let safariPass = ok && player == "playing" && url.lowercased().contains("/watch")
+
+        let finderStarted = Date()
+        let finder = MacControlService.shared.handle(
+            command: "app_action",
+            arguments: ["app": "Finder", "action": "play", "query": "EV-20260831"],
+            requestId: UUID().uuidString
+        )
+        let finderMs = Int(Date().timeIntervalSince(finderStarted) * 1000)
+        let finderOk = finder["ok"] as? Bool == true
+        let finderPlayer = String(describing: finder["player_state"] ?? "")
+        let finderFile = String(describing: finder["file"] ?? finder["path"] ?? "")
+        print("\(marker) finder_play ok=\(finderOk) player=\(finderPlayer) \(finderMs)ms file=\(finderFile) method=\(finder["method"] ?? "") err=\(finder["apple_error"] ?? "") spoken=\(finder["spoken"] ?? "")")
+        let finderPass = finderOk && finderPlayer == "playing"
+        let failed = (safariPass ? 0 : 1) + (finderPass ? 0 : 1)
+        print("\(marker) SUMMARY failed=\(failed) safari=\(safariPass) finder=\(finderPass)")
+        return failed == 0 ? 0 : 1
+    }
+
+    static func runFinderPlay() -> Int32 {
+        setbuf(stdout, nil)
+        _ = NSApplication.shared
+        let finderStarted = Date()
+        let finder = MacControlService.shared.handle(
+            command: "app_action",
+            arguments: ["app": "Finder", "action": "play", "query": "EV-20260831"],
+            requestId: UUID().uuidString
+        )
+        let finderMs = Int(Date().timeIntervalSince(finderStarted) * 1000)
+        let finderOk = finder["ok"] as? Bool == true
+        let finderPlayer = String(describing: finder["player_state"] ?? "")
+        let finderFile = String(describing: finder["file"] ?? finder["path"] ?? "")
+        print("\(marker) finder_play ok=\(finderOk) player=\(finderPlayer) \(finderMs)ms file=\(finderFile) method=\(finder["method"] ?? "") err=\(finder["apple_error"] ?? "") spoken=\(finder["spoken"] ?? "")")
+        let finderPass = finderOk && finderPlayer == "playing"
+        print("\(marker) SUMMARY failed=\(finderPass ? 0 : 1) finder=\(finderPass)")
+        return finderPass ? 0 : 1
+    }
+
+    static func runSearchDomain() -> Int32 {
+        setbuf(stdout, nil)
+        _ = NSApplication.shared
+        func hostOk(_ url: String?) -> Bool {
+            let lower = (url ?? "").lowercased()
+            return lower.contains("youtube.com")
+                && !lower.contains(".open")
+                && !lower.contains("youtube.com.in")
+                && !lower.contains("/watch")
+                && !lower.contains("google.com/search")
+        }
+        let gluedOpen = MacControlService.navigationURL(from: "youtube.com.open") ?? ""
+        let gluedIn = MacControlService.navigationURL(from: "youtube.com.in") ?? ""
+        let spoken = MacControlService.navigationURL(from: "youtube . com") ?? ""
+        let india = MacControlService.navigationURL(from: "gov.in") ?? ""
+        print("\(marker) nav_open=\(gluedOpen) nav_in=\(gluedIn) nav_spoken=\(spoken) nav_gov=\(india)")
+        let parsePass = hostOk(gluedOpen) && hostOk(gluedIn) && hostOk(spoken)
+            && india.lowercased().contains("gov.in")
+        let started = Date()
+        let result = MacControlService.shared.handle(
+            command: "app_action",
+            arguments: ["app": "Safari", "action": "search", "query": "youtube.com.open"],
+            requestId: UUID().uuidString
+        )
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        let url = String(describing: result["url"] ?? "")
+        let query = String(describing: result["query"] ?? "")
+        let player = String(describing: result["player_state"] ?? "")
+        let ok = result["ok"] as? Bool == true
+        print("\(marker) safari_search_domain ok=\(ok) \(ms)ms query=\(query) url=\(url) player=\(player) spoken=\(result["spoken"] ?? "")")
+        let searchPass = ok && hostOk(url) && !query.lowercased().contains(".open") && player != "playing"
+        let failed = (parsePass ? 0 : 1) + (searchPass ? 0 : 1)
+        print("\(marker) SUMMARY failed=\(failed) parse=\(parsePass) search=\(searchPass)")
+        return failed == 0 ? 0 : 1
+    }
+
+    static func runGenericIntent() -> Int32 {
+        setbuf(stdout, nil)
+        _ = NSApplication.shared
+        let started = Date()
+        let result = MacControlService.shared.handle(
+            command: "app_action",
+            arguments: [
+                "app": "TextEdit",
+                "action": "search",
+                "query": "hello world in TextEdit",
+            ],
+            requestId: UUID().uuidString
+        )
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        let query = String(describing: result["query"] ?? "")
+        let ok = result["ok"] as? Bool == true
+        let cleaned = query.lowercased() == "hello world"
+        print("\(marker) textedit_search ok=\(ok) \(ms)ms query=\(query) spoken=\(result["spoken"] ?? "")")
+        print("\(marker) SUMMARY failed=\(cleaned && ok ? 0 : 1) generic=\(cleaned && ok)")
+        return cleaned && ok ? 0 : 1
+    }
+
+    static func runFiles() -> Int32 {
+        setbuf(stdout, nil)
+        _ = NSApplication.shared
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Desktop")
+        let url = desktop.appendingPathComponent("EV-files-probe.txt")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let write = MacControlService.shared.handle(
+            command: "file_op",
+            arguments: [
+                "action": "write",
+                "path": url.path,
+                "content": "hello from evie",
+            ],
+            requestId: UUID().uuidString
+        )
+        let writeOk = write["ok"] as? Bool == true
+        let read = MacControlService.shared.handle(
+            command: "file_op",
+            arguments: ["action": "read", "path": url.path],
+            requestId: UUID().uuidString
+        )
+        let readOk = read["ok"] as? Bool == true
+            && String(describing: read["content"] ?? "").contains("hello from evie")
+        let edit = MacControlService.shared.handle(
+            command: "file_op",
+            arguments: [
+                "action": "write",
+                "path": url.path,
+                "content": "hi from evie",
+            ],
+            requestId: UUID().uuidString
+        )
+        let disk = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        let editOk = edit["ok"] as? Bool == true && disk == "hi from evie"
+        let list = MacControlService.shared.handle(
+            command: "file_op",
+            arguments: ["action": "list", "path": desktop.path, "query": "EV-files-probe"],
+            requestId: UUID().uuidString
+        )
+        let listed = (list["files"] as? [String] ?? []).contains("EV-files-probe.txt")
+        let denied = MacControlService.shared.handle(
+            command: "file_op",
+            arguments: [
+                "action": "read",
+                "path": NSHomeDirectory() + "/.ssh/id_rsa",
+            ],
+            requestId: UUID().uuidString
+        )
+        let denyOk = denied["ok"] as? Bool != true
+        print("\(marker) files_write ok=\(writeOk) path=\(url.path) spoken=\(write["spoken"] ?? "")")
+        print("\(marker) files_read ok=\(readOk) spoken=\(read["spoken"] ?? "")")
+        print("\(marker) files_edit ok=\(editOk) disk=\(disk)")
+        print("\(marker) files_list ok=\(listed)")
+        print("\(marker) files_deny ok=\(denyOk) err=\(denied["error"] ?? "")")
+        let failed = [writeOk, readOk, editOk, listed, denyOk].filter { !$0 }.count
+        print("\(marker) SUMMARY failed=\(failed) files=\(failed == 0)")
         return failed == 0 ? 0 : 1
     }
 }

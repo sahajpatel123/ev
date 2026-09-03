@@ -52,7 +52,7 @@ Physical two-iPhone remaining (Safari / Home Screen, not Xcode):
   [ ] Open https://<host>.ts.net/evie/ (or /evie-install/) in Safari
   [ ] Share → Add to Home Screen on iPhone 16 Pro and iPhone SE
   [ ] Pair + Mac-promote each phone; trust_state and auth_revision visible
-  [ ] Settings → set 16 Pro as preferred camera, SE as fallback
+  [ ] Home Screen card or More → Settings: 16 Pro as preferred camera, SE as fallback
   [ ] Ten spoken turns / reconnect / interruption / lease transfer on each
   [ ] Look, memory query, Mac-safe action
   [ ] Offline capture + exactly-once replay (pending != executed)

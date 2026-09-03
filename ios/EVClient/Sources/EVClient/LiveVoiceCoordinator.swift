@@ -39,6 +39,7 @@ public final class LiveVoiceCoordinator: ObservableObject {
     private var mutedAt: Date?
     private var lastPartialRenderAt = Date.distantPast
     private let partialRenderInterval: TimeInterval = 0.12
+    private var lastTtsAt = Date.distantPast
 
     public init() {
 #if os(iOS) || os(macOS)
@@ -392,11 +393,16 @@ public final class LiveVoiceCoordinator: ObservableObject {
         case "tts_chunk":
             if let b64 = event.audioB64, let data = Data(base64Encoded: b64) {
 #if os(iOS) || os(macOS)
+                // Tool-gap mic hold: continuation after a 0.4s+ silence gap
+                // must keep mic muted or ambient noise splits the answer.
+                let gap = Date().timeIntervalSince(lastTtsAt)
                 player.enqueue(
                     data,
                     sampleRate: Double(event.sampleRate ?? 16_000),
                     contentType: event.contentType
                 )
+                if gap > 0.4 { player.holdToolGapMute() }
+                lastTtsAt = Date()
 #endif
             }
         case "barge_in":
@@ -446,8 +452,22 @@ public final class LiveVoiceCoordinator: ObservableObject {
 #endif
                 break
             }
+            if action == "record_stop" {
+#if os(iOS) || os(macOS)
+                CameraManager.shared.cancelRecording()
+#endif
+                break
+            }
             if action == "observe" {
                 Task { await self.fulfillObserve(event: event) }
+                break
+            }
+            if action == "record" {
+                Task { await self.fulfillRecord(deviceId: event.deviceId, requestId: event.requestId, durationMs: event.durationMs) }
+                break
+            }
+            if action == "capture_save" {
+                Task { await self.fulfillLookCapture(deviceId: event.deviceId, requestId: event.requestId, persist: true) }
                 break
             }
             if ["capture", "look", "once"].contains(action) {
@@ -458,7 +478,7 @@ public final class LiveVoiceCoordinator: ObservableObject {
         }
     }
 
-    private func fulfillLookCapture(deviceId: String?, requestId: String?) async {
+    private func fulfillLookCapture(deviceId: String?, requestId: String?, persist: Bool = false) async {
         guard let connection else {
             lastError = "Camera look is unavailable until the live session connects."
             return
@@ -466,7 +486,19 @@ public final class LiveVoiceCoordinator: ObservableObject {
 #if os(iOS) || os(macOS)
         let permission = CameraManager.shared.permissionState()
         do {
-            let frame = try await CameraManager.shared.captureFrame()
+            let frame = try await CameraManager.shared.captureFrame(forSave: persist)
+            var savedPath: String?
+            var attachmentId: String?
+            if persist {
+                let saved = CameraManager.shared.savePhoto(frame.jpeg)
+                savedPath = saved.path
+                attachmentId = await uploadCameraMedia(
+                    filename: saved.filename,
+                    contentType: "image/jpeg",
+                    data: frame.jpeg,
+                    eventType: "camera.capture"
+                )
+            }
             connection.sendLookFrame(
                 requestId: requestId,
                 jpeg: frame.jpeg,
@@ -475,9 +507,19 @@ public final class LiveVoiceCoordinator: ObservableObject {
                 error: nil,
                 permission: frame.permission,
                 deviceId: deviceId ?? self.deviceId,
+                attachmentId: attachmentId,
                 sequence: 0,
                 last: true,
-                cameraName: frame.cameraName
+                cameraName: frame.cameraName,
+                luminance: frame.luminance,
+                labels: frame.labels,
+                ocrText: frame.ocrText,
+                faceCount: frame.faceCount,
+                personCount: frame.personCount,
+                lighting: frame.lighting,
+                colors: frame.colors,
+                savedPath: savedPath,
+                mediaKind: persist ? "photo" : "frame"
             )
         } catch {
             lastError = error.localizedDescription
@@ -494,6 +536,105 @@ public final class LiveVoiceCoordinator: ObservableObject {
             )
         }
 #endif
+    }
+
+    private func fulfillRecord(deviceId: String?, requestId: String?, durationMs: Int?) async {
+        guard let connection else { return }
+#if os(iOS) || os(macOS)
+        let permission = CameraManager.shared.permissionState()
+        do {
+            let seconds = TimeInterval(durationMs ?? 8000) / 1000
+            let clip = try await CameraManager.shared.recordClip(duration: seconds)
+            let posters = clip.posterJPEGs
+            if posters.isEmpty {
+                connection.sendLookFrame(
+                    requestId: requestId,
+                    jpeg: nil,
+                    width: clip.width,
+                    height: clip.height,
+                    error: nil,
+                    permission: clip.permission,
+                    deviceId: deviceId ?? self.deviceId,
+                    sequence: 0,
+                    last: true,
+                    cameraName: clip.cameraName,
+                    luminance: clip.luminance,
+                    labels: clip.labels,
+                    ocrText: clip.ocrText,
+                    faceCount: clip.faceCount,
+                    personCount: clip.personCount,
+                    lighting: clip.lighting,
+                    colors: clip.colors,
+                    savedPath: clip.savedPath,
+                    mediaKind: "video",
+                    clipDurationMs: Int(clip.duration * 1000)
+                )
+            } else {
+                for (index, jpeg) in posters.enumerated() {
+                    let last = index == posters.count - 1
+                    connection.sendLookFrame(
+                        requestId: requestId,
+                        jpeg: jpeg,
+                        width: clip.width,
+                        height: clip.height,
+                        error: nil,
+                        permission: clip.permission,
+                        deviceId: deviceId ?? self.deviceId,
+                        sequence: index,
+                        last: last,
+                        cameraName: clip.cameraName,
+                        luminance: clip.luminance,
+                        labels: clip.labels,
+                        ocrText: clip.ocrText,
+                        faceCount: clip.faceCount,
+                        personCount: clip.personCount,
+                        lighting: clip.lighting,
+                        colors: clip.colors,
+                        savedPath: clip.savedPath,
+                        mediaKind: "video",
+                        clipDurationMs: Int(clip.duration * 1000)
+                    )
+                }
+            }
+        } catch {
+            lastError = error.localizedDescription
+            let code = (error as? CameraManager.CaptureError)?.code ?? "capture_failed"
+            connection.sendLookFrame(
+                requestId: requestId,
+                jpeg: nil,
+                width: nil,
+                height: nil,
+                error: code,
+                permission: permission,
+                deviceId: deviceId ?? self.deviceId,
+                last: true,
+                mediaKind: "video"
+            )
+        }
+#endif
+    }
+
+    private func uploadCameraMedia(
+        filename: String,
+        contentType: String,
+        data: Data,
+        eventType: String
+    ) async -> String? {
+        guard let client, !data.isEmpty else { return nil }
+        do {
+            let response = try await client.attach(
+                filename: filename,
+                contentType: contentType,
+                data: data,
+                source: "ios",
+                eventType: eventType,
+                privacyLevel: "normal",
+                deviceID: deviceId
+            )
+            return response.attachment.id
+        } catch {
+            return nil
+        }
     }
 
     private func fulfillObserve(event: LiveVoiceEvent) async {
@@ -518,7 +659,15 @@ public final class LiveVoiceCoordinator: ObservableObject {
                     deviceId: deviceId,
                     sequence: index,
                     last: last,
-                    cameraName: frame.cameraName
+                    cameraName: frame.cameraName,
+                    luminance: frame.luminance,
+                    labels: frame.labels,
+                    ocrText: frame.ocrText,
+                    faceCount: frame.faceCount,
+                    personCount: frame.personCount,
+                    lighting: frame.lighting,
+                    colors: frame.colors,
+                    mediaKind: "frame"
                 )
             case .failure(let error):
                 connection.sendLookFrame(

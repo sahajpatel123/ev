@@ -21,6 +21,51 @@ from app.utils.text import normalize_text, simple_tokens
 
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
 
+
+def _clean_sentence_key(sentence: str) -> str:
+    cleaned = re.sub(r"[^\w\s]", "", sentence.strip().lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _remove_immediate_duplicate_sentences(text: str) -> tuple[str, int]:
+    """Drop repeated sentences and echoes while preserving the first sentence."""
+
+    sentences = SENTENCE_RE.split(text)
+    if len(sentences) < 2:
+        return text, 0
+    kept: list[str] = []
+    seen_keys: set[str] = set()
+    previous_tokens: set[str] = set()
+    removed = 0
+    for sentence in sentences:
+        trimmed = sentence.strip()
+        if not trimmed:
+            continue
+        key = _clean_sentence_key(trimmed)
+        tokens = {t for t in key.split() if len(t) > 2}
+
+        # Exact or normalized duplicate already seen
+        if key and key in seen_keys:
+            removed += 1
+            continue
+
+        # Near-duplicate adjacent sentence (subsumed or >=75% token overlap)
+        if tokens and previous_tokens:
+            max_len = max(len(tokens), len(previous_tokens))
+            min_len = min(len(tokens), len(previous_tokens))
+            overlap_max = len(tokens & previous_tokens) / max_len if max_len else 0.0
+            overlap_min = len(tokens & previous_tokens) / min_len if min_len else 0.0
+            if overlap_max >= 0.75 or (overlap_min >= 0.9 and min_len >= 3):
+                removed += 1
+                continue
+
+        kept.append(sentence)
+        if key:
+            seen_keys.add(key)
+        if tokens:
+            previous_tokens = tokens
+    return " ".join(kept).strip(), removed
+
 BIO_VERBS = (
     r"decided|prefer|preferred|live|lived|work|worked|own|owned|bought|met|went|"
     r"visited|studied|moved|born|grew|started|finished|learned|learnt|chose|"
@@ -94,13 +139,13 @@ HUD_CONTRACTS: dict[str, dict] = {
 }
 
 WORD_COUNT_RANGES: dict[CommunicationMode, tuple[int, int]] = {
-    "casual": (5, 40),
+    "casual": (5, 32),
     "technical": (10, 300),
     "analytical": (15, 360),
     "coaching": (15, 160),
     "emergency": (4, 45),
     "collaborative": (10, 200),
-    "social": (5, 36),
+    "social": (5, 28),
 }
 
 MANIPULATION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
@@ -763,9 +808,36 @@ def enforce_persona(
     text = re.sub(r"\bas an ai\b", "as EV", text, flags=re.IGNORECASE)
     text = re.sub(r"\bas a language model\b", "as EV", text, flags=re.IGNORECASE)
     text = re.sub(r"^\s*(i'm sorry, but|i apologize, but)\s+", "", text, flags=re.IGNORECASE)
+    # Strip question-echo introductory sentences or clauses to stay concise and lead directly with the answer.
+    text = re.sub(
+        r"^\s*(?:you asked|you wanted to know)\b[^.!?\n]*[.!?]\s+(?=[A-Z0-9])",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"^\s*(?:regarding (?:your question about|what you asked)|to answer your question(?: about)?)\s*[^,.!?\n]*,\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
     text, guardrails, guardrail_flags = apply_persona_guardrails(text, claims=claims)
     persona.update(guardrails)
     flags.extend(guardrail_flags)
+
+    if not _looks_structured(text):
+        text, repetitions_removed = _remove_immediate_duplicate_sentences(text)
+        if repetitions_removed:
+            persona["repetitions_removed"] = repetitions_removed
+            flags.append(
+                FilterFlag(
+                    "output",
+                    "repeated_sentence_removed",
+                    "low",
+                    detail=f"Removed {repetitions_removed} immediately repeated sentence(s)",
+                    action="refine",
+                )
+            )
 
     lo, hi = WORD_COUNT_RANGES.get(strategy.mode, (5, 300))
     if style_profile:

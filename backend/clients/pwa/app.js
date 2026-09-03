@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.02.03";
+const CLIENT_BUILD = "2026.09.02.06";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -194,16 +194,30 @@ function backendLabel() {
   return String(state.hello && state.hello.recommended_backend || "webrtc_strict");
 }
 
-function render() {
+function paintLive() {
   const unpaired = !state.deviceToken;
-  $("welcome").hidden = !unpaired;
-  $("ready-ui").hidden = unpaired;
+  const welcome = $("welcome");
+  const ready = $("ready-ui");
+  if (welcome) welcome.hidden = !unpaired;
+  if (ready) ready.hidden = unpaired;
   const online = state.conn === "READY" || state.conn === "ACTIVE";
   const offline = state.conn === "DISCONNECTED" || state.conn === "OFFLINE";
   textOf($("status"), offline && unpaired ? "Pair this device" : (online ? "Private" : state.conn));
-  $("talk").disabled = state._talkInflight || !online || state.ui === "OFFLINE" || state.ui === "CONNECTING";
-  $("talk").textContent = state.talking ? "Stop" : "Talk";
-  $("talk").setAttribute("aria-label", state.talking ? "Stop talking" : "Talk to Evie");
+  const talk = $("talk");
+  if (talk) {
+    talk.disabled = state._talkInflight || !online || state.ui === "OFFLINE" || state.ui === "CONNECTING";
+    talk.textContent = state.talking ? "Stop" : "Talk";
+    talk.setAttribute("aria-label", state.talking ? "Stop talking" : "Talk to Evie");
+  }
+  textOf($("user-line"), state.userLine);
+  textOf($("reply"), state.caption);
+  const quick = $("quick-row");
+  if (quick) quick.hidden = unpaired || !!state.talking;
+  if (state.ui === "OFFLINE") setMood("Home Station is offline.");
+}
+
+function render() {
+  paintLive();
   const hello = state.hello || {};
   const device = hello.device || state.device || {};
   textOf($("device-role"), prettyRole(device.role) || "—");
@@ -215,23 +229,23 @@ function render() {
   const next = status.next_action || (hello.session_context && hello.session_context.next_action) || "";
   textOf($("trust-line"), [trust, prettyRole(device.role), next && next !== "ready" ? ("next: " + next) : ""].filter(Boolean).join(" · "));
   textOf($("sandbox-banner"), "Personal memory off");
-  textOf($("user-line"), state.userLine);
-  textOf($("reply"), state.caption);
-  if (state.ui === "OFFLINE") setMood("Home Station is offline.");
   const st = hello.states || {};
   textOf($("states"), [
     st.tailnet ? "TAILNET " + String(st.tailnet).toUpperCase() : "",
     st.evie_core ? "EVIE CORE " + String(st.evie_core).toUpperCase() : "",
     st.realtime ? "REALTIME " + String(st.realtime).toUpperCase() : "",
   ].filter(Boolean).join(" · "));
-  fillSettings(hello, device);
-  fillPrivacy(hello, device);
-  fillMobileActions(hello);
-  fillDevices(hello, device);
-  fillInbox();
-  fillWelcomeStatus();
+  if (!state.talking) {
+    fillSettings(hello, device);
+    fillPrivacy(hello, device);
+    fillMobileActions(hello);
+    fillDevices(hello, device);
+    fillInbox();
+    fillWelcomeStatus();
+  }
   refreshInstallHint();
   showUpdateLine();
+  paintCameraRole();
   textOf($("audio-badge"), "Audio · " + backendLabel());
   const health = state.voiceHealth && state.voiceHealth.health;
   textOf($("voice-health"), health
@@ -245,7 +259,9 @@ function render() {
     : "VOICE HEALTH: idle");
   textOf($("voice-status-line"), "MOBILE VOICE: CONNECTION CONVERGENCE");
   renderConnectionStages();
-  textOf($("diag"), JSON.stringify({
+  const diagPanel = $("diag-panel");
+  if (diagPanel && diagPanel.open) {
+    textOf($("diag"), JSON.stringify({
     conn: state.conn,
     ui: state.ui,
     client_build: CLIENT_BUILD,
@@ -294,6 +310,16 @@ function render() {
     playback: engine ? engine.metrics : {},
     incidents: state.incidents.slice(-8),
   }, null, 2));
+  }
+}
+
+let healthRenderTimer = 0;
+function scheduleHealthRender() {
+  if (healthRenderTimer) return;
+  healthRenderTimer = window.setTimeout(() => {
+    healthRenderTimer = 0;
+    render();
+  }, 250);
 }
 
 function renderConnectionStages() {
@@ -407,7 +433,6 @@ function fillSettings(hello, device) {
     ["Notifications", notificationLine(status)],
     ["Sync cursor", state.syncCursor ? "yes" : "none"],
     ["Install", isStandalonePwa() ? "Home Screen" : "Safari tab"],
-    ["Camera role", cameraRoleLabel()],
   ]);
 }
 
@@ -737,7 +762,7 @@ function initSwipes(openSurface) {
 
   function interactive(target) {
     return !!(target && target.closest &&
-      target.closest("button, input, a, textarea, select, form, .sheet, .rail, .scrim"));
+      target.closest("button, input, a, textarea, select, form, .sheet, .rail, .scrim, .camera-ask, .choice-list, .quick-row"));
   }
 
   /* Paint at most once per frame, on the compositor (translate3d). */
@@ -878,7 +903,7 @@ function initSheetGestures() {
 
     function interactive(target) {
       return !!(target && target.closest &&
-        target.closest("button, input, a, textarea, select"));
+        target.closest("button, input, a, textarea, select, .camera-ask, .choice-list"));
     }
 
     function paint() {
@@ -1093,6 +1118,33 @@ function cameraRoleLabel() {
   if (state.cameraRole === "pro") return "preferred (16 Pro)";
   if (state.cameraRole === "standard") return "fallback (SE)";
   return "not set";
+}
+
+function setCameraRole(role) {
+  const next = role === "pro" || role === "standard" ? role : "unknown";
+  state.cameraRole = next;
+  try { localStorage.setItem("evie_camera_role", next); } catch (_err) {}
+  paintCameraRole();
+  if (next === "unknown") pushActivity("Camera role cleared");
+  else pushActivity("Camera set · " + cameraRoleLabel());
+  hello().catch(() => {});
+}
+
+function paintCameraRole() {
+  document.querySelectorAll("[data-camera-role]").forEach((btn) => {
+    const on = btn.getAttribute("data-camera-role") === state.cameraRole;
+    btn.classList.toggle("on", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  const ask = $("camera-ask");
+  if (ask) ask.hidden = !state.deviceToken || state.cameraRole !== "unknown" || !!state.talking;
+  const line = $("camera-role-line");
+  if (line) {
+    line.hidden = !state.deviceToken || state.cameraRole === "unknown";
+    line.textContent = "Camera · " + cameraRoleLabel();
+  }
+  const status = $("camera-role-status");
+  if (status) status.textContent = "Current: " + cameraRoleLabel();
 }
 
 function cameraHardware() {
@@ -1355,6 +1407,10 @@ async function pair() {
 
 async function sendText(text) {
   const requestId = crypto.randomUUID();
+  state.userLine = text;
+  state.caption = "…";
+  pushHistory("user", text);
+  paintLive();
   const body = await api("/v1/device-gateway/text", {
     method: "POST",
     body: JSON.stringify({
@@ -1365,14 +1421,13 @@ async function sendText(text) {
     }),
   });
   state.caption = body.reply || "";
-  pushHistory("user", text);
   pushHistory("evie", body.reply || "");
   if (body.conversation_moved) await stopTalk();
   if (body.needs_camera) await captureCamera(body);
   if (body.phone_action && window.EvieMobileActions) {
     window.EvieMobileActions.present(body.phone_action);
   }
-  render();
+  paintLive();
   return body;
 }
 
@@ -1517,10 +1572,16 @@ async function handleLiveMessage(gen, ev) {
       return;
     }
     if (msg.index === 0) {
-      engine.beginTurn({
+      // A zero index opens a provider response, but NOT always a new audible
+      // turn: tool continuations restart the chunk counter while preamble
+      // audio is still draining. Flushing there drops the queued tail
+      // mid-word on every tool call — adopt appends to the one stream.
+      const turn = {
         socketGeneration: gen,
         responseId: msg.response_id || msg.responseId || null,
-      });
+      };
+      if (engine.playing && engine.adoptTurn) engine.adoptTurn(turn);
+      else engine.beginTurn(turn);
     }
     await engine.enqueuePcm16({
       bytes: b64ToBytes(msg.audio_b64),
@@ -1729,17 +1790,17 @@ async function startWebRTC(opened) {
     onTranscript: (text, meta) => {
       state.lastAsr = text;
       state.lastAsrConfidence = meta && meta.confidence;
-      state.userLine = "TRANSCRIPT · " + text;
+      state.userLine = text;
       pushHistory("user", text);
       if (window.EvieMobileActions && window.EvieMobileActions.onTranscript) {
         window.EvieMobileActions.onTranscript(text);
       }
-      render();
+      paintLive();
     },
     onCaption: (text, done) => {
       state.caption = done ? text : (state.caption + text);
       if (done) pushHistory("evie", state.caption);
-      render();
+      paintLive();
     },
     onEnvelope: (amp) => {
       if (state.orb) state.orb.setAmp(amp);
@@ -1760,7 +1821,7 @@ async function startWebRTC(opened) {
     onHealth: (snap) => {
       state.voiceHealth = snap;
       if (snap && snap.connection) state.connectionDiag = snap.connection;
-      render();
+      scheduleHealthRender();
     },
   });
   state.webrtc = rtc;
@@ -2164,7 +2225,28 @@ async function boot() {
       showSheet(id, on);
     });
     $("more-rail").hidden = true;
+    if (surface === "inbox") refreshInbox();
   }
+  document.querySelectorAll("[data-quick]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const kind = btn.getAttribute("data-quick");
+      if (window.EvieFeedback) window.EvieFeedback.emit("tapPrimary", btn);
+      if (kind === "chat") {
+        openSurface("conversation");
+        return;
+      }
+      if (kind === "inbox") {
+        openSurface("inbox");
+        return;
+      }
+      const prompt = kind === "weather" ? "what's the weather" : (kind === "today" ? "what's on my calendar today" : "");
+      if (!prompt) return;
+      sendText(prompt).catch((err) => {
+        state.caption = String(err.message || err);
+        paintLive();
+      });
+    });
+  });
   document.querySelectorAll("[data-surface]").forEach((btn) => {
     btn.addEventListener("click", () => {
       openSurface(btn.getAttribute("data-surface"));
@@ -2221,18 +2303,18 @@ async function boot() {
     if (window.EvieMobileActions) window.EvieMobileActions.cancel();
   });
   $("retry-btn").addEventListener("click", () => hello().catch(() => scheduleReconnect()));
-  document.querySelectorAll("[data-camera-role]").forEach((btn) => {
-    btn.classList.toggle("on", btn.getAttribute("data-camera-role") === state.cameraRole);
-    btn.addEventListener("click", () => {
-      state.cameraRole = btn.getAttribute("data-camera-role") || "unknown";
-      try { localStorage.setItem("evie_camera_role", state.cameraRole); } catch (_err) {}
-      document.querySelectorAll("[data-camera-role]").forEach((other) => {
-        other.classList.toggle("on", other === btn);
-      });
-      hello().catch(() => {});
-      render();
-    });
+  document.addEventListener("click", (ev) => {
+    const node = ev.target;
+    if (!node || !node.closest) return;
+    const btn = node.closest("[data-camera-role]");
+    if (!btn) return;
+    setCameraRole(btn.getAttribute("data-camera-role") || "unknown");
   });
+  const cameraLine = $("camera-role-line");
+  if (cameraLine) {
+    cameraLine.addEventListener("click", () => openSurface("privacy"));
+  }
+  paintCameraRole();
   const updateLine = $("update-line");
   if (updateLine) {
     updateLine.addEventListener("click", () => {

@@ -80,6 +80,13 @@ async def record_conversation_turn(
             },
         )
     )
+    if event_type == "message.assistant":
+        try:
+            from app.memory.visual import remember_spoken_scene
+
+            await remember_spoken_scene(session, spoken, actor=actor, device_id=device_id)
+        except Exception:  # noqa: BLE001 - visual recall must never drop the turn
+            logger.info("visual spoken scene persist skipped", exc_info=True)
     log_memory(
         "memory.event_persisted",
         extra={

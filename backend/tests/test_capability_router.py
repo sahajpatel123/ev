@@ -51,6 +51,20 @@ async def test_memory_questions_stay_with_memory_router(db_session) -> None:
 
 
 @pytest.mark.asyncio
+async def test_mac_app_goals_do_not_route_to_memory(db_session) -> None:
+    chrome = await route_action(
+        _goal("In Google Chrome, search for OpenAI."),
+        session=db_session,
+    )
+    assert chrome.route_kind != RouteKind.MEMORY
+    notes = await route_action(
+        _goal("Create a note that says Evie live computer use"),
+        session=db_session,
+    )
+    assert notes.route_kind != RouteKind.MEMORY
+
+
+@pytest.mark.asyncio
 async def test_core_state_routes_to_core(db_session) -> None:
     route = await route_action(
         _goal("Project priority", target="life_project_query"), session=db_session

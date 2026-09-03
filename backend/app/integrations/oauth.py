@@ -221,7 +221,7 @@ class OAuthProvider:
         }
 
 
-def _google_provider() -> OAuthProvider:
+def _google_calendar_provider() -> OAuthProvider:
     return OAuthProvider(
         slug="google",
         name="Google Calendar",
@@ -232,6 +232,27 @@ def _google_provider() -> OAuthProvider:
             "openid",
             "email",
             "https://www.googleapis.com/auth/calendar.readonly",
+        ),
+        client_id=settings.google_oauth_client_id or "",
+        client_secret=settings.google_oauth_client_secret or "",
+        redirect_uri=settings.google_oauth_redirect_uri or "",
+        extra_authorize_params={"access_type": "offline", "prompt": "consent"},
+        revoke_url="https://oauth2.googleapis.com/revoke",
+    )
+
+
+def _google_mail_provider() -> OAuthProvider:
+    """Gmail metadata reads. Same Google client as calendar; separate consent."""
+    return OAuthProvider(
+        slug="google",
+        name="Gmail",
+        authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+        token_url="https://oauth2.googleapis.com/token",
+        api_base="https://gmail.googleapis.com/gmail/v1",
+        scopes=(
+            "openid",
+            "email",
+            "https://www.googleapis.com/auth/gmail.readonly",
         ),
         client_id=settings.google_oauth_client_id or "",
         client_secret=settings.google_oauth_client_secret or "",
@@ -261,7 +282,9 @@ def _github_provider() -> OAuthProvider:
 
 def provider_for(adapter_slug: str) -> OAuthProvider | None:
     if adapter_slug == "calendar":
-        return _google_provider()
+        return _google_calendar_provider()
+    if adapter_slug == "mail":
+        return _google_mail_provider()
     if adapter_slug == "github":
         return _github_provider()
     return None

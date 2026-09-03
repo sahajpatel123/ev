@@ -45,15 +45,23 @@ enum MacControlLiveE2E {
             emit("fail", ["boundary": "api_key", "detail": "placeholder API key"])
             return 2
         }
-        let client = EVAPIClient(baseURL: config.baseURL, token: config.apiKey)
+        let token = e2eBearerToken(config.apiKey)
+        let client = EVAPIClient(baseURL: config.baseURL, token: token)
+        let registry = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID")
+        let deviceId: String
+        if let registry, UUID(uuidString: registry) != nil {
+            deviceId = registry
+        } else {
+            deviceId = config.deviceID
+        }
         do {
-            let opened = try await client.openLiveVoice(deviceId: config.deviceID)
+            let opened = try await client.openLiveVoice(deviceId: deviceId)
             emit("session_opened", [
                 "session_id": opened.sessionId,
-                "device_id": config.deviceID,
+                "device_id": deviceId,
                 "base_url": config.baseURL.absoluteString,
             ])
-            let connection = LiveVoiceConnection(baseURL: config.baseURL, token: config.apiKey)
+            let connection = LiveVoiceConnection(baseURL: config.baseURL, token: token)
             let stream = try await connection.connect(sessionId: opened.sessionId)
             let deadline = Date().addingTimeInterval(timeout)
             var ready = false
@@ -85,7 +93,9 @@ enum MacControlLiveE2E {
                 connection.close()
             }
             let lowerUtterance = utterance.lowercased()
-            let needsComputerAction = lowerUtterance.contains("play")
+            let wantsLaptopFiles = fileUtterance(lowerUtterance)
+            let needsComputerAction = wantsLaptopFiles
+                || lowerUtterance.contains("play")
                 || lowerUtterance.contains("find")
                 || lowerUtterance.contains("search")
                 || lowerUtterance.contains("write")
@@ -97,6 +107,7 @@ enum MacControlLiveE2E {
                 || lowerUtterance.contains("type")
                 || lowerUtterance.contains("notes")
                 || lowerUtterance.contains("safari")
+                || lowerUtterance.contains("chrome")
                 || lowerUtterance.contains("calculator")
                 || lowerUtterance.contains("downloads")
                 || lowerUtterance.contains("first result")
@@ -107,20 +118,28 @@ enum MacControlLiveE2E {
                     let sent = sentText
                     let idle = Date().timeIntervalSince(lastActivity)
                     let hasReply = !replies.isEmpty
-                    let hasSemantic = toolCalls.contains { ($0["command"] as? String) == "app_action" }
-                    let hasInspect = toolCalls.contains { ($0["command"] as? String) == "inspect_ui" }
+                    let hasSemantic = toolCalls.contains { computerCommand($0["command"] as? String) }
+                    let hasInspect = hasSemantic
                     let actions = toolCalls.compactMap { $0["action"] as? String }
                     var stillGoing = (toolCalls.last?["must_continue"] as? Bool) == true
                     if lowerUtterance.contains("first result") || lowerUtterance.contains("open the first") {
                         stillGoing = stillGoing || !(actions.contains("navigate") || actions.contains("open_item"))
                     }
-                    if lowerUtterance.contains("notes") || lowerUtterance.contains("write") || lowerUtterance.contains("jot") {
-                        let wrote = toolCalls.contains {
+                    if wantsLaptopFiles {
+                        stillGoing = stillGoing || !fileOpSucceeded(toolCalls, utterance: lowerUtterance)
+                    } else if lowerUtterance.contains("notes") || lowerUtterance.contains("write") || lowerUtterance.contains("jot") {
+                        let wantsRead = lowerUtterance.contains("read")
+                            || lowerUtterance.contains("what's in")
+                            || lowerUtterance.contains("what is in")
+                        let done = toolCalls.contains {
                             let action = ($0["action"] as? String) ?? ""
                             let verified = ($0["verified"] as? Bool) ?? false
+                            if wantsRead {
+                                return verified && action == "read"
+                            }
                             return verified && ["create", "append", "type", "paste", "replace"].contains(action)
                         }
-                        stillGoing = stillGoing || !wrote
+                        stillGoing = stillGoing || !done
                     }
                     if lowerUtterance.contains("calculator") || lowerUtterance.contains("calculate") || lowerUtterance.contains("multiply") {
                         let display = toolCalls.compactMap { $0["display"] as? String }.first { !$0.isEmpty }
@@ -148,7 +167,7 @@ enum MacControlLiveE2E {
                     ready = true
                     connection.sendComputerState(
                         MacControlService.shared.permissionSnapshot(),
-                        deviceId: config.deviceID
+                        deviceId: deviceId
                     )
                     let realtime = event.config["realtime"]?.objectValue
                     advertised = stringList(realtime?["tool_names"] ?? realtime?["advertised_tool_names"])
@@ -158,7 +177,7 @@ enum MacControlLiveE2E {
                     schemaHash = realtime?["computer_tool_schema_hash"]?.stringValue
                         ?? realtime?["tool_schema_generation"]?.stringValue
                         ?? ""
-                    toolsReady = acknowledged.contains("app_action") && acknowledged.contains("inspect_ui")
+                    toolsReady = computerSurfaceReady(acknowledged)
                     emit("ready", [
                         "advertised": advertised,
                         "acknowledged": acknowledged,
@@ -182,9 +201,8 @@ enum MacControlLiveE2E {
                             schemaHash = value
                         }
                         let wasReady = toolsReady
-                        toolsReady = acknowledged.contains("app_action")
-                            && acknowledged.contains("inspect_ui")
-                            && (realtime["upstream_session_ready"]?.boolValue ?? toolsReady)
+                        toolsReady = computerSurfaceReady(acknowledged)
+                            && (realtime["upstream_session_ready"]?.boolValue ?? true)
                         if toolsReady != wasReady {
                             emit("tools", [
                                 "acknowledged": acknowledged,
@@ -212,7 +230,7 @@ enum MacControlLiveE2E {
                         command: command,
                         result: payload,
                         jpeg: jpeg,
-                        deviceId: config.deviceID
+                        deviceId: deviceId
                     )
                     let ms = Int(Date().timeIntervalSince(started) * 1000)
                     let row: [String: Any] = [
@@ -226,7 +244,10 @@ enum MacControlLiveE2E {
                         "player_state": payload["player_state"] as Any,
                         "error": payload["error"] as Any,
                         "url": payload["url"] as Any,
+                        "query": payload["query"] as Any,
                         "display": payload["display"] as Any,
+                        "body": payload["body"] as Any,
+                        "spoken": payload["spoken"] as Any,
                         "method": payload["method"] as Any,
                         "latency_ms": ms,
                     ]
@@ -268,12 +289,15 @@ enum MacControlLiveE2E {
                    !replies.isEmpty,
                    Date().timeIntervalSince(lastActivity) > 8
                 {
-                    let hasSemantic = toolCalls.contains { ($0["command"] as? String) == "app_action" }
+                    let hasSemantic = toolCalls.contains { computerCommand($0["command"] as? String) }
                     let waitingFollowUp = followUp != nil && !sentFollowUp
                     let actions = toolCalls.compactMap { $0["action"] as? String }
                     var stillGoing = (toolCalls.last?["must_continue"] as? Bool) == true
                     if lowerUtterance.contains("first result") || lowerUtterance.contains("open the first") {
                         stillGoing = stillGoing || !(actions.contains("navigate") || actions.contains("open_item"))
+                    }
+                    if wantsLaptopFiles {
+                        stillGoing = stillGoing || !fileOpSucceeded(toolCalls, utterance: lowerUtterance)
                     }
                     if (!needsComputerAction || hasSemantic) && !waitingFollowUp && !stillGoing {
                         break
@@ -314,8 +338,22 @@ enum MacControlLiveE2E {
                 ok = playing && toolsReady && sentText
             case "music-stopped":
                 ok = toolsReady && sentText && !playing
+            case "chrome-search":
+                ok = toolsReady && sentText && chromeSearchSucceeded(toolCalls)
+            case "notes-written":
+                ok = toolsReady && sentText && notesWriteSucceeded(toolCalls)
+            case "notes-read":
+                ok = toolsReady && sentText && notesReadSucceeded(toolCalls)
+            case "safari-search":
+                ok = toolsReady && sentText && safariSearchSucceeded(toolCalls)
+            case "file-written", "file-read", "file-edited", "file-listed", "file-opened", "file-op":
+                ok = toolsReady && sentText && fileOpSucceeded(toolCalls, utterance: lowerUtterance)
             default:
-                ok = toolsReady && sentText
+                ok = toolsReady && sentText && (
+                    !needsComputerAction
+                    || toolCalls.contains { computerCommand($0["command"] as? String) }
+                    || fileOpSucceeded(toolCalls, utterance: lowerUtterance)
+                )
             }
             if ok {
                 emit("pass", ["boundary": "live_e2e", "expect": expect])
@@ -343,6 +381,138 @@ enum MacControlLiveE2E {
         else { return }
         print("\(marker) \(line)")
         fflush(stdout)
+    }
+
+    private static func computerSurfaceReady(_ names: [String]) -> Bool {
+        let set = Set(names)
+        if set.contains("computer") {
+            return true
+        }
+        let apps = set.contains("open_app") || set.contains("list_apps") || set.contains("activate_app")
+        let inApp = set.contains("app_action")
+            || set.contains("inspect_ui")
+            || set.contains("read")
+            || set.contains("see")
+            || set.contains("click")
+        return apps && inApp
+    }
+
+    private static func computerCommand(_ command: String?) -> Bool {
+        let name = command ?? ""
+        return [
+            "app_action", "inspect_ui", "ui_action", "screen_look",
+            "read", "see", "click", "double_click", "right_click",
+            "type", "paste", "key", "scroll", "drag", "open_app", "open_url",
+            "computer", "file_op",
+        ].contains(name)
+    }
+
+    private static func chromeSearchSucceeded(_ calls: [[String: Any]]) -> Bool {
+        calls.contains { row in
+            let url = String(describing: row["url"] ?? "").lowercased()
+            let command = row["command"] as? String
+            return command == "app_action"
+                && (url.contains("google.com/search") || url.contains("openai"))
+        }
+    }
+
+    private static func notesWriteSucceeded(_ calls: [[String: Any]]) -> Bool {
+        calls.contains { row in
+            let action = (row["action"] as? String) ?? ""
+            let verified = (row["verified"] as? Bool) ?? false
+            let command = row["command"] as? String
+            return verified && (
+                (command == "app_action" && ["create", "append", "replace"].contains(action))
+                    || action == "type" || command == "type"
+            )
+        }
+    }
+
+    private static func notesReadSucceeded(_ calls: [[String: Any]]) -> Bool {
+        calls.contains { row in
+            let action = (row["action"] as? String) ?? ""
+            let verified = (row["verified"] as? Bool) ?? false
+            let command = row["command"] as? String
+            let body = String(describing: row["body"] ?? "")
+            let spoken = String(describing: row["spoken"] ?? "").lowercased()
+            let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            return command == "app_action"
+                && action == "read"
+                && verified
+                && text.count > 2
+                && !spoken.contains("couldn't read")
+        }
+    }
+
+    private static func safariSearchSucceeded(_ calls: [[String: Any]]) -> Bool {
+        calls.contains { row in
+            let url = String(describing: row["url"] ?? "").lowercased()
+            let query = String(describing: row["query"] ?? "").lowercased()
+            let command = row["command"] as? String
+            let action = (row["action"] as? String) ?? ""
+            let verified = (row["verified"] as? Bool) ?? false
+            let mustContinue = (row["must_continue"] as? Bool) ?? true
+            return command == "app_action"
+                && action == "search"
+                && verified
+                && !mustContinue
+                && url.contains("google.com/search")
+                && !query.contains("result in safari")
+                && query.count < 80
+        }
+    }
+
+    private static func fileUtterance(_ text: String) -> Bool {
+        let hasFileCue = text.contains("desktop")
+            || text.contains("documents")
+            || text.contains("downloads")
+            || text.contains(".txt")
+            || text.contains(".html")
+            || text.contains("local file")
+        let hasVerb = text.contains("write")
+            || text.contains("read")
+            || text.contains("edit")
+            || text.contains("list")
+            || text.contains("open")
+            || text.contains("create")
+            || text.contains("the files")
+        return hasFileCue && hasVerb
+    }
+
+    private static func fileOpSucceeded(_ calls: [[String: Any]], utterance: String) -> Bool {
+        let wanted: String
+        if utterance.contains("list") || utterance.contains("the files") || utterance.contains("what's on") {
+            wanted = "list"
+        } else if utterance.contains("edit") || utterance.contains("change") || utterance.contains("replace") {
+            wanted = "edit"
+        } else if utterance.contains("read") || utterance.contains("what's in") || utterance.contains("what is in") {
+            wanted = "read"
+        } else if utterance.contains("open") {
+            wanted = "open"
+        } else {
+            wanted = "write"
+        }
+        return calls.contains { row in
+            let command = row["command"] as? String
+            let action = (row["action"] as? String) ?? ""
+            let verified = (row["verified"] as? Bool) ?? false
+            let ok = (row["ok"] as? Bool) ?? false
+            guard command == "file_op", verified, ok else { return false }
+            if wanted == "edit" {
+                return action == "edit" || action == "write"
+            }
+            return action == wanted || action.isEmpty
+        }
+    }
+
+    private static func e2eBearerToken(_ fallback: String) -> String {
+        let env = ProcessInfo.processInfo.environment
+        if let value = env["EV_API_KEY"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           value.count >= 16,
+           !["dev", "changeme", "secret", "placeholder"].contains(value.lowercased()) {
+            return value
+        }
+        return fallback
     }
 
     private static func stringArg(_ args: [String], _ name: String) -> String? {

@@ -32,6 +32,7 @@ struct AppConfig {
         let urlString = urlSelection.value
         baseURLSource = urlSelection.source
         baseURL = URL(string: urlString) ?? URL(string: "http://127.0.0.1:8000")!
+        let persistURL = !urlSelection.source.hasPrefix("process environment")
 
         let hostName = (Host.current().localizedName ?? "Mac")
             .lowercased()
@@ -50,7 +51,7 @@ struct AppConfig {
             apiKey = token
             // Keep URL and deviceID persisted, but do NOT persist token to UserDefaults
             // (Keychain is the authority). Clean legacy UserDefaults master if stale.
-            defaults.set(urlString, forKey: "EV_API_URL")
+            if persistURL { defaults.set(urlString, forKey: "EV_API_URL") }
             defaults.set(deviceID, forKey: "EV_DEVICE_ID")
             // If UserDefaults still holds a master-length value that is not the device token,
             // keep it for now but it will not be used (Keychain wins). Do not overwrite Keychain.
@@ -60,7 +61,7 @@ struct AppConfig {
         if let token = DeviceCredentialStore.load(for: deviceID),
            APIAuthKey.isUsable(token) {
             apiKey = token
-            defaults.set(urlString, forKey: "EV_API_URL")
+            if persistURL { defaults.set(urlString, forKey: "EV_API_URL") }
             defaults.set(deviceID, forKey: "EV_DEVICE_ID")
             return
         }
@@ -76,7 +77,7 @@ struct AppConfig {
 
         if APIAuthKey.isUsable(resolvedKey) {
             defaults.set(resolvedKey, forKey: "EV_API_KEY")
-            defaults.set(urlString, forKey: "EV_API_URL")
+            if persistURL { defaults.set(urlString, forKey: "EV_API_URL") }
             defaults.set(deviceID, forKey: "EV_DEVICE_ID")
         } else {
             defaults.removeObject(forKey: "EV_API_KEY")
