@@ -578,6 +578,12 @@ def live_realtime_provider() -> str | None:
     brain = (settings.voice_live_brain or "auto").strip().lower()
     if brain in {"pipeline", "muse", "off", "auto", ""}:
         return None
+    from app.gateway.muse import muse_hearing_active, muse_intelligence_active
+
+    # Muse Talk path is ASR + Spark + existing TTS. A leftover
+    # EV_VOICE_LIVE_BRAIN=openai|xai must not open a second mouth.
+    if muse_intelligence_active() or muse_hearing_active():
+        return None
     openai_key = bool((settings.openai_api_key or "").strip())
     xai_key = bool((settings.xai_api_key or "").strip())
     if brain == "openai":

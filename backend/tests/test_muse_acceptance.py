@@ -263,6 +263,12 @@ def test_muse_path_has_one_mouth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "xai_api_key", "xai-present")
     assert live_realtime_provider() is None
     assert grok_voice_enabled() is False
+    monkeypatch.setattr(settings, "voice_live_brain", "openai")
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
+    assert live_realtime_provider() is None
+    assert grok_voice_enabled() is False
 
 
 def test_edge_tts_factory_has_no_openai_or_grok_fallback(monkeypatch: pytest.MonkeyPatch) -> None:

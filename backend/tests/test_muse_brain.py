@@ -120,7 +120,23 @@ def test_normal_s2s_brain_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_explicit_openai_realtime_rollback_still_exists(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "openai")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    monkeypatch.setattr(settings, "chat_provider", "xai")
+    monkeypatch.setattr(settings, "intelligence_provider", "")
+    monkeypatch.setattr(settings, "turn_control_provider", "openai")
+    monkeypatch.setattr(settings, "voice_asr_provider", "echo")
     assert live_realtime_provider() == "openai"
+
+
+def test_leftover_openai_realtime_does_not_open_a_second_mouth_while_muse_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "voice_live_brain", "openai")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
+    assert live_realtime_provider() is None
+    assert grok_voice_enabled() is False
 
 
 def test_muse_asr_factory(monkeypatch: pytest.MonkeyPatch) -> None:
