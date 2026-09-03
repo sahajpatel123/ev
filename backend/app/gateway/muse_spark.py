@@ -32,6 +32,27 @@ from app.gateway.reliability import (
 )
 
 
+_CHAT_MESSAGE_KEYS = ("role", "content", "name", "tool_calls", "tool_call_id")
+
+
+def _sanitize_chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep Chat Completions history Meta-legal.
+
+    Spark replies can include reasoning fields. Replaying those on the next
+    turn is an unsupported parameter / malformed conversation (HTTP 400).
+    """
+
+    cleaned: list[dict[str, Any]] = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        item = {key: message[key] for key in _CHAT_MESSAGE_KEYS if key in message}
+        if "role" not in item:
+            continue
+        cleaned.append(item)
+    return cleaned
+
+
 class MuseSparkProvider(DeepSeekProvider):
     """OpenAI-compatible Chat Completions against api.meta.ai."""
 
@@ -162,15 +183,16 @@ class MuseSparkProvider(DeepSeekProvider):
             raise CircuitOpenError(self.name, breaker.retry_after_seconds())
         payload: dict[str, Any] = {
             "model": model or self.default_model or muse_spark_model(),
-            "messages": messages,
+            "messages": _sanitize_chat_messages(messages),
         }
         payload = self._apply_provider_payload(payload, temperature=1.0)
         if tools:
             payload["tools"] = tools
         if response_format:
             payload["response_format"] = response_format
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
+        # Meta Chat Completions only accepts tool_choice=auto. Omit otherwise.
+        if tool_choice is not None and str(tool_choice).strip().lower() == "auto":
+            payload["tool_choice"] = "auto"
         attempts = max_attempts()
         for attempt in range(attempts):
             try:

@@ -383,6 +383,75 @@ def test_muse_spark_payload_drops_legacy_thinking() -> None:
 
 
 @pytest.mark.asyncio
+async def test_muse_spark_complete_raw_strips_reasoning_and_non_auto_tool_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.gateway.muse_spark import MuseSparkProvider
+    from app.gateway.reliability import CIRCUIT_BREAKERS
+
+    CIRCUIT_BREAKERS.reset("meta_muse_spark")
+    captured: dict = {}
+
+    class _Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "model": "muse-spark-1.3-contributor",
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+                "usage": {},
+            }
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *args, **kwargs):
+            captured["url"] = url
+            captured["payload"] = kwargs.get("json")
+            return _Resp()
+
+    monkeypatch.setattr("app.gateway.muse_spark.httpx.AsyncClient", _Client)
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="test-key",
+        default_model="muse-spark-1.3-contributor",
+    )
+    await provider.complete_raw(
+        [
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "list_dir", "arguments": "{}"},
+                    }
+                ],
+                "reasoning_content": "must not be replayed",
+                "reasoning": {"effort": "high"},
+            }
+        ],
+        tools=[{"type": "function", "function": {"name": "list_dir", "parameters": {}}}],
+        tool_choice="required",
+    )
+    message = captured["payload"]["messages"][0]
+    assert message["role"] == "assistant"
+    assert message["tool_calls"]
+    assert "reasoning_content" not in message
+    assert "reasoning" not in message
+    assert "tool_choice" not in captured["payload"]
+
+
+@pytest.mark.asyncio
 async def test_muse_spark_structured_omits_strict_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.contracts import ChatMessage
     from app.gateway.muse_spark import MuseSparkProvider
