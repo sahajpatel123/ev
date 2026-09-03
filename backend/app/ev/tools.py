@@ -110,16 +110,17 @@ UI_VERB_MAP: dict[str, tuple[str, dict[str, Any]]] = {
     "read": ("inspect_ui", {}),
     "see": ("screen_look", {}),
     "click": ("ui_action", {"action": "press"}),
-    "right_click": ("ui_action", {"action": "menu"}),
+    "double_click": ("ui_action", {"action": "double_click"}),
+    "right_click": ("ui_action", {"action": "right_click"}),
     "type": ("ui_action", {"action": "type"}),
     "paste": ("ui_action", {"action": "paste"}),
     "key": ("ui_action", {"action": "keyboard"}),
     "scroll": ("ui_action", {"action": "scroll"}),
+    "drag": ("ui_action", {"action": "drag"}),
 }
 
-# The complete UI-verb family (the map plus the multi-step verbs handled
-# explicitly in ``_handle``). Kill-switch and surfaces key off this set.
-UI_VERB_TOOLS: frozenset[str] = frozenset({*UI_VERB_MAP, "double_click", "drag"})
+# The complete UI-verb family. Kill-switch and surfaces key off this set.
+UI_VERB_TOOLS: frozenset[str] = frozenset(UI_VERB_MAP)
 
 
 TOOL_SPECS: list[dict[str, Any]] = [
@@ -128,11 +129,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         # stack. Same substrate as search_memory; different model surface.
         "name": "recall",
         "description": (
-            "Recall the owner's history: past conversations, decisions, "
-            "preferences, names, and what was left unfinished. Use when the "
-            "owner asks about the past or something previously said. Returns "
-            "an evidence pack with provenance; if empty, say no reliable "
-            "record was found."
+            "Recall the owner's history: people, chats, photos, notes, mail, "
+            "contacts, past conversations, decisions, and what was left "
+            "unfinished. You already know this owner; that life is not new. "
+            "Use when they ask about the past, someone they know, or whether "
+            "you know them. Returns a small evidence pack; answer from it. If "
+            "empty for the specific question, say you cannot find that "
+            "particular record — never that you have no history with them."
         ),
         "parameters": {
             "type": "object",
@@ -160,11 +163,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
         # implementation details or assigns risk.
         "name": "computer",
         "description": (
-            "Perform a goal on this Mac: open, close, or switch apps, open a "
-            "URL, or operate app UI when no dedicated capability applies. "
-            "State the goal in plain words. Do not use for memory, personal "
-            "history, project or commitment questions, weather, messages, or "
-            "timers — those have their own paths."
+            "Mac goal: open or close apps, open a URL, operate UI, or handle "
+            "owner files in Desktop/Documents/Downloads. State the request in "
+            "plain words. After a verified new_tab or close_tab, stop. After "
+            "opening a site, finish the first requested click. Not for memory, "
+            "weather, messages, timers, or writing programs — call code."
         ),
         "parameters": {
             "type": "object",
@@ -183,15 +186,55 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "undoable": False,
     },
     {
+        "name": "code",
+        "description": (
+            "Write, edit, or run software in an owner-allowed project. Call "
+            "this when they ask to code, make a helper or script, fix a bug, "
+            "add a test, run it, change the last script, or implement something "
+            "in a real repo. Casual phrasing counts ('can you make me a python "
+            "grader', 'run it', 'add a test'). Pass the full request as goal, "
+            "including the project name when they named one. Do not type into "
+            "an editor with computer/UI verbs."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "goal": {"type": "string", "minLength": 1, "maxLength": 4000},
+            },
+            "required": ["goal"],
+        },
+        "output": {"type": "object", "required": ["ok", "spoken"]},
+        "sensitive": False,
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "software:code",
+        "undoable": False,
+        "timeout_seconds": 300,
+        "provider": "software",
+    },
+    {
         "name": "search_memory",
         "description": (
-            "Search Evie's persistent owner memory and raw conversation "
-            "history. Call this when the owner asks what you talked about, "
-            "what they decided, what they named something, where you left off, "
-            "what is still open, what changed, what used to be true, or whether "
-            "you remember a fact. Do not guess. Results are an evidence pack: "
-            "prefer exact owner utterances. If evidence is empty, say you "
-            "cannot find a reliable record."
+            "Search Evie's persistent owner memory, conversation history, "
+            "camera observations (looks, clothing, objects, colors, saved "
+            "clips), and life-archive shelves (contacts, calendar, notes, "
+            "tasks, mail subjects, photos by date/album/filename). Call this "
+            "when they ask what you talked about, what they decided, who is "
+            "in their contacts, what is on the calendar, what they were "
+            "wearing, when you last saw an object, what they asked you to "
+            "remember from a look, whether you memorized or remembered something "
+            "they showed, what they preferred or decided, what got solved, where "
+            "they left off, or whether you remember a "
+            "fact. Also use for people Evie knows from life or WhatsApp, "
+            "old chat summaries, and iCloud Drive notes. Visual follow-ups search what you already saw on camera, "
+            "including things they asked you to memorize, "
+            "not Apple Photos. Also use when they ask if you know them, their "
+            "life, or their history. Do not guess. Results are a small evidence "
+            "pack, not the whole archive. Prefer exact owner utterances and "
+            "dated camera observations. Do not say you have no record until "
+            "this search returns empty evidence, and never generalize an empty "
+            "lookup into not knowing them."
         ),
         "parameters": {
             "type": "object",
@@ -402,8 +445,12 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "search_web",
         "description": (
-            "Search the web for current external information. Every result carries "
-            "a citation (title, url, snippet); never present uncited web content as memory."
+            "Search the public web for current facts about anything the owner "
+            "names or that you just identified with look (a product, "
+            "place, person, or object). Pass a concrete query — the title, "
+            "name, or words they used — not 'it' or 'this'. Summarize cited "
+            "results in speech. Never say you cannot search when this function "
+            "is listed."
         ),
         "parameters": {
             "type": "object",
@@ -445,6 +492,50 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "target_ownership": "public",
         "provider": "open-meteo",
         "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+    },
+    {
+        "name": "heading_out",
+        "description": (
+            "One spoken leave-the-house beat: live weather, the next calendar "
+            "commitment, when to leave, and optionally text someone they are "
+            "late. Use when they say they are heading out, headed out, leaving "
+            "the house, gotta go, on their way, time to go, or going out. Do "
+            "not split this into weather, calendar, leave-by, and message "
+            "calls. Pass notify_to and notify_text only when they asked to "
+            "text or tell someone."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "notify_to": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 80,
+                    "default": None,
+                },
+                "notify_text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 400,
+                    "default": None,
+                },
+                "place": {"type": "string", "minLength": 1, "maxLength": 80, "default": None},
+            },
+        },
+        "output": {"type": "object", "required": ["ok", "spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "web:search",
+        "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp", "weather", "leave_by"],
+        "fallback": "report unavailable; do not fabricate weather or calendar",
         "idempotency": "natural",
         "cancellation": "not_applicable",
     },
@@ -800,11 +891,12 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Perform a semantic UI action on a current inspect_ui element ref. "
             "Actions: press, focus, set_value, type, append, replace, paste, select, increment, "
-            "decrement, expand, collapse, menu, scroll, keyboard, click_at. type inserts "
-            "at the caret and does not overwrite. append adds. replace overwrites. paste "
-            "uses the clipboard then restores it. Prefer "
-            "element refs over coordinates. click_at requires a recent "
-            "screen_look frame_id and normalized 0-1 coordinates."
+            "decrement, expand, collapse, menu, scroll, keyboard, click_at, double_click, "
+            "right_click, drag. type inserts at the caret. append adds. replace overwrites. "
+            "paste with text types via clipboard; paste without text sends cmd+v. "
+            "Prefer element refs over coordinates. click_at and drag require a recent "
+            "screen_look frame_id and normalized 0-1 coordinates. drag is a real "
+            "mouse-down/move/up, not a click."
         ),
         "parameters": {
             "type": "object",
@@ -832,6 +924,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
                         "keyboard",
                         "menu",
                         "click_at",
+                        "double_click",
+                        "right_click",
+                        "drag",
                         "confirm",
                         "cancel",
                         "raise",
@@ -902,10 +997,15 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "read player state. Preserve ordinals (first=1). Opening Music is "
             "not completion. Only claim playing when verified is true. If the "
             "playlist does not exist, report failure; do not invent one. "
-            "Safari: search then navigate to open the first result; verify URL. "
+            "Safari: if they name a URL or domain, navigate there; otherwise "
+            "search only the words they asked to find, then navigate to open "
+            "the first result when they asked for that. Verify URL. "
+            "Safari/Chrome also: new_tab, close_tab, next_tab, previous_tab — "
+            "run each once; after verified is true, do not repeat. "
             "Notes: create/append with the exact text in query or value, then verify. "
             "Calculator: put the expression in query (generic keyboard path). "
-            "Unknown apps: use inspect_ui, then ui_action or screen_look."
+            "Unknown apps: inspect the UI and click, or capture the window and "
+            "click visible text. Newly installed apps are resolved live."
         ),
         "parameters": {
             "type": "object",
@@ -931,6 +1031,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
                         "read",
                         "open_item",
                         "open_folder",
+                        "new_tab",
+                        "close_tab",
+                        "next_tab",
+                        "previous_tab",
                     ],
                 },
                 "playlist": {"type": "string", "maxLength": 120},
@@ -1318,11 +1422,21 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "look",
         "description": (
             "Obtain a current visual observation from the owner's MacBook camera "
-            "when answering requires seeing the physical scene. Call this for "
-            "what am I holding, read this, what color is this, look at me, or "
-            "any question that needs the camera. Do not guess. Do not claim you "
-            "cannot see if this function is listed. Do not pass a permission "
-            "argument. Owner visual perception is already authorized."
+            "when answering requires seeing the physical scene: the room, a "
+            "person, what they are holding, a selfie, or something in front of "
+            "the camera. Do not use this for the Mac screen, a window, the "
+            "desktop, or which app is open — call computer for those. Do not "
+            "guess. Do not claim you cannot see if this function is listed. Do "
+            "not pass a permission argument. Owner visual perception is already "
+            "authorized. If they say open the camera and remember what they are "
+            "showing, or name an item in their hand, call look — not computer, "
+            "not place_call, not Photo Booth. Use capture_photo to take and save a still of the room. "
+            "Use record_video to save a clip. Do not open the Camera app for "
+            "those jobs. After look returns, describe the attached image in "
+            "natural speech — people, clothing, pose, objects, colors, and "
+            "setting — not a label list. If they asked you to memorize or remember "
+            "what they are showing, this look is stored across app restarts; say "
+            "you will remember it and never say you cannot guarantee future recall."
         ),
         "parameters": {
             "type": "object",
@@ -1362,9 +1476,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "observe_camera",
         "description": (
             "Watch the owner's MacBook camera for a few seconds when a single "
-            "frame is not enough (an LED changing, motion, turning something). "
-            "Duration is bounded. Do not use this for ordinary one-frame look "
-            "questions."
+            "frame is not enough (an LED changing, motion, turning something, "
+            "swapping an object). Describe people, objects, and colors in each "
+            "frame and what changed. Duration is bounded. Do not use this for "
+            "ordinary one-frame look questions."
         ),
         "parameters": {
             "type": "object",
@@ -1385,7 +1500,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "detail": {
                     "type": "string",
                     "enum": ["auto", "low", "high"],
-                    "default": "low",
+                    "default": "high",
                 },
             },
         },
@@ -1399,6 +1514,77 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "provider": "vision",
         "fallback": "report unavailable; do not fabricate a live video stream",
         "evidence": ["source", "timestamp"],
+    },
+    {
+        "name": "capture_photo",
+        "description": (
+            "Take and save a still photo from the owner's MacBook camera. Use "
+            "this when they ask to capture themselves, take a picture, snap a "
+            "photo, or save a still. This is not look (describe only) and not "
+            "record_video. Do not open the Camera app. After it returns, "
+            "describe the photo you took, then mention where it was saved."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "prompt": {"type": "string", "maxLength": 400, "default": None},
+                "detail": {
+                    "type": "string",
+                    "enum": ["auto", "low", "high"],
+                    "default": "high",
+                },
+            },
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": False,
+        "permission": "vision:read",
+        "undoable": False,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "provider": "vision",
+        "fallback": "report unavailable; do not fabricate a saved photo",
+        "evidence": ["source", "timestamp", "saved_path"],
+    },
+    {
+        "name": "record_video",
+        "description": (
+            "Record and save a short video from the owner's MacBook camera. Use "
+            "this when they ask to record a video, film something, or capture a "
+            "clip. This is not look and not observe_camera. Duration is bounded. "
+            "Do not open the Camera app. After it returns, describe the recorded "
+            "clip from the attached frames (people, clothing, motion), then "
+            "mention where it was saved."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "duration_seconds": {
+                    "type": "number",
+                    "minimum": 2,
+                    "maximum": 30,
+                    "default": 8,
+                },
+                "prompt": {"type": "string", "maxLength": 400, "default": None},
+                "detail": {
+                    "type": "string",
+                    "enum": ["auto", "low", "high"],
+                    "default": "high",
+                },
+            },
+        },
+        "output": {"type": "object", "required": ["spoken"]},
+        "sensitive": True,
+        "read_only": False,
+        "permission": "vision:read",
+        "undoable": False,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "provider": "vision",
+        "fallback": "report unavailable; do not fabricate a saved recording",
+        "evidence": ["source", "timestamp", "saved_path"],
     },
     {
         "name": "watchlist_add",
@@ -1923,10 +2109,17 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "facts, observations, lessons, patterns, and what was said or "
             "decided before. Use ONLY for the past (what they did, decided, "
             "preferred, or thought, with time context like in March, last month, "
-            "when did I, back in 2026). For FUTURE reminders, alerts, calendar, "
+            "when did I, back in 2026). Also use for contacts, notes, tasks, "
+            "mail subjects, photos by date or album, people Evie knows, "
+            "WhatsApp threads, and iCloud Drive notes; those return a small "
+            "evidence pack, never the whole archive. If a SHADOW MEMORY block is "
+            "already on this turn, answer from it first. For FUTURE reminders, alerts, calendar, "
             "or timers use get_upcoming_alerts or calendar_read instead. "
             "Results are chunked evidence with provenance and scores; if count "
-            "is zero, say no reliable record exists. Pass a page cursor to fetch "
+            "is zero, say you cannot find that particular record — never that "
+            "you have no history with them — and do not say that when SHADOW "
+            "MEMORY, the relationship card, or this tool already returned "
+            "matching lines. Pass a page cursor to fetch "
             "the next chunk page."
         ),
         "parameters": {
@@ -2161,7 +2354,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "paste",
-        "description": "Paste clipboard text into the focused field, or a ref from read.",
+        "description": (
+            "Paste into the focused field or a ref from read. Omit text to paste "
+            "the current clipboard (cmd+v). Pass text to type that string via paste."
+        ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -2169,7 +2365,6 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "text": {"type": "string", "minLength": 1, "maxLength": 4000},
                 "ref": {"type": "string", "maxLength": 24},
             },
-            "required": ["text"],
         },
         "sensitive": False,
         "read_only": False,
@@ -2228,9 +2423,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "drag",
         "description": (
-            "Select a ref from read, then move it to normalized x/y on a recent "
-            "see frame (frame_id required). Refuses honestly when frame_id is "
-            "missing; never guesses coordinates."
+            "Drag a ref from read to normalized x/y on a recent see frame "
+            "(frame_id required). Real mouse-down, move, mouse-up. Refuses "
+            "honestly when frame_id is missing; never guesses coordinates."
         ),
         "parameters": {
             "type": "object",
@@ -2257,10 +2452,15 @@ TOOL_SPECS: list[dict[str, Any]] = [
 
 _LIFE_BRIDGES: dict[str, tuple[str, str, str]] = {
     "resolve_contact": ("contacts", "contacts.resolve", "contacts:read"),
+    "create_contact": ("contacts", "contacts.create", "contacts:act"),
+    "save_contact": ("contacts", "contacts.create", "contacts:act"),
+    "update_contact": ("contacts", "contacts.update", "contacts:act"),
     "send_message": ("messaging", "messaging.send", "messaging:act"),
     "list_messages": ("messaging", "messaging.list_messages", "messaging:read"),
     "place_call": ("phone", "phone.call", "phone:act"),
     "list_mail": ("mail", "mail.list", "mail:read"),
+    "send_mail": ("mail", "mail.send", "mail:act"),
+    "send_email": ("mail", "mail.send", "mail:act"),
 }
 
 
@@ -2363,16 +2563,37 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
                 if next_step
                 else "I couldn't finish that yet."
             )
+        if name == "code":
+            return (
+                f"I couldn't finish that coding job. {next_step}"
+                if next_step
+                else "I couldn't finish that coding job."
+            )
         return f"I couldn't finish that yet. {next_step}".strip()
 
     if name == "set_reminder":
         text = str(payload.get("text") or payload.get("reminder") or "that").strip()
         return f"Reminder set: {text}."
+    if name == "code":
+        files = [str(item) for item in (payload.get("files_changed") or []) if item]
+        folder = str(payload.get("workspace") or payload.get("project") or "the coding workspace")
+        if files:
+            return f"I wrote {', '.join(files[:4])} in {folder}."
+        return "I finished that coding job."
     if name == "present" or "opened" in payload:
         if payload.get("opened"):
             return "Opened that on your screen."
         reason = next_step or str(payload.get("reason") or "").strip()
         return f"I couldn't open that on screen yet. {reason}".strip()
+
+    if name in {"send_mail", "send_email"} or payload.get("action") == "mail.send":
+        recipient = str(payload.get("to") or payload.get("recipient") or "recipient")
+        return f"Sent email to {recipient}."
+
+    if name in {"save_contact", "create_contact", "update_contact"} or payload.get("action") in {"contacts.create", "contacts.update"}:
+        c = payload.get("contact") if isinstance(payload.get("contact"), dict) else payload
+        cname = str(c.get("full_name") or c.get("name") or payload.get("name") or "the contact")
+        return f"Saved contact for {cname}."
 
     delivery = payload.get("delivery") or {}
     evidence = delivery.get("evidence") or {}
@@ -2447,6 +2668,19 @@ async def dispatch(
         if key not in IGNORED_ARGUMENT_KEYS
     }
     spec = get_spec(name)
+    if spec is not None and name in {
+        "look",
+        "observe_camera",
+        "capture_photo",
+        "record_video",
+    }:
+        from app.ev.camera_runtime import coerce_vision_arguments
+
+        dispatch_arguments = coerce_vision_arguments(
+            name,
+            dispatch_arguments,
+            ((spec.get("parameters") or {}).get("properties") or {}),
+        )
     status = "ok"
     error: str | None = None
     result: dict | None = None
@@ -2641,6 +2875,7 @@ async def dispatch(
                         live_session_id=live_session_id,
                         device_id=device_id,
                         request_id=request_id,
+                        channel=auth_channel,
                     )
                     if _router_mode == "on" and router_outcome is not None:
                         route = router_outcome["route"]
@@ -2903,6 +3138,53 @@ async def _run_execute_command(session: AsyncSession, args: dict, *, actor: str)
     return result
 
 
+async def _run_code_goal(
+    session: AsyncSession,
+    args: dict,
+    *,
+    actor: str,
+    channel: str | None = None,
+    live_session_id: str | None = None,
+) -> dict:
+    """Luna coding broker: goal in, verified files/runs out. Not a raw shell."""
+
+    from app.ev.actuator import evidence_base, fingerprint, record_actuator
+    from app.ev.luna_code import run_code_job
+
+    goal = str(args.get("goal") or "").strip()
+    if not goal:
+        return {
+            "ok": False,
+            "degraded": True,
+            "error": "missing_goal",
+            "spoken": "Tell me what to write or run.",
+        }
+    key = fingerprint("code", goal, actor)
+    result = await run_code_job(
+        goal,
+        actor=actor,
+        channel=channel,
+        session_key=str(live_session_id or "") or None,
+    )
+    ok = bool(result.get("ok"))
+    shaped = {
+        **result,
+        "ok": ok,
+        "spoken": str(result.get("spoken") or "")[:700],
+        "evidence": evidence_base(
+            source="luna_code",
+            accepted=ok,
+            observed=ok,
+            files=result.get("files_changed"),
+            brain=result.get("brain"),
+        ),
+    }
+    await record_actuator(
+        session, name="code", actor=actor, key=key, result=shaped, target=goal[:200]
+    )
+    return shaped
+
+
 async def _run_computer_goal(
     session: AsyncSession,
     args: dict,
@@ -2920,11 +3202,162 @@ async def _run_computer_goal(
     `computer` surface never becomes an opaque do-anything (§6 law).
     """
 
-    from app.ev.capability_router import RouteKind, goal_from_transcript, route_action
-
     goal_text = str(args.get("goal") or "").strip()
     if not goal_text:
         return {"ok": False, "error": "missing_goal", "spoken": "What should I do on the Mac?"}
+
+    from app.ev.laptop_files import (
+        is_system_confirmation,
+        looks_like_file_followup,
+        resolve_file_computer_goal,
+    )
+
+    if is_system_confirmation(goal_text):
+        return {
+            "ok": True,
+            "executed": False,
+            "verified": False,
+            "ignored": "system_confirmation",
+            "spoken": "",
+        }
+
+    from app.ev.computer_runtime import ensure_state
+    from app.ev.computer_strategy import (
+        resolve_generic_computer_goal,
+        resolve_in_app_computer_goal,
+        resolve_screen_observation_goal,
+        wants_first_on_page_item,
+        wants_play_media,
+    )
+
+    state = ensure_state(live_session_id)
+    orig = str(getattr(state, "original_owner_request", "") or "") if state is not None else ""
+    # The owner's words win. Joining a model rewrite onto them glues leftovers
+    # such as "youtube.com. Open" into the fake host youtube.com.open.
+    route_text = orig or goal_text
+    if orig and (wants_play_media(orig) or wants_first_on_page_item(orig)):
+        route_text = orig
+    if is_system_confirmation(orig):
+        orig = ""
+        route_text = goal_text
+
+    from app.ev.luna_code import looks_like_code_request
+
+    # Mini often calls computer for software work. The generic "write …"
+    # matcher would type into the front app. Luna is the coding broker.
+    code_goal = None
+    if looks_like_code_request(orig):
+        code_goal = orig
+    elif looks_like_code_request(goal_text):
+        code_goal = goal_text
+    if code_goal:
+        return await _run_code_goal(
+            session,
+            {"goal": code_goal},
+            actor=actor,
+            channel="voice" if (actor == "voice" or live_session_id) else "action",
+            live_session_id=live_session_id,
+        )
+
+    last_path = str(args.get("last_path") or getattr(state, "last_file_path", None) or "").strip() or None
+    if not last_path:
+        from app.ev.desk_scene import referent_file_path
+
+        found = referent_file_path()
+        if found is not None:
+            last_path = str(found)
+            if state is not None:
+                state.last_file_path = last_path
+    file_goal = resolve_file_computer_goal(
+        goal_text, args.get("target_app"), last_path=last_path
+    )
+    if file_goal is not None:
+        route_text = goal_text
+    elif orig and not looks_like_file_followup(goal_text, last_path=last_path):
+        file_goal = resolve_file_computer_goal(
+            orig, args.get("target_app"), last_path=last_path
+        )
+        if file_goal is not None:
+            route_text = orig
+    if file_goal is not None:
+        from app.ev.computer import handle_computer_tool
+
+        capability, inner_args = file_goal
+        inner_args.setdefault("goal", route_text)
+        if live_session_id:
+            inner_args.setdefault("session_id", live_session_id)
+        return await handle_computer_tool(
+            session,
+            capability,
+            inner_args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
+
+    if looks_like_file_followup(goal_text, last_path=last_path):
+        return {
+            "ok": False,
+            "executed": False,
+            "verified": False,
+            "must_continue": False,
+            "goal_complete": True,
+            "error": "file_referent_missing",
+            "spoken": "I don't have that file in reach. Say add it to the note on the desktop.",
+        }
+
+    observation = resolve_screen_observation_goal(route_text, args.get("target_app"))
+    if observation is not None:
+        from app.ev.computer import handle_computer_tool
+
+        capability, inner_args = observation
+        inner_args.setdefault("goal", goal_text)
+        return await handle_computer_tool(
+            session,
+            capability,
+            inner_args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
+
+    from app.ev.computer_strategy import looks_like_web_research, web_search_query_from_text
+
+    if looks_like_web_research(route_text):
+        query = web_search_query_from_text(route_text) or goal_text
+        return await _handle(
+            session,
+            "search_web",
+            {"query": query, "limit": 5},
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+            channel=None,
+        )
+
+    in_app = resolve_in_app_computer_goal(route_text, args.get("target_app"))
+    if in_app is None:
+        in_app = resolve_generic_computer_goal(route_text, args.get("target_app"))
+    if in_app is not None:
+        from app.ev.computer import handle_computer_tool
+
+        capability, inner_args = in_app
+        inner_args.setdefault("goal", route_text)
+        return await handle_computer_tool(
+            session,
+            capability,
+            inner_args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
+
+    from app.ev.capability_router import RouteKind, goal_from_transcript, route_action
+
     goal = goal_from_transcript(
         goal_text,
         actor=actor,
@@ -2934,14 +3367,16 @@ async def _run_computer_goal(
         goal.arguments["name"] = str(args["target_app"])
     route = await route_action(goal, session=session)
 
-    if route.route_kind == RouteKind.MEMORY:
+    from app.ev.computer_strategy import looks_like_computer_task as _mac_goal
+
+    if (route.route_kind == RouteKind.MEMORY or route.capability == "search_memory") and not _mac_goal(goal_text):
         return {
             "ok": False,
             "error": "not_a_computer_goal",
             "redirect": "recall",
             "spoken": "That's a memory question — let me recall it properly.",
         }
-    if route.route_kind == RouteKind.CORE:
+    if route.route_kind == RouteKind.CORE and not _mac_goal(goal_text):
         return {
             "ok": False,
             "error": "not_a_computer_goal",
@@ -2964,10 +3399,20 @@ async def _run_computer_goal(
                 "spoken": "Mac computer control is not enabled right now.",
             }
         from app.ev.computer import handle_computer_tool
+        from app.ev.computer_strategy import look_should_use_screen
 
+        fallback = (
+            "screen_look"
+            if look_should_use_screen(goal_text)
+            else (
+                "ui_action"
+                if any(word in goal_text.lower() for word in ("click", "type", "press", "scroll"))
+                else "open_app"
+            )
+        )
         return await handle_computer_tool(
             session,
-            "ui_action" if any(word in goal_text.lower() for word in ("click", "type", "press", "scroll")) else "open_app",
+            fallback,
             {**inner_args, "goal": goal_text},
             actor=actor,
             live_session_id=live_session_id,
@@ -2981,6 +3426,10 @@ async def _run_computer_goal(
             session, capability, inner_args,
             actor=actor, live_session_id=live_session_id, device_id=device_id,
         )
+    if capability == "search_web" and not str(inner_args.get("query") or "").strip():
+        from app.ev.computer_strategy import web_search_query_from_text
+
+        inner_args["query"] = web_search_query_from_text(goal_text) or goal_text
     from app.voice.live.layer import live_for_device, live_for_session
 
     live = live_for_session(str(live_session_id) if live_session_id else None) or (
@@ -3062,6 +3511,106 @@ async def _run_ui_sequence(
     }
 
 
+def _owner_visual_haystack(
+    args: dict,
+    live_session_id: str | None,
+    device_id,
+) -> str:
+    parts = [
+        str(args.get("prompt") or ""),
+        str(args.get("objective") or ""),
+        str(args.get("goal") or ""),
+    ]
+    try:
+        from app.voice.live.layer import live_for_device, live_for_session
+
+        live = live_for_session(live_session_id) or live_for_device(
+            str(device_id) if device_id else None
+        )
+    except Exception:
+        live = None
+    grok = getattr(live, "grok_voice", None) if live is not None else None
+    transcript = str(getattr(grok, "_last_input_transcript", "") or "")
+    if transcript:
+        parts.append(transcript)
+    return " ".join(part for part in parts if part.strip())
+
+
+async def _reroute_visual_to_files(
+    session: AsyncSession,
+    args: dict,
+    *,
+    actor: str,
+    live_session_id: str | None,
+    device_id,
+    request_id: str | None,
+) -> dict | None:
+    """Mini often calls look/observe for desktop files. Touch disk, not camera."""
+
+    hay = _owner_visual_haystack(args, live_session_id, device_id)
+    from app.ev.laptop_files import is_system_confirmation, looks_like_file_task
+
+    if is_system_confirmation(hay):
+        return {
+            "ok": True,
+            "executed": False,
+            "verified": False,
+            "ignored": "system_confirmation",
+            "spoken": "",
+        }
+    if looks_like_file_task(hay):
+        return await _run_computer_goal(
+            session,
+            {"goal": hay, "target_app": args.get("target_app")},
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
+    return None
+
+
+async def _reroute_look_to_screen(
+    session: AsyncSession,
+    args: dict,
+    *,
+    actor: str,
+    live_session_id: str | None,
+    device_id,
+    request_id: str | None,
+) -> dict | None:
+    files = await _reroute_visual_to_files(
+        session,
+        args,
+        actor=actor,
+        live_session_id=live_session_id,
+        device_id=device_id,
+        request_id=request_id,
+    )
+    if files is not None:
+        return files
+    from app.ev.computer_strategy import look_should_use_screen
+
+    hay = _owner_visual_haystack(args, live_session_id, device_id)
+    from app.memory.visual import wants_keep_visible
+
+    if wants_keep_visible(hay):
+        return None
+    if not look_should_use_screen(hay):
+        return None
+    from app.ev.computer import handle_computer_tool
+
+    return await handle_computer_tool(
+        session,
+        "screen_look",
+        {"target": "active_window", "goal": hay},
+        actor=actor,
+        live_session_id=live_session_id,
+        device_id=device_id,
+        request_id=request_id,
+    )
+
+
 async def _handle(
     session: AsyncSession,
     name: str,
@@ -3071,6 +3620,7 @@ async def _handle(
     live_session_id: str | None = None,
     device_id=None,
     request_id: str | None = None,
+    channel: str | None = None,
 ) -> dict:
     fleet = await handle_fleet_tool(session, name, args, actor=actor)
     if fleet is not None:
@@ -3093,6 +3643,14 @@ async def _handle(
             session, args, actor=actor,
             live_session_id=live_session_id, device_id=device_id,
             request_id=request_id,
+        )
+    if name == "code":
+        return await _run_code_goal(
+            session,
+            args,
+            actor=actor,
+            channel=channel,
+            live_session_id=live_session_id,
         )
     if name == "recall_history":
         # EV VOICE CONTROL PLAN: chunked past-history retrieval with time
@@ -3124,40 +3682,6 @@ async def _handle(
                 "error": "ui_verbs_disabled",
                 "spoken": "UI verb tools are disabled for this build.",
             }
-        if name == "double_click":
-            return await _run_ui_sequence(
-                session,
-                [
-                    ("ui_action", {"action": "click", "element_ref": str(args["ref"])}),
-                    ("ui_action", {"action": "click", "element_ref": str(args["ref"])}),
-                ],
-                actor=actor,
-                live_session_id=live_session_id,
-                device_id=device_id,
-                request_id=request_id,
-                label="double_click",
-            )
-        if name == "drag":
-            return await _run_ui_sequence(
-                session,
-                [
-                    ("ui_action", {"action": "select", "element_ref": str(args["ref"])}),
-                    (
-                        "ui_action",
-                        {
-                            "action": "click_at",
-                            "frame_id": str(args["frame_id"]),
-                            "x_normalized": float(args["x"]),
-                            "y_normalized": float(args["y"]),
-                        },
-                    ),
-                ],
-                actor=actor,
-                live_session_id=live_session_id,
-                device_id=device_id,
-                request_id=request_id,
-                label="drag",
-            )
         canonical, defaults = UI_VERB_MAP[name]
         merged = dict(defaults)
         for key, value in args.items():
@@ -3367,13 +3891,20 @@ async def _handle(
             str(args["query"]),
             limit=int(args.get("limit", 5)),
         )
+        payload = [
+            {"title": r.title, "url": r.url, "snippet": r.snippet}
+            for r in results
+        ]
+        spoken_bits = [
+            str(item.get("snippet") or item.get("title") or "").strip()
+            for item in payload[:2]
+        ]
+        spoken = " ".join(bit for bit in spoken_bits if bit)[:500]
         return {
             "ok": True,
             "count": len(results),
-            "results": [
-                {"title": r.title, "url": r.url, "snippet": r.snippet}
-                for r in results
-            ],
+            "results": payload,
+            "spoken": spoken or "I found sources, but they had no summary text.",
         }
     if name == "get_weather":
         from app.search.live import weather_results
@@ -3399,6 +3930,18 @@ async def _handle(
             "spoken": spoken,
             "hud": weather_hud(weather_results_list),
         }
+    if name == "heading_out":
+        from app.ev.workbench import handle_heading_out
+
+        return await handle_heading_out(
+            session,
+            notify_to=args.get("notify_to"),
+            notify_text=args.get("notify_text"),
+            place=args.get("place"),
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+        )
     if name in _LIFE_BRIDGES:
         return await _dispatch_life_action(
             session, name, args, actor=actor, policy_checked=True
@@ -3663,12 +4206,30 @@ async def _handle(
             session, camera=str(args["camera"]), at=args.get("at"), actor=actor
         )
     if name == "look":
-        from app.ev.look import look_with_timeout
+        rerouted = await _reroute_look_to_screen(
+            session,
+            args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
+        if rerouted is not None:
+            return rerouted
+        from app.ev.look import live_owner_transcript, look_with_timeout
 
+        prompt = (
+            args.get("prompt")
+            or args.get("objective")
+            or live_owner_transcript(
+                live_session_id, str(device_id) if device_id else None
+            )
+            or None
+        )
         return await look_with_timeout(
             session,
             actor=actor,
-            prompt=args.get("prompt"),
+            prompt=prompt,
             attachment_id=args.get("attachment_id"),
             focus=str(args.get("focus") or "auto"),
             detail=str(args.get("detail") or "high"),
@@ -3677,6 +4238,16 @@ async def _handle(
             request_id=request_id,
         )
     if name == "observe_camera":
+        rerouted = await _reroute_visual_to_files(
+            session,
+            args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
+        if rerouted is not None:
+            return rerouted
         from app.ev.look import observe_camera_with_timeout
 
         return await observe_camera_with_timeout(
@@ -3685,7 +4256,42 @@ async def _handle(
             duration_seconds=args.get("duration_seconds"),
             objective=args.get("objective"),
             strategy=str(args.get("strategy") or "interval"),
-            detail=str(args.get("detail") or "low"),
+            detail=str(args.get("detail") or "high"),
+            live_session_id=live_session_id,
+            device_id=str(device_id) if device_id else None,
+            request_id=request_id,
+        )
+    if name == "capture_photo":
+        rerouted = await _reroute_look_to_screen(
+            session,
+            args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
+        if rerouted is not None:
+            return rerouted
+        from app.ev.look import capture_photo_with_timeout
+
+        return await capture_photo_with_timeout(
+            session,
+            actor=actor,
+            prompt=args.get("prompt"),
+            detail=str(args.get("detail") or "high"),
+            live_session_id=live_session_id,
+            device_id=str(device_id) if device_id else None,
+            request_id=request_id,
+        )
+    if name == "record_video":
+        from app.ev.look import record_video_with_timeout
+
+        return await record_video_with_timeout(
+            session,
+            actor=actor,
+            duration_seconds=args.get("duration_seconds"),
+            prompt=args.get("prompt"),
+            detail=str(args.get("detail") or "high"),
             live_session_id=live_session_id,
             device_id=str(device_id) if device_id else None,
             request_id=request_id,

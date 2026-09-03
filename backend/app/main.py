@@ -128,9 +128,19 @@ async def lifespan(_: FastAPI):
     from app.ev.timers import timer_watch_loop
 
     watch = asyncio.create_task(timer_watch_loop(), name="ev-timer-watch")
+    desk_watch = None
+    if settings.environment != "test":
+        from app.ev.laptop_files import laptop_files_allowed
+
+        if laptop_files_allowed():
+            from app.ev.desk_scene import steward_watch_loop
+
+            desk_watch = asyncio.create_task(steward_watch_loop(), name="ev-desk-steward")
     yield
     watch.cancel()
     warmup.cancel()
+    if desk_watch is not None:
+        desk_watch.cancel()
     if power_watch is not None:
         power_watch.cancel()
     if stop is not None:

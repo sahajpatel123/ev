@@ -66,7 +66,7 @@ public enum VoicePresenceMath {
 
     public static func speechStatus(forAppStatus status: String) -> VoiceOrbSpeechStatus {
         switch status {
-        case "speaking", "listening":
+        case "speaking":
             return .speaking
         case "thinking":
             return .preparing

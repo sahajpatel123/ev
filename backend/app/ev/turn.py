@@ -32,6 +32,9 @@ _CONFIRM_TOKENS = (
     "couldn't set that reminder",
     "couldn't open that",
     "couldn't finish that",
+    "wrote",
+    "created",
+    "saved",
 )
 
 
@@ -101,19 +104,24 @@ def snapshot_working_on(
 def operator_instructions(*, who: str, source: str) -> str:
     """Short operator rules. Flash does better with this than a long essay."""
 
+    from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
+
     spoken = (
-        f" SPOKEN TURN — you are {who}. One to three short sentences. Never narrate checking."
+        f" SPOKEN TURN — you are {who}. One to two short, natural sentences. Keep it casual and brief."
         if source == "voice"
         else ""
     )
     return (
-        f"You are {who}, the owner's operator. This turn is "
-        "request → actions (already run by EV when asked) → your reply. "
+        f"You are {who}, the owner's operator. Keep replies casual, concise, and direct. "
+        "Do not speak too much. State the answer plainly without repeating the question, "
+        "rephrasing the same thought, or summarizing what was already said. "
+        "This turn is request → actions (already run by EV when asked) → your reply. "
         "Stay on WORKING ON. If ACTIONS THIS TURN lists executed work, confirm "
         "the real result — never say you will do it later, never invent a "
         "success. If no actions ran, answer the current request directly. "
         "Lead with the answer. Prior memory is optional background."
         f"{spoken}"
+        f"\n{SPEECH_STYLE_INSTRUCTIONS}"
     )
 
 
@@ -216,6 +224,46 @@ async def execute_requested_actions(
     live_session_id: str | None = None,
 ) -> list[ActionReceipt]:
     """Dispatch write/life tools the owner asked for, before the LLM speaks."""
+
+    from app.ev.luna_code import (
+        last_code_job,
+        looks_like_code_continue,
+        looks_like_code_followup,
+        spoken_code_followup,
+    )
+
+    job = last_code_job(str(live_session_id or "")) or last_code_job()
+    if looks_like_code_followup(message):
+        if job:
+            spoken = spoken_code_followup(message, job)
+            if spoken:
+                return [
+                    ActionReceipt(
+                        name="code",
+                        ok=True,
+                        result={"ok": True, "spoken": spoken, "workspace": job.get("workspace")},
+                    )
+                ]
+    if looks_like_code_continue(message) and job:
+        response = await dispatch(
+            session,
+            "code",
+            {"goal": message},
+            actor=actor,
+            allow_sensitive=allow_sensitive,
+            request_id=request_id,
+            device_id=device_id,
+            live_session_id=live_session_id,
+            channel="voice" if actor == "voice" else "action",
+        )
+        result = response.result if isinstance(response.result, dict) else {"ok": response.ok}
+        return [
+            ActionReceipt(
+                name="code",
+                ok=bool(response.ok and result.get("ok", True)),
+                result=result,
+            )
+        ]
 
     specs = tool_specs_from_dicts(tools_for_turn(message))
     planned = planned_calls_for(

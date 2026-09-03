@@ -1,20 +1,24 @@
 # EVIE Mobile — Release System
 
-**Status:** pipeline IMPLEMENTED (local verification) · signing/OTA PENDING owner Apple setup + physical install.
+**Ship path:** Safari PWA at `https://<home>.ts.net/evie/` over Tailscale. Funnel off. **No Xcode. No IPA. No TestFlight.**
 
-Architecture (owner-selected): automated macOS CI → Ad Hoc signing → private tailnet OTA. **No TestFlight. No routine Xcode GUI.**
+Upgrades are the same origin: Home Station serves a new PWA build (`release.json` / hello `latest_web_build`); the phone reloads.
 
 ```
-commit → GitHub Actions macOS runner
-  → TEST      swift run EvieBrokerCheck
-  → ARCHIVE   xcodebuild archive (Release, generic/platform=iOS)
-  → SIGN      Ad Hoc export, manual signing, pinned team/cert/profile
-  → VERIFY    scripts/ios/verify-release.sh (signature, bundle, version,
-              build, profile type, expiry, BOTH device UDIDs) — fail = no publish
-  → PACKAGE   release.json + SHA256SUMS
-  → PUBLISH   POST /evie-install/admin/publish (master-key; checksum re-verified)
-  → INSTALL   https://<home>.ts.net/evie-install/  (tailnet-only, funnel OFF)
+change on Home Station
+  → make pwa-release-manifest (if web assets changed)
+  → phones open /evie/ (or already-installed Home Screen app)
+  → hello sees latest_web_build → tap update / SW reload
 ```
+
+Install on a phone:
+
+1. Tailscale connected.
+2. Safari → `https://<home>.ts.net/evie-install/` or `/evie/`.
+3. Share → Add to Home Screen.
+4. Pair with a Mac-issued code; promote on the Mac.
+
+IPA / Ad Hoc / GitHub Actions signing remains in-tree as an **optional later** native track. It is not required to use Evie on iPhone.
 
 ## Channels
 
@@ -103,3 +107,28 @@ Never paste any of these into chat.
 | OTA install | IMPLEMENTED / PHYSICAL VERIFICATION PENDING |
 | Native shell app | SCAFFOLDED (compiles as SwiftPM logic; iOS app target needs first archive) |
 | Native voice A/B | NOT STARTED (gate before any promotion) |
+
+## Product path and evidence
+
+The shippable iPhone product is the **Tailscale `/evie/` PWA**. See [`docs/IPHONE_PRODUCT.md`](IPHONE_PRODUCT.md). EvieShell IPA is optional and not required.
+
+Name the evidence class whenever you claim phone behavior:
+
+- Automated: `make iphone-parity-check`
+- Packaged: `EvieBrokerCheck` (Swift CLI, no Xcode.app)
+- Physical two-iPhone: Safari / Home Screen on both phones via `scripts/ios/physical-acceptance.sh`
+
+The phone always uses `https://<host>.ts.net`. Never `http://<tailscale-ip>:8000`.
+
+## Physical two-iPhone gates
+
+These require the same PWA origin on the iPhone 16 Pro and iPhone SE, Tailscale connected, Funnel off:
+
+1. Add to Home Screen from Safari on both phones.
+2. Pair and promote each independently; confirm `PAIRED_SANDBOX` → `TRUSTED_OWNER_DEVICE` and a bumped `auth_revision`.
+3. Set camera role: 16 Pro preferred, SE fallback.
+4. Ten spoken turns on each phone, including reconnect, interruption, and transfer.
+5. Look, memory query, and a safe routed Mac action from both phones.
+6. Capture offline, reconnect, exactly-once sync (queued is never executed).
+7. Reload after a PWA build bump.
+8. Revoke one phone; the other stays usable; the revoked phone loses access.

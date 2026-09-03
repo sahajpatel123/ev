@@ -136,6 +136,18 @@ async def dispatch_phone_action(
             device_label=device_label,
             confirm=bool(args.get("confirm_action_id")),
         )
+        action_id = str(result.get("action_id") or "")
+        if action_id:
+            from app.db import SessionLocal
+            from app.device_gateway.durable_actions import upsert_action
+
+            from .store import get_action
+
+            row = get_action(action_id)
+            if row:
+                async with SessionLocal() as db:
+                    await upsert_action(db, row)
+                    await db.commit()
     card = result.get("card")
     if isinstance(card, dict):
         from .service import _push_live

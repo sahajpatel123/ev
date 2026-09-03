@@ -37,9 +37,11 @@
     <key>NSFaceIDUsageDescription</key>
     <string>EV uses Face ID to confirm sensitive actions independently of the voice session.</string>
     <key>NSCameraUsageDescription</key>
-    <string>EV uses the camera when you ask it to look at something in the physical world.</string>
+    <string>EV uses the camera when you ask it to look, take a photo, or record a video.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>EV reads photos you explicitly choose to attach to a memory.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>EV saves photos and videos you ask it to capture into your library.</string>
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>EV uses your location only while you are actively using a location-aware card.</string>
     <key>NSSiriUsageDescription</key>

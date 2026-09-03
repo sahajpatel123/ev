@@ -11,6 +11,10 @@
     video: false,
   };
 
+  /* After spoken audio ends, room / speaker tail can still hit the mic.
+     Mac live voice keeps capture muted across that tail; phones must too. */
+  const PLAYBACK_MIC_TAIL_MS = 220;
+
   const STATES = [
     "IDLE",
     "ACQUIRING_MIC",
@@ -450,6 +454,7 @@
   function EvieWebRTC(opts) {
     this.api = opts.api;
     this.instanceId = opts.instanceId;
+    this.leaseId = opts.leaseId || "";
     this.audioEl = opts.audioEl;
     this.onState = opts.onState || function () {};
     this.onTranscript = opts.onTranscript || function () {};
@@ -466,6 +471,7 @@
     this.sessionId = null;
     this.poll = 0;
     this.statsTimer = 0;
+    this.leaseTimer = 0;
     this.closed = true;
     this.playing = false;
     this.runtime = "IDLE";
@@ -495,11 +501,79 @@
     this.sessionUpdated = false;
     this.sessionModel = "";
     this.signaling = "unified_calls";
+    this._playbackHold = false;
+    this._micTailTimer = 0;
+    this._uiState = "";
   }
 
   EvieWebRTC.prototype._setRuntime = function _setRuntime(next) {
     this.runtime = next;
     this.onHealth(this.snapshot());
+  };
+
+  EvieWebRTC.prototype._echoHold = function _echoHold() {
+    return !!(this._playbackHold || this._micTailTimer || this.runtime === "EVIE_SPEAKING");
+  };
+
+  EvieWebRTC.prototype._micIsLive = function _micIsLive() {
+    return !!(this.micTrack && this.micTrack.readyState === "live" && (this.micTrack.enabled || this._echoHold()));
+  };
+
+  EvieWebRTC.prototype._emitState = function _emitState(label) {
+    if (!label) return;
+    if (this._echoHold() && (label === "listening" || label === "thinking")) return;
+    if (label === this._uiState) return;
+    this._uiState = label;
+    this.onState(label);
+  };
+
+  EvieWebRTC.prototype._setMicCaptureEnabled = function _setMicCaptureEnabled(on) {
+    if (!this.micTrack || this.micTrack.readyState === "ended") return;
+    this.micTrack.enabled = !!on;
+  };
+
+  EvieWebRTC.prototype._gateMicForPlayback = function _gateMicForPlayback(speaking) {
+    const self = this;
+    if (this._micTailTimer) {
+      window.clearTimeout(this._micTailTimer);
+      this._micTailTimer = 0;
+    }
+    if (speaking) {
+      this._playbackHold = true;
+      this._setMicCaptureEnabled(false);
+      return;
+    }
+    this._playbackHold = false;
+    this._micTailTimer = window.setTimeout(function () {
+      self._micTailTimer = 0;
+      if (self.closed || self.runtime === "EVIE_SPEAKING") return;
+      self._setMicCaptureEnabled(true);
+      self._emitState("listening");
+      self.onHealth(self.snapshot());
+    }, PLAYBACK_MIC_TAIL_MS);
+  };
+
+  EvieWebRTC.prototype._liveBody = function _liveBody(extra) {
+    return Object.assign({
+      instance_id: this.instanceId,
+      session_id: this.sessionId,
+      lease_id: this.leaseId,
+      client_generation: this.generation,
+    }, extra || {});
+  };
+
+  EvieWebRTC.prototype._startLeaseHeartbeat = function _startLeaseHeartbeat(stillThis) {
+    const self = this;
+    if (this.leaseTimer) window.clearInterval(this.leaseTimer);
+    this.leaseTimer = window.setInterval(function () {
+      if (!stillThis()) return;
+      self.api("/v1/device-gateway/heartbeat", {
+        method: "POST",
+        body: JSON.stringify(self._liveBody()),
+      }).then(function (body) {
+        if (body && body.conversation_moved) self.onState("moved");
+      }).catch(function () {});
+    }, 12000);
   };
 
   EvieWebRTC.prototype.start = async function start(opened, options) {
@@ -509,6 +583,7 @@
     this.generation = generation;
     this.closed = false;
     this.sessionId = opened.session_id;
+    this.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id) || this.leaseId || "";
     this.responses = new MobileResponseController();
     this.sessionCreated = false;
     this.sessionUpdated = false;
@@ -516,12 +591,16 @@
     this.playBlocked = null;
     this.attemptId = nextAttemptId();
     this.signaling = opts.signaling || opened.signaling || "unified_calls";
+    this._playbackHold = false;
+    this._micTailTimer = 0;
+    this._uiState = "";
     this.diag = new ConnectionDiag(this.attemptId);
     this.diag.peer_generation = generation;
     this.diag.signaling = this.signaling;
     this.diag.token_mode = this.signaling === "ephemeral_direct" ? "ephemeral" : "server";
     const self = this;
     const stillThis = function () { return !self.closed && self.generation === generation; };
+    this._startLeaseHeartbeat(stillThis);
     const fail = function (stage, err, extra) {
       const wrapped = err instanceof Error ? err : new Error(String(err || "failed"));
       self.diag.fail(stage, wrapped, extra);
@@ -575,6 +654,7 @@
           try { self.pc.restartIce(); return; } catch (_e) {}
         }
         self._setRuntime("FAILED");
+        self.onState("failed");
       }
       self.onHealth(self.snapshot());
     };
@@ -663,11 +743,7 @@
       if (this.signaling === "ephemeral_direct") {
         const minted = await this.api("/v1/device-gateway/live/webrtc/client-secret", {
           method: "POST",
-          body: JSON.stringify({
-            instance_id: this.instanceId,
-            session_id: this.sessionId,
-            attempt_id: this.attemptId,
-          }),
+          body: JSON.stringify(this._liveBody({ attempt_id: this.attemptId })),
         });
         const callsUrl = minted.calls_url;
         if (!callsUrl || !minted.value) fail("M09", new Error("Ephemeral credential missing"));
@@ -694,12 +770,10 @@
       } else {
         const answer = await this.api("/v1/device-gateway/live/webrtc/sdp", {
           method: "POST",
-          body: JSON.stringify({
-            instance_id: this.instanceId,
-            session_id: this.sessionId,
+          body: JSON.stringify(this._liveBody({
             sdp: localSdp,
             attempt_id: this.attemptId,
-          }),
+          })),
         });
         answerSdp = answer.sdp;
         this.diag.http_status = answer.provider_status || 201;
@@ -823,7 +897,7 @@
 
   EvieWebRTC.prototype._maybeVoiceReady = function _maybeVoiceReady() {
     if (this.closed || this.runtime === "FAILED") return;
-    const micLive = !!(this.micTrack && this.micTrack.readyState === "live" && this.micTrack.enabled);
+    const micLive = this._micIsLive();
     const pcOk = this.pc && (this.pc.connectionState === "connected" || this.pc.iceConnectionState === "connected" || this.pc.iceConnectionState === "completed");
     const dcOk = this.dc && this.dc.readyState === "open";
     const remote = !!(this.remoteTrack && this.remoteTrack.readyState !== "ended");
@@ -831,7 +905,8 @@
       this.diag.pass("M21");
       if (this.runtime !== "EVIE_SPEAKING" && this.runtime !== "OWNER_SPEAKING" && this.runtime !== "PROCESSING" && this.runtime !== "TOOL_RUNNING") {
         this._setRuntime("VOICE_READY");
-        this.onState(this.playBlocked ? "audio_blocked" : "listening");
+        if (this.playBlocked) this.onState("audio_blocked");
+        else this._emitState("listening");
       }
     }
     this.onHealth(this.snapshot());
@@ -839,8 +914,17 @@
 
   EvieWebRTC.prototype._onProvider = function _onProvider(msg) {
     if (!msg || this.closed) return;
-    this.responses.note(msg);
     const type = msg.type || "";
+    if (this._echoHold() && (
+      type === "input_audio_buffer.speech_started" ||
+      type === "input_audio_buffer.speech_stopped" ||
+      type === "conversation.item.input_audio_transcription.delta" ||
+      type === "conversation.item.input_audio_transcription.completed"
+    )) {
+      this.onHealth(this.snapshot());
+      return;
+    }
+    this.responses.note(msg);
     if (type === "session.created") {
       this.sessionCreated = true;
       this.sessionModel = (msg.session && msg.session.model) || this.sessionModel;
@@ -854,11 +938,11 @@
     }
     if (type === "input_audio_buffer.speech_started") {
       this._setRuntime("OWNER_SPEAKING");
-      this.onState("listening");
+      this._emitState("listening");
     }
     if (type === "input_audio_buffer.speech_stopped") {
       this._setRuntime("PROCESSING");
-      this.onState("thinking");
+      this._emitState("thinking");
     }
     if (type === "conversation.item.input_audio_transcription.completed" && msg.transcript) {
       this.onTranscript(msg.transcript, {
@@ -867,7 +951,16 @@
         label: "TRANSCRIPT",
       });
       this._setRuntime("PROCESSING");
-      this.onState("thinking");
+      this._emitState("thinking");
+      this.api("/v1/device-gateway/live/turn-receipt", {
+        method: "POST",
+        body: JSON.stringify(this._liveBody({
+          request_id: (this.attemptId || "turn") + ":" + (msg.item_id || Date.now()),
+          transcript: msg.transcript,
+          provider_item_id: msg.item_id || "",
+          kind: "final_transcript",
+        })),
+      }).catch(function () { /* receipt is server authority; client failure is retried next turn */ });
     }
     if (type === "response.output_audio_transcript.delta" && msg.delta) this.onCaption(msg.delta, false);
     if (type === "response.output_audio_transcript.done" && (msg.transcript || msg.text)) {
@@ -875,14 +968,15 @@
     }
     if (type === "output_audio_buffer.started" || type === "response.output_audio.delta") {
       this.playing = true;
+      this._gateMicForPlayback(true);
       this._setRuntime("EVIE_SPEAKING");
-      this.onState("speaking");
+      this._emitState("speaking");
     }
     if (type === "output_audio_buffer.stopped") {
       this.playing = false;
       if (!this.closed) {
         this._setRuntime("VOICE_READY");
-        this.onState("listening");
+        this._gateMicForPlayback(false);
       }
     }
     if (type === "response.function_call_arguments.done") {
@@ -900,13 +994,11 @@
     try {
       const result = await this.api("/v1/device-gateway/live/tool", {
         method: "POST",
-        body: JSON.stringify({
-          instance_id: this.instanceId,
-          session_id: this.sessionId,
+        body: JSON.stringify(this._liveBody({
           name: msg.name,
           call_id: msg.call_id,
           arguments: args,
-        }),
+        })),
       });
       this._send({
         type: "conversation.item.create",
@@ -915,6 +1007,13 @@
       this._send({ type: "response.create" });
       let parsed = {};
       try { parsed = JSON.parse(result.output || "{}"); } catch (_err) { parsed = {}; }
+      if (parsed.needs_camera) {
+        await self.onCamera({
+          type: "camera_request",
+          request_id: parsed.camera_request_id,
+          action: parsed.camera_action || parsed.action || args.action || "look_once",
+        });
+      }
       if (parsed.card && window.EvieMobileActions) window.EvieMobileActions.present(parsed);
       this.onHud({ kind: "result", name: msg.name, ok: true, phone_action: parsed });
     } catch (err) {
@@ -956,7 +1055,10 @@
     const tick = async function () {
       if (self.closed || !self.sessionId) return;
       try {
-        const body = await self.api("/v1/device-gateway/live/events?session_id=" + encodeURIComponent(self.sessionId));
+        const body = await self.api("/v1/device-gateway/live/events?session_id=" + encodeURIComponent(self.sessionId)
+          + "&instance_id=" + encodeURIComponent(self.instanceId || "")
+          + "&lease_id=" + encodeURIComponent(self.leaseId || "")
+          + "&client_generation=" + encodeURIComponent(String(self.generation || 0)));
         const events = (body && body.events) || [];
         for (let i = 0; i < events.length; i += 1) {
           const ev = events[i];
@@ -994,7 +1096,7 @@
   };
 
   EvieWebRTC.prototype.snapshot = function snapshot() {
-    const micLive = !!(this.micTrack && this.micTrack.readyState === "live" && this.micTrack.enabled);
+    const micLive = this._micIsLive();
     const health = voiceHealth({
       micActive: micLive,
       micReadyState: this.micTrack ? this.micTrack.readyState : "none",
@@ -1051,10 +1153,15 @@
   EvieWebRTC.prototype.stop = function stop() {
     this.closed = true;
     this.playing = false;
+    this._playbackHold = false;
+    if (this._micTailTimer) window.clearTimeout(this._micTailTimer);
+    this._micTailTimer = 0;
     this.generation += 1;
     this._setRuntime("ENDED");
     if (this.poll) window.clearTimeout(this.poll);
     this.poll = 0;
+    if (this.leaseTimer) window.clearInterval(this.leaseTimer);
+    this.leaseTimer = 0;
     if (this.statsTimer) window.clearTimeout(this.statsTimer);
     this.statsTimer = 0;
     if (this.dc) {
@@ -1127,6 +1234,7 @@
   }
 
   const api = {
+    PLAYBACK_MIC_TAIL_MS: PLAYBACK_MIC_TAIL_MS,
     PRODUCTION_MIC_CONSTRAINTS: PRODUCTION_MIC_CONSTRAINTS,
     STATES: STATES,
     STAGES: STAGES,

@@ -1,4 +1,6 @@
+import AppKit
 import AVFoundation
+import Darwin
 import Speech
 import EVClient
 import EVRuntime
@@ -963,6 +965,283 @@ enum EVSmokeTest {
         print("first-audio: process_alive=true")
         print(ok ? "first-audio: PASS" : "first-audio: FAIL")
         return ok ? 0 : 3
+    }
+
+    /// Wait until playback starts, then until the player goes quiet after
+    /// receiving audio. `isPlaying` is false during the startup prime and
+    /// while PCM sits in the 1500 ms lead aggregate, so a bare
+    /// `while isPlaying` returns immediately and under-counts a long reply.
+    private static func waitForPlaybackDrain(
+        _ player: TTSPlayer,
+        startSeconds: TimeInterval,
+        drainSeconds: TimeInterval
+    ) async {
+        let startDeadline = Date().addingTimeInterval(startSeconds)
+        while Date() < startDeadline {
+            if player.isPlaying || player.metrics().pcmReceivedFrames > 0 {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let drainDeadline = Date().addingTimeInterval(drainSeconds)
+        var started = false
+        var quietTicks = 0
+        while Date() < drainDeadline {
+            let playing = player.isPlaying
+            let played = player.metrics().pcmPlayedFrames
+            if playing || played > 0 {
+                started = true
+            }
+            if playing {
+                quietTicks = 0
+            } else if started {
+                quietTicks += 1
+                if quietTicks >= 8 {
+                    break
+                }
+            }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+    }
+
+    /// Live provider TTS through the same `TTSPlayer` EV.app uses. Proves
+    /// the websocket stays up for a spoken reply and the player does not
+    /// underrun. Does not open the microphone.
+    static func runLiveSpeakSurvival() -> Int32 {
+        setbuf(stdout, nil)
+        _ = NSApplication.shared
+        print("live-speak: start")
+        var code: Int32 = 2
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            code = await executeLiveSpeak()
+            semaphore.signal()
+        }
+        while semaphore.wait(timeout: .now() + 0.05) == .timedOut {
+            RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
+        }
+        return code
+    }
+
+    private static func executeLiveSpeak() async -> Int32 {
+        let config = AppConfig()
+        if config.usesPlaceholderKey {
+            print("live-speak: FAIL placeholder API key")
+            return 2
+        }
+        let longForm = CommandLine.arguments.contains("--long")
+        let envToken = ProcessInfo.processInfo.environment["EV_API_KEY"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let token: String
+        if let envToken, envToken.count >= 16,
+           !["dev", "changeme", "secret", "placeholder"].contains(envToken.lowercased()) {
+            token = envToken
+        } else {
+            token = config.apiKey
+        }
+        let client = EVAPIClient(baseURL: config.baseURL, token: token)
+        let player = TTSPlayer()
+        player.beginVoiceSession()
+        defer { player.endVoiceSession() }
+        var chunks = 0
+        var disconnects = 0
+        var playbackID: String?
+        var providerID: String?
+        var gotReply = false
+        var lastError = ""
+        var replies = 0
+        var turn1Underruns = 0
+        var turn1Restarts = 0
+        var turn1Played = 0
+        do {
+            let registry = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID")
+            let deviceId: String
+            if let registry, UUID(uuidString: registry) != nil {
+                deviceId = registry
+            } else {
+                deviceId = config.deviceID
+            }
+            print("live-speak: opening session device=\(deviceId) url=\(client.baseURL.absoluteString)")
+            let opened = try await client.openLiveVoice(deviceId: deviceId)
+            let connection = LiveVoiceConnection(baseURL: client.baseURL, token: client.token)
+            let stream = try await connection.connect(sessionId: opened.sessionId)
+            let phrases = longForm
+                ? [
+                    "Give one continuous spoken explanation of how a Mac finds a file on disk. "
+                        + "Keep talking for at least thirty seconds. Do not ask a question. "
+                        + "Do not stop early."
+                ]
+                : [
+                    "Say exactly these five words and nothing else: one two three four five.",
+                    "Say exactly these three words and nothing else: six seven eight.",
+                ]
+            var sent = false
+            var followUpSent = false
+            var drainStarted = false
+            let deadline = Date().addingTimeInterval(longForm ? 120 : 70)
+            for try await event in stream {
+                if Date() > deadline { break }
+                if event.type == "error" {
+                    let code = event.code ?? ""
+                    if code == "realtime_disconnect" {
+                        disconnects += 1
+                        print("live-speak: provider disconnect (socket kept): \(event.text ?? "")")
+                        continue
+                    }
+                    if event.fatal {
+                        lastError = event.text ?? code
+                        break
+                    }
+                    let blob = (event.text ?? "").lowercased()
+                    if blob.contains("quota") || blob.contains("insufficient") {
+                        lastError = event.text ?? code
+                        print("live-speak: FAIL quota \(lastError)")
+                        connection.close()
+                        return 7
+                    }
+                }
+                if event.type == "ready", !sent {
+                    sent = true
+                    connection.sendText(phrases[0])
+                    print("live-speak: turn1 text sent")
+                }
+                if event.type == "tts_chunk" {
+                    var responseID = playbackID ?? "live-speak"
+                    if let provider = event.providerResponseId, !provider.isEmpty {
+                        if let accepted = providerID, accepted != provider { continue }
+                        if providerID == nil {
+                            player.cancelResponse(responseID)
+                            responseID = provider
+                            playbackID = provider
+                            providerID = provider
+                            player.beginResponse(provider)
+                        }
+                    } else if playbackID == nil {
+                        playbackID = responseID
+                        player.beginResponse(responseID)
+                    }
+                    if let b64 = event.audioB64, !b64.isEmpty {
+                        chunks += 1
+                        player.enqueueBase64PCM(
+                            b64,
+                            contentType: event.contentType,
+                            sampleRate: Double(event.sampleRate ?? 16_000),
+                            responseID: playbackID ?? responseID,
+                            sequence: event.index
+                        )
+                    }
+                }
+                if event.type == "reply" {
+                    gotReply = true
+                    replies += 1
+                    if let responseID = playbackID {
+                        player.finishResponse(responseID)
+                    }
+                    print("live-speak: turn\(replies) reply \(event.text ?? "")")
+                    if replies == 1, !followUpSent {
+                        followUpSent = true
+                        Task {
+                            await Self.waitForPlaybackDrain(
+                                player,
+                                startSeconds: 8,
+                                drainSeconds: longForm ? 55 : 12
+                            )
+                            let first = player.metrics()
+                            turn1Underruns = first.underrunEvents
+                            turn1Restarts = first.engineRestartCount
+                            turn1Played = first.pcmPlayedFrames
+                            print(
+                                "live-speak: turn1 received=\(first.pcmReceivedFrames) "
+                                    + "scheduled=\(first.pcmScheduledFrames) "
+                                    + "played_frames=\(first.pcmPlayedFrames) "
+                                    + "played_ms=\(first.pcmPlayedFrames * 1000 / 16_000) "
+                                    + "underruns=\(first.underrunEvents) restarts=\(first.engineRestartCount)"
+                            )
+                            if longForm {
+                                connection.close()
+                                return
+                            }
+                            playbackID = nil
+                            providerID = nil
+                            connection.sendText(phrases[1])
+                            print("live-speak: turn2 text sent")
+                        }
+                    }
+                }
+                if !longForm, replies >= 2, chunks > 0, !drainStarted {
+                    drainStarted = true
+                    Task {
+                        try? await Task.sleep(nanoseconds: 1_200_000_000)
+                        await Self.waitForPlaybackDrain(player, startSeconds: 2, drainSeconds: 10)
+                        connection.close()
+                    }
+                }
+            }
+            connection.close()
+        } catch {
+            print("live-speak: FAIL \(error.localizedDescription)")
+            return 3
+        }
+        await Self.waitForPlaybackDrain(
+            player,
+            startSeconds: 2,
+            drainSeconds: longForm ? 55 : 12
+        )
+        let metrics = player.metrics()
+        let playedFrames = max(turn1Played, metrics.pcmPlayedFrames)
+        let turn1PlayedMs = playedFrames * 1000 / 16_000
+        print(
+            "live-speak: chunks=\(chunks) replies=\(replies) disconnects=\(disconnects) "
+                + "received=\(metrics.pcmReceivedFrames) scheduled=\(metrics.pcmScheduledFrames) "
+                + "turn1_played=\(turn1Played) turn1_played_ms=\(turn1Played * 1000 / 16_000) "
+                + "played=\(playedFrames) played_ms=\(turn1PlayedMs) "
+                + "underruns=\(turn1Underruns + metrics.underrunEvents) "
+                + "restarts=\(turn1Restarts + metrics.engineRestartCount) "
+                + "gaps=\(metrics.sequenceGapCount) overflow=\(metrics.overflowEvents)"
+        )
+        if !lastError.isEmpty {
+            print("live-speak: last_error \(lastError)")
+        }
+        if disconnects > 0 {
+            print("live-speak: FAIL socket/provider flap during reply")
+            return 4
+        }
+        if longForm {
+            if replies < 1 || chunks == 0 || playedFrames == 0 {
+                print("live-speak: FAIL no spoken audio")
+                return 5
+            }
+            if turn1PlayedMs < 20_000 {
+                print("live-speak: FAIL short reply \(turn1PlayedMs)ms")
+                return 10
+            }
+            if turn1Underruns + metrics.underrunEvents > 0 {
+                print("live-speak: FAIL underruns")
+                return 6
+            }
+            print("live-speak: PASS long-form \(turn1PlayedMs)ms underruns=0")
+            _ = gotReply
+            return 0
+        }
+        if replies < 2 {
+            print("live-speak: FAIL turn2 missing on same websocket")
+            return 9
+        }
+        if chunks == 0 || turn1Played == 0 || metrics.pcmPlayedFrames == 0 {
+            print("live-speak: FAIL no spoken audio")
+            return 5
+        }
+        if turn1Underruns + metrics.underrunEvents > 0 {
+            print("live-speak: FAIL underruns")
+            return 6
+        }
+        if turn1Restarts + metrics.engineRestartCount > 0 {
+            print("live-speak: FAIL engine restarts")
+            return 8
+        }
+        print("live-speak: PASS")
+        _ = gotReply
+        return 0
     }
 
     /// Listener-presence overlap stress: schedules many soft auxiliary

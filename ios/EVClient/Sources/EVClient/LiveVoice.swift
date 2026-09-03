@@ -128,13 +128,14 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     private let session: URLSession
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
-    /// Bounded dead-link detection: unanswered protocol pings. A backend
-    /// that vanishes without a clean close must NEVER leave this client
-    /// hanging forever on receive() (observed 2026-08-24 after a backend
-    /// restart): two missed pongs terminate the stream so the normal
-    /// reconnect loop owns recovery.
+    /// Dead-link detection for a receive() that can hang after the backend
+    /// vanishes. Inbound events and successful sends are the liveness signal.
+    /// URLSession `sendPing` callbacks are not reliable on current macOS, and
+    /// treating unanswered pings as death reconnnected a healthy socket every
+    /// ~15s (menu-bar offline flicker + chopped speech).
     private var pingTask: Task<Void, Never>?
-    private var missedPongs = 0
+    private var lastInboundNs: UInt64 = 0
+    private var lastOutboundNs: UInt64 = 0
     private var streamContinuation: AsyncThrowingStream<LiveVoiceEvent, Error>.Continuation?
     private var senderTask: Task<Void, Never>?
     private var senderContinuation: AsyncStream<Void>.Continuation?
@@ -142,12 +143,15 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     private var pendingControlMessages: [String] = []
     private var pendingPlaybackMessage: String?
     private var sendGeneration = 0
+    /// True after the API has echoed a keepalive. Until then, inbound silence
+    /// is normal on an older server, so dead-link requires both directions.
+    private var keepaliveAckSeen = false
     private let lock = NSLock()
 
     public init(
         baseURL: URL,
         token: String,
-        session: URLSession = EVAPIClient.voiceSession
+        session: URLSession = EVAPIClient.liveSocketSession
     ) {
         self.baseURL = baseURL
         self.token = token
@@ -188,6 +192,10 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         task.resume()
         lock.lock()
         let receiveGeneration = sendGeneration
+        let now = DispatchTime.now().uptimeNanoseconds
+        lastInboundNs = now
+        lastOutboundNs = now
+        keepaliveAckSeen = false
         lock.unlock()
         receiveTask = Task.detached(priority: .userInitiated) { [weak self] in
             await self?.receiveLoop(task, generation: receiveGeneration)
@@ -196,43 +204,53 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         return stream
     }
 
-    /// Bounded keepalive: ping every 5s; 3 strikes (~15s) for half-open.
-    /// Explicit receive() failure still reconnects immediately (no ping wait).
+    /// Keepalive every 20s so a muted socket (no PCM) still proves the send
+    /// path. Tear down only when BOTH inbound and outbound have been silent
+    /// for a long window — never on unanswered URLSession pings.
     private func startPingWatchdog(for task: URLSessionWebSocketTask, generation: Int) {
         pingTask?.cancel()
-        lock.lock()
-        missedPongs = 0
-        lock.unlock()
         pingTask = Task.detached(priority: .utility) { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
                 guard let self, self.isCurrent(task, generation: generation) else { return }
-                let strikes = self.registerPingSent()
-                if strikes >= 3 {
-                    NSLog("EV_WS ping strikes=\(strikes) — declaring dead link")
+                self.sendJSON(["type": "keepalive"])
+                if self.linkLooksDead() {
+                    NSLog("EV_WS dead-link: inbound and outbound both stale")
                     self.failDeadLink(task, generation: generation)
                     return
-                }
-                NSLog("EV_WS ping sent strikes=\(strikes)")
-                task.sendPing { [weak self] _ in
-                    self?.clearMissedPongs()
                 }
             }
         }
     }
 
-    private func registerPingSent() -> Int {
+    private func noteInbound() {
         lock.lock()
-        defer { lock.unlock() }
-        missedPongs += 1
-        return missedPongs
+        lastInboundNs = DispatchTime.now().uptimeNanoseconds
+        lock.unlock()
     }
 
-    private func clearMissedPongs() {
+    private func noteOutbound() {
         lock.lock()
-        if missedPongs != 0 { NSLog("EV_WS pong ok") }
-        missedPongs = 0
+        lastOutboundNs = DispatchTime.now().uptimeNanoseconds
         lock.unlock()
+    }
+
+    private func linkLooksDead() -> Bool {
+        lock.lock()
+        let inbound = lastInboundNs
+        let outbound = lastOutboundNs
+        let acked = keepaliveAckSeen
+        lock.unlock()
+        let now = DispatchTime.now().uptimeNanoseconds
+        let inboundAge = now &- inbound
+        let outboundAge = now &- outbound
+        // After the API acks keepalive, inbound silence is a real dead link
+        // (half-open TCP can still "send"). Older APIs never ack, so require
+        // both directions stale to avoid bouncing a healthy idle session.
+        if acked {
+            return inboundAge > 90_000_000_000
+        }
+        return inboundAge > 90_000_000_000 && outboundAge > 30_000_000_000
     }
 
     /// Dead link: cancel the blocked receive and tear the socket down so the
@@ -319,7 +337,17 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         attachmentId: String? = nil,
         sequence: Int? = nil,
         last: Bool? = nil,
-        cameraName: String? = nil
+        cameraName: String? = nil,
+        luminance: Double? = nil,
+        labels: [String]? = nil,
+        ocrText: String? = nil,
+        faceCount: Int? = nil,
+        personCount: Int? = nil,
+        lighting: String? = nil,
+        colors: [String]? = nil,
+        savedPath: String? = nil,
+        mediaKind: String? = nil,
+        clipDurationMs: Int? = nil
     ) {
         var payload: [String: Any] = [
             "type": "look_frame",
@@ -342,6 +370,16 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         if let sequence { payload["sequence"] = sequence }
         if let last { payload["last"] = last }
         if let cameraName, !cameraName.isEmpty { payload["camera_name"] = cameraName }
+        if let luminance { payload["luminance"] = luminance }
+        if let labels, !labels.isEmpty { payload["labels"] = labels }
+        if let ocrText, !ocrText.isEmpty { payload["ocr_text"] = ocrText }
+        if let faceCount { payload["face_count"] = faceCount }
+        if let personCount { payload["person_count"] = personCount }
+        if let lighting, !lighting.isEmpty { payload["lighting"] = lighting }
+        if let colors, !colors.isEmpty { payload["colors"] = colors }
+        if let savedPath, !savedPath.isEmpty { payload["saved_path"] = savedPath }
+        if let mediaKind, !mediaKind.isEmpty { payload["media_kind"] = mediaKind }
+        if let clipDurationMs { payload["duration_ms"] = clipDurationMs }
         sendJSON(payload)
     }
 
@@ -408,7 +446,6 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     }
 
     public func close() {
-        NSLog("EV_WS close() called — callers: \(Thread.callStackSymbols.prefix(6).joined(separator: " | "))")
         receiveTask?.cancel()
         receiveTask = nil
         pingTask?.cancel()
@@ -511,8 +548,10 @@ public final class LiveVoiceConnection: @unchecked Sendable {
                 while let message = self.nextMessage(for: task, generation: generation) {
                     do {
                         try await task.send(message)
+                        self.noteOutbound()
                     } catch {
                         NSLog("EV_WS sender FAILED: \(error)")
+                        self.failDeadLink(task, generation: generation)
                         return
                     }
                 }
@@ -549,6 +588,7 @@ public final class LiveVoiceConnection: @unchecked Sendable {
             while !Task.isCancelled {
                 guard isCurrent(task, generation: generation) else { return }
                 let message = try await task.receive()
+                noteInbound()
                 guard isCurrent(task, generation: generation) else { return }
                 let data: Data
                 switch message {
@@ -586,6 +626,12 @@ public final class LiveVoiceConnection: @unchecked Sendable {
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let type = object["type"] as? String
         else { return nil }
+        if type == "keepalive" {
+            lock.lock()
+            keepaliveAckSeen = true
+            lock.unlock()
+            return nil
+        }
         let rawState = object["state"] as? [String: Any] ?? [:]
         let state = rawState.reduce(into: [String: String]()) {
             if let value = $1.value as? String {
@@ -674,7 +720,7 @@ public final class LiveVoiceConnection: @unchecked Sendable {
             maxFrames: Self.intValue(object["max_frames"]),
             detail: object["detail"] as? String,
             command: object["command"] as? String ?? object["action"] as? String,
-            arguments: AnyCodable.dictionary(object["arguments"] as? [String: Any]) ?? [:]
+            arguments: AnyCodable.dictionary(Self.stringKeyedDictionary(object["arguments"])) ?? [:]
         )
     }
 
@@ -683,6 +729,19 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         if let value = raw as? Double { return Int(value) }
         if let value = raw as? NSNumber { return value.intValue }
         return nil
+    }
+
+    private static func stringKeyedDictionary(_ raw: Any?) -> [String: Any]? {
+        if let dict = raw as? [String: Any] { return dict }
+        guard let dict = raw as? NSDictionary else { return nil }
+        var out: [String: Any] = [:]
+        out.reserveCapacity(dict.count)
+        for (key, value) in dict {
+            if let key = key as? String {
+                out[key] = value
+            }
+        }
+        return out
     }
 
     private static func decodeCamera(_ raw: Any?) -> CameraStateSnapshot? {
@@ -999,10 +1058,15 @@ public final class LivePCMPlayer: NSObject, AVAudioPlayerDelegate, @unchecked Se
     private var startTask: DispatchWorkItem?
     private var startDeadline = Date.distantPast
     private var captureMuteUntil = Date.distantPast
+    private var toolGapMuteUntil = Date.distantPast
     private let minStartSeconds: Double = 0.04
     private let startDelay: TimeInterval = 0.02
     private let startRetryDelay: TimeInterval = 0.01
     private let captureEchoTail: TimeInterval = 0.16
+    // Tool-gap mic hold: memory tools take ~0.3-3s but computer/camera
+    // round-trips take 5-15s. A short hold reopens mid-tool and room noise
+    // splits the continuation into a colliding second stream → glitch.
+    private let toolGapHoldSeconds: TimeInterval = 8.0
     private var filePlayer: AVAudioPlayer?
     private var fileQueue: [Data] = []
     private var observers: [NSObjectProtocol] = []
@@ -1037,8 +1101,18 @@ public final class LivePCMPlayer: NSObject, AVAudioPlayerDelegate, @unchecked Se
             || filePlayer?.isPlaying == true
             || !fileQueue.isEmpty
             || Date() < captureMuteUntil
+            || Date() < toolGapMuteUntil
         lock.unlock()
         return active
+    }
+
+    /// Hold mic muted across provider tool gaps (3s) to prevent spurious VAD
+    /// during memory/computer tool execution that would split the answer.
+    public func holdToolGapMute(seconds: TimeInterval? = nil) {
+        lock.lock()
+        let until = Date().addingTimeInterval(seconds ?? toolGapHoldSeconds)
+        if until > toolGapMuteUntil { toolGapMuteUntil = until }
+        lock.unlock()
     }
 
     public func enqueue(

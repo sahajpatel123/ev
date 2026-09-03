@@ -59,26 +59,30 @@ def strip_production_memory_from_manifest(manifest: dict | None) -> dict:
 
 async def close_live_for_device(device_id: str, *, reason: str = "device_revoked") -> bool:
     from app.voice.live.events import ErrorEvent
-    from app.voice.live.layer import live_for_device
+    from app.voice.live.layer import active_lives, live_for_device
 
-    live = live_for_device(device_id)
-    if live is None:
-        return False
-    ws = getattr(live, "transport_ws", None)
-    with contextlib.suppress(Exception):
-        await live.emit(
-            ErrorEvent(
-                at_ms=getattr(live, "now", lambda: 0)(),
-                code=reason,
-                message="Device authorization ended.",
-                fatal=True,
-            )
-        )
-    live.close()
-    if ws is not None:
+    closed = False
+    matches = [live for live in list(active_lives()) if str(getattr(live, "device_id", "")) == str(device_id)]
+    if not matches:
+        live = live_for_device(device_id)
+        matches = [live] if live is not None else []
+    for live in matches:
+        closed = True
+        ws = getattr(live, "transport_ws", None)
         with contextlib.suppress(Exception):
-            await ws.close(code=4003)
-    return True
+            await live.emit(
+                ErrorEvent(
+                    at_ms=getattr(live, "now", lambda: 0)(),
+                    code=reason,
+                    message="Device authorization ended.",
+                    fatal=True,
+                )
+            )
+        live.close()
+        if ws is not None:
+            with contextlib.suppress(Exception):
+                await ws.close(code=4003)
+    return closed
 
 
 def make_sandbox_pipeline_responder(

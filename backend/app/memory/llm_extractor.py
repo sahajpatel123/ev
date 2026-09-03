@@ -144,6 +144,10 @@ def should_enrich(event: Event) -> bool:
     privacy = event.privacy_level or "normal"
     if event.event_type == "message.assistant" or privacy == "never_send_to_model":
         return False
+    from app.memory.live_life import is_live_life_event
+
+    if is_live_life_event(event):
+        return False
     if privacy == "sensitive" and not llm_extraction_sensitive_allowed():
         return False
     text = ((event.content or {}).get("text") or "").strip()

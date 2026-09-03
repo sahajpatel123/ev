@@ -85,3 +85,28 @@ def test_handler_exception_becomes_control_rejected_not_transport_death() -> Non
     assert any(getattr(e, "code", "") == "control_rejected" for e in emitted)
     payload = json.dumps({"probe": "still-alive"})
     assert isinstance(payload, str)
+
+
+def test_keepalive_is_acked_and_does_not_enter_handle_client() -> None:
+    session = LiveSession(session_id="keepalive", engine=LiveEngine())
+    handled: list = []
+    emitted: list = []
+
+    async def capture_handle(message):
+        handled.append(message)
+
+    async def capture_emit(event):
+        emitted.append(event)
+
+    session.handle_client = capture_handle  # type: ignore[method-assign]
+    session.emit = capture_emit  # type: ignore[method-assign]
+
+    async def run() -> None:
+        await asyncio.wait_for(
+            _handle_client_frame(session, {"type": "keepalive"}),
+            timeout=5,
+        )
+
+    asyncio.run(run())
+    assert handled == []
+    assert [getattr(e, "type", "") for e in emitted] == ["keepalive"]

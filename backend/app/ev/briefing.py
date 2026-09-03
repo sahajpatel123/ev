@@ -38,12 +38,14 @@ WRITE_TOOLS = frozenset(
         "close_app",
         "set_reminder",
         "present",
+        "code",
     }
 )
 CORE_TURN_TOOLS = (
     "search_memory",
     "search_web",
     "get_weather",
+    "heading_out",
     "calculate",
     "present",
     "get_upcoming_alerts",
@@ -65,6 +67,7 @@ def capabilities_text(name: str | None = None) -> str:
         f"Named companion {who}. Memory, decisions, timeline. Live weather. Web lookup. "
         "Clock, calendar, leave-by. Health trends when asked. Gear/battery. People in "
         "memory. Research and maker projects. Safe math. HUD/lookout via present. "
+        "Coding on command in a bounded workspace. "
         "Messages, calls, mail, reminders through granted Mac/iPhone bridges. "
         "Not city surveillance, not weapons, not a host-model brand."
     )
@@ -242,6 +245,11 @@ def infer_write_args(name: str, message: str) -> dict[str, Any] | None:
         if not body:
             return None
         return {"title": "EVIE", "body": body[:4000]}
+    if name == "code":
+        body = (message or "").strip()
+        if not body:
+            return None
+        return {"goal": body[:4000]}
     return None
 
 
@@ -265,6 +273,8 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
         want = "open_url"
     elif selection.selected == "present":
         want = "present"
+    elif selection.selected == "code":
+        want = "code"
     if want is None or want not in offered:
         return []
     calls: list[ToolCall] = []
@@ -475,7 +485,11 @@ def _prefetch_names(message: str) -> list[str]:
             names.append(name)
     if looks_world_knowledge(message) and "search_web" not in names:
         names.append("search_web")
-    if is_weather_query(message) and "get_weather" not in names:
+    from app.ev.tool_select import is_heading_out
+
+    if is_heading_out(message) and "heading_out" not in names:
+        names.insert(0, "heading_out")
+    if is_weather_query(message) and "get_weather" not in names and "heading_out" not in names:
         names.insert(0, "get_weather")
     if detect_life_action(message) and "resolve_contact" not in names:
         names.append("resolve_contact")

@@ -77,4 +77,18 @@ for udid in "${UDIDS[@]:-}"; do
 done
 echo "[verify] devices covered: ${#UDIDS[@]}"
 
-echo "[verify] OK: signature, identity, bundle $BID, version $VER build $BLD, Ad Hoc profile valid"
+# 5) embedded API origin must be private Tailscale HTTPS, never raw :8000
+API_URL=$( /usr/libexec/PlistBuddy -c 'Print EV_API_URL' "$APP/Info.plist" 2>/dev/null || echo "" )
+case "$API_URL" in
+  https://*.ts.net|https://*.ts.net/*) ;;
+  https://*.ts.net:*) ;;
+  *)
+    echo "FAIL VERIFY: EV_API_URL must be https://<host>.ts.net (got '${API_URL:-missing}')" >&2
+    exit 62
+    ;;
+esac
+echo "$API_URL" | grep -Eq ':8000([^0-9]|$)' \
+  && { echo "FAIL VERIFY: EV_API_URL must not use :8000 ($API_URL)" >&2; exit 63; }
+echo "[verify] API origin $API_URL"
+
+echo "[verify] OK: signature, identity, bundle $BID, version $VER build $BLD, Ad Hoc profile valid, HTTPS Home Station origin"

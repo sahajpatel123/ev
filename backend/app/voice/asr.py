@@ -659,12 +659,19 @@ class FasterWhisperTranscriber:
             raise ModelUnavailableError(
                 "faster-whisper is not installed; install the Agent 2 dependency"
             ) from exc
-        self._model = WhisperModel(
-            self.model_name,
-            device=self.device,
-            compute_type=self.compute_type,
-            download_root=self.model_dir,
-        )
+        load_kwargs = {
+            "device": self.device,
+            "compute_type": self.compute_type,
+            "download_root": self.model_dir,
+        }
+        try:
+            # Cached weights: skip the Hugging Face HEAD that ran on every
+            # ev.ears restart and spiked the MacBook after EV.app quit.
+            self._model = WhisperModel(
+                self.model_name, local_files_only=True, **load_kwargs
+            )
+        except Exception:
+            self._model = WhisperModel(self.model_name, **load_kwargs)
         _WHISPER_MODELS[key] = self._model
         return self._model
 

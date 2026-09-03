@@ -218,6 +218,10 @@ def test_status_and_pwa_connection_contract() -> None:
     assert "Voice connected — tap to enable audio" in app_js
     assert "M21" in webrtc
     assert "VOICE_READY" in webrtc
+    assert "_gateMicForPlayback" in webrtc
+    assert "_echoHold" in webrtc
+    assert "PLAYBACK_MIC_TAIL_MS" in webrtc
+    assert "scheduleHealthRender" in app_js
     assert "unified-calls-v1" in webrtc
     assert "waitIce" not in webrtc
     assert '("offer.sdp"' not in webrtc

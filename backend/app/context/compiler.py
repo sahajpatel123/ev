@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from app.utils.text import token_estimate
 
@@ -70,6 +71,43 @@ class ContextPlan:
         }
 
 
+CASUAL_SOCIAL_RE = re.compile(
+    r"^(?:"
+    r"(?:hey|hi|hello|yo|howdy|what'?s up|sup|greetings)(?:\s+(?:evie|ev|e\.v\.))?|"
+    r"good (?:morning|afternoon|evening|night|day)(?:\s+(?:evie|ev|e\.v\.))?|"
+    r"how are you(?: doing)?|how'?s it going|how are things|how do you feel|"
+    r"thanks|thank you|ok|okay|cool|nice|got it|sounds good|great|alright|bye|goodbye|see ya|"
+    r"tell me a joke|make me laugh"
+    r")[\s\.,!\?]*$",
+    re.IGNORECASE,
+)
+
+CASUAL_GREETING_TOKENS = frozenset(
+    {
+        "hey", "hi", "hello", "yo", "howdy", "sup", "greetings",
+        "good", "morning", "afternoon", "evening", "night", "day",
+        "how", "are", "you", "doing", "how's", "hows", "it", "going", "things",
+        "thanks", "thank", "ok", "okay", "cool", "nice", "great", "alright",
+        "got", "sounds", "perfect", "yep", "yeah", "nope",
+        "bye", "goodbye", "evie", "ev", "e.v", "e", "v"
+    }
+)
+
+
+def is_casual_social_turn(message: str | None) -> bool:
+    """Return True if message is purely a casual greeting, social banter, or acknowledgment."""
+    if not message or not message.strip():
+        return False
+    msg = message.strip()
+    if len(msg) > 100:
+        return False
+    if CASUAL_SOCIAL_RE.match(msg):
+        return True
+    cleaned = re.sub(r"[^\w\s']", " ", msg.lower()).strip()
+    words = [w for w in cleaned.split() if w]
+    return bool(words and all(w in CASUAL_GREETING_TOKENS for w in words))
+
+
 DEEP_DIVE_RE = re.compile(
     r"\b(why|which|what|how|when|where|who|remember|recall|as of|in march|in april|"
     r"last (week|month|year|tuesday)|changed|decision|preference|goal|conflict)\b",
@@ -80,6 +118,8 @@ DEEP_DIVE_RE = re.compile(
 def wants_deep_dive(message: str) -> bool:
     """Deterministic signal that a question may need more than the shallow pass."""
     if not message or not message.strip():
+        return False
+    if is_casual_social_turn(message):
         return False
     if len(message) > 180:
         return True
@@ -304,21 +344,34 @@ class ContextCompiler:
         plan's metadata records the chosen depth and attempt count so budget
         adherence can be measured.
         """
-        shallow_memories = list(memories[:shallow_k])
+        quiet = is_casual_social_turn(message) and memory_intent != "explicit_recall"
+        effective_shallow_k = 0 if quiet else shallow_k
+        shallow_memories = list(memories[:effective_shallow_k])
+        quiet_state = user_state
+        if quiet:
+            quiet_state = SimpleNamespace(
+                activity=getattr(user_state, "activity", ""),
+                active_project=getattr(user_state, "active_project", None),
+                active_goal=getattr(user_state, "active_goal", None),
+                current_task=getattr(user_state, "current_task", None),
+                recent_topics=list(getattr(user_state, "recent_topics", None) or []),
+                open_decisions=list(getattr(user_state, "open_decisions", None) or []),
+                live_context=[],
+            )
         shallow = self.compile(
             memories=shallow_memories,
-            user_state=user_state,
+            user_state=quiet_state,
             strategy_text=strategy_text,
             budget=budget,
-            perception_lines=perception_lines,
+            perception_lines=None if quiet else perception_lines,
             history=history,
-            rollup_summary=rollup_summary,
-            open_questions=open_questions,
-            open_conflicts=open_conflicts,
-            relationship_text=relationship_text,
+            rollup_summary=None if quiet else rollup_summary,
+            open_questions=None if quiet else open_questions,
+            open_conflicts=None if quiet else open_conflicts,
+            relationship_text=None if quiet else relationship_text,
             memory_intent=memory_intent,
         )
-        deep_requested = wants_deep_dive(message or "") and len(memories) > shallow_k
+        deep_requested = wants_deep_dive(message or "") and len(memories) > effective_shallow_k
         headroom = shallow.remaining_tokens >= budget * 0.15
         if deep_requested and headroom:
             plan = self.compile(
@@ -338,7 +391,7 @@ class ContextCompiler:
                 "progressive": True,
                 "depth": "deep",
                 "attempts": 2,
-                "shallow_k": shallow_k,
+                "shallow_k": effective_shallow_k,
                 "deep_k": deep_k,
                 "memory_intent": memory_intent,
                 "token_breakdown": {section.name: section.tokens for section in plan.sections},
@@ -348,9 +401,10 @@ class ContextCompiler:
             "progressive": True,
             "depth": "shallow",
             "attempts": 1,
-            "shallow_k": shallow_k,
+            "shallow_k": effective_shallow_k,
             "deep_requested": deep_requested,
             "memory_intent": memory_intent,
+            "quiet": quiet,
             "token_breakdown": {section.name: section.tokens for section in shallow.sections},
         }
         return shallow

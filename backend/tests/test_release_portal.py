@@ -106,3 +106,13 @@ def test_ota_manifest_shape() -> None:
     assert "/evie-install/{channel}/Evie.ipa" in source
     assert "com.ev.evie.shell" in source
     assert "_base_url(request)" in source  # absolute URL, required by iOS OTA
+
+
+def test_portal_index_installs_tailscale_pwa() -> None:
+    import inspect
+
+    source = inspect.getsource(portal.portal_index)
+    assert "/evie/" in source
+    assert "Add to Home Screen" in source
+    assert "Xcode" in source
+

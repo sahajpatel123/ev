@@ -83,6 +83,7 @@ ROUTED_CAPABILITIES = frozenset(
         "computer",
         "recall",
         "get_weather",
+        "heading_out",
         "search_web",
         "web_search",
         "research",
@@ -94,6 +95,7 @@ ROUTED_CAPABILITIES = frozenset(
         "send_message",
         "present",
         "execute_command",
+        "code",
         "start_timer",
         "set_reminder",
         "cancel_timer",
@@ -122,6 +124,8 @@ ROUTED_CAPABILITIES = frozenset(
         "look",
         "phone_action",
         "observe_camera",
+        "capture_photo",
+        "record_video",
         "drone",
         "media_check",
         "estimate_structure",
@@ -139,7 +143,19 @@ INDEPENDENT_FACTORS = frozenset(
 VOICE_FACTORS = frozenset({"voice", "voice_wake", "speaker_verified"})
 OWNER_ACTORS = frozenset({"master", "voice", "owner"})
 OWNER_AUTO_PERCEPTION = frozenset(
-    {"look", "observe_camera", "computer_status", "list_apps", "inspect_ui", "screen_look", "recall"}
+    {
+        "look",
+        "observe_camera",
+        "capture_photo",
+        "record_video",
+        "computer_status",
+        "list_apps",
+        "inspect_ui",
+        "screen_look",
+        "read",
+        "see",
+        "recall",
+    }
 )
 
 R3_TTL_SECONDS = 120
@@ -210,6 +226,7 @@ SCOPE_ALIASES: dict[str, frozenset[str]] = {
 
 PROVIDER_SLUGS: dict[str, str] = {
     "get_weather": "open-meteo",
+    "heading_out": "local",
     "search_web": "search",
     "web_search": "search",
     "calibrate": "local",
@@ -238,11 +255,15 @@ PROVIDER_SLUGS: dict[str, str] = {
     "look": "vision",
     "phone_action": "phone",
     "observe_camera": "vision",
+    "capture_photo": "vision",
+    "record_video": "vision",
     "list_mail": "mail",
     "draft_reply": "local",
     "whats_on_my_plate": "local",
     "home_act": "smart_home",
     "home_status": "local",
+    "code": "software",
+    "execute_command": "software",
 }
 
 # Public/local providers are not Integration rows. Missing Integration is
@@ -348,6 +369,8 @@ def canonical_target(name: str, arguments: dict | None) -> str | None:
     if name in ROUTED_CAPABILITIES:
         if name == "get_weather":
             return "home"
+        if name == "heading_out":
+            return "home"
         if name == "calendar_read":
             return "owner"
         if name == "list_messages":
@@ -419,7 +442,7 @@ def annotate_spec(spec: dict[str, Any]) -> dict[str, Any]:
         out.setdefault("fallback", "not_connected: connect the provider and grant the required scope")
     elif provider == "smart_home":
         out.setdefault("fallback", "not_connected: configure the local or Home Assistant bridge")
-    elif provider in {"local", "open-meteo", "vision"}:
+    elif provider in {"local", "open-meteo", "vision", "software", "computer"}:
         out.setdefault("fallback", "report unavailable; do not fabricate success")
     else:
         out.setdefault("fallback", "unavailable: provider adapter is not configured")
@@ -964,7 +987,18 @@ def attach_evidence(
     if result.get("ok") is False or result.get("error") or result.get("degraded"):
         return result
     clock = now or utcnow()
-    evidence = dict(result.get("evidence") or {})
+    raw_evidence = result.get("evidence")
+    if isinstance(raw_evidence, list):
+        # Recall/history packs are a list of cards. Do not dict() that list —
+        # Python then iterates card keys and raises ValueError, which live
+        # Talk logged as a failed recall and Mini denied from.
+        stamped = dict(result)
+        if "source" in decision.evidence_fields and not stamped.get("source"):
+            stamped["source"] = decision.provider or decision.audit.get("name")
+        if "timestamp" in decision.evidence_fields and not stamped.get("timestamp"):
+            stamped["timestamp"] = clock.isoformat()
+        return stamped
+    evidence = dict(raw_evidence or {})
     if "source" in decision.evidence_fields and not evidence.get("source"):
         existing = result.get("source")
         if isinstance(existing, dict):
@@ -1021,6 +1055,8 @@ def not_connected_payload(decision: PolicyDecision, *, next_step: str | None = N
             "set EV_SEARCH_PROVIDER=live (Open-Meteo weather, no key) "
             "or EV_SEARCH_PROVIDER=brave with EV_BRAVE_SEARCH_API_KEY"
         )
+        payload["count"] = 0
+        payload["results"] = []
     return payload
 
 

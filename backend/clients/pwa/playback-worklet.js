@@ -82,10 +82,13 @@ class EviePlaybackProcessor extends AudioWorkletProcessor {
       if (this.count <= 0) {
         out[i] = 0;
         if (!this.ended) {
+          // Transient arrival jitter, not the end of speech: hold the prime
+          // and the fade envelope so the next drip resumes instantly at full
+          // level. Un-priming here forced a re-prime wait plus a 96-sample
+          // fade-in dip on EVERY jitter hole — heard as constant flutter.
+          // Only explicit flush/stop/end releases the prime.
           this.underruns += 1;
           this.starveFrames += 1;
-          this.primed = false;
-          this.fade = 0;
         } else {
           this.playing = false;
         }

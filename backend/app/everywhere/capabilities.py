@@ -86,9 +86,22 @@ def _base_capabilities(device: Device) -> list[dict]:
     if "foreground_voice" in caps:
         out.append({"id": "voice.converse", "state": "AVAILABLE", "evidence": "handshake"})
     if "camera" in caps:
-        # Camera needs an OS permission grant at capture time; the handshake
-        # advertises possession, runtime may still downgrade to PERMISSION_REQUIRED.
-        out.append({"id": "camera.look", "state": "AVAILABLE", "evidence": "handshake"})
+        profile = getattr(device, "endpoint_profile", None) or {}
+        hardware = profile.get("hardware") if isinstance(profile, dict) else {}
+        perms = profile.get("permissions") if isinstance(profile, dict) else {}
+        perm = str((perms or {}).get("camera") or "unknown").lower()
+        state = "AVAILABLE"
+        if perm in {"denied", "restricted"}:
+            state = "PERMISSION_REQUIRED"
+        out.append(
+            {
+                "id": "camera.look",
+                "state": state,
+                "evidence": "endpoint_profile" if hardware else "handshake",
+                "camera_quality": (hardware or {}).get("camera_quality"),
+                "camera_preference_rank": (hardware or {}).get("camera_preference_rank"),
+            }
+        )
     if "text" in caps:
         out.append({"id": "text.chat", "state": "AVAILABLE", "evidence": "handshake"})
     # Any paired companion endpoint polls the backend, so it can always be a
@@ -148,6 +161,8 @@ async def capability_universe(session: AsyncSession) -> dict:
                     "reason_unavailable": None if state == "AVAILABLE" else f"device_{presence.lower()}",
                     "evidence": base["evidence"],
                     "verified_at": now_iso,
+                    "camera_quality": base.get("camera_quality"),
+                    "camera_preference_rank": base.get("camera_preference_rank"),
                 }
             )
     revision_src = json.dumps(
@@ -187,6 +202,8 @@ class CapabilityRouter:
                 "capability_id": r["capability_id"],
                 "state": r["state"],
                 "presence_state": r["presence_state"],
+                "camera_quality": r.get("camera_quality"),
+                "camera_preference_rank": r.get("camera_preference_rank"),
             }
             if (
                 r["state"] == "AVAILABLE"
@@ -197,6 +214,8 @@ class CapabilityRouter:
             else:
                 row["reason"] = r.get("reason_unavailable") or f"state_{r['state'].lower()}"
                 unavailable.append(row)
+        if wanted in {"camera.look", "camera"}:
+            candidates.sort(key=lambda c: (c.get("camera_preference_rank") is None, c.get("camera_preference_rank") or 99))
         return {
             "ok": bool(candidates),
             "capability": wanted,

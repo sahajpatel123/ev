@@ -24,6 +24,12 @@ struct EvieBrokerCheck {
 
         check("reject-selector", NativeBridgeRequest.parse(["type": "invokeSelector"]) == nil)
         check("allow-haptic", NativeBridgeRequest.parse(["type": "haptic", "event": "selection"]) != nil)
+        check("allow-pending-capture", NativeBridgeRequest.parse(["type": "pending_capture"]) != nil)
+        check("allow-healthkit-snapshot", NativeBridgeRequest.parse(["type": "healthkit_snapshot"]) != nil)
+        check("allow-calendar-snapshot", NativeBridgeRequest.parse(["type": "calendar_snapshot"]) != nil)
+        check("allow-contacts-snapshot", NativeBridgeRequest.parse(["type": "contacts_snapshot"]) != nil)
+        check("allow-notification-status", NativeBridgeRequest.parse(["type": "notification_status"]) != nil)
+        check("allow-permission-status", NativeBridgeRequest.parse(["type": "permissionStatus"]) != nil)
         check("reject-eval", NativeBridgeRequest.parse(["type": "eval"]) == nil)
 
         let receipt = NativeReceipt(

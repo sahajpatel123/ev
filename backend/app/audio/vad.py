@@ -511,4 +511,9 @@ def default_vad_engine() -> VadEngine:
             model_path=settings.ears_vad_model_path,
             threshold=settings.ears_vad_threshold,
         )
-    return EnergyVad()
+    # Floor must sit above MacBook-Air room-tone 20 ms RMS (~100–400) or the
+    # idle loop treats hiss as continuous speech. Close-talk "Evie" is >> this.
+    # Live session VAD uses its own EnergyVad(rms_speech_floor=...) and is
+    # not this default.
+    floor = max(80.0, float(settings.ears_idle_min_rms) * 0.4)
+    return EnergyVad(rms_speech_floor=floor)

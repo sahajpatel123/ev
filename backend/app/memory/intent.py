@@ -101,8 +101,9 @@ DECISION_PATTERNS = re.compile(
 PREFERENCE_PATTERNS = re.compile(
     r"\b(?:"
     r"what do (?:i|we) (?:usually )?(?:like|prefer|love|enjoy|use)"
+    r"|what did (?:i|we) (?:usually )?(?:like|prefer|love|enjoy|use)"
     r"|my (?:favorite|favourite|preference|preferred)"
-    r"|which (?:one )?do (?:i|we) (?:prefer|like|usually)"
+    r"|which (?:one )?(?:do|did) (?:i|we) (?:prefer|like|usually)"
     r"|how do i (?:like|prefer|take)"
     r")",
     re.IGNORECASE,
@@ -134,7 +135,7 @@ PERSON_PATTERNS = re.compile(
     r"who is\s+[A-Z][a-z]+"
     r"|tell me about\s+[A-Z][a-z]+"
     r"|what do you know about\s+[A-Z][a-z]+"
-    r"|my (?:friend|colleague|boss|manager|mom|dad|mother|father|brother|sister|wife|"
+    r"|my (?:friend|colleague|boss|manager|mummy|mommy|mum|mom|dad|daddy|mother|father|brother|sister|wife|"
     r"husband|partner|girlfriend|boyfriend|roommate|neighbor|dentist|doctor)"
     r"|when did (?:i|we) (?:last )?(?:meet|talk|speak|see) (?:with )?[A-Z][a-z]+"
     r")",
@@ -304,6 +305,8 @@ def classify_retrieval(
     if DECISION_PATTERNS.search(raw):
         return _done(RetrievalIntent.DECISION, "decision_marker")
     if PREFERENCE_PATTERNS.search(raw):
+        if historical:
+            return _done(RetrievalIntent.TEMPORAL_EXACT, "historical_preference")
         return _done(RetrievalIntent.CURRENT_PREFERENCE, "preference_marker")
     if INTENTION_PATTERNS.search(raw):
         return _done(RetrievalIntent.INTENTION, "intention_marker")
@@ -311,6 +314,26 @@ def classify_retrieval(
         return _done(RetrievalIntent.PROJECT_HISTORY, "project_history_marker")
     if PERSON_PATTERNS.search(raw):
         return _done(RetrievalIntent.PERSON, "person_marker")
+    how_person = re.search(r"\bhow(?:'s| is)\s+([A-Za-z]{3,})\b", raw)
+    if how_person and how_person.group(1).lower() not in {
+        "the",
+        "my",
+        "our",
+        "this",
+        "that",
+        "your",
+        "his",
+        "her",
+        "its",
+        "work",
+        "life",
+        "health",
+        "sleep",
+        "weather",
+        "everything",
+        "everyone",
+    }:
+        return _done(RetrievalIntent.PERSON, "person_how_is")
     if FACT_PATTERNS.search(raw):
         return _done(RetrievalIntent.FACT, "fact_marker")
     if PAST_EVENT_PATTERNS.search(raw):
@@ -321,6 +344,8 @@ def classify_retrieval(
     # Contextual signals layer (§7 step 2): continuity helpers.
     legacy = classify_memory_intent(raw)
     if legacy == "explicit_recall":
+        if historical:
+            return _done(RetrievalIntent.TEMPORAL_EXACT, "historical_explicit_recall")
         return _done(RetrievalIntent.FACT, "explicit_recall_signal")
     if legacy == "continuation" or is_continuation(raw) or _CONTINUATION_OVERRIDE.match(raw):
         if previous_intent is not None and previous_intent not in {

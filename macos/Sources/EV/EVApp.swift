@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import EVRuntime
 import SwiftUI
 
@@ -30,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Never-shown window so closing the menu panel / TCC dialog is not
     /// “last window closed” even if SwiftUI skips this delegate.
     private var keepAliveWindow: NSWindow?
+    private var termSource: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.arguments.contains("--orb-preview") {
@@ -39,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.setActivationPolicy(.accessory)
         installKeepAliveWindow()
+        installTerminationSignals()
         // URL scheme delivery for EVNotificationHelper (single notification
         // path: backend → helper → ev:// → EV app → UNUserNotificationCenter).
         NSAppleEventManager.shared().setEventHandler(
@@ -49,10 +52,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         installAppMenu()
         installStatusItemMenu()
-        // WAKE W1: ev.ears is the always-on listener (KeepAlive+RunAtLoad true,
-        // local ring → Stage-1 KWS → accepted-wake handoff with 1-2s pre-roll,
-        // stable mic, idle local-only). EV.app surrenders the mic while idle.
-        EarsProcess.ensureRunning()
+        // Opening EV.app starts the live session, which takes the mic.
+        // Kickstarting ev.ears here races live.start() (kill + KeepAlive
+        // respawn + faster-whisper) and is the launch-time heat/flicker
+        // source. Quit still restores ears as the always-on owner.
         installPressureGuard()
         // Orb windows created during AppModel.start are held until this
         // point: switching to accessory above would otherwise hide them.
@@ -79,6 +82,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             EarsProcess.ensureRunning()
         }
         return reply
+    }
+
+    /// SIGTERM (Activity Monitor, `kill`) must run the same mic-handoff as
+    /// Quit. Without this, a stale live-mic marker made ears and EV fight
+    /// for the input after a non-menu quit.
+    private func installTerminationSignals() {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        source.setEventHandler {
+            TerminatePolicy.markExplicitQuit()
+            EarsProcess.LiveMicOwnerMarker.clear()
+            EarsProcess.ensureRunning()
+            NSApp.terminate(nil)
+        }
+        source.resume()
+        termSource = source
     }
 
     private func installKeepAliveWindow() {
@@ -203,8 +222,7 @@ extension AppModel.Status {
     var symbolName: String {
         switch self {
         case .offline: return "circle.dashed"
-        case .listening: return "ear"
-        case .thinking: return "brain"
+        case .listening, .thinking: return "ear"
         case .speaking: return "waveform"
         }
     }

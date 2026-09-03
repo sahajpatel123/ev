@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from app.config import settings
 
@@ -59,25 +59,42 @@ def _base_url(request: Request) -> str:
 
 
 @router.get("/")
-async def portal_index(request: Request) -> PlainTextResponse:
-    """One screen, no developer jargon (B16)."""
-    lines = ["EVIE MOBILE", "", "Stable"]
-    try:
-        s = _load("stable")
-        lines += [f"Version {s['app_version']} · Build {s['native_build']}", "/evie-install/stable/install", ""]
-    except HTTPException:
-        lines += ["(none yet)", ""]
-    lines.append("Canary")
-    try:
-        c = _load("canary")
-        lines += [f"Version {c['app_version']} · Build {c['native_build']}", "/evie-install/canary/install", ""]
-    except HTTPException:
-        lines += ["(none yet)", ""]
-    lines += [
-        "Install: open a channel link on your iPhone and tap Install.",
-        "Private: this page is reachable only inside your tailnet.",
-    ]
-    return PlainTextResponse("\n".join(lines))
+async def portal_index(request: Request) -> HTMLResponse:
+    """Install Evie as a Tailscale PWA. IPA OTA remains optional and unused."""
+    from .release import current_web_release
+
+    rel = current_web_release() or {}
+    build = str(rel.get("web_build") or "")
+    origin = _base_url(request)
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Install Evie</title>
+  <style>
+    body {{ font-family: ui-sans-serif, system-ui, sans-serif; margin: 24px; line-height: 1.45; max-width: 40rem; }}
+    a.primary {{ display: inline-block; margin: 16px 0; padding: 12px 18px; background: #111; color: #fff; text-decoration: none; border-radius: 12px; }}
+    .quiet {{ color: #555; }}
+  </style>
+</head>
+<body>
+  <h1>Evie</h1>
+  <p>Install on this iPhone over Tailscale. No Xcode. No App Store.</p>
+  <p>Web build <strong>{build}</strong></p>
+  <p><a class="primary" href="/evie/">Open Evie</a></p>
+  <ol>
+    <li>Keep Tailscale connected. Funnel stays off.</li>
+    <li>Open Evie in Safari at <code>{origin}/evie/</code>.</li>
+    <li>Share → Add to Home Screen.</li>
+    <li>Pair with a code from the Mac, then promote the phone on the Mac.</li>
+  </ol>
+  <p class="quiet">Upgrades are automatic: Home Station serves a new PWA build on this same origin.</p>
+  <p class="quiet">IPA / itms-services links are not required for this path.</p>
+</body>
+</html>
+"""
+    return HTMLResponse(html)
 
 
 @router.get("/manifest")

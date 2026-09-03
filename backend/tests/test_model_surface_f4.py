@@ -1,7 +1,7 @@
 """F4 model-surface reduction: projection filter, recall/computer brokers.
 
 Acceptance (F4 directive):
-  - legacy surface = full 50-name allowlist projection; ON = 6-name target
+  - legacy surface = full 50-name allowlist projection; ON = reduced target
   - old tools are NEVER deleted — only hidden from the model projection
   - recall == search_memory substrate parity
   - computer routes goals (semantic/executor) and REFUSES memory/state goals
@@ -73,7 +73,7 @@ def test_legacy_surface_full_on_surface_reduced() -> None:
     settings.model_surface_v2 = "on"
     reduced = live_tool_projection(_fake_manifest())
     settings.model_surface_v2 = "legacy"
-    assert len(legacy) == 61  # 48 + recall + computer + 11 VOICE CONTROL PLAN (recall_history + 10 UI verbs)
+    assert len(legacy) == 65  # previous 64 + code broker
     assert {e["name"] for e in reduced} == F4_TARGET_SURFACE
     # Old tools are NOT deleted — the spec registry keeps every implementation.
     for name in ("send_message", "calendar_add", "open_app", "search_memory", "mission_control"):
@@ -90,7 +90,7 @@ def test_surface_modes_and_measurement() -> None:
     settings.model_surface_v2 = "legacy"
     print(f"\n[surface] legacy {n_l} tools {chars_l}B ~{tok_l}tok | on {n_o} tools {chars_o}B ~{tok_o}tok "
           f"| reduction {100 - round(100 * tok_o / tok_l, 1)}%")
-    assert n_l == 61 and n_o == 6
+    assert n_l == 65 and n_o == 10
     assert tok_o < tok_l / 4  # substantial reduction
     assert model_surface_mode() in {"legacy", "shadow", "on"}
 
@@ -98,15 +98,24 @@ def test_surface_modes_and_measurement() -> None:
 def test_new_specs_are_concise() -> None:
     """§33: tool descriptions stay lean — backend semantics live in code."""
 
-    for name in ("recall", "computer"):
+    for name in ("recall", "computer", "code"):
         spec = get_spec(name)
         assert spec is not None
         assert len(spec["description"]) < 600, name
         assert spec["parameters"]["properties"]
 
 
+def test_recall_spec_does_not_deny_shared_history() -> None:
+    spec = get_spec("recall")
+    assert spec is not None
+    text = spec["description"].lower()
+    assert "no reliable record was found" not in text
+    assert "already know this owner" in text
+    assert "no history with them" in text
+
+
 def test_live_allowlist_includes_new_brokers() -> None:
-    assert {"recall", "computer"} <= LIVE_VOICE_TOOLS
+    assert {"recall", "computer", "code"} <= LIVE_VOICE_TOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +181,19 @@ async def test_computer_refuses_memory_goal_with_redirect(db_session: AsyncSessi
     body = result.result or {}
     assert body.get("error") == "not_a_computer_goal"
     assert body.get("redirect") == "recall"
+
+
+@pytest.mark.asyncio
+async def test_computer_does_not_refuse_chrome_search_as_memory(db_session: AsyncSession) -> None:
+    result = await dispatch(
+        db_session,
+        "computer",
+        {"goal": "In Google Chrome, search for OpenAI.", "target_app": "Chrome"},
+        actor="master",
+    )
+    body = result.result or {}
+    assert body.get("error") != "not_a_computer_goal"
+    assert body.get("redirect") != "recall"
 
 
 @pytest.mark.asyncio
@@ -267,3 +289,30 @@ async def test_f4_shadow_corpus_no_lost_capability(db_session: AsyncSession) -> 
     assert resolved is not None and resolved[0] == "open_app"
     assert "open_app" in hidden  # hidden from the model, alive internally
     settings.model_surface_v2 = "legacy"
+
+
+def test_f4_computer_instructions_tell_model_to_call_computer() -> None:
+    from app.ev.computer_runtime import computer_model_instructions
+
+    settings.model_surface_v2 = "on"
+    try:
+        text = computer_model_instructions(
+            {
+                "mac_client_connected": True,
+                "app_lifecycle_ready": True,
+                "generic_ui_control_ready": False,
+            }
+        )
+        assert "AVAILABLE via the computer function" in text
+        assert "call computer immediately" in text
+        assert "Do not say you lack access" in text
+        assert "never say there is no mac control client" in text.lower()
+        assert "youtube.com" in text
+        assert "which app is open" in text
+        assert "inspect_ui" not in text.split("call computer immediately", 1)[0]
+        denied = computer_model_instructions(
+            {"mac_client_connected": False, "app_lifecycle_ready": False}
+        )
+        assert "UNAVAILABLE" in denied
+    finally:
+        settings.model_surface_v2 = "legacy"

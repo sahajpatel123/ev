@@ -11,9 +11,13 @@ decides how wide that pre-authorization is:
   pre-authorized; everything else needs confirmation.
 
 When confirmation is required, the caller must pass ``confirm: true`` on the
-action (or the runtime approval flow must have approved it). With
-``EV_LIFE_AUTONOMY=full`` the owner has explicitly opted out of per-action
-confirmation for anything inside the granted scopes.
+action (or the runtime approval flow must have approved it).
+
+``EV_LIFE_AUTONOMY=full`` opts out of *per-action* confirmation for
+recipients already pre-authorized by the allowlist. It does **not** disarm
+the unknown-recipient valve: unresolved recipients still need ``confirm``
+when ``EV_LIFE_CONFIRM_UNKNOWN`` is on. R3/R4 and refused domains are
+enforced elsewhere (``app.ev.policy``).
 """
 
 from __future__ import annotations
@@ -81,13 +85,8 @@ def evaluate_life_policy(
         if confirm_unknown is not None
         else bool(settings.life_confirm_unknown)
     )
-    if effective_autonomy == "full":
-        return LifePolicyDecision(
-            allowed=True,
-            confirmation_required=False,
-            reason="EV_LIFE_AUTONOMY=full",
-            contact=contact,
-        )
+    # ``full`` skips per-action confirmation for pre-authorized recipients
+    # only. Do not return here — the unknown-recipient valve stays armed.
     if effective_allowlist == ALLOWLIST_ANY:
         return LifePolicyDecision(
             allowed=True,
@@ -103,10 +102,13 @@ def evaluate_life_policy(
         or (effective_allowlist == ALLOWLIST_STARRED and is_starred)
     )
     if preauthorized:
+        reason = f"known contact under allowlist={effective_allowlist}"
+        if effective_autonomy == "full":
+            reason = f"EV_LIFE_AUTONOMY=full; {reason}"
         return LifePolicyDecision(
             allowed=True,
             confirmation_required=False,
-            reason=f"known contact under allowlist={effective_allowlist}",
+            reason=reason,
             contact=contact,
         )
     if not recipient:

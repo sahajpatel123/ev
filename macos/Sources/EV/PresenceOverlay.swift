@@ -18,7 +18,7 @@ enum EVPalette {
 }
 
 enum PresenceLayout: String, CaseIterable {
-    case ask, reply, split, stack, pulse, ribbon, field, ledger
+    case ask, reply, split, stack, pulse, ribbon, field, ledger, visor
 }
 
 func stableInt(_ key: String) -> UInt32 {
@@ -30,6 +30,9 @@ func stableInt(_ key: String) -> UInt32 {
 }
 
 func pickLayout(for content: PresenceContent) -> PresenceLayout {
+    if content.image != nil {
+        return .visor
+    }
     if let raw = content.layout, let layout = PresenceLayout(rawValue: raw) {
         return layout
     }
@@ -190,6 +193,7 @@ struct PresenceContent {
     var tilt: Double? = nil
     var origin: CLLocationCoordinate2D? = nil
     var destination: CLLocationCoordinate2D? = nil
+    var image: NSImage? = nil
 
     var resolvedTTL: TimeInterval? { ttl ?? timeType.defaultTTL }
     var resolvedLayout: PresenceLayout { pickLayout(for: self) }
@@ -250,6 +254,30 @@ final class PresenceController {
     var lastContents: [PresenceContent] { slots.values.map(\.content) }
 
     func show(_ content: PresenceContent) {
+        present(content, stealFocus: true)
+    }
+
+    func showVisor(jpeg: Data, title: String = "Look", message: String = "") {
+        guard let image = NSImage(data: jpeg), image.size.width > 1 else { return }
+        present(
+            PresenceContent(
+                id: "visor.camera",
+                title: title,
+                message: message,
+                kind: .card,
+                size: .lookout,
+                timeType: .linger,
+                placement: .upperRight,
+                source: "camera",
+                ttl: 24,
+                layout: "visor",
+                image: image
+            ),
+            stealFocus: false
+        )
+    }
+
+    private func present(_ content: PresenceContent, stealFocus: Bool) {
         lastContent = content
         let root = PresenceOverlayView(
             content: content,
@@ -273,9 +301,7 @@ final class PresenceController {
             position(existing.panel, placement: content.placement, size: size, content: content)
             existing.dismissWork = scheduleDismiss(id: content.id, ttl: content.resolvedTTL)
             slots[content.id] = existing
-            existing.panel.makeKeyAndOrderFront(nil)
-            existing.panel.orderFrontRegardless()
-            NSApp.activate(ignoringOtherApps: true)
+            reveal(existing.panel, stealFocus: stealFocus)
             return
         }
 
@@ -285,8 +311,14 @@ final class PresenceController {
         position(panel, placement: content.placement, size: size, content: content)
         let work = scheduleDismiss(id: content.id, ttl: content.resolvedTTL)
         slots[content.id] = Slot(content: content, panel: panel, hosting: view, dismissWork: work)
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
+        reveal(panel, stealFocus: stealFocus)
+    }
+
+    private func reveal(_ panel: NSPanel, stealFocus: Bool) {
+        if stealFocus {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+        }
         panel.orderFrontRegardless()
     }
 
@@ -582,6 +614,26 @@ private struct FolioBody: View {
                 ReplyBlock(text: content.resolvedReply)
                 NotesBlock(items: content.items, field: false)
                 SteerBlock(text: content.recommendation)
+                Spacer(minLength: 0)
+            }
+        case .visor:
+            VStack(alignment: .leading, spacing: 10) {
+                Text(content.title)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(EVPalette.ink)
+                if let image = content.image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFit()
+                        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                if !content.message.isEmpty {
+                    Text(content.message)
+                        .font(.system(size: 12))
+                        .foregroundStyle(EVPalette.muted)
+                        .lineLimit(2)
+                }
                 Spacer(minLength: 0)
             }
         }

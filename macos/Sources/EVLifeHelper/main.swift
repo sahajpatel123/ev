@@ -86,6 +86,48 @@ func runAppleScript(_ source: String) throws -> String {
     return result.stringValue ?? ""
 }
 
+/// Launch an app without activating it or stealing focus.
+func launchBundleHeadless(_ bundleID: String) {
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+        return
+    }
+    let config = NSWorkspace.OpenConfiguration()
+    config.activates = false
+    config.hides = true
+    config.addsToRecentItems = false
+    let sema = DispatchSemaphore(value: 0)
+    NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+        sema.signal()
+    }
+    _ = sema.wait(timeout: .now() + 1.5)
+}
+
+func hideProcess(_ name: String) {
+    let script = """
+    tell application "System Events"
+        if exists process "\(appleScriptEscape(name))" then
+            set visible of process "\(appleScriptEscape(name))" to false
+        end if
+    end tell
+    """
+    _ = try? runAppleScript(script)
+}
+
+func openURLHeadless(_ url: URL) -> Bool {
+    let config = NSWorkspace.OpenConfiguration()
+    config.activates = false
+    config.hides = true
+    config.addsToRecentItems = false
+    var opened = false
+    let sema = DispatchSemaphore(value: 0)
+    NSWorkspace.shared.open(url, configuration: config) { _, err in
+        opened = err == nil
+        sema.signal()
+    }
+    _ = sema.wait(timeout: .now() + 2.0)
+    return opened
+}
+
 func compileAppleScript(_ source: String) throws -> Bool {
     var error: NSDictionary?
     guard let script = NSAppleScript(source: source) else {
@@ -139,6 +181,8 @@ guard arguments.count >= 2 else {
             commands:
               contacts.list
               contacts.resolve --query <name|phone|email>
+              contacts.create --name <name> [--phone <phone>] [--email <email>] [--company <company>]
+              contacts.update [--id <id>] [--query <name>] [--name <name>] [--phone <phone>] [--email <email>] [--company <company>]
               messages.list [--limit N]
               messages.send --to <buddy> --text <message> [--dry-run]
               mail.list [--limit N]
@@ -176,6 +220,37 @@ case "contacts.resolve":
     let matches = (try? fetchContacts(query: query)) ?? []
     success(["query": query, "matches": Array(matches.prefix(10))])
 
+case "contacts.create":
+    guard let name = argumentValue("--name"), !name.isEmpty else {
+        fail(.badArguments, "bad_arguments", "contacts.create requires --name")
+    }
+    let phone = argumentValue("--phone")
+    let email = argumentValue("--email")
+    let company = argumentValue("--company")
+    do {
+        let created = try createContact(name: name, phone: phone, email: email, company: company)
+        success(created)
+    } catch {
+        fail(.failed, "failed", "contacts.create failed: \(error)")
+    }
+
+case "contacts.update":
+    let contactId = argumentValue("--id")
+    let query = argumentValue("--query")
+    if (contactId == nil || contactId!.isEmpty) && (query == nil || query!.isEmpty) {
+        fail(.badArguments, "bad_arguments", "contacts.update requires --id or --query")
+    }
+    let name = argumentValue("--name")
+    let phone = argumentValue("--phone")
+    let email = argumentValue("--email")
+    let company = argumentValue("--company")
+    do {
+        let updated = try updateContact(identifier: contactId, query: query, name: name, phone: phone, email: email, company: company)
+        success(updated)
+    } catch {
+        fail(.failed, "failed", "contacts.update failed: \(error)")
+    }
+
 // MARK: - Messages
 
 case "messages.list":
@@ -195,6 +270,7 @@ case "messages.send":
     }
     do {
         let script = """
+        tell application "Messages" to launch
         tell application "Messages"
             set targetService to 1st service whose service type = iMessage
             set targetBuddy to buddy "\(appleScriptEscape(recipient))" of targetService
@@ -210,10 +286,12 @@ case "messages.send":
                 )
             }
             _ = try compileAppleScript(script)
-            success(["to": recipient, "dry_run": true, "compiled": true])
+            success(["to": recipient, "dry_run": true, "compiled": true, "headless": true])
         }
+        launchBundleHeadless("com.apple.MobileSMS")
         _ = try runAppleScript(script)
-        success(["to": recipient, "sent": true])
+        hideProcess("Messages")
+        success(["to": recipient, "sent": true, "headless": true, "focus_stolen": false])
     } catch {
         fail(.failed, "failed", "messages.send failed: \(error)")
     }
@@ -224,6 +302,7 @@ case "mail.list":
     let limit = Int(argumentValue("--limit") ?? "10") ?? 10
     do {
         let script = """
+        tell application "Mail" to launch
         tell application "Mail"
             set n to count of messages of inbox
             if n > \(limit) then set n to \(limit)
@@ -237,7 +316,9 @@ case "mail.list":
             return out
         end tell
         """
+        launchBundleHeadless("com.apple.mail")
         let output = try runAppleScript(script)
+        hideProcess("Mail")
         let messages = output
             .split(separator: "\n", omittingEmptySubsequences: true)
             .map { line -> [String: Any] in
@@ -263,8 +344,9 @@ case "mail.send":
     let body = argumentValue("--body") ?? ""
     do {
         let script = """
+        tell application "Mail" to launch
         tell application "Mail"
-            set newMessage to make new outgoing message with properties {subject:"\(appleScriptEscape(subject))", content:"\(appleScriptEscape(body))"}
+            set newMessage to make new outgoing message with properties {subject:"\(appleScriptEscape(subject))", content:"\(appleScriptEscape(body))", visible:false}
             tell newMessage
                 make new to recipient at end of to recipients with properties {address:"\(appleScriptEscape(to))"}
                 send
@@ -280,10 +362,12 @@ case "mail.send":
                 )
             }
             _ = try compileAppleScript(script)
-            success(["to": to, "subject": subject, "dry_run": true, "compiled": true])
+            success(["to": to, "subject": subject, "dry_run": true, "compiled": true, "headless": true])
         }
+        launchBundleHeadless("com.apple.mail")
         _ = try runAppleScript(script)
-        success(["to": to, "subject": subject, "sent": true])
+        hideProcess("Mail")
+        success(["to": to, "subject": subject, "sent": true, "headless": true, "focus_stolen": false])
     } catch {
         fail(.failed, "failed", "mail.send failed: \(error)")
     }
@@ -305,10 +389,23 @@ case "call.place":
     guard let url = URL(string: urlString) else {
         fail(.badArguments, "bad_arguments", "call.place could not build URL from destination")
     }
-    if NSWorkspace.shared.open(url) {
-        success(["destination": destination, "kind": kind, "opened": true])
+    // FaceTime/Phone still present their own system call UI — that is macOS,
+    // not an EV window. We never activate or fall back to a focus-stealing open.
+    if openURLHeadless(url) {
+        success([
+            "destination": destination,
+            "kind": kind,
+            "opened": true,
+            "headless": true,
+            "focus_stolen": false,
+            "system_call_ui": true,
+        ])
     } else {
-        fail(.notAvailable, "not_available", "call.place could not open \(kind) URL")
+        fail(
+            .notAvailable,
+            "not_available",
+            "call.place could not open \(kind) without stealing focus"
+        )
     }
 
 case "call.check":
@@ -437,11 +534,15 @@ case "open.url":
     guard let urlString = argumentValue("--url"), !urlString.isEmpty else {
         fail(.badArguments, "bad_arguments", "open.url requires --url")
     }
+    let allowedURLSchemes: Set<String> = [
+        "http", "https", "mailto", "maps", "message", "sms", "tel",
+        "facetime", "spotify", "notes", "music", "itms", "itmss",
+    ]
     guard let url = URL(string: urlString),
           let scheme = url.scheme?.lowercased(),
-          scheme == "http" || scheme == "https"
+          allowedURLSchemes.contains(scheme)
     else {
-        fail(.badArguments, "bad_arguments", "open.url only accepts http or https URLs")
+        fail(.badArguments, "bad_arguments", "open.url only accepts web and allowlisted app URLs")
     }
     if NSWorkspace.shared.open(url) {
         success(["url": urlString, "opened": true])
@@ -498,6 +599,94 @@ func fetchContacts(query: String?) throws -> [[String: Any]] {
         ])
     }
     return contacts
+}
+
+func createContact(name: String, phone: String?, email: String?, company: String?) throws -> [String: Any] {
+    let store = try requireContacts()
+    let contact = CNMutableContact()
+    let parts = name.split(separator: " ", maxSplits: 1)
+    contact.givenName = String(parts.first ?? "")
+    if parts.count > 1 {
+        contact.familyName = String(parts[1])
+    }
+    if let phone, !phone.isEmpty {
+        contact.phoneNumbers = [CNLabeledValue(label: CNLabelPhoneNumberMobile, value: CNPhoneNumber(stringValue: phone))]
+    }
+    if let email, !email.isEmpty {
+        contact.emailAddresses = [CNLabeledValue(label: CNLabelHome, value: email as NSString)]
+    }
+    if let company, !company.isEmpty {
+        contact.organizationName = company
+    }
+    let saveRequest = CNSaveRequest()
+    saveRequest.add(contact, toContainerWithIdentifier: nil)
+    try store.execute(saveRequest)
+    return [
+        "id": contact.identifier,
+        "full_name": name,
+        "phone": phone ?? "",
+        "email": email ?? "",
+        "company": company ?? "",
+        "created": true,
+    ]
+}
+
+func updateContact(identifier: String?, query: String?, name: String?, phone: String?, email: String?, company: String?) throws -> [String: Any] {
+    let store = try requireContacts()
+    let keys: [CNKeyDescriptor] = [
+        CNContactIdentifierKey as CNKeyDescriptor,
+        CNContactGivenNameKey as CNKeyDescriptor,
+        CNContactFamilyNameKey as CNKeyDescriptor,
+        CNContactPhoneNumbersKey as CNKeyDescriptor,
+        CNContactEmailAddressesKey as CNKeyDescriptor,
+        CNContactOrganizationNameKey as CNKeyDescriptor,
+    ]
+    var targetContact: CNContact?
+    if let identifier, !identifier.isEmpty {
+        targetContact = try? store.unifiedContact(withIdentifier: identifier, keysToFetch: keys)
+    }
+    if targetContact == nil, let query, !query.isEmpty {
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        try store.enumerateContacts(with: request) { contact, stop in
+            let fullName = "\(contact.givenName) \(contact.familyName)".trimmingCharacters(in: .whitespaces).lowercased()
+            if fullName.contains(query.lowercased()) {
+                targetContact = contact
+                stop.pointee = true
+            }
+        }
+    }
+    guard let found = targetContact else {
+        throw LifeError.failed("contact not found")
+    }
+    guard let mutable = found.mutableCopy() as? CNMutableContact else {
+        throw LifeError.failed("could not create mutable contact copy")
+    }
+    if let name, !name.isEmpty {
+        let parts = name.split(separator: " ", maxSplits: 1)
+        mutable.givenName = String(parts.first ?? "")
+        mutable.familyName = parts.count > 1 ? String(parts[1]) : ""
+    }
+    if let phone, !phone.isEmpty {
+        mutable.phoneNumbers = [CNLabeledValue(label: CNLabelPhoneNumberMobile, value: CNPhoneNumber(stringValue: phone))]
+    }
+    if let email, !email.isEmpty {
+        mutable.emailAddresses = [CNLabeledValue(label: CNLabelHome, value: email as NSString)]
+    }
+    if let company, !company.isEmpty {
+        mutable.organizationName = company
+    }
+    let saveRequest = CNSaveRequest()
+    saveRequest.update(mutable)
+    try store.execute(saveRequest)
+    let updatedFullName = "\(mutable.givenName) \(mutable.familyName)".trimmingCharacters(in: .whitespaces)
+    return [
+        "id": mutable.identifier,
+        "full_name": updatedFullName,
+        "phone": phone ?? "",
+        "email": email ?? "",
+        "company": company ?? "",
+        "updated": true,
+    ]
 }
 
 func listMessages(limit: Int) throws -> [[String: Any]] {

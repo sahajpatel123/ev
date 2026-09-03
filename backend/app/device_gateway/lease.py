@@ -38,6 +38,8 @@ async def claim_lease(
     device_id: UUID,
     instance_id: str,
     method: str = "manual",
+    session_id: str | None = None,
+    client_generation: int = 0,
 ) -> ConversationLease:
     now = utcnow()
     ttl = timedelta(seconds=max(30, int(settings.conversation_lease_ttl_seconds)))
@@ -54,6 +56,8 @@ async def claim_lease(
             acquired_at=now,
             last_activity=now,
             expires_at=now + ttl,
+            session_id=(session_id or "")[:64] or None,
+            client_generation=int(client_generation or 0),
         )
         session.add(row)
         await session.flush()
@@ -65,6 +69,8 @@ async def claim_lease(
     row.acquired_at = now
     row.last_activity = now
     row.expires_at = now + ttl
+    row.session_id = (session_id or "")[:64] or None
+    row.client_generation = int(client_generation or 0)
     return row
 
 
@@ -112,5 +118,7 @@ def lease_public(row: ConversationLease | None) -> dict | None:
         "device_id": str(row.device_id),
         "instance_id": row.instance_id,
         "method": row.method,
+        "session_id": row.session_id,
+        "client_generation": int(getattr(row, "client_generation", 0) or 0),
         "expires_at": row.expires_at.isoformat() if row.expires_at else None,
     }

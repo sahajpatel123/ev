@@ -55,6 +55,7 @@ def test_operator_sheet_is_short_partner_speech_and_projection_driven() -> None:
     sheet = spoken_operator_sheet(_manifest())
 
     assert "I can do now: weather, timers, memory, HUD, diagnostics." in sheet
+    assert "people and chats" in sheet
     assert "Needs a connection: calendar (Google), messages (life helper)." in sheet
     assert "Needs a tap on your phone: calls, home actions." in sheet
     assert "I will not do:" not in sheet
@@ -86,6 +87,60 @@ def test_empty_live_projection_does_not_widen_from_stale_tools() -> None:
     assert sheet == "I can do now: nothing is verified yet."
 
 
+def test_f4_computer_broker_is_spoken_as_mac_control() -> None:
+    from app.ev.protocols import spoken_ready_capability_line
+
+    line = spoken_ready_capability_line(
+        {
+            "live_tool_projection": [
+                {
+                    "name": "computer",
+                    "availability": "available",
+                    "model_exposed": True,
+                    "realtime_eligible": True,
+                    "executable": True,
+                }
+            ],
+            "executable_tools": ["computer"],
+        }
+    )
+    assert "Mac control" in line
+    assert "nothing is verified yet" not in line
+
+
+def test_f4_computer_ready_does_not_also_need_mac_connection() -> None:
+    sheet = spoken_operator_sheet(
+        {
+            "live_tool_projection": [
+                {
+                    "name": "computer",
+                    "availability": "available",
+                    "model_exposed": True,
+                    "realtime_eligible": True,
+                    "executable": True,
+                }
+            ],
+            "executable_tools": ["computer"],
+            "capabilities": [
+                {
+                    "name": "computer",
+                    "availability": "available",
+                    "model_exposed": True,
+                    "realtime_eligible": True,
+                    "executable": True,
+                },
+                {"name": "inspect_ui", "availability": "not_connected"},
+                {"name": "open_app", "availability": "not_connected"},
+                {"name": "app_action", "availability": "not_connected"},
+                {"name": "calendar_read", "availability": "not_connected"},
+            ],
+        }
+    )
+    assert "I can do now: Mac control." in sheet
+    assert "Needs a connection: calendar (Google)." in sheet
+    assert "Mac control" not in sheet.split("Needs a connection:", 1)[-1]
+
+
 def test_live_instructions_replace_manifest_dump_and_keep_action_guards() -> None:
     manifest = _manifest()
     manifest["capability_error"] = "RuntimeError: registry probe failed"
@@ -109,8 +164,11 @@ def test_identity_and_live_prompts_do_not_claim_static_capabilities() -> None:
     assert "place calls" not in identity
     for prompt in (grok, openai):
         assert "I can do now: weather, timers, memory, HUD, diagnostics." in prompt
+        assert "people and chats" in prompt
         assert "calendar (Google)" not in prompt
         assert "place_call" not in prompt
+    assert "not small talk" in openai.lower()
+    assert "not ordinary chat" in grok.lower()
     for prompt in (grok, openai):
         assert "prefer action over essay" in prompt.lower()
         assert "never invent" in prompt.lower()

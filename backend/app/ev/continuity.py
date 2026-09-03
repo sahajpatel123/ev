@@ -77,7 +77,7 @@ EXPLICIT_RECALL = re.compile(
     r"what were we (talking|discussing|working)|"
     r"what have we discussed|"
     r"do you remember|"
-    r"remind me|"
+    r"remind me (?:what|about|when|of)|"
     r"what was i working on|"
     r"what (else )?were we talking about|"
     r"what have we talked about|"
@@ -102,6 +102,17 @@ EXPLICIT_RECALL = re.compile(
     r"what editor (?:do|did) i|what did i use before|"
     r"what should we (?:work on|do) next)\b"
     r"|"
+    r"\b(what did you see|what you (?:just )?saw|"
+    r"what was i wearing|was i wearing|saw me with|"
+    r"when was the last time you (?:saw|looked)|last time you saw|"
+    r"clip of me|photo of me|"
+    r"that (?:photo|picture|pic|clip|video|recording)|"
+    r"(?:photo|picture|clip|video) you (?:took|recorded|captured)|"
+    r"what did i (?:just )?ask you to (?:remember|memorise|memorize|keep)|"
+    r"what was i showing|"
+    r"did you (?:already |ever )?(?:memorise|memorize|remember)|"
+    r"have you (?:already |ever )?(?:memorised|memorized|remembered))\b"
+    r"|"
     r"\bover the last (few )?(days|weeks)\b"
     r")",
     re.IGNORECASE,
@@ -114,7 +125,8 @@ FORGET_INTENT = re.compile(
 PIN_INTENT = re.compile(
     r"("
     r"\b(remember this|don't forget (that|this)|do not forget|"
-    r"this is important|from now on)\b"
+    r"this is important|from now on|"
+    r"memorise|memorize)\b"
     r"|"
     r"(?:^|[.!?]\s+)(?:please )?remember that\b"
     r")",
@@ -198,9 +210,17 @@ def classify_memory_intent(message: str | None) -> MemoryIntent:
         return "fresh"
     if FORGET_INTENT.search(text):
         return "forget"
+    from app.memory.visual import is_keep_recall_query, is_visual_recall_query
+
+    if is_keep_recall_query(text) or is_visual_recall_query(text):
+        return "explicit_recall"
     if PIN_INTENT.search(text):
         return "pin"
     if EXPLICIT_RECALL.search(text):
+        return "explicit_recall"
+    from app.memory.life_archive.locate import classify_shelf
+
+    if classify_shelf(text) is not None:
         return "explicit_recall"
     if is_continuation(text):
         return "continuation"

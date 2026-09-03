@@ -1,4 +1,4 @@
-.PHONY: install dev test e2e-cli eval lint typecheck doctor verify compose-up compose-down migrate seed postgres-e2e package-macos mac-control-live-e2e mac-control-live-e2e-full mac-control-dev-restart evie-cross-platform-dev evie-home-station evie-cross-platform-ready cross-platform-e2e mobile-voice-e2e mobile-voice-config-diff mobile-actions-e2e evie-shell-check
+.PHONY: install dev test e2e-cli eval lint typecheck doctor verify compose-up compose-down migrate seed postgres-e2e package-macos mac-control-live-e2e mac-control-live-e2e-full mac-control-dev-restart evie-cross-platform-dev evie-home-station evie-cross-platform-ready cross-platform-e2e mobile-voice-e2e mobile-voice-config-diff mobile-actions-e2e evie-shell-check iphone-parity-check
 
 # Backend commands run from backend/ where pydantic looks for ./.env. Load the
 # repo-root .env into the environment first so EV_VAULT_KEY and friends are
@@ -44,6 +44,17 @@ ios-ci-check:
 	bash -n scripts/ios/build-evie-ipa.sh && bash -n scripts/ios/verify-release.sh
 	cd backend && uv run pytest -q tests/test_release_portal.py
 	@echo "ios-ci-check OK (no Xcode needed)"
+
+iphone-parity-check:
+	node --check backend/clients/pwa/app.js
+	node --check backend/clients/pwa/webrtc.js
+	bash -n scripts/ios/build-evie-ipa.sh
+	bash -n scripts/ios/verify-release.sh
+	bash -n scripts/ios/physical-acceptance.sh
+	bash -n scripts/ios/archive-if-possible.sh
+	cd ios/EvieShell && swift run EvieBrokerCheck
+	cd backend && uv run pytest -q tests/test_iphone_capability_plan.py tests/test_g2_trust_lifecycle.py tests/test_release_contract.py tests/test_device_gateway.py tests/test_pwa_audio.py tests/test_webrtc_connection.py tests/test_everywhere_g2.py tests/test_regression_golden.py tests/test_mobile_actions.py tests/test_mobile_shell.py
+	@echo "iphone-parity-check OK (automated + broker; ship path is Tailscale PWA, not Xcode)"
 
 # Full native build — requires macOS with Xcode.app (CI runner or dev Mac).
 ios-canary:

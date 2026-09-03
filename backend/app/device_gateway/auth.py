@@ -38,12 +38,13 @@ def _hmac_key() -> bytes:
 
 def issue_access_token(device: Device) -> str:
     exp = int(time.time()) + max(60, int(settings.device_access_ttl_seconds))
-    payload = f"{device.id}|{exp}|{memory_scope_of(device)}"
+    revision = int(getattr(device, "auth_revision", 1) or 1)
+    payload = f"{device.id}|{exp}|{memory_scope_of(device)}|{revision}"
     digest = hmac.new(_hmac_key(), payload.encode(), sha256).hexdigest()[:32]
     return f"evie1.{payload}.{digest}"
 
 
-def parse_access_token(token: str) -> tuple[UUID, int, str] | None:
+def parse_access_token(token: str) -> tuple[UUID, int, str, int] | None:
     if not token.startswith("evie1."):
         return None
     try:
@@ -51,11 +52,19 @@ def parse_access_token(token: str) -> tuple[UUID, int, str] | None:
         expected = hmac.new(_hmac_key(), payload.encode(), sha256).hexdigest()[:32]
         if not hmac.compare_digest(digest, expected):
             return None
-        device_id, exp_raw, scope = payload.split("|", 2)
+        parts = payload.split("|")
+        if len(parts) == 3:
+            device_id, exp_raw, scope = parts
+            revision = 0
+        elif len(parts) == 4:
+            device_id, exp_raw, scope, rev_raw = parts
+            revision = int(rev_raw)
+        else:
+            return None
         exp = int(exp_raw)
         if exp < int(time.time()):
             return None
-        return UUID(device_id), exp, scope
+        return UUID(device_id), exp, scope, revision
     except (ValueError, TypeError):
         return None
 
@@ -133,10 +142,16 @@ async def resolve_gateway_device(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty bearer token")
     parsed = parse_access_token(token)
     if parsed is not None:
-        device_id, _, _ = parsed
+        device_id, _, _, token_revision = parsed
         device = await session.get(Device, device_id)
         if device is None or device.revoked_at is not None:
             raise HTTPException(status_code=401, detail="Invalid or revoked device")
+        current_revision = int(getattr(device, "auth_revision", 1) or 1)
+        # v1 tokens (revision 0) are valid only before the first trust bump.
+        if token_revision not in {0, current_revision}:
+            raise HTTPException(status_code=401, detail="Access token expired after a trust change")
+        if token_revision == 0 and current_revision != 1:
+            raise HTTPException(status_code=401, detail="Access token expired after a trust change")
         device.last_seen_at = utcnow()
         return device
     token_hash = sha256_hex(token)

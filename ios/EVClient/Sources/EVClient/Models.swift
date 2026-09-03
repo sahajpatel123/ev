@@ -755,6 +755,8 @@ public struct VoiceLiveOpenResponse: Codable, Sendable, Equatable {
     public let conversationId: String?
     public let live: Bool
     public let message: String?
+    public let greeting: String?
+    public let onboarding: String?
 }
 
 public struct VoiceSessionVerifyResponse: Codable, Sendable, Equatable {

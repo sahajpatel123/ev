@@ -9,7 +9,7 @@ Modes:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import select
@@ -230,6 +230,42 @@ async def apply_pin_intent(
                 )
             ).scalars().all()
         )
+    camera_ids = list(
+        (
+            await session.execute(
+                select(Event.id)
+                .where(
+                    Event.event_type == "camera.observation",
+                    Event.tombstoned_at.is_(None),
+                    Event.occurred_at >= utcnow() - timedelta(minutes=15),
+                )
+                .order_by(Event.occurred_at.desc())
+                .limit(4)
+            )
+        ).scalars().all()
+    )
+    if camera_ids:
+        camera_memory_ids = list(
+            (
+                await session.execute(
+                    select(MemoryEvent.memory_id).where(MemoryEvent.event_id.in_(camera_ids))
+                )
+            ).scalars().all()
+        )
+        if camera_memory_ids:
+            extra_rows = list(
+                (
+                    await session.execute(
+                        select(Memory).where(
+                            Memory.id.in_(camera_memory_ids),
+                            Memory.is_current.is_(True),
+                            Memory.redacted.is_(False),
+                        )
+                    )
+                ).scalars().all()
+            )
+            have = {row.id for row in rows}
+            rows = extra_rows + [row for row in rows if row.id not in have]
     pinned = 0
     for memory in rows[:3]:
         extra = dict(memory.extra or {})

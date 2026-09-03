@@ -46,7 +46,16 @@ final class AppModel: ObservableObject {
         var detail: String
     }
 
-    @Published var status: Status = .offline
+    @Published var status: Status = .offline {
+        didSet {
+            if oldValue != status {
+                LiveConversation.bootTrace(
+                    "ST00_STATUS",
+                    "\(oldValue.rawValue)->\(status.rawValue) glyph=\(status.symbolName)"
+                )
+            }
+        }
+    }
     @Published var captureText = ""
     @Published var messages: [ChatMessage] = []
     @Published var hudCard: HUDCard?
@@ -111,6 +120,10 @@ final class AppModel: ObservableObject {
     init() {
         // Force BuildInfo linkage so binary hash changes with git SHA / audio arch
         print(BuildInfo.gitSHA, BuildInfo.audioArchitecture, BuildInfo.buildTimestamp)
+        LiveConversation.bootTrace(
+            "ST00_APP_INIT",
+            "\(BuildInfo.gitSHA) \(BuildInfo.buildTimestamp)"
+        )
         let config = AppConfig()
         self.config = config
         client = EVAPIClient(baseURL: config.baseURL, token: config.apiKey)
@@ -201,12 +214,8 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.toggleAudioControl() }
             }
         )
-        // WAKE W1: ev.ears is the always-on mic owner (launchd KeepAlive+RunAtLoad true).
-        // EV.app surrenders the mic while idle — only an accepted wake's
-        // Realtime handoff may acquire the input. Keep the kill for the brief
-        // handoff window (LiveConversation.start) but do not kill at launch
-        // when the idle path is local-only; ensure ears is alive instead.
-        EarsProcess.ensureRunning()
+        // App-open law: live.start() claims the mic. Do not kickstart ev.ears
+        // here — that respawns faster-whisper beside the live session.
         // Single coordinated startup sequence
         Task { await runSafeStartup() }
         heartbeatTask = Task { [weak self] in
@@ -227,6 +236,7 @@ final class AppModel: ObservableObject {
 
     private func runSafeStartup() async {
         startupState = .loadingIdentity
+        LiveConversation.bootTrace("ST00_STARTUP_BEGIN")
         // Exactly ONE Keychain read per process (cached thereafter)
         startupKeychainReads = 1
         _ = reloadAPICredentials()
@@ -234,53 +244,84 @@ final class AppModel: ObservableObject {
             startupState = .authFailed
             lastError = "DEVICE_CREDENTIAL_MISSING: No device token in Keychain. This Mac's trusted device record exists but local credential is missing — repair required (no master-key copy needed)."
             status = .offline
+            LiveConversation.bootTrace("ST00_AUTH_SKIP", "placeholder")
             return
         }
         startupState = .authenticating
         startupAuthAttempts = 1
         // Single auth attempt: bootstrap will validate device token via _resolve_actor
         do {
-            try await authenticateOnce()
+            try await authenticateOnce(deadlineSeconds: 8)
         } catch {
             if isUnauthorized(error) {
                 startupState = .authFailed
                 lastError = authFailureMessage((error as? EVAPIError)?.errorDescription ?? "")
                 status = .offline
+                LiveConversation.bootTrace("ST00_AUTH_FAIL", lastError ?? "unauthorized")
                 return
             } else {
                 startupState = .backendUnavailable
-                lastError = "Backend unavailable — will retry once."
-                // One bounded retry for transient network, not for invalid credential
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                do { try await authenticateOnce() } catch {
+                lastError = "Backend unavailable — retrying until it returns."
+                LiveConversation.bootTrace("ST00_AUTH_WAIT", "backend unreachable")
+                var attempt = 0
+                while !Task.isCancelled {
+                    attempt += 1
+                    try? await Task.sleep(nanoseconds: attempt == 1 ? 1_500_000_000 : 3_000_000_000)
+                    do {
+                        try await authenticateOnce(deadlineSeconds: 8)
+                        lastError = nil
+                        break
+                    } catch {
+                        if isUnauthorized(error) {
+                            startupState = .authFailed
+                            lastError = authFailureMessage((error as? EVAPIError)?.errorDescription ?? "")
+                            status = .offline
+                            LiveConversation.bootTrace("ST00_AUTH_FAIL", lastError ?? "unauthorized")
+                            return
+                        }
+                        LiveConversation.bootTrace("ST00_AUTH_WAIT", "retry \(attempt)")
+                    }
+                }
+                if Task.isCancelled {
                     startupState = .authFailed
                     status = .offline
+                    LiveConversation.bootTrace("ST00_AUTH_FAIL", "cancelled")
                     return
                 }
             }
         }
-        startupState = .bootstrapping
-        await bootstrapIfNeeded()
+        LiveConversation.bootTrace("ST00_AUTH_OK")
         // Camera LAW: remains OFF during normal boot
         startupCameraStarts = 0
-        // OWNER LAW: opening EV.app IS starting the audio — the live Realtime
-        // session comes up immediately (no push-to-talk, no wake gate). The
-        // always-available wake system serves the app-closed path only; the
-        // mic handoff marker keeps ears standing down while the app is open.
+        // OWNER LAW: opening EV.app IS starting the audio. Prefs bootstrap
+        // and device-mesh refresh must not gate the greeting — a hung
+        // bootstrap left the menu bar idle (0% CPU, no ST00, ears still up).
         startupState = .startingVoice
         startupMicStarts = 1
         live.start()
         startupState = .online
         status = .listening
         NSLog("EV audio started at app open (live session up; wake serves app-closed)")
+        Task { await bootstrapIfNeeded() }
         // Defer non-critical bridges until after voice is stable
         let statuses = await PermissionCenter.statuses()
         await connectGrantedBridges(from: statuses)
     }
 
-    private func authenticateOnce() async throws {
+    private func authenticateOnce(deadlineSeconds: Double = 8) async throws {
         // Lightweight auth probe: runtimeSync is device-authenticated and updates last_seen
-        _ = try await client.runtimeSync(limit: 1)
+        let api = client
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                _ = try await api.runtimeSync(limit: 1)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(deadlineSeconds * 1_000_000_000))
+                throw EVAPIError.transport("auth probe timed out")
+            }
+            try await group.next()
+            group.cancelAll()
+        }
     }
 
     func tick() async {
@@ -315,7 +356,9 @@ final class AppModel: ObservableObject {
             }
             await refreshDeviceMesh()
         } catch {
-            if isUnauthorized(error) {
+            // Live already owns the menu-bar status. A late bootstrap 401
+            // must not flip the glyph to offline while the session is up.
+            if isUnauthorized(error), !live.isRunning {
                 status = .offline
             }
         }
@@ -397,7 +440,7 @@ final class AppModel: ObservableObject {
             // alive. Hard-offline only for auth failure or genuine
             // connection-level transport errors; otherwise record and keep
             // the current capability state.
-            if isUnauthorized(error) {
+            if isUnauthorized(error), !live.isRunning {
                 status = .offline
             } else if let urlError = error as? URLError,
                       [URLError.cannotConnectToHost, .cannotFindHost,
@@ -1013,6 +1056,13 @@ final class AppModel: ObservableObject {
     func sendChat(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Opening EV.app is the live session. A parallel /ask stream would
+        // flip thinking/listening independently of the player and wiggle
+        // the menu-bar glyph mid-reply.
+        if live.isRunning {
+            live.sendOwnerUtterance(trimmed)
+            return
+        }
         messages.append(ChatMessage(id: UUID().uuidString, role: "user", text: trimmed, streaming: false))
         let id = UUID().uuidString
         pendingAssistantID = id

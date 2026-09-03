@@ -1,8 +1,16 @@
 /* EvieAudioPlaybackEngine v3 — PCM fallback. Production default is WebRTC. */
 (function (root) {
-  const AUDIO_ENGINE_VERSION = "3";
+  const AUDIO_ENGINE_VERSION = "4";
   const INPUT_RATE = 16000;
-  const PRIME_S = 0.09;
+  // Cold-start prime: ~220 ms of real audio before the first word. The
+  // provider streams at ~1x realtime, so the sustainable riding lead can
+  // never exceed what was banked before play starts. A 90 ms prime rode at
+  // ~90 ms and every routine arrival jitter ran the worklet dry — chronic
+  // early-sentence stutter on EVERY response (then the adapt loop masks it
+  // late). 220 ms absorbs normal jitter for ~130 ms of extra first-word
+  // latency. Mid-response restarts never re-prime (the worklet stays primed
+  // across transient starves); only true provider gaps re-buffer.
+  const PRIME_S = 0.22;
   const SLIP_S = 0.012;
   const JITTER_MIN_S = 0.06;
   const JITTER_MAX_S = 0.28;
@@ -342,6 +350,27 @@
     return this.generation;
   };
 
+  // Tool-continuation adopt: a new provider response id for the SAME spoken
+  // turn (preamble + tool gap + continuation) must NOT flush queued audio.
+  // Flushing drops the still-queued preamble tail, resets the resampler and
+  // re-primes from zero — a chop plus fade restart on every tool turn, and
+  // on any back-to-back responses whose tail is still draining. Adopt only
+  // retargets the ids and ensures the worklet is running; the PCM appends
+  // to the one audible stream.
+  EvieAudioPlaybackEngine.prototype.adoptTurn = function adoptTurn(meta) {
+    if (meta && meta.responseId) this.responseId = meta.responseId;
+    if (meta && meta.socketGeneration != null) this.socketGeneration = meta.socketGeneration;
+    // The continuation restarts chunk seq at 0: without clearing the dedup
+    // map every continuation chunk would be dropped as a "duplicate" and the
+    // answer after a tool call would go silent. Same-stream state (queued
+    // PCM, batches, resampler phase, generation) is deliberately preserved.
+    this.seen = {};
+    this.lastSeq = -1;
+    this.jitter.beginResponse();
+    if (this.node) this.node.port.postMessage({ type: "start" });
+    return this.generation;
+  };
+
   EvieAudioPlaybackEngine.prototype.setSocketGeneration = function setSocketGeneration(gen) {
     if (gen === this.socketGeneration) return;
     this.socketGeneration = gen;
@@ -393,10 +422,20 @@
       return false;
     }
     if (payload.responseId && payload.responseId !== this.responseId) {
-      this.beginTurn({
-        responseId: payload.responseId,
-        socketGeneration: socketGeneration,
-      });
+      if (this.playing) {
+        // Audible audio from the previous id is still draining: this is a
+        // tool continuation (or back-to-back turn), not a new turn. Adopt
+        // instead of flushing, or the queued tail is dropped mid-word.
+        this.adoptTurn({
+          responseId: payload.responseId,
+          socketGeneration: socketGeneration,
+        });
+      } else {
+        this.beginTurn({
+          responseId: payload.responseId,
+          socketGeneration: socketGeneration,
+        });
+      }
     } else if (!this.generation) {
       this.beginTurn({ socketGeneration: socketGeneration });
     }

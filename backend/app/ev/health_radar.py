@@ -287,6 +287,15 @@ async def create_snapshot(
     )
     session.add(snapshot)
     await session.flush()
+    try:
+        from app.services.event_service import EventService
+        from app.services.life_stream_daemon import health_snapshot_event_create
+
+        payload = health_snapshot_event_create(snapshot)
+        if payload is not None:
+            await EventService(session, actor="health_radar").create(payload)
+    except Exception:  # noqa: BLE001 - memory mirror must not drop the snapshot
+        pass
     z_flags = await detect_anomalies(session, snapshot)
     snapshot.anomalies = [*clinical_flags(metrics), *z_flags]
     return snapshot

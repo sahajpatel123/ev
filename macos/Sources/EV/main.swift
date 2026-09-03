@@ -9,6 +9,16 @@ if arguments.contains("--smoke-test") {
     exit(EVSmokeTest.run())
 } else if arguments.contains("--mac-control-probe") {
     exit(MacControlProbe.run())
+} else if arguments.contains("--play-media-probe") {
+    exit(MacControlProbe.runPlayMedia())
+} else if arguments.contains("--finder-play-probe") {
+    exit(MacControlProbe.runFinderPlay())
+} else if arguments.contains("--search-domain-probe") {
+    exit(MacControlProbe.runSearchDomain())
+} else if arguments.contains("--generic-intent-probe") {
+    exit(MacControlProbe.runGenericIntent())
+} else if arguments.contains("--files-probe") {
+    exit(MacControlProbe.runFiles())
 } else if arguments.contains("--live-e2e") {
     exit(MacControlLiveE2E.run())
 } else if arguments.contains("--permissions") {
@@ -23,6 +33,8 @@ if arguments.contains("--smoke-test") {
     exit(EVSmokeTest.runTTSContinuity())
 } else if arguments.contains("--first-audio-test") {
     exit(EVSmokeTest.runFirstAudioSurvival())
+} else if arguments.contains("--live-speak-test") {
+    exit(EVSmokeTest.runLiveSpeakSurvival())
 } else if arguments.contains("--listener-presence-test") {
     exit(EVSmokeTest.runListenerPresenceOverlap())
 } else if arguments.contains("--vp-echo-probe") {

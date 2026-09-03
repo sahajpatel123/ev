@@ -434,6 +434,92 @@ async def run_trusted_device_turn(
 
     # G2 B — deterministic cross-device capability routing (model does NOT decide executor)
     routed = _detect_routed_capability(effective_text)
+    if routed is None:
+        from app.everywhere.endpoint_profile import perception_action, resolve_camera_target, wants_perception
+        from app.memory.visual import is_visual_recall_query, search_visual_observations
+
+        if is_visual_recall_query(effective_text) and not wants_perception(effective_text):
+            hits = await search_visual_observations(session, effective_text)
+            if hits:
+                spoken = (hits[0].get("text") or "").strip() or "I remember that camera observation."
+                return {
+                    "reply": spoken,
+                    "ok": True,
+                    "route": "VISUAL_RECALL",
+                    "operation": "recall",
+                    "observation_id": hits[0].get("id"),
+                    "provenance": "camera.observation",
+                    "turn_id": None,
+                    "executed": True,
+                    "verified": True,
+                }
+
+        from .phone_core import maybe_phone_core_read
+
+        core = await maybe_phone_core_read(session, device=device, text=effective_text)
+        if core is not None:
+            return core
+
+        if wants_perception(effective_text):
+            from . import camera as cam
+
+            target_info = await resolve_camera_target(session, origin=device, text=effective_text)
+            target = target_info["device"]
+            request = cam.new_request(
+                origin_device_id=str(device.id),
+                target_device_id=str(target.id),
+            )
+            same = str(target.id) == str(device.id)
+            freshness = str(target_info.get("freshness") or "")
+            from app.everywhere.inbox import push_inbox
+
+            if not same:
+                await push_inbox(
+                    session,
+                    device_id=target.id,
+                    kind="camera_request",
+                    title="Evie needs this camera",
+                    body="Look was routed to the preferred iPhone camera.",
+                    payload={"request_id": request, "reason": target_info.get("reason")},
+                )
+            if freshness == "OFFLINE" and not same:
+                await push_inbox(
+                    session,
+                    device_id=device.id,
+                    kind="device_offline",
+                    title="Preferred camera is offline",
+                    body=f"{target_info.get('display_name') or 'The other iPhone'} is offline, so look cannot run there yet.",
+                    payload={"target_device_id": str(target.id), "request_id": request},
+                )
+            await session.commit()
+            spoken = (
+                "Looking with this iPhone now."
+                if same
+                else f"I routed look to {target_info.get('display_name') or 'the preferred camera'}."
+            )
+            if freshness == "OFFLINE" and not same:
+                spoken = (
+                    f"{target_info.get('display_name') or 'The preferred camera'} is offline. "
+                    "I queued the look instead of inventing what it sees."
+                )
+            return {
+                "reply": spoken,
+                "ok": True,
+                "route": "CAMERA",
+                "operation": "look",
+                "needs_camera": same and freshness != "OFFLINE",
+                "camera_request_id": request,
+                "camera_action": perception_action(effective_text),
+                "camera_target_device_id": str(target.id),
+                "camera_reason": target_info.get("reason"),
+                "permission": target_info.get("permission"),
+                "freshness": target_info.get("freshness"),
+                "provenance": target_info.get("provenance"),
+                "turn_id": None,
+                "executed": False,
+                "verified": False,
+            }
+
     if routed is not None:
         cap, args = routed
         try:
@@ -468,6 +554,16 @@ async def run_trusted_device_turn(
             if status in {"QUEUED", "ROUTED"}:
                 if broker.get("queued") or status == "QUEUED":
                     reply = f"I've queued that for your Mac ({cap}). It will run when the Mac is online."
+                    from app.everywhere.inbox import push_inbox
+
+                    await push_inbox(
+                        session,
+                        device_id=device.id,
+                        kind="action_queued",
+                        title="Queued for Home Station",
+                        body=reply,
+                        payload={"capability": cap, "action_id": broker.get("action_id")},
+                    )
                 else:
                     reply = f"I've sent that to your Mac ({cap})."
                 # Emit durable trace for observability
@@ -493,13 +589,25 @@ async def run_trusted_device_turn(
         # Broker returned soft error (offline, capability unavailable)
         err = broker.get("error_code") or "CAPABILITY_UNAVAILABLE"
         if err == "TARGET_DEVICE_OFFLINE":
+            from app.everywhere.inbox import push_inbox
+
+            await push_inbox(
+                session,
+                device_id=device.id,
+                kind="device_offline",
+                title="Home Station is offline",
+                body="The Mac is offline, so that action was not executed.",
+                payload={"capability": cap, "error_code": err},
+            )
+            await session.commit()
             return {
-                "reply": "Your Mac is offline right now, so I queued that. It will run when the Mac comes back online.",
+                "reply": "Your Mac is offline right now. I did not pretend it ran.",
                 "ok": False,
                 "error_code": "TARGET_DEVICE_OFFLINE",
                 "route": "DEVICE_ACTION",
                 "operation": cap,
                 "broker": broker,
+                "executed": False,
                 "turn_id": None,
             }
         return {

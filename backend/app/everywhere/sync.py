@@ -44,6 +44,7 @@ VISIBLE_TYPE_PREFIXES: tuple[str, ...] = (
     "mission_control.",
     "device.",
     "conversation.",
+    "camera.",
 )
 
 # Sources allowed across the device boundary today.

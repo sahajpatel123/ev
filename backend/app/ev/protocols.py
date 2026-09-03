@@ -341,7 +341,7 @@ async def protocol_sheet(session: AsyncSession) -> list[Protocol]:
     else:
         sight_status = "needs_setup"
         sight_detail = camera_operator_line(camera_ready)
-    items.append(Protocol("sight", "Camera look", sight_status, sight_detail))
+    items.append(Protocol("sight", "Camera", sight_status, sight_detail))
 
     wheels_gate = await _gate(session, "training_wheels")
     if profile.training_wheels_completed_at is not None:
@@ -404,6 +404,7 @@ def speak_enabled(items: list[Protocol], *, limit: int = 8) -> str:
 # those names out of partner speech.
 _SPOKEN_CAPABILITY_LABELS = {
     "get_weather": "weather",
+    "heading_out": "heading out",
     "start_timer": "timers",
     "set_reminder": "timers",
     "list_timers": "timers",
@@ -412,6 +413,7 @@ _SPOKEN_CAPABILITY_LABELS = {
     "search_decisions": "memory",
     "search_timeline": "memory",
     "recall_history": "memory",
+    "recall": "memory",
     "get_person": "memory",
     "present": "HUD",
     "calibrate": "diagnostics",
@@ -437,6 +439,9 @@ _SPOKEN_CAPABILITY_LABELS = {
     "ui_action": "Mac control",
     "screen_look": "Mac control",
     "app_action": "Mac control",
+    "computer": "Mac control",
+    "computer_status": "Mac control",
+    "code": "coding",
     "read": "Mac control",
     "see": "Mac control",
     "click": "Mac control",
@@ -449,13 +454,16 @@ _SPOKEN_CAPABILITY_LABELS = {
     "drag": "Mac control",
     "home_status": "home status",
     "home_act": "home actions",
-    "look": "camera look",
-    "observe_camera": "camera look",
+    "look": "camera",
+    "observe_camera": "camera",
+    "capture_photo": "camera",
+    "record_video": "camera",
     "camera_replay": "camera replay",
 }
 
 _SPOKEN_CAPABILITY_ORDER = (
     "weather",
+    "heading out",
     "timers",
     "memory",
     "HUD",
@@ -472,10 +480,11 @@ _SPOKEN_CAPABILITY_ORDER = (
     "open apps",
     "close apps",
     "Mac control",
+    "coding",
     "home status",
     "calls",
     "home actions",
-    "camera look",
+    "camera",
 )
 
 
@@ -542,11 +551,11 @@ def _is_spoken_ready(entry: dict) -> bool:
     for field in ("model_exposed", "realtime_eligible", "executable"):
         if field in entry and entry.get(field) is not True:
             return False
-    if entry.get("name") in {"look", "observe_camera"} and entry.get("capture_ready") is False:
+    if entry.get("name") in {"look", "observe_camera", "capture_photo", "record_video"} and entry.get("capture_ready") is False:
         return False
-    if entry.get("name") in {"inspect_ui", "ui_action"} and entry.get("generic_ui_control_ready") is False:
+    if entry.get("name") in {"inspect_ui", "ui_action", "read", "click", "double_click", "right_click", "type", "paste", "key", "scroll", "drag"} and entry.get("generic_ui_control_ready") is False:
         return False
-    if entry.get("name") == "screen_look" and entry.get("screen_vision_ready") is False:
+    if entry.get("name") in {"screen_look", "see"} and entry.get("screen_vision_ready") is False:
         return False
     return bool(_spoken_name(entry))
 
@@ -599,7 +608,12 @@ def _ready_spoken_labels(manifest: dict) -> list[str]:
 def spoken_ready_capability_line(manifest: dict | None) -> str:
     current = manifest if isinstance(manifest, dict) else {}
     ready = _ready_spoken_labels(current)
-    return "I can do now: " + (", ".join(ready) if ready else "nothing is verified yet") + "."
+    extra = (
+        " That already includes the owner's people and chats."
+        if "memory" in ready
+        else ""
+    )
+    return "I can do now: " + (", ".join(ready) if ready else "nothing is verified yet") + "." + extra
 
 
 def spoken_operator_sheet(
@@ -618,7 +632,11 @@ def spoken_operator_sheet(
 
     current = manifest if isinstance(manifest, dict) else {}
     all_entries = _spoken_all_entries(current)
-    ready_line = spoken_ready_capability_line(current)
+    ready = _ready_spoken_labels(current)
+    ready_line = (
+        "I can do now: " + (", ".join(ready) if ready else "nothing is verified yet") + "."
+        + (" That already includes the owner's people and chats." if "memory" in ready else "")
+    )
     setup = _spoken_labels(
         all_entries,
         setup=True,
@@ -634,6 +652,25 @@ def spoken_operator_sheet(
             )
         ),
     )
+    # A label already on the ready line is not also a missing connection.
+    # F4 projects `computer` while supervised inspect_ui/open_app stay
+    # not_connected internally — that must not become "Needs a connection:
+    # Mac control" after Mac control is already ready.
+    setup = [label for label in setup if label not in ready]
+    projected_names = {_spoken_name(item) for item in _spoken_projection_entries(current)}
+    if "computer" in projected_names and "Mac control" in ready:
+        setup = [
+            label
+            for label in setup
+            if label
+            not in {
+                "Mac control",
+                "open apps",
+                "close apps",
+                "open apps (life helper)",
+                "close apps (life helper)",
+            }
+        ]
 
     lines = [
         ready_line,

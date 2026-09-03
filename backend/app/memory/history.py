@@ -190,6 +190,33 @@ def _chunk_item(
     }
 
 
+def _retrieved_from_archive(row: dict[str, Any]) -> Any:
+    from app.contracts import RetrievedMemory
+
+    when = None
+    raw = row.get("when")
+    if raw:
+        try:
+            when = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            when = None
+    event_id = str(row.get("id") or "")
+    return RetrievedMemory(
+        memory_id=event_id,
+        text=str(row.get("text") or ""),
+        memory_type=str(row.get("memory_type") or "life"),
+        payload={"shelf": row.get("shelf"), "kind": row.get("kind") or "life"},
+        importance=0.5,
+        confidence=0.85,
+        event_time=when,
+        privacy_level="normal",
+        source_type="derived",
+        score=float(row.get("score") or 0.15),
+        components={"archive_locator": 1.0},
+        source_event_ids=[event_id] if event_id else [],
+    )
+
+
 async def search_history(
     session: AsyncSession,
     query: str,
@@ -211,17 +238,46 @@ async def search_history(
     score (the retriever's order is preserved).
     """
 
+    from app.memory.life_archive.locate import (
+        MAX_HITS,
+        is_owner_history_query,
+        life_shelf_for_memory_search,
+        locate_archive,
+        resolve_shelf,
+    )
+
+    if not memory_type:
+        shelf = life_shelf_for_memory_search(query, await resolve_shelf(session, query))
+        if shelf is not None:
+            rows = await locate_archive(
+                session, query, shelf=shelf, k=min(MAX_HITS, max(1, k))
+            )
+            return [_retrieved_from_archive(row) for row in rows]
+
     retriever = Retriever(session)
     memory_types: list[str] | None = None
     if memory_type:
         memory_types = [str(memory_type)]
     as_of_dt = _parse_iso_date(as_of) if as_of else None
+    from app.memory.state import classify_temporal_query
+
+    temporal = classify_temporal_query(query)
+    include_historical = (
+        as_of_dt is not None
+        or is_owner_history_query(query)
+        or temporal.mode in {
+            "historical",
+            "solved",
+            "as_of",
+            "changes",
+        }
+    )
     hits = await retriever.search(
         query,
         k=max(k, 12) + 16,
         access="model",
         memory_types=memory_types,
-        include_historical=as_of_dt is not None,
+        include_historical=include_historical,
         as_of=as_of_dt,
         min_score=min_score,
     )
@@ -356,6 +412,15 @@ async def recall_history(
     has_more = offset + k < len(hits)
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
     as_of_dt = _parse_iso_date(as_of) if as_of else None
+    results = [
+        _chunk_item(hit, offset + index + 1, mode)
+        for index, hit in enumerate(page)
+    ]
+    spoken_bits = [
+        " ".join(str(item.get("text") or "").split()).strip()
+        for item in results[:3]
+        if str(item.get("text") or "").strip()
+    ]
     return {
         "ok": True,
         "count": len(page),
@@ -366,13 +431,11 @@ async def recall_history(
         "memory_type": memory_type,
         "chunk_mode": mode,
         "offset": offset,
-        "results": [
-            _chunk_item(hit, offset + index + 1, mode)
-            for index, hit in enumerate(page)
-        ],
+        "results": results,
         "has_more": has_more,
         "next_cursor": encode_cursor(offset + k, fp) if has_more else None,
         "elapsed_ms": elapsed_ms,
+        "spoken": " ".join(spoken_bits)[:400] if spoken_bits else "I cannot find that particular record.",
     }
 
 
@@ -397,6 +460,19 @@ async def build_shadow_memory(
         return ""
     k = max(1, min(int(k or 5), 10))
     budget = max(64, int(budget_tokens or 900))
+    from app.memory.foundation import RetrievalIntent
+    from app.memory.intent import classify_retrieval
+    from app.memory.life_archive.locate import life_shelf_for_memory_search, resolve_shelf
+
+    shelf = life_shelf_for_memory_search(query, await resolve_shelf(session, query))
+    if shelf is None:
+        intent = classify_retrieval(query).intent
+        if intent in {
+            RetrievalIntent.NONE,
+            RetrievalIntent.UNKNOWN,
+            RetrievalIntent.CURRENT_STATE_QUERY,
+        }:
+            return ""
     hits = await search_history(
         session, query, k=k, time_range="all_time", chunk_mode="brief", min_score=min_score
     )
@@ -424,7 +500,10 @@ async def build_shadow_memory(
     if not lines:
         return ""
     header = (
-        "SHADOW MEMORY (from the owner's stored history; use only what the "
-        "current question needs, silently; never invent history):"
+        "SHADOW MEMORY (from the owner's stored history; you already know them; "
+        "use only what the current question needs, silently; never invent "
+        "history). If a line is a person, chat, photo, note, contact, or mail "
+        "card, answer from it — do not wait for search_memory, and do not say "
+        "their life is new to you:"
     )
     return header + "\n" + "\n".join(lines)

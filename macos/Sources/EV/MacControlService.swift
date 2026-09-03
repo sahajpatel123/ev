@@ -6,6 +6,7 @@ import Darwin
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
+import Vision
 
 /// Authoritative native Mac interaction boundary for EV.
 ///
@@ -15,7 +16,9 @@ import UniformTypeIdentifiers
 public final class MacControlService: @unchecked Sendable {
     public static let shared = MacControlService()
 
-    private let queue = DispatchQueue(label: "com.ev.maccontrol")
+    /// Serializes handle() without a GCD queue. AppleScript hops to the
+    /// main run loop; a GCD ``queue.sync`` from that path deadlocks Talk.
+    private let workLock = NSLock()
     private var generation = 0
     private var snapshotID = ""
     private var elements: [String: ElementRecord] = [:]
@@ -28,7 +31,10 @@ public final class MacControlService: @unchecked Sendable {
     private var lastNoteName: String?
     private var lastNoteBody: String?
     private var lastSafariQuery: String?
+    private var lastChromeQuery: String?
     private var focusedNow: AXUIElement?
+    private var installedAppsCache: (stamp: String, apps: [[String: Any]])?
+    private var appDirSources: [DispatchSourceFileSystemObject] = []
 
     private struct ElementRecord {
         let ref: String
@@ -53,7 +59,9 @@ public final class MacControlService: @unchecked Sendable {
         var data: Data?
     }
 
-    private init() {}
+    private init() {
+        startAppCatalogWatch()
+    }
 
     public func permissionSnapshot() -> [String: Any] {
         let front = NSWorkspace.shared.frontmostApplication
@@ -82,50 +90,79 @@ public final class MacControlService: @unchecked Sendable {
         return payload
     }
 
+    /// Cheap permission bits for the live computer-state watch. The full
+    /// ``permissionSnapshot`` walks up to 80 AX nodes (0.6s deadline) and
+    /// must not run on a timer — that heated the Mac while idle listening.
+    public func permissionFlags() -> [String: Any] {
+        let front = NSWorkspace.shared.frontmostApplication
+        let trusted = AXIsProcessTrusted()
+        return [
+            "accessibility_permission": trusted ? "authorized" : "denied",
+            "screen_capture_permission": CGPreflightScreenCaptureAccess() ? "authorized" : "denied",
+            "apple_events_permission": "unknown",
+            "foreground_app": front?.localizedName as Any,
+            "foreground_bundle_id": front?.bundleIdentifier as Any,
+            "platform": "macos",
+            "accessibility_ready": trusted,
+            "generic_ui_control_ready": trusted,
+            "app_lifecycle_ready": true,
+            "screen_vision_ready": CGPreflightScreenCaptureAccess(),
+            "installed_app_stamp": applicationsStamp(),
+            "installed_app_count": installedApps().count,
+        ]
+    }
+
     public func handle(command: String, arguments: [String: Any], requestId: String) -> [String: Any] {
-        queue.sync {
-            if cancelled.contains(requestId) {
-                return fail("cancelled", "Stopped.", command: command, requestId: requestId)
-            }
-            switch command {
-            case "status":
-                return status(requestId: requestId)
-            case "list_apps":
-                return listApps(arguments, requestId: requestId)
-            case "open_app":
-                return openApp(arguments, requestId: requestId, activate: true)
-            case "activate_app":
-                return openApp(arguments, requestId: requestId, activate: true)
-            case "close_app":
-                return closeApp(arguments, requestId: requestId)
-            case "open_url":
-                return openURL(arguments, requestId: requestId)
-            case "inspect_ui":
-                return inspectUI(arguments, requestId: requestId)
-            case "ui_action":
-                return uiAction(arguments, requestId: requestId)
-            case "screen_look":
-                return screenLook(arguments, requestId: requestId)
-            case "app_action":
-                return appAction(arguments, requestId: requestId)
-            case "keyboard":
-                return keyboard(arguments, requestId: requestId)
-            case "window_op":
-                return windowOp(arguments, requestId: requestId)
-            case "cancel":
-                cancelled.insert(requestId)
-                if let other = arguments["request_id"] as? String { cancelled.insert(other) }
-                return ok(["cancelled": true, "spoken": "Stopped."], command: command, requestId: requestId)
-            case "request_accessibility":
-                return requestAccessibility(requestId: requestId)
-            default:
-                return fail("unknown_command", "Unknown Mac control command.", command: command, requestId: requestId)
-            }
+        // NSLock, not GCD queue.sync: Chrome AppleScript hops to the main
+        // run loop. Holding `queue` while waiting for main deadlocks Talk
+        // (permission/state work and Swift MainActor share that thread).
+        workLock.lock()
+        defer { workLock.unlock() }
+        if cancelled.contains(requestId) {
+            return fail("cancelled", "Stopped.", command: command, requestId: requestId)
+        }
+        switch command {
+        case "status":
+            return status(requestId: requestId)
+        case "list_apps":
+            return listApps(arguments, requestId: requestId)
+        case "open_app":
+            return openApp(arguments, requestId: requestId, activate: true)
+        case "activate_app":
+            return openApp(arguments, requestId: requestId, activate: true)
+        case "close_app":
+            return closeApp(arguments, requestId: requestId)
+        case "open_url":
+            return openURL(arguments, requestId: requestId)
+        case "inspect_ui":
+            return inspectUI(arguments, requestId: requestId)
+        case "ui_action":
+            return uiAction(arguments, requestId: requestId)
+        case "screen_look":
+            return screenLook(arguments, requestId: requestId)
+        case "app_action":
+            return appAction(arguments, requestId: requestId)
+        case "keyboard":
+            return keyboard(arguments, requestId: requestId)
+        case "window_op":
+            return windowOp(arguments, requestId: requestId)
+        case "cancel":
+            cancelled.insert(requestId)
+            if let other = arguments["request_id"] as? String { cancelled.insert(other) }
+            return ok(["cancelled": true, "spoken": "Stopped."], command: command, requestId: requestId)
+        case "request_accessibility":
+            return requestAccessibility(requestId: requestId)
+        case "file_op":
+            return fileOp(arguments, requestId: requestId)
+        default:
+            return fail("unknown_command", "Unknown Mac control command.", command: command, requestId: requestId)
         }
     }
 
     public func cancel(requestId: String) {
-        queue.sync { _ = cancelled.insert(requestId) }
+        workLock.lock()
+        cancelled.insert(requestId)
+        workLock.unlock()
     }
 
     // MARK: - Status / apps
@@ -166,12 +203,15 @@ public final class MacControlService: @unchecked Sendable {
             }
             seen.insert(bundle)
             unique.append(app)
-            if unique.count >= 40 { break }
+            if unique.count >= 200 { break }
         }
+        let names = unique.compactMap { $0["name"] as? String }
         return ok(
             [
                 "apps": unique,
                 "count": unique.count,
+                "catalog_stamp": applicationsStamp(),
+                "installed_app_names": names,
                 "spoken": unique.isEmpty ? "I didn't find a matching app." : "I found \(unique.count) apps.",
             ],
             command: "list_apps",
@@ -232,12 +272,66 @@ public final class MacControlService: @unchecked Sendable {
         )
     }
 
+    private func dismissAppWindows(_ resolved: ResolvedApp, requestId: String) -> [String: Any] {
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: resolved.bundle)
+        guard !running.isEmpty else {
+            return ok(
+                [
+                    "name": resolved.name,
+                    "app": resolved.name,
+                    "bundle_id": resolved.bundle,
+                    "closed": true,
+                    "closed_windows": true,
+                    "already_closed": true,
+                    "quit": false,
+                    "spoken": "\(resolved.name) windows weren't open.",
+                ],
+                command: "close_app",
+                requestId: requestId
+            )
+        }
+        let script = """
+        tell application id \(asLiteral(resolved.bundle))
+          close every window
+        end tell
+        """
+        let ran = runAppleScript(script)
+        running.first?.hide()
+        Thread.sleep(forTimeInterval: 0.25)
+        let check = runAppleScript("""
+        tell application id \(asLiteral(resolved.bundle))
+          return (count of windows) as string
+        end tell
+        """)
+        let leftover = Int(check.text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        let closed = leftover == 0
+        return ok(
+            [
+                "name": resolved.name,
+                "app": resolved.name,
+                "bundle_id": resolved.bundle,
+                "closed": closed,
+                "closed_windows": true,
+                "quit": false,
+                "spoken": closed
+                    ? "Closed \(resolved.name) windows."
+                    : (ran.ok ? "Hid \(resolved.name)." : "I couldn't close \(resolved.name) windows."),
+            ],
+            command: "close_app",
+            requestId: requestId,
+            ok: closed || ran.ok
+        )
+    }
+
     private func closeApp(_ arguments: [String: Any], requestId: String) -> [String: Any] {
         guard let resolved = resolve(name: string(arguments, "name") ?? string(arguments, "app"), bundleId: string(arguments, "bundle_id")) else {
             return fail("not_found", "I couldn't find that app.", command: "close_app", requestId: requestId)
         }
-        if Self.protected.contains(resolved.bundle.lowercased()) {
+        if resolved.bundle.lowercased() == "com.apple.loginwindow" {
             return fail("protected", "I won't quit \(resolved.name).", command: "close_app", requestId: requestId)
+        }
+        if Self.protected.contains(resolved.bundle.lowercased()) {
+            return dismissAppWindows(resolved, requestId: requestId)
         }
         let running = NSRunningApplication.runningApplications(withBundleIdentifier: resolved.bundle)
         guard let app = running.first else {
@@ -298,9 +392,17 @@ public final class MacControlService: @unchecked Sendable {
         )
     }
 
+    private static let allowedURLSchemes: Set<String> = [
+        "http", "https", "mailto", "maps", "message", "sms", "tel",
+        "facetime", "spotify", "notes", "music", "itms", "itmss",
+    ]
+
     private func openURL(_ arguments: [String: Any], requestId: String) -> [String: Any] {
-        guard let raw = string(arguments, "url"), let url = URL(string: raw), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
-            return fail("invalid_url", "I can only open http or https links.", command: "open_url", requestId: requestId)
+        guard let raw = string(arguments, "url"), let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              Self.allowedURLSchemes.contains(scheme)
+        else {
+            return fail("invalid_url", "I can only open web links and a few app links.", command: "open_url", requestId: requestId)
         }
         let opened = NSWorkspace.shared.open(url)
         return ok(
@@ -451,9 +553,33 @@ public final class MacControlService: @unchecked Sendable {
         if action == "keyboard" || arguments["keys"] != nil && arguments["element_ref"] == nil {
             return keyboard(arguments, requestId: requestId)
         }
+        if action == "scroll" && string(arguments, "element_ref") == nil {
+            return scrollFront(arguments, requestId: requestId)
+        }
+        if (action == "paste" || action == "clipboard_paste")
+            && (string(arguments, "text") ?? string(arguments, "value") ?? "").isEmpty
+            && string(arguments, "element_ref") == nil
+        {
+            let posted = postHotkey("cmd+v")
+            return ok(
+                ["action": "paste", "method": "clipboard", "spoken": posted ? "Pasted." : "I couldn't paste."],
+                command: "ui_action",
+                requestId: requestId,
+                ok: posted
+            )
+        }
         guard let ref = string(arguments, "element_ref") else {
             if action == "type" || action == "type_text" || action == "append" || action == "paste" {
                 var value = string(arguments, "value") ?? string(arguments, "text") ?? ""
+                if action == "paste", value.isEmpty {
+                    let posted = postHotkey("cmd+v")
+                    return ok(
+                        ["action": "paste", "method": "clipboard", "spoken": posted ? "Pasted." : "I couldn't paste."],
+                        command: "ui_action",
+                        requestId: requestId,
+                        ok: posted
+                    )
+                }
                 if action == "append", !value.isEmpty, !value.hasPrefix("\n") {
                     value = "\n" + value
                 }
@@ -473,6 +599,28 @@ public final class MacControlService: @unchecked Sendable {
         switch action {
         case "press", "click":
             changed = AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+            if !changed, let point = hidCenter(of: element) {
+                click(point)
+                changed = true
+            }
+        case "double_click":
+            if let point = hidCenter(of: element) {
+                doubleClick(point)
+                changed = true
+            } else {
+                changed = AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+                    && AXUIElementPerformAction(element, kAXPressAction as CFString) == .success
+            }
+        case "right_click":
+            if let point = hidCenter(of: element) {
+                rightClick(point)
+                changed = true
+            } else {
+                changed = AXUIElementPerformAction(element, "AXExpand" as CFString) == .success
+                    || AXUIElementPerformAction(element, kAXShowMenuAction as CFString) == .success
+            }
+        case "drag":
+            return drag(arguments, from: record, requestId: requestId)
         case "focus":
             changed = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue) == .success
         case "set_value", "replace":
@@ -483,6 +631,22 @@ public final class MacControlService: @unchecked Sendable {
             return enterText(addition, mode: "append", element: element, requestId: requestId)
         case "type", "type_text", "paste":
             let value = string(arguments, "value") ?? string(arguments, "text") ?? ""
+            if action == "paste", value.isEmpty {
+                _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+                Thread.sleep(forTimeInterval: 0.05)
+                let posted = postHotkey("cmd+v")
+                return ok(
+                    [
+                        "action": "paste",
+                        "method": "clipboard",
+                        "element_ref": ref,
+                        "spoken": posted ? "Pasted." : "I couldn't paste.",
+                    ],
+                    command: "ui_action",
+                    requestId: requestId,
+                    ok: posted
+                )
+            }
             return enterText(value, mode: "insert", element: element, requestId: requestId)
         case "select":
             changed = AXUIElementSetAttributeValue(element, kAXSelectedAttribute as CFString, kCFBooleanTrue) == .success
@@ -496,6 +660,10 @@ public final class MacControlService: @unchecked Sendable {
         case "expand", "menu":
             changed = AXUIElementPerformAction(element, "AXExpand" as CFString) == .success
                 || AXUIElementPerformAction(element, kAXShowMenuAction as CFString) == .success
+            if !changed, let point = hidCenter(of: element) {
+                rightClick(point)
+                changed = true
+            }
         case "collapse":
             changed = AXUIElementPerformAction(element, "AXCollapse" as CFString) == .success
         case "confirm":
@@ -1264,6 +1432,118 @@ public final class MacControlService: @unchecked Sendable {
         up?.post(tap: .cghidEventTap)
     }
 
+    private func doubleClick(_ point: CGPoint) {
+        func pulse(_ state: Int64) {
+            let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)
+            down?.setIntegerValueField(.mouseEventClickState, value: state)
+            down?.post(tap: .cghidEventTap)
+            let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+            up?.setIntegerValueField(.mouseEventClickState, value: state)
+            up?.post(tap: .cghidEventTap)
+        }
+        pulse(1)
+        Thread.sleep(forTimeInterval: 0.04)
+        pulse(2)
+    }
+
+    private func rightClick(_ point: CGPoint) {
+        let down = CGEvent(mouseEventSource: nil, mouseType: .rightMouseDown, mouseCursorPosition: point, mouseButton: .right)
+        down?.post(tap: .cghidEventTap)
+        let up = CGEvent(mouseEventSource: nil, mouseType: .rightMouseUp, mouseCursorPosition: point, mouseButton: .right)
+        up?.post(tap: .cghidEventTap)
+    }
+
+    private func hidCenter(of element: AXUIElement) -> CGPoint? {
+        guard let origin = axPoint(element), let size = axSize(element), size.width > 1, size.height > 1 else {
+            return nil
+        }
+        let cocoa = CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+        return hidFromCocoa(cocoa)
+    }
+
+    private func hidFromCocoa(_ point: CGPoint) -> CGPoint {
+        // Accessibility frames are top-left origin; CGEvent is bottom-left of the desktop.
+        let height = NSScreen.screens.map { $0.frame.maxY }.max() ?? 0
+        return CGPoint(x: point.x, y: height - point.y)
+    }
+
+    private func drag(_ arguments: [String: Any], from record: ElementRecord, requestId: String) -> [String: Any] {
+        guard let start = hidCenter(of: record.element) else {
+            return fail("no_frame", "I couldn't find that control's position to drag.", command: "ui_action", requestId: requestId)
+        }
+        guard let frameId = string(arguments, "frame_id"), let frame = frames[frameId] else {
+            return fail("stale_frame", "I need a current screenshot before dragging to coordinates.", command: "ui_action", requestId: requestId)
+        }
+        if Date().timeIntervalSince(frame.capturedAt) > 8 {
+            return fail("stale_frame", "That screenshot is too old to drag.", command: "ui_action", requestId: requestId)
+        }
+        let xNorm = double(arguments, "x_normalized") ?? double(arguments, "x") ?? -1
+        let yNorm = double(arguments, "y_normalized") ?? double(arguments, "y") ?? -1
+        guard xNorm >= 0, xNorm <= 1, yNorm >= 0, yNorm <= 1 else {
+            return fail("bad_coordinates", "Drag destination must be normalized 0–1.", command: "ui_action", requestId: requestId)
+        }
+        let end = CGPoint(
+            x: frame.bounds.minX + frame.bounds.width * xNorm,
+            y: frame.bounds.minY + frame.bounds.height * yNorm
+        )
+        let down = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left)
+        down?.post(tap: .cghidEventTap)
+        let steps = 10
+        for step in 1...steps {
+            let t = CGFloat(step) / CGFloat(steps)
+            let point = CGPoint(x: start.x + (end.x - start.x) * t, y: start.y + (end.y - start.y) * t)
+            let dragged = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: point, mouseButton: .left)
+            dragged?.post(tap: .cghidEventTap)
+            Thread.sleep(forTimeInterval: 0.012)
+        }
+        let up = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: end, mouseButton: .left)
+        up?.post(tap: .cghidEventTap)
+        Thread.sleep(forTimeInterval: 0.12)
+        return ok(
+            [
+                "action": "drag",
+                "element_ref": record.ref,
+                "frame_id": frameId,
+                "x_normalized": xNorm,
+                "y_normalized": yNorm,
+                "method": "hid_drag",
+                "ui_changed": true,
+                "spoken": "Dragged.",
+            ],
+            command: "ui_action",
+            requestId: requestId
+        )
+    }
+
+    private func scrollFront(_ arguments: [String: Any], requestId: String) -> [String: Any] {
+        guard ensureAccessibility() else {
+            return accessibilityDenied(command: "ui_action", requestId: requestId)
+        }
+        let direction = (string(arguments, "direction") ?? "down").lowercased()
+        var changed = false
+        if let app = NSWorkspace.shared.frontmostApplication {
+            let appEl = AXUIElementCreateApplication(app.processIdentifier)
+            if let focused = axElement(appEl, kAXFocusedUIElementAttribute) {
+                changed = scroll(focused, arguments)
+            }
+            if !changed, let window = axElement(appEl, kAXFocusedWindowAttribute) {
+                changed = scroll(window, arguments)
+            }
+        }
+        if !changed {
+            let amount: Int32 = (direction == "up" || direction == "left") ? 4 : -4
+            let event = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0)
+            event?.post(tap: .cghidEventTap)
+            changed = event != nil
+        }
+        return ok(
+            ["action": "scroll", "direction": direction, "ui_changed": changed, "spoken": changed ? "Scrolled." : "I couldn't scroll."],
+            command: "ui_action",
+            requestId: requestId,
+            ok: changed
+        )
+    }
+
     // MARK: - Semantic app adapters (Music)
 
     static func adapterControl(app: String?, bundleId: String?) -> [String: Any] {
@@ -1282,9 +1562,9 @@ public final class MacControlService: @unchecked Sendable {
             return [
                 "preferred": "semantic_adapter",
                 "semantic_adapter": "safari",
-                "supported_actions": ["search", "navigate", "status", "open_item"],
+                "supported_actions": ["search", "navigate", "play", "status", "open_item"],
                 "fallbacks": ["accessibility", "keyboard", "screen_vision", "coordinate"],
-                "verification": "current_url",
+                "verification": "player_or_url",
             ]
         }
         if name.contains("notes") || bundle == "com.apple.notes" {
@@ -1300,9 +1580,27 @@ public final class MacControlService: @unchecked Sendable {
             return [
                 "preferred": "semantic_adapter",
                 "semantic_adapter": "finder",
-                "supported_actions": ["open_item", "open_folder", "status"],
+                "supported_actions": ["play", "open_item", "open_folder", "status"],
                 "fallbacks": ["accessibility", "keyboard", "screen_vision"],
-                "verification": "selection",
+                "verification": "player_or_selection",
+            ]
+        }
+        if name.contains("chrome") || bundle == "com.google.Chrome" {
+            return [
+                "preferred": "semantic_adapter",
+                "semantic_adapter": "chrome",
+                "supported_actions": ["search", "navigate", "play", "status", "open_item"],
+                "fallbacks": ["accessibility", "keyboard", "screen_vision", "coordinate"],
+                "verification": "player_or_url",
+            ]
+        }
+        if name.contains("spotify") || bundle == "com.spotify.client" {
+            return [
+                "preferred": "semantic_adapter",
+                "semantic_adapter": "spotify",
+                "supported_actions": ["play", "pause", "next", "previous", "status", "search", "open_item"],
+                "fallbacks": ["accessibility", "keyboard", "screen_vision", "coordinate"],
+                "verification": "now_playing",
             ]
         }
         return [
@@ -1315,7 +1613,7 @@ public final class MacControlService: @unchecked Sendable {
     }
 
     private func appAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
-        let app = (string(arguments, "app") ?? lastApp ?? "Music")
+        let app = (string(arguments, "app") ?? lastApp ?? "")
         let lower = app.lowercased()
         if lower.contains("music") || lower == "itunes" {
             return musicAction(arguments, requestId: requestId)
@@ -1332,12 +1630,301 @@ public final class MacControlService: @unchecked Sendable {
         if lower.contains("calculator") || lower == "calc" {
             return calculatorAction(arguments, requestId: requestId)
         }
-        return fail(
-            "no_adapter",
-            "That app has no semantic adapter. Inspect the UI instead.",
-            command: "app_action",
+        if lower.contains("chrome") {
+            return chromeAction(arguments, requestId: requestId)
+        }
+        if lower.contains("spotify") {
+            return spotifyAction(arguments, requestId: requestId)
+        }
+        if looksLikeLocalVideoPlayer(name: lower, bundle: "") {
+            let action = (string(arguments, "action") ?? "play").lowercased()
+            if action == "play" || action == "open_item" {
+                return finderPlayVideo(
+                    query: string(arguments, "query") ?? string(arguments, "value") ?? "",
+                    requestId: requestId
+                )
+            }
+        }
+        return genericAppAction(arguments, requestId: requestId)
+    }
+
+    private func genericAppAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
+        let action = (string(arguments, "action") ?? "status").lowercased()
+        let rawApp = string(arguments, "app") ?? ""
+        let useFront = rawApp.isEmpty || ["front", "this", "that", "it"].contains(rawApp.lowercased())
+        if !useFront {
+            let opened = openApp(["name": rawApp], requestId: requestId, activate: true)
+            if opened["ok"] as? Bool == false {
+                return opened
+            }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
+        var query = Self.cleanedComputerQuery(
+            string(arguments, "query")
+                ?? string(arguments, "value")
+                ?? string(arguments, "text")
+                ?? ""
+        )
+        if !rawApp.isEmpty {
+            let escaped = NSRegularExpression.escapedPattern(for: rawApp)
+            query = query.replacingOccurrences(
+                of: #"(?i)\s+(?:in|on|using|with)\s+\#(escaped)\s*$"#,
+                with: "",
+                options: .regularExpression
+            )
+        }
+        let inspectArgs: [String: Any] = useFront ? [:] : ["app": rawApp]
+        switch action {
+        case "status", "read":
+            var snap = inspectUI(inspectArgs, requestId: requestId)
+            snap["adapter"] = "generic"
+            snap["action"] = action
+            snap["executed"] = true
+            snap["verified"] = snap["ok"] as? Bool == true
+            if (snap["spoken"] as? String)?.isEmpty != false {
+                snap["spoken"] = "I'm looking at \(snap["app"] as? String ?? "the app")."
+            }
+            return snap
+        case "new_tab", "close_tab", "next_tab", "previous_tab":
+            let spec: String
+            let spoken: String
+            switch action {
+            case "new_tab":
+                spec = "cmd+t"
+                spoken = "Opened a new tab."
+            case "close_tab":
+                spec = "cmd+w"
+                spoken = "Closed the tab."
+            case "next_tab":
+                spec = "cmd+shift+]"
+                spoken = "Switched to the next tab."
+            default:
+                spec = "cmd+shift+["
+                spoken = "Switched to the previous tab."
+            }
+            let posted = postHotkey(spec)
+            Thread.sleep(forTimeInterval: 0.2)
+            return ok(
+                [
+                    "ok": posted,
+                    "executed": true,
+                    "verified": posted,
+                    "adapter": "generic",
+                    "app": rawApp.isEmpty ? (NSWorkspace.shared.frontmostApplication?.localizedName ?? "front") : rawApp,
+                    "action": action,
+                    "method": "keyboard",
+                    "spoken": posted ? spoken : "I couldn't send that tab shortcut.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: posted
+            )
+        case "search", "create", "append":
+            if query.isEmpty {
+                return fail("missing_query", "What should I type?", command: "app_action", requestId: requestId)
+            }
+            let fieldQuery = action == "search" ? "search" : ""
+            let inspect = inspectUI(inspectArgs.merging(["query": fieldQuery]) { _, new in new }, requestId: requestId)
+            let typed: [String: Any]
+            if let elements = inspect["elements"] as? [[String: Any]],
+               let ref = elements.first?["ref"] as? String
+            {
+                typed = uiAction(
+                    [
+                        "action": action == "append" ? "append" : (action == "search" ? "replace" : "type"),
+                        "element_ref": ref,
+                        "value": query,
+                    ],
+                    requestId: requestId
+                )
+            } else {
+                typed = enterText(query, mode: action == "append" ? "append" : "insert", element: nil, requestId: requestId)
+            }
+            if action == "search" {
+                _ = postHotkey("return")
+                Thread.sleep(forTimeInterval: 0.35)
+            }
+            let okTyped = typed["ok"] as? Bool == true
+            return ok(
+                [
+                    "ok": okTyped,
+                    "executed": true,
+                    "verified": okTyped,
+                    "adapter": "generic",
+                    "app": inspect["app"] as Any,
+                    "action": action,
+                    "query": query,
+                    "method": "accessibility",
+                    "spoken": okTyped
+                        ? (action == "search" ? "Searched for \(query)." : "Typed that.")
+                        : "I couldn't type in this app.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: okTyped
+            )
+        default:
+            return genericClickVisible(
+                query: query,
+                inspectArgs: inspectArgs,
+                requestId: requestId
+            )
+        }
+    }
+
+    private func genericClickVisible(
+        query: String,
+        inspectArgs: [String: Any],
+        requestId: String
+    ) -> [String: Any] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let frontName = (NSWorkspace.shared.frontmostApplication?.localizedName ?? "").lowercased()
+        let lowerNeedle = needle.lowercased()
+        let wantsMedia = lowerNeedle.contains("first video")
+            || lowerNeedle.contains("play the first")
+            || (lowerNeedle.contains("video") && (lowerNeedle.contains("first") || lowerNeedle.contains("play")))
+        if wantsMedia {
+            if frontName.contains("safari") {
+                return playMediaInBrowser(browser: "safari", arguments: ["query": needle], requestId: requestId)
+            }
+            if frontName.contains("chrome") {
+                return playMediaInBrowser(browser: "chrome", arguments: ["query": needle], requestId: requestId)
+            }
+            if frontName.contains("finder") {
+                return finderPlayVideo(query: needle, requestId: requestId)
+            }
+            if looksLikeLocalVideoPlayer(name: frontName, bundle: NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "") {
+                return finderPlayVideo(query: needle, requestId: requestId)
+            }
+        }
+        if lowerNeedle.contains("first result")
+            || lowerNeedle.contains("top result")
+            || lowerNeedle.contains("first search result")
+            || lowerNeedle.contains("first item")
+            || lowerNeedle.contains("first one")
+            || lowerNeedle == "first" {
+            if frontName.contains("safari") {
+                return safariOpenFirstResult(requestId: requestId)
+            }
+            if frontName.contains("chrome") {
+                return chromeOpenFirstResult([:], requestId: requestId)
+            }
+        }
+        let inspect = inspectUI(
+            inspectArgs.merging(needle.isEmpty ? [:] : ["query": needle]) { _, new in new },
             requestId: requestId
         )
+        if let elements = inspect["elements"] as? [[String: Any]],
+           let first = elements.first,
+           let ref = first["ref"] as? String
+        {
+            let pressed = uiAction(["action": "press", "element_ref": ref], requestId: requestId)
+            let okPress = pressed["ok"] as? Bool == true
+            return ok(
+                [
+                    "ok": okPress,
+                    "executed": true,
+                    "verified": okPress,
+                    "adapter": "generic",
+                    "app": inspect["app"] as Any,
+                    "action": "open_item",
+                    "query": needle,
+                    "element_ref": ref,
+                    "method": "accessibility",
+                    "spoken": okPress
+                        ? "Clicked \(first["title"] as? String ?? needle)."
+                        : "I found that control but couldn't press it.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: okPress
+            )
+        }
+        if !needle.isEmpty, let hit = clickVisibleText(needle) {
+            return ok(
+                [
+                    "ok": true,
+                    "executed": true,
+                    "verified": true,
+                    "adapter": "generic",
+                    "app": inspect["app"] as Any,
+                    "action": "open_item",
+                    "query": needle,
+                    "method": "screen_ocr",
+                    "matched_text": hit,
+                    "spoken": "Clicked \(hit).",
+                ],
+                command: "app_action",
+                requestId: requestId
+            )
+        }
+        return ok(
+            [
+                "ok": false,
+                "executed": true,
+                "verified": false,
+                "adapter": "generic",
+                "app": inspect["app"] as Any,
+                "action": "open_item",
+                "query": needle,
+                "method": "failed",
+                "spoken": needle.isEmpty
+                    ? "I can see the window, but I need a control to click."
+                    : "I didn't find “\(needle)” on screen.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: false
+        )
+    }
+
+    private func clickVisibleText(_ needle: String) -> String? {
+        guard CGPreflightScreenCaptureAccess() else { return nil }
+        let running = NSWorkspace.shared.frontmostApplication
+        guard let running, let info = windowInfo(pid: running.processIdentifier) else { return nil }
+        guard let image = CGWindowListCreateImage(
+            .null,
+            .optionIncludingWindow,
+            info.id,
+            [.boundsIgnoreFraming, .bestResolution]
+        ) else { return nil }
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            return nil
+        }
+        let want = needle.lowercased()
+        var best: (text: String, box: CGRect, score: Int)?
+        for observation in request.results ?? [] {
+            guard let candidate = observation.topCandidates(1).first else { continue }
+            let text = candidate.string
+            let lower = text.lowercased()
+            var score = 0
+            if lower == want { score = 100 }
+            else if lower.contains(want) { score = 80 }
+            else if want.contains(lower), lower.count >= 3 { score = 60 }
+            else { continue }
+            if best == nil || score > best!.score {
+                best = (text, observation.boundingBox, score)
+            }
+        }
+        guard let best else { return nil }
+        let imgW = CGFloat(image.width)
+        let imgH = CGFloat(image.height)
+        let visionRect = VNImageRectForNormalizedRect(best.box, image.width, image.height)
+        let xNorm = visionRect.midX / imgW
+        let yNorm = 1 - (visionRect.midY / imgH)
+        let point = CGPoint(
+            x: info.bounds.minX + info.bounds.width * xNorm,
+            y: info.bounds.minY + info.bounds.height * yNorm
+        )
+        click(point)
+        Thread.sleep(forTimeInterval: 0.2)
+        return best.text
     }
 
     private func musicAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
@@ -1384,7 +1971,7 @@ public final class MacControlService: @unchecked Sendable {
         let box = Box()
         let lock = NSLock()
         let done = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .userInitiated).async {
+        let execute = {
             var error: NSDictionary?
             if let script = NSAppleScript(source: source) {
                 let result = script.executeAndReturnError(&error)
@@ -1404,13 +1991,56 @@ public final class MacControlService: @unchecked Sendable {
             }
             done.signal()
         }
-        if done.wait(timeout: .now() + timeout) == .timedOut {
-            return (false, "", "timeout")
+        // NSAppleScript needs the AppKit run loop. Background threads hang
+        // until timeout while Talk's audio engines are up; e2e without mic
+        // happened to succeed on a global queue.
+        if Thread.isMainThread {
+            execute()
+        } else {
+            DispatchQueue.main.async(execute: execute)
+        }
+        if done.wait(timeout: .now() + min(timeout, 4)) == .timedOut {
+            return runOsascriptProcess(source, timeout: timeout)
         }
         lock.lock()
         let out = (box.ok, box.text, box.error)
         lock.unlock()
         return out
+    }
+
+    /// Separate process so a stuck NSAppleScript run loop cannot block Talk.
+    private func runOsascriptProcess(_ source: String, timeout: TimeInterval) -> (ok: Bool, text: String, error: String?) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        let input = Pipe()
+        let output = Pipe()
+        let err = Pipe()
+        proc.standardInput = input
+        proc.standardOutput = output
+        proc.standardError = err
+        do {
+            try proc.run()
+        } catch {
+            return (false, "", error.localizedDescription)
+        }
+        input.fileHandleForWriting.write(Data(source.utf8))
+        try? input.fileHandleForWriting.close()
+        let deadline = Date().addingTimeInterval(timeout)
+        while proc.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if proc.isRunning {
+            proc.terminate()
+            return (false, "", "timeout")
+        }
+        let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let errText = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if proc.terminationStatus == 0 {
+            return (true, text, nil)
+        }
+        return (false, "", errText.isEmpty ? "osascript failed" : errText)
     }
 
     private func musicPlaylistNames() -> (ok: Bool, names: [String], error: String?) {
@@ -1759,131 +2389,226 @@ public final class MacControlService: @unchecked Sendable {
 
     private func safariAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
         let action = (string(arguments, "action") ?? "status").lowercased()
-        _ = runAppleScript("tell application id \"com.apple.Safari\" to activate")
-        Thread.sleep(forTimeInterval: 0.25)
+        if let chrome = safariBrowserChrome(action, requestId: requestId) {
+            return chrome
+        }
         switch action {
         case "status", "read":
             return safariStatus(requestId: requestId, spokenPrefix: nil)
         case "search":
-            let query = string(arguments, "query") ?? string(arguments, "value") ?? ""
+            let query = searchQuery(arguments)
             if query.isEmpty {
                 return fail("missing_query", "What should I search for?", command: "app_action", requestId: requestId)
+            }
+            if let dest = Self.navigationURL(from: query) {
+                return safariOpenLocation(dest, requestId: requestId)
             }
             lastSafariQuery = query
             let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
             let url = "https://www.google.com/search?q=\(encoded)"
-            let ran = runAppleScript("tell application id \"com.apple.Safari\" to open location \(asLiteral(url))")
+            let script = """
+            tell application id "com.apple.Safari"
+              if (count of windows) is 0 then
+                make new document
+              else
+                tell window 1
+                  set current tab to (make new tab at end of tabs)
+                end tell
+              end if
+              set URL of current tab of window 1 to \(asLiteral(url))
+            end tell
+            """
+            let ran = runAppleScript(script)
             if !ran.ok {
                 return fail("safari_search_failed", ran.error ?? "Safari search failed.", command: "app_action", requestId: requestId)
             }
             Thread.sleep(forTimeInterval: 1.8)
             let status = safariNow()
+            let loaded = !status.url.isEmpty
             return ok(
                 [
                     "ok": true,
                     "executed": true,
-                    "verified": false,
-                    "must_continue": true,
+                    "verified": loaded,
+                    "must_continue": !loaded,
                     "adapter": "safari",
                     "app": "Safari",
                     "action": "search",
                     "query": query,
                     "url": status.url,
                     "title": status.title,
-                    "goal_complete": false,
-                    "spoken": "Safari is showing search results for \(query). Opening a result is still required.",
+                    "spoken": loaded
+                        ? "Safari is showing search results for \(query)."
+                        : "Safari did not load the search yet.",
                 ],
                 command: "app_action",
                 requestId: requestId
             )
-        case "navigate", "open_item", "play":
-            let extract = """
-            (() => {
-              const unwrap = (h) => {
-                try {
-                  const u = new URL(h);
-                  if (u.hostname.indexOf('google.') !== -1 && u.pathname === '/url') {
-                    return u.searchParams.get('q') || h;
-                  }
-                } catch (e) {}
-                return h;
-              };
-              const bad = (h) => {
-                const s = (h || '').toLowerCase();
-                return !s.startsWith('http')
-                  || s.indexOf('google.com/search') !== -1
-                  || s.indexOf('accounts.google') !== -1
-                  || s.indexOf('webcache') !== -1;
-              };
-              const nodes = [...document.querySelectorAll('#rso a h3, #search a h3, a h3')];
-              for (const h of nodes) {
-                const a = h.closest('a');
-                if (!a) continue;
-                const href = unwrap(a.href);
-                if (!bad(href) && href.indexOf('google.com') === -1) return href;
-              }
-              return '';
-            })()
-            """
-            let found = runAppleScript(
-                "tell application id \"com.apple.Safari\" to do JavaScript \(asLiteral(extract)) in current tab of window 1"
-            )
-            var href = found.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            var stillSearch = safariNow().url.lowercased().contains("google.com/search")
-            if found.ok, href.hasPrefix("http"), stillSearch {
-                _ = runAppleScript(
-                    "tell application id \"com.apple.Safari\" to set URL of current tab of window 1 to \(asLiteral(href))"
-                )
-                Thread.sleep(forTimeInterval: 1.3)
-                stillSearch = safariNow().url.lowercased().contains("google.com/search")
+        case "navigate", "open_item":
+            let query = locationQuery(arguments)
+            if let dest = Self.navigationURL(from: query) {
+                return safariOpenLocation(dest, requestId: requestId)
             }
-            if stillSearch {
-                if safariPressFirstLink() {
-                    Thread.sleep(forTimeInterval: 1.0)
-                    stillSearch = safariNow().url.lowercased().contains("google.com/search")
-                }
+            if queryLooksLikeMedia(query) {
+                return playMediaInBrowser(browser: "safari", arguments: arguments, requestId: requestId)
             }
-            if stillSearch {
-                if safariTabToFirstResult() {
-                    Thread.sleep(forTimeInterval: 1.0)
-                    stillSearch = safariNow().url.lowercased().contains("google.com/search")
-                }
-            }
-            if stillSearch, let query = lastSafariQuery, let discovered = discoverFirstWebResult(query) {
-                href = discovered
-                _ = runAppleScript(
-                    "tell application id \"com.apple.Safari\" to set URL of current tab of window 1 to \(asLiteral(discovered))"
-                )
-                Thread.sleep(forTimeInterval: 1.4)
-                stillSearch = safariNow().url.lowercased().contains("google.com/search")
-            }
-            let status = safariNow()
-            let verified = !status.url.lowercased().contains("google.com/search") && !status.url.isEmpty
-            return ok(
-                [
-                    "ok": verified,
-                    "executed": true,
-                    "verified": verified,
-                    "must_continue": !verified,
-                    "adapter": "safari",
-                    "app": "Safari",
-                    "action": "navigate",
-                    "url": status.url,
-                    "title": status.title,
-                    "clicked": href,
-                    "method": verified ? "discovered_url" : "failed",
-                    "suggested_fallbacks": verified ? [] : ["screen_look", "ui_action"],
-                    "spoken": verified
-                        ? "Opened \(status.title.isEmpty ? status.url : status.title)."
-                        : "Safari is still on the search page. Look at the window and click the first result.",
-                ],
-                command: "app_action",
-                requestId: requestId,
-                ok: verified
-            )
+            return safariOpenFirstResult(requestId: requestId, query: query)
+        case "play":
+            return playMediaInBrowser(browser: "safari", arguments: arguments, requestId: requestId)
         default:
             return fail("unknown_action", "Safari cannot do that.", command: "app_action", requestId: requestId)
         }
+    }
+
+    private func safariOpenLocation(_ url: String, requestId: String) -> [String: Any] {
+        let script = """
+        tell application id "com.apple.Safari"
+          if (count of windows) is 0 then
+            make new document
+            set URL of current tab of window 1 to \(asLiteral(url))
+          else
+            tell window 1
+              set current tab to (make new tab at end of tabs)
+              set URL of current tab to \(asLiteral(url))
+            end tell
+          end if
+        end tell
+        """
+        var ran = runAppleScript(script)
+        if !ran.ok {
+            ran = runAppleScript("tell application id \"com.apple.Safari\" to open location \(asLiteral(url))")
+        }
+        if !ran.ok {
+            return fail("safari_navigate_failed", ran.error ?? "Safari could not open that page.", command: "app_action", requestId: requestId)
+        }
+        let host = URL(string: url)?.host?.lowercased() ?? ""
+        Thread.sleep(forTimeInterval: 0.4)
+        var status = safariNow()
+        for _ in 0..<16 {
+            let current = status.url.lowercased()
+            let ready = !current.isEmpty
+                && !current.hasPrefix("favorites:")
+                && !current.hasPrefix("about:")
+                && (host.isEmpty || current.contains(host))
+            if ready { break }
+            Thread.sleep(forTimeInterval: 0.35)
+            status = safariNow()
+        }
+        let loaded = !status.url.isEmpty && !status.url.lowercased().hasPrefix("favorites:")
+        let stillSearch = status.url.lowercased().contains("google.com/search")
+        let hostOk = host.isEmpty || status.url.lowercased().contains(host)
+        let verified = loaded && !stillSearch && hostOk
+        return ok(
+            [
+                "ok": verified,
+                "executed": true,
+                "verified": verified,
+                "must_continue": !verified,
+                "adapter": "safari",
+                "app": "Safari",
+                "action": "navigate",
+                "url": status.url,
+                "title": status.title,
+                "goal_complete": verified,
+                "spoken": verified
+                    ? "Opened \(status.title.isEmpty ? status.url : status.title)."
+                    : "Safari did not open that page.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: verified
+        )
+    }
+
+    private func safariBrowserChrome(_ action: String, requestId: String) -> [String: Any]? {
+        let script: String
+        let spoken: String
+        switch action {
+        case "new_tab":
+            script = """
+            tell application id "com.apple.Safari"
+              if (count of windows) is 0 then
+                make new document
+              else
+                tell window 1
+                  set current tab to (make new tab at end of tabs)
+                end tell
+              end if
+            end tell
+            """
+            spoken = "Opened a new Safari tab."
+        case "close_tab":
+            script = """
+            tell application id "com.apple.Safari"
+              if (count of windows) is 0 then return
+              tell window 1
+                if (count of tabs) <= 1 then
+                  close
+                else
+                  close current tab
+                end if
+              end tell
+            end tell
+            """
+            spoken = "Closed the Safari tab."
+        case "next_tab":
+            script = """
+            tell application id "com.apple.Safari"
+              if (count of windows) is 0 then return
+              tell window 1
+                set i to index of current tab
+                set n to count of tabs
+                if n is 0 then return
+                if i < n then
+                  set current tab to tab (i + 1)
+                else
+                  set current tab to tab 1
+                end if
+              end tell
+            end tell
+            """
+            spoken = "Switched to the next Safari tab."
+        case "previous_tab":
+            script = """
+            tell application id "com.apple.Safari"
+              if (count of windows) is 0 then return
+              tell window 1
+                set i to index of current tab
+                set n to count of tabs
+                if n is 0 then return
+                if i > 1 then
+                  set current tab to tab (i - 1)
+                else
+                  set current tab to tab n
+                end if
+              end tell
+            end tell
+            """
+            spoken = "Switched to the previous Safari tab."
+        default:
+            return nil
+        }
+        let ran = runAppleScript(script)
+        Thread.sleep(forTimeInterval: 0.35)
+        let status = safariNow()
+        return ok(
+            [
+                "ok": ran.ok,
+                "executed": true,
+                "verified": ran.ok,
+                "adapter": "safari",
+                "app": "Safari",
+                "action": action,
+                "url": status.url,
+                "title": status.title,
+                "must_continue": false,
+                "goal_complete": ran.ok,
+                "spoken": ran.ok ? spoken : "Safari could not do that tab action.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: ran.ok
+        )
     }
 
     private func safariNow() -> (url: String, title: String) {
@@ -1897,6 +2622,891 @@ public final class MacControlService: @unchecked Sendable {
         let ran = runAppleScript(script)
         let parts = ran.text.components(separatedBy: "||")
         return (parts.first ?? "", parts.count > 1 ? parts[1] : "")
+    }
+
+    private static let googleFirstResultJS = """
+    (() => {
+      const unwrap = (h) => {
+        try {
+          const u = new URL(h);
+          if (u.hostname.indexOf('google.') !== -1 && (u.pathname === '/url' || u.pathname.indexOf('/url') === 0)) {
+            return u.searchParams.get('q') || u.searchParams.get('url') || h;
+          }
+        } catch (e) {}
+        return h;
+      };
+      const bad = (h) => {
+        const s = (h || '').toLowerCase();
+        return !s.startsWith('http')
+          || s.indexOf('google.com/search') !== -1
+          || s.indexOf('accounts.google') !== -1
+          || s.indexOf('webcache') !== -1
+          || s.indexOf('support.google') !== -1
+          || s.indexOf('policies.google') !== -1;
+      };
+      const selectors = [
+        '#search a h3',
+        '#rso a h3',
+        'div[data-snhf] a h3',
+        'a h3',
+        '#rso a[jsname][href]',
+        'a[href^="http"]'
+      ];
+      const seen = new Set();
+      for (const sel of selectors) {
+        for (const node of document.querySelectorAll(sel)) {
+          const a = node.tagName === 'A' ? node : node.closest('a');
+          if (!a || seen.has(a)) continue;
+          seen.add(a);
+          const href = unwrap(a.href);
+          if (!bad(href) && href.toLowerCase().indexOf('google.com') === -1) return href;
+        }
+      }
+      return '';
+    })()
+    """
+
+    private func extractGoogleFirstHref(browser: String) -> String {
+        let js = Self.googleFirstResultJS
+        let script: String
+        if browser == "safari" {
+            script = "tell application id \"com.apple.Safari\" to do JavaScript \(asLiteral(js)) in current tab of window 1"
+        } else {
+            script = """
+            tell application id "com.google.Chrome"
+              if (count of windows) is 0 then return ""
+              execute (active tab of front window) javascript \(asLiteral(js))
+            end tell
+            """
+        }
+        var href = ""
+        for _ in 0..<3 {
+            let found = runAppleScript(script)
+            href = found.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if found.ok, href.hasPrefix("http") { return href }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return href
+    }
+
+    private func firstResultSearchQuery(_ arguments: [String: Any], stored: String?) -> String? {
+        let raw = locationQuery(arguments)
+        let lower = raw.lowercased()
+        if raw.isEmpty
+            || lower.contains("first result")
+            || lower.contains("top result")
+            || lower.contains("first search")
+            || lower.contains("result link")
+            || lower.contains("first video")
+            || lower.contains("first item")
+            || lower.contains("first one")
+            || lower.contains("play the first")
+        {
+            let kept = (stored ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return kept.isEmpty ? nil : kept
+        }
+        return raw
+    }
+
+    private func isSearchResultsURL(_ url: String) -> Bool {
+        let lower = url.lowercased()
+        return lower.contains("google.com/search")
+            || lower.contains("bing.com/search")
+            || lower.contains("duckduckgo.com/?q")
+            || lower.contains("search.yahoo.com")
+    }
+
+    private func isEmptyBrowserURL(_ url: String) -> Bool {
+        let lower = url.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if lower.isEmpty { return true }
+        return lower.hasPrefix("favorites:")
+            || lower.hasPrefix("topsites:")
+            || lower.hasPrefix("about:")
+            || lower.contains("://newtab")
+            || lower.hasPrefix("chrome://new")
+            || lower.hasPrefix("safari-resource:")
+            || lower == "https://www.google.com/"
+            || lower == "https://google.com/"
+    }
+
+    private func isMediaListingURL(_ url: String) -> Bool {
+        let lower = url.lowercased()
+        if lower.contains("youtube.com/results") || lower.contains("youtube.com/feed") { return true }
+        if lower.contains("vimeo.com/search") || lower.contains("dailymotion.com/search") { return true }
+        if let parsed = URL(string: lower), let host = parsed.host?.lowercased() {
+            let path = parsed.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            if (host == "youtube.com" || host == "www.youtube.com" || host == "m.youtube.com") && path.isEmpty {
+                return true
+            }
+            if host == "vimeo.com" && path.isEmpty { return true }
+        }
+        return false
+    }
+
+    private func looksLikeContentItemURL(_ url: String) -> Bool {
+        let lower = url.lowercased()
+        if isSearchResultsURL(lower) || isMediaListingURL(lower) { return false }
+        return lower.contains("/watch")
+            || lower.contains("?v=")
+            || lower.contains("&v=")
+            || lower.contains("/status/")
+            || lower.contains("/shorts/")
+            || lower.contains("/reel")
+            || lower.contains("/dp/")
+            || lower.range(of: #"vimeo\.com/\d+"#, options: .regularExpression) != nil
+            || lower.contains("dailymotion.com/video/")
+    }
+
+    private func queryLooksLikeMedia(_ query: String) -> Bool {
+        let lower = query.lowercased()
+        if lower.isEmpty { return false }
+        return lower.contains("first video")
+            || lower.contains("play the first")
+            || lower == "first"
+            || lower == "second"
+            || lower == "third"
+            || lower.contains("video")
+            || lower.hasPrefix("play ")
+    }
+
+    private func mediaOrdinal(from query: String) -> Int {
+        let lower = query.lowercased()
+        if lower.contains("second") || lower.contains("2nd") { return 2 }
+        if lower.contains("third") || lower.contains("3rd") { return 3 }
+        if lower.contains("fourth") || lower.contains("4th") { return 4 }
+        if lower.contains("fifth") || lower.contains("5th") { return 5 }
+        return 1
+    }
+
+    private func mediaNeedle(from query: String) -> String {
+        var raw = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = raw.lowercased()
+        if raw.isEmpty
+            || lower == "first"
+            || lower.contains("first video")
+            || lower.contains("first item")
+            || lower.contains("first one")
+            || lower.contains("play the first")
+            || lower == "second"
+            || lower == "third"
+        {
+            return ""
+        }
+        let stripped = raw.replacingOccurrences(
+            of: #"(?i)^(play|watch|open)\s+(the\s+)?(video|clip|movie|file)?\s*"#,
+            with: "",
+            options: .regularExpression
+        )
+        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static let pageFirstContentJS = """
+    (function() {
+      function unwrap(href) {
+        try {
+          var u = new URL(href, location.href);
+          var uddg = u.searchParams.get('uddg');
+          if (uddg) return decodeURIComponent(uddg);
+          return u.href;
+        } catch (e) { return href || ''; }
+      }
+      function skip(href, text) {
+        var h = (href || '').toLowerCase();
+        var t = (text || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        if (!h || h.indexOf('javascript:') === 0 || h === '#' || h.indexOf('mailto:') === 0) return true;
+        if (/accounts\\.google|consent\\.|support\\.google|policies\\.google/.test(h)) return true;
+        if (/^(sign in|log in|privacy|terms|cookies?|help|about|contact|home|menu|shorts|subscriptions|library)$/.test(t)) return true;
+        return false;
+      }
+      var sels = [
+        'ytd-rich-item-renderer a#video-title-link',
+        'ytd-video-renderer a#video-title',
+        'a[href*="/watch"]',
+        'a[href*="/status/"]',
+        '[role="listitem"] a[href]',
+        '[role="article"] a[href]',
+        'main a[href]',
+        '#content a[href]',
+        '.search-result a[href]',
+        '.result a[href]',
+        '[data-testid="result"] a[href]',
+        'a[href^="http"]',
+        'a[href^="/"]'
+      ];
+      var start = location.href.split('#')[0];
+      for (var s = 0; s < sels.length; s++) {
+        var nodes = document.querySelectorAll(sels[s]);
+        for (var i = 0; i < nodes.length; i++) {
+          var node = nodes[i];
+          var a = node.tagName === 'A' ? node : node.closest('a');
+          if (!a) continue;
+          var href = unwrap(a.href || a.getAttribute('href') || '');
+          var text = (a.innerText || a.getAttribute('aria-label') || a.title || '').trim();
+          if (skip(href, text)) continue;
+          if ((href.split('#')[0] === start) && href.toLowerCase().indexOf('/watch') === -1) continue;
+          try { a.scrollIntoView({block: 'center'}); } catch (e) {}
+          a.click();
+          return href || text || 'clicked';
+        }
+      }
+      return '';
+    })()
+    """
+
+    private func runPageJS(_ js: String, browser: String) -> String {
+        let script: String
+        if browser == "safari" {
+            script = "tell application id \"com.apple.Safari\" to do JavaScript \(asLiteral(js)) in current tab of window 1"
+        } else {
+            script = """
+            tell application id "com.google.Chrome"
+              if (count of windows) is 0 then return ""
+              execute (active tab of front window) javascript \(asLiteral(js))
+            end tell
+            """
+        }
+        var href = ""
+        for _ in 0..<4 {
+            let found = runAppleScript(script)
+            href = found.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if found.ok, !href.isEmpty, href != "missing value" { return href }
+            Thread.sleep(forTimeInterval: 0.35)
+        }
+        return href
+    }
+
+    private func clickFirstOnPageItem(browser: String) -> String {
+        let href = runPageJS(Self.pageFirstContentJS, browser: browser)
+        Thread.sleep(forTimeInterval: 1.0)
+        return href
+    }
+
+    private static let pageMediaCandidatesJS = """
+    (function() {
+      function unwrap(href) {
+        try {
+          var u = new URL(href, location.href);
+          var uddg = u.searchParams.get('uddg');
+          if (uddg) return decodeURIComponent(uddg);
+          if (u.hostname.indexOf('google.') !== -1 && (u.pathname === '/url' || u.pathname.indexOf('/url') === 0)) {
+            return u.searchParams.get('q') || u.searchParams.get('url') || u.href;
+          }
+          return u.href;
+        } catch (e) { return href || ''; }
+      }
+      function isMedia(href) {
+        var h = (href || '').toLowerCase();
+        return /\\/watch(\\?|\\/|$)|[?&]v=|\\/shorts\\/|\\/reel|vimeo\\.com\\/\\d+|dailymotion\\.com\\/video\\//.test(h);
+      }
+      var sels = [
+        'ytd-rich-item-renderer a#video-title-link',
+        'ytd-video-renderer a#video-title',
+        'ytd-compact-video-renderer a.yt-simple-endpoint',
+        'a#thumbnail[href*="/watch"]',
+        'a[href*="/watch"]',
+        'a[href*="/shorts/"]',
+        'a[href*="vimeo.com/"]',
+        'a[href*="dailymotion.com/video"]',
+        'a[href*="/videos/"]'
+      ];
+      var seen = {};
+      var out = [];
+      for (var s = 0; s < sels.length; s++) {
+        var nodes = document.querySelectorAll(sels[s]);
+        for (var i = 0; i < nodes.length; i++) {
+          var node = nodes[i];
+          var a = node.tagName === 'A' ? node : node.closest('a');
+          if (!a) continue;
+          var href = unwrap(a.href || a.getAttribute('href') || '');
+          if (!isMedia(href) || seen[href]) continue;
+          seen[href] = 1;
+          var title = (a.getAttribute('title') || a.getAttribute('aria-label') || a.innerText || '').replace(/\\s+/g, ' ').trim();
+          out.push(href + '\\t' + title);
+          if (out.length >= 24) return out.join('\\n');
+        }
+      }
+      return out.join('\\n');
+    })()
+    """
+
+    private static let pageEnsurePlayingJS = """
+    (function() {
+      function clickLabeled(re) {
+        var nodes = document.querySelectorAll('button, [role="button"], .ytp-large-play-button, .ytp-play-button');
+        for (var i = 0; i < nodes.length; i++) {
+          var t = ((nodes[i].getAttribute('aria-label') || nodes[i].innerText || nodes[i].title || '') + '').toLowerCase();
+          if (re.test(t)) { nodes[i].click(); return true; }
+        }
+        return false;
+      }
+      clickLabeled(/accept all|i agree|agree|accept cookies|got it/);
+      var v = document.querySelector('video.html5-main-video, video');
+      if (v) {
+        try { v.muted = false; } catch (e) {}
+        try { var p = v.play(); if (p && p.catch) p.catch(function(){}); } catch (e) {}
+        if (!v.paused) return 'playing';
+        clickLabeled(/^(play$|play video|play \\()/);
+        try { v.play(); } catch (e) {}
+        return v.paused ? 'paused' : 'playing';
+      }
+      clickLabeled(/^(play$|play video)/);
+      return 'none';
+    })()
+    """
+
+    private static let pagePlayerStateJS = """
+    (function() {
+      var v = document.querySelector('video.html5-main-video, video');
+      if (!v) return 'none';
+      if (!v.paused && v.readyState >= 2) return 'playing';
+      if (!v.paused) return 'playing';
+      return 'paused';
+    })()
+    """
+
+    private func browserNow(_ browser: String) -> (url: String, title: String) {
+        browser == "chrome" ? chromeNow() : safariNow()
+    }
+
+    private func setBrowserURL(_ url: String, browser: String) {
+        let script: String
+        if browser == "chrome" {
+            script = """
+            tell application id "com.google.Chrome"
+              if (count of windows) is 0 then
+                make new window
+              end if
+              set URL of active tab of front window to \(asLiteral(url))
+            end tell
+            """
+        } else {
+            script = """
+            tell application id "com.apple.Safari"
+              if (count of windows) is 0 then
+                make new document
+              end if
+              set URL of current tab of window 1 to \(asLiteral(url))
+            end tell
+            """
+        }
+        _ = runAppleScript(script)
+    }
+
+    private func browserHTML(_ browser: String) -> String {
+        if browser == "safari" {
+            let script = """
+            tell application id "com.apple.Safari"
+              if (count of windows) is 0 then return ""
+              try
+                return source of front document
+              end try
+              try
+                return source of document 1
+              end try
+              return ""
+            end tell
+            """
+            let ran = runAppleScript(script, timeout: 14)
+            if ran.ok, ran.text.count > 200 { return ran.text }
+        }
+        let js = "(function(){try{return document.documentElement.outerHTML.slice(0,1800000)}catch(e){return ''}})()"
+        return runPageJS(js, browser: browser)
+    }
+
+    private func extractMediaCandidates(from html: String) -> [(href: String, title: String)] {
+        var items: [(href: String, title: String)] = []
+        var seen = Set<String>()
+        func add(_ href: String, title: String = "") {
+            let clean = href.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !clean.isEmpty, seen.insert(clean).inserted else { return }
+            items.append((clean, title))
+        }
+        let ns = html as NSString
+        let limit = NSRange(location: 0, length: min(ns.length, 1_800_000))
+        if let re = try? NSRegularExpression(pattern: #""videoId":"([\w-]{11})""#) {
+            for match in re.matches(in: html, range: limit) {
+                let id = ns.substring(with: match.range(at: 1))
+                add("https://www.youtube.com/watch?v=\(id)", title: titleNearVideoId(html, id: id))
+            }
+        }
+        if let re = try? NSRegularExpression(pattern: #"(?:https?://(?:www\.)?youtube\.com)?/watch\?v=([\w-]{6,11})"#) {
+            for match in re.matches(in: html, range: limit) {
+                let id = ns.substring(with: match.range(at: 1))
+                add("https://www.youtube.com/watch?v=\(id)", title: titleNearVideoId(html, id: id))
+            }
+        }
+        if let re = try? NSRegularExpression(pattern: #"https?://(?:www\.)?youtu\.be/([\w-]{6,11})"#) {
+            for match in re.matches(in: html, range: limit) {
+                let id = ns.substring(with: match.range(at: 1))
+                add("https://www.youtube.com/watch?v=\(id)")
+            }
+        }
+        if let re = try? NSRegularExpression(pattern: #"https?://(?:www\.)?vimeo\.com/(\d{5,})"#) {
+            for match in re.matches(in: html, range: limit) {
+                add(ns.substring(with: match.range))
+            }
+        }
+        if let re = try? NSRegularExpression(pattern: #"https?://(?:www\.)?dailymotion\.com/video/([\w]+)"#) {
+            for match in re.matches(in: html, range: limit) {
+                add(ns.substring(with: match.range))
+            }
+        }
+        return items
+    }
+
+    private func titleNearVideoId(_ html: String, id: String) -> String {
+        let needle = "\"videoId\":\"\(id)\""
+        guard let found = html.range(of: needle) else { return "" }
+        let start = html.index(found.lowerBound, offsetBy: -240, limitedBy: html.startIndex) ?? html.startIndex
+        let end = html.index(found.upperBound, offsetBy: 520, limitedBy: html.endIndex) ?? html.endIndex
+        let window = String(html[start..<end])
+        guard let re = try? NSRegularExpression(pattern: #""text":"([^"\\]{6,140})""#) else { return "" }
+        let ns = window as NSString
+        var best = ""
+        for match in re.matches(in: window, range: NSRange(location: 0, length: ns.length)) {
+            let text = ns.substring(with: match.range(at: 1))
+            if text.range(of: #"^\d+:\d+"#, options: .regularExpression) != nil { continue }
+            let lower = text.lowercased()
+            if ["views", "subscribers", "subscribe", "mix", "shorts"].contains(lower) { continue }
+            if text.count > best.count { best = text }
+        }
+        return best
+    }
+
+    private func parseMediaCandidateLines(_ raw: String) -> [(href: String, title: String)] {
+        var items: [(href: String, title: String)] = []
+        var seen = Set<String>()
+        for line in raw.split(separator: "\n") {
+            let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
+            let href = String(parts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = parts.count > 1 ? String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            guard href.hasPrefix("http"), seen.insert(href).inserted else { continue }
+            items.append((href, title))
+        }
+        return items
+    }
+
+    private func pickMediaCandidate(
+        _ items: [(href: String, title: String)],
+        needle: String,
+        ordinal: Int
+    ) -> (href: String, title: String)? {
+        guard !items.isEmpty else { return nil }
+        let want = needle.lowercased()
+        if !want.isEmpty {
+            if let exact = items.first(where: { $0.title.lowercased().contains(want) || $0.href.lowercased().contains(want) }) {
+                return exact
+            }
+            let tokens = want.split(separator: " ").map { String($0) }.filter { $0.count > 2 }
+            if !tokens.isEmpty {
+                if let fuzzy = items.first(where: { item in
+                    let blob = (item.title + " " + item.href).lowercased()
+                    return tokens.filter { blob.contains($0) }.count >= max(1, tokens.count / 2)
+                }) {
+                    return fuzzy
+                }
+            }
+        }
+        let index = max(1, ordinal) - 1
+        if items.indices.contains(index) { return items[index] }
+        return items.first
+    }
+
+    private func waitForBrowserCondition(browser: String, attempts: Int, interval: TimeInterval, _ test: (String, String) -> Bool) -> (url: String, title: String) {
+        var now = browserNow(browser)
+        if test(now.url, now.title) { return now }
+        for _ in 0..<attempts {
+            Thread.sleep(forTimeInterval: interval)
+            now = browserNow(browser)
+            if test(now.url, now.title) { return now }
+        }
+        return now
+    }
+
+    private func collectMediaCandidates(browser: String) -> [(href: String, title: String)] {
+        var items: [(href: String, title: String)] = []
+        for _ in 0..<12 {
+            let htmlItems = extractMediaCandidates(from: browserHTML(browser))
+            if !htmlItems.isEmpty { return htmlItems }
+            let jsItems = parseMediaCandidateLines(runPageJS(Self.pageMediaCandidatesJS, browser: browser))
+            if !jsItems.isEmpty { return jsItems }
+            items = htmlItems
+            Thread.sleep(forTimeInterval: 0.6)
+        }
+        return items
+    }
+
+    private func dismissBrowserConsent(browser: String) {
+        _ = runPageJS(Self.pageEnsurePlayingJS, browser: browser)
+        _ = axClickLabeledButton(browser: browser, labels: ["accept all", "accept", "i agree", "agree", "got it"])
+    }
+
+    private func axClickLabeledButton(browser: String, labels: [String]) -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+        let apps = browser == "chrome"
+            ? NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome")
+            : safariContentApps()
+        for running in apps.prefix(4) {
+            let appEl = AXUIElementCreateApplication(running.processIdentifier)
+            var walked: [WalkItem] = []
+            var walkCount = 0
+            let windows = axElements(appEl, kAXWindowsAttribute)
+            for root in windows.prefix(2) {
+                walk(root, depth: 0, deadline: Date().addingTimeInterval(1.1), maxWalk: 360, query: "", into: &walked, walkedCount: &walkCount)
+            }
+            for item in walked where item.enabled {
+                let blob = (item.title + " " + item.value).lowercased()
+                let role = item.role.lowercased()
+                guard role.contains("button") || item.actions.contains("AXPress") else { continue }
+                if labels.contains(where: { blob == $0 || blob.hasPrefix($0) }) {
+                    if AXUIElementPerformAction(item.element, kAXPressAction as CFString) == .success {
+                        return true
+                    }
+                    if let point = hidCenter(of: item.element) {
+                        click(point)
+                        return true
+                    }
+                }
+            }
+        }
+        return false
+    }
+
+    private func axPlayerIsPlaying(browser: String) -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+        let apps = browser == "chrome"
+            ? NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome")
+            : safariContentApps()
+        for running in apps.prefix(4) {
+            let appEl = AXUIElementCreateApplication(running.processIdentifier)
+            var walked: [WalkItem] = []
+            var walkCount = 0
+            let windows = axElements(appEl, kAXWindowsAttribute)
+            for root in windows.prefix(2) {
+                walk(root, depth: 0, deadline: Date().addingTimeInterval(1.0), maxWalk: 320, query: "", into: &walked, walkedCount: &walkCount)
+            }
+            for item in walked {
+                let blob = (item.title + " " + item.value).lowercased()
+                if blob == "pause" || blob.hasPrefix("pause") || blob.contains("pause video") {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func axClickMediaCard(browser: String, needle: String, ordinal: Int) -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+        let skip = [
+            "home", "shorts", "subscriptions", "you", "history", "library", "sign in",
+            "search", "skip navigation", "images", "videos", "maps", "news", "shopping",
+            "more", "tools", "settings", "privacy", "terms", "help", "about"
+        ]
+        let apps = browser == "chrome"
+            ? NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome")
+            : safariContentApps()
+        var scored: [(item: WalkItem, area: CGFloat)] = []
+        for running in apps.prefix(4) {
+            let appEl = AXUIElementCreateApplication(running.processIdentifier)
+            var walked: [WalkItem] = []
+            var walkCount = 0
+            let windows = axElements(appEl, kAXWindowsAttribute)
+            for root in windows.prefix(3) {
+                walk(root, depth: 0, deadline: Date().addingTimeInterval(1.6), maxWalk: 520, query: needle, into: &walked, walkedCount: &walkCount)
+            }
+            for item in walked where item.enabled && item.role == "AXLink" {
+                let blob = item.title.lowercased()
+                if blob.isEmpty || skip.contains(where: { blob == $0 || blob.hasPrefix($0 + " ") }) { continue }
+                if blob.count < 6 { continue }
+                let size = axSize(item.element) ?? .zero
+                let area = size.width * size.height
+                if size.width < 40 || size.height < 12 { continue }
+                scored.append((item, area))
+            }
+        }
+        scored.sort { $0.area > $1.area }
+        let want = needle.lowercased()
+        var picks = scored.map(\.item)
+        if !want.isEmpty {
+            let matched = picks.filter { $0.title.lowercased().contains(want) }
+            if !matched.isEmpty { picks = matched }
+        }
+        let index = max(1, ordinal) - 1
+        guard picks.indices.contains(index) || picks.first != nil else { return false }
+        let target = picks.indices.contains(index) ? picks[index] : picks[0]
+        if itemSupportsPress(target) {
+            if AXUIElementPerformAction(target.element, kAXPressAction as CFString) == .success {
+                return true
+            }
+        }
+        if let point = hidCenter(of: target.element) {
+            click(point)
+            return true
+        }
+        return false
+    }
+
+    private func clickBrowserPlayerRegion(browser: String) {
+        let bundle = browser == "chrome" ? "com.google.Chrome" : "com.apple.Safari"
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first else { return }
+        app.activate(options: [.activateAllWindows])
+        Thread.sleep(forTimeInterval: 0.12)
+        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+        let windows = axElements(appEl, kAXWindowsAttribute)
+        guard let window = windows.first,
+              let origin = axPoint(window),
+              let size = axSize(window),
+              size.width > 200, size.height > 200
+        else { return }
+        let cocoa = CGPoint(
+            x: origin.x + size.width * 0.34,
+            y: origin.y + 132 + min(180, size.height * 0.20)
+        )
+        click(hidFromCocoa(cocoa))
+    }
+
+    private func ensureHTML5VideoPlaying(browser: String) -> String {
+        for _ in 0..<8 {
+            let js = runPageJS(Self.pagePlayerStateJS, browser: browser)
+            if js == "playing" { return "playing" }
+            if axPlayerIsPlaying(browser: browser) { return "playing" }
+            _ = runPageJS(Self.pageEnsurePlayingJS, browser: browser)
+            clickBrowserPlayerRegion(browser: browser)
+            Thread.sleep(forTimeInterval: 0.12)
+            _ = axClickLabeledButton(browser: browser, labels: ["play", "play video", "play now", "skip", "skip ad"])
+            _ = postHotkey("k")
+            Thread.sleep(forTimeInterval: 0.4)
+            if axPlayerIsPlaying(browser: browser) { return "playing" }
+            if runPageJS(Self.pagePlayerStateJS, browser: browser) == "playing" { return "playing" }
+            _ = postHotkey("space")
+            Thread.sleep(forTimeInterval: 0.45)
+            if axPlayerIsPlaying(browser: browser) { return "playing" }
+            let again = runPageJS(Self.pagePlayerStateJS, browser: browser)
+            if again == "playing" { return "playing" }
+        }
+        if axPlayerIsPlaying(browser: browser) { return "playing" }
+        let last = runPageJS(Self.pagePlayerStateJS, browser: browser)
+        return last.isEmpty ? "paused" : last
+    }
+
+    private func playMediaInBrowser(browser: String, arguments: [String: Any], requestId: String) -> [String: Any] {
+        let query = locationQuery(arguments)
+        let needle = mediaNeedle(from: query)
+        let ordinal = mediaOrdinal(from: query)
+        if browser == "safari" {
+            _ = runAppleScript("tell application id \"com.apple.Safari\" to activate")
+        } else {
+            _ = runAppleScript("tell application id \"com.google.Chrome\" to activate")
+        }
+        var now = browserNow(browser)
+        if isEmptyBrowserURL(now.url) {
+            setBrowserURL("https://www.youtube.com/", browser: browser)
+            now = waitForBrowserCondition(browser: browser, attempts: 18, interval: 0.4) { url, _ in
+                !self.isEmptyBrowserURL(url)
+            }
+        }
+        dismissBrowserConsent(browser: browser)
+        now = browserNow(browser)
+        let currentTitle = now.title.lowercased()
+        let currentMatchesNeedle = needle.isEmpty
+            || currentTitle.contains(needle.lowercased())
+            || now.url.lowercased().contains(needle.lowercased())
+        if looksLikeContentItemURL(now.url) && currentMatchesNeedle {
+            Thread.sleep(forTimeInterval: 0.8)
+            let player = ensureHTML5VideoPlaying(browser: browser)
+            now = browserNow(browser)
+            return mediaPlayReceipt(
+                browser: browser,
+                requestId: requestId,
+                url: now.url,
+                title: now.title,
+                player: player,
+                method: "player_on_item"
+            )
+        }
+        var candidates = collectMediaCandidates(browser: browser)
+        if candidates.isEmpty {
+            _ = axClickMediaCard(browser: browser, needle: needle, ordinal: ordinal)
+            Thread.sleep(forTimeInterval: 1.2)
+            now = browserNow(browser)
+            if looksLikeContentItemURL(now.url) {
+                let player = ensureHTML5VideoPlaying(browser: browser)
+                now = browserNow(browser)
+                return mediaPlayReceipt(
+                    browser: browser,
+                    requestId: requestId,
+                    url: now.url,
+                    title: now.title,
+                    player: player,
+                    method: "ax_card"
+                )
+            }
+            candidates = collectMediaCandidates(browser: browser)
+        }
+        if let picked = pickMediaCandidate(candidates, needle: needle, ordinal: ordinal) {
+            setBrowserURL(picked.href, browser: browser)
+            now = waitForBrowserCondition(browser: browser, attempts: 16, interval: 0.4) { url, _ in
+                self.looksLikeContentItemURL(url)
+            }
+            Thread.sleep(forTimeInterval: 1.1)
+            let player = ensureHTML5VideoPlaying(browser: browser)
+            now = browserNow(browser)
+            return mediaPlayReceipt(
+                browser: browser,
+                requestId: requestId,
+                url: now.url,
+                title: now.title.isEmpty ? picked.title : now.title,
+                player: player,
+                method: "open_media_url",
+                clicked: picked.href
+            )
+        }
+        now = browserNow(browser)
+        return mediaPlayReceipt(
+            browser: browser,
+            requestId: requestId,
+            url: now.url,
+            title: now.title,
+            player: "none",
+            method: "failed"
+        )
+    }
+
+    private func mediaPlayReceipt(
+        browser: String,
+        requestId: String,
+        url: String,
+        title: String,
+        player: String,
+        method: String,
+        clicked: String = ""
+    ) -> [String: Any] {
+        let playing = player == "playing"
+        let onItem = looksLikeContentItemURL(url)
+        let verified = playing
+        let app = browser == "chrome" ? "Chrome" : "Safari"
+        let spoken: String
+        if playing {
+            spoken = "Playing \(title.isEmpty ? "the video" : title)."
+        } else if onItem {
+            spoken = "Opened the video but it is not playing yet."
+        } else {
+            spoken = "I couldn't play that video."
+        }
+        return ok(
+            [
+                "ok": verified,
+                "executed": true,
+                "verified": verified,
+                "must_continue": !verified,
+                "adapter": browser,
+                "app": app,
+                "action": "play",
+                "url": url,
+                "title": title,
+                "clicked": clicked,
+                "player_state": playing ? "playing" : (onItem ? "paused" : player),
+                "method": method,
+                "goal_complete": verified,
+                "suggested_fallbacks": verified ? [] : ["ui_action"],
+                "spoken": spoken,
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: verified
+        )
+    }
+
+    private func safariOpenFirstResult(requestId: String, query: String = "") -> [String: Any] {
+        if let needle = firstResultSearchQuery(["query": query], stored: lastSafariQuery) {
+            lastSafariQuery = needle
+        }
+        let start = safariNow()
+        if !isSearchResultsURL(start.url) {
+            Thread.sleep(forTimeInterval: 1.2)
+            var href = clickFirstOnPageItem(browser: "safari")
+            if href.isEmpty {
+                _ = safariPressFirstLink()
+                Thread.sleep(forTimeInterval: 0.8)
+            }
+            let status = safariNow()
+            let verified = looksLikeContentItemURL(status.url)
+            return ok(
+                [
+                    "ok": verified,
+                    "executed": true,
+                    "verified": verified,
+                    "must_continue": !verified,
+                    "adapter": "safari",
+                    "app": "Safari",
+                    "action": "navigate",
+                    "url": status.url,
+                    "title": status.title,
+                    "clicked": href,
+                    "method": verified ? "on_page_item" : "failed",
+                    "suggested_fallbacks": verified ? [] : ["screen_look", "ui_action"],
+                    "spoken": verified
+                        ? "Opened \(status.title.isEmpty ? status.url : status.title)."
+                        : "I couldn't open the first item on this page.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: verified
+            )
+        }
+        var href = extractGoogleFirstHref(browser: "safari")
+        var stillSearch = isSearchResultsURL(safariNow().url)
+        if href.hasPrefix("http"), stillSearch {
+            _ = runAppleScript(
+                "tell application id \"com.apple.Safari\" to set URL of current tab of window 1 to \(asLiteral(href))"
+            )
+            Thread.sleep(forTimeInterval: 1.0)
+            stillSearch = isSearchResultsURL(safariNow().url)
+        }
+        if stillSearch, let needle = lastSafariQuery, let discovered = discoverFirstWebResult(needle) {
+            href = discovered
+            _ = runAppleScript(
+                "tell application id \"com.apple.Safari\" to set URL of current tab of window 1 to \(asLiteral(discovered))"
+            )
+            Thread.sleep(forTimeInterval: 1.2)
+            stillSearch = isSearchResultsURL(safariNow().url)
+        }
+        if stillSearch {
+            if safariPressFirstLink() {
+                Thread.sleep(forTimeInterval: 0.8)
+                stillSearch = isSearchResultsURL(safariNow().url)
+            }
+        }
+        if stillSearch {
+            if safariTabToFirstResult() {
+                Thread.sleep(forTimeInterval: 0.8)
+                stillSearch = isSearchResultsURL(safariNow().url)
+            }
+        }
+        let status = safariNow()
+        let verified = !isSearchResultsURL(status.url) && !status.url.isEmpty
+        return ok(
+            [
+                "ok": verified,
+                "executed": true,
+                "verified": verified,
+                "must_continue": !verified,
+                "adapter": "safari",
+                "app": "Safari",
+                "action": "navigate",
+                "url": status.url,
+                "title": status.title,
+                "clicked": href,
+                "method": verified ? "discovered_url" : "failed",
+                "suggested_fallbacks": verified ? [] : ["screen_look", "ui_action"],
+                "spoken": verified
+                    ? "Opened \(status.title.isEmpty ? status.url : status.title)."
+                    : "Safari is still on the search page. Look at the window and click the first result.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: verified
+        )
     }
 
     private func discoverFirstWebResult(_ query: String) -> String? {
@@ -1926,8 +3536,9 @@ public final class MacControlService: @unchecked Sendable {
             raw = raw.removingPercentEncoding ?? raw
             let lower = raw.lowercased()
             if !lower.hasPrefix("http") { continue }
-            if lower.contains("duckduckgo.com") || lower.contains("google.com/search") { continue }
-            if lower.contains("youtube.com/redirect") { continue }
+            if lower.contains("duckduckgo.com") || lower.contains("google.com") { continue }
+            if lower.contains("bing.com") || lower.contains("yahoo.com") { continue }
+            if lower.contains("/redirect") { continue }
             return raw
         }
         return nil
@@ -2141,7 +3752,9 @@ public final class MacControlService: @unchecked Sendable {
 
     private func notesAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
         let action = (string(arguments, "action") ?? "status").lowercased()
-        _ = runAppleScript("tell application id \"com.apple.Notes\" to activate")
+        if action != "read", action != "status" {
+            _ = runAppleScript("tell application id \"com.apple.Notes\" to activate")
+        }
         let body = string(arguments, "value") ?? string(arguments, "text") ?? string(arguments, "query") ?? ""
         switch action {
         case "create":
@@ -2153,21 +3766,17 @@ public final class MacControlService: @unchecked Sendable {
             tell application id "com.apple.Notes"
               activate
               set newNote to make new note with properties {name:\(asLiteral(name)), body:\(asLiteral(body))}
-              return name of newNote
+              return (name of newNote) & linefeed & (body of newNote)
             end tell
             """
             let ran = runAppleScript(script, timeout: 4)
             if !ran.ok {
                 return notesCreateViaUI(body, requestId: requestId)
             }
-            lastNoteName = ran.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let read = runAppleScript("""
-            tell application id "com.apple.Notes"
-              if (count of notes) is 0 then return ""
-              return body of note 1
-            end tell
-            """, timeout: 4)
-            if !read.text.contains(body) {
+            let parts = ran.text.components(separatedBy: "\n")
+            lastNoteName = parts.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? name
+            let confirmedBody = parts.dropFirst().joined(separator: "\n")
+            if !confirmedBody.contains(body) {
                 return notesCreateViaUI(body, requestId: requestId)
             }
             lastNoteBody = body
@@ -2181,7 +3790,7 @@ public final class MacControlService: @unchecked Sendable {
                     "action": "create",
                     "method": "semantic",
                     "note": lastNoteName as Any,
-                    "body": read.text,
+                    "body": confirmedBody,
                     "spoken": "Created a note.",
                 ],
                 command: "app_action",
@@ -2234,31 +3843,77 @@ public final class MacControlService: @unchecked Sendable {
                 requestId: requestId
             )
         case "read", "status":
-            let script = """
-            tell application id "com.apple.Notes"
-              if (count of notes) is 0 then return ""
-              return body of note 1
-            end tell
-            """
-            let ran = runAppleScript(script)
+            let raw = notesNowText()
+            let visible = notesVisibleText(raw)
+            let fallback = lastNoteBody?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let body = visible.isEmpty ? fallback : visible
+            // An empty front note is a successful read, not an access deny.
+            // Walking other notes would speak the wrong document.
+            let spoken = body.isEmpty ? "The front note is empty." : "The note says: \(body)"
             return ok(
                 [
-                    "ok": ran.ok,
+                    "ok": true,
                     "executed": true,
-                    "verified": ran.ok,
+                    "verified": true,
                     "adapter": "notes",
                     "app": "Notes",
-                    "action": "read",
-                    "body": ran.text,
-                    "spoken": ran.text.isEmpty ? "I couldn't read the note." : ran.text,
+                    "action": action == "status" ? "status" : "read",
+                    "body": body,
+                    "spoken": spoken,
                 ],
                 command: "app_action",
-                requestId: requestId,
-                ok: ran.ok
+                requestId: requestId
             )
         default:
             return fail("unknown_action", "Notes cannot do that.", command: "app_action", requestId: requestId)
         }
+    }
+
+    private func notesNowText() -> String {
+        let script = """
+        tell application id "com.apple.Notes"
+          if (count of notes) is 0 then return ""
+          set raw to ""
+          try
+            set raw to plaintext of note 1
+          end try
+          if raw is missing value then set raw to ""
+          if raw is "" then
+            try
+              set raw to body of note 1
+            end try
+          end if
+          if raw is missing value then set raw to ""
+          if raw is "" then
+            try
+              set selName to name of item 1 of selection
+              try
+                set raw to plaintext of note selName
+              end try
+              if raw is missing value then set raw to ""
+              if raw is "" then set raw to body of note selName
+            end try
+          end if
+          if raw is missing value then return ""
+          return raw as string
+        end tell
+        """
+        let ran = runAppleScript(script, timeout: 8)
+        if ran.ok { return ran.text }
+        return ""
+    }
+
+    private func notesVisibleText(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty || text == "missing value" { return "" }
+        if let regex = try? NSRegularExpression(pattern: "<[^>]+>", options: []) {
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            text = regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
+        }
+        for (escaped, value) in [("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">")] {
+            text = text.replacingOccurrences(of: escaped, with: value)
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func notesCreateViaUI(_ body: String, requestId: String, append: Bool = false) -> [String: Any] {
@@ -2269,12 +3924,18 @@ public final class MacControlService: @unchecked Sendable {
             Thread.sleep(forTimeInterval: 0.45)
         }
         let entered = enterText(body, mode: append ? "append" : "insert", element: nil, requestId: requestId)
+        let needle = asLiteral(body)
         let read = runAppleScript("""
         tell application id "com.apple.Notes"
+          repeat with n in notes
+            try
+              if (body of n) contains \(needle) then return body of n
+            end try
+          end repeat
           if (count of notes) is 0 then return ""
           return body of note 1
         end tell
-        """)
+        """, timeout: 6)
         let verified = read.text.contains(body)
         lastNoteBody = body
         return ok(
@@ -2299,12 +3960,30 @@ public final class MacControlService: @unchecked Sendable {
 
     private func finderAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
         let action = (string(arguments, "action") ?? "open_item").lowercased()
-        _ = runAppleScript("tell application id \"com.apple.finder\" to activate")
-        let target = (string(arguments, "query") ?? string(arguments, "value") ?? string(arguments, "path") ?? "").lowercased()
         if action == "status" {
             return finderStatus(requestId: requestId)
         }
-        if target.contains("download") || action == "open_folder" || action == "open" {
+        if action == "close" || action == "quit" || action == "hide" || action == "close_windows" {
+            if let resolved = resolve(name: "Finder", bundleId: "com.apple.finder") {
+                return dismissAppWindows(resolved, requestId: requestId)
+            }
+            return fail("not_found", "I couldn't find Finder.", command: "close_app", requestId: requestId)
+        }
+        _ = runAppleScript("tell application id \"com.apple.finder\" to activate")
+        let target = (string(arguments, "query") ?? string(arguments, "value") ?? string(arguments, "path") ?? "")
+        let lower = target.lowercased()
+        let wantsVideo = action == "play"
+            || lower.contains("video")
+            || lower.contains("movie")
+            || lower.contains("clip")
+            || ["mp4", "mov", "m4v", "mkv", "avi", "webm"].contains(where: { lower.contains($0) })
+        if wantsVideo {
+            return finderPlayVideo(query: target, requestId: requestId)
+        }
+        if lower.contains("pdf") {
+            return finderOpenNewestPDF(requestId: requestId)
+        }
+        if lower.contains("download") || action == "open_folder" || action == "open" {
             let script = """
             tell application id "com.apple.finder"
               activate
@@ -2329,6 +4008,13 @@ public final class MacControlService: @unchecked Sendable {
                 ok: ran.ok
             )
         }
+        if action == "open_item" || action == "play" {
+            return finderPlayVideo(query: target, requestId: requestId)
+        }
+        return finderOpenNewestPDF(requestId: requestId)
+    }
+
+    private func finderOpenNewestPDF(requestId: String) -> [String: Any] {
         let script = """
         tell application id "com.apple.finder"
           activate
@@ -2355,7 +4041,7 @@ public final class MacControlService: @unchecked Sendable {
                 [
                     "ok": false,
                     "executed": true,
-                    "verified": true,
+                    "verified": false,
                     "error": "not_found",
                     "adapter": "finder",
                     "app": "Finder",
@@ -2379,6 +4065,355 @@ public final class MacControlService: @unchecked Sendable {
             ],
             command: "app_action",
             requestId: requestId
+        )
+    }
+
+    private func finderSearchFolders() -> [URL] {
+        var folders: [URL] = []
+        if let front = finderFrontFolder() { folders.append(front) }
+        let names: [FileManager.SearchPathDirectory] = [
+            .downloadsDirectory, .desktopDirectory, .moviesDirectory, .documentDirectory
+        ]
+        for name in names {
+            if let url = FileManager.default.urls(for: name, in: .userDomainMask).first {
+                folders.append(url)
+            }
+        }
+        var seen = Set<String>()
+        return folders.filter { seen.insert($0.path).inserted }
+    }
+
+    private func finderFrontFolder() -> URL? {
+        let script = """
+        tell application id "com.apple.finder"
+          if (count of windows) is 0 then return ""
+          try
+            return POSIX path of (target of window 1 as alias)
+          end try
+          return ""
+        end tell
+        """
+        let ran = runAppleScript(script)
+        let path = ran.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    private func mdfindMovies(in folders: [URL]) -> [URL] {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        var args: [String] = []
+        for folder in folders.prefix(6) {
+            args.append(contentsOf: ["-onlyin", folder.path])
+        }
+        args.append("kMDItemContentTypeTree == 'public.movie'")
+        proc.arguments = args
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+        } catch {
+            return []
+        }
+        let deadline = Date().addingTimeInterval(8)
+        while proc.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        if proc.isRunning {
+            proc.terminate()
+            return []
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        let exts: Set<String> = ["mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg"]
+        return text.split(whereSeparator: \.isNewline).compactMap { line in
+            let path = String(line)
+            if path.isEmpty { return nil }
+            let url = URL(fileURLWithPath: path)
+            return exts.contains(url.pathExtension.lowercased()) ? url : nil
+        }
+    }
+
+    private func enumerateVideos(in folder: URL, limit: Int) -> [URL] {
+        let exts: Set<String> = ["mp4", "mov", "m4v", "mkv", "avi", "webm", "mpg", "mpeg"]
+        guard let enumerator = FileManager.default.enumerator(
+            at: folder,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return [] }
+        var out: [URL] = []
+        var visited = 0
+        for case let url as URL in enumerator {
+            visited += 1
+            if visited > 800 { break }
+            if exts.contains(url.pathExtension.lowercased()) {
+                out.append(url)
+            }
+            if out.count >= limit { break }
+        }
+        return out
+    }
+
+    private func pickLocalVideo(query: String, urls: [URL]) -> URL? {
+        let needle = mediaNeedle(from: query).lowercased()
+        let ordinal = mediaOrdinal(from: query)
+        func mtime(_ url: URL) -> Date {
+            ((try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate) ?? .distantPast
+        }
+        var ranked = urls.sorted { mtime($0) > mtime($1) }
+        if !needle.isEmpty {
+            let matched = ranked.filter { $0.lastPathComponent.lowercased().contains(needle) }
+            if !matched.isEmpty { ranked = matched }
+        }
+        let index = max(1, ordinal) - 1
+        if ranked.indices.contains(index) { return ranked[index] }
+        return ranked.first
+    }
+
+    private func looksLikeLocalVideoPlayer(name: String, bundle: String) -> Bool {
+        let blob = (name + " " + bundle).lowercased()
+        return blob.contains("quicktime")
+            || blob.contains("quicktimeplayer")
+            || blob.contains("iina")
+            || blob.contains("vlc")
+            || blob.contains("com.apple.tv")
+            || blob.contains("iina.io")
+            || blob.contains("org.videolan")
+    }
+
+    private func defaultPlayerBundle(for url: URL) -> String? {
+        guard let appURL = NSWorkspace.shared.urlForApplication(toOpen: url) else { return nil }
+        return Bundle(url: appURL)?.bundleIdentifier
+    }
+
+    private func waitForVideoPlayer(preferred: String?) -> String? {
+        let skip: Set<String> = ["com.ev.suit", "com.apple.finder"]
+        let deadline = Date().addingTimeInterval(8)
+        while Date() < deadline {
+            if let preferred,
+               let app = NSRunningApplication.runningApplications(withBundleIdentifier: preferred).first,
+               !app.isTerminated
+            {
+                app.activate(options: [.activateAllWindows])
+                return preferred
+            }
+            if let front = NSWorkspace.shared.frontmostApplication,
+               let bid = front.bundleIdentifier,
+               !skip.contains(bid)
+            {
+                return bid
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        return preferred
+    }
+
+    private func axWalkBundle(_ bundleId: String, maxWalk: Int = 280) -> [WalkItem] {
+        guard AXIsProcessTrusted(),
+              let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first
+        else { return [] }
+        let appEl = AXUIElementCreateApplication(running.processIdentifier)
+        var walked: [WalkItem] = []
+        var walkCount = 0
+        let windows = axElements(appEl, kAXWindowsAttribute)
+        for root in windows.prefix(2) {
+            walk(root, depth: 0, deadline: Date().addingTimeInterval(1.0), maxWalk: maxWalk, query: "", into: &walked, walkedCount: &walkCount)
+        }
+        return walked
+    }
+
+    private func axHasPauseControl(bundleId: String) -> Bool {
+        for item in axWalkBundle(bundleId) {
+            let blob = (item.title + " " + item.value).lowercased()
+            if blob == "pause" || blob.hasPrefix("pause") || blob.contains("pause video") {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func axPressPlayControl(bundleId: String) -> Bool {
+        let labels = ["play", "play video", "play now", "resume"]
+        for item in axWalkBundle(bundleId) where item.enabled {
+            let blob = (item.title + " " + item.value).lowercased()
+            let role = item.role.lowercased()
+            guard role.contains("button") || item.actions.contains("AXPress") else { continue }
+            if labels.contains(where: { blob == $0 || blob.hasPrefix($0) }) {
+                if AXUIElementPerformAction(item.element, kAXPressAction as CFString) == .success {
+                    return true
+                }
+                if let point = hidCenter(of: item.element) {
+                    click(point)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func clickLocalPlayerRegion(bundleId: String) {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first else { return }
+        app.activate(options: [.activateAllWindows])
+        Thread.sleep(forTimeInterval: 0.1)
+        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+        guard let window = axElements(appEl, kAXWindowsAttribute).first,
+              let origin = axPoint(window),
+              let size = axSize(window),
+              size.width > 160, size.height > 120
+        else { return }
+        let cocoa = CGPoint(x: origin.x + size.width * 0.5, y: origin.y + size.height * 0.45)
+        click(hidFromCocoa(cocoa))
+    }
+
+    private func quickTimeDocumentCount() -> (count: Int, error: String?) {
+        let ran = runAppleScript("""
+        tell application id "com.apple.QuickTimePlayerX"
+          return (count of documents) as text
+        end tell
+        """, timeout: 4)
+        let n = Int(ran.text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        return (n, ran.error)
+    }
+
+    private func quickTimePlayDocument(matching fileName: String) -> (state: String, name: String, error: String?) {
+        let script = """
+        tell application id "com.apple.QuickTimePlayerX"
+          activate
+          if (count of documents) is 0 then return "none||"
+          set d to document 1
+          set needle to \(asLiteral(fileName))
+          if needle is not "" then
+            set theCount to count of documents
+            repeat with i from 1 to theCount
+              try
+                set candidate to document i
+                if (name of candidate) contains needle then
+                  set d to candidate
+                  exit repeat
+                end if
+              end try
+            end repeat
+          end if
+          play d
+          delay 0.7
+          set stateText to "paused"
+          try
+            if playing of d then set stateText to "playing"
+          end try
+          return stateText & "||" & (name of d)
+        end tell
+        """
+        let ran = runAppleScript(script, timeout: 10)
+        let parts = ran.text.components(separatedBy: "||")
+        let state = parts.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let name = parts.count > 1 ? parts[1].trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        return (state.isEmpty ? "none" : state, name, ran.error)
+    }
+
+    private func ensureLocalPlayerPlaying(bundleId: String) -> String {
+        if bundleId == "com.apple.QuickTimePlayerX" {
+            let qt = quickTimePlayDocument(matching: "")
+            if qt.state == "playing" { return "playing" }
+        }
+        if axHasPauseControl(bundleId: bundleId) { return "playing" }
+        _ = axPressPlayControl(bundleId: bundleId)
+        Thread.sleep(forTimeInterval: 0.35)
+        if axHasPauseControl(bundleId: bundleId) { return "playing" }
+        clickLocalPlayerRegion(bundleId: bundleId)
+        Thread.sleep(forTimeInterval: 0.12)
+        _ = postHotkey("space")
+        Thread.sleep(forTimeInterval: 0.45)
+        if axHasPauseControl(bundleId: bundleId) { return "playing" }
+        if bundleId == "com.apple.QuickTimePlayerX" {
+            let again = quickTimePlayDocument(matching: "")
+            if again.state == "playing" { return "playing" }
+        }
+        return axHasPauseControl(bundleId: bundleId) ? "playing" : "paused"
+    }
+
+    private func finderPlayVideo(query: String, requestId: String) -> [String: Any] {
+        let folders = finderSearchFolders()
+        var urls = mdfindMovies(in: folders)
+        if urls.isEmpty {
+            for folder in folders.prefix(5) {
+                urls.append(contentsOf: enumerateVideos(in: folder, limit: 60))
+            }
+        }
+        guard let picked = pickLocalVideo(query: query, urls: urls) else {
+            return ok(
+                [
+                    "ok": false,
+                    "executed": true,
+                    "verified": false,
+                    "error": "not_found",
+                    "adapter": "finder",
+                    "app": "Finder",
+                    "action": "play",
+                    "spoken": "I couldn't find a video file to play.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: false
+            )
+        }
+        let preferred = defaultPlayerBundle(for: picked) ?? "com.apple.QuickTimePlayerX"
+        let opened = NSWorkspace.shared.open(picked)
+        var appleError: String?
+        var method = opened ? "open" : "open_failed"
+        var state = "none"
+        var title = picked.lastPathComponent
+        let bundleId = waitForVideoPlayer(preferred: preferred) ?? preferred
+        if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first {
+            app.activate(options: [.activateAllWindows])
+        }
+        if bundleId == "com.apple.QuickTimePlayerX" {
+            for _ in 0..<20 {
+                let docs = quickTimeDocumentCount()
+                if let err = docs.error { appleError = err }
+                if docs.count > 0 { break }
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            let played = quickTimePlayDocument(matching: picked.lastPathComponent)
+            if let err = played.error { appleError = err }
+            state = played.state
+            if !played.name.isEmpty { title = played.name }
+            if state == "playing" { method = "quicktime_play" }
+        }
+        if state != "playing" {
+            let axState = ensureLocalPlayerPlaying(bundleId: bundleId)
+            if axState == "playing" {
+                state = "playing"
+                if method != "quicktime_play" { method = "ax_play" }
+            } else if state == "none" || state.isEmpty {
+                state = axState
+                method = "ax_play"
+            }
+        }
+        let verified = state == "playing"
+        return ok(
+            [
+                "ok": verified,
+                "executed": true,
+                "verified": verified,
+                "must_continue": !verified,
+                "adapter": "finder",
+                "app": "Finder",
+                "action": "play",
+                "file": picked.lastPathComponent,
+                "path": picked.path,
+                "player_bundle": bundleId,
+                "player_state": state.isEmpty ? "none" : state,
+                "title": title.isEmpty ? picked.lastPathComponent : title,
+                "method": method,
+                "apple_error": appleError ?? "",
+                "spoken": verified
+                    ? "Playing \(picked.lastPathComponent)."
+                    : "Opened \(picked.lastPathComponent) but I couldn't confirm playback.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: verified
         )
     }
 
@@ -2414,6 +4449,584 @@ public final class MacControlService: @unchecked Sendable {
             command: "app_action",
             requestId: requestId,
             ok: ran.ok
+        )
+    }
+
+    private func chromeNow() -> (url: String, title: String) {
+        let script = """
+        tell application id "com.google.Chrome"
+          if (count of windows) is 0 then return "||"
+          set theTab to active tab of front window
+          return (URL of theTab) & "||" & (title of theTab)
+        end tell
+        """
+        let ran = runAppleScript(script)
+        let parts = ran.text.components(separatedBy: "||")
+        return (parts.first ?? "", parts.count > 1 ? parts[1] : "")
+    }
+
+    private func chromeAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
+        let action = (string(arguments, "action") ?? "status").lowercased()
+        if let chrome = chromeBrowserChrome(action, requestId: requestId) {
+            return chrome
+        }
+        switch action {
+        case "status", "read":
+            let now = chromeNow()
+            return ok(
+                [
+                    "adapter": "chrome",
+                    "app": "Chrome",
+                    "action": "status",
+                    "url": now.url,
+                    "title": now.title,
+                    "spoken": now.title.isEmpty ? "Chrome is open." : "Chrome is showing \(now.title).",
+                ],
+                command: "app_action",
+                requestId: requestId
+            )
+        case "search":
+            let query = searchQuery(arguments)
+            if query.isEmpty {
+                return fail("missing_query", "What should I search for?", command: "app_action", requestId: requestId)
+            }
+            if let dest = Self.navigationURL(from: query) {
+                return chromeOpenLocation(dest, requestId: requestId)
+            }
+            lastChromeQuery = query
+            let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+            let target = "https://www.google.com/search?q=\(encoded)"
+            let script = """
+            tell application id "com.google.Chrome"
+              if (count of windows) is 0 then
+                make new window
+                set URL of active tab of front window to \(asLiteral(target))
+              else
+                tell front window
+                  make new tab with properties {URL:\(asLiteral(target))}
+                end tell
+              end if
+            end tell
+            """
+            let ran = runAppleScript(script)
+            if !ran.ok {
+                return fail("chrome_failed", ran.error ?? "Chrome failed.", command: "app_action", requestId: requestId)
+            }
+            Thread.sleep(forTimeInterval: 0.8)
+            var now = chromeNow()
+            for _ in 0..<8 where now.url.isEmpty {
+                Thread.sleep(forTimeInterval: 0.35)
+                now = chromeNow()
+            }
+            let loaded = !now.url.isEmpty
+            return ok(
+                [
+                    "ok": true,
+                    "executed": true,
+                    "verified": loaded,
+                    "must_continue": !loaded,
+                    "adapter": "chrome",
+                    "app": "Chrome",
+                    "action": "search",
+                    "query": query,
+                    "url": loaded ? now.url : target,
+                    "title": now.title,
+                    "spoken": "Chrome is showing search results for \(query).",
+                ],
+                command: "app_action",
+                requestId: requestId
+            )
+        case "navigate", "open_item":
+            let query = locationQuery(arguments)
+            if let dest = Self.navigationURL(from: query) {
+                return chromeOpenLocation(dest, requestId: requestId)
+            }
+            if queryLooksLikeMedia(query) {
+                return playMediaInBrowser(browser: "chrome", arguments: arguments, requestId: requestId)
+            }
+            return chromeOpenFirstResult(arguments, requestId: requestId)
+        case "play":
+            return playMediaInBrowser(browser: "chrome", arguments: arguments, requestId: requestId)
+        default:
+            return fail("unknown_action", "Chrome cannot do that.", command: "app_action", requestId: requestId)
+        }
+    }
+
+    private func chromeOpenLocation(_ url: String, requestId: String) -> [String: Any] {
+        let script = """
+        tell application id "com.google.Chrome"
+          if (count of windows) is 0 then
+            make new window
+            set URL of active tab of front window to \(asLiteral(url))
+          else
+            tell front window
+              make new tab with properties {URL:\(asLiteral(url))}
+            end tell
+          end if
+        end tell
+        """
+        let ran = runAppleScript(script)
+        Thread.sleep(forTimeInterval: 1.0)
+        var now = chromeNow()
+        for _ in 0..<6 where now.url.isEmpty {
+            Thread.sleep(forTimeInterval: 0.35)
+            now = chromeNow()
+        }
+        let verified = ran.ok && !now.url.isEmpty && !now.url.lowercased().contains("google.com/search")
+        return ok(
+            [
+                "ok": verified,
+                "executed": true,
+                "verified": verified,
+                "adapter": "chrome",
+                "app": "Chrome",
+                "action": "navigate",
+                "url": now.url,
+                "title": now.title,
+                "spoken": verified
+                    ? "Opened \(now.title.isEmpty ? now.url : now.title)."
+                    : "Chrome did not open that page.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: verified
+        )
+    }
+
+    private func chromeBrowserChrome(_ action: String, requestId: String) -> [String: Any]? {
+        let script: String
+        let spoken: String
+        switch action {
+        case "new_tab":
+            script = """
+            tell application id "com.google.Chrome"
+              if (count of windows) is 0 then
+                make new window
+              else
+                tell front window to make new tab
+              end if
+            end tell
+            """
+            spoken = "Opened a new Chrome tab."
+        case "close_tab":
+            script = """
+            tell application id "com.google.Chrome"
+              if (count of windows) is 0 then return
+              tell front window
+                if (count of tabs) <= 1 then
+                  close
+                else
+                  close active tab
+                end if
+              end tell
+            end tell
+            """
+            spoken = "Closed the Chrome tab."
+        case "next_tab":
+            script = """
+            tell application id "com.google.Chrome"
+              if (count of windows) is 0 then return
+              tell front window
+                set i to active tab index
+                set n to count of tabs
+                if n is 0 then return
+                if i < n then
+                  set active tab index to (i + 1)
+                else
+                  set active tab index to 1
+                end if
+              end tell
+            end tell
+            """
+            spoken = "Switched to the next Chrome tab."
+        case "previous_tab":
+            script = """
+            tell application id "com.google.Chrome"
+              if (count of windows) is 0 then return
+              tell front window
+                set i to active tab index
+                set n to count of tabs
+                if n is 0 then return
+                if i > 1 then
+                  set active tab index to (i - 1)
+                else
+                  set active tab index to n
+                end if
+              end tell
+            end tell
+            """
+            spoken = "Switched to the previous Chrome tab."
+        default:
+            return nil
+        }
+        let ran = runAppleScript(script)
+        Thread.sleep(forTimeInterval: 0.35)
+        let now = chromeNow()
+        return ok(
+            [
+                "ok": ran.ok,
+                "executed": true,
+                "verified": ran.ok,
+                "adapter": "chrome",
+                "app": "Chrome",
+                "action": action,
+                "url": now.url,
+                "title": now.title,
+                "must_continue": false,
+                "goal_complete": ran.ok,
+                "spoken": ran.ok ? spoken : "Chrome could not do that tab action.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: ran.ok
+        )
+    }
+
+    private func chromeOpenFirstResult(_ arguments: [String: Any], requestId: String) -> [String: Any] {
+        let query = firstResultSearchQuery(arguments, stored: lastChromeQuery) ?? ""
+        if !query.isEmpty { lastChromeQuery = query }
+        let start = chromeNow()
+        if !isSearchResultsURL(start.url) {
+            Thread.sleep(forTimeInterval: 1.2)
+            var href = clickFirstOnPageItem(browser: "chrome")
+            if href.isEmpty, chromePressFirstLink() {
+                Thread.sleep(forTimeInterval: 0.8)
+            }
+            let now = chromeNow()
+            let verified = looksLikeContentItemURL(now.url)
+            return ok(
+                [
+                    "ok": verified,
+                    "executed": true,
+                    "verified": verified,
+                    "must_continue": !verified,
+                    "adapter": "chrome",
+                    "app": "Chrome",
+                    "action": "navigate",
+                    "url": now.url,
+                    "title": now.title,
+                    "clicked": href,
+                    "spoken": verified
+                        ? "Opened \(now.title.isEmpty ? now.url : now.title)."
+                        : "I couldn't open the first item on this page.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: verified
+            )
+        }
+        var href = extractGoogleFirstHref(browser: "chrome")
+        var stillSearch = isSearchResultsURL(chromeNow().url)
+        if href.hasPrefix("http"), stillSearch {
+            let script = """
+            tell application id "com.google.Chrome"
+              set URL of active tab of front window to \(asLiteral(href))
+            end tell
+            """
+            _ = runAppleScript(script)
+            Thread.sleep(forTimeInterval: 1.0)
+            stillSearch = isSearchResultsURL(chromeNow().url)
+        }
+        if stillSearch, let q = lastChromeQuery ?? (query.isEmpty ? nil : query),
+           let discovered = discoverFirstWebResult(q)
+        {
+            href = discovered
+            let script = """
+            tell application id "com.google.Chrome"
+              set URL of active tab of front window to \(asLiteral(discovered))
+            end tell
+            """
+            _ = runAppleScript(script)
+            Thread.sleep(forTimeInterval: 1.2)
+            stillSearch = isSearchResultsURL(chromeNow().url)
+        }
+        if stillSearch, chromePressFirstLink() {
+            Thread.sleep(forTimeInterval: 0.8)
+            stillSearch = isSearchResultsURL(chromeNow().url)
+        }
+        let now = chromeNow()
+        let verified = !isSearchResultsURL(now.url) && !now.url.isEmpty
+        return ok(
+            [
+                "ok": verified,
+                "executed": true,
+                "verified": verified,
+                "must_continue": !verified,
+                "adapter": "chrome",
+                "app": "Chrome",
+                "action": "navigate",
+                "url": now.url,
+                "title": now.title,
+                "clicked": href,
+                "spoken": verified
+                    ? "Opened \(now.title.isEmpty ? now.url : now.title)."
+                    : "Chrome is still on the search page.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: verified
+        )
+    }
+
+    private func chromePressFirstLink() -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+        let skip = ["images", "videos", "maps", "news", "shopping", "more", "tools", "settings", "sign in"]
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first
+        guard let running else { return false }
+        let appEl = AXUIElementCreateApplication(running.processIdentifier)
+        var walked: [WalkItem] = []
+        var walkCount = 0
+        let windows = axElements(appEl, kAXWindowsAttribute)
+        for root in windows.prefix(2) {
+            walk(root, depth: 0, deadline: Date().addingTimeInterval(1.4), maxWalk: 420, query: "", into: &walked, walkedCount: &walkCount)
+        }
+        let links = walked.filter { $0.role == "AXLink" && $0.enabled && !$0.title.isEmpty }
+            .filter { item in
+                let blob = item.title.lowercased()
+                return !skip.contains(where: { blob == $0 || blob.hasPrefix($0 + " ") })
+                    && !blob.contains("google.com/search")
+                    && blob != "about this result"
+            }
+        if let first = links.first {
+            if itemSupportsPress(first) {
+                if AXUIElementPerformAction(first.element, kAXPressAction as CFString) == .success {
+                    return true
+                }
+            }
+            if let point = hidCenter(of: first.element) {
+                click(point)
+                return true
+            }
+        }
+        return false
+    }
+
+    private func spotifyNow() -> (state: String, track: String, artist: String) {
+        let script = """
+        tell application id "com.spotify.client"
+          set stateText to "unknown"
+          try
+            if player state is playing then
+              set stateText to "playing"
+            else if player state is paused then
+              set stateText to "paused"
+            else if player state is stopped then
+              set stateText to "stopped"
+            end if
+          end try
+          set trackName to ""
+          set artistName to ""
+          try
+            set trackName to name of current track
+            set artistName to artist of current track
+          end try
+          return stateText & linefeed & trackName & linefeed & artistName
+        end tell
+        """
+        let ran = runAppleScript(script)
+        let parts = ran.text.split(separator: "\n", omittingEmptySubsequences: false).map { String($0) }
+        let state = parts.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "unknown"
+        let track = parts.count > 1 ? parts[1] : ""
+        let artist = parts.count > 2 ? parts[2] : ""
+        return (state, track, artist)
+    }
+
+    private func spotifyAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
+        let action = (string(arguments, "action") ?? "status").lowercased()
+        switch action {
+        case "status", "current", "now_playing":
+            let now = spotifyNow()
+            let spoken: String
+            if now.state == "playing" && !now.track.isEmpty {
+                spoken = "Playing \(now.track)."
+            } else if now.state == "paused" && !now.track.isEmpty {
+                spoken = "Spotify is paused on \(now.track)."
+            } else {
+                spoken = "Spotify is \(now.state)."
+            }
+            return ok(
+                [
+                    "adapter": "spotify",
+                    "app": "Spotify",
+                    "action": "status",
+                    "player_state": now.state,
+                    "track": now.track,
+                    "artist": now.artist,
+                    "spoken": spoken,
+                ],
+                command: "app_action",
+                requestId: requestId
+            )
+        case "play", "play_track", "play_playlist", "open_item":
+            let query = string(arguments, "query")
+                ?? string(arguments, "track")
+                ?? string(arguments, "value")
+                ?? string(arguments, "playlist")
+                ?? ""
+            if !query.isEmpty {
+                return spotifySearchThenPlay(query, requestId: requestId)
+            }
+            _ = runAppleScript("tell application id \"com.spotify.client\" to play")
+            Thread.sleep(forTimeInterval: 0.4)
+            let now = spotifyNow()
+            let verified = now.state == "playing"
+            return ok(
+                [
+                    "ok": verified,
+                    "executed": true,
+                    "verified": verified,
+                    "adapter": "spotify",
+                    "app": "Spotify",
+                    "action": "play",
+                    "player_state": now.state,
+                    "track": now.track,
+                    "artist": now.artist,
+                    "spoken": verified
+                        ? (now.track.isEmpty ? "Spotify is playing." : "Playing \(now.track).")
+                        : "I told Spotify to play, but it is \(now.state).",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: verified
+            )
+        case "pause":
+            _ = runAppleScript("tell application id \"com.spotify.client\" to pause")
+            Thread.sleep(forTimeInterval: 0.25)
+            let now = spotifyNow()
+            return ok(
+                [
+                    "adapter": "spotify",
+                    "app": "Spotify",
+                    "action": "pause",
+                    "player_state": now.state,
+                    "track": now.track,
+                    "spoken": "Paused.",
+                ],
+                command: "app_action",
+                requestId: requestId
+            )
+        case "next":
+            _ = runAppleScript("tell application id \"com.spotify.client\" to next track")
+            Thread.sleep(forTimeInterval: 0.4)
+            let now = spotifyNow()
+            return ok(
+                [
+                    "adapter": "spotify",
+                    "app": "Spotify",
+                    "action": "next",
+                    "player_state": now.state,
+                    "track": now.track,
+                    "spoken": now.track.isEmpty ? "Skipped." : "Playing \(now.track).",
+                ],
+                command: "app_action",
+                requestId: requestId
+            )
+        case "previous", "back":
+            _ = runAppleScript("tell application id \"com.spotify.client\" to previous track")
+            Thread.sleep(forTimeInterval: 0.4)
+            let now = spotifyNow()
+            return ok(
+                [
+                    "adapter": "spotify",
+                    "app": "Spotify",
+                    "action": "previous",
+                    "player_state": now.state,
+                    "track": now.track,
+                    "spoken": now.track.isEmpty ? "Went back." : "Playing \(now.track).",
+                ],
+                command: "app_action",
+                requestId: requestId
+            )
+        case "search":
+            let query = string(arguments, "query") ?? string(arguments, "value") ?? string(arguments, "playlist") ?? ""
+            if query.isEmpty {
+                return fail("missing_query", "What should I search for on Spotify?", command: "app_action", requestId: requestId)
+            }
+            let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+            guard let url = URL(string: "spotify:search:\(encoded)") else {
+                return fail("invalid_url", "I couldn't build that Spotify search.", command: "app_action", requestId: requestId)
+            }
+            _ = runAppleScript("tell application id \"com.spotify.client\" to activate")
+            let opened = NSWorkspace.shared.open(url)
+            Thread.sleep(forTimeInterval: 0.8)
+            return ok(
+                [
+                    "ok": opened,
+                    "executed": true,
+                    "verified": false,
+                    "must_continue": true,
+                    "adapter": "spotify",
+                    "app": "Spotify",
+                    "action": "search",
+                    "query": query,
+                    "url": url.absoluteString,
+                    "spoken": opened
+                        ? "Spotify is showing search results for \(query). Playing a result is still required."
+                        : "I couldn't open Spotify search.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: opened
+            )
+        default:
+            return fail("unknown_action", "Spotify cannot do that.", command: "app_action", requestId: requestId)
+        }
+    }
+
+    private func spotifySearchThenPlay(_ query: String, requestId: String) -> [String: Any] {
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        guard let url = URL(string: "spotify:search:\(encoded)") else {
+            return fail("invalid_url", "I couldn't build that Spotify search.", command: "app_action", requestId: requestId)
+        }
+        _ = runAppleScript("tell application id \"com.spotify.client\" to activate")
+        let opened = NSWorkspace.shared.open(url)
+        Thread.sleep(forTimeInterval: 0.9)
+        _ = runAppleScript("""
+        tell application "System Events"
+          tell process "Spotify"
+            set frontmost to true
+            keystroke return
+          end tell
+        end tell
+        """)
+        Thread.sleep(forTimeInterval: 1.1)
+        let now = spotifyNow()
+        let wanted = query.lowercased()
+        let playing = now.state == "playing" && !now.track.isEmpty
+        let matched = playing && (
+            now.track.lowercased().contains(wanted)
+                || wanted.contains(now.track.lowercased())
+                || now.artist.lowercased().contains(wanted)
+        )
+        let verified = playing
+        let spoken: String
+        if matched {
+            spoken = "Playing \(now.track)."
+        } else if verified {
+            spoken = "Spotify is playing \(now.track)."
+        } else if opened {
+            spoken = "Spotify opened search for \(query), but I could not confirm playback."
+        } else {
+            spoken = "I couldn't open Spotify search."
+        }
+        return ok(
+            [
+                "ok": verified,
+                "executed": opened,
+                "verified": verified,
+                "must_continue": !verified,
+                "adapter": "spotify",
+                "app": "Spotify",
+                "action": "play",
+                "query": query,
+                "player_state": now.state,
+                "track": now.track,
+                "artist": now.artist,
+                "spoken": spoken,
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: verified
         )
     }
 
@@ -2552,7 +5165,10 @@ public final class MacControlService: @unchecked Sendable {
             }
             return nil
         }
-        let key = Self.aliases[raw.lowercased()] ?? raw.lowercased()
+        var key = Self.aliases[raw.lowercased()] ?? raw.lowercased()
+        if key.hasPrefix("the ") { key = String(key.dropFirst(4)) }
+        if key.hasPrefix("app ") { key = String(key.dropFirst(4)) }
+        if key.hasSuffix(" app") { key = String(key.dropLast(4)) }
         if let bundle = Self.known[key] {
             return resolve(name: nil, bundleId: bundle)
         }
@@ -2569,10 +5185,12 @@ public final class MacControlService: @unchecked Sendable {
                 running: pickUIProcess(bundleId: bundle) ?? running
             )
         }
-        let installed = installedApps().first {
+        let installedExact = installedApps().first {
             ($0["name"] as? String)?.lowercased() == key
-                || ($0["name"] as? String)?.lowercased().contains(key) == true
                 || ($0["bundle_id"] as? String)?.lowercased() == key
+        }
+        let installed = installedExact ?? installedApps().first {
+            ($0["name"] as? String)?.lowercased().contains(key) == true
         }
         if let installed, let bundle = installed["bundle_id"] as? String {
             return resolve(name: nil, bundleId: bundle)
@@ -2594,7 +5212,49 @@ public final class MacControlService: @unchecked Sendable {
         }
     }
 
+    private func applicationsStamp() -> String {
+        let directories = [
+            "/Applications",
+            "/System/Applications",
+            NSHomeDirectory() + "/Applications",
+        ]
+        return directories.map { path in
+            let url = URL(fileURLWithPath: path)
+            let date = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            return "\(path):\(date?.timeIntervalSince1970 ?? 0)"
+        }.joined(separator: "|")
+    }
+
+    private func startAppCatalogWatch() {
+        let paths = [
+            "/Applications",
+            "/System/Applications",
+            NSHomeDirectory() + "/Applications",
+        ]
+        for path in paths {
+            let fd = open(path, O_EVTONLY)
+            guard fd >= 0 else { continue }
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd,
+                eventMask: [.write, .rename, .delete, .attrib],
+                queue: DispatchQueue.global(qos: .utility)
+            )
+            source.setEventHandler { [weak self] in
+                self?.installedAppsCache = nil
+            }
+            source.setCancelHandler {
+                close(fd)
+            }
+            source.resume()
+            appDirSources.append(source)
+        }
+    }
+
     private func installedApps() -> [[String: Any]] {
+        let stamp = applicationsStamp()
+        if let cache = installedAppsCache, cache.stamp == stamp {
+            return cache.apps
+        }
         let directories = [
             "/Applications",
             "/System/Applications",
@@ -2617,6 +5277,7 @@ public final class MacControlService: @unchecked Sendable {
                 ])
             }
         }
+        installedAppsCache = (stamp, items)
         return items
     }
 
@@ -2683,11 +5344,115 @@ public final class MacControlService: @unchecked Sendable {
     }
 
     private func string(_ arguments: [String: Any], _ key: String) -> String? {
-        if let value = arguments[key] as? String {
+        guard let value = arguments[key], !(value is NSNull) else { return nil }
+        if let value = value as? String {
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         }
-        return nil
+        if value is Bool || value is NSNumber { return nil }
+        let trimmed = String(describing: value).trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func searchQuery(_ arguments: [String: Any]) -> String {
+        for key in ["query", "value", "text"] {
+            if let value = string(arguments, key) { return Self.cleanedComputerQuery(value) }
+        }
+        return ""
+    }
+
+    private func locationQuery(_ arguments: [String: Any]) -> String {
+        for key in ["url", "query", "value"] {
+            if let value = string(arguments, key) { return Self.cleanedComputerQuery(value) }
+        }
+        return ""
+    }
+
+    static func cleanedComputerQuery(_ raw: String) -> String {
+        var query = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        query = query.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`“”"))
+        query = query.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+        query = query.replacingOccurrences(
+            of: #"(?i)\s+continue=true\s*$"#,
+            with: "",
+            options: .regularExpression
+        )
+        query = query.replacingOccurrences(
+            of: #"(?i)\s+(?:nothing else|that's it|thats it|only that|please|thanks|for me)\s*$"#,
+            with: "",
+            options: .regularExpression
+        )
+        query = query.replacingOccurrences(
+            of: #"(?i)\s+in(?:\s+a|\s+the)?\s+new\s+tab\s*$"#,
+            with: "",
+            options: .regularExpression
+        )
+        query = query.replacingOccurrences(
+            of: #"(?i)\s+(?:in|on|using|with)\s+(?:the\s+)?(?:google\s+)?(?:chrome|safari|browser|spotify|notes|finder)\b.*$"#,
+            with: "",
+            options: .regularExpression
+        )
+        query = query.replacingOccurrences(
+            of: #"(?i)\s*(?:,|and|,?\s*then)\s+(?:open|click|press|play|go to|visit|close|quit)\b.*$"#,
+            with: "",
+            options: .regularExpression
+        )
+        query = query.trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+        if !query.contains(" "), query.contains(".") {
+            query = stripGluedCommandLabels(query)
+        }
+        return String(query.prefix(200))
+    }
+
+    static func stripGluedCommandLabels(_ raw: String) -> String {
+        let command: Set<String> = [
+            "open", "in", "on", "for", "and", "then", "new", "tab", "the", "a",
+            "to", "with", "using", "please", "safari", "chrome", "browser",
+            "search", "play", "watch", "click", "first", "result", "nothing",
+            "else", "just", "only", "app", "window", "here", "there", "now",
+            "go", "visit", "launch",
+        ]
+        var prefix = ""
+        var rest = raw
+        let lower = rest.lowercased()
+        for scheme in ["https://", "http://"] where lower.hasPrefix(scheme) {
+            prefix = String(rest.prefix(scheme.count))
+            rest = String(rest.dropFirst(scheme.count))
+            break
+        }
+        let parts = rest.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        var host = String(parts.first ?? "")
+        var labels = host.split(separator: ".").map(String.init).filter { !$0.isEmpty }
+        while labels.count >= 3, command.contains(labels[labels.count - 1].lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".,);!?"))) {
+            labels.removeLast()
+        }
+        host = labels.joined(separator: ".")
+        if host.isEmpty { return raw }
+        if parts.count > 1 {
+            return prefix + host + "/" + parts[1]
+        }
+        return prefix + host
+    }
+
+    static func navigationURL(from raw: String) -> String? {
+        var trimmed = cleanedComputerQuery(raw)
+        trimmed = trimmed.replacingOccurrences(
+            of: #"(?<=[A-Za-z0-9])\s+\.\s+(?=[A-Za-z0-9])"#,
+            with: ".",
+            options: .regularExpression
+        )
+        let quotes = CharacterSet(charactersIn: "\"'`")
+        trimmed = trimmed.trimmingCharacters(in: quotes)
+        while let last = trimmed.last, ".,);!?".contains(last) {
+            trimmed.removeLast()
+        }
+        if trimmed.isEmpty || trimmed.contains(" ") || trimmed.contains("@") { return nil }
+        let lower = trimmed.lowercased()
+        if lower == "localhost" || lower == "about:blank" { return nil }
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") { return trimmed }
+        let pattern = #"^(?:www\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,24}(?::\d{2,5})?(?:/[^\s]*)?$"#
+        guard trimmed.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return "https://\(trimmed)"
     }
 
     private func bool(_ arguments: [String: Any], _ key: String) -> Bool {
@@ -2756,6 +5521,443 @@ public final class MacControlService: @unchecked Sendable {
         typealias Fn = @convention(c) () -> Int32
         let fn = unsafeBitCast(symbol, to: Fn.self)
         return fn() != 0
+    }
+
+    // MARK: - Local files
+
+    private static let fileMaxBytes = 256 * 1024
+    private static let fileListCap = 40
+    private static let textFileExtensions: Set<String> = [
+        "txt", "md", "markdown", "json", "csv", "py", "swift", "js", "ts", "tsx",
+        "jsx", "html", "css", "xml", "yml", "yaml", "toml", "ini", "log", "sh",
+        "rs", "go", "rb", "java", "c", "h", "cpp", "hpp", "rtf", "text",
+    ]
+    private static let deniedNameParts: Set<String> = [
+        ".ssh", ".aws", ".gnupg", ".kube", "keychains", "keychain",
+    ]
+    private static let deniedFileNames: Set<String> = [
+        ".env", ".env.local", ".env.production", "id_rsa", "id_ed25519",
+        "id_ecdsa", "credentials.json", "credentials.csv", "master.key", "api.env",
+    ]
+    private static let deniedSuffixes = [".pem", ".p12", ".pfx", ".key", ".kdbx"]
+
+    private func allowedFileRoots() -> [URL] {
+        let fm = FileManager.default
+        let names: [FileManager.SearchPathDirectory] = [
+            .desktopDirectory, .documentDirectory, .downloadsDirectory,
+            .moviesDirectory, .musicDirectory, .picturesDirectory,
+        ]
+        var roots: [URL] = []
+        for name in names {
+            if let url = fm.urls(for: name, in: .userDomainMask).first {
+                roots.append(url.resolvingSymlinksInPath())
+            }
+        }
+        let code = fm.homeDirectoryForCurrentUser.appendingPathComponent("Code", isDirectory: true)
+        if fm.fileExists(atPath: code.path) {
+            roots.append(code.resolvingSymlinksInPath())
+        }
+        return roots
+    }
+
+    private func fileDenied(_ url: URL) -> String? {
+        let resolved = url.resolvingSymlinksInPath()
+        let path = resolved.path
+        let lowered = path.lowercased()
+        for part in resolved.pathComponents {
+            let name = part.lowercased()
+            if Self.deniedNameParts.contains(name) || Self.deniedFileNames.contains(name) {
+                return "path_denied"
+            }
+        }
+        if Self.deniedFileNames.contains(resolved.lastPathComponent.lowercased()) {
+            return "path_denied"
+        }
+        if Self.deniedSuffixes.contains(where: { lowered.hasSuffix($0) }) {
+            return "path_denied"
+        }
+        if lowered.contains("/library/application support/ev")
+            || lowered.contains("/.ev/secrets")
+            || lowered.contains("/.git/")
+        {
+            return "path_denied"
+        }
+        if !allowedFileRoots().contains(where: { root in
+            path == root.path || path.hasPrefix(root.path + "/")
+        }) {
+            return "path_outside_allowed"
+        }
+        return nil
+    }
+
+    private func expandFilePath(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        if trimmed.hasPrefix("~") {
+            return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
+        }
+        if trimmed.hasPrefix("/") {
+            return URL(fileURLWithPath: trimmed)
+        }
+        if let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first {
+            return desktop.appendingPathComponent(trimmed)
+        }
+        return URL(fileURLWithPath: trimmed)
+    }
+
+    private func locateFile(path: String, query: String) -> (url: URL?, matches: [URL], error: String?) {
+        let needle = (query.isEmpty ? URL(fileURLWithPath: path).lastPathComponent : query)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        if let url = expandFilePath(path), FileManager.default.fileExists(atPath: url.path) {
+            if let denied = fileDenied(url) { return (nil, [], denied) }
+            if isDirectory(url) {
+                if needle.isEmpty { return (url.resolvingSymlinksInPath(), [], nil) }
+            } else if needle.isEmpty || url.lastPathComponent.lowercased().contains(needle) {
+                return (url.resolvingSymlinksInPath(), [], nil)
+            }
+        }
+        if needle.isEmpty {
+            if let url = expandFilePath(path) {
+                if let denied = fileDenied(url) { return (nil, [], denied) }
+                return (url.resolvingSymlinksInPath(), [], nil)
+            }
+            return (nil, [], "not_found")
+        }
+        var matches: [URL] = []
+        let fm = FileManager.default
+        var searchRoots = allowedFileRoots()
+        if let scoped = expandFilePath(path), isDirectory(scoped) {
+            searchRoots = [scoped]
+        }
+        for root in searchRoots {
+            guard let children = try? fm.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for child in children where child.lastPathComponent.lowercased().contains(needle) {
+                if fileDenied(child) == nil {
+                    matches.append(child.resolvingSymlinksInPath())
+                }
+            }
+        }
+        let exact = matches.filter { $0.lastPathComponent.lowercased() == needle }
+        let pool = exact.isEmpty ? matches : exact
+        if pool.count == 1 { return (pool[0], [], nil) }
+        if pool.count > 1 {
+            let ranked = pool.sorted { lhs, rhs in
+                fileSearchScore(lhs, needle: needle) > fileSearchScore(rhs, needle: needle)
+            }
+            return (ranked[0], [], nil)
+        }
+        if let url = expandFilePath(path), !isDirectory(url) {
+            if let denied = fileDenied(url) { return (nil, [], denied) }
+            return (url.resolvingSymlinksInPath(), [], nil)
+        }
+        return (nil, [], "not_found")
+    }
+
+    private func fileSearchScore(_ url: URL, needle: String) -> Int {
+        let name = url.lastPathComponent.lowercased()
+        let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+        var score = 0
+        if stem == needle || name == needle { score = 100 }
+        else if stem.hasSuffix(" " + needle) { score = 85 }
+        else if name.contains(needle) { score = 50 }
+        if url.pathExtension.lowercased() == "pdf" && (needle == "resume" || needle == "cv" || needle == "pdf") {
+            score += 14
+        }
+        if name.contains("flagship") && needle != "flagship" { score -= 12 }
+        score -= min(stem.count, 24)
+        return score
+    }
+
+    private func isDirectory(_ url: URL) -> Bool {
+        var isDir: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) && isDir.boolValue
+    }
+
+    private func newestTextFile(in folder: URL) -> URL? {
+        let fm = FileManager.default
+        guard let children = try? fm.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+        let files = children.filter { child in
+            if isDirectory(child) { return false }
+            if child.lastPathComponent.hasPrefix(".") { return false }
+            if fileDenied(child) != nil { return false }
+            let ext = child.pathExtension.lowercased()
+            return ext.isEmpty || Self.textFileExtensions.contains(ext)
+        }
+        return files.max { lhs, rhs in
+            let left = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let right = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return left < right
+        }
+    }
+
+    private func uniqueDefaultWriteURL(_ url: URL) -> URL {
+        let fm = FileManager.default
+        if url.lastPathComponent != "evie-note.txt" || !fm.fileExists(atPath: url.path) {
+            return url
+        }
+        let folder = url.deletingLastPathComponent()
+        let ext = url.pathExtension.isEmpty ? "txt" : url.pathExtension
+        let stem = url.deletingPathExtension().lastPathComponent
+        for index in 2..<80 {
+            let candidate = folder.appendingPathComponent("\(stem)-\(index).\(ext)")
+            if !fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return folder.appendingPathComponent("\(stem)-\(Int(Date().timeIntervalSince1970)).\(ext)")
+    }
+
+    private func fileOp(_ arguments: [String: Any], requestId: String) -> [String: Any] {
+        let action = (string(arguments, "action") ?? "").lowercased()
+        let path = string(arguments, "path") ?? ""
+        let query = string(arguments, "query") ?? ""
+        let content = string(arguments, "content") ?? ""
+        switch action {
+        case "list":
+            return fileList(path: path, query: query, requestId: requestId)
+        case "read":
+            let found = locateFile(path: path, query: query)
+            guard var url = found.url else {
+                return fileLocateFail(found, requestId: requestId)
+            }
+            if isDirectory(url) {
+                guard let newest = newestTextFile(in: url) else {
+                    return fail(
+                        "not_found",
+                        "I don't see a text file in \(url.lastPathComponent) yet.",
+                        command: "file_op",
+                        requestId: requestId
+                    )
+                }
+                url = newest
+            }
+            return fileRead(url, requestId: requestId)
+        case "write", "edit", "append":
+            let found = locateFile(path: path, query: query)
+            var url = found.url
+            if url == nil, let created = expandFilePath(path.isEmpty ? query : path) {
+                if let denied = fileDenied(created) {
+                    return fail(denied, "I won't touch that path.", command: "file_op", requestId: requestId)
+                }
+                url = created
+            }
+            guard var dest = url else {
+                return fileLocateFail(found, requestId: requestId)
+            }
+            if isDirectory(dest) {
+                let name = query.isEmpty ? "evie-note.txt" : query
+                dest = dest.appendingPathComponent(name)
+            }
+            if dest.pathExtension.isEmpty {
+                dest = dest.appendingPathExtension("txt")
+            }
+            if !bool(arguments, "overwrite") {
+                dest = uniqueDefaultWriteURL(dest)
+            }
+            var body = content
+            if action == "append" {
+                if dest.path.isEmpty == false, FileManager.default.fileExists(atPath: dest.path),
+                   let existing = try? String(contentsOf: dest, encoding: .utf8)
+                {
+                    let prefix = existing.hasSuffix("\n") || existing.isEmpty ? existing : existing + "\n"
+                    body = prefix + content
+                }
+            }
+            return fileWrite(dest, content: body, requestId: requestId)
+        case "open":
+            let found = locateFile(path: path, query: query)
+            guard var url = found.url else {
+                return fileLocateFail(found, requestId: requestId)
+            }
+            if isDirectory(url) {
+                guard let newest = newestTextFile(in: url) else {
+                    return fail(
+                        "not_found",
+                        "I don't see a text file in \(url.lastPathComponent) yet.",
+                        command: "file_op",
+                        requestId: requestId
+                    )
+                }
+                url = newest
+            }
+            if let denied = fileDenied(url) {
+                return fail(denied, "I won't open that path.", command: "file_op", requestId: requestId)
+            }
+            let okOpen = NSWorkspace.shared.open(url)
+            return ok(
+                [
+                    "ok": okOpen,
+                    "executed": okOpen,
+                    "verified": okOpen,
+                    "action": "open",
+                    "path": url.path,
+                    "spoken": okOpen ? "Opened \(url.lastPathComponent)." : "I couldn't open \(url.lastPathComponent).",
+                    "source": "mac_control",
+                ],
+                command: "file_op",
+                requestId: requestId
+            )
+        default:
+            return fail("unknown_action", "I can read, write, edit, list, or open local files.", command: "file_op", requestId: requestId)
+        }
+    }
+
+    private func fileLocateFail(_ found: (url: URL?, matches: [URL], error: String?), requestId: String) -> [String: Any] {
+        if found.error == "ambiguous" {
+            let names = found.matches.prefix(8).map(\.lastPathComponent).joined(separator: ", ")
+            return fail("ambiguous", "Which file do you mean? I found \(names).", command: "file_op", requestId: requestId)
+        }
+        if found.error == "path_denied" || found.error == "path_outside_allowed" {
+            return fail(found.error ?? "path_denied", "I won't touch that path.", command: "file_op", requestId: requestId)
+        }
+        return fail(found.error ?? "not_found", "I couldn't find that file.", command: "file_op", requestId: requestId)
+    }
+
+    private func fileList(path: String, query: String, requestId: String) -> [String: Any] {
+        var folder: URL?
+        if let url = expandFilePath(path), FileManager.default.fileExists(atPath: url.path) {
+            var isDir: ObjCBool = false
+            FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir)
+            folder = isDir.boolValue ? url : url.deletingLastPathComponent()
+        }
+        folder = folder ?? FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
+        guard let root = folder else {
+            return fail("not_found", "I couldn't list that folder.", command: "file_op", requestId: requestId)
+        }
+        if let denied = fileDenied(root) {
+            return fail(denied, "I won't list that folder.", command: "file_op", requestId: requestId)
+        }
+        let needle = query.lowercased()
+        let children = (try? FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var names: [String] = []
+        for child in children.sorted(by: { $0.lastPathComponent.lowercased() < $1.lastPathComponent.lowercased() }) {
+            if !needle.isEmpty && !child.lastPathComponent.lowercased().contains(needle) { continue }
+            names.append(child.lastPathComponent)
+            if names.count >= Self.fileListCap { break }
+        }
+        let spoken = names.isEmpty ? "\(root.lastPathComponent) looks empty." : "On \(root.lastPathComponent): \(names.joined(separator: ", "))."
+        return ok(
+            [
+                "ok": true,
+                "executed": true,
+                "verified": true,
+                "action": "list",
+                "path": root.path,
+                "files": names,
+                "count": names.count,
+                "spoken": spoken,
+                "source": "mac_control",
+            ],
+            command: "file_op",
+            requestId: requestId
+        )
+    }
+
+    private func fileRead(_ url: URL, requestId: String) -> [String: Any] {
+        if let denied = fileDenied(url) {
+            return fail(denied, "I won't read that path.", command: "file_op", requestId: requestId)
+        }
+        let ext = url.pathExtension.lowercased()
+        if !ext.isEmpty && !Self.textFileExtensions.contains(ext) {
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.intValue ?? 0
+            return ok(
+                [
+                    "ok": true,
+                    "executed": true,
+                    "verified": true,
+                    "action": "read",
+                    "path": url.path,
+                    "binary": true,
+                    "size_bytes": size,
+                    "spoken": "\(url.lastPathComponent) is not a text file I can read aloud.",
+                    "source": "mac_control",
+                ],
+                command: "file_op",
+                requestId: requestId
+            )
+        }
+        guard let data = try? Data(contentsOf: url) else {
+            return fail("not_a_file", "\(url.lastPathComponent) is not a file.", command: "file_op", requestId: requestId)
+        }
+        if data.count > Self.fileMaxBytes {
+            return fail("too_large", "\(url.lastPathComponent) is larger than I will read.", command: "file_op", requestId: requestId)
+        }
+        let text = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+        let preview = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var spoken = preview.isEmpty ? "\(url.lastPathComponent) is empty." : "The file says: \(preview)"
+        if spoken.count > 420 {
+            spoken = String(spoken.prefix(417)) + "..."
+        }
+        return ok(
+            [
+                "ok": true,
+                "executed": true,
+                "verified": true,
+                "action": "read",
+                "path": url.path,
+                "content": text,
+                "size_bytes": data.count,
+                "spoken": spoken,
+                "source": "mac_control",
+            ],
+            command: "file_op",
+            requestId: requestId
+        )
+    }
+
+    private func fileWrite(_ url: URL, content: String, requestId: String) -> [String: Any] {
+        if let denied = fileDenied(url) {
+            return fail(denied, "I won't write that path.", command: "file_op", requestId: requestId)
+        }
+        guard let data = content.data(using: .utf8), data.count <= Self.fileMaxBytes else {
+            return fail("too_large", "That file is larger than I will write.", command: "file_op", requestId: requestId)
+        }
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let tmp = url.appendingPathExtension("ev-tmp")
+            try data.write(to: tmp, options: .atomic)
+            if FileManager.default.fileExists(atPath: url.path) {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+            } else {
+                try FileManager.default.moveItem(at: tmp, to: url)
+            }
+            let check = try String(contentsOf: url, encoding: .utf8)
+            let verified = check == content
+            var payload: [String: Any] = [
+                "ok": verified,
+                "executed": true,
+                "verified": verified,
+                "action": "write",
+                "path": url.path,
+                "bytes": data.count,
+                "spoken": "Wrote \(url.lastPathComponent).",
+                "source": "mac_control",
+            ]
+            if !verified { payload["error"] = "verify_mismatch" }
+            return ok(payload, command: "file_op", requestId: requestId)
+        } catch {
+            return fail("write_failed", "I couldn't write \(url.lastPathComponent).", command: "file_op", requestId: requestId)
+        }
     }
 
     private func ok(_ data: [String: Any], command: String, requestId: String, ok: Bool = true) -> [String: Any] {
@@ -2834,6 +6036,7 @@ public final class MacControlService: @unchecked Sendable {
 
     private static func keyCode(_ name: String) -> CGKeyCode? {
         switch name {
+        case "k": return CGKeyCode(kVK_ANSI_K)
         case "a": return CGKeyCode(kVK_ANSI_A)
         case "b": return CGKeyCode(kVK_ANSI_B)
         case "c": return CGKeyCode(kVK_ANSI_C)

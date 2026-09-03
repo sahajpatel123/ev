@@ -487,15 +487,28 @@ def test_standing_authority_policy_matrix() -> None:
     assert starred.allowed is False
     assert starred.confirmation_required is True
 
-    # EV_LIFE_AUTONOMY=full skips confirmation inside granted scopes.
-    full = evaluate_life_policy(
+    # EV_LIFE_AUTONOMY=full skips per-action confirmation for *known*
+    # contacts. Unknown recipients still require the confirm valve.
+    full_unknown = evaluate_life_policy(
         scopes=scopes,
         action="phone.call",
         recipient="+1999",
         autonomy="full",
+        allowlist="all",
     )
-    assert full.allowed is True
-    assert full.confirmation_required is False
+    assert full_unknown.allowed is False
+    assert full_unknown.confirmation_required is True
+
+    full_known = evaluate_life_policy(
+        scopes=scopes,
+        action="phone.call",
+        recipient="Mom",
+        contact=mom,
+        autonomy="full",
+        allowlist="all",
+    )
+    assert full_known.allowed is True
+    assert full_known.confirmation_required is False
 
 
 async def test_device_proxy_queue_outbox_and_delivery_evidence(

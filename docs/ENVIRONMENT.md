@@ -434,11 +434,14 @@ the helper is missing; local mode never fakes a sent message or placed call.
 | --- | --- | --- | --- |
 | `EV_LIFE_HELPER_PATH` | — | path | Executable `EVLifeHelper` binary (Agent 18/SUIT). Empty = life actions fail closed. |
 | `EV_MESSAGING_PROVIDER` | `local` | `local` \| `macos_life` \| `device_proxy` | Provider used by runtime/notify when dispatching `send_message`. |
-| `EV_LIFE_AUTONOMY` | `default` | `default` \| `full` | `full` = owner opted out of per-action confirmation inside granted scopes. |
+| `EV_LIFE_AUTONOMY` | `default` | `default` \| `full` | `full` = no per-action confirmation for recipients already pre-authorized by the allowlist. Unknown-recipient, R3, and refused-domain valves stay armed. |
 | `EV_LIFE_CONTACT_ALLOWLIST` | `all` | `all` \| `starred` \| `any` | Which recipients are pre-authorized once the standing scope is granted. |
 | `EV_LIFE_CONFIRM_UNKNOWN` | `true` | boolean | Require `confirm: true` (or approval) for recipients outside the allowlist. |
 | `EV_LIFE_HELPER_TIMEOUT_SECONDS` | `20` | seconds | Helper subprocess hard timeout. |
 | `EV_LIFE_HELPER_MAX_OUTPUT_BYTES` | `65536` | bytes | Helper stdout cap; oversized output is a loud failure. |
+| `EV_LIFE_STREAM_ENABLED` | `false` | boolean | Headless iMessage/contacts/mail/calendar follower. Also auto-on when `EV_MESSAGING_PROVIDER=macos_life` and a helper path is set. Google-only owners can set this true so calendar/Gmail envelopes still record. |
+| `EV_LIFE_STREAM_INTERVAL_SECONDS` | `20` | seconds | Scheduler cadence for the headless follower. |
+| `EV_LIFE_STREAM_CURSOR_PATH` | `~/.ev/life_stream_cursor.json` | path | Incremental chat.db rowid plus contact/mail/calendar/health fingerprints. |
 
 Per-integration config overrides (non-secret): `helper_path`, `contact_allowlist`,
 `autonomy`, `confirm_unknown` inside `config` when installing the integration.
@@ -450,9 +453,22 @@ Live speech surface modes for the realtime brain (OpenAI Realtime
 
 | Key | Default | Values | Purpose |
 | --- | --- | --- | --- |
-| `EV_VOICE_LIVE_MODE` | `supervised` | `supervised` \| `shadow` \| `autonomous` | `supervised` = full curated surface (historical behavior, unchanged). `shadow` = UI verbs + `recall_history` + generic capabilities; history is injected read-only as a `SHADOW MEMORY` block per owner turn (no function call needed to answer the past). `autonomous` = zero tools, pure speech-to-speech chat (no memory, no actions). |
+| `EV_VOICE_LIVE_MODE` | `supervised` | `supervised` \| `shadow` \| `autonomous` | `supervised` = full curated surface (historical behavior, unchanged). `shadow` = UI verbs + `recall_history` + generic capabilities; history is injected read-only as a `SHADOW MEMORY` block on the **current** spoken turn (OpenAI `create_response` is false until inject + `response.create`). `autonomous` = zero tools, pure speech-to-speech chat (no memory, no actions). Daily Evie on this station uses `shadow` in the runtime `.env`. |
 | `EV_VOICE_SHADOW_K` | `5` | 1–10 | Memory chunks injected per owner turn in `shadow` mode. |
 | `EV_VOICE_SHADOW_BUDGET_TOKENS` | `900` | ≥64 | Token cap for the injected `SHADOW MEMORY` block. |
 | `EV_VOICE_SHADOW_MIN_SCORE` | `0.0` | 0–1 | Retrieval floor for shadow chunks. |
 | `EV_UI_VERB_TOOLS_ENABLED` | `true` | boolean | Kill-switch for the `read/see/click/double_click/right_click/type/paste/key/scroll/drag` UI verbs. |
 | `EV_MODEL_SURFACE_V2` | `legacy` | `legacy` \| `shadow` \| `on` | Existing F4 surface reducer (independent of `EV_VOICE_LIVE_MODE`); `on` reduces the projected surface to `F4_TARGET_SURFACE`. |
+| `EV_LAPTOP_FILES` | `false` | boolean | Python-side fallback for Desktop/Documents/Downloads (and similar) file ops. Leave **false** on production `:8000` so that API host never writes its own disk. Talk (`scripts/start_talk_sidecar.py` on `:18000`) sets this true. When EV.app is connected, `file_op` runs on the Mac helper even if this flag is off. `/v1/health` → `runtime.laptop_files` reports the Python flag. |
+| `EV_LAPTOP_FILES_ROOT` | _(empty)_ | path | Test/dev jail. When set, file ops stay inside this folder and the Python flag is treated as on. |
+| `EV_CODE_ENABLED` | `true` | boolean | Owner-command coding broker. Realtime Mini never gets a shell; GPT-5.6 Luna (or an offline heuristic) writes/runs inside an allowed project. |
+| `EV_CODE_WORKSPACE` | `~/Library/Application Support/EV/code-workspace` | path | Default project root when the owner does not name one. Set this to a real repo for daily Evie. |
+| `EV_CODE_PROJECTS` | _(empty)_ | string | Extra allowed roots: `ev:/Users/me/Code/ev,demo:~/Code/demo`. |
+| `EV_CODE_PROJECTS_ROOT` | `~/Code` if that folder exists | path | Immediate child repos here are selectable by name (`in the ev repo`). Empty string disables discovery. |
+| `EV_CODE_MODEL` | `gpt-5.6-luna` | string | Coding brain via OpenAI Responses. Reuses `EV_OPENAI_API_KEY`. |
+| `EV_CODE_MAX_STEPS` | `24` | 1–32 | Luna tool rounds per coding job. Live voice uses up to 20 of these; chat uses the full budget. |
+| `EV_CODE_COMMAND_TIMEOUT_SECONDS` | `60` | 1–180 | Per allowlisted run (python3, node, ruby, php, java, go, cargo, pytest, …). No npm/pip/shell. |
+| `EV_CODE_LIVE_JOB_SECONDS` | `240` | 30–600 | Wall clock for a spoken coding job. The live mouth stays up; Evie talks when Luna finishes. |
+| `EV_CODE_CHAT_JOB_SECONDS` | `300` | 30–600 | Wall clock for a typed/chat coding job. |
+| `EV_CODE_HTTP_TIMEOUT_SECONDS` | `60` | 15–90 | Per OpenAI Responses round while Luna is working. |
+| `EV_CODE_MAX_FILE_BYTES` | `256000` | bytes | Max size of one workspace write or patch. |

@@ -1,5 +1,6 @@
 import Foundation
 import EvieNativeBroker
+import Darwin
 #if canImport(UIKit)
 import UIKit
 import MessageUI
@@ -7,6 +8,7 @@ import EventKit
 import Contacts
 import CoreLocation
 import UserNotifications
+import AVFoundation
 #endif
 
 @MainActor
@@ -18,7 +20,32 @@ final class CapabilityBroker: NSObject {
             FeedbackEngine.play(event)
             return ["ok": true, "executed": true, "verified": true, "result": "EXECUTED"]
         case "capabilities":
-            return ["ok": true, "broker_version": BrokerVersion.version, "capabilities": advertised()]
+            return advertisedPayload()
+        case "permissionStatus":
+            return ["ok": true, "permissions": permissionEvidence()]
+        case "requestPermission":
+            return await requestPermission(name: request.event ?? "")
+        case "pending_capture":
+            let note = UserDefaults.standard.string(forKey: "evie.pending_capture") ?? ""
+            let key = UserDefaults.standard.string(forKey: "evie.pending_capture_key") ?? ""
+            UserDefaults.standard.removeObject(forKey: "evie.pending_capture")
+            UserDefaults.standard.removeObject(forKey: "evie.pending_capture_key")
+            return ["ok": true, "note": note, "idempotency_key": key, "executed": false]
+        case "healthkit_snapshot":
+            return [
+                "ok": true,
+                "available": false,
+                "reason": "no_entitlement",
+                "freshness": "unavailable",
+                "sent_to_model": false,
+                "snapshot": [:],
+            ]
+        case "calendar_snapshot":
+            return await calendarSnapshot()
+        case "contacts_snapshot":
+            return contactsSnapshot()
+        case "notification_status":
+            return await notificationStatus()
         case "bind_session":
             if let token = raw["token"] as? String, !token.isEmpty {
                 DeviceAuth.store(token)
@@ -35,14 +62,200 @@ final class CapabilityBroker: NSObject {
         }
     }
 
+    private func advertisedPayload() -> [String: Any] {
+        [
+            "ok": true,
+            "broker_version": BrokerVersion.version,
+            "capabilities": advertised(),
+            "endpoint_capabilities": [
+                "foreground_voice", "camera", "text", "notification", "microphone", "location", "clipboard",
+            ],
+            "permissions": permissionEvidence(),
+            "hardware": DeviceHardware.profile(),
+        ]
+    }
+
     private func advertised() -> [String] {
         [
+            "foreground_voice", "camera", "text", "notification", "microphone", "location", "clipboard",
             "create_timer", "create_reminder", "create_alarm", "call_contact",
             "message_contact", "facetime_contact", "start_directions", "open_maps",
             "create_calendar_event", "open_app", "current_location", "share_content",
             "copy_to_clipboard", "haptic", "self_test",
         ]
     }
+
+    private func permissionEvidence() -> [String: String] {
+        #if os(iOS)
+        [
+            "microphone": AVCaptureDevice.authorizationStatus(for: .audio).evieLabel,
+            "camera": AVCaptureDevice.authorizationStatus(for: .video).evieLabel,
+            "contacts": CNContactStore.authorizationStatus(for: .contacts).evieContactsLabel,
+            "calendar": calendarLabel(),
+            "reminders": reminderLabel(),
+            "location": locationLabel(),
+            "notifications": UserDefaults.standard.string(forKey: "evie.notification_auth") ?? "undetermined",
+            "health": "unavailable",
+        ]
+        #else
+        [:]
+        #endif
+    }
+
+    #if os(iOS)
+    private func locationLabel() -> String {
+        switch CLLocationManager().authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse: return "granted"
+        case .denied, .restricted: return "denied"
+        default: return "undetermined"
+        }
+    }
+
+    private func calendarLabel() -> String {
+        let status = EKEventStore.authorizationStatus(for: .event)
+        if #available(iOS 17.0, *) {
+            switch status {
+            case .fullAccess: return "granted"
+            case .writeOnly: return "write_only"
+            case .denied, .restricted: return "denied"
+            default: return "undetermined"
+            }
+        }
+        switch status {
+        case .authorized: return "granted"
+        case .denied, .restricted: return "denied"
+        default: return "undetermined"
+        }
+    }
+
+    private func reminderLabel() -> String {
+        let status = EKEventStore.authorizationStatus(for: .reminder)
+        if #available(iOS 17.0, *) {
+            switch status {
+            case .fullAccess: return "granted"
+            case .writeOnly: return "write_only"
+            case .denied, .restricted: return "denied"
+            default: return "undetermined"
+            }
+        }
+        switch status {
+        case .authorized: return "granted"
+        case .denied, .restricted: return "denied"
+        default: return "undetermined"
+        }
+    }
+
+    private func requestPermission(name: String) async -> [String: Any] {
+        switch name {
+        case "camera":
+            let ok = await AVCaptureDevice.requestAccess(for: .video)
+            return ["ok": ok, "permission": ok ? "granted" : "denied"]
+        case "microphone":
+            let ok = await AVCaptureDevice.requestAccess(for: .audio)
+            return ["ok": ok, "permission": ok ? "granted" : "denied"]
+        case "calendar":
+            let store = EKEventStore()
+            let ok: Bool
+            if #available(iOS 17.0, *) {
+                ok = (try? await store.requestFullAccessToEvents()) ?? false
+            } else {
+                ok = (try? await store.requestAccess(to: .event)) ?? false
+            }
+            return ["ok": ok, "permission": ok ? "granted" : "denied"]
+        case "contacts":
+            let ok = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                CNContactStore().requestAccess(for: .contacts) { granted, _ in
+                    cont.resume(returning: granted)
+                }
+            }
+            return ["ok": ok, "permission": ok ? "granted" : "denied"]
+        case "notifications":
+            let ok = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+                    UserDefaults.standard.set(granted ? "granted" : "denied", forKey: "evie.notification_auth")
+                    cont.resume(returning: granted)
+                }
+            }
+            return ["ok": ok, "permission": ok ? "granted" : "denied", "delivery": "poll"]
+        default:
+            return ["ok": true, "permissions": permissionEvidence()]
+        }
+    }
+
+    private func calendarSnapshot() async -> [String: Any] {
+        let store = EKEventStore()
+        let allowed = calendarLabel() == "granted"
+        guard allowed else {
+            return ["ok": true, "events": [], "permission": calendarLabel(), "sent_to_model": false]
+        }
+        let start = Date()
+        let end = Calendar.current.date(byAdding: .day, value: 7, to: start) ?? start
+        let pred = store.predicateForEvents(withStart: start, end: end, calendars: nil)
+        let formatter = ISO8601DateFormatter()
+        let events = store.events(matching: pred).prefix(12).map { event in
+            [
+                "title": event.title ?? "Event",
+                "start": formatter.string(from: event.startDate),
+            ]
+        }
+        return ["ok": true, "events": Array(events), "permission": "granted", "sent_to_model": false]
+    }
+
+    private func contactsSnapshot() -> [String: Any] {
+        let label = CNContactStore.authorizationStatus(for: .contacts).evieContactsLabel
+        guard label == "granted" || label == "limited" else {
+            return ["ok": true, "contacts": [], "permission": label, "sent_to_model": false]
+        }
+        let keys = [CNContactGivenNameKey, CNContactFamilyNameKey] as [CNKeyDescriptor]
+        let request = CNContactFetchRequest(keysToFetch: keys)
+        var names: [[String: String]] = []
+        try? CNContactStore().enumerateContacts(with: request) { contact, stop in
+            if names.count >= 20 {
+                stop.pointee = true
+                return
+            }
+            let name = [contact.givenName, contact.familyName].filter { !$0.isEmpty }.joined(separator: " ")
+            if !name.isEmpty {
+                names.append(["name": name])
+            }
+        }
+        return ["ok": true, "contacts": names, "permission": label, "sent_to_model": false]
+    }
+
+    private func notificationStatus() async -> [String: Any] {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        let auth: String
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral: auth = "granted"
+        case .denied: auth = "denied"
+        default: auth = "undetermined"
+        }
+        UserDefaults.standard.set(auth, forKey: "evie.notification_auth")
+        return [
+            "ok": true,
+            "authorization": auth,
+            "delivery": "poll",
+            "push_registered": false,
+            "reason": "no_aps_environment",
+        ]
+    }
+    #else
+    private func requestPermission(name: String) async -> [String: Any] {
+        ["ok": false, "failure": "ACTION_UNAVAILABLE"]
+    }
+
+    private func calendarSnapshot() async -> [String: Any] {
+        ["ok": false, "events": [], "sent_to_model": false, "failure": "ACTION_UNAVAILABLE"]
+    }
+
+    private func contactsSnapshot() -> [String: Any] {
+        ["ok": false, "contacts": [], "sent_to_model": false, "failure": "ACTION_UNAVAILABLE"]
+    }
+
+    private func notificationStatus() async -> [String: Any] {
+        ["ok": true, "authorization": "unavailable", "delivery": "poll", "push_registered": false]
+    }
+    #endif
 
     private func execute(actionID: String) async -> [String: Any] {
         guard let token = DeviceAuth.token() else {
@@ -368,3 +581,58 @@ struct BrokerOutcome {
         return payload
     }
 }
+
+enum DeviceHardware {
+    static func machine() -> String {
+        var info = utsname()
+        uname(&info)
+        return withUnsafePointer(to: &info.machine) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: 1) { String(cString: $0) }
+        }
+    }
+
+    static func profile() -> [String: Any] {
+        let model = machine()
+        let quality: String
+        let rank: Int
+        switch model {
+        case "iPhone17,1", "iPhone17,2", "iPhone16,1", "iPhone16,2":
+            quality = "pro"
+            rank = 0
+        case "iPhone14,6", "iPhone12,8":
+            quality = "standard"
+            rank = 10
+        default:
+            quality = model.hasPrefix("iPhone") ? "standard" : "unknown"
+            rank = model.hasPrefix("iPhone") ? 20 : 50
+        }
+        return [
+            "model": model,
+            "machine": model,
+            "camera_quality": quality,
+            "camera_preference_rank": rank,
+        ]
+    }
+}
+
+#if os(iOS)
+extension AVAuthorizationStatus {
+    var evieLabel: String {
+        switch self {
+        case .authorized: return "granted"
+        case .denied, .restricted: return "denied"
+        default: return "undetermined"
+        }
+    }
+}
+
+extension CNAuthorizationStatus {
+    var evieContactsLabel: String {
+        switch self {
+        case .authorized: return "granted"
+        case .denied, .restricted: return "denied"
+        default: return "undetermined"
+        }
+    }
+}
+#endif

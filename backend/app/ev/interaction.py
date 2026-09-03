@@ -570,13 +570,13 @@ def build_strategy(
         level = min(level, 2)
 
     length_targets: dict[CommunicationMode, str] = {
-        "casual": "one to two sentences",
-        "technical": "as long as needed, precise and concrete",
-        "analytical": "structured comparison of evidence, options, risks and tradeoffs",
-        "coaching": "medium; evidence first, then one concrete next action",
+        "casual": "one to two short sentences; casual, concise, and direct",
+        "technical": "the minimum needed; precise, casual, and concrete",
+        "analytical": "concise structured comparison of evidence, options, risks and tradeoffs; no repetition",
+        "coaching": "brief; evidence first, then one concrete next action",
         "emergency": "one sentence plus one actionable step",
-        "collaborative": "medium; propose a position and name the assumption to challenge",
-        "social": "one to two sentences; never claim to be the only friend",
+        "collaborative": "brief; propose a position and name the assumption to challenge",
+        "social": "one to two short sentences; never claim to be the only friend",
     }
     directness: dict[CommunicationMode, str] = {
         "casual": "low to medium",
@@ -638,6 +638,7 @@ def strategy_block(strategy: InteractionStrategy, *, who: str | None = None) -> 
     """Compile the strategy into a prompt instruction for the reasoning model."""
 
     from app.ev.assistant import spoken_name
+    from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
     name = spoken_name(who)
     lines = [
@@ -645,6 +646,8 @@ def strategy_block(strategy: InteractionStrategy, *, who: str | None = None) -> 
         f"Intent: {strategy.intent}",
         f"Length: {strategy.length_target}.",
         f"Directness: {strategy.directness}.",
+        "Tone & Cadence: Casual, relaxed, and concise. Do not speak too much. Say each point once: never repeat phrases, restate the question, or echo what was already said.",
+        SPEECH_STYLE_INSTRUCTIONS,
         (
             "Assertiveness level: "
             f"{strategy.assertiveness} (0=neutral, 1=recommend, 2=strong recommend, "

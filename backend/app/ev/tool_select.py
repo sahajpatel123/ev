@@ -21,9 +21,10 @@ PERSON_PATTERNS = [
     re.compile(r"\bwho(?:'s| is)\s+[A-Z][a-z]+\b", re.IGNORECASE),
 ]
 TEXT_PHRASE_RE = re.compile(
-    r"\b(?:text|message|imessage|whatsapp|ping)\b|"
-    r"\bsend(?: a)? (?:text|message|note|sms)\b|"
-    r"\bsend \w+ a (?:text|message|note|sms)\b",
+    r"\b(?:text|imessage|ping)\b|"
+    r"\bsend(?: a)? (?:text|message|note|sms|whatsapp)\b|"
+    r"\bsend \w+ a (?:text|message|note|sms|whatsapp)\b|"
+    r"\bmessage \S+",
     re.IGNORECASE,
 )
 CALL_PHRASE_RE = re.compile(
@@ -31,6 +32,11 @@ CALL_PHRASE_RE = re.compile(
     re.IGNORECASE,
 )
 MAIL_PHRASE_RE = re.compile(r"\b(?:mail|email|inbox)\b", re.IGNORECASE)
+MAIL_READ_RE = re.compile(
+    r"\b(?:check|read|open|show|list)\b.{0,24}\b(?:mail|email|inbox)\b|"
+    r"\binbox\b",
+    re.IGNORECASE,
+)
 OPEN_URL_RE = re.compile(
     r"\bopen\b.*\b(?:url|link|website|page|http)\b|"
     r"\bopen\s+(?:https?://|www\.)",
@@ -74,9 +80,12 @@ MESSAGES_LIST_RE = re.compile(
     re.IGNORECASE,
 )
 SEARCH_WEB_RE = re.compile(
-    r"\b(?:search the web|look (?:this|it )?up|google |wikipedia|"
-    r"headline|stock price|who won|capital of|population of|"
-    r"latest news|current events|define )\b",
+    r"\b(?:search(?:\s+it|\s+this|\s+that)?(?:\s+on)?(?:\s+the)?\s+web|"
+    r"look (?:this|it|that )?up|google |"
+    r"wikipedia|headline|stock price|who won|capital of|population of|"
+    r"latest news|current events|define |"
+    r"give me (?:info|information|details)|"
+    r"what (?:this|that)(?:\s+\w+){0,8}\s+(?:is )?about)\b",
     re.IGNORECASE,
 )
 NAV_RE = re.compile(
@@ -122,6 +131,28 @@ TEXT_TARGET_RE = re.compile(
     r"\b(?:text|message|i'?m message)\s+([A-Za-z][A-Za-z'-]+)\s+(.+)$",
     re.IGNORECASE,
 )
+HEADING_OUT_RE = re.compile(
+    r"(?:"
+    r"\bi(?:['’]?m| am) heading out\b|"
+    r"\bheading out\b|"
+    r"\bheaded out\b|"
+    r"\bi(?:['’]?m| am) (?:headed|heading) (?:out|off)\b|"
+    r"\bi(?:['’]?m| am) leaving(?!\s+(?:this|the file|the note|it here|the tab))\b|"
+    r"\bi(?:['’]?m| am) (?:gonna go|going to go|going out)\b|"
+    r"\bi(?:['’]?m| am) on my way\b|"
+    r"\bon my way out\b|"
+    r"\bgotta go\b|"
+    r"\bgot to go\b|"
+    r"\btime to (?:go|leave|head out)\b|"
+    r"\bleaving (?:now|the house|home)\b"
+    r")",
+    re.IGNORECASE,
+)
+HEADING_OUT_NOTIFY_RE = re.compile(
+    r"\b(?:and )?(?:text|message|tell|let|ping)\s+(?:my\s+)?"
+    r"([A-Za-z][A-Za-z'-]{1,30})\s+(?:that\s+)?(.+)$",
+    re.IGNORECASE,
+)
 
 # S2S live models may call these. R4/shell, drone, print, and camera replay
 # stay off the realtime catalog so the audio loop never owns a durable actuator.
@@ -144,6 +175,7 @@ LIVE_VOICE_TOOLS = frozenset(
         "mission_control",
         "search_web",
         "get_weather",
+        "heading_out",
         "set_reminder",
         "send_message",
         "place_call",
@@ -175,10 +207,13 @@ LIVE_VOICE_TOOLS = frozenset(
         "app_action",
         "look",
         "observe_camera",
+        "capture_photo",
+        "record_video",
         "phone_action",
         # F4 reduced-surface brokers (projection-filtered by EV_MODEL_SURFACE_V2).
         "recall",
         "computer",
+        "code",
     }
 )
 
@@ -202,8 +237,9 @@ LIVE_VOICE_TOOLS = LIVE_VOICE_TOOLS | frozenset(
 
 # Curated surface for EV_VOICE_LIVE_MODE=shadow: UI verbs + recall_history +
 # generic capabilities (API-critical actions with real delivery evidence and
-# canonical life state). Raw per-app computer names (inspect_ui, ui_action,
-# screen_look, app_action) and the conflated generic memory searches are NOT
+# canonical life state) plus app_action for semantic adapters (Music, Safari,
+# Notes, Chrome, Spotify, …). Raw Accessibility primitives (inspect_ui,
+# ui_action, screen_look) and the conflated generic memory searches are NOT
 # advertised here: the verbs replace them and the shadow block injects history.
 SHADOW_VOICE_TOOLS = frozenset(
     {
@@ -236,6 +272,7 @@ SHADOW_VOICE_TOOLS = frozenset(
         # Generic capabilities (not per-app verbs)
         "search_web",
         "get_weather",
+        "heading_out",
         "set_reminder",
         "start_timer",
         "send_message",
@@ -257,22 +294,37 @@ SHADOW_VOICE_TOOLS = frozenset(
         "activate_app",
         "list_apps",
         "computer_status",
+        "app_action",
         "home_status",
         "home_act",
         "calibrate",
         "list_protocols",
         "look",
         "observe_camera",
+        "capture_photo",
+        "record_video",
         "phone_action",
+        "code",
     }
 )
 # --- END EV VOICE CONTROL PLAN ----------------------------------------------
 
-# F4 target model-facing surface (transitional): the six names the realtime
+# F4 target model-facing surface (transitional): the names the realtime
 # model sees when EV_MODEL_SURFACE_V2=on. Everything else becomes an internal
 # implementation detail behind Core / Memory / Capability Router / Executor.
 F4_TARGET_SURFACE = frozenset(
-    {"evie_turn", "recall", "computer", "look", "observe_camera", "phone_action"}
+    {
+        "evie_turn",
+        "recall",
+        "computer",
+        "code",
+        "search_web",
+        "look",
+        "observe_camera",
+        "capture_photo",
+        "record_video",
+        "phone_action",
+    }
 )
 
 # Realtime models often refuse Mac open/close in speech even when the
@@ -285,6 +337,11 @@ LOOK_RE = re.compile(
     r"what do you see|"
     r"what(?:'s| is) (?:that|this|on (?:the |my )?camera|in (?:the )?frame|in front(?: of (?:you|the camera))?|on my desk)|"
     r"what am i holding|"
+    r"what am i wearing|"
+    r"what (?:t-?shirt|shirt|top|hoodie|jacket) am i|"
+    r"what(?:'s| is) my (?:t-?shirt|shirt|top|hoodie|jacket|hat|outfit)|"
+    r"what color is my|"
+    r"which (?:t-?shirt|shirt|top|hoodie) am i|"
     r"what(?:'s| is) this (?:one|now)|"
     r"what color is this|"
     r"look at (?:this|that|the camera|me|my desk|the (?:label|sign|screen|photo|picture))|"
@@ -310,15 +367,80 @@ OBSERVE_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+CAPTURE_RE = re.compile(
+    r"\b(?:"
+    r"take a (?:photo|picture|pic|selfie)|"
+    r"take my (?:photo|picture)|"
+    r"snap a (?:photo|picture|pic)|"
+    r"capture (?:this|that|me|a photo|a picture|myself)|"
+    r"photograph (?:this|me|that)|"
+    r"selfie|"
+    r"save (?:a |this )?(?:photo|picture)"
+    r")\b",
+    re.IGNORECASE,
+)
+RECORD_RE = re.compile(
+    r"\b(?:"
+    r"record (?:this|that|a video|a clip|me|us|a movie|video)|"
+    r"start recording|"
+    r"video record|"
+    r"film (?:this|that|me|us)|"
+    r"make a (?:video|clip)|"
+    r"shoot a (?:video|clip)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def is_heading_out(message: str | None) -> bool:
+    text = (message or "").strip()
+    if not text:
+        return False
+    if not HEADING_OUT_RE.search(text):
+        return False
+    lowered = text.lower()
+    if re.search(r"\bleav(?:e|ing)\s+(this|the file|the note|a comment)\b", lowered):
+        return False
+    return True
+
+
+def parse_heading_out(message: str | None) -> dict | None:
+    """Transcript → heading_out arguments. None when this is not a leave beat."""
+
+    if not is_heading_out(message):
+        return None
+    args: dict = {}
+    notify = HEADING_OUT_NOTIFY_RE.search(message or "")
+    if notify:
+        args["notify_to"] = notify.group(1)
+        rest = (notify.group(2) or "").strip()
+        rest = re.sub(
+            r"\b(i(?:['’]?m| am) heading out|heading out|gotta go)\b",
+            "",
+            rest,
+            flags=re.IGNORECASE,
+        ).strip(" ,.")
+        args["notify_text"] = (rest or "I'm heading out and may be late.")[:400]
+    return args
 
 
 def _look_intent(message: str, lowered: str) -> bool:
+    from app.memory.visual import wants_current_visual, wants_keep_visible, wants_past_visual
+
     if "look up" in lowered or "look this up" in lowered or "look it up" in lowered:
         return False
     if any(p in lowered for p in ("how do i look", "how do i feel", "you look wrecked")):
         return False
-    return bool(LOOK_RE.search(message)) or (
-        "camera" in lowered and any(p in lowered for p in ("look", "see", "read", "what's on"))
+    if wants_past_visual(message) and not wants_current_visual(message):
+        return False
+    return (
+        bool(LOOK_RE.search(message))
+        or wants_current_visual(message)
+        or wants_keep_visible(message)
+        or (
+            "camera" in lowered
+            and any(p in lowered for p in ("look", "see", "read", "what's on"))
+        )
     )
 
 
@@ -334,13 +456,26 @@ def select_tool(message: str) -> ToolSelectionResponse:
     if TEXT_PHRASE_RE.search(message):
         add("send_message", 6, "The message asks to send a text/message.")
         add("resolve_contact", 4, "Life sends should resolve the recipient first.")
-    if CALL_PHRASE_RE.search(message) and not re.search(
-        r"\bremind(?:er)?\b.{0,48}\bcall\b", lowered
+    from app.memory.visual import wants_keep_visible as _keep_from_sight
+
+    if (
+        CALL_PHRASE_RE.search(message)
+        and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", lowered)
+        and not _keep_from_sight(message)
+        and not re.search(
+            r"\biphone\b|\bprimary phone\b|\bthis is my\b.{0,24}\bphone\b",
+            lowered,
+        )
     ):
         add("place_call", 6, "The message asks to place a call.")
         add("resolve_contact", 4, "Life calls should resolve the recipient first.")
     if MAIL_PHRASE_RE.search(message):
-        add("list_mail", 5, "The message asks about mail/email.")
+        read_mail = bool(MAIL_READ_RE.search(message))
+        add(
+            "list_mail",
+            10 if read_mail else 5,
+            "The message asks about mail/email.",
+        )
     if OPEN_URL_RE.search(message):
         add("open_url", 6, "The message asks to open a URL.")
     open_app = OPEN_APP_RE.search(message)
@@ -425,8 +560,42 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("where_is", 6, "The owner asked where someone is.")
     if "camera" in lowered and any(p in lowered for p in ("show", "replay", "from ")):
         add("camera_replay", 6, "The owner asked to replay an owner camera.")
+    from app.memory.visual import (
+        is_visual_recall_query,
+        wants_current_visual,
+        wants_keep_visible,
+        wants_past_visual,
+    )
+
+    if is_visual_recall_query(message) and not (
+        RECORD_RE.search(message) or CAPTURE_RE.search(message) or OBSERVE_RE.search(message)
+    ):
+        live_now = wants_current_visual(message) and not wants_past_visual(message)
+        if not live_now:
+            add(
+                "search_memory",
+                12,
+                "The owner asked about a photo, clip, clothing, or object Evie already saw.",
+            )
+    if is_heading_out(message):
+        add("heading_out", 9, "The owner is leaving; weather, calendar, and leave-by in one beat.")
+    from app.ev.laptop_files import looks_like_file_task
+    from app.ev.luna_code import looks_like_code_request
+
+    if looks_like_code_request(message):
+        add("code", 12, "The owner asked Evie to write, fix, or run software.")
+    elif looks_like_file_task(message):
+        add("computer", 13, "The owner asked Evie to read, write, or edit a local file.")
+    if RECORD_RE.search(message):
+        add("record_video", 10, "The owner asked to record a video clip.")
+    if CAPTURE_RE.search(message):
+        add("capture_photo", 10, "The owner asked to take and save a photo.")
     if OBSERVE_RE.search(message):
         add("observe_camera", 9, "The owner asked to watch a visual change over time.")
+    if wants_keep_visible(message) and not (
+        RECORD_RE.search(message) or CAPTURE_RE.search(message)
+    ):
+        add("look", 10, "The owner asked Evie to remember something in view.")
     if _look_intent(message, lowered):
         add("look", 8, "The owner asked the assistant to look at the camera or a photo.")
     if any(p in lowered for p in ("subscribe", "watchlist", "watch for")):
@@ -472,9 +641,48 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_quiet_hours", 6, "The owner is setting quiet hours.")
     if "what just happened" in lowered:
         add("list_callouts", 6, "The owner asked what just happened.")
+    from app.memory.life_archive.locate import classify_shelf, is_owner_history_query
+
+    owner_history = is_owner_history_query(message) and not is_visual_recall_query(message)
+    if owner_history:
+        add(
+            "search_memory",
+            11,
+            "The owner asked about their own past with Evie, not a WhatsApp aisle.",
+        )
     if classify_memory_intent(message) == "explicit_recall":
-        add("search_memory", 9, "The owner asked Evie to recall prior conversations or decisions.")
-    add("search_memory", 1, "Default: personal memory lookup.")
+        # Person cards ("who is Maya") stay get_person. Kinship aisle still
+        # wins via recall_history 10. Owner-history still searches memory.
+        live_now = _live_list_scored(scores)
+        if not live_now and (owner_history or not person_request):
+            add("search_memory", 9, "The owner asked Evie to recall prior conversations or decisions.")
+
+    life_shelf = classify_shelf(message)
+    live_list_now = _live_list_scored(scores)
+    contact_ask = life_shelf == "contacts" or any(
+        phrase in lowered
+        for phrase in ("my contacts", "in my contacts", "address book", "phone book")
+    )
+    if not live_list_now and not _is_app_window_command(message) and (
+        life_shelf
+        in {
+            "photos",
+            "notes",
+            "tasks",
+            "calendar",
+            "bookmarks",
+            "chats",
+            "owner",
+            "people",
+            "familiarity",
+            "mail",
+            "health",
+        }
+        or (contact_ask and not person_request)
+    ):
+        add("recall_history", 10, "The owner asked about a stored life-archive aisle.")
+    if not scores:
+        add("chat", 0, "Ordinary conversation; no memory or life tool.")
 
     best = max(scores, key=lambda item: item[1])
     alternatives = [
@@ -490,6 +698,33 @@ def select_tool(message: str) -> ToolSelectionResponse:
     )
 
 
+def _is_app_window_command(text: str) -> bool:
+    """True for open/close/switch-app commands that must not open a life shelf."""
+    if OPEN_APP_RE.search(text) or CLOSE_APP_RE.search(text):
+        return True
+    return bool(re.match(r"\s*(?:switch to|bring up|activate)\s+", text or "", re.I))
+
+
+def _live_list_scored(scores: list[tuple[str, int, str]]) -> bool:
+    return any(
+        name in {"list_messages", "calendar_read"} or (name == "list_mail" and weight >= 10)
+        for name, weight, _why in scores
+    )
+
+
+def _live_list_action(text: str) -> tuple[str, dict] | None:
+    """Live inbox/calendar reads beat recorded shelves. History questions stay on recall."""
+    if _is_app_window_command(text):
+        return None
+    if MAIL_READ_RE.search(text):
+        return "list_mail", {}
+    if MESSAGES_LIST_RE.search(text):
+        return "list_messages", {}
+    if CALENDAR_READ_RE.search(text):
+        return "calendar_read", {}
+    return None
+
+
 def resolve_live_action(message: str) -> tuple[str, dict] | None:
     """High-precision transcript → POL tool for the pipeline live path.
 
@@ -499,11 +734,67 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     """
 
     text = (message or "").strip()
-    if not text or len(text) > 240:
+    if not text:
+        return None
+    from app.ev.laptop_files import looks_like_file_task
+    from app.ev.luna_code import looks_like_code_request
+    from app.memory.visual import (
+        is_keep_recall_query,
+        is_visual_recall_query,
+        wants_keep_visible,
+    )
+
+    # Memorize-from-sight is a look, not a file/code goal, even if the
+    # utterance also names a folder or a book file.
+    if wants_keep_visible(text):
+        return "look", {"prompt": text[:400], "focus": "auto"}
+    if looks_like_code_request(text):
+        return "code", {"goal": text[:4000]}
+    if looks_like_file_task(text):
+        return "computer", {"goal": text[:500]}
+    from app.memory.life_archive.locate import (
+        classify_shelf,
+        is_owner_history_query,
+        life_shelf_for_memory_search,
+    )
+
+    _life_recall_shelves = {
+        "chats",
+        "people",
+        "familiarity",
+        "photos",
+        "notes",
+        "mail",
+        "contacts",
+        "owner",
+        "tasks",
+        "calendar",
+        "bookmarks",
+        "health",
+    }
+    live_list = _live_list_action(text)
+    if live_list is not None:
+        return live_list
+    if len(text) > 240:
+        if wants_keep_visible(text):
+            return "look", {"prompt": text[:400], "focus": "auto"}
+        if (
+            is_visual_recall_query(text)
+            or is_keep_recall_query(text)
+            or is_owner_history_query(text)
+        ):
+            return "search_memory", {"query": text[:400]}
+        if not _is_app_window_command(text):
+            life_shelf = life_shelf_for_memory_search(text, classify_shelf(text))
+            if life_shelf in _life_recall_shelves:
+                return "recall", {"query": text[:1000]}
         return None
     timer = TIMER_RE.search(text)
     if timer:
         return "start_timer", {"minutes": int(timer.group(1))}
+    heading = parse_heading_out(text)
+    if heading is not None:
+        return "heading_out", heading
     weather = is_weather_query(text)
     if weather:
         return "get_weather", {}
@@ -516,6 +807,18 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     send = TEXT_TARGET_RE.search(text)
     if send:
         return "send_message", {"to": send.group(1), "text": send.group(2).strip()[:500]}
+    if wants_keep_visible(text):
+        return "look", {"prompt": text[:400], "focus": "auto"}
+    if (
+        is_visual_recall_query(text)
+        or is_keep_recall_query(text)
+        or is_owner_history_query(text)
+    ):
+        return "search_memory", {"query": text[:400]}
+    if not _is_app_window_command(text):
+        life_shelf = life_shelf_for_memory_search(text, classify_shelf(text))
+        if life_shelf in _life_recall_shelves:
+            return "recall", {"query": text[:1000]}
     open_app = OPEN_APP_RE.search(text)
     if open_app:
         return "open_app", {"name": open_app.group("name")}
@@ -543,6 +846,11 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         "list_mail",
         "look",
         "observe_camera",
+        "capture_photo",
+        "record_video",
+        "heading_out",
+        "code",
+        "computer",
     }:
         if name == "calculate":
             return name, {"expression": text}
@@ -550,5 +858,15 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
             return name, {"prompt": text[:400], "focus": "auto"}
         if name == "observe_camera":
             return name, {"objective": text[:400], "duration_seconds": 4}
+        if name == "capture_photo":
+            return name, {"prompt": text[:400]}
+        if name == "record_video":
+            return name, {"prompt": text[:400], "duration_seconds": 8}
+        if name == "heading_out":
+            return name, parse_heading_out(text) or {}
+        if name == "code":
+            return name, {"goal": text[:4000]}
+        if name == "computer":
+            return name, {"goal": text[:500]}
         return name, {}
     return None

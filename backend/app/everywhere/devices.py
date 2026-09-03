@@ -85,6 +85,7 @@ def public_device(device: Device) -> dict:
         "sync_cursor_at": device.sync_cursor_at.isoformat() if device.sync_cursor_at else None,
         "sync_cursor_id": str(device.sync_cursor_id) if device.sync_cursor_id else None,
         "capabilities": list(device.capabilities or []),
+        "endpoint_profile": getattr(device, "endpoint_profile", None) or {},
     }
 
 

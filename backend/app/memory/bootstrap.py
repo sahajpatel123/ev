@@ -14,7 +14,7 @@ from app.memory.paths import atomic_write_json, ensure_tree, memory_root, read_j
 from app.models import Event, Memory
 from app.utils.text import token_estimate, utcnow
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _RAM: dict[str, Any] | None = None
 
 
@@ -76,10 +76,19 @@ async def build_bootstrap(session: AsyncSession) -> dict[str, Any]:
     episodes = await recent_episodes(session, k=2)
     through = await _latest_event_id(session)
     owner = profile.owner_preferred_name or profile.nickname or "owner"
+    sign = ""
+    try:
+        from app.memory.life_archive.locate import familiarity_sign
+
+        sign = await familiarity_sign(session)
+    except Exception:  # noqa: BLE001 - empty sign must not block a live session
+        sign = ""
     lines = [
         f"Owner: {owner}.",
         "Provider sessions are disposable; this relationship is not.",
     ]
+    if sign:
+        lines.append(sign)
     if state.active_project:
         lines.append(f"Active project: {state.active_project}.")
     if state.current_task:
@@ -153,9 +162,13 @@ def reset_bootstrap_cache() -> None:
 
 def load_cached_bootstrap() -> dict[str, Any] | None:
     global _RAM
-    if _RAM:
+    if _RAM and int(_RAM.get("schema_version") or 0) == SCHEMA_VERSION:
         return dict(_RAM)
+    if _RAM:
+        _RAM = None
     packed = read_json(memory_root() / "cache" / "bootstrap.json")
+    if packed and int(packed.get("schema_version") or 0) != SCHEMA_VERSION:
+        packed = None
     if packed:
         _RAM = packed
         note_bootstrap(
@@ -182,7 +195,12 @@ async def get_bootstrap(session: AsyncSession | None = None) -> dict[str, Any]:
             "tokens": 0,
         }
     latest = await _latest_event_id(session)
-    if cached and cached.get("relationship") and cached.get("through_event_id") == latest:
+    if (
+        cached
+        and int(cached.get("schema_version") or 0) == SCHEMA_VERSION
+        and cached.get("relationship")
+        and cached.get("through_event_id") == latest
+    ):
         return cached
     return await build_bootstrap(session)
 

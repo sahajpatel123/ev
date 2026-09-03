@@ -1,3 +1,5 @@
+**Primary iPhone product (locked):** Safari PWA at `/evie/` over Tailscale. See [`docs/IPHONE_PRODUCT.md`](IPHONE_PRODUCT.md). No Xcode required. `EVApp`/Watch/Share remain a later native track.
+
 # EV — Client & Device Architecture
 
 **Version 1.0** — the "suit" (iPhone/Watch) and "workbench" (Mac/web/CLI) surfaces,

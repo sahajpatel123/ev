@@ -102,10 +102,12 @@ generic capabilities — not per-app verbs — so they do not re-open the treadm
   (`search_memory`, `search_decisions`, `search_timeline`) are **not advertised** — the
   verbs replace them.
 - Every completed owner transcript triggers a **shadow recall** (`build_shadow_memory`:
-  `Retriever.search(access="model")`, brief chunks, token budget) and injects
-  `SHADOW MEMORY: …` into the session instructions (session.update) / the next
-  `response.create` instructions. The model speaks directly about the past — **no tool
-  call, no second turn, ~0 extra latency budget**.
+  `Retriever.search(access="model")`, brief chunks, token budget). On OpenAI
+  Realtime, `create_response` is **false** in shadow so the provider does not
+  auto-answer on VAD; the bridge attaches `SHADOW MEMORY: …` to **this turn's**
+  `response.create`. (A later `session.update` would miss the current answer.)
+  On xAI, session.update remains best-effort. The model speaks directly about
+  the past — **no tool call, no second turn**.
 - `recall_history` remains advertised as the explicit fallback ("go deeper / what about…")
   and for the typed-chat surface.
 - Shadow is read-only: it never creates prompts outside the existing privacy boundary

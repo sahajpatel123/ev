@@ -78,6 +78,11 @@ public struct NativeBridgeRequest: Sendable {
         "requestPermission",
         "permissionStatus",
         "bind_session",
+        "pending_capture",
+        "healthkit_snapshot",
+        "calendar_snapshot",
+        "contacts_snapshot",
+        "notification_status",
     ]
 
     public static func parse(_ body: [String: Any]) -> NativeBridgeRequest? {

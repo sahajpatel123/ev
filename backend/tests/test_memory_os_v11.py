@@ -240,6 +240,61 @@ async def test_editor_current_vs_historical(db_session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_owner_history_recall_skips_empty_chats_when_name_collides(
+    db_session: AsyncSession,
+) -> None:
+    """A contact named Before must not empty-pack 'what did I prefer before'."""
+
+    from app.memory.history import build_shadow_memory, recall_history
+    from app.memory.life_archive.locate import (
+        SOURCE,
+        classify_shelf,
+        life_shelf_for_memory_search,
+        people_aisle_names,
+        reset_people_cache,
+        resolve_shelf,
+    )
+    from app.models import Event
+
+    reset_people_cache()
+    db_session.add(
+        Event(
+            source=SOURCE,
+            event_type="life.person",
+            content={"name": "Before", "title": "Before"},
+            sha256="c" * 64,
+        )
+    )
+    await db_session.commit()
+    reset_people_cache()
+    names = await people_aisle_names(db_session)
+    assert any(str(name).lower() == "before" for name in names)
+    query = "What did I prefer before?"
+    assert classify_shelf(query, people=names) is None
+    assert await resolve_shelf(db_session, query) is None
+    assert life_shelf_for_memory_search(query, "chats") is None
+    assert life_shelf_for_memory_search(query, "people") is None
+
+    service = MemoryService()
+    t1 = utcnow() - timedelta(days=10)
+    t2 = utcnow() - timedelta(hours=1)
+    await _commit_turn(db_session, "I prefer VS Code.", occurred_at=t1)
+    await _commit_turn(db_session, "I've switched to Cursor.", occurred_at=t2)
+    historical = await service.recall(db_session, query)
+    blob = _blob(historical).lower()
+    assert historical.get("life_shelf") in {None, ""}
+    assert historical.get("grounding") == "evidence"
+    assert "vs code" in blob
+    assert "vs code" in str(historical.get("spoken") or "").lower()
+    shadow = await build_shadow_memory(db_session, query, k=8)
+    assert "vs code" in shadow.lower()
+    history = await recall_history(db_session, query, k=8)
+    history_blob = " ".join(str(item.get("text") or "") for item in history.get("results") or []).lower()
+    assert history.get("ok") is True
+    assert "vs code" in history_blob
+
+
+@pytest.mark.asyncio
 async def test_music_as_of_resolution(db_session: AsyncSession) -> None:
     service = MemoryService()
     t1 = utcnow() - timedelta(days=3)

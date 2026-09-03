@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Entity, Event, Memory, MemoryEntity, ObservationRecord, RecognitionLog
+from app.models import Entity, EntityRelationship, Event, Memory, MemoryEntity, ObservationRecord, RecognitionLog
 from app.schemas import PersonWhereaboutsOut
 from app.utils.text import normalize_text, utcnow
 
@@ -24,23 +24,36 @@ def _freshness(value: str | datetime | None, *, stale_after_seconds: int = 86_40
 
 
 async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
+    from app.memory.life_archive.locate import name_lookup_keys
+
     normalized = normalize_text(name)
     entity = None
     relationship = None
-    result = await session.execute(
-        select(Entity).where(
-            Entity.entity_type == "person",
-            Entity.canonical_key == f"person:{normalized}",
-        )
-    )
-    entity = result.scalar_one_or_none()
-    if entity is None:
+    for candidate in name_lookup_keys(name):
+        key = normalize_text(candidate)
         result = await session.execute(
-            select(Entity)
-            .where(Entity.entity_type == "person", Entity.name.ilike(f"%{name}%"))
-            .limit(5)
+            select(Entity).where(
+                Entity.entity_type == "person",
+                Entity.canonical_key == f"person:{key}",
+            )
         )
-        entity = result.scalars().first()
+        entity = result.scalar_one_or_none()
+        if entity is not None:
+            normalized = key
+            break
+    if entity is None:
+        for candidate in name_lookup_keys(name):
+            if len(candidate.strip()) < 4:
+                continue
+            result = await session.execute(
+                select(Entity)
+                .where(Entity.entity_type == "person", Entity.name.ilike(f"%{candidate}%"))
+                .limit(5)
+            )
+            entity = result.scalars().first()
+            if entity is not None:
+                normalized = normalize_text(entity.name or candidate)
+                break
 
     # Mentions across events.
     mention_stmt = (
@@ -321,6 +334,33 @@ async def whereabouts(session: AsyncSession, name: str) -> PersonWhereaboutsOut:
             "freshness_state": _freshness(latest_sighting["confirmed_at"]),
             "text": f"Confirmed in a shared attachment ({latest_sighting['label']}).",
         }
+
+    if entity is not None:
+        if relationship is None:
+            edge = (
+                await session.execute(
+                    select(EntityRelationship)
+                    .where(
+                        EntityRelationship.to_entity_id == entity.id,
+                        EntityRelationship.valid_until.is_(None),
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if edge is not None:
+                relationship = edge.relationship_type
+        summary = str(entity.summary or "").strip()
+        if summary and not any(item.get("text") == summary for item in related_memories):
+            related_memories.insert(
+                0,
+                {
+                    "memory_id": str(entity.id),
+                    "memory_type": "life.person",
+                    "text": summary[:400],
+                    "event_time": utcnow().isoformat(),
+                    "confidence": 0.9,
+                },
+            )
 
     return PersonWhereaboutsOut(
         name=name,

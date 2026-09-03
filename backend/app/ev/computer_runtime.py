@@ -32,6 +32,12 @@ from app.ev.computer_strategy import (
     preferred_strategy_for_goal,
     progress_milestone_for,
     user_facing_terminal_speech,
+    wants_first_on_page_item,
+    wants_first_result_text,
+    wants_play_media,
+    wants_screen_observation,
+    looks_like_opened_content_item,
+    _search_query_from_goal,
 )
 
 logger = logging.getLogger("ev.computer")
@@ -48,12 +54,28 @@ COMPUTER_LIFECYCLE_TOOLS = frozenset(
 )
 COMPUTER_AX_TOOLS = frozenset({"inspect_ui", "ui_action"})
 COMPUTER_VISION_TOOLS = frozenset({"screen_look"})
-COMPUTER_SEMANTIC_TOOLS = frozenset({"app_action"})
+COMPUTER_SEMANTIC_TOOLS = frozenset({"app_action", "computer"})
+COMPUTER_UI_VERB_AX = frozenset(
+    {
+        "read",
+        "click",
+        "double_click",
+        "right_click",
+        "type",
+        "paste",
+        "key",
+        "scroll",
+        "drag",
+    }
+)
+COMPUTER_UI_VERB_VISION = frozenset({"see"})
 COMPUTER_TOOLS = (
     COMPUTER_LIFECYCLE_TOOLS
     | COMPUTER_AX_TOOLS
     | COMPUTER_VISION_TOOLS
     | COMPUTER_SEMANTIC_TOOLS
+    | COMPUTER_UI_VERB_AX
+    | COMPUTER_UI_VERB_VISION
 )
 MAX_GOAL_STEPS = 24
 MAX_GOAL_SECONDS = 90.0
@@ -99,6 +121,9 @@ _APP_HINTS: tuple[tuple[str, str], ...] = (
     ("music", "Music"),
     ("notes", "Notes"),
     ("safari", "Safari"),
+    ("chrome", "Chrome"),
+    ("google chrome", "Chrome"),
+    ("spotify", "Spotify"),
     ("finder", "Finder"),
     ("calculator", "Calculator"),
     ("calendar", "Calendar"),
@@ -175,6 +200,28 @@ class ComputerGoal:
         }
 
 
+def _is_speech_only_subgoal(text: str) -> bool:
+    """True when a leftover 'then …' clause is just speak-back, not another Mac act."""
+
+    lower = (text or "").strip().lower()
+    if not lower:
+        return True
+    if re.search(
+        r"\b(click|search|type|write|create|append|play|navigate|scroll|press|"
+        r"open|close|quit|launch|find|paste|read)\b",
+        lower,
+    ):
+        return False
+    if re.search(
+        r"\b(report|tell|say|speak|announce|summarize|summarise|recite|describe)\b",
+        lower,
+    ):
+        return True
+    if re.search(r"\bwhat it says\b", lower):
+        return True
+    return False
+
+
 def parse_owner_computer_goal(text: str, *, goal_id: str | None = None) -> ComputerGoal:
     raw = (text or "").strip()
     goal = ComputerGoal(
@@ -244,12 +291,16 @@ def parse_owner_computer_goal(text: str, *, goal_id: str | None = None) -> Compu
         or goal.play_requested
         or goal.find_only
         or re.search(
-            r"\b(and|then|find|search|click|type|write|make a note|play)\b",
+            r"\b(then|search|click|type|write|make a note|play)\b",
             lower,
+        )
+        or (
+            re.search(r"\band\b", lower)
+            and re.search(r"\b(search|click|type|write|play|tab|open)\b", lower)
         )
     )
     goal.lifecycle_only = (not multi) and bool(
-        re.search(r"\b(open|launch|quit|close|activate|focus)\b", lower)
+        re.search(r"\b(open|launch|quit|close|activate|focus|dismiss|hide|exit)\b", lower)
     )
     if goal.requested_outcome:
         goal.status = "planning"
@@ -370,6 +421,8 @@ class ComputerState:
     last_milestone: str = "NEW"
     budget_used: dict[str, int] = field(default_factory=dict)
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
+    original_owner_request: str | None = None
+    last_file_path: str | None = None
 
     def working_context(self) -> dict[str, Any]:
         return {
@@ -564,6 +617,24 @@ def overlay_computer_entry(entry: dict[str, Any], readiness: ComputerReadiness) 
         out["executable"] = False
         out["fallback_reason"] = out["availability_reason"]
         return out
+    if name == "computer":
+        # F4 broker: a live Mac Talk session is the control client. Do not
+        # wait for a later computer_state event before telling the model
+        # it may operate apps.
+        if readiness.mac_client_connected or readiness.app_lifecycle_ready:
+            out["availability"] = "available"
+            out["availability_reason"] = "live Mac computer broker ready"
+            out["model_exposed"] = True
+            out["realtime_eligible"] = True
+            out["executable"] = True
+            return out
+        out["availability"] = "not_connected"
+        out["availability_reason"] = "EV.app is not connected for Mac UI control"
+        out["model_exposed"] = False
+        out["realtime_eligible"] = False
+        out["executable"] = False
+        out["fallback_reason"] = out["availability_reason"]
+        return out
     if not readiness.mac_client_connected:
         out["availability"] = "not_connected"
         out["availability_reason"] = "EV.app is not connected for Mac UI control"
@@ -576,7 +647,7 @@ def overlay_computer_entry(entry: dict[str, Any], readiness: ComputerReadiness) 
     out["model_exposed"] = True
     out["realtime_eligible"] = True
     out["executable"] = True
-    if name in COMPUTER_AX_TOOLS:
+    if name in COMPUTER_AX_TOOLS or name in COMPUTER_UI_VERB_AX:
         if readiness.accessibility_permission == "denied":
             out["availability_reason"] = "macOS has not granted EV Accessibility permission"
         elif readiness.accessibility_permission == "not_determined":
@@ -587,7 +658,7 @@ def overlay_computer_entry(entry: dict[str, Any], readiness: ComputerReadiness) 
     if name in COMPUTER_SEMANTIC_TOOLS:
         out["availability_reason"] = "semantic app adapters via EV.app"
         return out
-    if name in COMPUTER_VISION_TOOLS:
+    if name in COMPUTER_VISION_TOOLS or name in COMPUTER_UI_VERB_VISION:
         if not readiness.screen_vision_ready and readiness.screen_capture_permission == "denied":
             out["availability_reason"] = "macOS has not granted EV Screen Recording permission"
         elif not readiness.screen_vision_ready:
@@ -614,12 +685,12 @@ def computer_operator_line(readiness: ComputerReadiness | dict[str, Any] | None)
     if raw.get("generic_ui_control_ready") and raw.get("screen_vision_ready"):
         return (
             "COMPUTER CONTROL: AVAILABLE. Open, activate, and quit apps; inspect "
-            "accessible UI; click, type, select, and scroll; capture a window "
+            "accessible UI; click, type, select, scroll, and drag; capture a window "
             "screenshot when accessibility is insufficient. Prefer accomplishing "
             "the owner's Mac goal yourself and verify before speaking success. "
-            "Opening an app is not completion. Prefer app_action when a semantic "
-            "adapter is listed in the open_app control payload. Do not narrate "
-            "each micro-action."
+            "Opening an app is not completion. When listed, use read/see/click/"
+            "type/key for any app (Apple or third-party). Prefer app_action when "
+            "a semantic adapter is listed. Do not narrate each micro-action."
         )
     if raw.get("generic_ui_control_ready"):
         return (
@@ -659,6 +730,55 @@ def computer_operator_line(readiness: ComputerReadiness | dict[str, Any] | None)
 
 def computer_model_instructions(readiness: ComputerReadiness | dict[str, Any] | None) -> str:
     raw = readiness.as_dict() if isinstance(readiness, ComputerReadiness) else dict(readiness or {})
+    try:
+        from app.config import settings
+
+        f4_surface = (
+            getattr(settings, "model_surface_v2", "legacy") or "legacy"
+        ).strip().lower() == "on"
+    except Exception:  # pragma: no cover - settings always importable in app
+        f4_surface = False
+    if f4_surface:
+        if raw.get("mac_client_connected") or raw.get("app_lifecycle_ready"):
+            return (
+                "COMPUTER CONTROL: AVAILABLE via the computer function. "
+                "When the owner asks you to operate this Mac or an app — Chrome, "
+                "Safari, Notes, Music, Spotify, Calculator, Finder, or any other "
+                "installed application — call computer immediately with goal set "
+                "to their request in plain words and target_app when they named "
+                "an app. Newly installed or removed apps are picked up live from "
+                "this Mac; you do not need a restart to open, close, or operate "
+                "them. Close, quit, open, new tab, close tab, and in-app actions "
+                "always go through computer. If this line says AVAILABLE, never "
+                "say there is no Mac control client connected. "
+                "If they name a URL or domain such as youtube.com, open that "
+                "site; do not Google-search the domain. Search queries must be "
+                "only the words they want found, not leftover clauses. "
+                "Read, write, edit, list, or open local files on this Mac "
+                "(Desktop, Documents, Downloads, and similar owner folders) "
+                "through computer. Put the file name and folder in the goal. "
+                "Writing, editing, or running software is the code function, "
+                "not computer and not typing into an editor. "
+                "After a page or search loads, if they asked to open or play "
+                "the first video, link, or item on screen, finish that click "
+                "in the same turn. Looking something up on the web to tell "
+                "them about it is search_web, not a Safari search. "
+                "The Mac screen, window, desktop, display, or which app is open "
+                "is computer, not camera look. Camera look is the room and "
+                "people. If there is no dedicated adapter, inspect the UI and "
+                "click, or capture the window and click visible text. "
+                "Do not say you lack access, need a connection, or cannot "
+                "operate apps. Do not recite the operator sheet instead of "
+                "acting. Do not call inspect_ui, open_app, or app_action by "
+                "name; those run inside computer. Finish the in-app outcome "
+                "(search done, first result opened, note written, track playing), "
+                "then speak the verified result. Speech is never execution evidence."
+            )
+        return (
+            "COMPUTER CONTROL: UNAVAILABLE. No Mac control client is connected. "
+            "If the owner asks you to operate the Mac, say EV.app is not "
+            "connected. Do not claim you clicked anything."
+        )
     line = computer_operator_line(raw)
     ui_ready = bool(raw.get("generic_ui_control_ready"))
     life_ready = bool(raw.get("app_lifecycle_ready"))
@@ -667,7 +787,9 @@ def computer_model_instructions(readiness: ComputerReadiness | dict[str, Any] | 
         " You have real computer-control tools. When the owner asks for an "
         "action on this Mac, prefer accomplishing the goal yourself when an "
         "available capability can do so. Do not describe manual steps when you "
-        "can perform them. Do not assume failure because an exact high-level "
+        "can perform them. Writing, editing, or running software is the code "
+        "function, not computer and not typing into an editor. Do not assume "
+        "failure because an exact high-level "
         "tool is absent. Compose list_apps, open_app, activate_app, app_action, "
         "inspect_ui, ui_action, and screen_look. If open_app returns "
         "control.preferred=semantic_adapter, call app_action next — do not "
@@ -770,11 +892,88 @@ def _is_continuation_request(text: str, existing: ComputerGoal | None) -> bool:
     return bool(_CONTINUATION_RE.search(raw))
 
 
+def _looks_like_owner_correction(text: str) -> bool:
+    """True when the owner is narrowing or replacing the previous computer goal."""
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:just|only|nothing else|i (?:said|meant|told)|not play|"
+            r"don't play|do not play|no video|don't click|do not click)\b",
+            raw,
+            re.I,
+        )
+    )
+
+
+def _looks_like_model_rewrite(original: str, newer: str) -> bool:
+    """True when a shorter computer() goal is still the same owner task."""
+    o = (original or "").strip().lower()
+    n = (newer or "").strip().lower()
+    if not o or not n:
+        return False
+    if n == o or n in o:
+        return True
+    if re.search(r"\b(close|quit|exit)\b", n) and not re.search(
+        r"\b(close|quit|exit)\b", o
+    ):
+        return False
+    if (wants_play_media(n) or wants_first_on_page_item(n)) and not (
+        wants_play_media(o) or wants_first_on_page_item(o)
+    ):
+        if re.search(r"\b(playlist|spotify|\bsong\b|\btrack\b|apple music)\b", o):
+            return False
+        return True
+    tokens = ("safari", "chrome", "youtube", "google", "search")
+    if any(token in o and token in n for token in tokens) and len(n) <= max(
+        len(o) + 24, 80
+    ):
+        return True
+    if wants_play_media(o) and (
+        wants_play_media(n)
+        or wants_screen_observation(n)
+        or re.search(
+            r"\b(verif|clickable|visible|screenshot|look at (?:the )?(?:page|screen)|if nothing)\b",
+            n,
+        )
+    ):
+        return True
+    return False
+
+
+def _goal_haystack(state: ComputerState | None) -> str:
+    if state is None:
+        return ""
+    parts = [
+        str(getattr(state, "original_owner_request", "") or ""),
+        str(getattr(state.goal, "owner_request", "") or "") if state.goal else "",
+        str(state.pending_goal or ""),
+    ]
+    return " ".join(part for part in parts if part)
+
+
+def _intent_haystack(state: ComputerState | None) -> str:
+    """Owner words only. A model rewrite must not add play/first-video intent."""
+    if state is None:
+        return ""
+    orig = str(getattr(state, "original_owner_request", "") or "").strip()
+    if orig:
+        if re.search(r"\b(playlist|spotify|\bsong\b|\btrack\b|apple music)\b", orig, re.I):
+            return _goal_haystack(state)
+        return orig
+    return _goal_haystack(state)
+
+
 def note_goal(state: ComputerState | None, text: str | None) -> None:
     if state is None:
         return
     goal = str(text or "").strip()
     if not goal:
+        return
+    from app.ev.laptop_files import is_system_confirmation
+
+    if is_system_confirmation(goal):
         return
     if _CANCEL_RE.search(goal) and len(goal) < 80:
         state.cancelled = True
@@ -803,6 +1002,14 @@ def note_goal(state: ComputerState | None, text: str | None) -> None:
         log_computer("computer.goal_started", extra={"goal": state.pending_goal, "continue": True})
         return
     parsed = parse_owner_computer_goal(goal)
+    if (
+        state.original_owner_request
+        and _looks_like_model_rewrite(state.original_owner_request, goal)
+        and not _looks_like_owner_correction(goal)
+    ):
+        pass
+    else:
+        state.original_owner_request = goal[:400]
     state.goal = parsed
     state.pending_goal = goal[:400]
     state.step_count = 0
@@ -871,6 +1078,23 @@ def ingest_app_action_result(state: ComputerState | None, result: dict[str, Any]
         goal.verified = False
         goal.failure_reason = "ambiguous"
         return
+    haystack = _intent_haystack(state)
+    if (
+        action in {"new_tab", "close_tab", "next_tab", "previous_tab"}
+        and result.get("executed") is True
+        and result.get("ok") is not False
+    ):
+        goal.status = "complete"
+        goal.verified = True
+        goal.failure_reason = None
+        goal.observed = {
+            "app": result.get("app"),
+            "action": action,
+            "url": result.get("url"),
+            "title": result.get("title"),
+        }
+        result["verified"] = True
+        return
     if goal.find_only and action in {"find_playlist", "list_playlists", "list_tracks"}:
         tracks = result.get("tracks") if isinstance(result.get("tracks"), list) else []
         has_track = bool(track or tracks)
@@ -912,6 +1136,26 @@ def ingest_app_action_result(state: ComputerState | None, result: dict[str, Any]
             "keys": result.get("keys"),
         }
         return
+    if (
+        action == "search"
+        and result.get("executed") is True
+        and result.get("ok") is not False
+        and result.get("verified") is True
+        and str(result.get("url") or "").strip()
+        and not wants_first_result_text(haystack)
+        and not wants_play_media(haystack)
+    ):
+        goal.status = "complete"
+        goal.verified = True
+        goal.failure_reason = None
+        goal.observed = {
+            "app": result.get("app"),
+            "action": "search",
+            "query": result.get("query"),
+            "url": result.get("url"),
+        }
+        result["verified"] = True
+        return
     if result.get("verified") is True and action in {
         "play",
         "play_track",
@@ -923,7 +1167,46 @@ def ingest_app_action_result(state: ComputerState | None, result: dict[str, Any]
         "create",
         "append",
         "open_item",
+        "search",
+        "read",
     }:
+        if action == "search" and wants_first_result_text(haystack):
+            goal.status = "acting"
+            goal.verified = False
+            return
+        if action == "search" and wants_play_media(haystack):
+            goal.status = "acting"
+            goal.verified = False
+            return
+        if action == "search" and not str(result.get("url") or "").strip():
+            goal.status = "acting"
+            goal.verified = False
+            result["verified"] = False
+            return
+        if action == "create" and "note" in str(result.get("app") or "").lower():
+            if not str(result.get("body") or "").strip():
+                goal.status = "acting"
+                goal.verified = False
+                result["verified"] = False
+                return
+        app_name = str(result.get("app") or "").lower()
+        if app_name not in {"music", "spotify"} and action in {"navigate", "play", "open_item"}:
+            url = str(result.get("url") or "")
+            player = str(result.get("player_state") or "").lower()
+            if wants_play_media(haystack) and player != "playing":
+                goal.status = "acting"
+                goal.verified = False
+                result["verified"] = False
+                result["must_continue"] = True
+                return
+            if (
+                player != "playing"
+                and wants_first_on_page_item(haystack)
+                and not looks_like_opened_content_item(url)
+            ):
+                goal.status = "acting"
+                goal.verified = False
+                return
         if goal.ordinal is not None and index is not None and index != goal.ordinal:
             goal.status = "failed"
             goal.verified = False
@@ -956,6 +1239,9 @@ def ingest_app_action_result(state: ComputerState | None, result: dict[str, Any]
             "track": goal.track,
             "position": index if index is not None else goal.ordinal,
             "player_state": result.get("player_state"),
+            "body": result.get("body"),
+            "query": result.get("query"),
+            "url": result.get("url"),
         }
         if index is not None:
             goal.ordinal = index
@@ -963,13 +1249,49 @@ def ingest_app_action_result(state: ComputerState | None, result: dict[str, Any]
             remaining = [item for item in goal.subgoals if not item.get("complete")]
             if remaining:
                 remaining[0]["complete"] = True
-            if any(not item.get("complete") for item in goal.subgoals):
+            leftover = [
+                item
+                for item in goal.subgoals
+                if not item.get("complete")
+            ]
+            body = str(result.get("body") or "").strip()
+            keep: list[dict[str, Any]] = []
+            for item in leftover:
+                text = str(item.get("text") or "")
+                if _is_speech_only_subgoal(text):
+                    item["complete"] = True
+                    continue
+                if (
+                    action == "read"
+                    and body
+                    and re.search(r"\bread\b", text.lower())
+                    and not re.search(
+                        r"\b(write|create|append|click|search|type)\b", text.lower()
+                    )
+                ):
+                    item["complete"] = True
+                    continue
+                url = str(result.get("url") or "").lower()
+                if (
+                    action in {"navigate", "open_item"}
+                    and url
+                    and "google.com/search" not in url
+                    and re.search(
+                        r"\b(first(?:\s+search)?\s+result|top(?:\s+search)?\s+result|"
+                        r"open the first|click the first|open (the )?first)\b",
+                        text.lower(),
+                    )
+                ):
+                    item["complete"] = True
+                    continue
+                keep.append(item)
+            if keep:
                 goal.status = "acting"
                 goal.verified = False
-                goal.requested_outcome = next(
-                    item["text"] for item in goal.subgoals if not item.get("complete")
-                )
+                goal.requested_outcome = str(keep[0].get("text") or "")
                 return
+            for item in goal.subgoals:
+                item["complete"] = True
         return
     if result.get("executed"):
         goal.status = "acting"
@@ -996,17 +1318,34 @@ def stamp_computer_receipt(
                 state.goal.status = "observing"
             if (
                 executed
-                and state.goal.lifecycle_only
+                and out.get("ok") is not False
                 and name in {"open_app", "activate_app", "close_app"}
             ):
-                state.goal.status = "complete"
-                state.goal.verified = True
-                state.goal.observed = {"app": out.get("app") or out.get("name")}
+                hay = _goal_haystack(state)
+                close_only = name == "close_app" and not (
+                    wants_first_result_text(hay) or _search_query_from_goal(hay)
+                )
+                if state.goal.lifecycle_only or close_only:
+                    state.goal.status = "complete"
+                    state.goal.verified = True
+                    state.goal.observed = {"app": out.get("app") or out.get("name")}
         elif name in {"inspect_ui", "screen_look"}:
             if state.goal.status in {"planning", "observing"}:
                 state.goal.status = "observing"
         elif name == "ui_action" and executed:
             state.goal.status = "acting"
+        elif name == "file_op":
+            if out.get("ok") is True:
+                state.goal.status = "complete"
+                state.goal.verified = True
+                state.goal.observed = {
+                    "path": out.get("path"),
+                    "action": out.get("action"),
+                }
+            else:
+                state.goal.status = "failed"
+                state.goal.verified = False
+                state.goal.failure_reason = str(out.get("error") or "file_op_failed")
         snapshot = state.goal.as_dict()
         out["goal"] = snapshot
         out["must_continue"] = bool(snapshot["must_continue"])
@@ -1025,12 +1364,17 @@ def stamp_computer_receipt(
             )
             out["verified"] = False
             out["completion_claim_allowed"] = False
-        if state.cancelled:
+        if state.cancelled or str(out.get("error") or "") in {
+            "cancelled",
+            "client_disconnected",
+            "owner_stop",
+        }:
             out["cancelled"] = True
             out["must_continue"] = False
             out["verified"] = False
             out["completion_claim_allowed"] = True
-            out["spoken"] = "Stopped."
+            if not out.get("spoken"):
+                out["spoken"] = "Stopped."
         method = classify_tool_strategy(name, {})
         if name == "app_action":
             method = str(out.get("method") or "semantic")

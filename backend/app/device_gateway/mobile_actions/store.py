@@ -126,6 +126,22 @@ def create_action(record: dict[str, Any]) -> dict[str, Any]:
         return dict(row)
 
 
+def restore_action(record: dict[str, Any]) -> dict[str, Any]:
+    row = dict(record)
+    action_id = str(row.get("action_id") or "")
+    if not action_id:
+        return row
+    with _LOCK:
+        _ACTIONS[action_id] = row
+        token = str(row.get("action_token") or "")
+        completion = str(row.get("completion_token") or "")
+        if token:
+            _ACTION_TOKENS[token] = action_id
+        if completion:
+            _COMPLETION_TOKENS[completion] = action_id
+        return dict(row)
+
+
 def get_action(action_id: str) -> dict[str, Any] | None:
     with _LOCK:
         _gc_locked(time.time())

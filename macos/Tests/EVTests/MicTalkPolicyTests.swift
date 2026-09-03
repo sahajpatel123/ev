@@ -31,6 +31,47 @@ enum EVMicTalkTests {
             check(name, ok, detail)
         }
 
+        check(
+            "playback-lane-greeting-adopts",
+            LivePlaybackLane.decide(
+                acceptedProviderId: nil,
+                incomingProviderId: "resp_a",
+                queuedFrames: 4800
+            ) == .adoptProviderId
+        )
+        check(
+            "playback-lane-same-enqueues",
+            LivePlaybackLane.decide(
+                acceptedProviderId: "resp_a",
+                incomingProviderId: "resp_a",
+                queuedFrames: 100
+            ) == .enqueue
+        )
+        check(
+            "playback-lane-nil-incoming-enqueues",
+            LivePlaybackLane.decide(
+                acceptedProviderId: "resp_a",
+                incomingProviderId: nil,
+                queuedFrames: 100
+            ) == .enqueue
+        )
+        check(
+            "playback-lane-starved-continuation-rolls",
+            LivePlaybackLane.decide(
+                acceptedProviderId: "resp_a",
+                incomingProviderId: "resp_b",
+                queuedFrames: 0
+            ) == .rollToNewResponse
+        )
+        check(
+            "playback-lane-overlapping-drops",
+            LivePlaybackLane.decide(
+                acceptedProviderId: "resp_a",
+                incomingProviderId: "resp_b",
+                queuedFrames: 2400
+            ) == .adoptProviderId
+        )
+
         // MARK: Criterion 1 — authorized mic is granted, never off/denied
         let authorized = MicrophoneAuthorization.state(authorizationStatus: .authorized)
         check("authorized-is-granted", authorized == .granted)
@@ -230,8 +271,8 @@ enum EVMicTalkTests {
             VoicePresenceMath.speechStatus(forAppStatus: "thinking") == .preparing
         )
         check(
-            "orb-speech-listening-visible",
-            VoicePresenceMath.speechStatus(forAppStatus: "listening") == .speaking
+            "orb-speech-listening-hidden",
+            VoicePresenceMath.speechStatus(forAppStatus: "listening") == .hidden
         )
         check(
             "orb-speech-offline-hidden",
@@ -325,6 +366,11 @@ enum EVMicTalkTests {
             }
             check("wired-VoiceOrb-audio-energy", overlay.contains("VoiceLevelMeter.shared.snapshot"))
             check("wired-package-orb", package.contains("Resources/orb") && package.contains("filament-orb.mp4"))
+            check(
+                "wired-package-preserves-existing-api-url",
+                package.contains("Keep the Talk URL this machine already uses")
+                    && package.contains("An explicit EV_API_URL in the package environment still wins")
+            )
             check("wired-AppModel-shows-orb", appModel.contains("VoiceOrbOverlay.shared.attach"))
         } catch {
             failed += 1
@@ -400,8 +446,7 @@ enum EVMicTalkTests {
             let config = try read(root.appendingPathComponent("Sources/EV/AppConfig.swift"))
             let auth = try read(root.appendingPathComponent("Sources/EVAuth/APIAuthKey.swift"))
             let permissions = try read(root.appendingPathComponent("Sources/EV/PermissionCenter.swift"))
-            check("wired-AppModel-TalkRouting.action", appModel.contains("TalkRouting.action"))
-            check("wired-AppModel-TalkRouting.liveOwnsInput", appModel.contains("TalkRouting.liveOwnsInput"))
+            check("wired-AppModel-toggle-audio-control", appModel.contains("func toggleAudioControl()"))
             check("wired-AppModel-mic-didChange", appModel.contains("MicrophoneAuthorization.didChange"))
             check("wired-AppModel-hotkey-at-start", appModel.contains("hotkey.start"))
             check("wired-AppModel-health-capability-manifest", appModel.contains("capabilityManifest = health.capabilityManifest"))
@@ -413,11 +458,53 @@ enum EVMicTalkTests {
             check("wired-AppModel-issue-reverification", appModel.contains("issueReverification"))
             check("wired-AppModel-hud-during-live", appModel.contains("refreshHUD(force:"))
             check("wired-AppModel-conversationId", appModel.contains("conversationId"))
+            check("wired-AppModel-boot-trace", appModel.contains("ST00_APP_INIT") && appModel.contains("ST00_AUTH_OK"))
+            check("wired-AppModel-status-trace", appModel.contains("ST00_STATUS"))
             check(
-                "wired-AppModel-recheck-live-after-clip-start",
-                appModel.range(of: "let started = await mic.start()") != nil
-                    && appModel.contains("if TalkRouting.liveOwnsInput")
+                "wired-AppModel-health-keeps-live-status",
+                appModel.contains("if isUnauthorized(error), !live.isRunning")
             )
+            check(
+                "wired-AppModel-live-before-bootstrap",
+                {
+                    guard let voice = suffix(appModel, from: "startupMicStarts = 1") else { return false }
+                    guard let livePos = voice.range(of: "live.start()"),
+                          let bootPos = voice.range(of: "Task { await bootstrapIfNeeded() }") else {
+                        return false
+                    }
+                    return livePos.lowerBound < bootPos.lowerBound
+                }()
+            )
+            check(
+                "wired-AppModel-bootstrap-keeps-live-status",
+                appModel.contains("if isUnauthorized(error), !live.isRunning")
+            )
+            check(
+                "wired-AppModel-live-chat-uses-owner-turn",
+                appModel.contains("live.sendOwnerUtterance(trimmed)")
+                    && appModel.contains("A parallel /ask stream would")
+            )
+            let credStore = try read(root.appendingPathComponent("Sources/EV/DeviceCredentialStore.swift"))
+            check(
+                "wired-DeviceCredential-file-before-keychain-heal",
+                {
+                    guard let loadFn = suffix(credStore, from: "static func load(for deviceID: String)") else {
+                        return false
+                    }
+                    guard let filePos = loadFn.range(of: "loadFromFile(for: deviceID)"),
+                          let healPos = loadFn.range(of: "healIfNeeded(for: deviceID)") else {
+                        return false
+                    }
+                    return filePos.lowerBound < healPos.lowerBound
+                        && loadFn.contains("DispatchQueue.global")
+                }()
+            )
+            let talkRouting = try read(
+                root.deletingLastPathComponent()
+                    .appendingPathComponent("macos/Sources/EVRuntime/TalkRouting.swift")
+            )
+            check("wired-TalkRouting-action", talkRouting.contains("func action("))
+            check("wired-TalkRouting-liveOwnsInput", talkRouting.contains("func liveOwnsInput("))
 
             check("wired-AppConfig-api-url-environment", config.contains("environment[\"EV_API_URL\"]"))
             check("wired-AppConfig-api-url-user-defaults", config.contains("defaults.string(forKey: \"EV_API_URL\")"))
@@ -441,7 +528,7 @@ enum EVMicTalkTests {
             check("wired-GlobalHotkey-global-monitor", hotkey.contains("addGlobalMonitorForEvents"))
 
             let menu = try read(root.appendingPathComponent("Sources/EV/MenuBarView.swift"))
-            check("wired-MenuBarView-toggleTalk", menu.contains("model.toggleTalk()"))
+            check("wired-MenuBarView-toggleAudio", menu.contains("model.toggleAudioControl()"))
             check("wired-MenuBarView-no-late-hotkey", !menu.contains("hotkey.start"))
             check("wired-MenuBarView-confirm-hold", menu.contains("model.confirmHudAction()"))
             check("wired-MenuBarView-capability-summary", menu.contains("capabilitySummary"))
@@ -469,19 +556,26 @@ enum EVMicTalkTests {
             check("wired-LiveConversation-no-tts-chunk-speaking", !live.contains("case \"tts_chunk\":\n            model.status = .speaking"))
 
             let tts = try read(root.appendingPathComponent("Sources/EV/TTSPlayer.swift"))
-            check("wired-TTSPlayer-shared-fallback", tts.contains("detachSharedPlayer()"))
             check("wired-TTSPlayer-mixer-volume", tts.contains("mainMixerNode.outputVolume = 1.0"))
             check("wired-TTSPlayer-echo-gate", tts.contains("shouldMuteCapture"))
             check("wired-TTSPlayer-48k-graph", tts.contains("48_000"))
             check("wired-TTSPlayer-streaming-converter", tts.contains(".noDataNow"))
             check("wired-TTSPlayer-always-play", tts.contains("playerNode.play()"))
-            check("wired-TTSPlayer-prime-start", tts.contains("primeStreamPlayback(generation: generation)"))
+            check("wired-TTSPlayer-underrun-resume", tts.contains("resumeHole"))
             check("wired-TTSPlayer-drain-watchdog", tts.contains("noteAssistantAudioComplete()"))
             check("wired-TTSPlayer-no-lead-chop", !tts.contains("return try schedulePCM(pcm, sampleRate: sampleRate)"))
             check("wired-TTSPlayer-no-overrun-reset", !tts.contains("maxStreamLead"))
             check("wired-TTSPlayer-mute-queued-not-node", tts.contains("Do not use `AVAudioPlayerNode.isPlaying`"))
             check("wired-TTSPlayer-playback-reference", tts.contains("playbackSnapshot()"))
             check("wired-TTSPlayer-stop-for-barge-in", tts.contains("stopForBargeIn()"))
+            // CONTINUITY LAW (tool + normal jitter fix): aggregationMs is a
+            // MAXIMUM buffer, never a minimum batch — every arrival above the
+            // anti-sliver floor schedules immediately, or ~1x realtime drips
+            // starve the node ~5x/second. Mid-response restarts resume on any
+            // scheduled audio; only cold starts take the 250 ms prime.
+            check("wired-TTSPlayer-prompt-scheduling", tts.contains("minBytes") && tts.contains("alignedMax"))
+            check("wired-TTSPlayer-starved-resume", tts.contains("starvedResume"))
+            check("wired-TTSPlayer-jitter-prime", tts.contains("startupPrebufferMs = 250"))
             // OWNER DECISION 2026-08-23: the ungated barge-in detector that
             // chopped long answers (92 mid-response stops) is REMOVED from
             // the live path. Interruption V1 (explicit address) replaces it,
@@ -502,8 +596,8 @@ enum EVMicTalkTests {
                   live.contains("func stopAssistantSpeech()"))
             check(
                 "wired-LiveConversation-no-render-thread-stop",
-                live.contains("interruptControlQueue") && !live.contains("stopForBargeIn()"),
-                "V1 interruption must hop to the control queue before touching the player"
+                live.contains("func stopAssistantSpeech()") && !live.contains("stopForBargeIn()"),
+                "deterministic stop is on the main actor; LiveConversation never stops the player from the tap thread"
             )
             let smoke = try read(root.appendingPathComponent("Sources/EV/SmokeTest.swift"))
             check(
@@ -515,9 +609,15 @@ enum EVMicTalkTests {
             // Preroll forwarding belonged to spoken interruption (closed).
             // Deterministic Stop intentionally forwards nothing: the owner
             // speaks AFTER silence, via the normal provider path.
-            check("wired-LiveConversation-drain-watchdog", live.contains("noteAssistantAudioComplete()"))
+            check("wired-LiveConversation-drain-watchdog", live.contains("finishResponse(") && tts.contains("noteAssistantAudioComplete()"))
             check("wired-LiveConversation-computer-request", live.contains("case \"computer_request\""))
             check("wired-LiveConversation-mac-control", live.contains("MacControlService.shared.handle"))
+            check("wired-LiveConversation-computer-result-off-main", live.contains("ST24_COMPUTER_RESULT"))
+            check(
+                "wired-LiveConversation-tool-continuation-rolls-starved-lane",
+                live.contains("ST15D_PLAYBACK_LANE_ROLL")
+                    && live.contains("LivePlaybackLane.decide")
+            )
             let mainSwift = try read(root.appendingPathComponent("Sources/EV/main.swift"))
             check("wired-LiveConversation-mac-control-probe", mainSwift.contains("--mac-control-probe"))
             check("wired-LiveConversation-computer-state", live.contains("sendComputerState"))
@@ -542,17 +642,19 @@ enum EVMicTalkTests {
                 "wired-listener-aux-never-assistant-speaking",
                 suffix(tts, from: "func enqueueListenerFeedback")
                     .map { body -> Bool in
-                        guard let end = body.range(of: "private func scheduleAuxiliary") else { return false }
-                        return !body[..<end.lowerBound].contains("notifyPlaying")
-                            && !body[..<end.lowerBound].contains("onPlayingChange")
+                        let end = body.range(of: "\n    func preemptListenerFeedback")
+                            ?? body.range(of: "\n    private func ingest")
+                        let slice = end.map { body[..<$0.lowerBound] } ?? body.prefix(600)
+                        return !slice.contains("notifyPlaying") && !slice.contains("onPlayingChange")
                     } == true,
                 "enqueueListenerFeedback must never raise onPlayingChange (assistantSpeaking stays false)"
             )
-            // A8: barge-in stop is ROLE C ONLY — it cannot tear down the aux lane.
+            // Listener Presence cancelled: stopForBargeIn is a silent invalidate,
+            // no aux lane to tear down.
             check(
                 "wired-listener-stop-for-barge-in-aux-immune",
-                tts.contains("stopForBargeIn() {\n        stop(echoTail: false, auxTeardown: false"),
-                "stopForBargeIn must pass auxTeardown:false (completion immunity)"
+                tts.contains("func stopForBargeIn()") && tts.contains("invalidatePlayback(echoTail: false)"),
+                "stopForBargeIn invalidates playback without an aux lane"
             )
             // Role + completion policy are DECLARED, never inferred.
             check(
@@ -585,6 +687,7 @@ enum EVMicTalkTests {
             check("wired-EVApp-orb-after-launch", app.contains("noteAppDidFinishLaunching"))
             check("wired-EVApp-reply", app.contains("TerminatePolicy.reply()"))
             check("wired-EVApp-drop-pressure", app.contains("installPressureGuard"))
+            check("wired-EVApp-thinking-icon-is-ear", app.contains("case .listening, .thinking: return \"ear\""))
 
             let application = try read(root.appendingPathComponent("Sources/EV/EVApplication.swift"))
             check("wired-EVApplication-allowsTerminate", application.contains("TerminatePolicy.allowsTerminate"))
@@ -608,6 +711,26 @@ enum EVMicTalkTests {
             let macControl = try read(root.appendingPathComponent("Sources/EV/MacControlService.swift"))
             check("wired-MacControl-inspect", macControl.contains("func inspectUI"))
             check("wired-MacControl-app-action", macControl.contains("func appAction"))
+            check("wired-MacControl-safari-open-first", macControl.contains("func safariOpenFirstResult"))
+            check("wired-MacControl-safari-open-location", macControl.contains("func safariOpenLocation"))
+            check("wired-MacControl-safari-browser-chrome", macControl.contains("func safariBrowserChrome"))
+            check("wired-MacControl-dismiss-app-windows", macControl.contains("func dismissAppWindows"))
+            check("wired-MacControl-chrome-open-first", macControl.contains("func chromeOpenFirstResult"))
+            check("wired-MacControl-chrome-open-location", macControl.contains("func chromeOpenLocation"))
+            check("wired-MacControl-navigation-url", macControl.contains("func navigationURL(from"))
+            check(
+                "wired-MacControl-search-query-not-goal",
+                macControl.contains("[\"query\", \"value\", \"text\"]")
+                    && !macControl.contains("[\"query\", \"value\", \"url\", \"text\", \"goal\"]")
+            )
+            check("wired-MacControl-generic-app", macControl.contains("func genericAppAction"))
+            check("wired-MacControl-screen-ocr-click", macControl.contains("func clickVisibleText"))
+            check("wired-MacControl-app-catalog-watch", macControl.contains("func startAppCatalogWatch"))
+            check(
+                "wired-MacControl-empty-front-note-is-verified",
+                macControl.contains("The front note is empty.")
+                    && !macControl.contains("I couldn't read the note.")
+            )
             check("wired-MacControl-music", macControl.contains("func musicPlay"))
             check("wired-MacControl-surface", macControl.contains("func pickUIProcess"))
             check("wired-MacControl-ui-action", macControl.contains("AXUIElementPerformAction"))
@@ -635,6 +758,78 @@ enum EVMicTalkTests {
             )
             check("wired-LiveVoice-hud-decode", liveMic.contains("decodeHUD"))
             check("wired-LiveVoice-dispatch-tool", api.contains("func dispatchTool"))
+            check("wired-LiveVoice-live-socket-session", api.contains("liveSocketSession"))
+            check(
+                "wired-LiveVoice-keepalive-not-ping-death",
+                liveMic.contains("\"keepalive\"") && liveMic.contains("linkLooksDead")
+                    && liveMic.contains("keepaliveAckSeen")
+                    && !liveMic.contains("ping strikes=")
+            )
+            check("wired-LiveConversation-permission-flags-watch", live.contains("permissionFlags()"))
+            check(
+                "wired-LiveConversation-ready-skips-ax-snapshot",
+                !live.contains("permissionSnapshot()")
+            )
+            check(
+                "wired-LiveConversation-defers-computer-state",
+                live.contains("player.isPlaying") && live.contains("startComputerStateWatch")
+            )
+            check("wired-LiveConversation-app-open-greet", live.contains("ST14B_GREET_SENT") && live.contains("Always cue on first ready"))
+            check("wired-LiveConversation-owner-turn-file", live.contains("owner-turn.txt") && live.contains("ST21_OWNER_TURN"))
+            check("wired-LiveConversation-heard-trace", live.contains("ST22_USER_HEARD") && live.contains("ST23_ASSISTANT_TEXT"))
+            check(
+                "wired-LiveConversation-computer-state-waits-for-pcm",
+                live.contains("ST14C_COMPUTER_STATE_DEFERRED") && live.contains("heardPlayback")
+            )
+            check("wired-TTSPlayer-echo-tail-covers-speaker-ring", tts.contains("echoTail: TimeInterval = 1.5"))
+            check("wired-LiveConversation-playback-gate-traces", live.contains("ST15_PLAYBACK_GATE"))
+            check(
+                "wired-LiveConversation-tts-without-transcript",
+                live.contains("Greeting / cue replies can emit PCM before a final_transcript")
+            )
+            check(
+                "wired-LiveConversation-transcript-does-not-chop-greeting",
+                live.contains("if playbackResponseID == nil")
+                    && live.contains("A new player id")
+                    && live.contains("setStatusPreservingPlayback")
+            )
+            check(
+                "wired-LiveConversation-adopt-provider-id-without-cancel",
+                live.contains("Adopt the provider id without swapping the player lane")
+                    && !live.contains("model.player.cancelResponse(responseID)")
+            )
+            check("wired-LiveConversation-no-offline-on-reconnect", !live.contains("model.status = .offline"))
+            check(
+                "wired-LiveConversation-speaking-phase-not-ear",
+                !live.contains("case \"speaking\", \"speaking_and_listening\":\n            model.status = .listening")
+            )
+            check(
+                "wired-LiveConversation-thinking-phase-needs-response",
+                live.contains("Server VAD emits thinking on room tone")
+                    && live.contains("if assistantID != nil || playbackResponseID != nil")
+            )
+            check(
+                "wired-LiveConversation-clears-response-when-pcm-done",
+                live.contains("Drop the response latch when PCM is done")
+            )
+            check(
+                "wired-LiveConversation-reconnect-keeps-queued-pcm",
+                live.contains("Already-scheduled PCM should finish")
+                    && !live.contains("model?.player.cancelResponse(playbackResponseID)")
+            )
+            check(
+                "wired-LiveConversation-watchdog-does-not-kill-socket",
+                live.contains("WDOG_NO_RESPONSE") && !live.contains("self.tearDownChannel(for: gen)")
+            )
+            check("wired-TTSPlayer-underrun-keeps-speaking", tts.contains("resumeHole"))
+            check("wired-TTSPlayer-stall-after-play", tts.contains("guard playerStarted else { return }"))
+            check("wired-TTSPlayer-tts-metrics-jsonl", tts.contains("tts-metrics.jsonl"))
+            check("wired-LiveConversation-build-trace", live.contains("ST00_BUILD"))
+            check("wired-LiveConversation-boot-trace-api", live.contains("static func bootTrace"))
+            check("wired-EVApp-sigterm-clears-mic", app.contains("installTerminationSignals"))
+            check("wired-EVApp-thinking-icon-is-ear", app.contains("case .listening, .thinking: return \"ear\""))
+            let ears = try read(root.appendingPathComponent("Sources/EV/EarsProcess.swift"))
+            check("wired-EarsProcess-no-kickstart-while-live", ears.contains("isLiveOwnerAlive"))
             check("wired-LiveVoice-issue-reverification", api.contains("func issueReverification"))
             check("wired-LiveVoice-approve-reverify", api.contains("reverifyToken"))
             let coordinator = try read(
