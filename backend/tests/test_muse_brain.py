@@ -47,6 +47,24 @@ def test_muse_spark_fails_closed_without_key(monkeypatch: pytest.MonkeyPatch) ->
         get_chat_provider()
 
 
+def test_muse_spark_empty_instance_key_fails_closed_not_nameerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.gateway.muse_spark import MuseSparkProvider
+
+    monkeypatch.setattr(settings, "meta_model_api_key", None)
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="",
+        default_model="muse-spark-1.3-contributor",
+    )
+    with pytest.raises(MuseProviderUnavailable):
+        provider._headers()
+
+
 def test_muse_routing_never_selects_legacy_brains(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")

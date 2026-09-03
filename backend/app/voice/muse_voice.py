@@ -235,6 +235,19 @@ class _MuseLiveSession:
         self._audio_ms += int(len(pcm) / 32.0) if self._encoding == "PCM_16KHZ" else int(len(pcm) / 48.0)
         self._queue.put_nowait(pcm)
 
+    def handshake_payload(self) -> dict:
+        """First JSON text frame. Auth is here, not an HTTP Authorization header."""
+
+        return {
+            "authorization": {"accessToken": f"Bearer {self._api_key}"},
+            "audioEncoding": self._encoding,
+            "model": self._model,
+            "mode": "ENDPOINTING",
+            "partialMode": "CUMULATIVE",
+            "keywords": list(_KEYWORDS),
+            "languageBias": ["English"],
+        }
+
     def end_input(self) -> None:
         if self._ended.is_set():
             return
@@ -271,17 +284,7 @@ class _MuseLiveSession:
         try:
             async with websockets.connect(uri, open_timeout=30, max_size=None) as ws:
                 await ws.send(
-                    json.dumps(
-                        {
-                            "authorization": {"accessToken": f"Bearer {self._api_key}"},
-                            "audioEncoding": self._encoding,
-                            "model": self._model,
-                            "mode": "ENDPOINTING",
-                            "partialMode": "CUMULATIVE",
-                            "keywords": list(_KEYWORDS),
-                            "languageBias": ["English"],
-                        }
-                    )
+                    json.dumps(self.handshake_payload())
                 )
                 handshake = json.loads(await ws.recv())
                 if not isinstance(handshake, dict) or "sessionId" not in handshake:

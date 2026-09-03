@@ -14,6 +14,7 @@ import httpx
 from app.contracts import ChatMessage, ChatResult, ToolCall, ToolSpec
 from app.gateway.muse import (
     MuseProviderUnavailable,
+    muse_api_key,
     muse_base_url,
     muse_spark_model,
     muse_spark_reasoning_effort,
