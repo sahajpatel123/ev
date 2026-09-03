@@ -1,0 +1,104 @@
+"""Owner-facing Muse Brain V1 proof against Talk :18000.
+
+Requires META_MODEL_API_KEY in the secrets overlay. Never prints the value.
+Does not touch production ev.api on :8000.
+
+Usage: python3 scripts/prove_muse_brain.py
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+REPO = Path("/Users/sahajpatel/Code/ev")
+SIDECAR = "http://127.0.0.1:18000"
+
+
+def _sidecar():
+    import importlib.util
+
+    path = REPO / "scripts" / "start_talk_sidecar.py"
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _health() -> dict | None:
+    try:
+        with urllib.request.urlopen(f"{SIDECAR}/v1/health", timeout=3) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _is_muse(body: dict | None) -> bool:
+    if not isinstance(body, dict):
+        return False
+    providers = body.get("providers") or {}
+    models = body.get("models") or {}
+    voice = models.get("voice") or {}
+    return (
+        providers.get("chat") == "meta_muse_spark"
+        and providers.get("live") == "pipeline"
+        and voice.get("provider") == "meta_muse_voice"
+    )
+
+
+def wait_for_muse(*, seconds: float = 45.0) -> dict:
+    deadline = time.time() + seconds
+    last = None
+    while time.time() < deadline:
+        last = _health()
+        if _is_muse(last):
+            return last
+        time.sleep(0.5)
+    sys.stderr.write(
+        "Talk sidecar on :18000 is not the Muse brain after restart.\n"
+    )
+    raise SystemExit(3)
+
+
+def main() -> None:
+    mod = _sidecar()
+    mod.load(REPO / ".env")
+    mod.load(REPO / "backend" / ".env")
+    secrets = Path(
+        os.environ.get("EV_SECRETS_FILE", str(Path.home() / ".ev/secrets/production.env"))
+    ).expanduser()
+    mod.load(secrets)
+    mod.refuse_muse_without_key()
+    if not _is_muse(_health()):
+        subprocess.check_call(
+            [sys.executable, str(REPO / "scripts" / "start_talk_sidecar.py")],
+            cwd=str(REPO),
+        )
+        wait_for_muse()
+    env = os.environ.copy()
+    env["EV_TEST_USE_LIVE_MUSE"] = "1"
+    env["EV_ALLOW_REMOTE_ASR"] = "true"
+    result = subprocess.run(
+        [
+            "/Users/sahajpatel/.local/bin/uv",
+            "run",
+            "pytest",
+            "tests/test_muse_live.py",
+            "-q",
+            "--tb=short",
+        ],
+        cwd=str(REPO / "backend"),
+        env=env,
+    )
+    raise SystemExit(result.returncode)
+
+
+if __name__ == "__main__":
+    main()

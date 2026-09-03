@@ -437,6 +437,37 @@ def test_talk_sidecar_replaces_port_only_after_meta_key_gate() -> None:
     assert "kickstart" not in source
 
 
+def test_prove_muse_brain_refuses_without_meta_key(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    overlay = tmp_path / "secrets.env"
+    overlay.write_text("# Muse Brain V1\n# META_MODEL_API_KEY=\n")
+    env = os.environ.copy()
+    env["EV_SECRETS_FILE"] = str(overlay)
+    env["EV_CHAT_PROVIDER"] = "meta_muse_spark"
+    env["EV_INTELLIGENCE_PROVIDER"] = "meta_muse_spark"
+    env["EV_VOICE_ASR_PROVIDER"] = "meta_muse_voice"
+    env.pop("META_MODEL_API_KEY", None)
+    env.pop("EV_META_MODEL_API_KEY", None)
+    env.pop("MODEL_API_KEY", None)
+    result = subprocess.run(
+        [sys.executable, str(Path("/Users/sahajpatel/Code/ev/scripts/prove_muse_brain.py"))],
+        cwd="/Users/sahajpatel/Code/ev",
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 2
+    assert "META_MODEL_API_KEY is missing" in (result.stderr or "")
+    source = Path("/Users/sahajpatel/Code/ev/scripts/prove_muse_brain.py").read_text()
+    assert "8000" in source and "Does not touch production ev.api on :8000" in source
+    assert "kickstart" not in source
+
+
 @pytest.mark.asyncio
 async def test_muse_spark_complete_raw_strips_reasoning_and_non_auto_tool_choice(
     monkeypatch: pytest.MonkeyPatch,

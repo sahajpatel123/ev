@@ -382,3 +382,26 @@ async def test_owner_facing_sidecar_spark_counters_and_composed_hearing() -> Non
     assert composed.status_code == 200, composed.text
     assert (composed.json().get("reply") or "").strip()
     assert "unavailable" not in (composed.json().get("reply") or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_live_canary_priority_is_deterministic_zero_spark() -> None:
+    from app.ev.luna_adapter import classify_intent
+    from app.gateway.muse import muse_counters_snapshot, reset_muse_counters
+
+    reset_muse_counters()
+    intent = await classify_intent("what priority is Canary")
+    assert muse_counters_snapshot()["spark_calls"] == 0
+    assert intent.route in {"STATE_QUERY", "CONVERSATION", "MISSION_CONTROL"}
+
+
+@pytest.mark.asyncio
+async def test_live_ambiguous_turn_calls_spark() -> None:
+    from app.ev.luna_adapter import classify_intent
+    from app.gateway.muse import muse_counters_snapshot, reset_muse_counters, muse_intelligence_active
+
+    if not muse_intelligence_active():
+        pytest.skip("pytest process is not Muse-routed; sidecar tests cover owner chat")
+    reset_muse_counters()
+    await classify_intent("I've been thinking about that thing from yesterday, what should I do")
+    assert muse_counters_snapshot()["spark_calls"] >= 1
