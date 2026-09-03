@@ -423,6 +423,78 @@ def test_muse_spark_payload_drops_legacy_thinking() -> None:
     assert "stream_options" not in payload
 
 
+def test_spark_folds_orphan_receipt_tools() -> None:
+    from app.gateway.muse_spark import MuseSparkProvider
+
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="test-key",
+        default_model="muse-spark-1.3-contributor",
+    )
+    legal = provider._conversation_for_meta(
+        [
+            ChatMessage(role="system", content="sys"),
+            ChatMessage(role="user", content="open Calculator"),
+            ChatMessage(role="tool", content='{"ok":true}', name="open_app"),
+        ]
+    )
+    assert legal[-1].role == "user"
+    assert "ACTION RESULT (open_app)" in legal[-1].content
+    assert all(message.role != "tool" for message in legal)
+
+
+def test_spark_keeps_paired_tool_replay() -> None:
+    from app.contracts import ToolCall
+    from app.gateway.muse_spark import MuseSparkProvider
+
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="test-key",
+        default_model="muse-spark-1.3-contributor",
+    )
+    legal = provider._conversation_for_meta(
+        [
+            ChatMessage(role="user", content="weather in Surat"),
+            ChatMessage(
+                role="assistant",
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call_weather",
+                        name="search_web",
+                        arguments={"query": "Surat weather"},
+                    )
+                ],
+            ),
+            ChatMessage(
+                role="tool",
+                content='{"temp":32}',
+                name="search_web",
+                tool_call_id="call_weather",
+            ),
+        ]
+    )
+    assert legal[-2].role == "assistant"
+    assert legal[-1].role == "tool"
+    assert legal[-1].tool_call_id == "call_weather"
+    assistant = provider._message_payload(legal[-2])
+    assert assistant["content"] is None
+    assert assistant["tool_calls"][0]["id"] == "call_weather"
+    assert assistant["tool_calls"][0]["function"]["name"] == "search_web"
+    tool = provider._message_payload(legal[-1])
+    assert tool["tool_call_id"] == "call_weather"
+
+
+def test_tool_loop_replays_assistant_tool_calls() -> None:
+    import inspect
+
+    from app.services import tool_loop
+
+    source = inspect.getsource(tool_loop.run_tool_loop)
+    assert "tool_calls=paired_calls" in source
+    assert "tool_call_id=paired_calls[index].id" in source
+
+
 def test_muse_spark_coerces_legacy_client_model_ids() -> None:
     from app.gateway.muse_spark import MuseSparkProvider
 

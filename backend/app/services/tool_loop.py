@@ -14,7 +14,7 @@ from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.contracts import ChatMessage, ToolSpec
+from app.contracts import ChatMessage, ToolCall, ToolSpec
 from app.ev import tools as ev_tools
 from app.ev.briefing import WRITE_TOOLS, plan_life_tool_calls
 from app.gateway.costs import check_cost_cap
@@ -23,6 +23,14 @@ from app.gateway.validation import validate_tool_calls
 from app.services.model_call import log_model_call
 
 MAX_TOOL_ROUNDS = 3
+
+
+def _stable_tool_call_id(call, index: int) -> str:
+    raw = (getattr(call, "id", None) or "").strip()
+    if 1 <= len(raw) <= 64:
+        return raw
+    name = str(getattr(call, "name", None) or "tool").replace(" ", "_")
+    return f"call_{index}_{name}"[:64]
 
 
 def _user_text(messages: Sequence[ChatMessage]) -> str:
@@ -118,7 +126,7 @@ async def run_tool_loop(
 
     gateway.cost_guard = _cost_guard
 
-    async def dispatch_call(validated) -> None:
+    async def dispatch_call(validated, *, tool_call_id: str | None = None) -> None:
         nonlocal last_write_result
         arguments = validated.rectified_arguments or validated.call.arguments
         response = await ev_tools.dispatch(
@@ -150,6 +158,7 @@ async def run_tool_loop(
                 role="tool",
                 content=content,
                 name=validated.call.name,
+                tool_call_id=tool_call_id,
             )
         )
 
@@ -215,8 +224,23 @@ async def run_tool_loop(
                 call.tool_validation = list(call.tool_validation) + planned
         if not executable:
             break
-        for validated in executable:
-            await dispatch_call(validated)
+        paired_calls = [
+            ToolCall(
+                id=_stable_tool_call_id(validated.call, index),
+                name=validated.call.name,
+                arguments=validated.call.arguments,
+            )
+            for index, validated in enumerate(executable)
+        ]
+        current_messages.append(
+            ChatMessage(
+                role="assistant",
+                content=call.result.text or "",
+                tool_calls=paired_calls,
+            )
+        )
+        for index, validated in enumerate(executable):
+            await dispatch_call(validated, tool_call_id=paired_calls[index].id)
         call = await gateway.chat(
             current_messages,
             envelope=envelope,

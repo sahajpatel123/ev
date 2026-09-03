@@ -518,8 +518,12 @@ async def test_owner_facing_sidecar_calculate_and_research_and_memory() -> None:
         research_reply = (research.json().get("reply") or "").strip()
         assert research_reply
         assert "unavailable" not in research_reply.lower()
+        assert "manager soon" not in research_reply.lower()
         assert "grok" not in (research.json().get("model") or "").lower()
         assert "luna" not in (research.json().get("model") or "").lower()
+        assert "deepseek" not in (research.json().get("model") or "").lower()
+        after_research = await client.get("http://127.0.0.1:18000/v1/health")
+        assert _spark_calls(after_research.json()) >= spark0 + 1
 
         memory = await _sidecar_chat(
             client, bearer, "what were we working on recently, one short sentence"
@@ -529,6 +533,8 @@ async def test_owner_facing_sidecar_calculate_and_research_and_memory() -> None:
         assert memory_reply
         assert "unavailable" not in memory_reply.lower()
         assert "grok" not in (memory.json().get("model") or "").lower()
+        after_memory = await client.get("http://127.0.0.1:18000/v1/health")
+        assert _spark_calls(after_memory.json()) >= _spark_calls(after_research.json()) + 1
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ Fail closed when META_MODEL_API_KEY is missing. No silent provider substitution.
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -105,6 +106,61 @@ class MuseSparkProvider(DeepSeekProvider):
         if status in {401, 403}:
             raise MuseProviderUnavailable("Muse Spark credential was rejected") from exc
 
+    def _conversation_for_meta(self, messages: Sequence[ChatMessage]) -> list[ChatMessage]:
+        """Meta 400s orphan ``role=tool`` rows. Fold action receipts into user text."""
+
+        legal: list[ChatMessage] = []
+        open_ids: set[str] = set()
+        for message in messages:
+            role = (message.role or "").strip().lower()
+            if role == "assistant":
+                calls = list(message.tool_calls or [])
+                open_ids = {
+                    (call.id or "").strip()
+                    for call in calls
+                    if (call.id or "").strip()
+                }
+                legal.append(message)
+                continue
+            if role == "tool":
+                tool_call_id = (message.tool_call_id or "").strip()
+                if tool_call_id and tool_call_id in open_ids:
+                    legal.append(message)
+                    continue
+                label = (message.name or "tool").strip() or "tool"
+                legal.append(
+                    ChatMessage(
+                        role="user",
+                        content=f"ACTION RESULT ({label}): {message.content}",
+                    )
+                )
+                continue
+            open_ids = set()
+            legal.append(message)
+        return legal
+
+    def _message_payload(self, message: ChatMessage) -> dict:
+        payload = super()._message_payload(message)
+        calls = list(message.tool_calls or [])
+        if calls:
+            payload["tool_calls"] = [
+                {
+                    "id": ((call.id or f"call_{index}")[:64]),
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments or {}, default=str),
+                    },
+                }
+                for index, call in enumerate(calls)
+            ]
+            if not (message.content or "").strip():
+                payload["content"] = None
+        tool_call_id = (message.tool_call_id or "").strip()
+        if tool_call_id:
+            payload["tool_call_id"] = tool_call_id[:64]
+        return payload
+
     async def _complete(
         self,
         messages: Sequence[ChatMessage],
@@ -115,7 +171,10 @@ class MuseSparkProvider(DeepSeekProvider):
     ) -> ChatResult:
         try:
             return await super()._complete(
-                messages, model=self._resolve_model(model), temperature=temperature, tools=tools
+                self._conversation_for_meta(messages),
+                model=self._resolve_model(model),
+                temperature=temperature,
+                tools=tools,
             )
         except httpx.HTTPStatusError as exc:
             self._raise_if_auth_rejected(exc)
@@ -168,7 +227,9 @@ class MuseSparkProvider(DeepSeekProvider):
     ) -> AsyncIterator:
         try:
             async for chunk in super().stream_chat(
-                messages, model=self._resolve_model(model), temperature=temperature
+                self._conversation_for_meta(messages),
+                model=self._resolve_model(model),
+                temperature=temperature,
             ):
                 if getattr(chunk, "done", False):
                     note_spark_call(
