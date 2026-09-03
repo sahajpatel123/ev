@@ -431,7 +431,9 @@ async def test_owner_facing_sidecar_canary_is_core_not_grok() -> None:
     async with httpx.AsyncClient(timeout=60) as client:
         before = await client.get("http://127.0.0.1:18000/v1/health")
         assert (before.json().get("providers") or {}).get("chat") == "meta_muse_spark"
+        spark0 = _spark_calls(before.json())
         resp = await _sidecar_chat(client, bearer, "what priority is Canary")
+        after = await client.get("http://127.0.0.1:18000/v1/health")
     assert resp.status_code == 200, resp.text
     body = resp.json()
     reply = (body.get("reply") or "").strip()
@@ -441,7 +443,7 @@ async def test_owner_facing_sidecar_canary_is_core_not_grok() -> None:
     assert "grok" not in model
     assert "luna" not in model
     assert "deepseek" not in model
-    # TurnGate classify is Spark=0; typed/voice pipeline may still verbalize.
+    assert _spark_calls(after.json()) == spark0
 
 
 @pytest.mark.asyncio

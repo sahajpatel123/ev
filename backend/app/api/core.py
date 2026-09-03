@@ -1195,6 +1195,36 @@ async def _stream_chat(
             await task
 
 
+async def _maybe_deterministic_core_reply(
+    session: AsyncSession,
+    message: str,
+    *,
+    actor: str,
+    device_id: UUID | None,
+) -> str | None:
+    """Speak TurnGate/Core truth for deterministic reads without Spark.
+
+    Mutations stay on the existing tool/Spark path so a shadow TurnGate
+    voice turn cannot double-apply a write. Conversation still uses Spark.
+    """
+
+    from app.ev.luna_adapter import is_deterministic_high_confidence
+    from app.ev.turn_controller import TurnController
+
+    if not is_deterministic_high_confidence(message):
+        return None
+    controller = TurnController(
+        session,
+        actor=actor,
+        device_id=str(device_id) if device_id else None,
+    )
+    core = await controller.handle_turn(message)
+    if core.route not in {"STATE_QUERY", "MISSION_CONTROL"}:
+        return None
+    spoken = (core.owner_message or "").strip()
+    return spoken or None
+
+
 async def run_chat_pipeline(
     data: ChatRequest,
     session: AsyncSession,
@@ -1579,6 +1609,14 @@ async def run_chat_pipeline(
         device_id=device_id,
     )
     receipts: list = []
+    core_reply = None
+    if not decision.blocked and local is None:
+        core_reply = await _maybe_deterministic_core_reply(
+            session,
+            data.message,
+            actor=actor,
+            device_id=device_id,
+        )
 
     if decision.blocked:
         final_draft = (
@@ -1605,6 +1643,16 @@ async def run_chat_pipeline(
         # Voice Talk only plays tts_chunk audio. Local intents never
         # stream token deltas, so push the full reply into the same
         # callback the model path uses or the answer stays silent.
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
+    elif core_reply is not None:
+        result = ChatResult(text=core_reply)
+        report = OutputReport(
+            draft=result.text,
+            final_text=result.text,
+            flags=decision.flags,
+        )
+        envelope_hash = None
         if text_delta_callback is not None and result.text:
             await text_delta_callback(result.text)
     else:
