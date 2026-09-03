@@ -326,6 +326,7 @@ class LiveAsrFeed:
                     on_final=self._on_native_final,
                     on_unusable=self.on_unusable,
                     sample_rate=self.sample_rate,
+                    mode="PUSH_TO_TALK",
                 )
             if self._buffer:
                 feeder = getattr(self.transcriber, "feed_live", None)
@@ -440,9 +441,9 @@ class LiveAsrFeed:
 
         if self._final_text is not None:
             return self._final_text
-        # Muse Voice commits on speechComplete, not transcript.final. The
-        # native stream has no _final_task; still honor timeout_ms so the
-        # turn-taker does not lock in the last partial.
+        # Native Muse stream: LiveAsrFeed opens PUSH_TO_TALK so the commit is
+        # transcript.final (speechComplete is a duplicate-safe fallback).
+        # Honor timeout_ms so the turn-taker does not lock in the last partial.
         waiting_native = self._native_stream() and bool(timeout_ms)
         if self._final_task is None and not waiting_native:
             return self._last_partial or None

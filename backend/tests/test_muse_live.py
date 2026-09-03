@@ -195,6 +195,17 @@ async def test_live_muse_voice_file_transcribe_bounded_set() -> None:
 
 @pytest.mark.asyncio
 async def test_live_muse_voice_stream_partial_final_endpoint_no_duplicate() -> None:
+    await _live_muse_voice_one_final("ENDPOINTING")
+
+
+@pytest.mark.asyncio
+async def test_live_muse_voice_push_to_talk_commits_transcript_final_no_duplicate() -> None:
+    """Owner-facing LiveAsrFeed delimits with local VAD + endStream (PUSH_TO_TALK)."""
+
+    await _live_muse_voice_one_final("PUSH_TO_TALK")
+
+
+async def _live_muse_voice_one_final(mode: str) -> None:
     import asyncio
 
     from app.voice.muse_voice import MuseVoiceTranscriber
@@ -217,6 +228,7 @@ async def test_live_muse_voice_stream_partial_final_endpoint_no_duplicate() -> N
         on_final=on_final,
         on_unusable=on_unusable,
         sample_rate=16000,
+        mode=mode,
     )
     frame = 3200  # 100 ms of PCM16 @ 16 kHz
     try:
@@ -231,7 +243,7 @@ async def test_live_muse_voice_stream_partial_final_endpoint_no_duplicate() -> N
             await asyncio.sleep(0.1)
     finally:
         transcriber.abort_live()
-    assert not errors, f"live Muse Voice failed: {type(errors[0]).__name__}"
+    assert not errors, f"live Muse Voice {mode} failed: {type(errors[0]).__name__}"
     assert len(finals) == 1
     assert _semantic_hit(finals[0], ("calculator", "calculate"))
 

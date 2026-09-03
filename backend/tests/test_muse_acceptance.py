@@ -79,6 +79,16 @@ def test_muse_live_handshake_puts_bearer_in_first_json_not_http_header() -> None
     assert payload["mode"] == "ENDPOINTING"
     assert payload["model"] == "muse-voice-transcribe-1.0"
     assert "Evie" in payload["keywords"]
+    push = _MuseLiveSession(
+        api_key="test-key",
+        model="muse-voice-transcribe-1.0",
+        encoding="PCM_16KHZ",
+        mode="PUSH_TO_TALK",
+        on_partial=None,
+        on_final=None,
+        on_unusable=None,
+    )
+    assert push.handshake_payload()["mode"] == "PUSH_TO_TALK"
 
 
 @pytest.mark.asyncio
@@ -158,6 +168,50 @@ async def test_muse_live_speech_complete_is_keyed_by_turn_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_muse_live_push_to_talk_commits_on_transcript_final() -> None:
+    from app.voice.muse_voice import _MuseLiveSession
+
+    partials: list[str] = []
+    finals: list[str] = []
+
+    async def on_partial(text: str) -> None:
+        partials.append(text)
+
+    async def on_final(text: str) -> None:
+        finals.append(text)
+
+    session = _MuseLiveSession(
+        api_key="test-key",
+        model="muse-voice-transcribe-1.0",
+        encoding="PCM_16KHZ",
+        mode="PUSH_TO_TALK",
+        on_partial=on_partial,
+        on_final=on_final,
+        on_unusable=None,
+    )
+
+    class _WS:
+        def __init__(self) -> None:
+            self._messages = [
+                '{"type":"transcript","transcript":"Open Calc","final":false}',
+                '{"type":"transcript","transcript":"Open Calculator","final":true}',
+                '{"type":"speechComplete","turnId":1,"transcript":"Open Calculator"}',
+            ]
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._messages:
+                raise StopAsyncIteration
+            return self._messages.pop(0)
+
+    await session._receive(_WS())
+    assert partials == ["Open Calc", "Open Calculator"]
+    assert finals == ["Open Calculator"]
+
+
+@pytest.mark.asyncio
 async def test_live_asr_feed_native_stream_commits_only_final() -> None:
     partials: list[str] = []
     fed: list[bytes] = []
@@ -170,6 +224,7 @@ async def test_live_asr_feed_native_stream_commits_only_final() -> None:
         def start_live(self, loop, **kwargs) -> None:
             self._on_partial = kwargs.get("on_partial")
             self._on_final = kwargs.get("on_final")
+            self.mode = kwargs.get("mode")
 
         def feed_live(self, pcm: bytes) -> None:
             fed.append(pcm)
@@ -185,8 +240,10 @@ async def test_live_asr_feed_native_stream_commits_only_final() -> None:
     async def on_partial(text: str) -> None:
         partials.append(text)
 
-    feed = LiveAsrFeed(_Native(), on_partial=on_partial)
+    native = _Native()
+    feed = LiveAsrFeed(native, on_partial=on_partial)
     feed.begin()
+    assert native.mode == "PUSH_TO_TALK"
     feed.feed(b"\x00\x01" * 160)
     await feed._on_native_partial("Open Calc")
     assert "Open Calc" in partials

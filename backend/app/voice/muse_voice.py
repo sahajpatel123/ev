@@ -83,8 +83,9 @@ class MuseVoiceTranscriber:
             )
         audio, filename = await _read_audio(audio_b64, audio_ref)
         session_id = f"ev-asr-{uuid4().hex[:12]}"
-        # File clips are one complete turn (PUSH_TO_TALK). Live WebSocket uses
-        # ENDPOINTING. Official multipart: request part has no filename.
+        # File clips are one complete turn (PUSH_TO_TALK). Live WebSocket
+        # default is ENDPOINTING (continuous). LiveAsrFeed uses PUSH_TO_TALK
+        # because local VAD delimits the turn with endStream.
         request = {
             "mode": "PUSH_TO_TALK",
             "model": self.model,
@@ -177,13 +178,18 @@ class MuseVoiceTranscriber:
         on_final: OnFinal | None = None,
         on_unusable: OnUnusable | None = None,
         sample_rate: int = 16000,
+        mode: str = "ENDPOINTING",
     ) -> None:
         self.abort_live()
         encoding = "PCM_16KHZ" if sample_rate == 16000 else "PCM_24KHZ"
+        live_mode = (mode or "ENDPOINTING").strip().upper() or "ENDPOINTING"
+        if live_mode not in {"ENDPOINTING", "PUSH_TO_TALK", "DIARIZATION"}:
+            live_mode = "ENDPOINTING"
         self._live = _MuseLiveSession(
             api_key=self._key(),
             model=self.model,
             encoding=encoding,
+            mode=live_mode,
             on_partial=on_partial,
             on_final=on_final,
             on_unusable=on_unusable,
@@ -215,10 +221,12 @@ class _MuseLiveSession:
         on_partial: OnPartial | None,
         on_final: OnFinal | None,
         on_unusable: OnUnusable | None,
+        mode: str = "ENDPOINTING",
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._encoding = encoding
+        self._mode = (mode or "ENDPOINTING").strip().upper() or "ENDPOINTING"
         self.on_partial = on_partial
         self.on_final = on_final
         self.on_unusable = on_unusable
@@ -243,7 +251,7 @@ class _MuseLiveSession:
             "authorization": {"accessToken": f"Bearer {self._api_key}"},
             "audioEncoding": self._encoding,
             "model": self._model,
-            "mode": "ENDPOINTING",
+            "mode": self._mode,
             "partialMode": "CUMULATIVE",
             "keywords": list(_KEYWORDS),
             "languageBias": ["English"],
@@ -359,15 +367,29 @@ class _MuseLiveSession:
                 text = str(event.get("transcript") or "").strip()
                 if text and self.on_partial is not None:
                     await self.on_partial(text)
+                # PUSH_TO_TALK: the client delimits the turn with endStream.
+                # transcript.final is the commit. ENDPOINTING ignores final.
+                if (
+                    self._mode == "PUSH_TO_TALK"
+                    and bool(event.get("final"))
+                    and text
+                ):
+                    await self._emit_final(text, turn_id="push_to_talk")
+                    if self._got_final:
+                        return
                 continue
             # ENDPOINTING: speechEnd is a boundary only. The committed turn
             # text is speechComplete (Meta may post-process after speechEnd).
-            # PUSH_TO_TALK uses transcript.final on the file endpoint, not here.
             if kind == "speechComplete":
+                turn_key: object = (
+                    "push_to_talk" if self._mode == "PUSH_TO_TALK" else event.get("turnId")
+                )
                 await self._emit_final(
                     str(event.get("transcript") or "").strip(),
-                    turn_id=event.get("turnId"),
+                    turn_id=turn_key,
                 )
+                if self._mode == "PUSH_TO_TALK" and self._got_final:
+                    return
 
     async def _emit_final(self, text: str, *, turn_id: object = None) -> None:
         text = (text or "").strip()
