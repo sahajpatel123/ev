@@ -160,6 +160,65 @@ async def test_live_asr_feed_native_stream_commits_only_final() -> None:
     assert text == "Open Calculator"
 
 
+@pytest.mark.asyncio
+async def test_live_asr_feed_waits_for_speech_complete_not_partial() -> None:
+    class _Native:
+        name = "meta_muse_voice"
+        native_live_stream = True
+
+        def start_live(self, loop, **kwargs) -> None:
+            self._on_final = kwargs.get("on_final")
+            self._loop = loop
+
+        def feed_live(self, pcm: bytes) -> None:
+            del pcm
+
+        def end_live(self) -> None:
+            async def later() -> None:
+                await asyncio.sleep(0.04)
+                if self._on_final:
+                    await self._on_final("Open Calculator")
+
+            self._loop.create_task(later())
+
+        def abort_live(self) -> None:
+            return None
+
+    feed = LiveAsrFeed(_Native())
+    feed.begin()
+    await feed._on_native_partial("open calculator")
+    feed.end_speech()
+    text = await feed.final_text(timeout_ms=400)
+    assert text == "Open Calculator"
+    assert text != "open calculator"
+
+
+@pytest.mark.asyncio
+async def test_live_asr_feed_native_timeout_falls_back_to_partial() -> None:
+    class _Native:
+        name = "meta_muse_voice"
+        native_live_stream = True
+
+        def start_live(self, loop, **kwargs) -> None:
+            del loop, kwargs
+
+        def feed_live(self, pcm: bytes) -> None:
+            del pcm
+
+        def end_live(self) -> None:
+            return None
+
+        def abort_live(self) -> None:
+            return None
+
+    feed = LiveAsrFeed(_Native())
+    feed.begin()
+    await feed._on_native_partial("open calculator")
+    feed.end_speech()
+    text = await feed.final_text(timeout_ms=30)
+    assert text == "open calculator"
+
+
 def test_open_calculator_is_deterministic_not_spark() -> None:
     reset_muse_counters()
     action = resolve_live_action("Open Calculator")

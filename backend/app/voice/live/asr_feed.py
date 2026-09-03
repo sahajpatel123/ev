@@ -440,7 +440,11 @@ class LiveAsrFeed:
 
         if self._final_text is not None:
             return self._final_text
-        if self._final_task is None:
+        # Muse Voice commits on speechComplete, not transcript.final. The
+        # native stream has no _final_task; still honor timeout_ms so the
+        # turn-taker does not lock in the last partial.
+        waiting_native = self._native_stream() and bool(timeout_ms)
+        if self._final_task is None and not waiting_native:
             return self._last_partial or None
         if timeout_ms:
             with contextlib.suppress(TimeoutError):
