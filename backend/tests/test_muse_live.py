@@ -115,3 +115,34 @@ async def test_live_muse_voice_file_transcribe() -> None:
     )
     assert (result.text or "").strip()
     assert result.details.get("diarization_is_owner_auth") is False
+
+
+@pytest.mark.asyncio
+async def test_owner_facing_talk_sidecar_health_is_muse_not_openai_or_grok() -> None:
+    """The current owner-facing Talk process must already be the Muse brain.
+
+    Skipped without a Meta key (same as other live probes). When the key is
+    loaded, a stale :18000 still advertising xAI / OpenAI Realtime fails this
+    row instead of counting as owner-facing proof.
+    """
+
+    import httpx
+
+    async with httpx.AsyncClient(timeout=5) as client:
+        resp = await client.get("http://127.0.0.1:18000/v1/health")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    providers = body.get("providers") or {}
+    models = body.get("models") or {}
+    assert providers.get("chat") == "meta_muse_spark"
+    assert providers.get("live") == "pipeline"
+    voice = models.get("voice") or {}
+    turn = models.get("turn_control") or {}
+    manager = models.get("manager") or {}
+    assert voice.get("provider") == "meta_muse_voice"
+    assert voice.get("model") == "muse-voice-transcribe-1.0"
+    assert turn.get("provider") == "meta_muse_spark"
+    assert turn.get("model") == "muse-spark-1.3-contributor"
+    assert manager.get("provider") == "meta_muse_spark"
+    assert providers.get("live") != "openai-realtime"
+    assert providers.get("chat") != "xai"
