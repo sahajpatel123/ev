@@ -539,6 +539,25 @@ def test_talk_sidecar_refuses_muse_without_meta_key(monkeypatch: pytest.MonkeyPa
     assert mod.meta_key_loaded() is True
 
 
+def test_talk_sidecar_overlay_fills_empty_meta_key(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py")
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar_empty_meta", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    overlay = tmp_path / "production.env"
+    overlay.write_text("META_MODEL_API_KEY=meta-overlay-not-logged\n")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    mod.load(overlay)
+    mod.alias_meta_model_keys()
+    assert mod.meta_key_loaded() is True
+
+
 def test_talk_sidecar_replaces_port_only_after_meta_key_gate() -> None:
     from pathlib import Path
 

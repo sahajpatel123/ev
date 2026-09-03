@@ -120,6 +120,44 @@ async def test_muse_live_protocol_speech_end_before_final_is_not_duplicated() ->
 
 
 @pytest.mark.asyncio
+async def test_muse_live_speech_complete_is_keyed_by_turn_id() -> None:
+    from app.voice.muse_voice import _MuseLiveSession
+
+    finals: list[str] = []
+
+    async def on_final(text: str) -> None:
+        finals.append(text)
+
+    session = _MuseLiveSession(
+        api_key="test-key",
+        model="muse-voice-transcribe-1.0",
+        encoding="PCM_16KHZ",
+        on_partial=None,
+        on_final=on_final,
+        on_unusable=None,
+    )
+
+    class _WS:
+        def __init__(self) -> None:
+            self._messages = [
+                '{"type":"speechComplete","turnId":1,"transcript":"Open Calculator"}',
+                '{"type":"speechComplete","turnId":1,"transcript":"Open Calculator"}',
+                '{"type":"speechComplete","turnId":2,"transcript":"what priority is Canary"}',
+            ]
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._messages:
+                raise StopAsyncIteration
+            return self._messages.pop(0)
+
+    await session._receive(_WS())
+    assert finals == ["Open Calculator", "what priority is Canary"]
+
+
+@pytest.mark.asyncio
 async def test_live_asr_feed_native_stream_commits_only_final() -> None:
     partials: list[str] = []
     fed: list[bytes] = []

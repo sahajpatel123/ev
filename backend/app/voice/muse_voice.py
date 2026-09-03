@@ -227,6 +227,7 @@ class _MuseLiveSession:
         self._abort = asyncio.Event()
         self._closed = False
         self._got_final = False
+        self._completed_turns: set[object] = set()
         self._audio_ms = 0
 
     def feed(self, pcm: bytes) -> None:
@@ -345,6 +346,7 @@ class _MuseLiveSession:
                 continue
             kind = str(event.get("type") or "")
             if kind == "error":
+                self._abort.set()
                 await self._fail(
                     VoiceError(
                         "Muse Voice Transcribe reported an error",
@@ -362,12 +364,19 @@ class _MuseLiveSession:
             # text is speechComplete (Meta may post-process after speechEnd).
             # PUSH_TO_TALK uses transcript.final on the file endpoint, not here.
             if kind == "speechComplete":
-                await self._emit_final(str(event.get("transcript") or "").strip())
+                await self._emit_final(
+                    str(event.get("transcript") or "").strip(),
+                    turn_id=event.get("turnId"),
+                )
 
-    async def _emit_final(self, text: str) -> None:
+    async def _emit_final(self, text: str, *, turn_id: object = None) -> None:
         text = (text or "").strip()
-        if not text or self._got_final:
+        if not text:
             return
+        key: object = turn_id if turn_id is not None else "_none"
+        if key in self._completed_turns:
+            return
+        self._completed_turns.add(key)
         self._got_final = True
         if self.on_final is not None:
             await self.on_final(text)

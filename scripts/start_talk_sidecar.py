@@ -52,6 +52,11 @@ def daemonize() -> None:
             os.close(fd)
 
 
+_META_SECRET_NAMES = frozenset(
+    {"META_MODEL_API_KEY", "EV_META_MODEL_API_KEY", "MODEL_API_KEY"}
+)
+
+
 def load(path: Path) -> None:
     if not path.exists():
         return
@@ -64,6 +69,11 @@ def load(path: Path) -> None:
         val = val.strip()
         if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
             val = val[1:-1]
+        # An empty shell export must not hide the overlay Meta key.
+        if key in _META_SECRET_NAMES:
+            if val and not (os.environ.get(key) or "").strip():
+                os.environ[key] = val
+            continue
         os.environ.setdefault(key, val)
 
 
