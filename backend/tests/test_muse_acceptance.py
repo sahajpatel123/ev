@@ -511,3 +511,103 @@ def test_diagnostics_calibration_pings_spark_not_grok() -> None:
     source = inspect.getsource(diagnostics.run_calibration)
     assert "muse_spark_model" in source
     assert "muse_intelligence_active" in source
+
+
+def test_preflight_reports_muse_spark_partial_without_key_not_deepseek_double(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.scripts.preflight import _check_chat
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "meta_model_api_key", "")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    kind, name, detail = _check_chat()
+    assert kind == "PARTIAL"
+    assert name == "meta_muse_spark"
+    assert "DeepSeek" not in detail or "no silent" in detail
+    assert "Grok" in detail or "fails closed" in detail
+    assert "test double" not in detail.lower()
+
+
+def test_preflight_reports_muse_spark_real_when_key_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.scripts.preflight import _check_chat
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "meta_model_api_key", "test-key-not-logged")
+    kind, name, detail = _check_chat()
+    assert kind == "REAL"
+    assert name == "meta_muse_spark"
+    assert "muse-spark-1.3-contributor" in detail
+    assert "pipeline" in detail
+    assert "test-key-not-logged" not in detail
+
+
+def test_preflight_reports_muse_voice_partial_without_key_not_whisper_double(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.scripts.preflight import _check_asr
+
+    monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
+    monkeypatch.setattr(settings, "meta_model_api_key", "")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    kind, name, detail = _check_asr()
+    assert kind == "PARTIAL"
+    assert name == "meta_muse_voice"
+    assert "Whisper" in detail or "fails closed" in detail
+    assert "test double" not in detail.lower()
+    assert "parakeet" not in detail.lower()
+
+
+def test_preflight_reports_existing_edge_tts_as_real(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.scripts.preflight import _check_tts
+
+    monkeypatch.setattr(settings, "voice_tts_provider", "edge_tts")
+    monkeypatch.setattr(settings, "voice_tts_edge_voice", "en-GB-SoniaNeural")
+    kind, name, detail = _check_tts()
+    assert kind == "REAL"
+    assert name == "edge_tts"
+    assert "SoniaNeural" in detail
+    assert "test double" not in detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_runtime_health_muse_asr_degraded_without_key_not_base_url_lie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.runtime import _asr_tts_checks
+
+    class MuseTranscriber:
+        name = "meta_muse_voice"
+
+    class EdgeSynth:
+        name = "edge_tts"
+
+    monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
+    monkeypatch.setattr(settings, "voice_asr_model", "muse-voice-transcribe-1.0")
+    monkeypatch.setattr(settings, "voice_asr_base_url", None)
+    monkeypatch.setattr(settings, "voice_tts_provider", "edge_tts")
+    monkeypatch.setattr(settings, "voice_tts_base_url", None)
+    monkeypatch.setattr(settings, "meta_model_api_key", "")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    monkeypatch.setattr("app.voice.asr.get_transcriber", lambda: MuseTranscriber())
+    monkeypatch.setattr("app.voice.tts.get_synthesizer", lambda: EdgeSynth())
+    checks = await _asr_tts_checks()
+    asr = next(c for c in checks if c["name"] == "asr")
+    tts = next(c for c in checks if c["name"] == "tts")
+    assert asr["status"] == "degraded"
+    assert asr["reason"] == "META_MODEL_API_KEY missing"
+    assert "base_url" not in (asr.get("reason") or "")
+    assert tts["status"] == "ok"
+    assert tts["provider"] == "edge_tts"

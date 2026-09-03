@@ -1550,6 +1550,15 @@ async def _asr_tts_checks() -> list[dict]:
             await transcriber.transcribe(text_hint="ev health probe")
             asr_status = "ok"
             asr_detail: dict = {"probe": "echo"}
+        elif getattr(transcriber, "name", "") in {"meta_muse_voice", "muse_voice"}:
+            from app.gateway.muse import muse_key_loaded
+
+            if muse_key_loaded():
+                asr_status = "ok"
+                asr_detail = {"provider": transcriber.name}
+            else:
+                asr_status = "degraded"
+                asr_detail = {"reason": "META_MODEL_API_KEY missing"}
         elif settings.voice_asr_base_url:
             asr_status = "ok"
             asr_detail = {}
@@ -1581,6 +1590,9 @@ async def _asr_tts_checks() -> list[dict]:
             await synthesizer.synthesize("ev health probe", style=SpeechStyle())
             tts_status = "ok"
             tts_detail = {"probe": "meta"}
+        elif synthesizer.name == "edge_tts":
+            tts_status = "ok"
+            tts_detail = {"provider": "edge_tts"}
         elif settings.voice_tts_base_url:
             tts_status = "ok"
             tts_detail = {}
@@ -1673,11 +1685,19 @@ async def runtime_health(session: AsyncSession) -> dict:
     checks.append(
         {"name": "queue", "status": queue_status, "mode": settings.processing_mode}
     )
+    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active, muse_key_loaded
+
+    intel = configured_intelligence_provider() or settings.chat_provider
+    chat_status = "ok"
+    chat_detail: dict = {"provider": intel}
+    if muse_intelligence_active() and not muse_key_loaded():
+        chat_status = "degraded"
+        chat_detail["reason"] = "META_MODEL_API_KEY missing"
     checks.append(
         {
             "name": "chat_provider",
-            "status": "ok",
-            "provider": settings.chat_provider,
+            "status": chat_status,
+            **chat_detail,
         }
     )
     checks.extend(await _asr_tts_checks())
