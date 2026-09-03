@@ -385,23 +385,112 @@ async def test_owner_facing_sidecar_spark_counters_and_composed_hearing() -> Non
 
 
 @pytest.mark.asyncio
-async def test_live_canary_priority_is_deterministic_zero_spark() -> None:
+async def test_live_canary_priority_is_deterministic_zero_spark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import settings
     from app.ev.luna_adapter import classify_intent
     from app.gateway.muse import muse_counters_snapshot, reset_muse_counters
 
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "turn_control_provider", "meta_muse_spark")
     reset_muse_counters()
     intent = await classify_intent("what priority is Canary")
     assert muse_counters_snapshot()["spark_calls"] == 0
-    assert intent.route in {"STATE_QUERY", "CONVERSATION", "MISSION_CONTROL"}
+    assert intent.route == "STATE_QUERY"
 
 
 @pytest.mark.asyncio
-async def test_live_ambiguous_turn_calls_spark() -> None:
+async def test_live_ambiguous_turn_calls_spark(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
     from app.ev.luna_adapter import classify_intent
-    from app.gateway.muse import muse_counters_snapshot, reset_muse_counters, muse_intelligence_active
+    from app.gateway.muse import muse_counters_snapshot, reset_muse_counters
 
-    if not muse_intelligence_active():
-        pytest.skip("pytest process is not Muse-routed; sidecar tests cover owner chat")
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "turn_control_provider", "meta_muse_spark")
     reset_muse_counters()
     await classify_intent("I've been thinking about that thing from yesterday, what should I do")
     assert muse_counters_snapshot()["spark_calls"] >= 1
+
+
+async def _sidecar_chat(client, bearer: str, message: str):
+    return await client.post(
+        "http://127.0.0.1:18000/v1/chat",
+        headers={"Authorization": f"Bearer {bearer}"},
+        json={"message": message},
+    )
+
+
+@pytest.mark.asyncio
+async def test_owner_facing_sidecar_canary_is_core_not_grok() -> None:
+    import httpx
+
+    bearer = _sidecar_bearer()
+    async with httpx.AsyncClient(timeout=60) as client:
+        before = await client.get("http://127.0.0.1:18000/v1/health")
+        assert (before.json().get("providers") or {}).get("chat") == "meta_muse_spark"
+        resp = await _sidecar_chat(client, bearer, "what priority is Canary")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    reply = (body.get("reply") or "").strip()
+    assert reply
+    assert "unavailable" not in reply.lower()
+    model = (body.get("model") or "").lower()
+    assert "grok" not in model
+    assert "luna" not in model
+    assert "deepseek" not in model
+    # TurnGate classify is Spark=0; typed/voice pipeline may still verbalize.
+
+
+@pytest.mark.asyncio
+async def test_owner_facing_sidecar_calculate_and_research_and_memory() -> None:
+    import httpx
+
+    bearer = _sidecar_bearer()
+    async with httpx.AsyncClient(timeout=120) as client:
+        health = await client.get("http://127.0.0.1:18000/v1/health")
+        assert (health.json().get("providers") or {}).get("chat") == "meta_muse_spark"
+        calc = await _sidecar_chat(client, bearer, "calculate 19 times 47")
+        assert calc.status_code == 200, calc.text
+        calc_reply = (calc.json().get("reply") or "")
+        assert "893" in calc_reply.replace(",", "")
+        assert "grok" not in (calc.json().get("model") or "").lower()
+
+        research = await _sidecar_chat(
+            client, bearer, "research the current weather in Surat, one short sentence"
+        )
+        assert research.status_code == 200, research.text
+        research_reply = (research.json().get("reply") or "").strip()
+        assert research_reply
+        assert "unavailable" not in research_reply.lower()
+        assert "grok" not in (research.json().get("model") or "").lower()
+        assert "luna" not in (research.json().get("model") or "").lower()
+
+        memory = await _sidecar_chat(
+            client, bearer, "what were we working on recently, one short sentence"
+        )
+        assert memory.status_code == 200, memory.text
+        memory_reply = (memory.json().get("reply") or "").strip()
+        assert memory_reply
+        assert "unavailable" not in memory_reply.lower()
+        assert "grok" not in (memory.json().get("model") or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_live_edge_tts_speaks_spark_text_without_openai_mouth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import settings
+    from app.voice.contracts import SpeechStyle
+    from app.voice.tts import EdgeTTSSynthesizer, get_synthesizer
+
+    synth = EdgeTTSSynthesizer(voice="en-GB-SoniaNeural")
+    assert synth.name == "edge_tts"
+    spoken = await synth.synthesize("pong", style=SpeechStyle())
+    assert spoken.audio
+    assert len(spoken.audio) > 200
+    monkeypatch.setattr(settings, "voice_tts_provider", "edge_tts")
+    mouth = get_synthesizer()
+    assert mouth.name == "edge_tts"

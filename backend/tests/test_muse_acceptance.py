@@ -265,6 +265,16 @@ def test_muse_path_has_one_mouth(monkeypatch: pytest.MonkeyPatch) -> None:
     assert grok_voice_enabled() is False
 
 
+def test_edge_tts_factory_has_no_openai_or_grok_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.voice.tts import get_synthesizer
+
+    monkeypatch.setattr(settings, "voice_tts_provider", "edge_tts")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-must-not-be-used")
+    monkeypatch.setattr(settings, "xai_api_key", "xai-must-not-be-used")
+    mouth = get_synthesizer()
+    assert mouth.name == "edge_tts"
+
+
 @pytest.mark.asyncio
 async def test_research_style_turn_uses_spark_not_deepseek_or_luna(
     monkeypatch: pytest.MonkeyPatch,
