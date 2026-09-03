@@ -761,13 +761,19 @@ def _compose_spoken(
 async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
     """Optional Spark wording pass over derived facts. Never sends pixels."""
 
-    from app.gateway.muse import MuseProviderUnavailable
+    from app.gateway.muse import (
+        MUSE_SPARK_PROVIDERS,
+        MuseProviderUnavailable,
+        muse_intelligence_active,
+    )
 
     try:
         provider = get_chat_provider()
     except MuseProviderUnavailable:
         return draft
     if getattr(provider, "name", "") in {"echo", "mock"} or not getattr(provider, "api_key", True):
+        return draft
+    if muse_intelligence_active() and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS:
         return draft
     if provider.name == "deepseek" and not settings.deepseek_api_key:
         return draft

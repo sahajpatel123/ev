@@ -64,7 +64,7 @@ def _is_muse(body: dict | None) -> bool:
     )
 
 
-def wait_for_muse(*, seconds: float = 45.0) -> dict:
+def wait_for_muse(*, seconds: float = 90.0) -> dict:
     deadline = time.time() + seconds
     last = None
     while time.time() < deadline:

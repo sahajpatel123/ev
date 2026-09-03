@@ -132,10 +132,17 @@ def routing_candidates() -> list[str]:
     ``echo``/``mock`` are offline dev doubles, not routing targets. DeepSeek
     is a candidate when it is the primary provider or an API key is set; the
     local provider is a candidate when a base URL/name override is configured.
+    Muse Spark is a single-brain mode: leftover xAI/DeepSeek keys are not
+    tournament candidates.
     """
 
+    from app.gateway.muse import MUSE_SPARK_PROVIDERS, configured_intelligence_provider
+
+    primary = (configured_intelligence_provider() or settings.chat_provider or "").strip()
+    if primary.lower() in MUSE_SPARK_PROVIDERS:
+        return [primary]
+
     candidates: set[str] = set()
-    primary = settings.chat_provider
     if primary in ("deepseek", "local", "echo", "mock", "xai", "meta_muse_spark", "muse", "muse_spark"):
         candidates.add(primary)
     if settings.deepseek_api_key or os.getenv("EV_DEEPSEEK_API_KEY"):

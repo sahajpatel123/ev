@@ -317,6 +317,14 @@ async def analyze_attachment(
             provider = get_chat_provider()
         except MuseProviderUnavailable:
             provider = None
+    from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_intelligence_active
+
+    if (
+        muse_intelligence_active()
+        and provider is not None
+        and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS
+    ):
+        provider = None
     privacy = event.privacy_level or "normal"
     if not permission:
         raise PermissionError(

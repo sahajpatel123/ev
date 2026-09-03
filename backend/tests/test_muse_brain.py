@@ -82,6 +82,17 @@ def test_muse_routing_never_selects_legacy_brains(monkeypatch: pytest.MonkeyPatc
     assert selection.reason == "muse_spark_single_brain"
 
 
+def test_muse_routing_candidates_are_spark_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.gateway.routing import routing_candidates
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "deepseek_api_key", "deepseek-must-not-route")
+    monkeypatch.setattr(settings, "xai_api_key", "xai-must-not-route")
+    monkeypatch.setattr(settings, "local_model_base_url", "http://localhost:11434/v1")
+    assert routing_candidates() == ["meta_muse_spark"]
+
+
 def test_spark_code_loop_prompt_is_not_luna() -> None:
     import inspect
 

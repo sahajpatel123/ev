@@ -604,6 +604,26 @@ async def test_look_polish_fails_closed_without_muse_key(
 
 
 @pytest.mark.asyncio
+async def test_look_polish_refuses_grok_when_muse_is_brain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev import look
+
+    class XAI:
+        name = "xai"
+        api_key = "xai-must-not-polish"
+
+        async def chat(self, *args, **kwargs):
+            raise AssertionError("Grok must not polish look while Muse is the brain")
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr("app.ev.look.get_chat_provider", lambda: XAI())
+    out = await look._polish_spoken("A red mug is on the desk.", {"ocr_text": "mug"})
+    assert out == "A red mug is on the desk."
+
+
+@pytest.mark.asyncio
 async def test_voice_memory_fallback_uses_muse_not_whisper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
