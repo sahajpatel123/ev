@@ -86,6 +86,10 @@ class MuseSparkProvider(DeepSeekProvider):
         del temperature
         payload.pop("temperature", None)
         payload.pop("thinking", None)
+        # Meta streaming examples send stream=true only. OpenAI's
+        # stream_options.include_usage is not in the Chat Completions table and
+        # an unsupported parameter is HTTP 400 — which would mute Talk.
+        payload.pop("stream_options", None)
         payload.update(self._payload_extras())
         return payload
 

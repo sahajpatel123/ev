@@ -366,12 +366,20 @@ def test_muse_spark_payload_drops_legacy_thinking() -> None:
         default_model="muse-spark-1.3-contributor",
     )
     payload = provider._apply_provider_payload(
-        {"model": "muse-spark-1.3-contributor", "temperature": 0.7, "thinking": {"type": "enabled"}},
+        {
+            "model": "muse-spark-1.3-contributor",
+            "temperature": 0.7,
+            "thinking": {"type": "enabled"},
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        },
         temperature=0.7,
     )
     assert payload["reasoning_effort"] == "high"
+    assert payload.get("stream") is True
     assert "temperature" not in payload
     assert "thinking" not in payload
+    assert "stream_options" not in payload
 
 
 @pytest.mark.asyncio
