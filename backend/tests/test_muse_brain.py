@@ -538,3 +538,34 @@ def test_health_manager_is_spark_when_muse_is_primary(monkeypatch: pytest.Monkey
     assert snap["manager"]["provider"] == "meta_muse_spark"
     assert snap["muse"]["reasoning_effort"] == "high"
 
+
+@pytest.mark.asyncio
+async def test_v1_health_reports_muse_pipeline_not_openai_or_deepseek(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "turn_control_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
+    monkeypatch.setattr(settings, "voice_live_brain", "pipeline")
+    monkeypatch.setattr(settings, "meta_model_api_key", "test-key")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-must-not-select-s2s")
+    monkeypatch.setattr(settings, "xai_api_key", "xai-must-not-select-s2s")
+    monkeypatch.setattr(settings, "deepseek_api_key", "ds-must-not-be-manager")
+
+    resp = await client.get("/v1/health")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["providers"]["chat"] == "meta_muse_spark"
+    assert body["providers"]["live"] == "pipeline"
+    assert body["models"]["voice"]["provider"] == "meta_muse_voice"
+    assert body["models"]["voice"]["model"] == "muse-voice-transcribe-1.0"
+    assert body["models"]["turn_control"]["provider"] == "meta_muse_spark"
+    assert body["models"]["turn_control"]["model"] == "muse-spark-1.3-contributor"
+    assert body["models"]["manager"]["provider"] == "meta_muse_spark"
+    assert body["models"]["manager"]["model"] == "muse-spark-1.3-contributor"
+    assert body["models"]["voice"]["provider"] != "openai-realtime"
+    assert "deepseek" not in (body["models"]["manager"].get("provider") or "")
+    assert "grok" not in (body["providers"]["live"] or "")
+    assert "luna" not in (body["models"]["turn_control"].get("model") or "")
+
