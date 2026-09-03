@@ -1544,6 +1544,7 @@ async def _asr_tts_checks() -> list[dict]:
     from app.voice.tts import get_synthesizer
 
     checks: list[dict] = []
+    asr_model = settings.voice_asr_model
     try:
         transcriber = get_transcriber()
         if transcriber.name == "echo":
@@ -1551,8 +1552,9 @@ async def _asr_tts_checks() -> list[dict]:
             asr_status = "ok"
             asr_detail: dict = {"probe": "echo"}
         elif getattr(transcriber, "name", "") in {"meta_muse_voice", "muse_voice"}:
-            from app.gateway.muse import muse_key_loaded
+            from app.gateway.muse import muse_key_loaded, muse_voice_model
 
+            asr_model = muse_voice_model()
             if muse_key_loaded():
                 asr_status = "ok"
                 asr_detail = {"provider": transcriber.name}
@@ -1573,7 +1575,7 @@ async def _asr_tts_checks() -> list[dict]:
             "name": "asr",
             "status": asr_status,
             "provider": settings.voice_asr_provider,
-            "model": settings.voice_asr_model,
+            "model": asr_model,
             **asr_detail,
         }
     )

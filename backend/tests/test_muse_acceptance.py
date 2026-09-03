@@ -645,7 +645,8 @@ async def test_runtime_health_muse_asr_degraded_without_key_not_base_url_lie(
         name = "edge_tts"
 
     monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
-    monkeypatch.setattr(settings, "voice_asr_model", "muse-voice-transcribe-1.0")
+    monkeypatch.setattr(settings, "voice_asr_model", "base")
+    monkeypatch.setattr(settings, "muse_voice_model", "muse-voice-transcribe-1.0")
     monkeypatch.setattr(settings, "voice_asr_base_url", None)
     monkeypatch.setattr(settings, "voice_tts_provider", "edge_tts")
     monkeypatch.setattr(settings, "voice_tts_base_url", None)
@@ -660,6 +661,8 @@ async def test_runtime_health_muse_asr_degraded_without_key_not_base_url_lie(
     tts = next(c for c in checks if c["name"] == "tts")
     assert asr["status"] == "degraded"
     assert asr["reason"] == "META_MODEL_API_KEY missing"
+    assert asr["model"] == "muse-voice-transcribe-1.0"
+    assert asr["model"] != "base"
     assert "base_url" not in (asr.get("reason") or "")
     assert tts["status"] == "ok"
     assert tts["provider"] == "edge_tts"
