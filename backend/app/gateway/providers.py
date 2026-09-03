@@ -380,7 +380,7 @@ class DeepSeekProvider(OpenAICompatibleProvider):
                     client.stream(
                         "POST",
                         f"{self.base_url}/chat/completions",
-                        headers=self._headers(),
+                        headers=getattr(self, "_stream_headers", self._headers)(),
                         json=payload,
                     ) as resp,
                 ):

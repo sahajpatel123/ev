@@ -13,6 +13,7 @@ speaks "Local file access is not enabled on this API."
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 REPO = Path("/Users/sahajpatel/Code/ev")
@@ -66,14 +67,62 @@ def load(path: Path) -> None:
         os.environ.setdefault(key, val)
 
 
+def alias_meta_model_keys() -> None:
+    """Mirror config.py: Meta docs, overlay, and EV_ names are one secret."""
+
+    docs = (os.environ.get("MODEL_API_KEY") or "").strip()
+    meta = (os.environ.get("META_MODEL_API_KEY") or "").strip() or docs
+    ev_meta = (os.environ.get("EV_META_MODEL_API_KEY") or "").strip()
+    if docs and not (os.environ.get("META_MODEL_API_KEY") or "").strip():
+        os.environ["META_MODEL_API_KEY"] = docs
+    if meta and not ev_meta:
+        os.environ["EV_META_MODEL_API_KEY"] = meta
+    elif ev_meta and not meta:
+        os.environ["META_MODEL_API_KEY"] = ev_meta
+
+
+def muse_selected() -> bool:
+    intel = (
+        os.environ.get("EV_INTELLIGENCE_PROVIDER")
+        or os.environ.get("EV_CHAT_PROVIDER")
+        or ""
+    ).strip().lower()
+    hearing = (os.environ.get("EV_VOICE_ASR_PROVIDER") or "").strip().lower()
+    return intel in {"meta_muse_spark", "muse", "muse_spark"} or hearing in {
+        "meta_muse_voice",
+        "muse_voice",
+    }
+
+
+def meta_key_loaded() -> bool:
+    return bool(
+        (os.environ.get("META_MODEL_API_KEY") or "").strip()
+        or (os.environ.get("EV_META_MODEL_API_KEY") or "").strip()
+        or (os.environ.get("MODEL_API_KEY") or "").strip()
+    )
+
+
+def refuse_muse_without_key() -> None:
+    """Fail closed before daemonize so a missing Meta key is visible."""
+
+    alias_meta_model_keys()
+    if muse_selected() and not meta_key_loaded():
+        sys.stderr.write(
+            "Talk sidecar refused to start: META_MODEL_API_KEY is missing "
+            "while Muse is selected.\n"
+        )
+        raise SystemExit(2)
+
+
 def main() -> None:
-    daemonize()
     load(REPO / ".env")
     load(REPO / "backend" / ".env")
     # Production secrets overlay (META_MODEL_API_KEY). setdefault so an
     # explicit operator env still wins; config.py aliases the Meta names.
     secrets = Path(os.environ.get("EV_SECRETS_FILE", str(Path.home() / ".ev/secrets/production.env"))).expanduser()
     load(secrets)
+    refuse_muse_without_key()
+    daemonize()
     SUPPORT.mkdir(parents=True, exist_ok=True)
     # Keep EV_DATABASE_URL and EV_VOICE_LIVE_MODE from .env so Talk sees the
     # same archive and shadow surface the owner actually uses.

@@ -77,6 +77,26 @@ class MuseSparkProvider(DeepSeekProvider):
             "Content-Type": "application/json",
         }
 
+    def _stream_headers(self) -> dict:
+        headers = self._headers()
+        headers["Accept"] = "text/event-stream"
+        return headers
+
+    def _resolve_model(self, model: str | None) -> str:
+        """Spark is the only Meta chat model Evie may call.
+
+        Leftover client IDs (Grok, Luna, DeepSeek) must not be forwarded;
+        Meta would 400 and Talk would mute.
+        """
+
+        spark = (self.default_model or muse_spark_model()).strip()
+        requested = (model or "").strip()
+        if not requested:
+            return spark
+        if "muse-spark" in requested.lower():
+            return requested
+        return spark
+
     def _payload_extras(self) -> dict:
         return {"reasoning_effort": muse_spark_reasoning_effort()}
 
@@ -95,7 +115,7 @@ class MuseSparkProvider(DeepSeekProvider):
     ) -> ChatResult:
         try:
             return await super()._complete(
-                messages, model=model, temperature=temperature, tools=tools
+                messages, model=self._resolve_model(model), temperature=temperature, tools=tools
             )
         except httpx.HTTPStatusError as exc:
             self._raise_if_auth_rejected(exc)
@@ -148,7 +168,7 @@ class MuseSparkProvider(DeepSeekProvider):
     ) -> AsyncIterator:
         try:
             async for chunk in super().stream_chat(
-                messages, model=model, temperature=temperature
+                messages, model=self._resolve_model(model), temperature=temperature
             ):
                 if getattr(chunk, "done", False):
                     note_spark_call(
@@ -182,7 +202,7 @@ class MuseSparkProvider(DeepSeekProvider):
         if not breaker.allow_request():
             raise CircuitOpenError(self.name, breaker.retry_after_seconds())
         payload: dict[str, Any] = {
-            "model": model or self.default_model or muse_spark_model(),
+            "model": self._resolve_model(model),
             "messages": _sanitize_chat_messages(messages),
         }
         payload = self._apply_provider_payload(payload, temperature=1.0)

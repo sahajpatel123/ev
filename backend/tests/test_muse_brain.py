@@ -382,6 +382,50 @@ def test_muse_spark_payload_drops_legacy_thinking() -> None:
     assert "stream_options" not in payload
 
 
+def test_muse_spark_coerces_legacy_client_model_ids() -> None:
+    from app.gateway.muse_spark import MuseSparkProvider
+
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="test-key",
+        default_model="muse-spark-1.3-contributor",
+    )
+    assert provider._resolve_model(None) == "muse-spark-1.3-contributor"
+    assert provider._resolve_model("gpt-5.6-luna") == "muse-spark-1.3-contributor"
+    assert provider._resolve_model("grok-4.6") == "muse-spark-1.3-contributor"
+    assert provider._resolve_model("deepseek-v4-flash") == "muse-spark-1.3-contributor"
+    assert provider._resolve_model("muse-spark-1.3-contributor") == "muse-spark-1.3-contributor"
+    assert provider._resolve_model("muse-spark-1.3") == "muse-spark-1.3"
+    headers = provider._stream_headers()
+    assert headers["Accept"] == "text/event-stream"
+    assert headers["Authorization"].startswith("Bearer ")
+
+
+def test_talk_sidecar_refuses_muse_without_meta_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py")
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("EV_CHAT_PROVIDER", "meta_muse_spark")
+    monkeypatch.setenv("EV_VOICE_ASR_PROVIDER", "meta_muse_voice")
+    monkeypatch.delenv("META_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("EV_META_MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    assert mod.muse_selected() is True
+    assert mod.meta_key_loaded() is False
+    with pytest.raises(SystemExit) as exited:
+        mod.refuse_muse_without_key()
+    assert exited.value.code == 2
+    monkeypatch.setenv("META_MODEL_API_KEY", "meta-test-not-logged")
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "meta-test-not-logged")
+    mod.refuse_muse_without_key()
+    assert mod.meta_key_loaded() is True
+
+
 @pytest.mark.asyncio
 async def test_muse_spark_complete_raw_strips_reasoning_and_non_auto_tool_choice(
     monkeypatch: pytest.MonkeyPatch,
