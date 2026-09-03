@@ -8,6 +8,8 @@ from __future__ import annotations
 import io
 import os
 import shutil
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -253,6 +255,12 @@ async def test_owner_facing_talk_sidecar_health_is_muse_not_openai_or_grok() -> 
     models = body.get("models") or {}
     assert providers.get("chat") == "meta_muse_spark"
     assert providers.get("live") == "pipeline"
+    head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(Path(__file__).resolve().parents[2]),
+        text=True,
+    ).strip()
+    assert (body.get("git") or {}).get("sha") == head
     voice = models.get("voice") or {}
     turn = models.get("turn_control") or {}
     manager = models.get("manager") or {}
@@ -539,3 +547,65 @@ async def test_live_edge_tts_speaks_spark_text_without_openai_mouth(
     monkeypatch.setattr(settings, "voice_tts_provider", "edge_tts")
     mouth = get_synthesizer()
     assert mouth.name == "edge_tts"
+
+
+@pytest.mark.asyncio
+async def test_live_spark_code_job_uses_jail_not_luna_http(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import settings
+    from app.ev.luna_code import run_code_job
+    from app.gateway.muse import muse_counters_snapshot, reset_muse_counters
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "code_projects", "")
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "code_enabled", True)
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "openai_api_key", None)
+    luna = {"n": 0}
+
+    async def boom_luna(*args, **kwargs):
+        luna["n"] += 1
+        raise AssertionError("Luna-code HTTP must be 0")
+
+    monkeypatch.setattr("app.ev.luna_code._luna_loop", boom_luna)
+    reset_muse_counters()
+    result = await run_code_job(
+        "Write hello.py that prints hi and run it with python3. Stay in the selected workspace."
+    )
+    assert luna["n"] == 0
+    brain = str(result.get("brain") or "").lower()
+    assert "luna" not in brain
+    assert "gpt-5" not in brain
+    assert str(tmp_path) in str(result.get("workspace") or "")
+    spoken = str(result.get("spoken") or "").lower()
+    assert "luna" not in spoken
+    assert muse_counters_snapshot()["spark_calls"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_live_curator_reasoning_uses_spark_not_deepseek(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import settings
+    from app.gateway.muse import muse_counters_snapshot, reset_muse_counters
+    from app.memory.curator import _call_deepseek
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    deepseek = {"n": 0}
+
+    def boom_deepseek(*args, **kwargs):
+        deepseek["n"] += 1
+        raise AssertionError("DeepSeek curator LLM must not be constructed")
+
+    monkeypatch.setattr("app.memory.curator.DeepSeekProvider", boom_deepseek)
+    reset_muse_counters()
+    text, _tokens = await _call_deepseek(
+        'Return only JSON: {"memories":[],"entities":[],"open_loops":[]}'
+    )
+    assert (text or "").strip()
+    assert deepseek["n"] == 0
+    assert muse_counters_snapshot()["spark_calls"] >= 1

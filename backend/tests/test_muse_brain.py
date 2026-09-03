@@ -82,6 +82,20 @@ def test_muse_routing_never_selects_legacy_brains(monkeypatch: pytest.MonkeyPatc
     assert selection.reason == "muse_spark_single_brain"
 
 
+def test_spark_code_loop_prompt_is_not_luna() -> None:
+    import inspect
+
+    from app.ev.luna_code import LUNA_CODE_SYSTEM, SPARK_CODE_SYSTEM, _spark_code_loop
+
+    assert SPARK_CODE_SYSTEM.startswith("You are Evie's coding brain.")
+    assert "(Luna)" not in SPARK_CODE_SYSTEM
+    assert "Mini is only the mouth" not in SPARK_CODE_SYSTEM
+    assert "Luna" in LUNA_CODE_SYSTEM
+    source = inspect.getsource(_spark_code_loop)
+    assert "SPARK_CODE_SYSTEM" in source
+    assert "LUNA_CODE_SYSTEM" not in source
+
+
 def test_normal_s2s_brain_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "pipeline")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")

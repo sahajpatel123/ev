@@ -40,16 +40,27 @@ def _health() -> dict | None:
         return None
 
 
+def _head_sha() -> str:
+    out = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(REPO),
+        text=True,
+    )
+    return (out or "").strip()
+
+
 def _is_muse(body: dict | None) -> bool:
     if not isinstance(body, dict):
         return False
     providers = body.get("providers") or {}
     models = body.get("models") or {}
     voice = models.get("voice") or {}
+    sha = (body.get("git") or {}).get("sha")
     return (
         providers.get("chat") == "meta_muse_spark"
         and providers.get("live") == "pipeline"
         and voice.get("provider") == "meta_muse_voice"
+        and sha == _head_sha()
     )
 
 
@@ -62,7 +73,9 @@ def wait_for_muse(*, seconds: float = 45.0) -> dict:
             return last
         time.sleep(0.5)
     sys.stderr.write(
-        "Talk sidecar on :18000 is not the Muse brain after restart.\n"
+        "Talk sidecar on :18000 is not the current Muse brain "
+        "(need chat=meta_muse_spark live=pipeline voice=meta_muse_voice "
+        "and git.sha=HEAD).\n"
     )
     raise SystemExit(3)
 

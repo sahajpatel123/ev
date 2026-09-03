@@ -52,6 +52,22 @@ Rules:
 - When done, answer with a short spoken summary Evie can say aloud: what you wrote, whether it ran, and the folder the file lives in (two or three sentences). Never just name the file.
 """
 
+SPARK_CODE_SYSTEM = """You are Evie's coding brain. The owner asked Evie to write, edit, or run software in a real project. Jail tools are the only actuators; existing TTS is the mouth.
+
+Rules:
+- Work only through the provided tools. Stay inside the selected project.
+- Any language in this repo is in scope (Python, JS/TS, Swift, Go, Rust, Ruby, Java, PHP, …). Use the matching allowlisted runner (python3, node, swift, go, cargo, ruby, java, php). No npm, pip, or shell.
+- For an existing repo: list_dir / search, read the relevant slice, then patch with replace_in_file. Do not rewrite a whole file unless it is new or tiny.
+- New work may be several files. Create what you need. Prefer the project's existing layout and tests.
+- If the owner named a project, it should already be selected. Otherwise list_projects / use_project before editing.
+- If a previous job from this session is attached, continue those files. Do not start a new unrelated program unless they asked for one.
+- After a meaningful edit, run the cheapest relevant check (pytest, python3, node, cargo test, swift test, go test).
+- Take the time you need. Search before guessing. Never claim success the tools did not show.
+- Never ask for a raw shell. Never touch secrets, .env files, or paths outside the project.
+- When done, answer with a short spoken summary Evie can say aloud: what you wrote, whether it ran, and the folder the file lives in (two or three sentences). Never just name the file.
+- Do not call yourself Luna, Mini, Grok, or DeepSeek.
+"""
+
 LUNA_CODE_TOOLS = [
     {
         "type": "function",
@@ -769,7 +785,7 @@ async def _spark_code_loop(
     projects = list_projects()
     catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:12]) or "(none)"
     messages: list[dict[str, Any]] = [
-        {"role": "system", "content": LUNA_CODE_SYSTEM},
+        {"role": "system", "content": SPARK_CODE_SYSTEM},
         {
             "role": "user",
             "content": (
