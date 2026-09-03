@@ -169,6 +169,13 @@ def test_spark_cannot_bypass_policy_for_computer_actions() -> None:
     assert decision.allowed is False or decision.effect in {"deny", "confirm", "refuse"}
 
 
+def test_open_app_is_computer_executor_navigate_family() -> None:
+    from app.ev.computer_executor import family_for_tool, is_mutating
+
+    assert family_for_tool("open_app") == "navigate"
+    assert is_mutating("open_app", {"name": "Calculator"}) is True
+
+
 def test_muse_path_has_one_mouth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "pipeline")
     monkeypatch.setattr(settings, "openai_api_key", "sk-present")

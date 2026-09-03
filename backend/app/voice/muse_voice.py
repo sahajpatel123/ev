@@ -83,8 +83,10 @@ class MuseVoiceTranscriber:
             )
         audio, filename = await _read_audio(audio_b64, audio_ref)
         session_id = f"ev-asr-{uuid4().hex[:12]}"
+        # File clips are one complete turn (PUSH_TO_TALK). Live WebSocket uses
+        # ENDPOINTING. Official multipart: request part has no filename.
         request = {
-            "mode": "ENDPOINTING",
+            "mode": "PUSH_TO_TALK",
             "model": self.model,
             "audioEncoding": "WAV",
             "keywords": list(_KEYWORDS),
@@ -99,10 +101,13 @@ class MuseVoiceTranscriber:
             resp = await client.post(
                 f"{muse_base_url()}/asr/transcribe",
                 params={"sessionId": session_id},
-                headers={"Authorization": f"Bearer {key}"},
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
                 files={
                     "request": (
-                        "request.json",
+                        None,
                         json.dumps(request),
                         "application/json",
                     ),

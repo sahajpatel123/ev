@@ -112,7 +112,10 @@ async def test_muse_asr_file_transcribe_parses_final_and_diarization(
             return payload
 
     class _Client:
-        async def post(self, *args, **kwargs):
+        captured: dict = {}
+
+        async def post(self, url, *args, **kwargs):
+            _Client.captured = {"url": url, **kwargs}
             return _Resp()
 
         async def aclose(self):
@@ -123,6 +126,15 @@ async def test_muse_asr_file_transcribe_parses_final_and_diarization(
     assert result.text == "Open Calculator"
     assert result.details["diarization_is_owner_auth"] is False
     assert result.details["diarization_speakers"] == ["A"]
+    files = _Client.captured["files"]
+    assert files["request"][0] is None
+    request = __import__("json").loads(files["request"][1])
+    assert request["audioEncoding"] == "WAV"
+    assert request["mode"] == "PUSH_TO_TALK"
+    assert request["model"] == "muse-voice-transcribe-1.0"
+    headers = _Client.captured["headers"]
+    assert headers["Accept"] == "application/json"
+    assert headers["Authorization"].startswith("Bearer ")
 
 
 def _tiny_wav() -> bytes:
