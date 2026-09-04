@@ -688,6 +688,30 @@ async def _call_luna(turn: str, context: dict | None) -> TurnIntent:
     raise RuntimeError("Luna unavailable")
 
 
+def _json_object(text: str) -> dict | None:
+    """Parse a JSON object from Spark text, including fenced replies."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw.lower().startswith("json"):
+            raw = raw[4:].strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            data = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return data if isinstance(data, dict) else None
+
+
 async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
     """Muse Spark emits the existing TurnIntent contract. No second classifier."""
 
@@ -727,16 +751,9 @@ async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
     if result is not None:
         if result.tool_calls:
             return TurnIntent.model_validate(result.tool_calls[0].arguments)
-        text = (result.text or "").strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.lower().startswith("json"):
-                text = text[4:].strip()
-        if text:
-            try:
-                return TurnIntent.model_validate(json.loads(text))
-            except (json.JSONDecodeError, ValueError):
-                pass
+        parsed = _json_object(result.text or "")
+        if parsed is not None:
+            return TurnIntent.model_validate(parsed)
     schema = {
         "type": "object",
         "additionalProperties": False,
@@ -744,9 +761,9 @@ async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
         "required": ["route", "operation"],
     }
     structured = await provider.chat_structured(messages, schema=schema, schema_name="turn_intent")
-    text = (structured.text or "").strip()
-    if text:
-        return TurnIntent.model_validate(json.loads(text))
+    parsed = _json_object(structured.text or "")
+    if parsed is not None:
+        return TurnIntent.model_validate(parsed)
     raise RuntimeError("spark_intent_missing")
 
 

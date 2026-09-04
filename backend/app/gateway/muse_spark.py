@@ -98,6 +98,16 @@ class MuseSparkProvider(DeepSeekProvider):
             return requested
         return spark
 
+    def _identified(self, result: ChatResult, requested: str | None) -> ChatResult:
+        """Stamp Spark's id when Meta omits model or echoes a leftover name."""
+
+        spark = self._resolve_model(requested)
+        current = (result.model or "").strip()
+        if current and "muse-spark" in current.lower():
+            return result
+        result.model = spark
+        return result
+
     def _payload_extras(self) -> dict:
         return {"reasoning_effort": muse_spark_reasoning_effort()}
 
@@ -202,7 +212,7 @@ class MuseSparkProvider(DeepSeekProvider):
     ) -> ChatResult:
         result = await super().chat(messages, model=model, temperature=temperature)
         note_spark_call(usage=result.usage, model=result.model)
-        return result
+        return self._identified(result, model)
 
     async def chat_with_tools(
         self,
@@ -216,7 +226,7 @@ class MuseSparkProvider(DeepSeekProvider):
             messages, tools, model=model, temperature=temperature
         )
         note_spark_call(usage=result.usage, model=result.model)
-        return result
+        return self._identified(result, model)
 
     async def stream_chat(
         self,
@@ -337,11 +347,14 @@ class MuseSparkProvider(DeepSeekProvider):
             except json.JSONDecodeError:
                 args = {"raw": fn.get("arguments")}
             tool_calls.append(ToolCall(id=call.get("id", ""), name=fn.get("name", ""), arguments=args))
-        return ChatResult(
-            text=choice.get("content") or "",
-            tool_calls=tool_calls,
-            usage=data.get("usage") or {},
-            model=data.get("model"),
+        return self._identified(
+            ChatResult(
+                text=choice.get("content") or "",
+                tool_calls=tool_calls,
+                usage=data.get("usage") or {},
+                model=data.get("model"),
+            ),
+            model,
         )
 
 

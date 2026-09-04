@@ -251,6 +251,69 @@ async def test_muse_asr_file_transcribe_parses_final_and_diarization(
     assert headers["Authorization"].startswith("Bearer ")
 
 
+@pytest.mark.asyncio
+async def test_muse_asr_file_transcribe_joins_turns_when_top_level_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.voice.muse_voice import MuseVoiceTranscriber
+
+    monkeypatch.setenv("EV_ALLOW_REMOTE_ASR", "true")
+    payload = {
+        "sessionId": "s1",
+        "audioDurationMs": 800,
+        "turns": [
+            {"turnId": 1, "transcript": "Open", "speaker": "A"},
+            {"turnId": 2, "transcript": "Calculator", "speaker": "A"},
+        ],
+    }
+
+    class _Resp:
+        status_code = 200
+        content = b"{}"
+
+        def json(self):
+            return payload
+
+    class _Client:
+        async def post(self, url, *args, **kwargs):
+            return _Resp()
+
+        async def aclose(self):
+            return None
+
+    transcriber = MuseVoiceTranscriber(api_key="test-key", client=_Client())
+    result = await transcriber.transcribe(
+        audio_b64=__import__("base64").b64encode(_tiny_wav()).decode("ascii")
+    )
+    assert result.text == "Open Calculator"
+
+
+def test_spark_stamps_model_id_when_meta_omits_it() -> None:
+    from app.contracts import ChatResult
+    from app.gateway.muse_spark import MuseSparkProvider
+
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="test-key",
+        default_model="muse-spark-1.3-contributor",
+    )
+    empty = ChatResult(text="pong", usage={}, model=None)
+    stamped = provider._identified(empty, None)
+    assert stamped.model == "muse-spark-1.3-contributor"
+    leftover = ChatResult(text="pong", usage={}, model="grok-4.6")
+    assert provider._identified(leftover, "grok-4.6").model == "muse-spark-1.3-contributor"
+    official = ChatResult(text="pong", usage={}, model="muse-spark-1.3-contributor")
+    assert provider._identified(official, None).model == "muse-spark-1.3-contributor"
+
+
+def test_spark_intent_parses_fenced_json() -> None:
+    from app.ev.luna_adapter import _json_object
+
+    parsed = _json_object('```json\n{"route":"CONVERSATION","operation":"UNKNOWN"}\n```')
+    assert parsed == {"route": "CONVERSATION", "operation": "UNKNOWN"}
+    assert _json_object("not json") is None
+
+
 def _tiny_wav() -> bytes:
     import io
     import math

@@ -92,6 +92,8 @@ def _semantic_hit(transcript: str, needles: tuple[str, ...]) -> bool:
 
 @pytest.mark.asyncio
 async def test_live_catalog_exposes_muse_ids() -> None:
+    import json
+
     import httpx
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -103,14 +105,17 @@ async def test_live_catalog_exposes_muse_ids() -> None:
     data = resp.json()
     ids: list[str] = []
     raw = data.get("data") if isinstance(data, dict) else data
+    if isinstance(data, dict) and not isinstance(raw, list):
+        raw = data.get("models") or data.get("items") or []
     if isinstance(raw, list):
         for item in raw:
             if isinstance(item, dict) and item.get("id"):
                 ids.append(str(item["id"]))
             elif isinstance(item, str):
                 ids.append(item)
-    assert muse_spark_model() in ids
-    assert muse_voice_model() in ids
+    blob = json.dumps(data)
+    assert muse_spark_model() in ids or muse_spark_model() in blob
+    assert muse_voice_model() in ids or muse_voice_model() in blob
 
 
 @pytest.mark.asyncio

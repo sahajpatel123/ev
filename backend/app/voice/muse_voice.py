@@ -162,10 +162,16 @@ class MuseVoiceTranscriber:
                 code="asr_unusable",
             )
         data = resp.json() if resp.content else {}
-        text = str(data.get("transcript") or "").strip()
+        turns = data.get("turns") if isinstance(data.get("turns"), list) else []
+        text = str(data.get("transcript") or data.get("text") or "").strip()
+        if not text:
+            text = " ".join(
+                str(turn.get("transcript") or "").strip()
+                for turn in turns
+                if isinstance(turn, dict)
+            ).strip()
         duration_ms = int(data.get("audioDurationMs") or 0)
         note_voice_call(audio_ms=duration_ms)
-        turns = data.get("turns") if isinstance(data.get("turns"), list) else []
         speakers = sorted(
             {
                 str(turn.get("speaker") or "")
