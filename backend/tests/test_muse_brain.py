@@ -107,6 +107,23 @@ def test_spark_code_loop_prompt_is_not_luna() -> None:
     assert "LUNA_CODE_SYSTEM" not in source
 
 
+def test_spark_turn_classifier_prompt_is_not_luna() -> None:
+    import inspect
+
+    from app.ev.luna_adapter import (
+        LUNA_SYSTEM_PROMPT,
+        SPARK_TURN_SYSTEM,
+        _call_spark_intent,
+    )
+
+    assert SPARK_TURN_SYSTEM.startswith("You are Evie's turn classifier (Muse Spark).")
+    assert "Luna" not in SPARK_TURN_SYSTEM
+    assert "Luna" in LUNA_SYSTEM_PROMPT
+    source = inspect.getsource(_call_spark_intent)
+    assert "SPARK_TURN_SYSTEM" in source
+    assert "LUNA_SYSTEM_PROMPT" not in source
+
+
 def test_normal_s2s_brain_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "pipeline")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")

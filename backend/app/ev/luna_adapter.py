@@ -46,6 +46,13 @@ Rules:
 Return ONLY the structured intent via the emit_intent tool. No prose.
 """
 
+# Same TurnIntent contract as Luna, without telling Spark it is Luna.
+SPARK_TURN_SYSTEM = LUNA_SYSTEM_PROMPT.replace(
+    "You are Evie's Turn Controller brain (Luna).",
+    "You are Evie's turn classifier (Muse Spark).",
+    1,
+)
+
 # Cache-friendly static tool spec for emit_intent
 EMIT_INTENT_TOOL = {
     "name": "emit_intent",
@@ -695,7 +702,7 @@ async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
     if isinstance(context, dict) and context:
         ctx = "\nContext (task-scoped, already filtered):\n" + json.dumps(context)[:2000]
     messages = [
-        ChatMessage(role="system", content=LUNA_SYSTEM_PROMPT),
+        ChatMessage(role="system", content=SPARK_TURN_SYSTEM),
         ChatMessage(role="user", content=f"Owner turn:\n{turn}{ctx}"),
     ]
     tool = ToolSpec(
