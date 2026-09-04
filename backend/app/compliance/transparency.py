@@ -210,6 +210,22 @@ async def transparency_report(session: AsyncSession) -> dict:
             "retained": "derived memories with provenance and redaction cascade",
         },
     ]
+    from app.gateway.muse import (
+        MUSE_SPARK_PROVIDERS,
+        configured_intelligence_provider,
+        muse_base_url,
+        muse_intelligence_active,
+    )
+
+    chat_provider = (configured_intelligence_provider() or settings.chat_provider or "").strip()
+    if muse_intelligence_active() or chat_provider.lower() in MUSE_SPARK_PROVIDERS:
+        chat_destination = muse_base_url()
+        if chat_provider.lower() not in MUSE_SPARK_PROVIDERS:
+            chat_provider = "meta_muse_spark"
+    elif settings.chat_provider == "xai":
+        chat_destination = settings.xai_base_url
+    else:
+        chat_destination = settings.deepseek_base_url
     transmitted = [
         {
             "kind": "voiceprint",
@@ -227,13 +243,9 @@ async def transparency_report(session: AsyncSession) -> dict:
         },
         {
             "kind": "chat",
-            "provider": settings.chat_provider,
-            "remote": settings.chat_provider not in ("echo", "mock"),
-            "destination": (
-                settings.xai_base_url
-                if settings.chat_provider == "xai"
-                else settings.deepseek_base_url
-            ),
+            "provider": chat_provider,
+            "remote": chat_provider not in ("echo", "mock"),
+            "destination": chat_destination,
             "consent_track": "chat_egress",
             "consent_active": "chat_egress" in active_tracks,
             "remote_gate_allowed": remote_processing_allowed("chat_egress"),

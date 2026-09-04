@@ -194,6 +194,7 @@ async def test_muse_live_push_to_talk_commits_on_transcript_final() -> None:
         def __init__(self) -> None:
             self._messages = [
                 '{"type":"transcript","transcript":"Open Calc","final":false}',
+                '{"type":"transcript","transcript":"not yet","final":"false"}',
                 '{"type":"transcript","transcript":"Open Calculator","final":true}',
                 '{"type":"speechComplete","turnId":1,"transcript":"Open Calculator"}',
             ]
@@ -207,8 +208,26 @@ async def test_muse_live_push_to_talk_commits_on_transcript_final() -> None:
             return self._messages.pop(0)
 
     await session._receive(_WS())
-    assert partials == ["Open Calc", "Open Calculator"]
+    assert partials == ["Open Calc", "not yet", "Open Calculator"]
     assert finals == ["Open Calculator"]
+
+
+@pytest.mark.asyncio
+async def test_transparency_chat_egress_names_meta_not_deepseek_when_muse_is_brain(
+    client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "turn_control_provider", "meta_muse_spark")
+    resp = await client.get("/v1/compliance/transparency")
+    assert resp.status_code == 200, resp.text
+    chat = next(item for item in resp.json()["transmitted"] if item["kind"] == "chat")
+    assert chat["provider"] == "meta_muse_spark"
+    dest = (chat.get("destination") or "").lower()
+    assert "meta.ai" in dest
+    assert "deepseek" not in dest
+    assert "x.ai" not in dest
+    assert "openai.com" not in dest
 
 
 @pytest.mark.asyncio

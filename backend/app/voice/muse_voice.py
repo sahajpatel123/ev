@@ -37,6 +37,14 @@ OnUnusable = Callable[[VoiceError], Awaitable[None]]
 _KEYWORDS = ("Evie", "Eve", "EVIE", "Canary", "OwnerTurn")
 
 
+def _json_true(value: object) -> bool:
+    """JSON boolean true. ``bool("false")`` is True in Python and must not commit."""
+
+    if value is True or value == 1:
+        return True
+    return isinstance(value, str) and value.strip().lower() == "true"
+
+
 class MuseVoiceTranscriber:
     """File + live WebSocket ASR for ``muse-voice-transcribe-1.0``."""
 
@@ -371,7 +379,7 @@ class _MuseLiveSession:
                 # transcript.final is the commit. ENDPOINTING ignores final.
                 if (
                     self._mode == "PUSH_TO_TALK"
-                    and bool(event.get("final"))
+                    and _json_true(event.get("final"))
                     and text
                 ):
                     await self._emit_final(text, turn_id="push_to_talk")
