@@ -558,6 +558,53 @@ def test_talk_sidecar_overlay_fills_empty_meta_key(tmp_path, monkeypatch: pytest
     assert mod.meta_key_loaded() is True
 
 
+def test_talk_sidecar_muse_env_beats_leftover_xai_and_openai(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util
+    import os
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py")
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar_leftover_brain", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("EV_CHAT_PROVIDER", "xai")
+    monkeypatch.setenv("EV_VOICE_ASR_PROVIDER", "faster_whisper")
+    monkeypatch.setenv("EV_VOICE_LIVE_BRAIN", "openai")
+    monkeypatch.setenv("EV_VOICE_TTS_PROVIDER", "openai_compat")
+    monkeypatch.setenv("EV_TURN_CONTROL_PROVIDER", "openai")
+    monkeypatch.setenv("EV_ALLOW_REMOTE_ASR", "false")
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "EV_CHAT_PROVIDER=meta_muse_spark",
+                "EV_INTELLIGENCE_PROVIDER=meta_muse_spark",
+                "EV_VOICE_ASR_PROVIDER=meta_muse_voice",
+                "EV_VOICE_LIVE_BRAIN=pipeline",
+                "EV_VOICE_TTS_PROVIDER=edge_tts",
+                "EV_TURN_CONTROL_PROVIDER=meta_muse_spark",
+                "EV_TURN_CONTROL_MODEL=muse-spark-1.3-contributor",
+                "EV_MUSE_SPARK_MODEL=muse-spark-1.3-contributor",
+                "EV_MUSE_VOICE_MODEL=muse-voice-transcribe-1.0",
+                "EV_ALLOW_REMOTE_ASR=true",
+            ]
+        )
+        + "\n"
+    )
+    mod.load(env_file)
+    assert os.environ["EV_CHAT_PROVIDER"] == "meta_muse_spark"
+    assert os.environ["EV_INTELLIGENCE_PROVIDER"] == "meta_muse_spark"
+    assert os.environ["EV_VOICE_ASR_PROVIDER"] == "meta_muse_voice"
+    assert os.environ["EV_VOICE_LIVE_BRAIN"] == "pipeline"
+    assert os.environ["EV_VOICE_TTS_PROVIDER"] == "edge_tts"
+    assert os.environ["EV_TURN_CONTROL_PROVIDER"] == "meta_muse_spark"
+    assert os.environ["EV_ALLOW_REMOTE_ASR"] == "true"
+    assert mod.muse_selected() is True
+
+
 def test_talk_sidecar_replaces_port_only_after_meta_key_gate() -> None:
     from pathlib import Path
 

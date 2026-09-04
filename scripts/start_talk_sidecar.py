@@ -55,6 +55,61 @@ def daemonize() -> None:
 _META_SECRET_NAMES = frozenset(
     {"META_MODEL_API_KEY", "EV_META_MODEL_API_KEY", "MODEL_API_KEY"}
 )
+# Owner .env Muse flags must beat leftover Grok/OpenAI/DeepSeek exports from an
+# older Talk launch. setdefault would silently keep the stale brain.
+_MUSE_BRAIN_KEYS = frozenset(
+    {
+        "EV_CHAT_PROVIDER",
+        "EV_INTELLIGENCE_PROVIDER",
+        "EV_VOICE_ASR_PROVIDER",
+        "EV_VOICE_LIVE_BRAIN",
+        "EV_VOICE_TTS_PROVIDER",
+        "EV_TURN_CONTROL_PROVIDER",
+        "EV_TURN_CONTROL_MODEL",
+        "EV_MUSE_SPARK_MODEL",
+        "EV_MUSE_VOICE_MODEL",
+        "EV_MUSE_SPARK_REASONING_EFFORT",
+        "EV_ALLOW_REMOTE_ASR",
+    }
+)
+_LEFTOVER_BRAIN_VALUES = frozenset(
+    {
+        "xai",
+        "openai",
+        "openai-realtime",
+        "openai_compat",
+        "grok",
+        "grok-voice",
+        "xai-realtime",
+        "deepseek",
+        "opencode",
+        "faster_whisper",
+        "parakeet",
+        "parakeet_tdt",
+        "parakeet-tdt",
+        "whisper",
+        "echo",
+        "mock",
+    }
+)
+
+
+def _leftover_brain_value(value: str) -> bool:
+    raw = (value or "").strip().lower()
+    if not raw:
+        return True
+    if raw in _LEFTOVER_BRAIN_VALUES:
+        return True
+    return raw.startswith(("grok", "gpt-", "deepseek", "whisper"))
+
+
+def _muse_file_value(key: str, val: str) -> bool:
+    raw = (val or "").strip().lower()
+    if key == "EV_ALLOW_REMOTE_ASR":
+        return raw in {"true", "1", "yes"}
+    if "muse" in raw:
+        return True
+    return raw in {"pipeline", "edge_tts"}
 
 
 def load(path: Path) -> None:
@@ -74,6 +129,15 @@ def load(path: Path) -> None:
             if val and not (os.environ.get(key) or "").strip():
                 os.environ[key] = val
             continue
+        if key in _MUSE_BRAIN_KEYS and _muse_file_value(key, val):
+            current = os.environ.get(key) or ""
+            if key == "EV_ALLOW_REMOTE_ASR":
+                if current.strip().lower() not in {"true", "1", "yes"}:
+                    os.environ[key] = val
+                    continue
+            elif _leftover_brain_value(current):
+                os.environ[key] = val
+                continue
         os.environ.setdefault(key, val)
 
 
@@ -185,8 +249,8 @@ def stop_existing_talk_sidecar() -> None:
 def main() -> None:
     load(REPO / ".env")
     load(REPO / "backend" / ".env")
-    # Production secrets overlay (META_MODEL_API_KEY). setdefault so an
-    # explicit operator env still wins; config.py aliases the Meta names.
+    # Production secrets overlay (META_MODEL_API_KEY). Leftover xAI/OpenAI
+    # process env cannot hide Muse flags from owner .env.
     secrets = Path(os.environ.get("EV_SECRETS_FILE", str(Path.home() / ".ev/secrets/production.env"))).expanduser()
     load(secrets)
     refuse_muse_without_key()
