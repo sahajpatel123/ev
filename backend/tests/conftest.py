@@ -41,6 +41,7 @@ if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
         os.environ["META_MODEL_API_KEY"] = ""
         os.environ["MODEL_API_KEY"] = ""
         os.environ["EV_INTELLIGENCE_PROVIDER"] = ""
+        os.environ["EV_TURN_CONTROL_PROVIDER"] = "openai"
 # Health/queue probes ping Redis; default redis://localhost:6379/0 is the
 # owner instance. Port 9 refuses immediately. Opt in with EV_TEST_USE_LIVE_REDIS=1.
 if os.environ.get("EV_TEST_USE_LIVE_REDIS") != "1":
@@ -82,6 +83,9 @@ if _LIVE_MUSE:
 else:
     os.environ["EV_VOICE_TTS_PROVIDER"] = "meta"
     os.environ["EV_VOICE_ASR_PROVIDER"] = "echo"
+    # Owner .env may leave Muse turn-control on; unit tests must not
+    # secretly treat leftover openai_compat TTS as a Muse mouth rewrite.
+    os.environ["EV_TURN_CONTROL_PROVIDER"] = "openai"
 os.environ["EV_VOICE_WAKE_PROVIDER"] = "phrase"
 os.environ["EV_SEARCH_PROVIDER"] = "none"
 os.environ["EV_OPENCODE_TOOL_EMULATION"] = "false"

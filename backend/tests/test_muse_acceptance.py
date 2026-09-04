@@ -405,6 +405,39 @@ def test_edge_tts_factory_has_no_openai_or_grok_fallback(monkeypatch: pytest.Mon
     assert mouth.name == "edge_tts"
 
 
+def test_leftover_openai_tts_is_edge_while_muse_is_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.voice.tts import get_synthesizer
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "voice_asr_provider", "meta_muse_voice")
+    monkeypatch.setattr(settings, "voice_tts_provider", "openai_compat")
+    monkeypatch.setattr(settings, "voice_tts_base_url", "https://api.openai.com/v1")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-must-not-be-used")
+    mouth = get_synthesizer()
+    assert mouth.name == "edge_tts"
+
+
+@pytest.mark.asyncio
+async def test_openai_tts_synthesize_refuses_while_muse_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.voice.contracts import SpeechStyle
+    from app.voice.tts import OpenAICompatSynthesizer
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "voice_tts_provider", "openai_compat")
+    synth = OpenAICompatSynthesizer(
+        base_url="https://api.openai.com/v1",
+        api_key="sk-must-not-be-used",
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+    )
+    with pytest.raises(RuntimeError, match="Edge TTS"):
+        await synth.synthesize("hi", style=SpeechStyle())
+
+
 @pytest.mark.asyncio
 async def test_research_style_turn_uses_spark_not_deepseek_or_luna(
     monkeypatch: pytest.MonkeyPatch,

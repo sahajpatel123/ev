@@ -200,7 +200,11 @@ class OpenAICompatSynthesizer:
         self._client = client
 
     async def synthesize(self, text: str, *, style: SpeechStyle) -> SynthesisResult:
-        if (settings.voice_tts_provider or "").strip().lower() == "edge_tts":
+        from app.gateway.muse import muse_hearing_active, muse_intelligence_active
+
+        if (settings.voice_tts_provider or "").strip().lower() == "edge_tts" or (
+            muse_intelligence_active() or muse_hearing_active()
+        ):
             raise RuntimeError(
                 "OpenAI TTS is blocked while Edge TTS is the Talk mouth"
             )
@@ -749,7 +753,18 @@ def _resolve_tts_voices_path(model_name: str) -> str | None:
 
 
 def get_synthesizer() -> Synthesizer:
-    provider = settings.voice_tts_provider
+    provider = (settings.voice_tts_provider or "").strip().lower()
+    from app.gateway.muse import muse_hearing_active, muse_intelligence_active
+
+    # Leftover EV_VOICE_TTS_PROVIDER=openai_compat must not open a second
+    # cloud mouth while Muse hearing or Spark is the Talk brain.
+    if (muse_intelligence_active() or muse_hearing_active()) and provider in {
+        "openai_compat",
+        "openai",
+        "grok",
+        "xai",
+    }:
+        provider = "edge_tts"
     if provider == "openai_compat":
         if not settings.voice_tts_base_url:
             # Misconfigured remote TTS must not 500 Talk/wake. Text + local

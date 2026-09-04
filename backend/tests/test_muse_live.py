@@ -553,6 +553,24 @@ async def test_owner_facing_sidecar_calculate_and_research_and_memory() -> None:
         after_memory = await client.get("http://127.0.0.1:18000/v1/health")
         assert _spark_calls(after_memory.json()) >= _spark_calls(after_research.json()) + 1
 
+        spark_before_computer = _spark_calls(after_memory.json())
+        computer = await _sidecar_chat(
+            client,
+            bearer,
+            "On this Mac, tell me the frontmost app name in one short sentence. Do not open anything.",
+        )
+        assert computer.status_code == 200, computer.text
+        computer_reply = (computer.json().get("reply") or "").strip()
+        assert computer_reply
+        assert "unavailable" not in computer_reply.lower()
+        assert "manager soon" not in computer_reply.lower()
+        model = (computer.json().get("model") or "").lower()
+        assert "grok" not in model
+        assert "luna" not in model
+        assert "deepseek" not in model
+        after_computer = await client.get("http://127.0.0.1:18000/v1/health")
+        assert _spark_calls(after_computer.json()) >= spark_before_computer + 1
+
 
 @pytest.mark.asyncio
 async def test_live_edge_tts_speaks_spark_text_without_openai_mouth(
