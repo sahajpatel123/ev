@@ -710,16 +710,33 @@ async def _call_spark_intent(turn: str, context: dict | None) -> TurnIntent:
         description=EMIT_INTENT_TOOL["description"],
         parameters=EMIT_INTENT_TOOL["parameters"],
     )
-    result = await provider.chat_with_tools(messages, [tool], model=muse_spark_model())
-    if result.tool_calls:
-        return TurnIntent.model_validate(result.tool_calls[0].arguments)
-    text = (result.text or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:].strip()
-    if text:
-        return TurnIntent.model_validate(json.loads(text))
+    import httpx
+
+    from app.gateway.muse import MuseProviderUnavailable
+
+    result = None
+    try:
+        result = await provider.chat_with_tools(messages, [tool], model=muse_spark_model())
+    except MuseProviderUnavailable:
+        raise
+    except httpx.HTTPStatusError as exc:
+        # Meta 400s some tool schemas (additionalProperties / required).
+        # Structured json_schema (no strict) is the same Spark brain, not Luna.
+        if getattr(exc.response, "status_code", None) not in {400, 422}:
+            raise
+    if result is not None:
+        if result.tool_calls:
+            return TurnIntent.model_validate(result.tool_calls[0].arguments)
+        text = (result.text or "").strip()
+        if text.startswith("```"):
+            text = text.strip("`")
+            if text.lower().startswith("json"):
+                text = text[4:].strip()
+        if text:
+            try:
+                return TurnIntent.model_validate(json.loads(text))
+            except (json.JSONDecodeError, ValueError):
+                pass
     schema = {
         "type": "object",
         "additionalProperties": False,

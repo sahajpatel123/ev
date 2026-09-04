@@ -122,6 +122,43 @@ def test_spark_turn_classifier_prompt_is_not_luna() -> None:
     source = inspect.getsource(_call_spark_intent)
     assert "SPARK_TURN_SYSTEM" in source
     assert "LUNA_SYSTEM_PROMPT" not in source
+    assert "chat_structured" in source
+    assert "HTTPStatusError" in source
+
+
+@pytest.mark.asyncio
+async def test_spark_intent_falls_through_to_structured_on_tool_schema_400(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from app.contracts import ChatResult
+    from app.ev.luna_adapter import _call_spark_intent
+    from app.ev.turn_intent import TurnIntent
+
+    monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
+    monkeypatch.setattr(settings, "meta_model_api_key", "test-key")
+
+    class _FakeSpark:
+        async def chat_with_tools(self, *args, **kwargs):
+            request = httpx.Request("POST", "https://api.meta.ai/v1/chat/completions")
+            response = httpx.Response(400, request=request)
+            raise httpx.HTTPStatusError("tool schema", request=request, response=response)
+
+        async def chat_structured(self, *args, **kwargs):
+            return ChatResult(
+                text='{"route":"CONVERSATION","operation":"UNKNOWN"}',
+                usage={},
+                model="muse-spark-1.3-contributor",
+            )
+
+    monkeypatch.setattr(
+        "app.gateway.muse_spark.muse_spark_provider", lambda: _FakeSpark()
+    )
+    intent = await _call_spark_intent("hello there, what should we do", None)
+    assert isinstance(intent, TurnIntent)
+    assert intent.route == "CONVERSATION"
 
 
 def test_normal_s2s_brain_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
