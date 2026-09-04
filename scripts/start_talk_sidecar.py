@@ -156,16 +156,24 @@ def alias_meta_model_keys() -> None:
 
 
 def muse_selected() -> bool:
-    intel = (
-        os.environ.get("EV_INTELLIGENCE_PROVIDER")
-        or os.environ.get("EV_CHAT_PROVIDER")
-        or ""
-    ).strip().lower()
-    hearing = (os.environ.get("EV_VOICE_ASR_PROVIDER") or "").strip().lower()
-    return intel in {"meta_muse_spark", "muse", "muse_spark"} or hearing in {
-        "meta_muse_voice",
-        "muse_voice",
+    """True when any Muse slot is on. Leftover xAI in one slot must not hide Spark."""
+
+    names = {
+        (os.environ.get("EV_INTELLIGENCE_PROVIDER") or "").strip().lower(),
+        (os.environ.get("EV_CHAT_PROVIDER") or "").strip().lower(),
+        (os.environ.get("EV_TURN_CONTROL_PROVIDER") or "").strip().lower(),
+        (os.environ.get("EV_VOICE_ASR_PROVIDER") or "").strip().lower(),
     }
+    return bool(
+        names
+        & {
+            "meta_muse_spark",
+            "muse",
+            "muse_spark",
+            "meta_muse_voice",
+            "muse_voice",
+        }
+    )
 
 
 def meta_key_loaded() -> bool:

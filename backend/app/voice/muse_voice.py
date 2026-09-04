@@ -45,6 +45,23 @@ def _json_true(value: object) -> bool:
     return isinstance(value, str) and value.strip().lower() == "true"
 
 
+def _as_json_event(message: object) -> dict | None:
+    """Parse one Muse Voice WebSocket text/binary JSON frame."""
+
+    if isinstance(message, bytes):
+        try:
+            message = message.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    if not isinstance(message, str):
+        return None
+    try:
+        event = json.loads(message)
+    except json.JSONDecodeError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
 class MuseVoiceTranscriber:
     """File + live WebSocket ASR for ``muse-voice-transcribe-1.0``."""
 
@@ -303,8 +320,12 @@ class _MuseLiveSession:
                 await ws.send(
                     json.dumps(self.handshake_payload())
                 )
-                handshake = json.loads(await ws.recv())
-                if not isinstance(handshake, dict) or "sessionId" not in handshake:
+                handshake = _as_json_event(await ws.recv())
+                if (
+                    not handshake
+                    or handshake.get("type") == "error"
+                    or "sessionId" not in handshake
+                ):
                     await self._fail(
                         VoiceError(
                             "Muse Voice Transcribe handshake failed",
@@ -352,13 +373,10 @@ class _MuseLiveSession:
         async for message in ws:
             if self._abort.is_set():
                 return
-            if isinstance(message, bytes):
+            if isinstance(message, bytes) and not message[:1] in {b"{", b"["}:
                 continue
-            try:
-                event = json.loads(message)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
+            event = _as_json_event(message)
+            if event is None:
                 continue
             kind = str(event.get("type") or "")
             if kind == "error":

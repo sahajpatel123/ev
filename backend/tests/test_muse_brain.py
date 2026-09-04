@@ -622,6 +622,32 @@ def test_talk_sidecar_muse_env_beats_leftover_xai_and_openai(
     assert mod.muse_selected() is True
 
 
+def test_talk_sidecar_muse_selected_if_any_slot_is_muse(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py")
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar_any_slot", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("EV_INTELLIGENCE_PROVIDER", "xai")
+    monkeypatch.setenv("EV_CHAT_PROVIDER", "meta_muse_spark")
+    monkeypatch.setenv("EV_TURN_CONTROL_PROVIDER", "openai")
+    monkeypatch.setenv("EV_VOICE_ASR_PROVIDER", "faster_whisper")
+    assert mod.muse_selected() is True
+    monkeypatch.setenv("EV_CHAT_PROVIDER", "xai")
+    monkeypatch.setenv("EV_TURN_CONTROL_PROVIDER", "meta_muse_spark")
+    assert mod.muse_selected() is True
+    monkeypatch.setenv("EV_TURN_CONTROL_PROVIDER", "openai")
+    monkeypatch.setenv("EV_VOICE_ASR_PROVIDER", "meta_muse_voice")
+    assert mod.muse_selected() is True
+    monkeypatch.setenv("EV_VOICE_ASR_PROVIDER", "faster_whisper")
+    assert mod.muse_selected() is False
+
+
 def test_talk_sidecar_replaces_port_only_after_meta_key_gate() -> None:
     from pathlib import Path
 

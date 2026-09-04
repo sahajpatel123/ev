@@ -91,6 +91,16 @@ def test_muse_live_handshake_puts_bearer_in_first_json_not_http_header() -> None
     assert push.handshake_payload()["mode"] == "PUSH_TO_TALK"
 
 
+def test_muse_live_json_frames_accept_utf8_bytes() -> None:
+    from app.voice.muse_voice import _as_json_event
+
+    ack = _as_json_event(b'{"sessionId":"s1"}')
+    assert ack == {"sessionId": "s1"}
+    assert _as_json_event('{"type":"error"}') == {"type": "error"}
+    assert _as_json_event(b"\xff\xfe") is None
+    assert _as_json_event("not-json") is None
+
+
 @pytest.mark.asyncio
 async def test_muse_live_protocol_speech_end_before_final_is_not_duplicated() -> None:
     from app.voice.muse_voice import _MuseLiveSession
