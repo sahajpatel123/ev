@@ -55,11 +55,27 @@ def _is_muse(body: dict | None) -> bool:
     providers = body.get("providers") or {}
     models = body.get("models") or {}
     voice = models.get("voice") or {}
+    turn = models.get("turn_control") or {}
+    manager = models.get("manager") or {}
+    muse = models.get("muse") or {}
+    runtime = body.get("runtime") or {}
+    checks = {
+        row.get("name"): row
+        for row in (runtime.get("checks") or [])
+        if isinstance(row, dict)
+    }
+    tts = checks.get("tts") or {}
+    tts_ok = (not tts) or tts.get("provider") == "edge_tts"
     sha = (body.get("git") or {}).get("sha")
     return (
         providers.get("chat") == "meta_muse_spark"
         and providers.get("live") == "pipeline"
         and voice.get("provider") == "meta_muse_voice"
+        and voice.get("model") == "muse-voice-transcribe-1.0"
+        and turn.get("provider") == "meta_muse_spark"
+        and manager.get("provider") == "meta_muse_spark"
+        and muse.get("reasoning_effort") == "high"
+        and tts_ok
         and sha == _head_sha()
     )
 
@@ -75,7 +91,8 @@ def wait_for_muse(*, seconds: float = 90.0) -> dict:
     sys.stderr.write(
         "Talk sidecar on :18000 is not the current Muse brain "
         "(need chat=meta_muse_spark live=pipeline voice=meta_muse_voice "
-        "and git.sha=HEAD).\n"
+        "turn_control=meta_muse_spark manager=meta_muse_spark "
+        "tts=edge_tts reasoning_effort=high and git.sha=HEAD).\n"
     )
     raise SystemExit(3)
 

@@ -647,6 +647,43 @@ def test_prove_muse_brain_refuses_without_meta_key(tmp_path, monkeypatch: pytest
     assert "kickstart" not in source
 
 
+def test_prove_muse_brain_rejects_stale_xai_health(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/prove_muse_brain.py")
+    spec = importlib.util.spec_from_file_location("prove_muse_brain_is_muse", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    monkeypatch.setattr(mod, "_head_sha", lambda: "abc123")
+    stale = {
+        "git": {"sha": "abc123"},
+        "providers": {"chat": "xai", "live": "openai-realtime"},
+        "models": {
+            "voice": {"provider": "openai-realtime", "model": "gpt-realtime-2.1-mini"},
+            "turn_control": {"provider": "openai", "model": "gpt-5.6-luna"},
+            "manager": {"provider": "deepseek"},
+        },
+    }
+    assert mod._is_muse(stale) is False
+    healthy = {
+        "git": {"sha": "abc123"},
+        "providers": {"chat": "meta_muse_spark", "live": "pipeline"},
+        "models": {
+            "voice": {"provider": "meta_muse_voice", "model": "muse-voice-transcribe-1.0"},
+            "turn_control": {"provider": "meta_muse_spark", "model": "muse-spark-1.3-contributor"},
+            "manager": {"provider": "meta_muse_spark"},
+            "muse": {"reasoning_effort": "high"},
+        },
+        "runtime": {"checks": [{"name": "tts", "provider": "edge_tts"}]},
+    }
+    assert mod._is_muse(healthy) is True
+    half = dict(healthy)
+    half["models"] = {**healthy["models"], "turn_control": {"provider": "openai"}}
+    assert mod._is_muse(half) is False
+
+
 @pytest.mark.asyncio
 async def test_muse_spark_complete_raw_strips_reasoning_and_non_auto_tool_choice(
     monkeypatch: pytest.MonkeyPatch,
