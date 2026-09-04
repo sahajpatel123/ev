@@ -25,17 +25,18 @@ os.environ["EV_MASTER_KEY"] = "test-key"
 os.environ["EV_API_KEY"] = "test-key"
 # Force sync: inherited EV_PROCESSING_MODE=queue would enqueue onto owner Redis.
 os.environ["EV_PROCESSING_MODE"] = "sync"
+_LIVE_MUSE = os.environ.get("EV_TEST_USE_LIVE_MUSE") == "1"
 if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
     # Overwrite inherited shell/env-file provider keys. setdefault leaks the
     # owner's EV_VOICE_LIVE_BRAIN=openai and a live DeepSeek key into unit tests.
-    os.environ["EV_CHAT_PROVIDER"] = "mock"
     os.environ["EV_XAI_API_KEY"] = ""
     os.environ["EV_OPENAI_API_KEY"] = ""
     os.environ["EV_DEEPSEEK_API_KEY"] = ""
     os.environ["EV_OPENCODE_API_KEY"] = ""
     os.environ["EV_VOICE_LIVE_BRAIN"] = "pipeline"
     os.environ["EV_BRAVE_SEARCH_API_KEY"] = ""
-    if os.environ.get("EV_TEST_USE_LIVE_MUSE") != "1":
+    if not _LIVE_MUSE:
+        os.environ["EV_CHAT_PROVIDER"] = "mock"
         os.environ["EV_META_MODEL_API_KEY"] = ""
         os.environ["META_MODEL_API_KEY"] = ""
         os.environ["MODEL_API_KEY"] = ""
@@ -58,8 +59,29 @@ os.environ["EV_VOICEPRINT_PROVIDER"] = "hash"
 os.environ["EV_VOICEPRINT_MODEL_DIR"] = f"{_TMP}/no-campp"
 os.environ["EV_ML_MODEL_DIR"] = f"{_TMP}/models"
 os.environ["EV_MODEL_DIR"] = f"{_TMP}/models"
-os.environ["EV_VOICE_TTS_PROVIDER"] = "meta"
-os.environ["EV_VOICE_ASR_PROVIDER"] = "echo"
+if _LIVE_MUSE:
+    # In-process live Muse proof must hear/speak/think as Muse, not echo/mock.
+    # Leftover OpenAI/xAI/DeepSeek keys stay blank so they cannot win.
+    os.environ["EV_ALLOW_REMOTE_ASR"] = "true"
+    os.environ["EV_VOICE_LIVE_BRAIN"] = "pipeline"
+    leftover_chat = (os.environ.get("EV_CHAT_PROVIDER") or "").strip().lower()
+    if leftover_chat in {"", "mock", "echo", "xai", "deepseek", "opencode", "openai"}:
+        os.environ["EV_CHAT_PROVIDER"] = "meta_muse_spark"
+    leftover_intel = (os.environ.get("EV_INTELLIGENCE_PROVIDER") or "").strip().lower()
+    if leftover_intel in {"", "mock", "echo", "xai", "deepseek", "opencode", "openai"}:
+        os.environ["EV_INTELLIGENCE_PROVIDER"] = "meta_muse_spark"
+    leftover_turn = (os.environ.get("EV_TURN_CONTROL_PROVIDER") or "").strip().lower()
+    if leftover_turn in {"", "openai", "xai", "deepseek", "mock"}:
+        os.environ["EV_TURN_CONTROL_PROVIDER"] = "meta_muse_spark"
+    leftover_asr = (os.environ.get("EV_VOICE_ASR_PROVIDER") or "").strip().lower()
+    if leftover_asr in {"", "echo", "faster_whisper", "openai_compat", "parakeet"}:
+        os.environ["EV_VOICE_ASR_PROVIDER"] = "meta_muse_voice"
+    leftover_tts = (os.environ.get("EV_VOICE_TTS_PROVIDER") or "").strip().lower()
+    if leftover_tts in {"", "meta", "openai_compat", "echo"}:
+        os.environ["EV_VOICE_TTS_PROVIDER"] = "edge_tts"
+else:
+    os.environ["EV_VOICE_TTS_PROVIDER"] = "meta"
+    os.environ["EV_VOICE_ASR_PROVIDER"] = "echo"
 os.environ["EV_VOICE_WAKE_PROVIDER"] = "phrase"
 os.environ["EV_SEARCH_PROVIDER"] = "none"
 os.environ["EV_OPENCODE_TOOL_EMULATION"] = "false"

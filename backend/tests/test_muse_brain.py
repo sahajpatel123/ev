@@ -690,6 +690,27 @@ def test_prove_muse_brain_refuses_without_meta_key(tmp_path, monkeypatch: pytest
     assert "kickstart" not in source
 
 
+def test_live_muse_conftest_does_not_force_echo_mock_or_offline_tts() -> None:
+    from pathlib import Path
+
+    source = Path("/Users/sahajpatel/Code/ev/backend/tests/conftest.py").read_text()
+    assert "_LIVE_MUSE" in source
+    live_branch = source.split("if _LIVE_MUSE:", 1)[1].split("else:", 1)[0]
+    unit_branch = source.split("if _LIVE_MUSE:", 1)[1].split("else:", 1)[1]
+    assert 'EV_VOICE_ASR_PROVIDER"] = "meta_muse_voice"' in live_branch
+    assert 'EV_VOICE_TTS_PROVIDER"] = "edge_tts"' in live_branch
+    assert 'EV_CHAT_PROVIDER"] = "meta_muse_spark"' in live_branch
+    assert 'EV_VOICE_ASR_PROVIDER"] = "echo"' not in live_branch
+    assert 'EV_CHAT_PROVIDER"] = "mock"' not in live_branch
+    assert 'EV_VOICE_ASR_PROVIDER"] = "echo"' in unit_branch
+    assert 'EV_VOICE_TTS_PROVIDER"] = "meta"' in unit_branch
+    prove = Path("/Users/sahajpatel/Code/ev/scripts/prove_muse_brain.py").read_text()
+    assert 'env["EV_CHAT_PROVIDER"] = "meta_muse_spark"' in prove
+    assert 'env["EV_VOICE_ASR_PROVIDER"] = "meta_muse_voice"' in prove
+    assert 'env["EV_VOICE_TTS_PROVIDER"] = "edge_tts"' in prove
+    assert 'env["EV_XAI_API_KEY"] = ""' in prove
+
+
 def test_prove_muse_brain_rejects_stale_xai_health(monkeypatch: pytest.MonkeyPatch) -> None:
     import importlib.util
     from pathlib import Path

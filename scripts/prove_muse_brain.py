@@ -115,6 +115,16 @@ def main() -> None:
     env = os.environ.copy()
     env["EV_TEST_USE_LIVE_MUSE"] = "1"
     env["EV_ALLOW_REMOTE_ASR"] = "true"
+    env["EV_CHAT_PROVIDER"] = "meta_muse_spark"
+    env["EV_INTELLIGENCE_PROVIDER"] = "meta_muse_spark"
+    env["EV_TURN_CONTROL_PROVIDER"] = "meta_muse_spark"
+    env["EV_VOICE_ASR_PROVIDER"] = "meta_muse_voice"
+    env["EV_VOICE_TTS_PROVIDER"] = "edge_tts"
+    env["EV_VOICE_LIVE_BRAIN"] = "pipeline"
+    env["EV_XAI_API_KEY"] = ""
+    env["EV_OPENAI_API_KEY"] = ""
+    env["EV_DEEPSEEK_API_KEY"] = ""
+    env["EV_OPENCODE_API_KEY"] = ""
     result = subprocess.run(
         [
             "/Users/sahajpatel/.local/bin/uv",
