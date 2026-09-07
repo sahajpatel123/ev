@@ -80,3 +80,68 @@ async def test_memory_detail_includes_provenance(
 async def test_memory_requires_gateway_credential(client: AsyncClient) -> None:
     res = await client.get("/v1/device-gateway/memories")
     assert res.status_code == 401
+
+
+async def test_search_endpoint_owner_and_sandbox(
+    owner_phone, gateway_phone, client: AsyncClient, db_session
+) -> None:
+    from app.models import Event, Memory
+    from app.utils.text import utcnow
+
+    _body, owner = owner_phone
+    _sbody, sandbox = gateway_phone
+
+    mem = Memory(
+        memory_type="preference",
+        text="Sunset walks along Marine Drive",
+        importance=0.7,
+        confidence=0.9,
+        source_type="explicit",
+        fingerprint="eac67-search-mem",
+        is_current=True,
+    )
+    db_session.add(mem)
+    ev = Event(
+        event_type="note",
+        source="owner",
+        content={"text": "Owner mentioned Marine Drive sunsets"},
+        occurred_at=utcnow(),
+        sha256="e" * 64,
+    )
+    db_session.add(ev)
+    await db_session.commit()
+
+    res = await owner.get("/v1/device-gateway/search", params={"q": "Marine Drive"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is True
+    assert body["memory_enabled"] is True
+    kinds = [m["memory_type"] for m in body["memories"]]
+    assert "preference" in kinds
+    assert any("Marine Drive" in (e["text"] or "") for e in body["events"])
+
+    sand = (await sandbox.get("/v1/device-gateway/search", params={"q": "Marine"})).json()
+    assert sand["memory_enabled"] is False
+    assert sand["memories"] == []
+    assert sand["events"] == []
+
+
+async def test_search_finds_reminders_and_contacts(owner_phone, db_session) -> None:
+    from app.models import Alert
+
+    _body, phone = owner_phone
+    db_session.add(
+        Alert(
+            kind="reminder",
+            title="Reminder",
+            body="Water the basil plant",
+            tier="useful",
+            status="pending",
+            source="set_reminder",
+            fingerprint="eac67-alert",
+        )
+    )
+    await db_session.commit()
+    res = await phone.get("/v1/device-gateway/search", params={"q": "basil"})
+    assert res.status_code == 200
+    assert any("basil" in r["text"] for r in res.json()["reminders"])

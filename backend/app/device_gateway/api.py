@@ -1355,6 +1355,100 @@ def _phone_memory(memory: Memory) -> dict:
     }
 
 
+@router.get("/search")
+async def device_search(
+    request: Request,
+    q: str = Query(default="", min_length=1, max_length=200),
+    limit: int = Query(default=20, ge=1, le=60),
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """One-call phone search across memories, recent events, pending
+    reminders, and the phone's own contacts snapshot. Sandbox devices see
+    reminders/contacts only — personal memory stays off until promotion."""
+    _check_origin(request)
+    needle = q.strip().lower()
+    memory_enabled = not is_sandbox_device(device)
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+
+    memories: list[dict] = []
+    events: list[dict] = []
+    if memory_enabled and needle:
+        from app.models import Event, Memory
+        from app.memory.retrieval import Retriever
+
+        mem_rows = list(
+            (
+                await session.execute(
+                    select(Memory).where(Memory.is_current.is_(True)).limit(2000)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        try:
+            retriever = Retriever(session)
+            hits = await retriever.search(q, k=limit, access="master")
+            hit_ids = {UUID(h.memory_id) for h in hits}
+            ranked = [m for m in mem_rows if m.id in hit_ids]
+            ranked.sort(
+                key=lambda m: next(h.score for h in hits if h.memory_id == str(m.id)),
+                reverse=True,
+            )
+            memories = [_phone_memory(m) for m in ranked[:limit]]
+        except Exception:
+            memories = []
+
+        if len(memories) < limit:
+            recent = (
+                (
+                    await session.execute(
+                        select(Event)
+                        .where(Event.tombstoned_at.is_(None))
+                        .order_by(Event.occurred_at.desc())
+                        .limit(600)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for ev in recent:
+                text = str((ev.content or {}).get("text") or "")
+                if needle in text.lower():
+                    events.append(
+                        {
+                            "id": str(ev.id),
+                            "kind": ev.event_type,
+                            "text": text[:400],
+                            "occurred_at": ev.occurred_at.isoformat() if ev.occurred_at else None,
+                        }
+                    )
+                    if len(events) >= max(1, limit - len(memories)):
+                        break
+
+    from app.ev.alert_radar import list_alerts
+
+    reminders = []
+    for row in await list_alerts(session, status="pending", kind="reminder", limit=60):
+        text = str(row.body or row.title or "")
+        if needle in text.lower():
+            reminders.append({"id": str(row.id), "text": text})
+    contacts = []
+    for item in (profile.get("contacts") or {}).get("contacts") or []:
+        name = str(item.get("name") or "")
+        if needle in name.lower():
+            contacts.append({"name": name})
+    return {
+        "ok": True,
+        "query": q,
+        "memory_enabled": memory_enabled,
+        "memories": memories,
+        "events": events,
+        "reminders": reminders[:limit],
+        "contacts": contacts[:limit],
+    }
+
+
 @router.get("/sync/bootstrap")
 async def phone_sync_bootstrap(
     request: Request,
