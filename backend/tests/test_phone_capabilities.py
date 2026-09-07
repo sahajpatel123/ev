@@ -745,3 +745,61 @@ async def test_calendar_summary_spoken_shape(db_session, monkeypatch):
     assert "Dentist" in spoken
     assert "in 3 hours" in spoken or "in 2 hours" in spoken
     assert "2 events today" in spoken or "leave by" in spoken
+
+
+async def test_list_reminders_spoken_shape(db_session):
+    """Cycle 62 — C22: reminders list combines standing Alert reminders and
+    timed reminder-shaped timers into one honest spoken answer."""
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from app.ev.fleet_tools import handle_fleet_tool
+    from app.models import Alert, OwnerTimer
+    from app.utils.text import utcnow
+
+    now = utcnow()
+    db_session.add(
+        OwnerTimer(
+            payload={"text": "call the dentist"},
+            status="pending",
+            fire_at=now + timedelta(hours=2),
+        )
+    )
+    db_session.add(
+        Alert(
+            kind="reminder",
+            title="Reminder",
+            body="water the balcony plants",
+            priority=0.6,
+            tier="useful",
+            status="pending",
+            source="set_reminder",
+            fingerprint=uuid4().hex,
+        )
+    )
+    await db_session.commit()
+
+    result = await handle_fleet_tool(db_session, "list_reminders", {}, actor="master")
+    assert result.get("ok") is True, result
+    spoken = str(result.get("spoken") or "")
+    assert "call the dentist" in spoken
+    assert "water the balcony plants" in spoken
+
+    # The phone phrase routes to it through maybe_phone_mac_act.
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.models import Device
+
+    d = Device(
+        name="Rem Phone",
+        token_hash="rem-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+    turn = await maybe_phone_mac_act(
+        db_session, device=d, text="what are my reminders", idempotency_key="rem-1"
+    )
+    assert turn is not None and turn.get("tool") == "list_reminders", turn
+    assert "dentist" in str(turn.get("reply") or "").lower()

@@ -177,8 +177,25 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
         "cancellation": "not_applicable",
     },
     {
+        "name": "list_reminders",
+        "description": "List the owner's pending reminders (timed and standing). Never writes.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object", "required": ["ok", "spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "assistant:profile",
+        "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+    },
+    {
         "name": "snooze_timer",
-        "description": "Delay a pending timer or restart a fired one.",
+        "description": "Snooze a pending owner timer.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -532,6 +549,58 @@ async def handle_fleet_tool(
         from app.ev.timers import list_timers
 
         return await list_timers(session)
+    if name == "list_reminders":
+        # Cycle 62 — reminders list: pending reminder-shaped timers plus
+        # standing Alert reminders, in one honest spoken answer.
+        from sqlalchemy import select as _select
+        from app.ev.timers import list_timers
+        from app.ev.actuator import evidence_base
+        from app.models import Alert
+        from app.utils.text import utcnow as _utcnow
+
+        now = _utcnow()
+        alerts = list(
+            (
+                await session.execute(
+                    _select(Alert)
+                    .where(Alert.kind == "reminder", Alert.status == "pending")
+                    .order_by(Alert.created_at.desc())
+                    .limit(20)
+                )
+            ).scalars().all()
+        )
+        timers = await list_timers(session)
+        items = [
+            {"id": str(a.id), "text": str(a.body or "")[:200], "fire_at": None}
+            for a in alerts
+            if str(a.body or "").strip()
+        ]
+        spoken_parts: list[str] = []
+        timer_items = timers.get("timers") or []
+        if timer_items:
+            spoken_parts.append(
+                f"{len(timer_items)} timed reminder{'s' if len(timer_items) != 1 else ''}"
+                + f", next: {timer_items[0].get('text') or 'untitled'}"
+            )
+        if items:
+            spoken_parts.append(
+                f"{len(items)} standing reminder{'s' if len(items) != 1 else ''}: "
+                + "; ".join(str(i["text"])[:60] for i in items[:3])
+            )
+        spoken = (
+            ". ".join(spoken_parts) + ("." if spoken_parts else "")
+            or "No reminders waiting."
+        )
+        return {
+            "ok": True,
+            "count": len(items) + len(timer_items),
+            "standing": items,
+            "timers": timer_items,
+            "spoken": spoken,
+            "evidence": evidence_base(
+                source="reminder_list", accepted=True, observed=True, now=now
+            ),
+        }
     if name == "snooze_timer":
         from app.ev.timers import snooze_timer
 

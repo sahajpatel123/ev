@@ -44,12 +44,12 @@ PHONE_CORE_READS = (
     "contacts",
     "inbox",
 )
-
 # Home-Station action surface (device_gateway/phone_mac.py + routed actions):
 # what a trusted phone voice turn may DO, not just read.
 PHONE_TRUSTED_ACTIONS = (
     "start_timer",
     "set_reminder",
+    "list_reminders",
     "calendar_read",
     "get_weather",
     "list_mail",

@@ -66,9 +66,13 @@ _TIMER_WORD_RE = re.compile(
     + r")\s*(?:min|mins|minute|minutes)\b",
     re.I,
 )
+
+_REMINDER_LIST_RE = re.compile(
+    r"\b(?:what|list|read).{0,24}\breminders?\b|\breminders?\b.{0,16}\b(?:list|do i have|waiting)\b",
+    re.I,
+)
+
 _CLOSE_CALC_RE = re.compile(r"\b(?:close|quit)\s+(?:the\s+)?(?:calculator|calc)\b", re.I)
-
-
 def _ok(reply: str, *, route: str, tool: str, executed: bool, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "reply": reply,
@@ -93,6 +97,8 @@ def _phrase_action(text: str) -> tuple[str, dict[str, Any]] | None:
         minutes = _WORD_MINUTES.get(word.group("word").lower())
         if minutes:
             return "start_timer", {"minutes": minutes}
+    if _REMINDER_LIST_RE.search(text):
+        return "list_reminders", {}
     if _CLOSE_CALC_RE.search(text):
         return "close_app", {"name": "Calculator"}
     return None
@@ -177,15 +183,18 @@ async def maybe_phone_mac_act(
 
     from app.ev.spark_phone import looks_like_phone_chat, spark_phone_tool
     from app.ev.tool_select import resolve_live_action
-
-    if looks_like_phone_chat(raw):
-        return None
-
-    resolved = resolve_live_action(raw)
-    if resolved is None:
-        resolved = _phrase_action(raw)
-    if resolved is None:
-        resolved = await spark_phone_tool(raw)
+    # Cycle 62 — the reminders list is a Home-Station surface, not memory
+    # recall: check the precise phrase BEFORE resolve_live_action's broad
+    # recall matcher can claim "what are my reminders".
+    reminders_phrase = _phrase_action(raw) if _REMINDER_LIST_RE.search(raw) else None
+    if reminders_phrase is not None:
+        resolved = reminders_phrase
+    else:
+        resolved = resolve_live_action(raw)
+        if resolved is None:
+            resolved = _phrase_action(raw)
+        if resolved is None:
+            resolved = await spark_phone_tool(raw)
     if resolved is None:
         return None
     name, args = resolved
