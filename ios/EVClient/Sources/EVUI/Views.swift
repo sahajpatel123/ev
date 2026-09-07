@@ -437,3 +437,27 @@ public struct AppShellView: View {
         }
     }
 }
+// Cycle EAC-08 — EVUI Today widget view.
+/// iPhone-only additive view; backward compatible (new struct, existing views untouched).
+public struct EvieTodayWidgetView: View {
+    public let headline: String
+    public let subline: String
+
+    public init(headline: String, subline: String = "") {
+        self.headline = headline
+        self.subline = subline
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(headline)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            if !subline.isEmpty {
+                Text(subline)
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+            }
+        }
+    }
+}
