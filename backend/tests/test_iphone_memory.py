@@ -208,3 +208,25 @@ async def test_audio_capture_stores_attachment(owner_phone, gateway_phone) -> No
         json={"audio_b64": "!!!not-base64!!!", "idempotency_key": "eac70-audio-bad"},
     )
     assert bad.status_code == 422
+
+
+async def test_offline_queue_drop_own_device_only(owner_phone, gateway_phone) -> None:
+    _body, owner = owner_phone
+    _sbody, other = gateway_phone
+    queued = await owner.post(
+        "/v1/device-gateway/queue",
+        json={"idempotency_key": "eac71-stuck-1", "kind": "siri_capture", "payload": {"text": "stuck note"}},
+    )
+    assert queued.status_code in {200, 201}, queued.text
+    item_id = queued.json()["item"]["id"]
+
+    foreign = await other.delete(f"/v1/device-gateway/queue/{item_id}")
+    assert foreign.status_code == 404
+
+    dropped = await owner.delete(f"/v1/device-gateway/queue/{item_id}")
+    assert dropped.status_code == 200, dropped.text
+    assert dropped.json()["dropped"] is True
+
+    again = await owner.delete(f"/v1/device-gateway/queue/{item_id}")
+    assert again.status_code == 200
+    assert again.json()["idempotent"] is True

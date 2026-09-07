@@ -1043,6 +1043,31 @@ async def offline_list(
     return {"ok": True, "items": await list_pending(session, device_id=device.id)}
 
 
+@router.delete("/queue/{item_id}")
+async def offline_drop(
+    item_id: UUID,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Drop a pending queued item owned by this device (owner cleanup)."""
+    _check_origin(request)
+    from app.models import OfflineQueueItem
+
+    row = await session.get(OfflineQueueItem, item_id)
+    if row is None or str(row.device_id) != str(device.id):
+        raise HTTPException(status_code=404, detail="Queued item not found")
+    if row.state in {"executed", "failed"}:
+        raise HTTPException(status_code=409, detail="Queued item already terminal")
+    if row.state == "rejected" and row.error_code == "DROPPED_BY_OWNER":
+        return {"ok": True, "dropped": True, "item_id": str(row.id), "idempotent": True}
+    row.state = "rejected"
+    row.error_code = "DROPPED_BY_OWNER"
+    row.replayed_at = utcnow()
+    await session.commit()
+    return {"ok": True, "dropped": True, "item_id": str(row.id)}
+
+
 @router.post("/healthkit/snapshot")
 async def healthkit_snapshot(
     data: HealthkitSnapshotRequest,

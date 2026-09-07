@@ -86,6 +86,11 @@
           <strong>Chat</strong>
           <span>The conversation on this phone</span>
         </button>
+        <button type="button" class="folio-card" data-surface="queue">
+          <span class="folio-kicker">Offline</span>
+          <strong>Queue</strong>
+          <span>Pending captures on this phone</span>
+        </button>
         <button type="button" class="folio-card" data-surface="capture">
           <span class="folio-kicker">Note</span>
           <strong>Capture</strong>
@@ -127,6 +132,15 @@
           <span>Camera, trust, appearance</span>
         </button>
       </div>
+    </section>
+
+    <section id="queue-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="queue-sheet" aria-label="Close">✕</button>
+      <h2>Queue</h2>
+      <p class="quiet">Offline captures waiting on this phone. Queued is never executed silently — captures drain as trusted chat turns.</p>
+      <ol id="queue-list" class="timeline"></ol>
+      <button type="button" id="queue-refresh-btn" class="secondary">Refresh</button>
+      <p class="quiet" id="queue-meta"></p>
     </section>
 
     <section id="capture-sheet" class="sheet" hidden>
