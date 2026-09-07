@@ -1148,3 +1148,17 @@ async def test_memory_browser_read_only(client, db_session):
     assert body["sandbox"] is True
     assert body["memories"] == []
     # Route on a trusted device would list the row; sandbox fence holds.
+
+
+async def test_tactical_brief_read_only(client, db_session):
+    """Cycle 74 — C34: the tactical brief page data is server-composed,
+    read-only, and honest about system state (timers, devices, nudges)."""
+    phone = await _pair_sandbox(client, "Tac-SE")
+    brief = await phone.get("/v1/device-gateway/tactical")
+    assert brief.status_code == 200
+    body = brief.json()
+    assert body["ok"] is True
+    assert isinstance(body["timers"], list)
+    assert body["devices_online"] >= 1
+    assert isinstance(body["voice_lease"], bool)
+    assert body["heading_out"] == "unknown"

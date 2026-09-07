@@ -9,13 +9,13 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.09.08.25">
+  <meta name="evie-build" content="2026.09.08.26">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.09.08.25">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.09.08.26">
   <title>Evie</title>
 </head>
 <body>
@@ -114,6 +114,11 @@
           <strong>Devices</strong>
           <span>This iPhone and Home Station</span>
         </button>
+        <button type="button" class="folio-card folio-wide" data-quick="tactical">
+          <span class="folio-kicker">Tactical</span>
+          <strong>Brief</strong>
+          <span>Right-now system state, read only</span>
+        </button>
         <button type="button" class="folio-card" data-surface="activity">
           <span class="folio-kicker">Pulse</span>
           <strong>Now</strong>
@@ -140,6 +145,12 @@
       <div id="turn-history" class="turn-history"></div>
       <h3>Memory — read only</h3>
       <div id="memory-browser" class="turn-history"></div>
+    </section>
+
+    <section id="tactical-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="tactical-sheet" aria-label="Close">✕</button>
+      <h2>Tactical brief</h2>
+      <div id="tactical-body" class="turn-history"></div>
     </section>
 
     <section id="devices-sheet" class="sheet" hidden>
@@ -253,14 +264,14 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.09.08.25"></script>
-  <script src="/evie/presence.js?v=2026.09.08.25"></script>
-  <script src="/evie/orb.js?v=2026.09.08.25"></script>
-  <script src="/evie/feedback.js?v=2026.09.08.25"></script>
-  <script src="/evie/webrtc.js?v=2026.09.08.25"></script>
-  <script src="/evie/mobile-actions.js?v=2026.09.08.25"></script>
-  <script src="/evie/capabilities.js?v=2026.09.08.25"></script>
-  <script src="/evie/app.js?v=2026.09.08.25"></script>
+  <script src="/evie/audio.js?v=2026.09.08.26"></script>
+  <script src="/evie/presence.js?v=2026.09.08.26"></script>
+  <script src="/evie/orb.js?v=2026.09.08.26"></script>
+  <script src="/evie/feedback.js?v=2026.09.08.26"></script>
+  <script src="/evie/webrtc.js?v=2026.09.08.26"></script>
+  <script src="/evie/mobile-actions.js?v=2026.09.08.26"></script>
+  <script src="/evie/capabilities.js?v=2026.09.08.26"></script>
+  <script src="/evie/app.js?v=2026.09.08.26"></script>
   <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
        additive window.EvieTrust namespace; no existing markup changed. -->
   <script>

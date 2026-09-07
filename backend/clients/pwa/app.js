@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.25";
+const CLIENT_BUILD = "2026.09.08.26";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -722,6 +722,7 @@ function showSheet(id, on) {
   if (on && id === "settings-sheet") fillSense().catch(() => {});
   if (on && id === "conversation-sheet") loadTurnHistory().catch(() => {});
   if (on && id === "conversation-sheet") loadMemoryBrowser().catch(() => {});
+  if (on && id === "tactical-sheet") loadTactical().catch(() => {});
   if (on && id === "more-sheet") loadQuickActions().catch(() => {});
 }
 
@@ -962,6 +963,38 @@ async function loadMemoryBrowser() {
     chips.appendChild(chip);
     wrap.appendChild(text);
     wrap.appendChild(chips);
+    host.appendChild(wrap);
+  });
+}
+
+/* Cycle 74 — tactical brief page: right-now system state, read only. */
+async function loadTactical() {
+  const body = await api("/v1/device-gateway/tactical", { _useDeviceToken: true }).catch(() => null);
+  const host = $("tactical-body");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!body || body.ok === false) {
+    const p = document.createElement("p");
+    p.className = "quiet";
+    p.textContent = "Brief unavailable right now.";
+    host.appendChild(p);
+    return;
+  }
+  const rows = [
+    ["Timers", (body.timers || []).map((t) => t.label || t.id).join(", ") || "none running"],
+    ["Inbox unread", String(body.inbox_unread)],
+    ["Devices", body.devices_online + " of " + body.devices_total + " online"],
+    ["Heading out", String(body.heading_out)],
+    ["Voice lease", body.voice_lease ? "held" : "free"],
+    ["Nudges", (body.nudges && body.nudges.enabled === false ? "off" : "on") + (body.nudges && body.nudges.quiet_now ? " · quiet now" : "")],
+  ];
+  rows.forEach(([k, v]) => {
+    const wrap = document.createElement("div");
+    wrap.className = "turn";
+    const line = document.createElement("div");
+    line.className = "turn-text";
+    line.textContent = k + ": " + v;
+    wrap.appendChild(line);
     host.appendChild(wrap);
   });
 }
@@ -2821,10 +2854,11 @@ async function boot() {
       conversation: "conversation-sheet",
       devices: "devices-sheet",
       activity: "activity-sheet",
+      tactical: "tactical-sheet",
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "tactical-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -2844,6 +2878,10 @@ async function boot() {
       }
       if (kind === "inbox") {
         openSurface("inbox");
+        return;
+      }
+      if (kind === "tactical") {
+        openSurface("tactical");
         return;
       }
       if (kind === "today") {

@@ -1628,6 +1628,53 @@ async def memory_browser(
     return {"ok": True, "count": len(memories), "memories": memories}
 
 
+
+@router.get("/tactical")
+async def tactical_brief(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 74 — READ-ONLY tactical brief page data: what's true RIGHT
+    NOW across the system (timers, inbox, nudges, devices, voice lease,
+    heading-out state). Server-composed; the phone only renders."""
+
+    _check_origin(request)
+    from sqlalchemy import select as _select, func as _func
+    from app.models import Device as _Device
+    from app.ev.timers import list_timers
+    timers = await list_timers(session)
+    from app.everywhere.inbox import list_inbox
+    inbox_items = await list_inbox(session, device_id=device.id, limit=50)
+    devices = (await session.execute(_select(_Device))).scalars().all()
+    online = [d for d in devices if d.revoked_at is None and d.last_seen_at is not None]
+    from app.everywhere.heading_out import heading_out_consent
+    from app.device_gateway.lease import current_lease
+
+    lease = None
+    try:
+        lease = await current_lease(session)
+    except Exception:
+        lease = None
+    from app.everywhere.nudge import in_quiet_hours, nudge_prefs
+
+    prefs = nudge_prefs(device)
+    return {
+        "ok": True,
+        "at": utcnow().isoformat(),
+        "timers": [
+            {"id": str(t.get("id") or ""), "label": str(t.get("label") or t.get("title") or ""), "fire_at": str(t.get("fire_at") or "")}
+            for t in (timers.get("timers") or [])[:6]
+        ],
+        "inbox_unread": len([i for i in inbox_items if i.get("unread")]),
+        "nudges": {**prefs, "quiet_now": in_quiet_hours(prefs)},
+        "devices_online": len(online),
+        "devices_total": len([d for d in devices if d.revoked_at is None]),
+        "heading_out": heading_out_consent(device).get("state") or "unknown",
+        "voice_lease": bool(lease),
+    }
+
+
 class VoiceVerifyRequest(BaseModel):
     audio_b64: str
 
