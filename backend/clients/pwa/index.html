@@ -220,5 +220,22 @@
   <script src="/evie/webrtc.js?v=2026.09.05.03"></script>
   <script src="/evie/mobile-actions.js?v=2026.09.05.03"></script>
   <script src="/evie/app.js?v=2026.09.05.03"></script>
+  <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
+       additive window.EvieTrust namespace; no existing markup changed. -->
+  <script>
+  window.EvieTrust = (function () {
+    var STATES = {
+      PAIRED_SANDBOX: { tone: "neutral", label: "Paired · Sandbox", cta: "Review pairing" },
+      TRUSTED_OWNER_DEVICE: { tone: "good", label: "Trusted owner device", cta: "Manage devices" },
+      REVOKED: { tone: "bad", label: "Trust revoked", cta: "Re-pair this iPhone" }
+    };
+    function banner(state) {
+      var key = String(state == null ? "" : state);
+      if (STATES[key]) return { tone: STATES[key].tone, label: STATES[key].label, cta: STATES[key].cta };
+      return { tone: STATES.PAIRED_SANDBOX.tone, label: STATES.PAIRED_SANDBOX.label, cta: STATES.PAIRED_SANDBOX.cta };
+    }
+    return { banner: banner };
+  })();
+  </script>
 </body>
 </html>
