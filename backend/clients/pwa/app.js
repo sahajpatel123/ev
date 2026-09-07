@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.05.03";
+const CLIENT_BUILD = "2026.09.08.01";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -699,6 +699,9 @@ function pushActivity(text) {
 function showSheet(id, on) {
   const el = $(id);
   if (el) el.hidden = !on;
+  if (on && id === "settings-sheet" && window.EvieCapabilities) {
+    window.EvieCapabilities.refresh({ api: (path) => api(path, { _useDeviceToken: true }) });
+  }
 }
 
 function anySheetOpen() {

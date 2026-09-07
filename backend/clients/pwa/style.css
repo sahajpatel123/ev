@@ -653,3 +653,17 @@ html, body {
   }
   .timeline .as-evie { border-width: 2px; }
 }
+
+/* Cycle 42 — capability manifest card (settings sheet). */
+.cap-card { margin: 12px 0 18px; padding: 14px; border: 1px solid var(--line, #d8d5cf); border-radius: 14px; }
+.cap-title { margin: 0 0 4px; font-size: 15px; }
+.cap-trust { margin: 0 0 10px; font-size: 12px; opacity: 0.7; }
+.cap-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
+.cap-row { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.cap-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.cap-on { background: #3a9c58; }
+.cap-off { background: #c4c0b8; }
+.cap-muted { opacity: 0.55; }
+.cap-limits { margin: 10px 0 0; padding-left: 18px; font-size: 12px; opacity: 0.75; }
+.cap-hint { margin: 10px 0 0; font-size: 13px; font-weight: 600; }
+.cap-revoked { border-color: #b3554e; }

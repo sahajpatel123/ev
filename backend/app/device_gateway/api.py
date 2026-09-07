@@ -517,6 +517,24 @@ async def device_status(
     return {"ok": True, **device_status_payload(device), "device": _device_public(device)}
 
 
+@router.get("/capabilities")
+async def device_capabilities(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """Server-computed answer to "what can THIS iPhone do right now?".
+
+    Pure read: derives the manifest from the same policy code the voice and
+    text paths enforce, so what the PWA displays can never drift from what
+    turns actually do. No trust, memory, or tool state is mutated here.
+    """
+
+    _check_origin(request)
+    from .capability_manifest import capability_manifest
+
+    return {"ok": True, **capability_manifest(device)}
+
+
 @router.post("/heartbeat")
 async def heartbeat(
     data: ClaimRequest,
