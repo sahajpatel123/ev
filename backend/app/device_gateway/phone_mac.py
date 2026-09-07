@@ -67,12 +67,18 @@ _TIMER_WORD_RE = re.compile(
     re.I,
 )
 
+_WEB_SEARCH_RE = re.compile(
+    r"\b(?:search|look\s?up|google)\b.{0,12}\b(?:the\s+)?web\b|\bweb\s+search\b|\bsearch\s+(?:the\s+)?web\b",
+    re.I,
+)
+
 _REMINDER_LIST_RE = re.compile(
     r"\b(?:what|list|read).{0,24}\breminders?\b|\breminders?\b.{0,16}\b(?:list|do i have|waiting)\b",
     re.I,
 )
 
 _CLOSE_CALC_RE = re.compile(r"\b(?:close|quit)\s+(?:the\s+)?(?:calculator|calc)\b", re.I)
+
 def _ok(reply: str, *, route: str, tool: str, executed: bool, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "reply": reply,
@@ -97,6 +103,9 @@ def _phrase_action(text: str) -> tuple[str, dict[str, Any]] | None:
         minutes = _WORD_MINUTES.get(word.group("word").lower())
         if minutes:
             return "start_timer", {"minutes": minutes}
+    if _WEB_SEARCH_RE.search(text):
+        query = _WEB_SEARCH_RE.sub("", text, count=1).lstrip(" for ").strip(" ,.!?") or text
+        return "search_web", {"query": query[:400]}
     if _REMINDER_LIST_RE.search(text):
         return "list_reminders", {}
     if _CLOSE_CALC_RE.search(text):

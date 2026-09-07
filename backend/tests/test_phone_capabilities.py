@@ -826,3 +826,34 @@ def test_manifest_marks_sensitive_reads_with_privacy_note():
     sensitive_sbx = sandbox.get("sensitive_reads") or {}
     assert sensitive_sbx.get("list_mail") is False
     assert sandbox.get("privacy_note") == ""
+
+
+async def test_search_web_routed_from_phone(db_session):
+    """Cycle 64 — C24: 'search the web for X' routes to the search_web tool
+    through the phone mac surface; without a provider configured it degrades
+    to an honest unavailable reply rather than a fake answer."""
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.models import Device
+
+    d = Device(
+        name="Search Phone",
+        token_hash="search-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+
+    turn = await maybe_phone_mac_act(
+        db_session,
+        device=d,
+        text="search the web for the best ramen in Tokyo",
+        idempotency_key="sw-1",
+    )
+    assert turn is not None and turn.get("tool") == "search_web", turn
+    reply = str(turn.get("reply") or "").lower()
+    # Either results (provider configured) or the honest unavailability line.
+    assert (
+        "ramen" in reply or "disabled" in reply or "couldn't" in reply or "not connected" in reply
+    ), reply
