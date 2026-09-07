@@ -22,7 +22,6 @@ PHONE_MAC_TOOLS = (
     "activate_app",
     "list_apps",
     "computer_status",
-    "open_url",
     "start_timer",
     "cancel_timer",
     "list_timers",
@@ -46,10 +45,18 @@ PHONE_MAC_TOOLS = (
     "present",
     "send_message",
     "place_call",
-    "computer",
-    "code",
     "evie_turn",
 )
+PHONE_TOOL_ALIASES = {
+    "timer": "start_timer",
+    "reminder": "set_reminder",
+    "weather": "get_weather",
+    "calendar": "calendar_read",
+    "mail": "list_mail",
+    "messages": "list_messages",
+    "message": "send_message",
+    "call": "place_call",
+}
 
 _CHAT_RE = re.compile(
     r"^(?:hi|hello|hey|yo|yes|yeah|yep|ok|okay|no|nope|thanks|thank you|"
@@ -63,6 +70,10 @@ _ACTION_ISH_RE = re.compile(
     r"turn (?:on|off)|lights?|lock|unlock|brief|what's on|"
     r"calculator|safari|spotify|notes|reminders"
     r")\b",
+    re.I,
+)
+_HEALTH_RE = re.compile(
+    r"\b(?:healthkit|steps?|heart rate|sleep|calories|blood pressure)\b",
     re.I,
 )
 
@@ -82,6 +93,9 @@ _SCHEMA = {
         "query": {"type": "string"},
         "goal": {"type": "string"},
         "expression": {"type": "string"},
+        "entity": {"type": "string"},
+        "action": {"type": "string"},
+        "channel": {"type": "string"},
     },
     "required": ["tool"],
 }
@@ -96,7 +110,7 @@ Otherwise pick one Home Station tool:
 - set_reminder (text)
 - get_weather, calendar_read, list_mail, list_messages, brief_me, home_status
 - send_message (to, text), place_call (name)
-- home_act for lights/locks
+- home_act only for reversible lights on/off actions
 - computer for a Mac UI/file job (goal)
 - code for a coding job (goal)
 - calculate (expression)
@@ -120,7 +134,7 @@ def looks_like_phone_chat(text: str) -> bool:
 
 def should_ask_spark(text: str) -> bool:
     raw = (text or "").strip()
-    if looks_like_phone_chat(raw):
+    if not raw or _HEALTH_RE.search(raw) or looks_like_phone_chat(raw):
         return False
     return bool(_ACTION_ISH_RE.search(raw) or len(raw.split()) >= 4)
 
@@ -193,11 +207,24 @@ def _parse_tool(raw: str) -> tuple[str, dict[str, Any]] | None:
             return None
     if not isinstance(data, dict):
         return None
-    tool = str(data.get("tool") or "chat").strip()
+    tool = str(data.get("tool") or "chat").strip().lower()
+    tool = PHONE_TOOL_ALIASES.get(tool, tool)
     if tool in {"", "chat"} or tool not in PHONE_MAC_TOOLS:
         return None
     args: dict[str, Any] = {}
-    for key in ("name", "minutes", "text", "to", "url", "query", "goal", "expression"):
+    for key in (
+        "name",
+        "minutes",
+        "text",
+        "to",
+        "url",
+        "query",
+        "goal",
+        "expression",
+        "entity",
+        "action",
+        "channel",
+    ):
         value = data.get(key)
         if value is None or value == "":
             continue

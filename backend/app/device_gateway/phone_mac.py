@@ -16,6 +16,35 @@ from app.models import Device
 
 from .sandbox import is_sandbox_device
 
+PHONE_HOME_CAPABILITIES: tuple[str, ...] = (
+    "get_weather",
+    "calendar_read",
+    "list_mail",
+    "list_messages",
+    "resolve_contact",
+    "list_timers",
+    "start_timer",
+    "cancel_timer",
+    "list_reminders",
+    "set_reminder",
+    "cancel_reminder",
+    "open_app",
+    "close_app",
+    "send_message",
+    "place_call",
+    "home_act",
+    "computer.open_calculator",
+    "computer.close_calculator",
+)
+
+PHONE_HOME_CAPABILITY_MANIFEST: dict[str, Any] = {
+    "executor": "home_station",
+    "availability": "server_validated",
+    "safe_actions": list(PHONE_HOME_CAPABILITIES),
+    "verification": "result_and_evidence",
+    "blocked": ["shell", "drone", "unsafe_ui", "credentials", "payments"],
+}
+
 _CAMERA = frozenset({"look", "observe_camera", "capture_photo", "record_video"})
 _BLOCKED = frozenset(
     {
@@ -28,6 +57,9 @@ _BLOCKED = frozenset(
         "print_start",
         "camera_replay",
         "app_action",
+        "computer",
+        "code",
+        "open_url",
     }
 )
 _NEGATED_RE = re.compile(
@@ -218,6 +250,27 @@ async def _phone_reminder_action(
 
 
 def _spoken_from_dispatch(response: Any, name: str, payload: dict[str, Any]) -> str:
+    if name == "resolve_contact":
+        matches = payload.get("matches") or payload.get("contacts") or []
+        names: list[str] = []
+        for item in matches[:5] if isinstance(matches, list) else []:
+            if isinstance(item, dict):
+                label = str(
+                    item.get("full_name")
+                    or item.get("display_name")
+                    or item.get("name")
+                    or ""
+                ).strip()
+                if label and label not in names:
+                    names.append(label)
+        if names:
+            return (
+                "I found "
+                + ", ".join(names)
+                + " in Home Station Contacts."
+            )
+        if payload.get("error") in {"not_connected", "contacts_unavailable"}:
+            return "Home Station Contacts isn't connected yet."
     spoken = str(payload.get("spoken") or payload.get("owner_message") or "").strip()
     if spoken:
         if name in {"list_mail", "calendar_read", "list_messages"}:
@@ -381,6 +434,30 @@ async def maybe_phone_mac_act(
         if isinstance(items, list) and len(items) == 1 and isinstance(items[0], dict):
             args["id"] = str(items[0].get("id") or "")
 
+    if name == "home_act":
+        from app.ev.home import match_home_entity, normalize_action
+
+        entity_name = str(args.get("entity") or "").strip()
+        action_name = str(args.get("action") or "").strip()
+        match = await match_home_entity(session, entity_name)
+        row = match.item if match.unique else None
+        canonical = normalize_action(str(getattr(row, "domain", "")), action_name) if row else None
+        if (
+            row is None
+            or str(getattr(row, "domain", "")).lower() != "light"
+            or canonical not in {"on", "off"}
+        ):
+            return _ok(
+                "From the phone I can only turn an identified light on or off. "
+                "I won't change locks, doors, or covers from this path.",
+                route="HOME_STATION",
+                tool=name,
+                executed=False,
+                ok=False,
+                error_code="PHONE_HOME_ACTION_LIMIT",
+            )
+        args["action"] = canonical
+
     from app.ev.tools import dispatch
 
     # Computer tools must run on Home Station's Mac helper, not this iPhone.
@@ -454,6 +531,12 @@ async def maybe_phone_mac_act(
         executed = bool(executed and initiated)
         action_ok = bool(action_ok and initiated)
         verified = bool(connected)
+    elif name == "home_act":
+        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+        verified = bool(
+            not payload.get("simulated")
+            and evidence.get("observed") is True
+        )
     else:
         verified = bool(payload.get("verified", executed))
     return _ok(
@@ -475,5 +558,6 @@ async def maybe_phone_mac_act(
             "connected": payload.get("connected"),
             "answered": payload.get("answered"),
             "kind": payload.get("kind") or args.get("kind"),
+            "simulated": payload.get("simulated"),
         },
     )

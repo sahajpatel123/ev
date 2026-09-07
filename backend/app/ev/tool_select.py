@@ -99,6 +99,11 @@ CONTACT_LOOKUP_RE = re.compile(
     r"\b(?:phone\s+)?(?:number|email)\s+for\s+(?P<name2>[A-Za-z][A-Za-z'-]+)\b",
     re.IGNORECASE,
 )
+CONTACTS_QUERY_RE = re.compile(
+    r"\b(?:find|look\s+up|show|search\s+for)\s+(?:my\s+)?"
+    r"(?P<name>[A-Za-z][A-Za-z'-]+)\s+in\s+(?:my\s+)?contacts\b",
+    re.IGNORECASE,
+)
 _CONTACT_LOOKUP_SKIP = frozenset(
     {"who", "what", "that", "this", "there", "here", "it", "today", "life", "the"}
 )
@@ -949,6 +954,17 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     early_life_list = _live_list_action(text)
     if early_life_list is not None:
         return early_life_list
+    early_lookup = CONTACT_LOOKUP_RE.search(text)
+    if early_lookup is None:
+        early_lookup = CONTACTS_QUERY_RE.search(text)
+    if early_lookup:
+        found = str(
+            early_lookup.groupdict().get("name")
+            or early_lookup.groupdict().get("name2")
+            or ""
+        ).strip()
+        if found and found.lower() not in _CONTACT_LOOKUP_SKIP:
+            return "resolve_contact", {"name": found}
     early_call = CALL_TARGET_RE.search(text)
     if (
         early_call

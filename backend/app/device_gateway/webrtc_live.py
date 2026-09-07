@@ -178,35 +178,33 @@ def _evie_look_spec() -> dict[str, Any]:
 
 
 def _evie_home_action_spec() -> dict[str, Any]:
+    from .phone_mac import PHONE_HOME_CAPABILITIES
+
+    capabilities = tuple(
+        dict.fromkeys(
+            (
+                "device.echo",
+                "device.ping",
+                "mac.notify",
+                "mac.echo",
+                *PHONE_HOME_CAPABILITIES,
+            )
+        )
+    )
     return {
         "name": "evie_home_action",
         "description": (
-            "Run a Home Station / Mac action from this iPhone: timers, "
-            "reminders, open/close Calculator and other Mac apps, mail, "
-            "calendar, notify, or echo. Safari cannot run iPhone Clock. "
-            "Never expose shell, credentials, payments, or arbitrary URLs."
+            "Run one of the server-validated Home Station actions advertised "
+            "in the trusted-phone capability manifest. Safari cannot run "
+            "iPhone Clock itself. Never expose shell, credentials, payments, "
+            "or arbitrary URLs."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "capability": {
                     "type": "string",
-                    "enum": [
-                        "device.echo",
-                        "device.ping",
-                        "mac.notify",
-                        "mac.echo",
-                        "computer.open_calculator",
-                        "computer.close_calculator",
-                        "start_timer",
-                        "set_reminder",
-                        "open_app",
-                        "close_app",
-                        "calendar_read",
-                        "list_mail",
-                        "list_messages",
-                        "get_weather",
-                    ],
+                    "enum": list(capabilities),
                 },
                 "arguments": {"type": "object"},
                 "text": {"type": "string"},
@@ -228,7 +226,11 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
     from app.device_gateway.sandbox import is_sandbox_device
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
-    trusted_owner = device is not None and not is_sandbox_device(device)
+    trusted_owner = (
+        device is not None
+        and not is_sandbox_device(device)
+        and device.revoked_at is None
+    )
     identity_line = ""
     saved = (owner_name or "").strip()
     if trusted_owner and saved:
@@ -256,7 +258,9 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
         # Trusted phones keep evie_state_query as the Core broker and add
         # server-validated phone, perception, and Home Station tools.
         from app.device_gateway.mobile_actions.tool import phone_action_function_spec
+        from .phone_mac import PHONE_HOME_CAPABILITY_MANIFEST
 
+        manifest["home_station_capabilities"] = dict(PHONE_HOME_CAPABILITY_MANIFEST)
         tools = [
             _evie_state_query_spec() | {"type": "function"},
             phone_action_function_spec(device),
@@ -908,6 +912,10 @@ async def run_phone_tool(
             "list_mail": "check my mail",
             "list_messages": "check my messages",
             "get_weather": "what's the weather",
+            "list_timers": "show my timers",
+            "cancel_timer": "cancel my timer",
+            "list_reminders": "show my reminders",
+            "cancel_reminder": "cancel my reminder",
         }.get(cap)
         if cap == "start_timer":
             minutes = extra.get("minutes") or extra.get("duration_minutes")
@@ -919,6 +927,13 @@ async def run_phone_tool(
             app = str(extra.get("name") or extra.get("app") or "").strip()
             verb = "open" if cap == "open_app" else "close"
             direct = f"{verb} {app}" if app else transcript
+        elif cap == "home_act":
+            entity = str(extra.get("entity") or "").strip()
+            action = str(extra.get("action") or "").strip()
+            direct = f"{action} {entity}" if entity and action else transcript
+        elif cap == "resolve_contact":
+            name = str(extra.get("name") or extra.get("query") or "").strip()
+            direct = f"what is {name}'s phone number" if name else transcript
         utterance = (direct or transcript or utterance_from_phone_action({"operation": cap, **extra}, transcript)).strip()
         use_dispatch = bool(utterance) and (
             cap not in ALLOWED_ROUTED_CAPABILITIES
@@ -932,6 +947,14 @@ async def run_phone_tool(
                 "list_mail",
                 "list_messages",
                 "get_weather",
+                "list_timers",
+                "cancel_timer",
+                "list_reminders",
+                "cancel_reminder",
+                "resolve_contact",
+                "send_message",
+                "place_call",
+                "home_act",
             }
         )
         async with SessionLocal() as db:
@@ -984,8 +1007,26 @@ async def run_phone_tool(
             }
         )
     if name == "phone_action":
+        from app.db import SessionLocal
+        from app.models import Device as DeviceRow
         from app.device_gateway.mobile_actions.tool import dispatch_phone_action
 
+        async with SessionLocal() as db:
+            drow = (
+                await db.execute(
+                    select(DeviceRow).where(DeviceRow.id == UUID(str(live.device_id)))
+                )
+            ).scalars().first()
+            if drow is None or drow.revoked_at is not None:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error_code": "DEVICE_REVOKED",
+                        "spoken": "This device is no longer trusted.",
+                        "executed": False,
+                        "verified": False,
+                    }
+                )
         grok = getattr(live, "grok_voice", None)
         transcript = str(getattr(grok, "_last_input_transcript", "") or "").strip()
         payload = await dispatch_phone_action(
