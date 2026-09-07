@@ -49,3 +49,10 @@ final class NotificationManager {
         }
     }
 }
+// Cycle EAC-04 — Notification opt-in copy.
+/// iPhone-only strings; backward compatible (new type, authorization flow untouched).
+enum EvieNotificationOptInCopy {
+    static let title = "Stay in the loop with Evie?"
+    static let body = "Evie sends timely nudges for holds and mentions. Notifications are optional; everything remains in the app."
+    static let declineNote = "You can turn these on later from Settings."
+}
