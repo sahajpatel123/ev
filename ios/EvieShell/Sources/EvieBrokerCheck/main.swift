@@ -44,6 +44,7 @@ struct EvieBrokerCheck {
         check("accepted-not-executed", receipt.accepted && !receipt.executed)
         check("executed-not-verified", !(receipt.executed && receipt.verified && receipt.result == "SYSTEM_UI_OPENED"))
         check("broker-version", BrokerVersion.version == "1.0.0")
+        check("cycle48-orb-states", evieCycle48SelfTestCase())
 
         if failed > 0 {
             fputs("EvieBrokerCheck failed \(failed) assertion(s)\n", stderr)
@@ -51,4 +52,13 @@ struct EvieBrokerCheck {
         }
         print("EvieBrokerCheck OK")
     }
+}
+
+// Cycle 48 — iPhone-only, backward compat: pure broker-check self-test case.
+// Free function with no harness changes to existing checks; only adds one case above.
+func evieCycle48SelfTestCase() -> Bool {
+    let states = EvieOrbState.allCases.map(\.rawValue)
+    assert(!states.isEmpty, "Cycle 48: orb states must not be empty")
+    assert(Set(states).count == states.count, "Cycle 48: orb states must be unique")
+    return !states.isEmpty && Set(states).count == states.count
 }
