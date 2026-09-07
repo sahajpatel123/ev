@@ -223,3 +223,14 @@
   root.EvieOrb = EviePresence;
   root.EvieMicLevel = EvieMicLevel;
 })(typeof window !== "undefined" ? window : globalThis);
+// Cycle 11 (iPhone-only): timeline-view state hook. Additive-only: new
+// EviePresence.prototype.cycle11StateClass; draw/membrane untouched. Pure
+// state -> CSS-class mapper (no DOM), so Mac behavior is unchanged.
+(function (root) {
+  var P = root.EviePresence && root.EviePresence.prototype;
+  if (!P || P.cycle11StateClass) return;
+  P.cycle11StateClass = function cycle11StateClass(state) {
+    var s = String(state || (this && this.state) || "idle").toLowerCase().replace(/[^a-z]/g, "") || "idle";
+    return "evie-timeline is-" + s;
+  };
+})(typeof window !== "undefined" ? window : globalThis);
