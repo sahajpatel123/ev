@@ -707,3 +707,10 @@ html, body {
 .evie-today-hud .evie-today-hud-body { font-size: 14px; line-height: 1.55; color: var(--muted); }
 /* Cycle EAC63 (iPhone-only): Today empty-state line. Additive-only. */
 .evie-today-empty { color: var(--muted); font-size: 13px; }
+/* Cycle EAC65 (iPhone-only): memory browser. Additive-only namespace. */
+.memory-detail { padding: 4px 0 12px; }
+.memory-detail .memory-detail-text { font-size: 16px; line-height: 1.55; margin-bottom: 8px; }
+.memory-detail .memory-detail-kicker { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 14px 0 6px; }
+.evie-memory-row { display: flex; flex-direction: column; gap: 2px; padding: 10px 0; cursor: pointer; }
+.evie-memory-row strong { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.evie-memory-row span { font-size: 15px; line-height: 1.45; }

@@ -91,6 +91,11 @@
           <strong>Devices</strong>
           <span>This iPhone and Home Station</span>
         </button>
+        <button type="button" class="folio-card" data-surface="memory">
+          <span class="folio-kicker">Recall</span>
+          <strong>Memory</strong>
+          <span>Search what Evie knows</span>
+        </button>
         <button type="button" class="folio-card" data-surface="today">
           <span class="folio-kicker">Today</span>
           <strong>Today</strong>
@@ -112,6 +117,24 @@
           <span>Camera, trust, appearance</span>
         </button>
       </div>
+    </section>
+
+    <section id="memory-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="memory-sheet" aria-label="Close">✕</button>
+      <h2>Memory</h2>
+      <p class="quiet">What Evie remembers — with provenance.</p>
+      <form id="memory-search-form" class="composer" hidden>
+        <label class="sr-only" for="memory-q">Search memories</label>
+        <input id="memory-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Search memories">
+      </form>
+      <ol id="memory-list" class="timeline"></ol>
+      <article id="memory-detail" class="memory-detail" hidden>
+        <p class="memory-detail-text" id="memory-detail-text"></p>
+        <p class="quiet" id="memory-detail-meta"></p>
+        <p class="memory-detail-kicker">Sources</p>
+        <ol id="memory-sources" class="timeline"></ol>
+      </article>
+      <p class="quiet" id="memory-meta"></p>
     </section>
 
     <section id="today-sheet" class="sheet" hidden>

@@ -614,6 +614,98 @@ async function refreshToday() {
   }
 }
 
+async function refreshMemories(query) {
+  if (!state.deviceToken) return;
+  const list = $("memory-list");
+  const detail = $("memory-detail");
+  const meta = $("memory-meta");
+  if (detail) detail.hidden = true;
+  if (list) {
+    while (list.firstChild) list.removeChild(list.firstChild);
+  }
+  try {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    const body = await api("/v1/device-gateway/memories" + (params.toString() ? "?" + params.toString() : ""));
+    if (body.memory_enabled === false) {
+      textOf(meta, "Personal memory is off — pair and promote this phone from the Mac.");
+      const form = $("memory-search-form");
+      if (form) form.hidden = true;
+      return;
+    }
+    const form = $("memory-search-form");
+    if (form) form.hidden = false;
+    const rows = body.memories || [];
+    if (!rows.length) {
+      const li = document.createElement("li");
+      li.className = "evie-today-empty";
+      li.textContent = query ? "No memories match that search." : "No memories yet.";
+      if (list) list.appendChild(li);
+    }
+    rows.forEach((row) => {
+      const li = document.createElement("li");
+      li.className = "evie-memory-row";
+      const strong = document.createElement("strong");
+      strong.textContent = row.memory_type || "memory";
+      const span = document.createElement("span");
+      span.textContent = String(row.text || "").slice(0, 160);
+      li.appendChild(strong);
+      li.appendChild(span);
+      li.addEventListener("click", () => openMemoryDetail(row.id));
+      if (list) list.appendChild(li);
+    });
+    textOf(meta, body.total + " memories" + (query ? " · “" + query + "”" : ""));
+  } catch (err) {
+    textOf(meta, "Memory unavailable: " + String(err.message || err));
+  }
+}
+
+async function openMemoryDetail(memoryId) {
+  const detail = $("memory-detail");
+  const list = $("memory-list");
+  if (!detail || !memoryId) return;
+  try {
+    const body = await api("/v1/device-gateway/memories/" + memoryId);
+    const mem = body.memory;
+    if (!mem) return;
+    detail.hidden = false;
+    if (list) list.hidden = true;
+    textOf($("memory-detail-text"), mem.text || "");
+    const confidence = typeof mem.confidence === "number" ? Math.round(mem.confidence * 100) + "%" : "—";
+    textOf($("memory-detail-meta"), (mem.memory_type || "memory") + " · confidence " + confidence + " · " + (mem.source_type || "inferred"));
+    const sources = $("memory-sources");
+    if (sources) {
+      while (sources.firstChild) sources.removeChild(sources.firstChild);
+      const items = body.sources || [];
+      if (!items.length) {
+        const li = document.createElement("li");
+        li.className = "evie-today-empty";
+        li.textContent = "No source events recorded.";
+        sources.appendChild(li);
+      }
+      items.forEach((src) => {
+        const li = document.createElement("li");
+        li.textContent = (src.kind || "event") + " — " + (src.text || "");
+        sources.appendChild(li);
+      });
+    }
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "secondary";
+    back.textContent = "Back to list";
+    back.addEventListener("click", () => {
+      detail.hidden = true;
+      if (list) list.hidden = false;
+    });
+    const existing = $("memory-back-btn");
+    if (existing) existing.remove();
+    back.id = "memory-back-btn";
+    detail.appendChild(back);
+  } catch (err) {
+    textOf($("memory-meta"), "Memory unavailable: " + String(err.message || err));
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -800,7 +892,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -2447,13 +2539,14 @@ async function boot() {
     const map = {
       more: "more-sheet",
       today: "today-sheet",
+      memory: "memory-sheet",
       conversation: "conversation-sheet",
       devices: "devices-sheet",
       activity: "activity-sheet",
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "today-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "today-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -2463,6 +2556,7 @@ async function boot() {
     });
     if (surface === "inbox") refreshInbox();
     if (surface === "today") refreshToday();
+    if (surface === "memory") refreshMemories();
   }
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -2493,6 +2587,14 @@ async function boot() {
       openSurface(btn.getAttribute("data-surface"));
     });
   });
+  const memoryForm = $("memory-search-form");
+  if (memoryForm) {
+    memoryForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const q = $("memory-q");
+      refreshMemories(q ? q.value.trim() : "");
+    });
+  }
   initSwipes(openSurface);
   initSheetGestures();
   document.querySelectorAll(".sheet-close").forEach((btn) => {
