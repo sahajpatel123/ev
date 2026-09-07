@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.31";
+const CLIENT_BUILD = "2026.09.08.32";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -1787,6 +1787,11 @@ async function sendText(text) {
     throw err;
   }
   state.caption = body.reply || "";
+  // Cycle 78 — cross-device handoff: when the thread was continued from
+  // another device, say so quietly instead of pretending nothing moved.
+  if (body.handoff && body.handoff.active_device_id) {
+    pushActivity("Continued from your other device");
+  }
   pushHistory("evie", body.reply || "");
   if (body.conversation_moved) await stopTalk();
   if (body.needs_camera) await captureCamera(body);

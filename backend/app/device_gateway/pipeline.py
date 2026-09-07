@@ -671,12 +671,35 @@ async def run_trusted_device_turn(
                     }
         except Exception:
             pass
+    # Cycle 78 — cross-device handoff: if the thread was last driven from a
+    # DIFFERENT device, carry the recent thread into this turn so Evie
+    # continues the same conversation, not a stranger's silence.
+    handoff_note = ""
+    try:
+        hstate = await current_state(session)
+        hturns = [t for t in (hstate.turns or []) if isinstance(t, dict)] if hstate else []
+        last = hturns[-1] if hturns else None
+        if last and str(last.get("device_id") or "") not in ("", str(device.id)):
+            from .handoff import state_public
+
+            topic_txt = str(hstate.topic or "").strip()
+            recent = " | ".join(
+                (t.get("role", "") + ": " + str(t.get("text", ""))[:120]) for t in hturns[-2:]
+            )
+            handoff_note = (
+                f"[handoff: continuing a conversation started on another device"
+                + (f" — topic: {topic_txt}" if topic_txt else "")
+                + (f" — recent: {recent}" if recent else "")
+                + "] "
+            )
+    except Exception:
+        handoff_note = ""
     turn = create_owner_turn(
         live_session_id=f"device-text:{device.id}",
         provider_item_id=idempotency_key,
         owner_id="master",
         device_id=str(device.id),
-        transcript=effective_text,
+        transcript=handoff_note + effective_text,
         transcript_source="device_text",
         turn_id=(
             f"text-{device.id}-{idempotency_key}" if idempotency_key else None

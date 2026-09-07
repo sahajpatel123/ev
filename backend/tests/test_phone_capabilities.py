@@ -1192,3 +1192,47 @@ async def test_two_iphone_lease_arbitration(client, db_session):
     taken_body = taken.json()
     assert taken_body["ok"] is True
     assert taken_body["took_over"] is True
+
+
+async def test_cross_device_handoff_note(client, db_session):
+    """Cycle 78 — C38: a turn from device B while the thread was last
+    driven by device A carries a handoff note into the turn transcript."""
+    from sqlalchemy import delete as _del
+    from app.models import ActiveConversationState as _State
+    from app.device_gateway.handoff import record_turn
+
+    await db_session.execute(_del(_State))
+    await db_session.commit()
+    a = await _pair_sandbox(client, "HandX-A")
+    # Device A drives the thread; topic recorded.
+    r1 = await a.post(
+        "/v1/device-gateway/text",
+        json={"text": "We're discussing Project Blue Satellite.", "instance_id": "ha"},
+    )
+    assert r1.status_code == 200
+    # Device B continues: the turn transcript must carry the handoff note.
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import app.ev.turn_gate as tg
+
+    device_b = SimpleNamespace(
+        id="handx-b", name="HandX-B", memory_scope="owner", revoked_at=None,
+        capabilities=["foreground_voice"], battery_percent=90.0, last_seen_at=None,
+        endpoint_profile={},
+    )
+    captured = {}
+
+    async def fake_handle(session, turn):
+        captured["transcript"] = turn.transcript
+        from app.ev.turn_gate import TurnResult
+
+        return TurnResult(ok=True, route="MEMORY", operation="memory_store", reply="Noted.", turn_id=turn.turn_id)
+
+    with patch.object(tg, "handle_owner_turn", fake_handle):
+        from app.device_gateway.pipeline import run_trusted_device_turn
+
+        out = await run_trusted_device_turn(
+            db_session, device=device_b, text="Continue what I was saying."
+        )
+    assert captured.get("transcript", "").startswith("[handoff:")
