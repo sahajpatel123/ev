@@ -357,3 +357,22 @@
   root.EvieHudCardText = EvieHudCardText;
 })(typeof window !== "undefined" ? window : globalThis);
 
+/* Cycle 14 — iPhone-only additive share-target intake model; backward compat: pure draft capture. */
+(function (root) {
+  "use strict";
+  var URL_RE = /https?:\/\/[^\s"<>]+/;
+  function EvieShareTargetDraft(input) {
+    var s = input || {};
+    var text = String(s.text == null ? "" : s.text);
+    var url = String(s.url == null ? "" : s.url).trim();
+    var title = String(s.title == null ? "" : s.title).trim();
+    if (!url) {
+      var m = URL_RE.exec(text);
+      if (m) url = m[0];
+    }
+    return { text: text, url: url, title: title, hasContent: !!(text.trim() || url) };
+  }
+  EvieShareTargetDraft.draftFor = EvieShareTargetDraft;
+  root.EvieShareTargetDraft = EvieShareTargetDraft;
+})(typeof window !== "undefined" ? window : globalThis);
+
