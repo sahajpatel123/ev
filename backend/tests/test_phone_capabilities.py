@@ -1026,3 +1026,53 @@ async def test_voice_enrollment_consent_gated(client, db_session):
     assert with_consent.status_code == 403
     sense = (await phone.get("/v1/device-gateway/sense")).json()
     assert sense["voice_enrolled"] is False
+
+
+async def test_send_message_requires_speaker_verify(client, db_session, monkeypatch):
+    """Cycle 70 — C30: 'text Priya hello' from the phone refuses until the
+    owner passes a spoken voice check; the refusal is honest and actionable."""
+    phone = await _pair_sandbox(client, "Send-SE")
+    # Sandbox devices can't reach the dispatch at all; pair is enough to show
+    # the gate exists at the dispatch layer. Drive maybe_phone_mac_act directly.
+    import asyncio
+
+    from types import SimpleNamespace
+
+    from app.device_gateway import phone_mac as mac_mod
+    from app.device_gateway.sandbox import is_sandbox_device as _real_sandbox
+
+    device = SimpleNamespace(
+        id="send-dev-1", name="Send-SE", endpoint_profile={}, capabilities=["camera"], revoked_at=None
+    )
+    mac_mod.is_sandbox_device = lambda d: False
+    async def _none(text):
+        return None
+
+    mac_mod.resolve_live_action = lambda raw: ("send_message", {"to": "Priya", "text": "hello"})
+    import app.ev.spark_phone as spark
+
+    spark.spark_phone_tool = _none
+    from app.ev.tools import dispatch
+
+    async def _fake_dispatch(session, name, args, **kwargs):
+        from app.schemas import ToolCallResponse
+
+        return ToolCallResponse(
+            name=name, ok=True, result={"ok": True, "spoken": "Sent to Priya."}, error=None, latency_ms=1.0
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _fake_dispatch)
+    try:
+        refused = await mac_mod.maybe_phone_mac_act(db_session, device=device, text="text Priya hello")
+        assert refused is not None
+        assert refused["executed"] is False
+        assert refused["needs_speaker_verify"] is True
+        from app.everywhere.speaker_verify import mark_speaker_verified, speaker_verified
+
+        assert speaker_verified(device) is False
+        mark_speaker_verified(device)
+        assert speaker_verified(device) is True
+        allowed = await mac_mod.maybe_phone_mac_act(db_session, device=device, text="text Priya hello")
+        assert allowed["executed"] is True
+    finally:
+        mac_mod.is_sandbox_device = _real_sandbox

@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.21";
+const CLIENT_BUILD = "2026.09.08.22";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -741,7 +741,7 @@ async function fillSense() {
     ["Nudges", (nudges.enabled === false ? "off" : "on") + (nudges.quiet_now ? " · quiet hours now" : " · quiet " + (nudges.quiet_start || "") + "–" + (nudges.quiet_end || ""))],
     ["Heading out", headingLabel(body)],
     ["People", body.people_count ? body.people_count + " enrolled" : "roster — tap to add"],
-    ["Voice", body.voice_enrolled ? "enrolled" : "not enrolled — tap to enroll"],
+    ["Voice", body.voice_enrolled ? "enrolled — tap to re-check" : "not enrolled — tap to enroll"],
   ]);
   if ($("voice-enroll")) {
     $("voice-enroll").hidden = false;
@@ -749,7 +749,7 @@ async function fillSense() {
   const peopleRow = document.querySelector("#sense-meta dt:last-of-type");
   if (peopleRow) peopleRow.onclick = () => enrollPerson().catch(() => {});
   const voiceRow = document.querySelector("#sense-meta dt:last-of-type");
-  if (voiceRow && body.voice_enrolled === false) voiceRow.onclick = () => enrollVoice().catch(() => {});
+  if (voiceRow) voiceRow.onclick = () => (body.voice_enrolled ? verifyVoice() : enrollVoice()).catch(() => {});
 }
 
 /* Cycle 68 — enrolled people: the owner names who matters; no biometrics.
@@ -810,6 +810,35 @@ async function enrollVoice() {
   }
   pushActivity("Voice enrolled · v" + res.version);
   fillSense().catch(() => {});
+}
+
+/* Cycle 70 — spoken voice check: one clip against the enrolled voiceprint;
+   success opens a 120 s window for consequential sends (text/call). */
+async function verifyVoice() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("No microphone on this phone");
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+  try {
+    const chunks = [];
+    const rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => chunks.push(e.data);
+    const done = new Promise((resolve) => { rec.onstop = resolve; });
+    rec.start();
+    await new Promise((r) => setTimeout(r, 1800));
+    rec.stop();
+    await done;
+    const buf = await new Blob(chunks).arrayBuffer();
+    const wavB64 = (window.EvieAudio && window.EvieAudio.toWavB64) ? await window.EvieAudio.toWavB64(buf) : btoa(String.fromCharCode(...new Uint8Array(buf)));
+    const res = await api("/v1/device-gateway/voice/verify", {
+      method: "POST",
+      body: JSON.stringify({ audio_b64: wavB64 }),
+    });
+    pushActivity(res.ok ? "Voice check passed · 2 min" : "Voice check failed — try again");
+    return !!res.ok;
+  } finally {
+    stream.getTracks().forEach((t) => t.stop());
+  }
 }
 
 /* Cycle 66 — heading-out: opt-in, foreground-only geofence against the

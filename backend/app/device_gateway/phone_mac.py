@@ -209,9 +209,20 @@ async def maybe_phone_mac_act(
     name, args = resolved
     if name in _CAMERA or name in _BLOCKED:
         return None
+    if name in {"send_message", "place_call"}:
+        # Cycle 70 — a paired token proves the DEVICE is trusted; a voice
+        # check proves the OWNER is present. Outward actions need both.
+        from app.everywhere.speaker_verify import speaker_verified
+
+        if not speaker_verified(device):
+            return _ok(
+                "I need a quick voice check before I message anyone. Tap Verify in EV Sense and say a few words.",
+                route="HOME_STATION",
+                tool=name,
+                executed=False,
+                extra={"needs_speaker_verify": True},
+            )
     args = dict(args or {})
-    if idempotency_key and name == "start_timer" and "idempotency_key" not in args:
-        args["idempotency_key"] = idempotency_key[:80]
 
     from app.ev.tools import dispatch
 

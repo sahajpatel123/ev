@@ -1546,6 +1546,36 @@ async def offline_replay(
     return result
 
 
+class VoiceVerifyRequest(BaseModel):
+    audio_b64: str
+
+
+@router.post("/voice/verify")
+async def phone_voice_verify(
+    data: VoiceVerifyRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 70 — spoken challenge against the enrolled voiceprint. Success
+    opens the 120 s speaker-verified window for consequential sends."""
+
+    _check_origin(request)
+    if is_sandbox_device(device):
+        raise HTTPException(status_code=403, detail="Speaker verification is an owner surface")
+    from app.api.voice import _runtime
+
+    outcome = await _runtime(session).verify_samples([{"audio_b64": data.audio_b64, "liveness_proof": "live"}])
+    await session.commit()
+    if not outcome.get("accepted"):
+        return {"ok": False, **outcome, "spoken": "That didn't match. Try again."}
+    from app.everywhere.speaker_verify import mark_speaker_verified
+
+    mark_speaker_verified(device)
+    await session.commit()
+    return {"ok": True, **outcome, "spoken": "It's you. Go ahead."}
+
+
 async def _reload_queue_item(
     session: AsyncSession,
     *,
