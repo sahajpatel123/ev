@@ -706,6 +706,32 @@ async function openMemoryDetail(memoryId) {
   }
 }
 
+async function runSearch(query) {
+  const meta = $("search-meta");
+  const q = (query || "").trim();
+  if (!q) {
+    textOf(meta, "Type a query to search everything.");
+    return;
+  }
+  try {
+    const body = await api("/v1/device-gateway/search?q=" + encodeURIComponent(q));
+    fillOl("search-memories", (body.memories || []).map((m) => (m.memory_type ? m.memory_type + " — " : "") + m.text), 8, body.memory_enabled === false ? "Memory is off (pair + promote on the Mac)." : "No memory matches.");
+    fillOl("search-events", (body.events || []).map((e) => (e.kind || "event") + " — " + e.text), 8, "No events match.");
+    fillOl("search-reminders", (body.reminders || []).map((r) => r.text || "Reminder"), 6, "No reminders match.");
+    fillOl("search-contacts", (body.contacts || []).map((c) => c.name || ""), 6, "No contacts match.");
+    const total = (body.memories || []).length + (body.events || []).length + (body.reminders || []).length + (body.contacts || []).length;
+    textOf(meta, total + " result" + (total === 1 ? "" : "s") + " for “" + q + "”");
+  } catch (err) {
+    textOf(meta, "Search unavailable: " + String(err.message || err));
+  }
+}
+
+function openSearch() {
+  showSheet("search-sheet", true);
+  const input = $("search-q");
+  if (input) input.focus();
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -892,7 +918,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "memory-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -2539,6 +2565,7 @@ async function boot() {
     const map = {
       more: "more-sheet",
       today: "today-sheet",
+      search: "search-sheet",
       memory: "memory-sheet",
       conversation: "conversation-sheet",
       devices: "devices-sheet",
@@ -2546,7 +2573,7 @@ async function boot() {
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "today-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "today-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -2593,6 +2620,14 @@ async function boot() {
       ev.preventDefault();
       const q = $("memory-q");
       refreshMemories(q ? q.value.trim() : "");
+    });
+  }
+  const searchForm = $("search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const q = $("search-q");
+      runSearch(q ? q.value : "");
     });
   }
   initSwipes(openSurface);

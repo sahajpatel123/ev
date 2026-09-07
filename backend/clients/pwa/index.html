@@ -86,6 +86,11 @@
           <strong>Chat</strong>
           <span>The conversation on this phone</span>
         </button>
+        <button type="button" class="folio-card folio-wide" data-surface="search">
+          <span class="folio-kicker">Find</span>
+          <strong>Search</strong>
+          <span>Memory, events, reminders, contacts</span>
+        </button>
         <button type="button" class="folio-card" data-surface="devices">
           <span class="folio-kicker">Places</span>
           <strong>Devices</strong>
@@ -117,6 +122,25 @@
           <span>Camera, trust, appearance</span>
         </button>
       </div>
+    </section>
+
+    <section id="search-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="search-sheet" aria-label="Close">✕</button>
+      <h2>Search</h2>
+      <p class="quiet">One query across memory, events, reminders, contacts.</p>
+      <form id="search-form" class="composer">
+        <label class="sr-only" for="search-q">Search Evie</label>
+        <input id="search-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Search everything">
+      </form>
+      <h3>Memory</h3>
+      <ol id="search-memories" class="timeline"></ol>
+      <h3>Events</h3>
+      <ol id="search-events" class="timeline"></ol>
+      <h3>Reminders</h3>
+      <ol id="search-reminders" class="timeline"></ol>
+      <h3>Contacts</h3>
+      <ol id="search-contacts" class="timeline"></ol>
+      <p class="quiet" id="search-meta"></p>
     </section>
 
     <section id="memory-sheet" class="sheet" hidden>

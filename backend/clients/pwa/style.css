@@ -714,3 +714,5 @@ html, body {
 .evie-memory-row { display: flex; flex-direction: column; gap: 2px; padding: 10px 0; cursor: pointer; }
 .evie-memory-row strong { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
 .evie-memory-row span { font-size: 15px; line-height: 1.45; }
+/* Cycle EAC68 (iPhone-only): search sheet. Additive-only namespace. */
+#search-sheet h3 { margin-top: 16px; }
