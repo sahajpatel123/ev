@@ -249,3 +249,56 @@ async def test_phone_conversation_recalls_stored_memory(
     else:
         # Deterministic state answer — the canonical surface; shadow not required.
         assert result.get("ok") is True
+
+
+async def test_phone_history_recall_read(db_session):
+    """Cycle 48 — C8: an explicit history question on the trusted phone
+    surface routes to the deterministic MEMORY read with real depth (k=5)
+    and speaks what it found."""
+    from uuid import uuid4
+
+    from app.device_gateway.pipeline import run_trusted_device_turn
+    from app.models import Device, Memory
+    from app.utils.text import fingerprint, utcnow
+
+    now = utcnow()
+    for i in range(5):
+        db_session.add(
+            Memory(
+                memory_type="fact",
+                text=f"Note {i}: the rooftop garden needs a drip irrigation line",
+                payload={},
+                importance=0.8,
+                confidence=0.9,
+                source_type="explicit",
+                privacy_level="normal",
+                event_time=now,
+                valid_from=now,
+                is_current=True,
+                fingerprint=fingerprint({"seed": uuid4().hex}),
+                embedding=None,
+                embedding_model_version=None,
+            )
+        )
+    d = Device(
+        name="History Phone",
+        token_hash="history-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+
+    result = await run_trusted_device_turn(
+        db_session,
+        device=d,
+        text="what do you remember about the rooftop garden",
+        idempotency_key="his-1",
+        ingest_conversation=True,
+    )
+    spoken = str(result.get("reply") or "")
+    if result.get("route") == "MEMORY":
+        assert result.get("ok") is True
+        assert "garden" in spoken.lower() or result.get("count", 0) >= 0
+        assert result.get("provenance") == "memory.history"

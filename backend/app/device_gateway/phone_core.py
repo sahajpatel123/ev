@@ -152,13 +152,20 @@ async def maybe_phone_core_read(
     if _HISTORY.search(raw) and not is_visual_recall_query(raw) and not is_weather_query(raw):
         from app.memory.history import recall_history
 
-        recalled = await recall_history(session, raw, k=3)
+        # Cycle 48 — the phone is the owner's walk-away surface: an explicit
+        # history question there deserves the same depth as a desk question
+        # (k=5, date-stamped spoken summary), not a truncated k=3.
+        recalled = await recall_history(session, raw, k=5)
         spoken = str(recalled.get("spoken") or "").strip() or "I don't have that in memory yet."
         return _ok(
             spoken,
             route="MEMORY",
             executed=bool(recalled.get("count")),
-            extra={"provenance": "memory.history", "count": recalled.get("count") or 0},
+            extra={
+                "provenance": "memory.history",
+                "count": recalled.get("count") or 0,
+                "cursor": recalled.get("cursor"),
+            },
         )
 
     if is_weather_query(raw):
