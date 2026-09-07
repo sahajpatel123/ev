@@ -72,3 +72,16 @@ self.EvieSwVersion = {
   }
 };
 if (typeof window !== "undefined") window.EvieSwVersion = self.EvieSwVersion;
+/* Cycle 25 — iPhone-only device-role label. Backward compatible: additive
+   self.EvieDeviceRole pure helper; owner-declared input only (never probed
+   from hardware); existing listeners untouched. */
+self.EvieDeviceRole = {
+  label: function (declared) {
+    var d = String(declared == null ? "" : declared).trim().toLowerCase();
+    if (d === "se" || d.indexOf("se ") === 0 || d.indexOf(" se") !== -1) {
+      return "iPhone SE (fallback)";
+    }
+    return "iPhone 16 Pro (preferred)";
+  }
+};
+if (typeof window !== "undefined") window.EvieDeviceRole = self.EvieDeviceRole;
