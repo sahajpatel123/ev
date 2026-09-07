@@ -623,7 +623,6 @@ class LiveSession:
         if isinstance(event, PartialTranscriptEvent) and getattr(event, "role", "user") == "assistant":
             self._persist_keep_identity_now(event.text)
         if persist_user:
-        if isinstance(event, FinalTranscriptEvent):
             from_s2s = event.provider in {"openai-realtime", "grok-voice"}
             from app.ev.laptop_files import is_system_confirmation
             from app.memory.visual import is_camera_prompt_echo, is_memory_hedge_scene
