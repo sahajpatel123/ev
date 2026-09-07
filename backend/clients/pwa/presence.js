@@ -154,6 +154,72 @@
     void lobes;
   };
 
+  // Cycle 2 (iPhone-only): mic-level meter feeding presence amp. Attaches to a
+  // MediaStream, computes smoothed RMS via AnalyserNode, calls back 0..1 so the
+  // veil widens while the owner speaks. No-ops on Mac browsers without audio.
+  function EvieMicLevel(onLevel) {
+    this.onLevel = typeof onLevel === "function" ? onLevel : function () {};
+    this.ctx = null;
+    this.analyser = null;
+    this.source = null;
+    this.raf = 0;
+    this.level = 0;
+    this.running = false;
+  }
+
+  EvieMicLevel.prototype.attach = function attach(stream) {
+    try {
+      this.detach();
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC || !stream) return false;
+      this.ctx = new AC({ sampleRate: 16000 });
+      this.source = this.ctx.createMediaStreamSource(stream);
+      this.analyser = this.ctx.createAnalyser();
+      this.analyser.fftSize = 512;
+      this.source.connect(this.analyser);
+      this.running = true;
+      this._tick();
+      return true;
+    } catch (_err) {
+      return false;
+    }
+  };
+
+  EvieMicLevel.prototype._tick = function _tick() {
+    if (!this.running || !this.analyser) return;
+    const buf = new Uint8Array(this.analyser.fftSize);
+    this.analyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i += 1) {
+      const v = (buf[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / buf.length);
+    this.level += (Math.min(1, rms * 3) - this.level) * 0.25;
+    try {
+      this.onLevel(this.level);
+    } catch (_err) {}
+    const self = this;
+    this.raf = requestAnimationFrame(function () { self._tick(); });
+  };
+
+  EvieMicLevel.prototype.detach = function detach() {
+    this.running = false;
+    if (this.raf) cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    try {
+      if (this.source) this.source.disconnect();
+    } catch (_err) {}
+    try {
+      if (this.ctx) this.ctx.close();
+    } catch (_err) {}
+    this.ctx = null;
+    this.analyser = null;
+    this.source = null;
+    this.level = 0;
+  };
+
   root.EviePresence = EviePresence;
   root.EvieOrb = EviePresence;
+  root.EvieMicLevel = EvieMicLevel;
 })(typeof window !== "undefined" ? window : globalThis);
