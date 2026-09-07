@@ -278,3 +278,14 @@
     return "evie-loc is-" + s;
   };
 })(typeof window !== "undefined" ? window : globalThis);
+// Cycle 18 (iPhone-only): health quick-capture state hook. Additive-only: new
+// EviePresence.prototype.cycle18StateClass; draw/membrane untouched. Pure
+// state -> CSS-class mapper (no DOM), so Mac behavior is unchanged.
+(function (root) {
+  var P = root.EviePresence && root.EviePresence.prototype;
+  if (!P || P.cycle18StateClass) return;
+  P.cycle18StateClass = function cycle18StateClass(state) {
+    var s = String(state || (this && this.state) || "idle").toLowerCase().replace(/[^a-z]/g, "") || "idle";
+    return "evie-health is-" + s;
+  };
+})(typeof window !== "undefined" ? window : globalThis);

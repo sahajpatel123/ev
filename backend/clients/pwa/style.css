@@ -691,3 +691,11 @@ html, body {
 .evie-loc .evie-loc-title { font-size: 16px; font-weight: 600; }
 .evie-loc .evie-loc-copy { font-size: 14px; line-height: 1.55; color: var(--muted); }
 .evie-loc .evie-loc-actions { display: flex; gap: 10px; }
+/* Cycle 18 (iPhone-only): health quick-capture grid. Additive-only: new
+   .evie-health namespace; every existing selector untouched. Dark/light via
+   existing vars, so Mac browsers without this markup render exactly as before. */
+.evie-health { display: grid; gap: 10px; grid-template-columns: repeat(2, 1fr); }
+.evie-health .evie-health-chip { padding: 14px; border: 1px solid var(--stroke); border-radius: 18px; background: var(--elevated); text-align: center; font-size: 14px; }
+.evie-health .evie-health-chip strong { display: block; font-size: 20px; letter-spacing: -0.02em; }
+.evie-health .evie-health-chip span { color: var(--muted); font-size: 12px; }
+.evie-health .evie-health-wide { grid-column: 1 / -1; }
