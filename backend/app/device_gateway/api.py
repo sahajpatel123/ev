@@ -601,14 +601,6 @@ async def _refuse_active_lease(session: AsyncSession, existing: Any) -> dict | N
     Returns the refusal body, or None when the holder went quiet (stale
     lease falls through to a normal claim)."""
 
-    from datetime import timedelta as _timedelta
-
-    last_active = _lease_when(existing.last_activity)
-    active_recently = last_active is not None and (
-        utcnow() - last_active
-    ) <= _timedelta(seconds=max(45, int(settings.conversation_lease_ttl_seconds) // 2))
-    if not active_recently:
-        return None
     holder = await session.get(Device, existing.device_id)
     holder_name = ((holder.name or "").split() or ["another device"])[0] if holder else "another device"
     return {

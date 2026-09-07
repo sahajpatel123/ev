@@ -1,15 +1,15 @@
 {
-  "web_build": "2026.09.08.30",
+  "web_build": "2026.09.08.31",
   "web_protocol": 1,
   "api_protocol": "1",
   "web_protocol_min": 1,
   "web_protocol_max": 1,
-  "generated_at": "2026-09-07T23:25:56.069656+00:00",
+  "generated_at": "2026-09-07T23:38:58.088397+00:00",
   "files": {
-    "index.html": "522bd42c840e24f908cddd73df93f52f7378cbdcdf325c617b2bfbb516b26e90",
-    "app.js": "385ed594114e271be88742dfbe74b343deb216180d391922d8bc2251378ae3c7",
+    "index.html": "9fbfcbd610a7b7a367f746c29b27e6a31d92eb97260752f8becd6d9520dfc243",
+    "app.js": "1e7b555302c3362b0778744cdb8aa12f6ba84994d9bff8f93e1d80af0da8c586",
     "capabilities.js": "f93c8ccf665b5c80880cdd24ae496f6dcdbd9161af02dcfd17cb50aa5428f385",
-    "sw.js": "f8272117a7e5d831934201ab872c5750f93298479ec50b1cf7dcd7dad0eae89c",
+    "sw.js": "6e8794bd6cfe781c8d01e4bb9253d22195035f32cf1cd2a3dcb26048cd537fbe",
     "audio.js": "619a8d0d505e5eda5814abe0bfc252959decf54dbd3bd1108480b8905df966d1",
     "webrtc.js": "da6f3f9b41820a10c6fd52903aedda22c22d875d07412d9796bb56e374135560",
     "mobile-actions.js": "5feb04b27850a3f307ee2d04a49b5a35b9ed62a54f775e6f61e8f99c24985425",
@@ -21,5 +21,5 @@
     "style.css": "58e10d5a3363ad0b3c6c795670f0214d92f06be42146c983241f59ef09cfc7a9",
     "manifest.webmanifest": "2adb4ce4ceda7ca22df030c7bca54a609e3d11b445709f981324907844ee4f47"
   },
-  "asset_manifest_hash": "39303b8f64dd781e090ce217876636e0e91313d04472376a18f60f38432d4fd1"
+  "asset_manifest_hash": "cad45f4b2bd6251af088d95fa04a9e9d63e6ec990934576ae1d8a380f5b1b110"
 }

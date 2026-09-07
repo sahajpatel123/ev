@@ -179,9 +179,16 @@ async def test_sandbox_cannot_read_production_memory(
     await phone.aclose()
 
 
-async def test_handoff_uses_active_conversation_state(client: AsyncClient) -> None:
+async def test_handoff_uses_active_conversation_state(client: AsyncClient, db_session) -> None:
+    # Cycle 77 — arbitration keys off ANY unexpired lease (a text turn claims
+    # one too); clear leftovers so the test is deterministic.
+    from sqlalchemy import delete as _delete
+    from app.models import ConversationLease as _Lease
+
+    await db_session.execute(_delete(_Lease))
+    await db_session.commit()
     _, primary = await _pair(client, role="primary_companion", name="Handoff A")
-    _, secondary = await _pair(client, role="secondary_companion", name="Handoff B")
+    _, secondary = await _pair(client, role="primary_companion", name="Handoff B")
     await primary.post(
         "/v1/device-gateway/text",
         json={
@@ -194,15 +201,29 @@ async def test_handoff_uses_active_conversation_state(client: AsyncClient) -> No
         json={"text": "Continue what I was saying.", "instance_id": "tab-b"},
     )
     assert "Project Blue Satellite" in follow.json()["reply"]
-    lease_a = await primary.post(
+    # A text turn holds the lease; the other device's claim is refused once
+    # and must take over explicitly.
+    refused_a = await primary.post(
         "/v1/device-gateway/conversation/claim",
         json={"instance_id": "tab-a", "method": "manual"},
     )
-    lease_b = await secondary.post(
+    assert refused_a.json()["ok"] is False
+    lease_a = await primary.post(
+        "/v1/device-gateway/conversation/claim",
+        json={"instance_id": "tab-a", "method": "manual", "takeover": True},
+    )
+    assert lease_a.json()["ok"] is True
+    refused_b = await secondary.post(
         "/v1/device-gateway/conversation/claim",
         json={"instance_id": "tab-b", "method": "manual"},
     )
-    assert lease_a.json()["lease"]["device_id"] != lease_b.json()["lease"]["device_id"]
+    assert refused_b.json()["ok"] is False
+    assert refused_b.json()["holder"]["device_id"] == lease_a.json()["lease"]["device_id"]
+    lease_b = await secondary.post(
+        "/v1/device-gateway/conversation/claim",
+        json={"instance_id": "tab-b", "method": "manual", "takeover": True},
+    )
+    assert lease_b.json()["lease"]["device_id"] != lease_a.json()["lease"]["device_id"]
     await primary.aclose()
     await secondary.aclose()
 
