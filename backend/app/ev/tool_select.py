@@ -52,7 +52,8 @@ OPEN_APP_RE = re.compile(
     r"safari|messages|mail|calendar|finder|notes|music|photos|maps|"
     r"facetime|reminders|settings|terminal|chrome|arc|slack|spotify|"
     r"textedit|text edit|calculator|calc|cursor|vscode|code|"
-    r"google chrome|system settings|system preferences|imessage)"
+    r"google chrome|system settings|system preferences|imessage|"
+    r"browser|vs code|visual studio code|apple mail|apple calendar|i message)"
     r"(?:\.app)?\b",
     re.IGNORECASE,
 )
@@ -60,7 +61,9 @@ CLOSE_APP_RE = re.compile(
     r"\b(?:close|quit)\s+(?:up\s+)?(?:the\s+)?(?P<name>"
     r"safari|messages|mail|calendar|notes|music|photos|maps|"
     r"facetime|reminders|settings|terminal|chrome|arc|slack|spotify|"
-    r"google chrome|system settings|system preferences|imessage)"
+    r"calculator|calc|cursor|vscode|code|textedit|text edit|"
+    r"google chrome|system settings|system preferences|imessage|"
+    r"browser|vs code|visual studio code|apple mail|apple calendar|i message)"
     r"(?:\.app)?\b",
     re.IGNORECASE,
 )
@@ -144,6 +147,26 @@ CAPABILITIES_RE = re.compile(
 )
 TIMER_RE = re.compile(
     r"\b(?:start |set )?(?:a )?timer (?:for )?(\d+)\s*(?:min|mins|minute|minutes)\b",
+    re.IGNORECASE,
+)
+TIMER_LIST_RE = re.compile(
+    r"\b(?:what(?:'s| is)|show|list)\s+(?:my\s+)?(?:pending\s+)?timers?\b|"
+    r"\bhow many\s+(?:pending\s+)?timers?\b",
+    re.IGNORECASE,
+)
+TIMER_CANCEL_RE = re.compile(
+    r"\b(?:cancel|stop|delete|clear)\s+(?:my\s+|the\s+)?"
+    r"(?:pending\s+)?timer(?:\s+(?:for|called|named)\s+(.+?))?\s*$",
+    re.IGNORECASE,
+)
+REMINDER_LIST_RE = re.compile(
+    r"\b(?:what(?:'s| is)|show|list)\s+(?:my\s+)?(?:pending\s+)?reminders?\b|"
+    r"\bany\s+(?:pending\s+)?reminders?\b",
+    re.IGNORECASE,
+)
+REMINDER_CANCEL_RE = re.compile(
+    r"\b(?:cancel|delete|dismiss|clear)\s+(?:my\s+|the\s+)?"
+    r"reminder(?:\s+(?:to|for|called|named)\s+(.+?))?\s*$",
     re.IGNORECASE,
 )
 CALL_TARGET_RE = re.compile(
@@ -911,6 +934,28 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     camera = fallback_camera_action(text)
     if wants_keep_visible(text) or wants_held_object_look(text):
         return "look", {"prompt": text[:400], "focus": "auto"}
+    if REMINDER_LIST_RE.search(text):
+        return "list_reminders", {}
+    cancel_reminder = REMINDER_CANCEL_RE.search(text)
+    if cancel_reminder:
+        target = str(cancel_reminder.group(1) or "").strip()
+        return "cancel_reminder", {"text": target[:500]} if target else {}
+    early_open_app = OPEN_APP_RE.search(text)
+    if early_open_app:
+        return "open_app", {"name": early_open_app.group("name")}
+    early_close_app = CLOSE_APP_RE.search(text)
+    if early_close_app:
+        return "close_app", {"name": early_close_app.group("name")}
+    early_life_list = _live_list_action(text)
+    if early_life_list is not None:
+        return early_life_list
+    early_call = CALL_TARGET_RE.search(text)
+    if (
+        early_call
+        and not CALL_HISTORY_RE.search(text)
+        and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", text, re.IGNORECASE)
+    ):
+        return "place_call", {"name": early_call.group(1)}
     if looks_like_code_request(text):
         return "code", {"goal": text[:4000]}
     from app.ev.desk_acts import parse_desk_act
@@ -974,6 +1019,18 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
             if life_shelf in _life_recall_shelves:
                 return "recall", {"query": text[:1000]}
         return None
+    if TIMER_LIST_RE.search(text):
+        return "list_timers", {}
+    cancel_timer = TIMER_CANCEL_RE.search(text)
+    if cancel_timer:
+        target = str(cancel_timer.group(1) or "").strip()
+        return "cancel_timer", {"text": target[:500]} if target else {}
+    if REMINDER_LIST_RE.search(text):
+        return "list_reminders", {}
+    cancel_reminder = REMINDER_CANCEL_RE.search(text)
+    if cancel_reminder:
+        target = str(cancel_reminder.group(1) or "").strip()
+        return "cancel_reminder", {"text": target[:500]} if target else {}
     timer = TIMER_RE.search(text)
     if timer:
         return "start_timer", {"minutes": int(timer.group(1))}

@@ -226,6 +226,9 @@ def test_status_and_pwa_connection_contract() -> None:
     assert "core_takeover" in webrtc
     assert "_setVadCreateResponse" in webrtc
     assert "response.cancel" in webrtc
+    assert "home_station_result" in webrtc
+    assert "showHomeStationResult" in app_js
+    assert 'aria-live="polite"' in html
     assert "scheduleHealthRender" in app_js
     assert "unified-calls-v1" in webrtc
     assert "waitIce" not in webrtc

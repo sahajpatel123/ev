@@ -581,6 +581,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "default": "messages",
                 },
                 "confirm": {"type": "boolean", "default": False},
+                "idempotency_key": {"type": "string", "maxLength": 128, "default": None},
             },
             "required": ["to", "text"],
         },
@@ -1078,6 +1079,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "properties": {
                 "text": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "when": {"type": "string", "maxLength": 128, "default": None},
+                "idempotency_key": {"type": "string", "maxLength": 128, "default": None},
             },
             "required": ["text"],
         },
@@ -4079,12 +4081,22 @@ async def _handle(
         from uuid import uuid4
 
         from app.ev.briefing import extract_reminder_when
+        from app.ev.actuator import fingerprint, prior_result, record_actuator
         from app.ev.resolve import parse_owner_when
         from app.ev.timers import start_timer
         from app.models import Alert
         from app.utils.text import utcnow as _utcnow
 
         text = str(args.get("text") or "").strip()
+        idempotency_key = str(args.get("idempotency_key") or "").strip()[:128] or None
+        if idempotency_key:
+            prior = await prior_result(
+                session,
+                name="set_reminder",
+                key=idempotency_key,
+            )
+            if prior is not None:
+                return prior
         now = _utcnow()
         when = args.get("when") or extract_reminder_when(text)
         fire_at = None
@@ -4100,9 +4112,10 @@ async def _handle(
                 at=fire_at.isoformat(),
                 text=text,
                 actor=actor,
+                idempotency_key=idempotency_key,
             )
             if timed.get("ok"):
-                return {
+                result = {
                     "ok": True,
                     "text": text,
                     "when": timed.get("fire_at"),
@@ -4110,6 +4123,41 @@ async def _handle(
                     "spoken": timed.get("spoken") or f"Reminder set: {text}.",
                     "evidence": timed.get("evidence"),
                 }
+                if idempotency_key:
+                    await record_actuator(
+                        session,
+                        name="set_reminder",
+                        actor=actor,
+                        key=idempotency_key,
+                        result=result,
+                        target=text,
+                    )
+                return result
+        alert_fingerprint = fingerprint(
+            "set_reminder",
+            idempotency_key or text,
+            when or "",
+            text,
+        )
+        existing_alert = (
+            await session.execute(
+                select(Alert)
+                .where(
+                    Alert.source == "set_reminder",
+                    Alert.fingerprint == alert_fingerprint,
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        if existing_alert is not None:
+            return {
+                "ok": True,
+                "text": text,
+                "id": str(existing_alert.id),
+                "stored": "alert",
+                "spoken": f"Reminder set: {text}.",
+                "idempotent_replay": True,
+            }
         alert = Alert(
             kind="reminder",
             title="Reminder",
@@ -4118,16 +4166,16 @@ async def _handle(
             tier="useful",
             status="pending",
             source="set_reminder",
-            fingerprint=uuid4().hex,
+            fingerprint=alert_fingerprint or uuid4().hex,
             rationale="Owner asked to be reminded.",
-            details={"text": text, "when": when},
+            details={"text": text, "when": when, "idempotency_key": idempotency_key},
         )
         session.add(alert)
         await session.flush()
         from app.ev.actuator import evidence_base
         from app.utils.text import utcnow as _utcnow
 
-        return {
+        result = {
             "ok": True,
             "text": text,
             "id": str(alert.id),
@@ -4141,6 +4189,16 @@ async def _handle(
                 alert_id=str(alert.id),
             ),
         }
+        if idempotency_key:
+            await record_actuator(
+                session,
+                name="set_reminder",
+                actor=actor,
+                key=idempotency_key,
+                result=result,
+                target=text,
+            )
+        return result
     if name == "set_assistant_name":
         from app.ev.assistant import set_nickname
 

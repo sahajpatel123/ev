@@ -162,8 +162,10 @@ async def maybe_phone_core_read(
         )
 
     if is_weather_query(raw):
-        has_place = extract_place(raw) is not None
-        has_home = home_coords() is not None or bool(default_place())
+        requested_place = extract_place(raw)
+        home_location = default_place()
+        has_place = requested_place is not None
+        has_home = home_coords() is not None or bool(home_location)
         if not has_place and not has_home:
             return _ok(
                 "I need a place for the forecast. Ask 'weather in <city>' "
@@ -174,22 +176,52 @@ async def maybe_phone_core_read(
             )
         try:
             results = await asyncio.wait_for(weather_results(raw, limit=2), timeout=8)
-        except Exception:
+        except asyncio.TimeoutError:
             return _ok(
-                "I couldn't fetch live weather just now.",
+                "Home Station weather lookup timed out. I won't guess the forecast.",
                 route="WEATHER",
                 executed=False,
+                extra={"error_code": "WEATHER_TIMEOUT", "retryable": True},
+            )
+        except Exception:
+            return _ok(
+                "I couldn't fetch live weather from Home Station just now.",
+                route="WEATHER",
+                executed=False,
+                extra={"error_code": "WEATHER_UNAVAILABLE", "retryable": True},
             )
         snippet = ""
         if results:
             snippet = str(getattr(results[0], "snippet", None) or "").strip()
         if not snippet:
             return _ok(
-                "I couldn't fetch live weather just now.",
+                "I couldn't fetch live weather from Home Station just now.",
                 route="WEATHER",
                 executed=False,
+                extra={"error_code": "WEATHER_EMPTY", "retryable": True},
             )
-        return _ok(snippet, route="WEATHER", extra={"provenance": "open-meteo"})
+        lowered = snippet.lower()
+        if "weather location needed" in lowered or "no coarse place is configured" in lowered:
+            return _ok(
+                "I need a Home Station location for the forecast. Ask for weather in a city "
+                "or set the Home Station location.",
+                route="WEATHER",
+                executed=False,
+                extra={"error_code": "WEATHER_LOCATION_REQUIRED", "needs_place": True},
+            )
+        return _ok(
+            snippet,
+            route="WEATHER",
+            extra={
+                "provenance": "open-meteo",
+                "location": requested_place or home_location or "Home Station",
+                "location_source": (
+                    "query"
+                    if requested_place
+                    else ("home_station_coordinates" if home_coords() is not None else "home_station_place")
+                ),
+            },
+        )
 
     if _CALENDAR.search(raw):
         cal = profile.get("calendar") if isinstance(profile.get("calendar"), dict) else {}

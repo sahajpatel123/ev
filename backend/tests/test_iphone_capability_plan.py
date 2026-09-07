@@ -682,6 +682,43 @@ async def test_phone_core_weather_uses_home_location(db_session: AsyncSession, m
     assert core["route"] == "WEATHER"
     assert core["executed"] is True
     assert "partly cloudy" in (core.get("reply") or "")
+    assert core["location"] == "San Francisco"
+    assert core["location_source"] == "home_station_coordinates"
+
+
+@pytest.mark.asyncio
+async def test_phone_core_weather_timeout_is_explicit(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    import asyncio
+
+    from app.device_gateway.phone_core import maybe_phone_core_read
+
+    monkeypatch.setattr("app.device_gateway.phone_core.home_coords", lambda: (37.77, -122.42))
+    monkeypatch.setattr("app.device_gateway.phone_core.default_place", lambda: "San Francisco")
+
+    async def _timeout(_query: str, limit: int = 2):
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr("app.device_gateway.phone_core.weather_results", _timeout)
+    device = Device(
+        name="Weather Timeout Phone",
+        token_hash="weather-timeout-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+    result = await maybe_phone_core_read(
+        db_session,
+        device=device,
+        text="What's the weather?",
+    )
+    assert result is not None
+    assert result["executed"] is False
+    assert result["error_code"] == "WEATHER_TIMEOUT"
+    assert "won't guess" in result["reply"]
 
 
 def test_healthkit_never_enters_webrtc_session() -> None:
@@ -776,6 +813,23 @@ def test_spark_phone_skips_hearing_chat() -> None:
     assert should_ask_spark("Open Calculator on my Mac")
 
 
+def test_phone_timer_list_and_cancel_phrases_resolve_to_home_tools() -> None:
+    from app.ev.tool_select import resolve_live_action
+
+    assert resolve_live_action("Show my pending timers") == ("list_timers", {})
+    assert resolve_live_action("How many timers are running?") == ("list_timers", {})
+    assert resolve_live_action("Cancel my timer") == ("cancel_timer", {})
+    assert resolve_live_action("Cancel the timer for pasta") == (
+        "cancel_timer",
+        {"text": "pasta"},
+    )
+    assert resolve_live_action("Show my reminders") == ("list_reminders", {})
+    assert resolve_live_action("Cancel reminder to stretch") == (
+        "cancel_reminder",
+        {"text": "stretch"},
+    )
+
+
 @pytest.mark.asyncio
 async def test_phone_home_station_opens_calculator(
     client: AsyncClient, db_session: AsyncSession, monkeypatch
@@ -785,6 +839,8 @@ async def test_phone_home_station_opens_calculator(
 
     async def _open_app(session, name, arguments, **kwargs):
         assert name == "open_app"
+        assert arguments["name"] == "Calculator"
+        assert kwargs.get("device_id") is None
         return ToolCallResponse(
             name="open_app",
             ok=True,
@@ -811,7 +867,10 @@ async def test_phone_home_station_opens_calculator(
     assert opened.status_code == 200, opened.text
     payload = opened.json()
     assert payload["route"] == "HOME_STATION"
+    assert payload["accepted"] is True
+    assert payload["status"] == "COMPLETED"
     assert payload["executed"] is True
+    assert payload["verified"] is True
     assert "Calculator" in (payload.get("reply") or "")
 
     db_session.expire_all()
@@ -824,6 +883,406 @@ async def test_phone_home_station_opens_calculator(
     )
     assert hearing is None
     await phone.aclose()
+
+
+def test_phone_calculator_phrases_are_deterministic() -> None:
+    from app.device_gateway.phone_mac import _phrase_action
+    from app.ev.tool_select import resolve_live_action
+
+    assert _phrase_action("Launch the calculator") == (
+        "open_app",
+        {"name": "Calculator"},
+    )
+    assert _phrase_action("Quit Calculator") == (
+        "close_app",
+        {"name": "Calculator"},
+    )
+    assert resolve_live_action("Open browser") == (
+        "open_app",
+        {"name": "browser"},
+    )
+    assert resolve_live_action("Close VS Code") == (
+        "close_app",
+        {"name": "VS Code"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_phone_calculator_helper_failure_is_truthful(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.schemas import ToolCallResponse
+
+    async def _missing_helper(session, name, arguments, **kwargs):
+        return ToolCallResponse(
+            name=name,
+            ok=False,
+            result={
+                "ok": False,
+                "spoken": "I need the EV app live to operate the Mac.",
+            },
+            latency_ms=1,
+            error="MAC_HELPER_UNAVAILABLE",
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _missing_helper)
+    device = Device(
+        name="Calculator Failure Phone",
+        token_hash="calculator-failure-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+    result = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Open Calculator",
+        idempotency_key="calculator-failure-001",
+    )
+    assert result is not None
+    assert result["ok"] is False
+    assert result["status"] == "FAILED"
+    assert result["executed"] is False
+    assert "EV app live" in result["reply"]
+
+
+@pytest.mark.asyncio
+async def test_phone_mail_read_uses_home_station_truthfully(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.schemas import ToolCallResponse
+
+    async def _mail_success(session, name, arguments, **kwargs):
+        assert name == "list_mail"
+        assert kwargs.get("device_id") is not None
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": True,
+                "spoken": "Latest mail: Maya — the meeting moved to 3 PM.",
+                "messages": [{"subject": "Meeting", "body": "private body omitted"}],
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _mail_success)
+    device = Device(
+        name="Mail Phone",
+        token_hash="mail-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+    success = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Check my mail",
+    )
+    assert success is not None
+    assert success["status"] == "COMPLETED"
+    assert success["executed"] is True
+    assert "meeting moved" in success["reply"]
+    assert "private body omitted" not in success["reply"]
+
+    async def _mail_missing(session, name, arguments, **kwargs):
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": False,
+                "degraded": True,
+                "error": "not_connected",
+                "spoken": "Home Station Mail isn't connected yet.",
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _mail_missing)
+    missing = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Read my email",
+    )
+    assert missing is not None
+    assert missing["status"] == "FAILED"
+    assert missing["executed"] is False
+    assert "isn't connected" in missing["reply"]
+
+
+@pytest.mark.asyncio
+async def test_phone_calendar_read_uses_home_station_truthfully(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.schemas import ToolCallResponse
+
+    async def _calendar_success(session, name, arguments, **kwargs):
+        assert name == "calendar_read"
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": True,
+                "spoken": "Upcoming: Dentist at 9 AM.",
+                "events": [{"title": "Dentist", "start": "9 AM"}],
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _calendar_success)
+    device = Device(
+        name="Calendar Phone",
+        token_hash="calendar-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+    success = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="What's on my calendar?",
+    )
+    assert success is not None
+    assert success["status"] == "COMPLETED"
+    assert success["executed"] is True
+    assert "Dentist" in success["reply"]
+
+    async def _calendar_missing(session, name, arguments, **kwargs):
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": False,
+                "degraded": True,
+                "error": "not_connected",
+                "spoken": "Home Station Calendar isn't connected yet.",
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _calendar_missing)
+    missing = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="What meetings are on my calendar?",
+    )
+    assert missing is not None
+    assert missing["status"] == "FAILED"
+    assert missing["executed"] is False
+    assert "isn't connected" in missing["reply"]
+
+
+@pytest.mark.asyncio
+async def test_phone_messages_read_is_read_only_and_truthful(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.schemas import ToolCallResponse
+
+    async def _messages_success(session, name, arguments, **kwargs):
+        assert name == "list_messages"
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": True,
+                "spoken": "Latest message from Maya: Running 10 minutes late.",
+                "messages": [{"sender": "Maya", "body": "private body omitted"}],
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _messages_success)
+    device = Device(
+        name="Messages Phone",
+        token_hash="messages-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+    success = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Check my messages",
+    )
+    assert success is not None
+    assert success["status"] == "COMPLETED"
+    assert success["executed"] is True
+    assert "10 minutes late" in success["reply"]
+    assert "private body omitted" not in success["reply"]
+
+    async def _messages_missing(session, name, arguments, **kwargs):
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": False,
+                "degraded": True,
+                "error": "not_connected",
+                "spoken": "Home Station Messages isn't connected yet.",
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _messages_missing)
+    missing = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Read my messages",
+    )
+    assert missing is not None
+    assert missing["status"] == "FAILED"
+    assert missing["executed"] is False
+    assert "isn't connected" in missing["reply"]
+
+
+@pytest.mark.asyncio
+async def test_phone_message_send_separates_fields_and_replays_once(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.schemas import ToolCallResponse
+
+    calls = {"count": 0}
+
+    async def _send_success(session, name, arguments, **kwargs):
+        calls["count"] += 1
+        assert name == "send_message"
+        assert arguments["to"] == "Maya"
+        assert arguments["text"] == "I am running late"
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": True,
+                "sent": True,
+                "to": "Maya",
+                "channel": "messages",
+                "spoken": "Sent a message to Maya.",
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _send_success)
+    device = Device(
+        name="Send Phone",
+        token_hash="send-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+    first = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Text Maya I am running late",
+        idempotency_key="phone-message-retry-001",
+    )
+    second = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Text Maya I am running late",
+        idempotency_key="phone-message-retry-001",
+    )
+    assert first and first["status"] == "COMPLETED"
+    assert first["sent"] is True
+    assert second and second.get("idempotent_replay") is True
+    assert calls["count"] == 1
+
+    async def _composer_only(session, name, arguments, **kwargs):
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": True,
+                "sent": False,
+                "opened": True,
+                "channel": "messages",
+                "spoken": "I opened Messages, but the message is not sent.",
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _composer_only)
+    prepared = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Text Maya I am running late",
+        idempotency_key="phone-message-composer-001",
+    )
+    assert prepared is not None
+    assert prepared["status"] == "FAILED"
+    assert prepared["executed"] is False
+    assert prepared["sent"] is False
+    assert "not sent" in prepared["reply"]
+
+
+@pytest.mark.asyncio
+async def test_phone_call_reports_initiation_without_claiming_connection(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.schemas import ToolCallResponse
+
+    async def _call(session, name, arguments, **kwargs):
+        assert name == "place_call"
+        assert arguments["name"] == "Maya"
+        assert arguments["kind"] == "facetime"
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": True,
+                "opened": True,
+                "connected": False,
+                "spoken": "Opening FaceTime to Maya.",
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _call)
+    device = Device(
+        name="Call Phone",
+        token_hash="call-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+    result = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="FaceTime Maya",
+    )
+    assert result is not None
+    assert result["status"] == "COMPLETED"
+    assert result["executed"] is True
+    assert result["verified"] is False
+    assert result["connected"] is False
+    assert "Opening FaceTime" in result["reply"]
+    assert "connected" not in result["reply"].lower()
 
 
 @pytest.mark.asyncio
@@ -845,7 +1304,10 @@ async def test_phone_home_station_sets_timer(client: AsyncClient) -> None:
     assert timed.status_code == 200, timed.text
     timer_body = timed.json()
     assert timer_body["route"] == "HOME_STATION"
+    assert timer_body["accepted"] is True
+    assert timer_body["status"] == "COMPLETED"
     assert timer_body["executed"] is True
+    assert timer_body["queued"] is False
     assert timer_body.get("tool") == "start_timer" or timer_body.get("operation") == "start_timer"
     from app.device_gateway.mobile_actions.tool import dispatch_phone_action
 
@@ -882,3 +1344,117 @@ async def test_sandbox_phone_cannot_dispatch_home_station(db_session: AsyncSessi
     await db_session.commit()
     acted = await maybe_phone_mac_act(db_session, device=d, text="Open calculator")
     assert acted is None
+
+
+def test_phone_home_station_status_contract() -> None:
+    from app.device_gateway.phone_mac import _ok
+
+    completed = _ok("Opened Calculator.", route="HOME_STATION", tool="open_app", executed=True)
+    assert completed["accepted"] is True
+    assert completed["status"] == "COMPLETED"
+    assert completed["executed"] is True
+    assert completed["verified"] is True
+    assert completed["queued"] is False
+    assert completed["error_code"] is None
+    queued = _ok(
+        "Queued for Home Station.",
+        route="HOME_STATION",
+        tool="start_timer",
+        executed=False,
+        queued=True,
+    )
+    assert queued["status"] == "QUEUED"
+    assert queued["accepted"] is True
+    assert queued["ok"] is True
+    failed = _ok(
+        "I couldn't complete that.",
+        route="HOME_STATION",
+        tool="calendar_read",
+        executed=False,
+        ok=False,
+        error_code="not_connected",
+    )
+    assert failed["status"] == "FAILED"
+    assert failed["error_code"] == "not_connected"
+    assert failed["verified"] is False
+
+
+@pytest.mark.asyncio
+async def test_phone_timer_and_reminder_retries_are_exactly_once(
+    db_session: AsyncSession,
+) -> None:
+    from sqlalchemy import select
+
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.models import Alert, OwnerTimer
+
+    device = Device(
+        name="Idempotent Phone",
+        token_hash="idempotent-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+
+    timer_first = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Set a timer for 3 minutes",
+        idempotency_key="phone-timer-retry-001",
+    )
+    timer_second = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Set a timer for 3 minutes",
+        idempotency_key="phone-timer-retry-001",
+    )
+    timers = list((await db_session.execute(select(OwnerTimer))).scalars().all())
+    assert timer_first and timer_first["executed"] is True
+    assert timer_second and timer_second.get("idempotent_replay") is True
+    assert len(timers) == 1
+
+    reminder_first = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Remind me to stretch",
+        idempotency_key="phone-reminder-retry-001",
+    )
+    reminder_second = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Remind me to stretch",
+        idempotency_key="phone-reminder-retry-001",
+    )
+    alerts = list(
+        (
+            await db_session.execute(
+                select(Alert).where(Alert.source == "set_reminder")
+            )
+        ).scalars().all()
+    )
+    assert reminder_first and reminder_first["executed"] is True
+    assert reminder_second and reminder_second.get("idempotent_replay") is True
+    assert len(alerts) == 1
+
+    listed = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Show my reminders",
+    )
+    assert listed and listed["executed"] is True
+    assert listed["count"] == 1
+    cancelled = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Cancel reminder to stretch",
+    )
+    assert cancelled and cancelled["executed"] is True
+    assert "cancelled" in str(cancelled["reply"]).lower()
+    listed_again = await maybe_phone_mac_act(
+        db_session,
+        device=device,
+        text="Show my reminders",
+    )
+    assert listed_again and listed_again["count"] == 0

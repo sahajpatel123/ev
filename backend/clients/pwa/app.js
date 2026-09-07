@@ -127,6 +127,37 @@ function textOf(el, value) {
   if (el) el.textContent = value == null ? "" : String(value);
 }
 
+function showHomeStationResult(payload) {
+  const body = payload && payload.phone_action ? payload.phone_action : (payload || {});
+  const isHomeStation =
+    body.route === "HOME_STATION" ||
+    body.provenance === "home_station.dispatch" ||
+    (payload && payload.home_station_result);
+  if (!isHomeStation) return false;
+  const tool = String(body.tool || body.operation || payload.name || "action").trim();
+  let status = "accepted";
+  if (body.ok === false || body.tool_ok === false || body.error_code) {
+    status = "failed";
+  } else if (body.queued) {
+    status = "queued";
+  } else if (body.executed === true) {
+    status = body.verified === true ? "completed · verified" : "completed · verification pending";
+  }
+  const line = "Home Station · " + status + " · " + tool;
+  const card = $("action-card");
+  if (card) {
+    card.hidden = false;
+    card.setAttribute("role", "status");
+    card.setAttribute("aria-live", "polite");
+    textOf(card, line);
+  }
+  if (state._lastHomeStationResult !== line) {
+    state._lastHomeStationResult = line;
+    pushActivity(line);
+  }
+  return true;
+}
+
 function setMood(label) {
   state.mood = label;
   textOf($("mood"), label);
@@ -1431,6 +1462,7 @@ async function sendText(text) {
   }
   state.caption = body.reply || "";
   pushHistory("evie", body.reply || "");
+  showHomeStationResult(body);
   if (body.conversation_moved) await stopTalk();
   if (body.needs_camera) await captureCamera(body);
   if (body.phone_action && window.EvieMobileActions) {
@@ -1915,6 +1947,16 @@ async function startWebRTC(opened) {
     },
     onCamera: (ev) => handleCameraRequest(ev),
     onHud: (hud) => {
+      if (
+        showHomeStationResult(
+          hud && hud.home_station_result
+            ? Object.assign({}, hud, hud.phone_action || {})
+            : hud
+        )
+      ) {
+        render();
+        return;
+      }
       if (window.EvieMobileActions && window.EvieMobileActions.presentFromHud(hud)) {
         render();
         return;

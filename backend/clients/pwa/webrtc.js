@@ -1040,6 +1040,7 @@
         })),
       }).then(function (body) {
         if (body && body.core_takeover && body.core_reply) {
+          rtc.onHud(Object.assign({ kind: "home_station_result" }, body));
           rtc._speakCore(body.core_reply);
           return;
         }
@@ -1109,7 +1110,13 @@
         });
       }
       if (parsed.card && window.EvieMobileActions) window.EvieMobileActions.present(parsed);
-      this.onHud({ kind: "result", name: msg.name, ok: true, phone_action: parsed });
+      this.onHud({
+        kind: "result",
+        name: msg.name,
+        ok: parsed.ok !== false,
+        phone_action: parsed,
+        home_station_result: parsed.route === "HOME_STATION" || parsed.provenance === "home_station.dispatch",
+      });
     } catch (err) {
       this._send({
         type: "conversation.item.create",
