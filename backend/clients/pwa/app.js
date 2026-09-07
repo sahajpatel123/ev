@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.28";
+const CLIENT_BUILD = "2026.09.08.29";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -898,7 +898,7 @@ async function loadTurnHistory() {
   const body = await api("/v1/device-gateway/history?limit=20", { _useDeviceToken: true }).catch(() => null);
   const host = $("turn-history");
   if (!host) return;
-  host.innerHTML = "";
+  host.replaceChildren();
   const turns = (body && body.turns) || [];
   if (!turns.length) {
     const p = document.createElement("p");
@@ -933,7 +933,7 @@ async function loadMemoryBrowser() {
   const body = await api("/v1/device-gateway/memory?limit=25", { _useDeviceToken: true }).catch(() => null);
   const host = $("memory-browser");
   if (!host) return;
-  host.innerHTML = "";
+  host.replaceChildren();
   if (body && body.sandbox) {
     const p = document.createElement("p");
     p.className = "quiet";
@@ -972,7 +972,7 @@ async function loadTactical() {
   const body = await api("/v1/device-gateway/tactical", { _useDeviceToken: true }).catch(() => null);
   const host = $("tactical-body");
   if (!host) return;
-  host.innerHTML = "";
+  host.replaceChildren();
   if (!body || body.ok === false) {
     const p = document.createElement("p");
     p.className = "quiet";
