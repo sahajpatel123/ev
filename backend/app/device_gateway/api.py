@@ -1594,6 +1594,40 @@ async def phone_history(
     return {"ok": True, "turns": turns}
 
 
+@router.get("/memory")
+async def memory_browser(
+    request: Request,
+    limit: int = 25,
+    kind: str | None = None,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 73 — READ-ONLY memory browser for the trusted phone. Recent
+    memories with type/importance; no edit verbs exist on this surface
+    (correct/forget/restore stay in the privacy center)."""
+
+    _check_origin(request)
+    if is_sandbox_device(device):
+        return {"ok": True, "sandbox": True, "memories": [], "note": "Personal memory is off on this device."}
+    from sqlalchemy import select as _select
+    from app.models import Memory as _Memory
+
+    query = _select(_Memory).order_by(_Memory.created_time.desc()).limit(max(1, min(int(limit or 25), 60)))
+    rows = (await session.execute(query)).scalars().all()
+    memories = [
+        {
+            "id": str(row.id),
+            "kind": row.memory_type,
+            "text": (row.text or "")[:280],
+            "importance": round(float(row.importance or 0), 2),
+            "provenance": row.source_type,
+            "at": row.created_time.isoformat() if row.created_time else None,
+        }
+        for row in rows
+    ]
+    return {"ok": True, "count": len(memories), "memories": memories}
+
+
 class VoiceVerifyRequest(BaseModel):
     audio_b64: str
 

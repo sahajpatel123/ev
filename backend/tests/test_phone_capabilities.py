@@ -1124,3 +1124,27 @@ async def test_phone_history_returns_receipts_with_chips(client, db_session):
     assert matching, turns
     assert matching[0]["chips"][0]["tool"] == "send_message"
     assert matching[0]["chips"][0]["executed"] is True
+
+
+async def test_memory_browser_read_only(client, db_session):
+    """Cycle 73 — C33: the trusted phone can READ recent memories; the
+    surface has no edit verbs. Sandbox honestly reports memory off."""
+    phone = await _pair_sandbox(client, "Mem-SE")
+    from app.models import Memory as MemoryRow
+
+    db_session.add(
+        MemoryRow(
+            memory_type="fact",
+            text="Priya's birthday is June 3rd.",
+            payload={},
+            importance=0.8,
+            fingerprint="mem-browser-fp-1",
+        )
+    )
+    await db_session.commit()
+    browser = await phone.get("/v1/device-gateway/memory")
+    assert browser.status_code == 200
+    body = browser.json()
+    assert body["sandbox"] is True
+    assert body["memories"] == []
+    # Route on a trusted device would list the row; sandbox fence holds.

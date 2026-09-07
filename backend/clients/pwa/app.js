@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.24";
+const CLIENT_BUILD = "2026.09.08.25";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -721,6 +721,7 @@ function showSheet(id, on) {
   }
   if (on && id === "settings-sheet") fillSense().catch(() => {});
   if (on && id === "conversation-sheet") loadTurnHistory().catch(() => {});
+  if (on && id === "conversation-sheet") loadMemoryBrowser().catch(() => {});
   if (on && id === "more-sheet") loadQuickActions().catch(() => {});
 }
 
@@ -919,6 +920,46 @@ async function loadTurnHistory() {
       c.textContent = [chip.tool, chip.route, chip.executed ? "done" : "not done"].filter(Boolean).join(" · ");
       chips.appendChild(c);
     });
+    wrap.appendChild(text);
+    wrap.appendChild(chips);
+    host.appendChild(wrap);
+  });
+}
+
+/* Cycle 73 — read-only memory browser: what Evie remembers, recent first.
+   No edit verbs on this surface; corrections live in the privacy center. */
+async function loadMemoryBrowser() {
+  const body = await api("/v1/device-gateway/memory?limit=25", { _useDeviceToken: true }).catch(() => null);
+  const host = $("memory-browser");
+  if (!host) return;
+  host.innerHTML = "";
+  if (body && body.sandbox) {
+    const p = document.createElement("p");
+    p.className = "quiet";
+    p.textContent = body.note || "Personal memory is off on this device.";
+    host.appendChild(p);
+    return;
+  }
+  const memories = (body && body.memories) || [];
+  if (!memories.length) {
+    const p = document.createElement("p");
+    p.className = "quiet";
+    p.textContent = "Nothing remembered yet.";
+    host.appendChild(p);
+    return;
+  }
+  memories.forEach((memory) => {
+    const wrap = document.createElement("div");
+    wrap.className = "turn";
+    const text = document.createElement("div");
+    text.className = "turn-text";
+    text.textContent = memory.text || "";
+    const chips = document.createElement("div");
+    chips.className = "turn-chips";
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = [memory.kind, memory.provenance].filter(Boolean).join(" · ");
+    chips.appendChild(chip);
     wrap.appendChild(text);
     wrap.appendChild(chips);
     host.appendChild(wrap);
