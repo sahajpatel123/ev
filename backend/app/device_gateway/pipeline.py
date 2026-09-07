@@ -386,6 +386,7 @@ async def run_trusted_device_turn(
     text: str,
     idempotency_key: str | None = None,
     focus_title: str | None = None,
+    ingest_conversation: bool = False,
 ) -> dict[str, Any]:
     """focus_title: SAME-SESSION bounded entity focus (P0.1 PART 7).
 
@@ -711,6 +712,30 @@ async def run_trusted_device_turn(
         # turn with "Done." Signal the provider to answer from its own
         # conversation; Core asserted there is no canonical state here.
         # F1: turn-scoped recalled history rides along (labeled, expiring).
+        if ingest_conversation:
+            # Cycle 43 — receipts learn: the realtime voice path otherwise
+            # drops the owner's words from the durable trail (the provider
+            # speaks them, the receipt stores them, but the memory OS never
+            # sees them). Fire-and-forget through the SAME live-turn pipeline
+            # the Mac voice path uses: record, extract, curate, prefetch.
+            # Never blocks or fails the voice turn.
+            try:
+                from app.memory.turns import schedule_live_turn
+
+                schedule_live_turn(
+                    text=effective_text,
+                    role="user",
+                    conversation_id=None,
+                    device_id=str(device.id),
+                    live_session_id=f"device-text:{device.id}",
+                    transcript_source="device_voice",
+                    extra_metadata={
+                        "surface": "phone_voice",
+                        "turn_id": turn.turn_id,
+                    },
+                )
+            except Exception:  # noqa: BLE001 - ingestion must not drop the turn
+                pass
         shadow = result.shadow_context if isinstance(result.shadow_context, dict) else None
         return {
             "ok": True,

@@ -794,6 +794,7 @@ async def run_phone_tool(
                 text=str(a.get("query_text") or ""),
                 idempotency_key=call_id,
                 focus_title=a.get("entity_name"),
+                ingest_conversation=True,
             )
             await db.commit()
         if result.get("conversational"):
