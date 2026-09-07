@@ -26,5 +26,9 @@
       "delivered",
       "played"
     ]
+  },
+  "x-evie-cycle-43-large-text": {
+    "note": "Cycle 43 \u2014 iPhone-only large-text accessibility flag. Backward compatible: additive namespaced key; default off.",
+    "default": false
   }
 }
