@@ -63,13 +63,27 @@ _MUSE_BRAIN_KEYS = frozenset(
         "EV_INTELLIGENCE_PROVIDER",
         "EV_VOICE_ASR_PROVIDER",
         "EV_VOICE_LIVE_BRAIN",
-        "EV_VOICE_TTS_PROVIDER",
+        "EV_MUSE_SPARK_MODEL",
+        "EV_INTELLIGENCE_LAYER",
         "EV_TURN_CONTROL_PROVIDER",
         "EV_TURN_CONTROL_MODEL",
-        "EV_MUSE_SPARK_MODEL",
         "EV_MUSE_VOICE_MODEL",
         "EV_MUSE_SPARK_REASONING_EFFORT",
         "EV_ALLOW_REMOTE_ASR",
+        "EV_ALLOW_REMOTE_TTS",
+        "EV_PHONE_AUDIO_BACKEND",
+    }
+)
+_REMOTE_ALLOW_KEYS = frozenset({"EV_ALLOW_REMOTE_ASR", "EV_ALLOW_REMOTE_TTS"})
+_LEFTOVER_MUSE_VALUES = frozenset(
+    {
+        "meta_muse_spark",
+        "muse",
+        "muse_spark",
+        "meta_muse_voice",
+        "muse_voice",
+        "pipeline",
+        "pcm_ws",
     }
 )
 _LEFTOVER_BRAIN_VALUES = frozenset(
@@ -105,11 +119,39 @@ def _leftover_brain_value(value: str) -> bool:
 
 def _muse_file_value(key: str, val: str) -> bool:
     raw = (val or "").strip().lower()
-    if key == "EV_ALLOW_REMOTE_ASR":
+    if key in _REMOTE_ALLOW_KEYS:
         return raw in {"true", "1", "yes"}
     if "muse" in raw:
         return True
     return raw in {"pipeline", "edge_tts"}
+
+
+def _leftover_muse_value(value: str) -> bool:
+    return (value or "").strip().lower() in _LEFTOVER_MUSE_VALUES
+
+
+def _openai_live_file_value(key: str, val: str) -> bool:
+    raw = (val or "").strip().lower()
+    if key == "EV_VOICE_LIVE_BRAIN":
+        return raw in {"openai", "auto", "xai"}
+    if key == "EV_PHONE_AUDIO_BACKEND":
+        return raw in {"webrtc_strict", "webrtc", "auto"}
+    if key == "EV_CHAT_PROVIDER":
+        return raw in {"xai", "openai", "deepseek", "echo", "opencode", "mock"}
+    if key == "EV_INTELLIGENCE_PROVIDER":
+        return raw in {"", "xai", "openai", "deepseek"}
+    if key == "EV_VOICE_ASR_PROVIDER":
+        return raw in {
+            "faster_whisper",
+            "echo",
+            "parakeet",
+            "openai_compat",
+            "parakeet_tdt",
+            "parakeet-tdt",
+        }
+    if key == "EV_TURN_CONTROL_PROVIDER":
+        return raw in {"openai", "xai", "deepseek", ""}
+    return False
 
 
 def load(path: Path) -> None:
@@ -129,13 +171,17 @@ def load(path: Path) -> None:
             if val and not (os.environ.get(key) or "").strip():
                 os.environ[key] = val
             continue
-        if key in _MUSE_BRAIN_KEYS and _muse_file_value(key, val):
+        if key in _MUSE_BRAIN_KEYS:
             current = os.environ.get(key) or ""
-            if key == "EV_ALLOW_REMOTE_ASR":
-                if current.strip().lower() not in {"true", "1", "yes"}:
+            if _muse_file_value(key, val):
+                if key in _REMOTE_ALLOW_KEYS:
+                    if current.strip().lower() not in {"true", "1", "yes"}:
+                        os.environ[key] = val
+                        continue
+                elif _leftover_brain_value(current):
                     os.environ[key] = val
                     continue
-            elif _leftover_brain_value(current):
+            if _openai_live_file_value(key, val) and _leftover_muse_value(current):
                 os.environ[key] = val
                 continue
         os.environ.setdefault(key, val)
@@ -176,6 +222,22 @@ def muse_selected() -> bool:
     )
 
 
+def muse_spark_selected() -> bool:
+    names = {
+        (os.environ.get("EV_INTELLIGENCE_PROVIDER") or "").strip().lower(),
+        (os.environ.get("EV_CHAT_PROVIDER") or "").strip().lower(),
+        (os.environ.get("EV_TURN_CONTROL_PROVIDER") or "").strip().lower(),
+    }
+    return bool(names & {"meta_muse_spark", "muse", "muse_spark"})
+
+
+def muse_voice_selected() -> bool:
+    return (os.environ.get("EV_VOICE_ASR_PROVIDER") or "").strip().lower() in {
+        "meta_muse_voice",
+        "muse_voice",
+    }
+
+
 def meta_key_loaded() -> bool:
     return bool(
         (os.environ.get("META_MODEL_API_KEY") or "").strip()
@@ -184,14 +246,46 @@ def meta_key_loaded() -> bool:
     )
 
 
+def opencode_key_loaded() -> bool:
+    if (os.environ.get("EV_OPENCODE_API_KEY") or "").strip() or (
+        os.environ.get("OPENCODE_API_KEY") or ""
+    ).strip():
+        return True
+    path = Path(
+        os.environ.get("EV_OPENCODE_ENV_FILE", "~/.config/ev/opencode.env")
+    ).expanduser()
+    try:
+        for raw in path.read_text().splitlines():
+            key, sep, value = raw.partition("=")
+            if sep and key.strip() == "OPENCODE_API_KEY" and value.strip().strip("'\""):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def ensure_talk_mouth_remote_allowed() -> None:
+    """Edge TTS is remote; leftover EV_ALLOW_REMOTE_TTS=false would mute Talk."""
+
+    tts = (os.environ.get("EV_VOICE_TTS_PROVIDER") or "").strip().lower()
+    if tts == "edge_tts":
+        os.environ["EV_ALLOW_REMOTE_TTS"] = "true"
+
+
 def refuse_muse_without_key() -> None:
-    """Fail closed before daemonize so a missing Meta key is visible."""
+    """Fail closed before daemonize so a missing Muse credential is visible."""
 
     alias_meta_model_keys()
-    if muse_selected() and not meta_key_loaded():
+    if muse_voice_selected() and not meta_key_loaded():
         sys.stderr.write(
             "Talk sidecar refused to start: META_MODEL_API_KEY is missing "
-            "while Muse is selected.\n"
+            "while Muse Voice is selected.\n"
+        )
+        raise SystemExit(2)
+    if muse_spark_selected() and not opencode_key_loaded():
+        sys.stderr.write(
+            "Talk sidecar refused to start: OPENCODE_API_KEY is missing "
+            "while Muse Spark is selected.\n"
         )
         raise SystemExit(2)
 
@@ -261,6 +355,13 @@ def main() -> None:
     # process env cannot hide Muse flags from owner .env.
     secrets = Path(os.environ.get("EV_SECRETS_FILE", str(Path.home() / ".ev/secrets/production.env"))).expanduser()
     load(secrets)
+    if opencode_key_loaded() and muse_selected():
+        # Desk/file meaning uses Muse Spark 1.3 when the owner selected a
+        # Muse slot. When the owner selects OpenAI voice (GPT Realtime S2S),
+        # leave intelligence alone so the realtime mouth can open. Proposed
+        # list contents still use Spark via OPENCODE_API_KEY in spark_inventory,
+        # even if this provider flag stays unset.
+        os.environ["EV_INTELLIGENCE_PROVIDER"] = "meta_muse_spark"
     refuse_muse_without_key()
     stop_existing_talk_sidecar()
     daemonize()
@@ -274,6 +375,8 @@ def main() -> None:
     os.environ["EV_HOME_STATION_MODE"] = "false"
     os.environ["EV_PROCESSING_MODE"] = "sync"
     os.environ["EV_MAINTENANCE_MODE"] = "0"
+    os.environ.setdefault("EV_MUSE_SPARK_MODEL", "muse-spark-1.3-contributor")
+    ensure_talk_mouth_remote_allowed()
     os.environ.setdefault("EV_VOICEPRINT_PROVIDER", "campp")
     os.environ.setdefault("EV_SEARCH_PROVIDER", "live")
     os.environ["PATH"] = (

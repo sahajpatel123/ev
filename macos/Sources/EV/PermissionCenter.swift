@@ -19,7 +19,7 @@ import UserNotifications
 
 /// Every TCC permission the LIFE access hub can need. Detection is live —
 /// the panel never claims a permission is granted when TCC reports denied.
-enum PermissionKind: String, CaseIterable, Identifiable {
+enum PermissionKind: String, CaseIterable, Identifiable, Sendable {
     case microphone
     case speechRecognition
     case camera
@@ -38,7 +38,7 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum PermissionState: String {
+enum PermissionState: String, Sendable {
     case granted
     case denied
     case notDetermined
@@ -46,7 +46,7 @@ enum PermissionState: String {
     case partial
 }
 
-struct PermissionStatus {
+struct PermissionStatus: Equatable, Sendable {
     let kind: PermissionKind
     let state: PermissionState
     let whatBreaks: String
@@ -80,12 +80,18 @@ final class BluetoothAuthorizationRequester: NSObject, CBCentralManagerDelegate 
 /// programmatic TCC requests where the OS provides them.
 enum PermissionCenter {
     static func statuses() async -> [PermissionStatus] {
-        [
+        // Accessibility stale-grant detection launches sqlite3 and waits for
+        // it. Permission panels used to run that blocking probe on the main
+        // actor every two seconds; opening the menu could therefore starve
+        // live voice event delivery. Keep the exact detection logic, but run
+        // its process/file work at utility priority.
+        async let accessibility = detachedAccessibilityStatus()
+        return [
             microphoneStatus(),
             speechStatus(),
             cameraStatus(),
             screenRecordingStatus(),
-            accessibilityStatus(),
+            await accessibility,
             automationStatus(),
             fullDiskAccessStatus(),
             contactsStatus(),
@@ -96,6 +102,12 @@ enum PermissionCenter {
             inputMonitoringStatus(),
             locationStatus(),
         ]
+    }
+
+    private static func detachedAccessibilityStatus() async -> PermissionStatus {
+        await Task.detached(priority: .utility) {
+            accessibilityStatus()
+        }.value
     }
 
     static func openSettings(for kind: PermissionKind) {
@@ -237,12 +249,6 @@ enum PermissionCenter {
         }
     }
 
-    /// Version stamped into `ev.permissions.autoRequestedVersion` whenever the
-    /// registration sweep runs. Bump this when the request set or order
-    /// changes so every installed build re-runs the sweep exactly once and EV
-    /// re-registers in any new System Settings pane.
-    static let registrationVersion = 2
-
     /// Requests every permission macOS exposes a programmatic prompt for, in
     /// a safe order, so EV registers in each System Settings pane. After this
     /// returns, the panes list EV and the user toggles any that are still off.
@@ -291,9 +297,9 @@ enum PermissionCenter {
     }
 
     /// Re-runs registration for everything macOS still reports as undecided.
-    /// Idempotent — decided permissions are never re-prompted — so re-opening
-    /// the panel (or re-running the CLI probe) fills in any pane EV has not
-    /// appeared in yet instead of re-asking about ones already answered.
+    /// Idempotent — decided permissions are never re-prompted — so re-running
+    /// the CLI probe fills in any pane EV has not appeared in yet instead of
+    /// re-asking about ones already answered.
     static func requestPending() async -> [PermissionStatus] {
         var current = await statuses()
         // Automation is per-target: even when the aggregate row is partial
@@ -946,11 +952,7 @@ struct PermissionsPanelView: View {
     var onBack: (() -> Void)? = nil
     @State private var statuses: [PermissionStatus] = []
     @State private var isRequesting = false
-    /// Version-keyed so a *new* build re-runs the registration sweep exactly
-    /// once even if an older build already set the old key. Bump
-    /// ``PermissionCenter.registrationVersion`` whenever the request set or
-    /// order changes.
-    @AppStorage("ev.permissions.autoRequestedVersion") private var autoRequestedVersion = 0
+    @State private var isLoading = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1021,23 +1023,19 @@ struct PermissionsPanelView: View {
             Task { await load() }
         }
         .task {
+            // Appearing is deliberately read-only. The old automatic
+            // requestPending sweep launched a chain of TCC prompts and app
+            // probes 1.5 seconds after the menu opened. Besides being
+            // surprising, that work could overlap streamed playback, and a
+            // user closing the panel mid-sweep caused it to retry next open.
+            // Grant All and each row's Ask button remain the explicit paths.
             await load()
-            // One-time per version: fire every still-undecided request so EV
-            // registers in each System Settings privacy pane. macOS only
-            // lists an app after it has asked for the permission, so without
-            // this the panes stay empty even though EV is "installed". The
-            // flag is written only after the sweep completes, so a cancelled
-            // sweep (panel closed mid-way) re-runs on the next open.
-            if autoRequestedVersion != PermissionCenter.registrationVersion {
-                try? await Task.sleep(nanoseconds: 1_500_000_000)
-                guard !Task.isCancelled else { return }
-                isRequesting = true
-                statuses = await PermissionCenter.requestPending()
-                isRequesting = false
-                autoRequestedVersion = PermissionCenter.registrationVersion
-            }
         }
-        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+        // Permission state does not need audio-rate freshness. A slower,
+        // non-common-mode refresh avoids panel tracking repeatedly scheduling
+        // work while the owner is listening to a response. Manual Refresh and
+        // microphone notifications remain immediate.
+        .onReceive(Timer.publish(every: 10, on: .main, in: .default).autoconnect()) { _ in
             Task { await load() }
         }
     }
@@ -1052,6 +1050,13 @@ struct PermissionsPanelView: View {
     }
 
     private func load() async {
-        statuses = await PermissionCenter.statuses()
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        let latest = await PermissionCenter.statuses()
+        guard !Task.isCancelled else { return }
+        if latest != statuses {
+            statuses = latest
+        }
     }
 }

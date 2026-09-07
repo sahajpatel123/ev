@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -25,6 +26,13 @@ DEFAULT_HOUSE: tuple[dict[str, Any], ...] = (
         "entity_id": "light.lab",
         "name": "lab lights",
         "area": "lab",
+        "domain": "light",
+        "state": "off",
+    },
+    {
+        "entity_id": "light.living_room",
+        "name": "living room lights",
+        "area": "living room",
         "domain": "light",
         "state": "off",
     },
@@ -386,6 +394,61 @@ async def _ha_refresh_rows(
             updated += 1
     await session.flush()
     return {"ok": True, "updated": updated}
+
+
+_HOME_NOUN_RE = re.compile(
+    r"\b(?:lights?|lamps?|lock|door|garage|gate|heating|thermostat|fan|blinds?)\b",
+    re.IGNORECASE,
+)
+_NOT_HOME_RE = re.compile(
+    r"\b(?:computer|mac|laptop|monitor|screen|wifi|bluetooth|hotspot|cursor|terminal)\b",
+    re.IGNORECASE,
+)
+_HOME_ACT_RE = re.compile(
+    r"\b(?:"
+    r"(?:turn|switch)\s+(?P<act_switch>on|off)\s+(?:the\s+)?(?P<ent_switch>.+?)"
+    r"|(?:turn|switch)\s+(?:the\s+)?(?P<ent_trail>.+?)\s+(?P<act_trail>on|off)"
+    r"|(?P<act_verb>lock|unlock|open|close)\s+(?:the\s+)?(?P<ent_verb>.+?)"
+    r")\s*[.!?]?$",
+    re.IGNORECASE,
+)
+
+
+def parse_home_act(message: str | None) -> dict | None:
+    """Transcript → home_act arguments. None when this is not a house verb."""
+
+    text = (message or "").strip()
+    if not text:
+        return None
+    if _NOT_HOME_RE.search(text):
+        return None
+    match = _HOME_ACT_RE.search(text)
+    if not match:
+        return None
+    action = (
+        match.group("act_switch")
+        or match.group("act_trail")
+        or match.group("act_verb")
+        or ""
+    ).lower()
+    entity = " ".join(
+        str(
+            match.group("ent_switch")
+            or match.group("ent_trail")
+            or match.group("ent_verb")
+            or ""
+        ).split()
+    ).strip(" .")
+    if not entity or len(entity) > 80:
+        return None
+    if not _HOME_NOUN_RE.search(entity) and entity.lower() not in {
+        "lab lights",
+        "living room lights",
+        "front door",
+        "garage",
+    }:
+        return None
+    return {"entity": entity, "action": action}
 
 
 async def home_act(

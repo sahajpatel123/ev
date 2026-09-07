@@ -67,6 +67,15 @@ final class LiveConversation {
     /// Every connectOnce increments this; stale generation callbacks must not
     /// mutate the new generation's state (providerReady, player, etc).
     private var generation = 0
+    /// A native ASR failure can arrive as a non-fatal live event. Request no
+    /// more than one channel recovery for a generation so a persistent MVT
+    /// outage cannot create a reconnect storm or strand the UI in thinking.
+    private var asrRecoveryRequestedGeneration: Int?
+    /// Preserve an already audible response; restart only after its physical
+    /// playback episode has ended.
+    private var pendingASRRecoveryGeneration: Int?
+    private var pendingASRRecoveryMessage: String?
+    private var speechPerceptionErrorVisible = false
     /// Awake greeting from `POST /v1/voice/live/open`. Spoken once via a
     /// short cue after the provider is ready so the GUI player is proven
     /// on app-open (Realtime otherwise waits for user VAD).
@@ -76,6 +85,10 @@ final class LiveConversation {
     private var responseWatchdog: Task<Void, Never>?
     private var playbackResponseID: String?
     private var playbackProviderResponseID: String?
+    /// Realtime PCM is delivered directly to TTSPlayer's serial queue before
+    /// the MainActor consumes the corresponding UI event.  Pipeline/audio_ref
+    /// events still use the normal handler below.
+    private var directAudioIngress = false
     nonisolated(unsafe) private weak var playbackPlayer: TTSPlayer?
     private static let traceLock = NSLock()
     /// Boot milestones that happen before ``start()`` (auth, placeholder skip).
@@ -165,6 +178,18 @@ final class LiveConversation {
                     self.playbackProviderResponseID = nil
                     self.assistantID = nil
                 }
+                // A provider error may arrive while the player is in a
+                // non-speaking UI phase (for example, a queued greeting or a
+                // tool gap). Recovery is still owed when the physical episode
+                // ends; do not make it depend on the status glyph.
+                if !playing,
+                   let pendingGeneration = self.pendingASRRecoveryGeneration,
+                   pendingGeneration == self.generation {
+                    let message = self.pendingASRRecoveryMessage ?? "Muse Voice input failed"
+                    self.pendingASRRecoveryGeneration = nil
+                    self.pendingASRRecoveryMessage = nil
+                    self.requestASRReconnect(for: pendingGeneration, message: message)
+                }
             }
         }
     }
@@ -208,6 +233,10 @@ final class LiveConversation {
         ownerTurnWatch = nil
         loopTask?.cancel()
         loopTask = nil
+        asrRecoveryRequestedGeneration = nil
+        pendingASRRecoveryGeneration = nil
+        pendingASRRecoveryMessage = nil
+        speechPerceptionErrorVisible = false
         tearDownChannel()
         fullTeardownCapture()
         isActive = false
@@ -867,6 +896,9 @@ final class LiveConversation {
         guard let model else { return }
         generation += 1
         let myGen = generation
+        pendingASRRecoveryGeneration = nil
+        pendingASRRecoveryMessage = nil
+        speechPerceptionErrorVisible = false
         model.resetLiveDiagnostics()
         lastPartialRenderAt = .distantPast
         let registry = UserDefaults.standard.string(forKey: "EV_REGISTRY_DEVICE_ID")
@@ -893,6 +925,11 @@ final class LiveConversation {
                 baseURL: model.client.baseURL,
                 token: model.client.token
             )
+            let player = model.player
+            connection.setRealtimeAudioChunkHandler { event in
+                player.enqueueRealtimeChunk(event)
+            }
+            directAudioIngress = true
             self.connection = connection
             phase = "ST12B_WS_CONNECT"
             // INTERRUPTION V1: construct the detector ONLY when the owner enabled
@@ -1171,6 +1208,10 @@ final class LiveConversation {
             }
         case "partial":
             if let text = event.text, !text.isEmpty {
+                if speechPerceptionErrorVisible {
+                    model.lastError = nil
+                    speechPerceptionErrorVisible = false
+                }
                 let now = Date()
                 guard now.timeIntervalSince(lastPartialRenderAt) >= partialRenderInterval
                     || model.transcript.isEmpty
@@ -1182,6 +1223,7 @@ final class LiveConversation {
             if let text = event.text, !text.isEmpty {
                 lastPartialRenderAt = .distantPast
                 model.lastError = nil
+                speechPerceptionErrorVisible = false
                 let cue = suppressCueTranscript
                     && text.trimmingCharacters(in: .whitespacesAndNewlines)
                         .trimmingCharacters(in: CharacterSet(charactersIn: ".!?"))
@@ -1223,6 +1265,7 @@ final class LiveConversation {
         case "tts_chunk":
             cancelResponseWatchdog()
             model.lastError = nil
+            speechPerceptionErrorVisible = false
             // Greeting / cue replies can emit PCM before a final_transcript.
             // Dropping those chunks left app-open speech silent on the GUI.
             if playbackResponseID == nil {
@@ -1256,6 +1299,9 @@ final class LiveConversation {
                     // Historical drop path — now mapped to adopt to avoid
                     // losing tool continuation audio (glitch). Treat as adopt.
                     playbackProviderResponseID = providerID
+                    playbackResponseID = providerID
+                    responseID = providerID
+                    model.player.adoptResponse(providerID)
                     model.player.holdToolGapMute(seconds: 8.0)
                     Self.st("ST15C_PLAYBACK_LANE_ADOPT_DROP", "tool-continuation")
                 case .enqueue:
@@ -1267,22 +1313,26 @@ final class LiveConversation {
                     // 8s covers computer/camera round-trips (5-15s); the
                     // player re-holds on underrun if the gap runs longer.
                     playbackProviderResponseID = providerID
+                    playbackResponseID = providerID
+                    responseID = providerID
+                    model.player.adoptResponse(providerID)
                     model.player.holdToolGapMute(seconds: 8.0)
                     Self.st("ST15C_PLAYBACK_LANE_ADOPT", "tool-continuation")
                 case .rollToNewResponse:
                     // Tool continuation is a new Realtime response. The
                     // preamble lane is starved; keep one player node by
                     // rolling instead of dropping the spoken result.
-                    model.player.finishResponse(responseID)
                     playbackResponseID = providerID
                     playbackProviderResponseID = providerID
-                    model.player.beginResponse(providerID)
                     responseID = providerID
+                    model.player.adoptResponse(providerID)
+                    model.player.holdToolGapMute(seconds: 8.0)
                     Self.st("ST15D_PLAYBACK_LANE_ROLL", "continuation")
                 }
-                if lane == .drop { break }
             }
-            if let b64 = event.audioB64, !b64.isEmpty {
+            let directChunkHandled = directAudioIngress
+                && !(event.providerResponseId ?? "").isEmpty
+            if let b64 = event.audioB64, !b64.isEmpty, !directChunkHandled {
                 model.player.enqueueBase64PCM(
                     b64,
                     contentType: event.contentType,
@@ -1323,6 +1373,7 @@ final class LiveConversation {
         case "reply":
             cancelResponseWatchdog()
             model.lastError = nil
+            speechPerceptionErrorVisible = false
             if let text = event.text {
                 Self.st("ST23_ASSISTANT_TEXT", "chars=\(text.count)")
                 if let id = assistantID, let index = model.messages.firstIndex(where: { $0.id == id }) {
@@ -1357,6 +1408,22 @@ final class LiveConversation {
             let message = event.text ?? event.code ?? ""
             if Self.isBenignRealtimeError(message) {
                 break
+            }
+            let recovery = LiveVoiceRecoveryPolicy.action(for: event)
+            if recovery == .reconnect {
+                speechPerceptionErrorVisible = true
+                let eventGeneration = gen ?? generation
+                if asrRecoveryRequestedGeneration != eventGeneration {
+                    if model.player.isPlaying {
+                        pendingASRRecoveryGeneration = eventGeneration
+                        pendingASRRecoveryMessage = message
+                    } else {
+                        requestASRReconnect(for: eventGeneration, message: message)
+                    }
+                }
+            } else if recovery == .resetTurn {
+                speechPerceptionErrorVisible = true
+                resetPendingTurnAfterASRError()
             }
             if event.code == "realtime_disconnect" {
                 providerReadyForForward = false
@@ -1662,8 +1729,10 @@ final class LiveConversation {
         // The next connectOnce will reuse the existing running engine via
         // idempotent startMicrophone (checks microphone.isRunning).
         VoiceLevelMeter.shared.resetInput()
+        connection?.setRealtimeAudioChunkHandler(nil)
         connection?.close()
         connection = nil
+        directAudioIngress = false
     }
 
     private func fullTeardownCapture() {
@@ -1692,6 +1761,39 @@ final class LiveConversation {
     private func cancelResponseWatchdog() {
         responseWatchdog?.cancel()
         responseWatchdog = nil
+    }
+
+    /// Finish a failed perception turn locally without inventing a reply.
+    /// Controls and typed fallback remain available on the live socket.
+    private func resetPendingTurnAfterASRError() {
+        cancelResponseWatchdog()
+        guard let model, !model.player.isPlaying else { return }
+        if let id = assistantID,
+           let index = model.messages.firstIndex(where: { $0.id == id }) {
+            model.messages[index].streaming = false
+        }
+        assistantID = nil
+        playbackResponseID = nil
+        playbackProviderResponseID = nil
+        model.status = .listening
+    }
+
+    /// Close the current live socket once so its owning loop can establish a
+    /// fresh backend/MVT session. The existing teardown deliberately keeps
+    /// the local microphone graph alive across this transport boundary.
+    private func requestASRReconnect(for gen: Int, message: String) {
+        guard gen == generation,
+              asrRecoveryRequestedGeneration != gen else { return }
+        asrRecoveryRequestedGeneration = gen
+        pendingASRRecoveryGeneration = nil
+        pendingASRRecoveryMessage = nil
+        providerReadyForForward = false
+        model?.noteLiveDisconnected(
+            reason: message.isEmpty ? "Muse Voice input failed; reconnecting." : message,
+            willReconnect: true
+        )
+        resetPendingTurnAfterASRError()
+        tearDownChannel(for: gen)
     }
 
     private func modelFormatted(_ error: Error) -> String {

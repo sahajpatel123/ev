@@ -33,7 +33,12 @@ class ModelInfo:
 
 
 def voice_model_info() -> ModelInfo:
-    from app.gateway.muse import muse_api_key, muse_asr_realtime_url, muse_hearing_active, muse_voice_model
+    from app.gateway.muse import (
+        muse_api_key,
+        muse_asr_realtime_url,
+        muse_hearing_active,
+        muse_voice_model,
+    )
 
     if muse_hearing_active():
         return ModelInfo(
@@ -73,9 +78,9 @@ def voice_model_info() -> ModelInfo:
 
 def turn_control_model_info() -> ModelInfo:
     from app.gateway.muse import (
-        muse_api_key,
-        muse_base_url,
         muse_intelligence_active,
+        muse_spark_base_url,
+        muse_spark_key_loaded,
         muse_spark_model,
     )
 
@@ -84,8 +89,8 @@ def turn_control_model_info() -> ModelInfo:
             role="turn_control",
             provider="meta_muse_spark",
             model=muse_spark_model(),
-            base_url=muse_base_url(),
-            available=bool(muse_api_key()),
+            base_url=muse_spark_base_url(),
+            available=muse_spark_key_loaded(),
         )
     raw = (getattr(settings, "turn_control_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-5.6-luna").strip()
     provider = (getattr(settings, "turn_control_provider", None) or "openai").strip() or "openai"
@@ -101,15 +106,20 @@ def turn_control_model_info() -> ModelInfo:
 
 
 def manager_model_info() -> ModelInfo:
-    from app.gateway.muse import muse_api_key, muse_base_url, muse_intelligence_active, muse_spark_model
+    from app.gateway.muse import (
+        muse_intelligence_active,
+        muse_spark_base_url,
+        muse_spark_key_loaded,
+        muse_spark_model,
+    )
 
     if muse_intelligence_active():
         return ModelInfo(
             role="manager",
             provider="meta_muse_spark",
             model=muse_spark_model(),
-            base_url=muse_base_url(),
-            available=bool(muse_api_key()),
+            base_url=muse_spark_base_url(),
+            available=muse_spark_key_loaded(),
         )
     return ModelInfo(
         role="manager",

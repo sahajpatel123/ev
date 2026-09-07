@@ -483,24 +483,50 @@ html, body {
 .quick-row button:active {
   transform: translateY(1px) scale(0.98);
 }
-.rail {
-  position: fixed;
-  left: 16px;
-  right: 16px;
-  bottom: calc(92px + env(safe-area-inset-bottom));
+.folio-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  z-index: 7;
+  gap: 10px;
+  width: 100%;
 }
-.rail button {
-  min-height: 44px;
-  border-radius: 16px;
+.folio-card {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 112px;
+  padding: 16px;
+  border-radius: 22px;
   border: 1px solid var(--stroke);
-  background: var(--elevated);
+  background:
+    linear-gradient(165deg, color-mix(in srgb, var(--veil-filament) 18%, transparent), transparent 55%),
+    color-mix(in srgb, var(--ink) 5%, transparent);
   color: inherit;
-  backdrop-filter: blur(var(--blur));
+  font: inherit;
+  text-align: left;
+  touch-action: manipulation;
+  transition: transform 90ms ease, background 160ms ease;
 }
+.folio-wide { grid-column: 1 / -1; min-height: 100px; }
+.folio-kicker {
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.folio-card strong {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.folio-card > span:last-of-type {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.35;
+}
+.folio-card:active { transform: scale(0.98); }
 .constellation {
   display: grid;
   gap: 12px;

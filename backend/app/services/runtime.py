@@ -8,6 +8,7 @@ observable and recoverable instead of silently disappearing.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
@@ -1687,14 +1688,14 @@ async def runtime_health(session: AsyncSession) -> dict:
     checks.append(
         {"name": "queue", "status": queue_status, "mode": settings.processing_mode}
     )
-    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active, muse_key_loaded
+    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active, muse_spark_key_loaded
 
     intel = configured_intelligence_provider() or settings.chat_provider
     chat_status = "ok"
     chat_detail: dict = {"provider": intel}
-    if muse_intelligence_active() and not muse_key_loaded():
+    if muse_intelligence_active() and not muse_spark_key_loaded():
         chat_status = "degraded"
-        chat_detail["reason"] = "META_MODEL_API_KEY missing"
+        chat_detail["reason"] = "OPENCODE_API_KEY missing"
     checks.append(
         {
             "name": "chat_provider",
@@ -1806,6 +1807,12 @@ async def daemon_tick(session: AsyncSession) -> dict:
     print_poll = await poll_print_jobs(session)
     feed_poll = await poll_public_feeds(session)
     sense_pass = await fused_sense_pass(session)
+    from app.ev.luna_code import spawn_pending_code_intern
+
+    intern = spawn_pending_code_intern()
+    from app.ev.luna_code import flush_background_code_notify
+
+    flush_background_code_notify()
     recalibration = await maybe_recalibrate_filter(session)
     notifications = await deliver_pending_alerts(session)
     dlq_escalations = await deliver_dlq_escalations(session)
@@ -1839,6 +1846,7 @@ async def daemon_tick(session: AsyncSession) -> dict:
             "print_poll": print_poll,
             "feed_poll": feed_poll,
             "sense_pass": {k: sense_pass.get(k) for k in ("callout", "stored", "candidates")},
+            "code_intern": intern,
         },
     )
 
@@ -1858,6 +1866,7 @@ async def daemon_tick(session: AsyncSession) -> dict:
         "timers": timers,
         "empties": empties,
         "health": health,
+        "code_intern": intern,
     }
 
 

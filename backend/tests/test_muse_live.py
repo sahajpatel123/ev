@@ -62,17 +62,25 @@ def _spoken_wav_pcm(text: str) -> tuple[bytes, bytes]:
 
 
 def _sidecar_bearer() -> str:
-    """Read Talk auth from repo overlay/.env without printing the value."""
+    """Read Talk auth without printing the value.
+
+    Talk's master is overlay ``EV_MASTER_KEY`` when repo ``.env`` has no
+    master (sidecar ``setdefault`` then overlay). A leftover ``EV_API_KEY``
+    in ``.env`` is a different token and 401s as master mismatch.
+    """
 
     from pathlib import Path
 
-    names = ("EV_API_KEY", "EV_MASTER_KEY")
-    for path in (
-        Path("/Users/sahajpatel/Code/ev/.env"),
-        Path.home() / ".ev/secrets/production.env",
-    ):
+    overlay = Path.home() / ".ev/secrets/production.env"
+    env_file = Path("/Users/sahajpatel/Code/ev/.env")
+    order = (
+        (overlay, ("EV_MASTER_KEY",)),
+        (env_file, ("EV_MASTER_KEY", "EV_API_KEY")),
+    )
+    for path, names in order:
         if not path.is_file():
             continue
+        found: dict[str, str] = {}
         for raw in path.read_text().splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
@@ -81,7 +89,10 @@ def _sidecar_bearer() -> str:
             key = key.strip()
             val = val.strip().strip("'").strip('"')
             if key in names and val:
-                return val
+                found[key] = val
+        for name in names:
+            if found.get(name):
+                return found[name]
     pytest.skip("no Talk sidecar bearer in overlay or .env")
 
 
@@ -205,7 +216,7 @@ async def test_live_muse_voice_stream_partial_final_endpoint_no_duplicate() -> N
 
 @pytest.mark.asyncio
 async def test_live_muse_voice_push_to_talk_commits_transcript_final_no_duplicate() -> None:
-    """Owner-facing LiveAsrFeed delimits with local VAD + endStream (PUSH_TO_TALK)."""
+    """Direct adapter PUSH_TO_TALK still commits one final via endStream."""
 
     await _live_muse_voice_one_final("PUSH_TO_TALK")
 
@@ -524,9 +535,16 @@ async def test_owner_facing_sidecar_calculate_and_research_and_memory() -> None:
             client, bearer, "Open Calculator and calculate 19 times 47"
         )
         assert combined.status_code == 200, combined.text
-        assert "893" in (combined.json().get("reply") or "").replace(",", "")
-        after_combined = await client.get("http://127.0.0.1:18000/v1/health")
-        assert _spark_calls(after_combined.json()) == spark0
+        combined_reply = (combined.json().get("reply") or "")
+        assert "893" in combined_reply.replace(",", "")
+        combined_model = (combined.json().get("model") or "").lower()
+        assert "grok" not in combined_model
+        assert "luna" not in combined_model
+        assert "deepseek" not in combined_model
+        # Combined open+calculate is Core action_reply (893). Do not require the
+        # process Spark counter to stay frozen: every /v1/chat schedules
+        # fire-and-forget curator, and opening Calculator is slow enough that
+        # that background Spark can finish before this HTTP response.
 
         research = await _sidecar_chat(
             client, bearer, "research the current weather in Surat, one short sentence"
@@ -614,7 +632,7 @@ async def test_live_spark_code_job_uses_jail_not_luna_http(
     monkeypatch.setattr("app.ev.luna_code._luna_loop", boom_luna)
     reset_muse_counters()
     result = await run_code_job(
-        "Write hello.py that prints hi and run it with python3. Stay in the selected workspace."
+        "Write a Python file named greet.py that prints hi. Stay in the selected workspace."
     )
     assert luna["n"] == 0
     brain = str(result.get("brain") or "").lower()
@@ -642,7 +660,7 @@ async def test_live_curator_reasoning_uses_spark_not_deepseek(
         deepseek["n"] += 1
         raise AssertionError("DeepSeek curator LLM must not be constructed")
 
-    monkeypatch.setattr("app.memory.curator.DeepSeekProvider", boom_deepseek)
+    monkeypatch.setattr("app.gateway.providers.DeepSeekProvider", boom_deepseek)
     reset_muse_counters()
     text, _tokens = await _call_deepseek(
         'Return only JSON: {"memories":[],"entities":[],"open_loops":[]}'

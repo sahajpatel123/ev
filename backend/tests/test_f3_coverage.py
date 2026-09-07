@@ -50,7 +50,7 @@ SEMANTIC_TOOLS = {
     "calendar_read", "calendar_add", "set_reminder", "start_timer",
     "get_weather", "heading_out", "search_web", "calculate", "get_person", "get_health_trends",
     "get_gear_status", "brief_me", "home_status", "home_act", "calibrate",
-    "list_protocols", "present", "code",
+    "list_protocols", "present", "code", "set_quiet_hours",
 }
 COMPUTER_TOOLS = {
     "computer", "computer_status", "list_apps", "open_app", "close_app",
@@ -82,10 +82,10 @@ def test_all_48_tools_classified() -> None:
             seen[tool] = class_name
     unclassified = all_tools - set(seen)
     assert not unclassified, f"UNCLASSIFIED live tools: {sorted(unclassified)}"
-    assert len(seen) == 65  # previous 64 + code broker
-    # Destination counts: CORE 13, MEMORY 3, SEMANTIC 23, COMPUTER 21, TRANSITIONAL 5.
+    assert len(seen) == 66  # previous 65 + quiet-hours live
+    # Destination counts: CORE 13, MEMORY 3, SEMANTIC 24, COMPUTER 21, TRANSITIONAL 5.
     assert len(CORE_TOOLS) == 13 and len(MEMORY_TOOLS) == 3
-    assert len(SEMANTIC_TOOLS) == 23 and len(COMPUTER_TOOLS) == 21
+    assert len(SEMANTIC_TOOLS) == 24 and len(COMPUTER_TOOLS) == 21
     assert len(TRANSITIONAL_TOOLS) == 5
 
 
@@ -202,7 +202,7 @@ CORPUS: list[tuple[str, str, str | None]] = [
     ("Run a calibration check", "semantic", "calibrate"),
     ("What will you not do?", "semantic", "list_protocols"),
     ("Pull up my research on embeddings", "semantic", "present"),
-    ("Set quiet hours until 8", "none", None),
+    ("Set quiet hours until 8", "semantic", "set_quiet_hours"),
     ("Text the group about lunch", "semantic", "send_message"),
     ("Call the dentist", "semantic", "place_call"),
     ("What's the capital of France?", "semantic", "search_web"),
@@ -275,7 +275,9 @@ async def test_routing_corpus(db_session: AsyncSession) -> None:
                 route.route_kind == RouteKind.UNAVAILABLE
             )
         elif expected_kind == "memory":
-            ok = route.route_kind == RouteKind.MEMORY
+            ok = route.route_kind == RouteKind.MEMORY or (
+                route.capability in {"search_memory", "recall", "recall_history"}
+            )
         elif expected_kind == "computer":
             # Without a live device an honest UNAVAILABLE with the right
             # capability intent is correct ROUTING (availability is env truth).

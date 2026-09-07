@@ -1,4 +1,9 @@
-"""Sandbox text pipeline. Never run_chat_pipeline / Memory OS / relationship attach."""
+"""Device Gateway text pipelines.
+
+Sandbox devices stay isolated from Memory OS. Trusted devices use canonical
+Core routing first, then hand conversational turns to Evie's normal chat
+pipeline so a text request always receives an actual answer.
+"""
 
 from __future__ import annotations
 
@@ -520,6 +525,17 @@ async def run_trusted_device_turn(
                 "verified": False,
             }
 
+        from .phone_mac import maybe_phone_mac_act
+
+        mac_act = await maybe_phone_mac_act(
+            session,
+            device=device,
+            text=effective_text,
+            idempotency_key=idempotency_key,
+        )
+        if mac_act is not None:
+            return mac_act
+
     if routed is not None:
         cap, args = routed
         try:
@@ -782,4 +798,73 @@ async def run_trusted_device_turn(
         "needs_clarification": bool(result.needs_clarification),
         "turn_id": turn.turn_id,
         "duplicate": bool(getattr(result, "duplicate", False)),
+    }
+
+
+async def run_trusted_device_text(
+    session: AsyncSession,
+    *,
+    device: Device,
+    text: str,
+    idempotency_key: str | None = None,
+) -> dict[str, Any]:
+    """Return a complete trusted-device text answer.
+
+    ``run_trusted_device_turn`` deliberately leaves conversational replies to
+    a live realtime provider. HTTP text has no such continuation, so complete
+    only that route through the shared Muse-capable chat pipeline.
+    """
+
+    result = await run_trusted_device_turn(
+        session,
+        device=device,
+        text=text,
+        idempotency_key=idempotency_key,
+    )
+    if not result.get("conversational"):
+        return result
+
+    from app.api.core import run_chat_pipeline
+    from app.ev.assistant import resolve_live_thread
+    from app.filter.envelope import SpeakerIdentity
+    from app.schemas import ChatRequest
+
+    thread = await resolve_live_thread(session, None)
+    pipeline = await run_chat_pipeline(
+        ChatRequest(
+            message=text,
+            conversation_id=thread.id,
+            device_id=str(device.id),
+            allow_sensitive_tools=True,
+        ),
+        session,
+        f"device:{device.name}",
+        thread_id=thread.id,
+        device_id=device.id,
+        source="device_text",
+        user_event_type="message.user",
+        event_privacy="sensitive",
+        speaker=SpeakerIdentity(
+            actor_id=f"device:{device.name}",
+            verified=True,
+            confidence=1.0,
+            method="trusted_device",
+        ),
+    )
+    reply = str(pipeline["result"].text or "").strip()
+    if not reply:
+        reply = "I heard you, but I don't have an answer yet."
+    return {
+        **result,
+        "reply": reply,
+        "model": pipeline["result"].model,
+        "conversation_id": pipeline["conversation_id"],
+        "context_tokens": pipeline["context_tokens"],
+        "context_depth": pipeline["context_depth"],
+        "request_id": pipeline["request_id"],
+        "memory_delta": pipeline["memory_deltas"],
+        "provenance": pipeline["provenance"],
+        "filter_report": pipeline.get("filter_report"),
+        "context_plan": pipeline.get("context_plan"),
+        "surfaces": pipeline.get("surfaces"),
     }

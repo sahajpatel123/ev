@@ -37,6 +37,7 @@ if os.environ.get("EV_TEST_USE_LIVE_CHAT") != "1":
     os.environ["EV_BRAVE_SEARCH_API_KEY"] = ""
     if not _LIVE_MUSE:
         os.environ["EV_CHAT_PROVIDER"] = "mock"
+        os.environ["OPENCODE_API_KEY"] = ""
         os.environ["EV_META_MODEL_API_KEY"] = ""
         os.environ["META_MODEL_API_KEY"] = ""
         os.environ["MODEL_API_KEY"] = ""
@@ -54,6 +55,7 @@ if os.environ.get("EV_TEST_USE_LIVE_MAC") != "1":
     os.environ["EV_NOTIFY_MACOS_ALLOW_OSASCRIPT"] = "false"
     os.environ["EV_NOTIFY_BACKEND"] = "console"
     os.environ["EV_MESSAGING_PROVIDER"] = "local"
+    os.environ["EV_LIFE_STREAM_ENABLED"] = "false"
 os.environ.setdefault("EV_EMBEDDING_PROVIDER", "hash")
 os.environ.setdefault("EV_EMBEDDING_DIM", "64")
 os.environ["EV_VOICEPRINT_PROVIDER"] = "hash"

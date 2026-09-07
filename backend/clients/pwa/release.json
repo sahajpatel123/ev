@@ -1,24 +1,24 @@
 {
-  "web_build": "2026.09.02.06",
+  "web_build": "2026.09.05.03",
   "web_protocol": 1,
   "api_protocol": "1",
   "web_protocol_min": 1,
   "web_protocol_max": 1,
-  "generated_at": "2026-09-03T12:55:00.476371+00:00",
+  "generated_at": "2026-09-05T06:33:11.700546+00:00",
   "files": {
-    "index.html": "0db015cab3c814973b21116d84fba89dc6eef895dd93aa5369766734d7864c6d",
-    "app.js": "245c487e2db0a12ae37639354af811a956a319b4325b90ce2151c988c11cbae2",
-    "sw.js": "8245baa273ff1f9dc54af521da710da58e72d1c4c1a554cb77db95ade178aff5",
+    "index.html": "9c22475a98e1d065ec7a0b681802ad067a0cfd966a410c261563865604f71d9b",
+    "app.js": "ea5cec638ea48caa2ab1c69b1d675f8e64159c8da7125b4c037337f752fb95ed",
+    "sw.js": "022218ca3803d33098526e995af2c225e8bfd8a5db32a511ce611f19b53269af",
     "audio.js": "fa022222fbdbfd2b3b23b81ad3e473562d1b44223236626217ff54968a01f354",
-    "webrtc.js": "e93bb75374748d06317c18be1a9a889be46a08e82ea4af9d096f90133766d3ab",
+    "webrtc.js": "41229a892409c441b1ec5324a0beae41efadff9d574c38f2c66b5d38b29854a4",
     "mobile-actions.js": "580d5f3febb87285b9c6eb1be42c0138d6cfb5004d9a93615ffd403a9070fa2a",
     "presence.js": "921ad81867d8f78b05a191b02eeb81bb437d93b6c39294085b7e04395b68bf1b",
     "orb.js": "971ed6b4fef6703f76430c8fa66dab6c35a80f2f726014e2695033345e565199",
     "pcm-worklet.js": "153f30b0616ef32a560af572642f7246b72b5d5593bef27ed8ec10690c24c6c5",
     "playback-worklet.js": "e9959d2a2e162bedcaf0671f6b97c766d60a04b5ccce7dbc911d23dc8453d602",
     "feedback.js": "4275ff2d47aaa4e3baf0741951f8decfbb4abf393ea72b14c08c29f8914226e9",
-    "style.css": "c9397da618b0b3c5fdd139cef95b089d47ec711f4ba55658045429bf99cc8574",
+    "style.css": "6852cc404d555a276af64365153eb75b48fd7933dbf59b8ed54284544b23842a",
     "manifest.webmanifest": "2adb4ce4ceda7ca22df030c7bca54a609e3d11b445709f981324907844ee4f47"
   },
-  "asset_manifest_hash": "19d22a376dc7295714945153a05e3234fbb611a3409d6237a13fc1332ae90490"
+  "asset_manifest_hash": "f8746195d17df48c40ec790dac1340cec2c05adf8420316b93f350d9645c1a36"
 }

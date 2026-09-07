@@ -12,6 +12,7 @@ from __future__ import annotations
 import ast
 import math
 import operator
+import re
 import time
 from collections.abc import Callable
 from datetime import timedelta
@@ -189,12 +190,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "code",
         "description": (
             "Write, edit, or run software in an owner-allowed project. Call "
-            "this when they ask to code, make a helper or script, fix a bug, "
-            "add a test, run it, change the last script, or implement something "
-            "in a real repo. Casual phrasing counts ('can you make me a python "
-            "grader', 'run it', 'add a test'). Pass the full request as goal, "
-            "including the project name when they named one. Do not type into "
-            "an editor with computer/UI verbs."
+            "this for a short script or a small fix. For a full site, app UI, "
+            "or coding goal from scratch, still call this with the full ask — "
+            "Evie will background it so talking stays free. Casual phrasing "
+            "counts. Pass the full request as goal. Do not type into an editor "
+            "with computer/UI verbs. Mini never gets a shell."
         ),
         "parameters": {
             "type": "object",
@@ -599,7 +599,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "list_messages",
-        "description": "List recent messages from the granted messaging bridge.",
+        "description": (
+            "List recent iMessage and SMS from this Mac's Messages database. "
+            "Does not open Messages.app. WhatsApp is a different aisle — use "
+            "recall when they said WhatsApp."
+        ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -661,12 +665,17 @@ TOOL_SPECS: list[dict[str, Any]] = [
     },
     {
         "name": "list_mail",
-        "description": "List recent mail from the granted mail bridge.",
+        "description": (
+            "Read recent Apple Mail on this Mac without opening Mail.app. "
+            "Speaks a short gist of the particular message, or a short inbox "
+            "digest — never the full body."
+        ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                "query": {"type": "string", "minLength": 1, "maxLength": 400},
             },
         },
         "output": {"type": "object"},
@@ -2475,12 +2484,18 @@ def _resolved_sensitive(spec: dict) -> bool:
 def _life_unavailable(reason: str, *, next_step: str, error: str | None = None) -> dict:
     """Capability-theater contract: degraded=true + exact next_step."""
 
+    spoken = str(next_step or reason or "").strip()
+    if spoken.lower() in {"not connected", "not_connected"}:
+        spoken = "I couldn't finish that on this Mac."
+    elif not spoken.lower().startswith("i "):
+        spoken = f"I couldn't finish that. {spoken}"[:400]
     return {
         "ok": False,
         "degraded": True,
         "next_step": next_step,
         "reason": reason,
         "error": error or reason,
+        "spoken": spoken[:400],
     }
 
 
@@ -2558,10 +2573,13 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
                 else "I couldn't open that on screen yet."
             )
         if name in {"send_message", "place_call"}:
+            spoken = str(payload.get("spoken") or "").strip()
+            if spoken and spoken.lower() not in {"not connected", "not_connected"}:
+                return spoken
             return (
                 f"I couldn't finish that yet. {next_step}"
-                if next_step
-                else "I couldn't finish that yet."
+                if next_step and next_step.lower() not in {"not connected", "not_connected"}
+                else "I couldn't send that from this Mac yet."
             )
         if name == "code":
             return (
@@ -2580,6 +2598,13 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
         if files:
             return f"I wrote {', '.join(files[:4])} in {folder}."
         return "I finished that coding job."
+    channel_name = str(payload.get("channel") or "").strip().lower()
+    if name == "send_message" and channel_name in {"whatsapp", "wa"}:
+        target = str(payload.get("to") or "them")
+        if payload.get("sent"):
+            return f"Sent WhatsApp to {target}."
+        if payload.get("opened"):
+            return f"Opened WhatsApp to {target}."
     if name == "present" or "opened" in payload:
         if payload.get("opened"):
             return "Opened that on your screen."
@@ -2731,7 +2756,19 @@ async def dispatch(
         session_id=live_session_id,
     )
 
-    if spec is None and decision.effect != "refuse":
+    # Personality is an owner preference, not a capability extension.  This
+    # dispatcher is the model/tool path, so it never mutates the profile — not
+    # even when a broad job scope carries an owner-looking actor.  Explicit
+    # owner API/voice intent uses ``personality.update`` directly after auth.
+    if name == "update_personality":
+        status = "denied"
+        error = "personality_owner_only"
+        result = {
+            "ok": False,
+            "error": "personality_owner_only",
+            "spoken": "Only you can change my personality.",
+        }
+    elif spec is None and decision.effect != "refuse":
         status = "error"
         error = f"Unknown tool '{name}'"
     elif weapon_text and WEAPON_RE.search(weapon_text):
@@ -2818,7 +2855,8 @@ async def dispatch(
             elif decision.effect == "not_connected":
                 status = "ok"
                 error = None
-                result = not_connected_payload(decision)
+                hub = await _mac_hub_life_read(name, dispatch_arguments)
+                result = hub if hub is not None else not_connected_payload(decision)
             elif decision.effect == "refuse":
                 status = "denied"
                 error = "refused"
@@ -3149,6 +3187,7 @@ async def _run_code_goal(
     """Luna coding broker: goal in, verified files/runs out. Not a raw shell."""
 
     from app.ev.actuator import evidence_base, fingerprint, record_actuator
+    from app.ev.code_studio import maybe_handle_code_ops
     from app.ev.luna_code import run_code_job
 
     goal = str(args.get("goal") or "").strip()
@@ -3159,6 +3198,17 @@ async def _run_code_goal(
             "error": "missing_goal",
             "spoken": "Tell me what to write or run.",
         }
+    if "CODING GOAL SLICE" not in goal:
+        spoken = maybe_handle_code_ops(
+            goal, session_key=str(live_session_id or "") or "owner"
+        )
+        if spoken:
+            return {
+                "ok": True,
+                "spoken": spoken,
+                "deferred": True,
+                "background": True,
+            }
     key = fingerprint("code", goal, actor)
     result = await run_code_job(
         goal,
@@ -3207,6 +3257,8 @@ async def _run_computer_goal(
         return {"ok": False, "error": "missing_goal", "spoken": "What should I do on the Mac?"}
 
     from app.ev.laptop_files import (
+        ADD_TO_DEIXIS_RE,
+        FILE_FOLLOWUP_RE,
         is_system_confirmation,
         looks_like_file_followup,
         resolve_file_computer_goal,
@@ -3296,7 +3348,9 @@ async def _run_computer_goal(
             request_id=request_id,
         )
 
-    if looks_like_file_followup(goal_text, last_path=last_path):
+    if looks_like_file_followup(goal_text, last_path=last_path) and (
+        ADD_TO_DEIXIS_RE.search(goal_text) or FILE_FOLLOWUP_RE.search(goal_text)
+    ):
         return {
             "ok": False,
             "executed": False,
@@ -3548,6 +3602,19 @@ async def _reroute_visual_to_files(
 
     hay = _owner_visual_haystack(args, live_session_id, device_id)
     from app.ev.laptop_files import is_system_confirmation, looks_like_file_task
+    from app.memory.visual import wants_held_object_look, wants_keep_visible
+
+    # Show-and-remember / hold-in-hand is a camera look. A leftover
+    # desktop/file phrase in the haystack must not steal the JPEG.
+    prompt = str(args.get("prompt") or "")
+    if (
+        str(request_id or "") in {"owner-keep", "owner-keep-hold"}
+        or wants_keep_visible(prompt)
+        or wants_keep_visible(hay)
+        or wants_held_object_look(prompt)
+        or wants_held_object_look(hay)
+    ):
+        return None
 
     if is_system_confirmation(hay):
         return {
@@ -3591,9 +3658,9 @@ async def _reroute_look_to_screen(
     from app.ev.computer_strategy import look_should_use_screen
 
     hay = _owner_visual_haystack(args, live_session_id, device_id)
-    from app.memory.visual import wants_keep_visible
+    from app.memory.visual import wants_held_object_look, wants_keep_visible
 
-    if wants_keep_visible(hay):
+    if wants_keep_visible(hay) or wants_held_object_look(hay):
         return None
     if not look_should_use_screen(hay):
         return None
@@ -4084,21 +4151,15 @@ async def _handle(
         decision = await reset_nickname(session)
         return {"ok": True, "name": decision.name}
     if name == "update_personality":
-        from app.ev.personality import get_current, to_dict, update
-        from app.schemas import PersonalityUpdate
-
-        current = to_dict(await get_current(session))
-        for key in ("humor", "formality", "verbosity", "directness"):
-            if args.get(key) is not None:
-                current[key] = int(args[key])
-        profile = await update(
-            session,
-            PersonalityUpdate(
-                **current,
-                reason_for_change=args.get("reason_for_change") or "tool",
-            ),
-        )
-        return {"ok": True, "profile": to_dict(profile)}
+        # Deliberate owner-only mutation path: explicit voice/API intent calls
+        # ``personality.update`` directly.  A model-produced function call is
+        # never allowed to retune the profile merely because it runs inside an
+        # owner-authenticated turn.
+        return {
+            "ok": False,
+            "error": "personality_owner_only",
+            "spoken": "Only you can change my personality.",
+        }
     if name == "list_protocols":
         from app.ev.protocols import protocol_sheet, protocols_to_dicts
 
@@ -4147,7 +4208,14 @@ async def _handle(
             end=args.get("end"),
         )
         await persist_quiet_hours(session)
-        return hours
+        start = hours.get("start") or ""
+        end = hours.get("end") or ""
+        spoken = (
+            f"Quiet until {end}. I won't ping unless it's urgent."
+            if args.get("until")
+            else f"Quiet hours from {start} until {end}. I won't ping unless it's urgent."
+        )
+        return {**hours, "ok": True, "spoken": spoken}
     if name == "calibrate":
         from app.ev.workbench import handle_calibrate
 
@@ -4392,7 +4460,15 @@ async def _handle(
         from app.ev.training_wheels import mark_step_from_event
 
         await mark_step_from_event(session, "first_hud")
-        return opened
+        spoken = (
+            "It's on your HUD."
+            if opened.get("opened")
+            else (
+                "I couldn't open the HUD yet. "
+                + str(opened.get("reason") or opened.get("next_step") or "")
+            ).strip()
+        )
+        return {**opened, "spoken": spoken}
     raise KeyError(f"Unknown tool '{name}'")
 
 
@@ -4426,11 +4502,17 @@ async def _dispatch_life_action(
     slug, action, scope = _LIFE_BRIDGES[name]
     integration = await _active_life_integration(session, slug)
     if integration is None:
+        write = await _mac_hub_life_write(name, args)
+        if write is not None:
+            return write
+        fallback = await _mac_hub_life_read(name, args)
+        if fallback is not None:
+            return fallback
         return _life_unavailable(
             f"no {slug} bridge is installed",
             next_step=(
-                f"install the {slug} integration and grant scope '{scope}' "
-                f"(POST /v1/integrations with adapter={slug})"
+                f"I couldn't reach {slug} on this Mac. "
+                "Grant EVLifeHelper Messages, Mail, and Contacts in System Settings."
             ),
         )
     try:
@@ -4475,4 +4557,401 @@ async def _dispatch_life_action(
             error=str(exc),
         )
     payload = getattr(outcome, "result", None) or {}
-    return {"ok": True, **payload}
+    result = {"ok": True, **payload}
+    if name in {"list_mail", "resolve_contact", "list_messages"} and not _life_read_rows(name, result):
+        hub = await _mac_hub_life_read(name, args)
+        if hub is not None and _life_read_rows(name, hub):
+            return hub
+    if name == "list_mail":
+        from app.ev.spark_task import bind_decision, decide_task, reset_decision
+        from app.memory.mail_speak import shape_mail_payload
+
+        ask = str(args.get("query") or args.get("q") or "").strip() or "any new email"
+        decision = await decide_task(ask, family_hint="mail")
+        token = bind_decision(decision)
+        try:
+            result = shape_mail_payload(result, ask)
+            result["task_decision"] = decision.as_dict()
+            return result
+        finally:
+            reset_decision(token)
+    spoken = _spoken_life_bridge(name, result)
+    if spoken:
+        result["spoken"] = spoken
+    return result
+
+
+async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
+    """Send/call/mail through EVLifeHelper when no Integration row exists."""
+
+    if name not in {"send_message", "place_call", "send_mail", "send_email"}:
+        return None
+    from app.ev.apps import discover_life_helper_path
+    from app.integrations.life_helper import (
+        LifeHelperError,
+        LifeHelperUnavailableError,
+        LifePermissionDeniedError,
+        run_life_helper,
+    )
+    from app.services.life_stream_daemon import life_stream_should_run
+
+    helper = discover_life_helper_path()
+    if not helper and not life_stream_should_run():
+        return None
+    try:
+        if name == "send_message":
+            return await _send_via_helper(args, helper_path=helper)
+        if name in {"send_mail", "send_email"}:
+            to = str(args.get("to") or "").strip()
+            body = str(args.get("body") or args.get("text") or "").strip()
+            subject = str(args.get("subject") or "Message from Evie").strip()
+            if not to or not body:
+                return _life_unavailable(
+                    "missing_mail_fields",
+                    next_step="I need who to email and what to say.",
+                )
+            dest = await _resolve_send_destination(to, "mail", helper_path=helper)
+            email = dest.get("email") or (to if "@" in to else "")
+            if not email:
+                return _life_unavailable(
+                    "no_email",
+                    next_step=f"I don't have an email for {to}.",
+                )
+            result = await run_life_helper(
+                "mail.send",
+                {"to": email, "subject": subject, "body": body},
+                helper_path=helper,
+            )
+            return {
+                "ok": True,
+                "sent": True,
+                "to": to,
+                "channel": "mail",
+                "spoken": f"Sent email to {to}.",
+                **(result.data or {}),
+                "delivery": result.delivery,
+            }
+        destination = str(args.get("name") or args.get("to") or args.get("destination") or "").strip()
+        if not destination:
+            return _life_unavailable("missing_call_target", next_step="Who should I call?")
+        dest = await _resolve_send_destination(destination, "messages", helper_path=helper)
+        phone = dest.get("phone") or destination
+        result = await run_life_helper(
+            "call.place",
+            {"destination": phone, "kind": str(args.get("kind") or "tel")},
+            helper_path=helper,
+        )
+        return {
+            "ok": True,
+            "opened": True,
+            "name": destination,
+            "spoken": f"Ringing {destination}.",
+            **(result.data or {}),
+            "delivery": result.delivery,
+        }
+    except LifeHelperUnavailableError as exc:
+        return _life_unavailable("helper_unavailable", next_step=str(exc), error=str(exc))
+    except LifePermissionDeniedError as exc:
+        return _life_unavailable(
+            "permission_denied",
+            next_step=str(exc),
+            error="permission_denied",
+        )
+    except LifeHelperError as exc:
+        return _life_unavailable("helper_failed", next_step=str(exc), error=str(exc))
+
+
+async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
+    from app.integrations.life_helper import run_life_helper
+
+    to = str(args.get("to") or "").strip()
+    body = str(args.get("text") or args.get("body") or "").strip()
+    if not to or not body:
+        return _life_unavailable(
+            "missing_send_fields",
+            next_step="I need who to message and what to say.",
+        )
+    wanted = str(args.get("channel") or "").strip().lower()
+    if wanted in {"wa", "whatsapp"}:
+        channel = "whatsapp"
+    elif wanted in {"mail", "email"}:
+        channel = "mail"
+    else:
+        channel = "messages"
+        preferred = _channel_from_talk(to)
+        if preferred == "whatsapp":
+            channel = "whatsapp"
+        elif preferred == "mail" and wanted:
+            channel = "mail"
+    dest = await _resolve_send_destination(to, channel, helper_path=helper_path)
+    if channel == "mail":
+        email = dest.get("email") or (to if "@" in to else "")
+        if not email:
+            return _life_unavailable("no_email", next_step=f"I don't have an email for {to}.")
+        result = await run_life_helper(
+            "mail.send",
+            {"to": email, "subject": "Message from Evie", "body": body},
+            helper_path=helper_path,
+        )
+        return {
+            "ok": True,
+            "sent": True,
+            "to": to,
+            "channel": "mail",
+            "spoken": f"Sent email to {to}.",
+            **(result.data or {}),
+            "delivery": result.delivery,
+        }
+    if channel == "whatsapp":
+        phone = dest.get("phone") or ""
+        digits = re.sub(r"\D+", "", phone or to)
+        if len(digits) >= 8:
+            result = await run_life_helper(
+                "whatsapp.send",
+                {"to": digits, "text": body},
+                helper_path=helper_path,
+            )
+            opened = bool((result.data or {}).get("opened"))
+            return {
+                "ok": True,
+                "opened": opened,
+                "sent": False,
+                "to": to,
+                "channel": "whatsapp",
+                "spoken": f"Opened WhatsApp to {to}." if opened else f"I couldn't open WhatsApp for {to}.",
+                **(result.data or {}),
+                "delivery": result.delivery,
+            }
+        channel = "messages"
+    handle = dest.get("phone") or dest.get("handle") or to
+    result = await run_life_helper(
+        "messages.send",
+        {"to": handle, "text": body},
+        helper_path=helper_path,
+    )
+    sent = bool((result.data or {}).get("sent"))
+    return {
+        "ok": bool(sent),
+        "sent": sent,
+        "to": to,
+        "channel": "messages",
+        "spoken": f"Sent a message to {to}." if sent else f"I couldn't text {to} from Messages.",
+        **(result.data or {}),
+        "delivery": result.delivery,
+    }
+
+
+def _channel_from_talk(to: str) -> str | None:
+    from app.memory.life_archive.desk import _compact
+
+    key = _compact(to)
+    if not key:
+        return None
+    try:
+        from app.services.life_stream_daemon import get_life_stream_daemon, life_stream_should_run
+
+        if not life_stream_should_run():
+            return None
+        daemon = get_life_stream_daemon()
+        hits = list(daemon.peek_whatsapp(tokens=[key], limit=4) or [])
+        if hits:
+            return "whatsapp"
+    except Exception:
+        return None
+    return None
+
+
+async def _resolve_send_destination(
+    to: str, channel: str, *, helper_path: str | None
+) -> dict[str, str]:
+    from app.integrations.life_helper import run_life_helper
+
+    out: dict[str, str] = {}
+    try:
+        result = await run_life_helper(
+            "contacts.resolve", {"query": to}, helper_path=helper_path
+        )
+    except Exception:
+        return out
+    matches = list((result.data or {}).get("matches") or [])
+    if not matches:
+        return out
+    row = matches[0] if isinstance(matches[0], dict) else {}
+    phones = row.get("phone_numbers") or []
+    emails = row.get("email_addresses") or []
+    if phones:
+        out["phone"] = str(phones[0])
+    if emails:
+        out["email"] = str(emails[0])
+    if row.get("full_name"):
+        out["handle"] = str(row["full_name"])
+    del channel
+    return out
+
+
+async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
+    """Closed-app Mac copies. iMessage is chat.db, mail is Envelope Index, contacts are CNContactStore."""
+    if name not in {"list_mail", "resolve_contact", "list_messages"}:
+        return None
+    from app.memory.live_life import peek_account_life, peek_mac_life
+    from app.memory.recall import _spoken_empty_connected, _spoken_from_evidence
+    from app.services.life_stream_daemon import get_life_stream_daemon, life_stream_should_run
+
+    if not life_stream_should_run():
+        return None
+    limit = max(1, min(int(args.get("limit") or 8), 8))
+    query = str(args.get("query") or args.get("name") or args.get("q") or "").strip()
+    try:
+        daemon = get_life_stream_daemon()
+    except Exception:
+        return None
+    if name == "list_messages":
+        from app.ev.spark_task import bind_decision, decide_task, reset_decision
+
+        ask = query or "any new messages"
+        decision = await decide_task(ask, family_hint="messages")
+        token = bind_decision(decision)
+        try:
+            hits = peek_mac_life(ask, shelf="chats", tokens=decision.tokens(), k=limit, daemon=daemon)
+            spoken = (
+                _spoken_from_evidence(hits, ask) if hits else _spoken_empty_connected(ask)
+            )
+            from app.memory.message_speak import shape_message_payload
+
+            return shape_message_payload(
+                {
+                    "ok": True,
+                    "count": len(hits),
+                    "messages": hits,
+                    "spoken": spoken,
+                    "source": "live_mac",
+                    "channel": "imessage",
+                    "task_decision": decision.as_dict(),
+                },
+                ask,
+            )
+        finally:
+            reset_decision(token)
+    if name == "list_mail":
+        from app.ev.spark_task import bind_decision, decide_task, reset_decision
+        from app.memory.mail_speak import fill_readout, selector_tokens, shape_mail_payload
+
+        ask = query or "any new email"
+        decision = await decide_task(ask, family_hint="mail")
+        token = bind_decision(decision)
+        try:
+            wanted = decision.tokens() or selector_tokens(ask)
+            hits = peek_mac_life(ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon)
+            if not hits:
+                hits = await peek_account_life(
+                    ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon
+                )
+            if decision.manner == "readout":
+                for hit in hits[:1]:
+                    fill_readout(
+                        hit,
+                        mail_index_path=str(getattr(daemon, "mail_index_path", "") or ""),
+                    )
+            spoken = (
+                _spoken_from_evidence(hits, ask) if hits else _spoken_empty_connected(ask)
+            )
+            shaped = shape_mail_payload(
+                {
+                    "ok": True,
+                    "count": len(hits),
+                    "messages": hits,
+                    "spoken": spoken,
+                    "source": "live_mac",
+                    "channel": "mail",
+                    "task_decision": decision.as_dict(),
+                },
+                ask,
+            )
+            shaped["task_decision"] = decision.as_dict()
+            return shaped
+        finally:
+            reset_decision(token)
+    from app.ev.spark_task import bind_decision, decide_task, reset_decision
+
+    tokens = [query.lower()] if query else []
+    ask = query or "who is in my contacts"
+    decision = await decide_task(ask, family_hint="contacts")
+    token = bind_decision(decision)
+    try:
+        wanted = decision.tokens() or tokens
+        hits = peek_mac_life(ask, shelf="contacts", tokens=wanted, k=limit, daemon=daemon)
+        if not hits:
+            hits = await peek_account_life(
+                ask,
+                shelf="contacts",
+                tokens=wanted,
+                k=limit,
+                daemon=daemon,
+            )
+        spoken = (
+            _spoken_from_evidence(hits, query or "who is in my contacts")
+            if hits
+            else _spoken_empty_connected("who is in my contacts")
+        )
+        return {
+            "ok": bool(hits),
+            "count": len(hits),
+            "contacts": [{"text": item.get("text")} for item in hits],
+            "spoken": spoken,
+            "source": "live_mac",
+            "task_decision": decision.as_dict(),
+        }
+    finally:
+        reset_decision(token)
+
+
+def _life_read_rows(name: str, payload: dict) -> bool:
+    if name in {"list_mail", "list_messages"}:
+        return bool(payload.get("messages") or payload.get("items"))
+    if name == "resolve_contact":
+        return bool(payload.get("contacts") or payload.get("matches"))
+    return False
+
+
+def _spoken_life_bridge(name: str, payload: dict) -> str:
+    if payload.get("spoken"):
+        return str(payload.get("spoken") or "")
+    items: list = []
+    if name in {"list_mail", "list_messages"}:
+        items = payload.get("messages") or payload.get("items") or []
+    elif name == "resolve_contact":
+        items = payload.get("matches") or payload.get("contacts") or []
+    else:
+        return ""
+    bits = []
+    for item in items[:3]:
+        if isinstance(item, dict):
+            text = str(
+                item.get("subject")
+                or item.get("full_name")
+                or item.get("name")
+                or item.get("text")
+                or ""
+            ).strip()
+            sender = str(item.get("sender") or item.get("handle") or "").strip()
+            if text and sender:
+                bits.append(f"{text} from {sender}")
+            elif text:
+                bits.append(text)
+        elif item:
+            bits.append(str(item))
+    if not bits:
+        return ""
+    if name == "resolve_contact":
+        return ("On this Mac: " + ". ".join(bits))[:400]
+    if name == "list_messages":
+        from app.memory.message_speak import speak_messages
+
+        ask = str(payload.get("query") or "").strip()
+        return speak_messages(ask or "any new messages", items)[:520]
+    if name == "list_mail":
+        from app.memory.mail_speak import speak_mail
+
+        ask = str(payload.get("query") or "").strip()
+        return speak_mail(ask or "any new email", items)[:520]
+    return ""

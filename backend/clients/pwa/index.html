@@ -9,13 +9,13 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.09.02.06">
+  <meta name="evie-build" content="2026.09.05.03">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.09.02.06">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.09.05.03">
   <title>Evie</title>
 </head>
 <body>
@@ -76,13 +76,38 @@
       </form>
     </section>
 
-    <nav id="more-rail" class="rail" hidden>
-      <button type="button" data-surface="conversation">Chat</button>
-      <button type="button" data-surface="devices">Devices</button>
-      <button type="button" data-surface="activity">Activity</button>
-      <button type="button" data-surface="inbox">Inbox</button>
-      <button type="button" data-surface="privacy">Settings</button>
-    </nav>
+    <section id="more-sheet" class="sheet folio" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="more-sheet" aria-label="Close">✕</button>
+      <h2>Around you</h2>
+      <p class="quiet">One Evie. This phone, Home Station, the thread.</p>
+      <div class="folio-grid">
+        <button type="button" class="folio-card folio-wide" data-surface="conversation">
+          <span class="folio-kicker">Thread</span>
+          <strong>Chat</strong>
+          <span>The conversation on this phone</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="devices">
+          <span class="folio-kicker">Places</span>
+          <strong>Devices</strong>
+          <span>This iPhone and Home Station</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="activity">
+          <span class="folio-kicker">Pulse</span>
+          <strong>Now</strong>
+          <span>What just happened</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="inbox">
+          <span class="folio-kicker">Quiet</span>
+          <strong>Inbox</strong>
+          <span>Notices waiting here</span>
+        </button>
+        <button type="button" class="folio-card folio-wide" data-surface="privacy">
+          <span class="folio-kicker">This iPhone</span>
+          <strong>Settings</strong>
+          <span>Camera, trust, appearance</span>
+        </button>
+      </div>
+    </section>
 
     <section id="conversation-sheet" class="sheet" hidden>
       <button type="button" class="sheet-close sheet-x" data-close="conversation-sheet" aria-label="Close">✕</button>
@@ -188,12 +213,12 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.09.02.06"></script>
-  <script src="/evie/presence.js?v=2026.09.02.06"></script>
-  <script src="/evie/orb.js?v=2026.09.02.06"></script>
-  <script src="/evie/feedback.js?v=2026.09.02.06"></script>
-  <script src="/evie/webrtc.js?v=2026.09.02.06"></script>
-  <script src="/evie/mobile-actions.js?v=2026.09.02.06"></script>
-  <script src="/evie/app.js?v=2026.09.02.06"></script>
+  <script src="/evie/audio.js?v=2026.09.05.03"></script>
+  <script src="/evie/presence.js?v=2026.09.05.03"></script>
+  <script src="/evie/orb.js?v=2026.09.05.03"></script>
+  <script src="/evie/feedback.js?v=2026.09.05.03"></script>
+  <script src="/evie/webrtc.js?v=2026.09.05.03"></script>
+  <script src="/evie/mobile-actions.js?v=2026.09.05.03"></script>
+  <script src="/evie/app.js?v=2026.09.05.03"></script>
 </body>
 </html>

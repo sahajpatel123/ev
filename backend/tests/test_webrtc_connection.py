@@ -221,6 +221,11 @@ def test_status_and_pwa_connection_contract() -> None:
     assert "_gateMicForPlayback" in webrtc
     assert "_echoHold" in webrtc
     assert "PLAYBACK_MIC_TAIL_MS" in webrtc
+    assert "PLAYBACK_MIC_TAIL_MS = 800" in webrtc
+    assert "_speakCore" in webrtc
+    assert "core_takeover" in webrtc
+    assert "_setVadCreateResponse" in webrtc
+    assert "response.cancel" in webrtc
     assert "scheduleHealthRender" in app_js
     assert "unified-calls-v1" in webrtc
     assert "waitIce" not in webrtc
@@ -249,6 +254,89 @@ def test_js_connection_helpers() -> None:
             "if(text.indexOf('M10')<0||text.indexOf('mv_1')<0) process.exit(4);"
             "if(mv.STAGES.length!==22) process.exit(5);"
             "console.log('ok');",
+            str(PWA / "webrtc.js"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_js_webrtc_ungates_mic_and_forwards_camera() -> None:
+    webrtc = (PWA / "webrtc.js").read_text()
+    assert "opened.client_generation" in webrtc
+    assert 'type === "response.output_audio.done"' in webrtc
+    assert 'type === "response.audio.done"' in webrtc
+    assert "await this.onCamera({" in webrtc
+    result = subprocess.run(
+        [
+            "node",
+            "-e",
+            "global.window = global;"
+            "const mv=require(process.argv[1]);"
+            "const dummyAudio={play(){return Promise.resolve();},pause(){},srcObject:null};"
+            "function makeRtc(extra){"
+            "  return new mv.EvieWebRTC(Object.assign({"
+            "    api: async () => ({}),"
+            "    onState(){}, onHealth(){}, onHud(){}, audioEl: dummyAudio"
+            "  }, extra||{}));"
+            "}"
+            "const leftover=makeRtc(); leftover.generation=7;"
+            "const opened={client_generation:3,session_id:'s'};"
+            "const bound=Number(opened&&opened.client_generation);"
+            "const generation=Number.isInteger(bound)&&bound>0?bound:leftover.generation+1;"
+            "if(generation!==3) process.exit(2);"
+            "(async()=>{"
+            "  let seen=null;"
+            "  const cam=makeRtc({"
+            "    api: async () => ({output: JSON.stringify({needs_camera:true,camera_request_id:'r1',camera_action:'look_once'})}),"
+            "    onCamera: async (ev)=>{ seen=ev; }"
+            "  });"
+            "  cam.dc={readyState:'open', send(){}};"
+            "  await cam._tool({name:'evie_look', call_id:'c1', arguments:'{}'});"
+            "  if(!seen||seen.request_id!=='r1'||seen.action!=='look_once') process.exit(4);"
+            "  const rtc=makeRtc(); rtc.closed=false;"
+            "  rtc.micTrack={readyState:'live', enabled:true};"
+            "  rtc._onProvider({type:'response.output_audio.delta'});"
+            "  if(rtc.micTrack.enabled) process.exit(5);"
+            "  rtc._onProvider({type:'response.output_audio.done'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, mv.PLAYBACK_MIC_TAIL_MS+50));"
+            "  if(!rtc.micTrack.enabled) process.exit(6);"
+            "  rtc._onProvider({type:'response.output_audio.delta'});"
+            "  if(rtc.micTrack.enabled) process.exit(7);"
+            "  rtc._onProvider({type:'response.audio.done'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, mv.PLAYBACK_MIC_TAIL_MS+50));"
+            "  if(!rtc.micTrack.enabled) process.exit(8);"
+            "  const sent=[];"
+            "  const echo=makeRtc(); echo.closed=false;"
+            "  echo.dc={readyState:'open', send(s){ sent.push(JSON.parse(s)); }};"
+            "  echo.micTrack={readyState:'live', enabled:true};"
+            "  echo._onProvider({type:'response.created', response:{id:'a'}});"
+            "  echo._onProvider({type:'response.output_audio.delta'});"
+            "  if(echo.micTrack.enabled) process.exit(9);"
+            "  echo._onProvider({type:'response.created', response:{id:'b'}});"
+            "  if(!sent.some((m)=>m.type==='response.cancel' && m.response_id==='b')) process.exit(10);"
+            "  if(mv.PLAYBACK_MIC_TAIL_MS<700) process.exit(11);"
+            "  const coreSent=[];"
+            "  let coreBody={core_takeover:true,core_reply:\"It's Saturday.\"};"
+            "  const core=makeRtc({api: async () => coreBody});"
+            "  core.closed=false;"
+            "  core.dc={readyState:'open', send(s){ coreSent.push(JSON.parse(s)); }};"
+            "  core._onProvider({type:'conversation.item.input_audio_transcription.completed', transcript:\"what's the date today\", item_id:'i1'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, 0));"
+            "  if(!coreSent.some((m)=>m.type==='response.cancel')) process.exit(12);"
+            "  if(!coreSent.some((m)=>m.type==='response.create' && String((m.response&&m.response.instructions)||'').indexOf(\"It's Saturday\")>=0)) process.exit(13);"
+            "  const ordinarySent=[];"
+            "  const ordinary=makeRtc({api: async () => ({})});"
+            "  ordinary.closed=false;"
+            "  ordinary.dc={readyState:'open', send(s){ ordinarySent.push(JSON.parse(s)); }};"
+            "  ordinary._onProvider({type:'conversation.item.input_audio_transcription.completed', transcript:'tell me a fact about Saturn', item_id:'i2'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, 0));"
+            "  if(!ordinarySent.some((m)=>m.type==='response.cancel')) process.exit(14);"
+            "  if(!ordinarySent.some((m)=>m.type==='response.create')) process.exit(15);"
+            "  console.log('ok');"
+            "})().catch((err)=>{ console.error(err); process.exit(1); });",
             str(PWA / "webrtc.js"),
         ],
         check=False,

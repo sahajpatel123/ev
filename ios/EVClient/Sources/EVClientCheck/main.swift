@@ -772,6 +772,51 @@ do {
     print("FAIL: voice wake: \(error)")
 }
 
+// 14c. Native Muse speech errors must recover the client state without
+// confusing ordinary empty turns or intentionally fatal session closure.
+do {
+    let unusable = LiveVoiceEvent(
+        type: "error",
+        text: "Muse Voice Transcribe reported an error",
+        code: "asr_unusable"
+    )
+    expect(
+        LiveVoiceRecoveryPolicy.action(for: unusable) == .reconnect,
+        "MVT unusable stream requests one live reconnect"
+    )
+
+    let auth = LiveVoiceEvent(
+        type: "error",
+        text: "Muse Voice authentication failed",
+        code: "asr_auth_failed"
+    )
+    expect(
+        LiveVoiceRecoveryPolicy.action(for: auth) == .resetTurn,
+        "MVT auth failure resets the pending turn without a reconnect loop"
+    )
+
+    let empty = LiveVoiceEvent(type: "error", text: "No speech", code: "asr_empty_result")
+    expect(
+        LiveVoiceRecoveryPolicy.action(for: empty) == .none,
+        "empty ASR result is an ordinary no-speech outcome"
+    )
+
+    let fatal = LiveVoiceEvent(
+        type: "error",
+        text: "Sleep phrase — live channel closing",
+        code: "listening_stopped",
+        fatal: true
+    )
+    expect(
+        LiveVoiceRecoveryPolicy.action(for: fatal) == .none,
+        "fatal sleep/session closure stays with the normal lifecycle"
+    )
+    print("ok: live Muse error recovery policy")
+} catch {
+    failures.append("live Muse error recovery: \(error)")
+    print("FAIL: live Muse error recovery: \(error)")
+}
+
 // 15. Keychain token store (skip silently when an unsigned CLT binary is
 // denied keychain access; that is an environment limitation, not a client bug).
 do {

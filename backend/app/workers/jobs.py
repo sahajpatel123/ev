@@ -135,7 +135,7 @@ def run_research_job(job_id: str) -> dict:
 
 
 def run_life_stream_tick() -> dict:
-    """Headless iMessage/contacts/mail/calendar follower. No windows. Opt-in."""
+    """Headless Mac continuity-hub follower. No windows. Opt-in."""
     import asyncio
 
     from app.services.life_stream_daemon import (
@@ -166,6 +166,7 @@ def run_life_stream_tick() -> dict:
                 raw = result.data.get("contacts") if result.data else None
                 if isinstance(raw, list):
                     contacts = [row for row in raw if isinstance(row, dict)]
+                    daemon.remember_contacts(contacts)
             except Exception as exc:  # noqa: BLE001 - follower must not crash the scheduler
                 contacts = []
                 contacts_error = f"{type(exc).__name__}: {exc}"

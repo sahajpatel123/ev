@@ -43,6 +43,10 @@ def test_muse_spark_fails_closed_without_key(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(settings, "meta_model_api_key", None)
     monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
     monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setattr(settings, "opencode_api_key", None)
+    monkeypatch.setattr(settings, "opencode_env_file", "")
+    monkeypatch.setenv("EV_OPENCODE_API_KEY", "")
+    monkeypatch.setenv("OPENCODE_API_KEY", "")
     with pytest.raises((MuseProviderUnavailable, Exception)):
         get_chat_provider()
 
@@ -56,6 +60,10 @@ def test_muse_spark_empty_instance_key_fails_closed_not_nameerror(
     monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
     monkeypatch.setenv("META_MODEL_API_KEY", "")
     monkeypatch.setenv("MODEL_API_KEY", "")
+    monkeypatch.setattr(settings, "opencode_api_key", None)
+    monkeypatch.setattr(settings, "opencode_env_file", "")
+    monkeypatch.setenv("EV_OPENCODE_API_KEY", "")
+    monkeypatch.setenv("OPENCODE_API_KEY", "")
     provider = MuseSparkProvider(
         base_url="https://api.meta.ai/v1",
         api_key="",
@@ -161,17 +169,29 @@ async def test_spark_intent_falls_through_to_structured_on_tool_schema_400(
     assert intent.route == "CONVERSATION"
 
 
-def test_normal_s2s_brain_is_off(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pipeline_brain_keeps_s2s_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "pipeline")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     monkeypatch.setattr(settings, "xai_api_key", "xai-test")
+    monkeypatch.setattr(settings, "chat_provider", "xai")
+    monkeypatch.setattr(settings, "intelligence_provider", "")
+    monkeypatch.setattr(settings, "voice_asr_provider", "echo")
     assert live_realtime_provider() is None
     assert grok_voice_enabled() is False
+
+
+def test_auto_live_brain_uses_openai_realtime_when_keyed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "auto")
-    assert live_realtime_provider() is None
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    monkeypatch.setattr(settings, "xai_api_key", "xai-test")
+    monkeypatch.setattr(settings, "chat_provider", "xai")
+    monkeypatch.setattr(settings, "intelligence_provider", "")
+    monkeypatch.setattr(settings, "voice_asr_provider", "echo")
+    assert live_realtime_provider() == "openai"
+    assert grok_voice_enabled() is True
 
 
-def test_explicit_openai_realtime_rollback_still_exists(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_explicit_openai_realtime_is_the_live_mouth(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "openai")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     monkeypatch.setattr(settings, "chat_provider", "xai")
@@ -411,21 +431,24 @@ async def test_muse_spark_chat_and_tools_and_stream(monkeypatch: pytest.MonkeyPa
 
         def json(self):
             return {
+                "id": "resp_test",
                 "model": "muse-spark-1.3-contributor",
-                "choices": [
+                "output_text": "hello",
+                "output": [
                     {
-                        "message": {
-                            "content": "hello",
-                            "tool_calls": [
-                                {
-                                    "id": "c1",
-                                    "function": {"name": "emit_intent", "arguments": '{"route":"CONVERSATION"}'},
-                                }
-                            ],
-                        }
-                    }
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "hello"}],
+                    },
+                    {
+                        "type": "function_call",
+                        "id": "fc_test",
+                        "call_id": "c1",
+                        "name": "emit_intent",
+                        "arguments": '{"route":"CONVERSATION"}',
+                    },
                 ],
-                "usage": {"prompt_tokens": 11, "completion_tokens": 5, "total_tokens": 16},
+                "usage": {"input_tokens": 11, "output_tokens": 5, "total_tokens": 16},
             }
 
     class _Stream:
@@ -466,15 +489,17 @@ async def test_muse_spark_chat_and_tools_and_stream(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("app.gateway.providers.httpx.AsyncClient", _Client)
     monkeypatch.setattr("app.gateway.muse_spark.httpx.AsyncClient", _Client)
     provider = MuseSparkProvider(
-        base_url="https://api.meta.ai/v1",
+        base_url="https://opencode.ai/zen/go/v1",
         api_key="test-key",
         default_model="muse-spark-1.3-contributor",
         provider_name="meta_muse_spark",
     )
     chat = await provider.chat([ChatMessage(role="user", content="hi")])
     assert chat.text == "hello"
+    assert captured["url"] == "https://opencode.ai/zen/go/v1/responses"
     assert captured["payload"]["model"] == "muse-spark-1.3-contributor"
-    assert captured["payload"]["reasoning_effort"] == "high"
+    assert captured["payload"]["reasoning"] == {"effort": "high"}
+    assert captured["payload"]["input"] == [{"role": "user", "content": "hi"}]
     assert "temperature" not in captured["payload"]
     tools = await provider.chat_with_tools(
         [ChatMessage(role="user", content="hi")],
@@ -624,8 +649,8 @@ def test_muse_spark_coerces_legacy_client_model_ids() -> None:
     assert provider._resolve_model("gpt-5.6-luna") == "muse-spark-1.3-contributor"
     assert provider._resolve_model("grok-4.6") == "muse-spark-1.3-contributor"
     assert provider._resolve_model("deepseek-v4-flash") == "muse-spark-1.3-contributor"
-    assert provider._resolve_model("muse-spark-1.3-contributor") == "muse-spark-1.3-contributor"
-    assert provider._resolve_model("muse-spark-1.3") == "muse-spark-1.3"
+    assert provider._resolve_model("muse-spark-1.2-contributor") == "muse-spark-1.3-contributor"
+    assert provider._resolve_model("muse-spark-1.3") == "muse-spark-1.3-contributor"
     headers = provider._stream_headers()
     assert headers["Accept"] == "text/event-stream"
     assert headers["Authorization"].startswith("Bearer ")
@@ -645,6 +670,7 @@ def test_talk_sidecar_refuses_muse_without_meta_key(monkeypatch: pytest.MonkeyPa
     monkeypatch.delenv("META_MODEL_API_KEY", raising=False)
     monkeypatch.delenv("EV_META_MODEL_API_KEY", raising=False)
     monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.setenv("EV_OPENCODE_API_KEY", "spark-test-not-logged")
     assert mod.muse_selected() is True
     assert mod.meta_key_loaded() is False
     with pytest.raises(SystemExit) as exited:
@@ -654,6 +680,30 @@ def test_talk_sidecar_refuses_muse_without_meta_key(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("EV_META_MODEL_API_KEY", "meta-test-not-logged")
     mod.refuse_muse_without_key()
     assert mod.meta_key_loaded() is True
+
+
+def test_talk_sidecar_refuses_spark_without_opencode_key(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py")
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar_spark_key", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("EV_CHAT_PROVIDER", "meta_muse_spark")
+    monkeypatch.setenv("EV_VOICE_ASR_PROVIDER", "meta_muse_voice")
+    monkeypatch.setenv("META_MODEL_API_KEY", "meta-test-not-logged")
+    monkeypatch.setenv("EV_OPENCODE_API_KEY", "")
+    monkeypatch.setenv("OPENCODE_API_KEY", "")
+    monkeypatch.setenv("EV_OPENCODE_ENV_FILE", str(tmp_path / "missing.env"))
+    assert mod.muse_spark_selected() is True
+    assert mod.opencode_key_loaded() is False
+    with pytest.raises(SystemExit) as exited:
+        mod.refuse_muse_without_key()
+    assert exited.value.code == 2
 
 
 def test_talk_sidecar_overlay_fills_empty_meta_key(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -693,6 +743,7 @@ def test_talk_sidecar_muse_env_beats_leftover_xai_and_openai(
     monkeypatch.setenv("EV_VOICE_TTS_PROVIDER", "openai_compat")
     monkeypatch.setenv("EV_TURN_CONTROL_PROVIDER", "openai")
     monkeypatch.setenv("EV_ALLOW_REMOTE_ASR", "false")
+    monkeypatch.setenv("EV_ALLOW_REMOTE_TTS", "false")
     env_file = tmp_path / ".env"
     env_file.write_text(
         "\n".join(
@@ -707,6 +758,7 @@ def test_talk_sidecar_muse_env_beats_leftover_xai_and_openai(
                 "EV_MUSE_SPARK_MODEL=muse-spark-1.3-contributor",
                 "EV_MUSE_VOICE_MODEL=muse-voice-transcribe-1.0",
                 "EV_ALLOW_REMOTE_ASR=true",
+                "EV_ALLOW_REMOTE_TTS=true",
             ]
         )
         + "\n"
@@ -719,7 +771,64 @@ def test_talk_sidecar_muse_env_beats_leftover_xai_and_openai(
     assert os.environ["EV_VOICE_TTS_PROVIDER"] == "edge_tts"
     assert os.environ["EV_TURN_CONTROL_PROVIDER"] == "meta_muse_spark"
     assert os.environ["EV_ALLOW_REMOTE_ASR"] == "true"
+    assert os.environ["EV_ALLOW_REMOTE_TTS"] == "true"
     assert mod.muse_selected() is True
+
+
+def test_talk_sidecar_openai_realtime_beats_leftover_muse(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util
+    import os
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py")
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar_openai_live", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("EV_CHAT_PROVIDER", "meta_muse_spark")
+    monkeypatch.setenv("EV_VOICE_ASR_PROVIDER", "meta_muse_voice")
+    monkeypatch.setenv("EV_VOICE_LIVE_BRAIN", "pipeline")
+    monkeypatch.setenv("EV_PHONE_AUDIO_BACKEND", "pcm_ws")
+    monkeypatch.setenv("EV_TURN_CONTROL_PROVIDER", "meta_muse_spark")
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "EV_CHAT_PROVIDER=xai",
+                "EV_INTELLIGENCE_PROVIDER=",
+                "EV_VOICE_ASR_PROVIDER=faster_whisper",
+                "EV_VOICE_LIVE_BRAIN=openai",
+                "EV_PHONE_AUDIO_BACKEND=webrtc_strict",
+                "EV_TURN_CONTROL_PROVIDER=openai",
+            ]
+        )
+        + "\n"
+    )
+    mod.load(env_file)
+    assert os.environ["EV_CHAT_PROVIDER"] == "xai"
+    assert os.environ["EV_VOICE_ASR_PROVIDER"] == "faster_whisper"
+    assert os.environ["EV_VOICE_LIVE_BRAIN"] == "openai"
+    assert os.environ["EV_PHONE_AUDIO_BACKEND"] == "webrtc_strict"
+    assert os.environ["EV_TURN_CONTROL_PROVIDER"] == "openai"
+    assert mod.muse_selected() is False
+
+
+def test_talk_sidecar_edge_tts_forces_remote_allow(monkeypatch: pytest.MonkeyPatch) -> None:
+    import importlib.util
+    import os
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py")
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar_edge_tts", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("EV_VOICE_TTS_PROVIDER", "edge_tts")
+    monkeypatch.setenv("EV_ALLOW_REMOTE_TTS", "false")
+    mod.ensure_talk_mouth_remote_allowed()
+    assert os.environ["EV_ALLOW_REMOTE_TTS"] == "true"
 
 
 def test_talk_sidecar_muse_selected_if_any_slot_is_muse(
@@ -837,7 +946,10 @@ def test_prove_muse_brain_rejects_stale_xai_health(monkeypatch: pytest.MonkeyPat
         "models": {
             "voice": {"provider": "meta_muse_voice", "model": "muse-voice-transcribe-1.0"},
             "turn_control": {"provider": "meta_muse_spark", "model": "muse-spark-1.3-contributor"},
-            "manager": {"provider": "meta_muse_spark"},
+            "manager": {
+                "provider": "meta_muse_spark",
+                "model": "muse-spark-1.3-contributor",
+            },
             "muse": {"reasoning_effort": "high"},
         },
         "runtime": {"checks": [{"name": "tts", "provider": "edge_tts"}]},
@@ -909,12 +1021,14 @@ async def test_muse_spark_complete_raw_strips_reasoning_and_non_auto_tool_choice
         tools=[{"type": "function", "function": {"name": "list_dir", "parameters": {}}}],
         tool_choice="required",
     )
-    message = captured["payload"]["messages"][0]
-    assert message["role"] == "assistant"
-    assert message["tool_calls"]
-    assert "reasoning_content" not in message
-    assert "reasoning" not in message
-    assert "tool_choice" not in captured["payload"]
+    item = captured["payload"]["input"][0]
+    assert item["type"] == "function_call"
+    assert item["call_id"] == "call_1"
+    assert item["name"] == "list_dir"
+    assert item["arguments"] == "{}"
+    assert "reasoning_content" not in item
+    assert "reasoning" not in item
+    assert captured["payload"]["tool_choice"] == "required"
 
 
 @pytest.mark.asyncio
@@ -964,8 +1078,9 @@ async def test_muse_spark_structured_omits_strict_flag(monkeypatch: pytest.Monke
         [ChatMessage(role="user", content="hi")],
         schema={"type": "object", "properties": {"route": {"type": "string"}}},
     )
-    schema = captured["payload"]["response_format"]["json_schema"]
-    assert "strict" not in schema
+    schema = captured["payload"]["text"]["format"]
+    assert schema["type"] == "json_schema"
+    assert schema["strict"] is False
     assert result.text
     assert muse_counters_snapshot()["spark_reasoning_tokens"] == 12
 
@@ -1102,6 +1217,41 @@ async def test_coding_loop_uses_spark_not_openai_when_muse_on(
     assert openai_posts["n"] == 0
     assert result.get("brain") == "muse-spark-1.3-contributor" or "spark" in str(result.get("brain") or "").lower() or result.get("ok") in {True, False}
 
+@pytest.mark.asyncio
+async def test_code_model_spark_routes_without_global_muse(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """EV_CODE_MODEL=Spark moves code jobs only; chat/intelligence stay put."""
+    from app.ev import luna_code
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "chat_provider", "deepseek")
+    monkeypatch.setattr(settings, "intelligence_provider", "")
+    monkeypatch.setattr(settings, "code_model", "muse-spark-1.3-contributor")
+    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
+
+    async def fake_spark_loop(goal, **kwargs):
+        return {
+            "ok": True,
+            "spoken": "Wrote a script and ran it.",
+            "files_changed": ["hello.py"],
+            "runs": [{"ok": True, "argv": ["python3", "hello.py"], "exit_code": 0}],
+            "brain": "muse-spark-1.3-contributor",
+            "workspace": str(tmp_path),
+            "degraded": False,
+        }
+
+    async def fake_luna_loop(*args, **kwargs):
+        raise AssertionError("Luna must not run when code model is Spark")
+
+    monkeypatch.setattr(luna_code, "_spark_code_loop", fake_spark_loop)
+    monkeypatch.setattr(luna_code, "_luna_loop", fake_luna_loop)
+    result = await luna_code.run_code_job("write a python script that prints hello")
+    assert result.get("brain") == "muse-spark-1.3-contributor"
+    assert result.get("ok") is True
+
 
 @pytest.mark.asyncio
 async def test_muse_spark_401_fails_closed_not_silent_fallback(
@@ -1192,4 +1342,3 @@ async def test_v1_health_reports_muse_pipeline_not_openai_or_deepseek(
     assert "deepseek" not in (body["models"]["manager"].get("provider") or "")
     assert "grok" not in (body["providers"]["live"] or "")
     assert "luna" not in (body["models"]["turn_control"].get("model") or "")
-

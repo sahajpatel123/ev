@@ -1,6 +1,7 @@
 """Luna intent adapter (G1.3) — GPT-5.6 Luna via structured outputs.
 
-Uses OpenAI text/Responses structured outputs when EV_OPENAI_API_KEY is set;
+Uses Muse Spark Contributor Responses/tool calls when configured, and OpenAI
+text/Responses structured outputs only for explicit legacy rollback;
 falls back to deterministic rule-based routing for tests and offline runs.
 No regex-parsed free-form English.
 """
@@ -586,13 +587,17 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
         return intent
     use_spark = False
     try:
-        from app.gateway.muse import muse_intelligence_active, muse_key_loaded
+        from app.gateway.muse import (
+            muse_intelligence_active,
+            muse_spark_key_loaded,
+            muse_spark_model,
+        )
 
         use_spark = muse_intelligence_active()
     except Exception:
         use_spark = False
     if use_spark:
-        if not muse_key_loaded():
+        if not muse_spark_key_loaded():
             return TurnIntent(
                 route="CLARIFICATION",
                 operation="UNKNOWN",
@@ -605,7 +610,10 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
             latency = (time.perf_counter() - start) * 1000
             if not isinstance(intent, TurnIntent):
                 intent = TurnIntent.model_validate(intent)
-            _record_metrics(latency, usage={"model": "muse-spark-1.3-contributor", "route_source": "SPARK"})
+            _record_metrics(
+                latency,
+                usage={"model": muse_spark_model(), "route_source": "SPARK"},
+            )
             record_route_source("SPARK")
             return intent
         except Exception:
@@ -663,11 +671,12 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
 async def _call_luna(turn: str, context: dict | None) -> TurnIntent:
     """Structured TurnIntent. Muse Spark is the normal brain; OpenAI is legacy."""
 
-    from app.gateway.muse import muse_intelligence_active
+    from app.gateway.muse import muse_intelligence_active, muse_spark_model
 
     if muse_intelligence_active():
         intent = await _call_spark_intent(turn, context)
-        _record_luna_model("muse-spark-1.3-contributor", "muse-spark-1.3-contributor", success=True)
+        model = muse_spark_model()
+        _record_luna_model(model, model, success=True)
         return intent
 
     requested = (getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-5.6-luna"

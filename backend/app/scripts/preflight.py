@@ -84,13 +84,13 @@ def _check_chat() -> tuple[str, str, str]:
         MUSE_SPARK_PROVIDERS,
         configured_intelligence_provider,
         muse_intelligence_active,
-        muse_key_loaded,
+        muse_spark_key_loaded,
         muse_spark_model,
     )
 
     provider = configured_intelligence_provider() or settings.chat_provider
     if provider.lower() in MUSE_SPARK_PROVIDERS or muse_intelligence_active():
-        if muse_key_loaded():
+        if muse_spark_key_loaded():
             return (
                 "REAL",
                 "meta_muse_spark",
@@ -99,7 +99,7 @@ def _check_chat() -> tuple[str, str, str]:
         return (
             "PARTIAL",
             "meta_muse_spark",
-            "configured Muse Spark but META_MODEL_API_KEY is missing — "
+            "configured Muse Spark but OPENCODE_API_KEY is missing — "
             "intelligence fails closed; no silent Grok/DeepSeek substitute",
         )
     if provider == "opencode":

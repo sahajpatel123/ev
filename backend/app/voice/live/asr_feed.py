@@ -280,9 +280,52 @@ class LiveAsrFeed:
         self._final_ready = asyncio.Event()
         self._last_partial_at: float = 0.0
         self._unusable_notified = False
+        self._native_started = False
+        # A failed hosted stream must not be reopened on every PCM block.  The
+        # next VAD turn is the retry boundary, which prevents a provider outage
+        # from becoming a reconnect/error storm while keeping the live socket
+        # usable for text and controls.
+        self._native_failed = False
 
     def _native_stream(self) -> bool:
         return bool(getattr(self.transcriber, "native_live_stream", False))
+
+    def _ensure_native(self) -> None:
+        """Open one Muse realtime session for the live conversation.
+
+        Meta's live contract is ENDPOINTING plus continuous PCM (including
+        silence). Local VAD still drives the turn-taker; it must not
+        endStream or reconnect per utterance.
+        """
+
+        if not self._native_stream() or self._native_started or self._native_failed:
+            return
+        starter = getattr(self.transcriber, "start_live", None)
+        if not callable(starter):
+            return
+        self._native_started = True
+        try:
+            starter(
+                self._loop,
+                on_partial=self._on_native_partial,
+                on_final=self._on_native_final,
+                on_unusable=self._on_native_unusable,
+                sample_rate=self.sample_rate,
+                mode="ENDPOINTING",
+            )
+        except Exception as exc:  # noqa: BLE001 - keep the live socket usable
+            self._native_started = False
+            self._native_failed = True
+            self._loop.create_task(
+                self._notify_unusable(
+                    VoiceError(
+                        f"live ASR failed to start: {type(exc).__name__}: {exc}",
+                        status=503,
+                        code="asr_unusable",
+                    )
+                ),
+                name="ev-live-asr-native-start-error",
+            )
 
     async def _on_native_partial(self, text: str) -> None:
         text = (text or "").strip()
@@ -302,6 +345,26 @@ class LiveAsrFeed:
         if self.on_partial is not None:
             await self.on_partial(text)
 
+    async def _on_native_unusable(self, exc: VoiceError) -> None:
+        """Mark the native stream dead and expose one actionable error.
+
+        Muse calls this before its worker has fully left the socket. Abort the
+        worker here so no late provider event can be delivered into the next
+        utterance; retry is intentionally deferred to the next VAD ``begin``.
+        A provider close after a usable final is quiet, but still marks the
+        stream for replacement.
+        """
+
+        self._native_started = False
+        self._native_failed = True
+        aborter = getattr(self.transcriber, "abort_live", None)
+        if callable(aborter):
+            with contextlib.suppress(Exception):
+                aborter()
+        if self._final_text:
+            return
+        await self._notify_unusable(exc)
+
     # ------------------------------------------------------------------ #
     # Lifecycle
     # ------------------------------------------------------------------ #
@@ -318,24 +381,30 @@ class LiveAsrFeed:
         self._speech_active = True
         self._last_partial_at = self._clock()
         if self._native_stream():
-            starter = getattr(self.transcriber, "start_live", None)
-            if callable(starter):
-                starter(
-                    self._loop,
-                    on_partial=self._on_native_partial,
-                    on_final=self._on_native_final,
-                    on_unusable=self.on_unusable,
-                    sample_rate=self.sample_rate,
-                    mode="PUSH_TO_TALK",
-                )
+            if self._native_failed:
+                # A fresh utterance is the explicit retry boundary after a
+                # failed native stream.  Reset the one-shot notification guard
+                # so a later independent failure is still visible.
+                self._native_failed = False
+                self._unusable_notified = False
+            self._ensure_native()
             if self._buffer:
                 feeder = getattr(self.transcriber, "feed_live", None)
                 if callable(feeder):
                     feeder(bytes(self._buffer))
 
     def note_idle(self, pcm: bytes) -> None:
-        """Keep a short pre-speech ring so word onsets are not clipped."""
+        """Keep a short pre-speech ring so word onsets are not clipped.
 
+        Native Muse must keep receiving PCM during silence or Meta closes
+        the stream as idle input.
+        """
+
+        if self._native_stream() and pcm:
+            self._ensure_native()
+            feeder = getattr(self.transcriber, "feed_live", None)
+            if callable(feeder):
+                feeder(pcm)
         if self._speech_active or not pcm or self.prefix_padding_bytes <= 0:
             return
         self._pre_roll.extend(pcm)
@@ -352,9 +421,10 @@ class LiveAsrFeed:
         if remaining > 0:
             self._buffer.extend(pcm[:remaining])
         if self._native_stream():
+            self._ensure_native()
             feeder = getattr(self.transcriber, "feed_live", None)
-            if callable(feeder):
-                feeder(pcm[:remaining] if remaining > 0 else b"")
+            if callable(feeder) and remaining > 0:
+                feeder(pcm[:remaining])
             return
         if self._final_task is not None and not self._final_task.done():
             # Speech resumed after a final transcription started (VAD jitter):
@@ -385,9 +455,8 @@ class LiveAsrFeed:
 
         self._speech_active = False
         if self._native_stream():
-            ender = getattr(self.transcriber, "end_live", None)
-            if callable(ender):
-                ender()
+            # Local VAD ended the owner's turn. Muse ENDPOINTING commits via
+            # speechComplete. endStream would close the whole session.
             return
         if not self._buffer:
             return
@@ -406,10 +475,13 @@ class LiveAsrFeed:
         """The user interrupted / a new turn started: drop in-flight work."""
 
         self._abort_workers()
-        if self._native_stream():
+        if self._native_stream() and clear_pre_roll:
             aborter = getattr(self.transcriber, "abort_live", None)
             if callable(aborter):
                 aborter()
+            self._native_started = False
+            self._native_failed = False
+            self._unusable_notified = False
         self._buffer.clear()
         if clear_pre_roll:
             self._pre_roll.clear()
@@ -441,8 +513,7 @@ class LiveAsrFeed:
 
         if self._final_text is not None:
             return self._final_text
-        # Native Muse stream: LiveAsrFeed opens PUSH_TO_TALK so the commit is
-        # transcript.final (speechComplete is a duplicate-safe fallback).
+        # Native Muse stream: ENDPOINTING commits on speechComplete.
         # Honor timeout_ms so the turn-taker does not lock in the last partial.
         waiting_native = self._native_stream() and bool(timeout_ms)
         if self._final_task is None and not waiting_native:
@@ -460,8 +531,19 @@ class LiveAsrFeed:
         return self._last_partial
 
     def reset(self) -> None:
-        """Called after a reply lands: back to the empty state."""
-        self.abort()
+        """Called after a reply lands: back to the empty utterance state.
+
+        Native Muse stays open across turns. Closing it here forced a
+        reconnect-per-utterance that Meta treats as a new session and that
+        raced with in-flight error events.
+        """
+
+        self._abort_workers()
+        self._buffer.clear()
+        self._speech_active = False
+        self._last_partial = ""
+        if not self._native_stream():
+            self.abort(clear_pre_roll=True)
 
     # ------------------------------------------------------------------ #
     # Internals

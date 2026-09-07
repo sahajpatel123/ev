@@ -307,6 +307,20 @@ def _integration_state(
         not credential_required or row.id in credentialed_integrations
     )
     if row is None:
+        from app.ev.apps import discover_life_helper_path
+        from app.services.life_stream_daemon import life_stream_should_run
+
+        if provider in {"messaging", "phone", "mail", "contacts"} and (
+            life_stream_should_run() or discover_life_helper_path()
+        ):
+            return {
+                "availability": "available",
+                "reason": "macos_life helper on this Mac",
+                "current_provider": "macos_life",
+                "provider_scopes": list(required_scopes),
+                "missing_provider_scopes": [],
+                "credential_ready": True,
+            }
         return {
             "availability": "not_connected",
             "reason": "no active provider connection",

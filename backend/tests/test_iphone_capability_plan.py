@@ -217,18 +217,83 @@ async def test_turn_receipt_is_durable_and_not_self_authority(
         db_session,
         device=device,
         idempotency_key=key,
-        transcript="Set a timer for two minutes",
+        transcript="Can you hear me?",
         session_id="sess-1",
     )
     await db_session.commit()
     assert first["durable"] is True
     assert first["authority"] is False
     assert first["life_mutation"] is False
+    assert first.get("core_takeover") is not True
+    clock_key = "receipt-clock-" + uuid4().hex[:12]
+    clock = await record_turn_receipt(
+        db_session,
+        device=device,
+        idempotency_key=clock_key,
+        transcript="What's the date today?",
+        session_id="sess-1",
+    )
+    await db_session.commit()
+    assert clock["core_takeover"] is True
+    assert clock["core_route"] == "CLOCK"
+    assert str(clock.get("core_reply") or "").startswith("It's")
+    assert clock["authority"] is False
+    name_key = "receipt-name-" + uuid4().hex[:12]
+    unnamed = await record_turn_receipt(
+        db_session,
+        device=device,
+        idempotency_key=name_key,
+        transcript="What's my name?",
+        session_id="sess-1",
+    )
+    await db_session.commit()
+    assert unnamed["core_takeover"] is True
+    assert unnamed["core_route"] == "IDENTITY"
+    from app.ev.assistant import set_owner_preferred_name
+
+    await set_owner_preferred_name(db_session, "Sahaj")
+    await db_session.commit()
+    named_key = "receipt-named-" + uuid4().hex[:12]
+    named = await record_turn_receipt(
+        db_session,
+        device=device,
+        idempotency_key=named_key,
+        transcript="What's my name?",
+        session_id="sess-1",
+    )
+    await db_session.commit()
+    assert named["core_takeover"] is True
+    assert "Sahaj" in str(named.get("core_reply") or "")
+    weather_key = "receipt-wx-" + uuid4().hex[:12]
+    weather = await record_turn_receipt(
+        db_session,
+        device=device,
+        idempotency_key=weather_key,
+        transcript="What's the weather?",
+        session_id="sess-1",
+    )
+    await db_session.commit()
+    assert weather["core_takeover"] is True
+    assert weather["core_route"] == "WEATHER"
+    timer_key = "receipt-timer-" + uuid4().hex[:12]
+    timer = await record_turn_receipt(
+        db_session,
+        device=device,
+        idempotency_key=timer_key,
+        transcript="Set a timer for 5 minutes",
+        session_id="sess-1",
+    )
+    await db_session.commit()
+    assert timer["core_takeover"] is True
+    assert timer["core_route"] == "HOME_STATION"
+    assert "timer" in str(timer.get("core_reply") or "").lower() or "minute" in str(
+        timer.get("core_reply") or ""
+    ).lower()
     replay = await record_turn_receipt(
         db_session,
         device=device,
         idempotency_key=key,
-        transcript="Set a timer for two minutes",
+        transcript="Can you hear me?",
         session_id="sess-1",
     )
     assert replay["replayed"] is True
@@ -364,6 +429,20 @@ def test_trusted_webrtc_tools_are_server_validated() -> None:
     cfg = phone_webrtc_session(device=d)
     names = [t.get("name") for t in cfg.get("tools", [])]
     assert names == ["evie_state_query", "phone_action", "evie_look", "evie_home_action"]
+    blob = cfg["instructions"].lower()
+    assert "evie_state_query" in blob
+    assert "their name" in blob
+    assert "home station" in blob
+    home = next(t for t in cfg["tools"] if t.get("name") == "evie_home_action")
+    caps = ((home.get("parameters") or {}).get("properties") or {}).get("capability") or {}
+    assert "start_timer" in (caps.get("enum") or [])
+    vad = cfg["audio"]["input"]["turn_detection"]
+    assert vad["threshold"] == 0.68
+    assert vad["silence_duration_ms"] == 700
+    assert vad["create_response"] is True
+    named = phone_webrtc_session(device=d, owner_name="Sahaj")
+    assert "The person you are speaking with is Sahaj" in named["instructions"]
+    assert "Sahaj" not in cfg["instructions"]
 
 
 def test_pwa_and_native_source_gates() -> None:
@@ -397,14 +476,24 @@ def test_pwa_and_native_source_gates() -> None:
     assert "Add to Home Screen" in html
     assert "Which iPhone is this?" in html
     assert 'data-surface="privacy"' in html
+    assert 'id="more-sheet"' in html
+    assert "folio-grid" in html
+    assert "more-rail" not in html
+    assert 'id="more-rail"' not in html
     assert 'data-quick="weather"' in html
     assert "paintLive" in app_js
     assert "choice-list" in html
     assert "camera-ask" in html
     assert "record_clip" in app_js
     assert "parsed.needs_camera" in webrtc
+    assert "await this.onCamera({" in webrtc
+    assert "opened.client_generation" in webrtc
+    assert 'type === "response.output_audio.done"' in webrtc
     assert 'self.onState("failed")' in webrtc
     assert "_gateMicForPlayback" in webrtc
+    assert "response.cancel" in webrtc
+    assert "PLAYBACK_MIC_TAIL_MS = 800" in webrtc
+    assert "what's today's date" in app_js
     assert "scheduleHealthRender" in app_js
     assert "hardware: native.hardware" in app_js
     assert "healthkit_snapshot" in broker
@@ -448,7 +537,9 @@ async def test_push_poll_register_and_inbox_channel(client: AsyncClient) -> None
 
 
 @pytest.mark.asyncio
-async def test_phone_core_reads_are_server_validated(client: AsyncClient, db_session: AsyncSession) -> None:
+async def test_phone_core_reads_are_server_validated(client: AsyncClient, db_session: AsyncSession, monkeypatch) -> None:
+    monkeypatch.setattr("app.device_gateway.phone_core.home_coords", lambda: None)
+    monkeypatch.setattr("app.device_gateway.phone_core.default_place", lambda: None)
     body, phone = await _pair(client, role="primary_companion", name="Core Phone")
     promoted = await client.post(
         "/v1/device-gateway/admin/promote-owner",
@@ -463,6 +554,51 @@ async def test_phone_core_reads_are_server_validated(client: AsyncClient, db_ses
     assert weather.json()["route"] == "WEATHER"
     assert weather.json()["executed"] is False
     assert "place" in (weather.json().get("reply") or "").lower()
+
+    named = await phone.post(
+        "/v1/device-gateway/text",
+        json={"text": "What's my name?", "instance_id": "Core Phone-tab", "request_id": "nm0-" + uuid4().hex[:12]},
+    )
+    assert named.status_code == 200, named.text
+    assert named.json()["route"] == "IDENTITY"
+    from app.ev.assistant import set_owner_preferred_name
+
+    await set_owner_preferred_name(db_session, "Sahaj")
+    await db_session.commit()
+    named2 = await phone.post(
+        "/v1/device-gateway/text",
+        json={"text": "What's my name?", "instance_id": "Core Phone-tab", "request_id": "nm1-" + uuid4().hex[:12]},
+    )
+    assert named2.status_code == 200, named2.text
+    assert named2.json()["route"] == "IDENTITY"
+    assert "Sahaj" in (named2.json().get("reply") or "")
+
+    clock = await phone.post(
+        "/v1/device-gateway/text",
+        json={"text": "What's the date today?", "instance_id": "Core Phone-tab", "request_id": "dt-" + uuid4().hex[:12]},
+    )
+    assert clock.status_code == 200, clock.text
+    assert clock.json()["route"] == "CLOCK"
+    assert (clock.json().get("reply") or "").startswith("It's")
+
+    can = await phone.post(
+        "/v1/device-gateway/text",
+        json={"text": "What can you do?", "instance_id": "Core Phone-tab", "request_id": "cap-" + uuid4().hex[:12]},
+    )
+    assert can.status_code == 200, can.text
+    assert can.json()["route"] == "CAPABILITIES"
+    assert "weather" in (can.json().get("reply") or "").lower()
+    assert "home station" in (can.json().get("reply") or "").lower()
+
+    empty_cal = await phone.post(
+        "/v1/device-gateway/text",
+        json={"text": "What's on my calendar?", "instance_id": "Core Phone-tab", "request_id": "cal0-" + uuid4().hex[:12]},
+    )
+    assert empty_cal.status_code == 200, empty_cal.text
+    empty_cal_body = empty_cal.json()
+    assert empty_cal_body["route"] in {"CALENDAR", "HOME_STATION"}
+    assert "Dentist" not in (empty_cal_body.get("reply") or "")
+    assert empty_cal_body.get("conversational") is not True
 
     cal = await phone.post(
         "/v1/device-gateway/calendar/snapshot",
@@ -516,6 +652,36 @@ async def test_phone_core_reads_are_server_validated(client: AsyncClient, db_ses
     assert memory.status_code == 200
     assert memory.json()["route"] == "MEMORY"
     await phone.aclose()
+
+
+@pytest.mark.asyncio
+async def test_phone_core_weather_uses_home_location(db_session: AsyncSession, monkeypatch) -> None:
+    from app.device_gateway.phone_core import maybe_phone_core_read
+
+    monkeypatch.setattr("app.device_gateway.phone_core.home_coords", lambda: (37.77, -122.42))
+    monkeypatch.setattr("app.device_gateway.phone_core.default_place", lambda: "San Francisco")
+
+    class _Hit:
+        snippet = "San Francisco: partly cloudy 18°C"
+
+    async def _fake_weather(_query: str, limit: int = 2):
+        return [_Hit()]
+
+    monkeypatch.setattr("app.device_gateway.phone_core.weather_results", _fake_weather)
+    d = Device(
+        name="Weather Phone",
+        token_hash="weather-phone-home",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+    core = await maybe_phone_core_read(db_session, device=d, text="What's the weather?")
+    assert core is not None
+    assert core["route"] == "WEATHER"
+    assert core["executed"] is True
+    assert "partly cloudy" in (core.get("reply") or "")
 
 
 def test_healthkit_never_enters_webrtc_session() -> None:
@@ -598,3 +764,121 @@ async def test_hello_owner_declared_camera_rank(client: AsyncClient) -> None:
     assert hardware.get("camera_quality") == "pro"
     assert hardware.get("camera_preference_rank") == 0
     await phone.aclose()
+
+
+def test_spark_phone_skips_hearing_chat() -> None:
+    from app.ev.spark_phone import looks_like_phone_chat, should_ask_spark
+
+    assert looks_like_phone_chat("Can you hear me?")
+    assert looks_like_phone_chat("hello")
+    assert not looks_like_phone_chat("Set a timer for 5 minutes")
+    assert not should_ask_spark("yes")
+    assert should_ask_spark("Open Calculator on my Mac")
+
+
+@pytest.mark.asyncio
+async def test_phone_home_station_opens_calculator(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.schemas import ToolCallResponse
+
+    async def _open_app(session, name, arguments, **kwargs):
+        assert name == "open_app"
+        return ToolCallResponse(
+            name="open_app",
+            ok=True,
+            result={"ok": True, "spoken": "Opened Calculator.", "opened": True},
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _open_app)
+    body, phone = await _pair(client, role="primary_companion", name="Act Phone")
+    promoted = await client.post(
+        "/v1/device-gateway/admin/promote-owner",
+        json={"device_id": body["device"]["device_id"], "reason": "owner"},
+    )
+    assert promoted.status_code == 200
+    opened = await phone.post(
+        "/v1/device-gateway/text",
+        json={
+            "text": "Open calculator",
+            "instance_id": "Act Phone-tab",
+            "request_id": "calc-" + uuid4().hex[:12],
+        },
+    )
+    assert opened.status_code == 200, opened.text
+    payload = opened.json()
+    assert payload["route"] == "HOME_STATION"
+    assert payload["executed"] is True
+    assert "Calculator" in (payload.get("reply") or "")
+
+    db_session.expire_all()
+    device = await db_session.get(Device, UUID(body["device"]["device_id"]))
+    assert device is not None
+    skipped = await maybe_phone_mac_act(db_session, device=device, text="Don't open Calculator.")
+    assert skipped is None
+    hearing = await maybe_phone_mac_act(
+        db_session, device=device, text="Turn off the Wi-Fi after I finish this sentence."
+    )
+    assert hearing is None
+    await phone.aclose()
+
+
+@pytest.mark.asyncio
+async def test_phone_home_station_sets_timer(client: AsyncClient) -> None:
+    body, phone = await _pair(client, role="primary_companion", name="Timer Phone")
+    promoted = await client.post(
+        "/v1/device-gateway/admin/promote-owner",
+        json={"device_id": body["device"]["device_id"], "reason": "owner"},
+    )
+    assert promoted.status_code == 200
+    timed = await phone.post(
+        "/v1/device-gateway/text",
+        json={
+            "text": "Set a timer for 5 minutes",
+            "instance_id": "Timer Phone-tab",
+            "request_id": "tmr-" + uuid4().hex[:12],
+        },
+    )
+    assert timed.status_code == 200, timed.text
+    timer_body = timed.json()
+    assert timer_body["route"] == "HOME_STATION"
+    assert timer_body["executed"] is True
+    assert timer_body.get("tool") == "start_timer" or timer_body.get("operation") == "start_timer"
+    from app.device_gateway.mobile_actions.tool import dispatch_phone_action
+
+    native_miss = await dispatch_phone_action(
+        device_id=body["device"]["device_id"],
+        role="primary_companion",
+        instance_id="Timer Phone-tab",
+        session_id="sess-timer",
+        origin="https://home.example.ts.net",
+        arguments={"operation": "create_timer", "duration_minutes": 3},
+        transcript="",
+        device_label="Timer Phone",
+    )
+    assert native_miss.get("home_station") is True
+    assert native_miss.get("ok") is True
+    assert "timer" in str(native_miss.get("spoken") or "").lower() or "minute" in str(
+        native_miss.get("spoken") or ""
+    ).lower()
+    await phone.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_phone_cannot_dispatch_home_station(db_session: AsyncSession) -> None:
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+
+    d = Device(
+        name="Sandbox Act",
+        token_hash="sandbox-act",
+        trust_level="paired",
+        memory_scope="sandbox",
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+    acted = await maybe_phone_mac_act(db_session, device=d, text="Open calculator")
+    assert acted is None

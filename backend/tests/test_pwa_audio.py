@@ -47,7 +47,7 @@ def test_greeting_duplication_invariants() -> None:
     assert "node.start(plan.start)" in audio_js
     assert "LinearResampler" in audio_js
     assert "worklet-ring-buffer" in audio_js
-    assert "AUDIO_ENGINE_VERSION = \"3\"" in audio_js
+    assert 'AUDIO_ENGINE_VERSION = "4"' in audio_js
     assert "mute.gain.value = 0" in app_js
     assert 'msg.type === "tts_chunk"' in app_js
     assert "type: \"playback\"" in app_js

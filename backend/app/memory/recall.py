@@ -31,9 +31,11 @@ from app.memory.retrieval import Retriever
 from app.memory.visual import (
     VISUAL_EVENT_TYPE,
     is_camera_prompt_echo,
+    is_keep_recall_echo,
     is_keep_recall_query,
     is_memory_hedge_scene,
     is_visual_recall_query,
+    keep_topic,
     search_visual_observations,
     visual_observation_matches,
 )
@@ -345,7 +347,14 @@ def _when_epoch(value) -> float:
 def _visual_item_rank(item: dict, *, recency_first: bool = False, topic: str = "") -> tuple:
     """Newest keep/identity first. An older scene must not bury a new memorize."""
 
-    from app.memory.visual import visual_content_tokens, visual_index_tokens, _stems
+    from app.memory.visual import (
+        _keep_is_thin,
+        _remainder_has_identity,
+        is_generic_label_scene,
+        visual_content_tokens,
+        visual_index_tokens,
+        _stems,
+    )
 
     blob = " ".join(
         part
@@ -353,6 +362,7 @@ def _visual_item_rank(item: dict, *, recency_first: bool = False, topic: str = "
             str(item.get("text") or ""),
             str(item.get("recall") or ""),
             str(item.get("object") or ""),
+            str(item.get("description") or ""),
         )
         if part
     ).strip().lower()
@@ -360,7 +370,21 @@ def _visual_item_rank(item: dict, *, recency_first: bool = False, topic: str = "
         "asked evie to remember" in blob
         or "you asked me to remember" in blob
         or str(item.get("reason") or "") == "visual_keep"
-        or str(item.get("memory_type") or "") == "fact"
+        or str(item.get("confidence") or "") == "visual_keep"
+        or str(item.get("kind") or "") == "visual_keep"
+    )
+    stub = (
+        is_generic_label_scene(blob)
+        or not _remainder_has_identity(blob)
+        or _keep_is_thin(
+            {
+                "description": item.get("description") or item.get("text") or "",
+                "recall": item.get("recall") or "",
+                "object": item.get("object") or "",
+                "usable_scene": True,
+            },
+            item.get("text"),
+        )
     )
     recency = -_when_epoch(item.get("when") or item.get("occurred_at"))
     overlap = 0
@@ -370,8 +394,8 @@ def _visual_item_rank(item: dict, *, recency_first: bool = False, topic: str = "
         overlap = -len(_stems(wanted) & _stems(have))
     identity = 0 if (keep or item.get("object") or "it reads" in blob) else 1
     if recency_first:
-        return (recency, identity, overlap, -len(blob))
-    return (overlap, identity, recency, -len(blob))
+        return (0 if keep else 1, recency, 1 if stub else 0, identity, overlap, -len(blob))
+    return (1 if stub else 0, overlap, identity, recency, -len(blob))
 
 
 def _visual_spoken_rank(text: str) -> tuple:
@@ -385,6 +409,8 @@ def _is_waffle_evidence_line(text: str, query: str = "") -> bool:
     if not blob:
         return True
     if blob.endswith("?") or blob.startswith("tell me "):
+        return True
+    if is_keep_recall_echo(text):
         return True
     if blob.startswith(("hey!", "hey ", "hi!", "hi i'm", "hi i am")):
         return True
@@ -442,10 +468,19 @@ def _clip_spoken_body(body: str) -> str:
     text = " ".join(str(body or "").split()).strip().strip("\"'")
     if not text or text.lower().startswith("http"):
         return ""
-    if len(text) <= 140:
+    cap = 140
+    try:
+        from app.ev.spark_task import active_decision
+
+        decision = active_decision()
+        if decision is not None and decision.manner == "readout":
+            cap = 900
+    except Exception:
+        cap = 140
+    if len(text) <= cap:
         return text
-    clipped = text[:137].rsplit(" ", 1)[0].rstrip(",;:")
-    return (clipped or text[:137]).rstrip() + "…"
+    clipped = text[: cap - 3].rsplit(" ", 1)[0].rstrip(",;:")
+    return (clipped or text[: cap - 3]).rstrip() + "…"
 
 
 def _parse_chat_beat(item: dict) -> dict | None:
@@ -501,7 +536,120 @@ def _speak_chat_overview(cards: list[tuple[str, int]]) -> str:
     )
 
 
-def _speak_person_chat(query: str, beats: list[dict], names: list[str]) -> str:
+def _speak_channel(query: str, items: list[dict] | None = None) -> str:
+    from app.memory.life_archive.locate import life_channel
+
+    channel = life_channel(query)
+    if channel == "whatsapp":
+        return "WhatsApp"
+    if channel == "imessage":
+        return "Messages"
+    if channel == "mail":
+        return "mail"
+    sources = {str(item.get("source") or "") for item in items or []}
+    sources.discard("")
+    if sources == {"imessage"}:
+        return "Messages"
+    if sources == {"whatsapp"}:
+        return "WhatsApp"
+    if "imessage" in sources and "whatsapp" in sources:
+        return "Messages and WhatsApp"
+    blob = (query or "").lower()
+    if re.search(r"\b(imessage|sms|texts?|messages?)\b", blob):
+        return "Messages"
+    return "WhatsApp"
+
+
+def _spoken_empty_connected(query: str) -> str:
+    from app.memory.life_archive.locate import (
+        CALL_HISTORY_RE,
+        _NOTIFICATION_ASK,
+        is_live_now_ask,
+        life_channel,
+    )
+
+    blob = (query or "").lower()
+    channel = life_channel(query)
+    if channel == "whatsapp" or "whatsapp" in blob:
+        return (
+            "I don't see new WhatsApp on this Mac right now. "
+            "WhatsApp Desktop has to be logged in here."
+        )
+    if CALL_HISTORY_RE.search(blob):
+        return "I don't see recent calls on this Mac right now."
+    if re.search(r"\bphotos?\b", blob) and is_live_now_ask(query):
+        return "I don't see new photos on this Mac right now."
+    if channel == "mail" or re.search(r"\b(e-?mails?|gmail|mails?)\b", blob):
+        return "I don't see new mail on this Mac right now."
+    if channel == "contacts" or re.search(r"\bcontacts?\b", blob):
+        return "I don't see that contact on this Mac right now."
+    if channel == "imessage":
+        return "I don't see new messages on this Mac right now."
+    if _NOTIFICATION_ASK.search(blob):
+        return "I don't see new messages or calls on this Mac right now."
+    return "I cannot find that particular record."
+
+
+def _speak_other_live(query: str, items: list[dict]) -> str:
+    from app.memory.life_archive.locate import life_channel
+    from app.memory.mail_speak import is_mail_ask, is_mail_hit, speak_mail
+    from app.memory.message_speak import is_chat_hit, speak_messages
+
+    channel = life_channel(query)
+    mail_items = [item for item in items if is_mail_hit(item)]
+    if is_mail_ask(query) or (mail_items and len(mail_items) == len(items)):
+        return speak_mail(query, mail_items or items)
+    chat_items = [item for item in items if is_chat_hit(item)]
+    if chat_items and (channel in {"imessage", "whatsapp"} or len(chat_items) == len(items)):
+        spoken = speak_messages(query, chat_items)
+        if spoken:
+            return spoken
+    bits: list[str] = []
+    seen: set[str] = set()
+    for item in items[:4]:
+        if is_mail_hit(item):
+            headline = speak_mail(query, [item])
+            text = re.sub(r"^Recent mail:\s*", "", headline).strip() if headline else ""
+        else:
+            text = " ".join(str(item.get("text") or "").split()).strip()
+        if not text or text.lower() in seen:
+            continue
+        seen.add(text.lower())
+        if not text.endswith((".", "!", "?")):
+            text = text.rstrip(".") + "."
+        bits.append(text)
+    if not bits:
+        return ""
+    body = " ".join(bits)
+    blob = (query or "").lower()
+    if re.search(r"\bphotos?\b", blob):
+        return f"Latest photos on this Mac: {body}"
+    if re.search(r"\b(call|called|calls)\b", blob):
+        return f"Recent calls on this Mac: {body}"
+    if channel == "contacts" or re.search(r"\bcontacts?\b", blob):
+        return f"On this Mac: {body}"
+    if channel == "imessage":
+        return f"Recent messages on this Mac: {body}"
+    if channel == "whatsapp":
+        return f"Recent WhatsApp on this Mac: {body}"
+    return body
+
+
+def _speak_person_chat(
+    query: str, beats: list[dict], names: list[str], *, channel: str = "WhatsApp"
+) -> str:
+    from app.ev.spark_task import active_decision, wants_readout
+    from app.memory.message_speak import speak_person_gist
+
+    decision = None
+    try:
+        decision = active_decision()
+    except Exception:
+        decision = None
+    readout = (decision is not None and decision.manner == "readout") or wants_readout(query)
+    if not readout:
+        return speak_person_gist(query, beats, names, channel=channel or "WhatsApp")
+    channel = channel or "WhatsApp"
     name = next((item for item in names if item), "")
     if not name:
         for beat in beats:
@@ -523,9 +671,13 @@ def _speak_person_chat(query: str, beats: list[dict], names: list[str]) -> str:
         re.search(r"\blast\b", query or "", re.IGNORECASE)
     )
     if last_ask or recent:
-        lead = f"Last you talked with {name} on WhatsApp" if name else "Last you were chatting on WhatsApp"
+        lead = (
+            f"Last you talked with {name} on {channel}"
+            if name
+            else f"Last you were chatting on {channel}"
+        )
     else:
-        lead = f"You and {name} talk on WhatsApp" if name else "You talk on WhatsApp"
+        lead = f"You and {name} talk on {channel}" if name else f"You talk on {channel}"
     if when:
         lead += f", {when}"
     lead += "."
@@ -544,22 +696,156 @@ def _speak_person_chat(query: str, beats: list[dict], names: list[str]) -> str:
     return spoken[:400]
 
 
+def _keepish_evidence(item: dict) -> bool:
+    blob = " ".join(
+        part
+        for part in (
+            str(item.get("text") or ""),
+            str(item.get("recall") or ""),
+            str(item.get("description") or ""),
+            str(item.get("keep_request") or ""),
+        )
+        if part
+    ).lower()
+    return (
+        str(item.get("reason") or "") == "visual_keep"
+        or str(item.get("kind") or "") == "visual_keep"
+        or str(item.get("confidence") or "") == "visual_keep"
+        or "asked evie to remember" in blob
+        or "you asked me to remember" in blob
+    )
+
+
+def _spoken_from_newest_keep(evidence: list, query: str) -> str | None:
+    """Generic keep-recall speaks this look, not last week's thicker keep."""
+
+    from app.memory.visual import (
+        is_keep_identity_speech,
+        is_keep_recall_echo,
+        is_keep_recall_query,
+        keep_topic,
+        recall_spoken_from_keep,
+    )
+
+    if not is_keep_recall_query(query):
+        return None
+    if keep_topic(query) not in {"", "this", "that", "it", "you"}:
+        return None
+    rows = [item for item in evidence if isinstance(item, dict) and _keepish_evidence(item)]
+    if not rows:
+        return None
+    newest = max(
+        enumerate(rows),
+        key=lambda pair: (
+            _when_epoch(pair[1].get("when") or pair[1].get("occurred_at")),
+            1 if str(pair[1].get("attachment_id") or "").strip() else 0,
+            1 if str(pair[1].get("reason") or "") == "visual_keep" else 0,
+            pair[0],
+        ),
+    )[1]
+    aid = str(newest.get("attachment_id") or "").strip()
+    pool: list[dict] = [newest]
+    newest_line = str(newest.get("text") or newest.get("description") or "").strip()
+    newest_named = bool(
+        recall_spoken_from_keep(newest_line, newest).strip()
+        or is_keep_identity_speech(newest_line)
+    )
+    newest_echo = (not newest_named) and is_keep_recall_echo(newest_line)
+    for item in evidence:
+        if not isinstance(item, dict) or item is newest:
+            continue
+        other_aid = str(item.get("attachment_id") or "").strip()
+        line = str(item.get("text") or item.get("description") or "").strip()
+        if aid:
+            if other_aid == aid:
+                pool.append(item)
+            elif newest_echo and is_keep_identity_speech(line):
+                pool.append(item)
+            continue
+        if newest_named:
+            continue
+        if newest_echo:
+            if is_keep_identity_speech(line):
+                pool.append(item)
+            continue
+        if _keepish_evidence(item):
+            continue
+        if other_aid:
+            continue
+        lowered = line.lower()
+        if lowered.startswith(("i looked", "i recorded", "i took a photo", "i watched")):
+            continue
+        if is_keep_identity_speech(line):
+            pool.append(item)
+    ranked = sorted(pool, key=lambda item: _visual_item_rank(item))
+    for item in ranked:
+        spoken = recall_spoken_from_keep(str(item.get("text") or ""), item)
+        line = spoken.strip() or str(item.get("text") or item.get("description") or "").strip()
+        if not line:
+            continue
+        if is_keep_recall_echo(line):
+            continue
+        asked = " ".join(str(query or "").split()).strip().lower().rstrip("?.")
+        if asked and line.lower().rstrip("?.") == asked:
+            continue
+        if spoken.strip() and not is_keep_recall_echo(spoken):
+            return spoken.strip()[:800]
+        if line and is_keep_identity_speech(line):
+            return line[:800]
+    return "I cannot find that particular record."
+
+
 def _spoken_from_evidence(evidence: list, query: str = "") -> str:
     """Short live line from packed evidence so pipeline/Grok can speak a hit."""
 
-    from app.memory.life_archive.locate import is_chat_with_other_person, is_owner_history_query
+    from app.memory.life_archive.locate import (
+        is_chat_summary_query,
+        is_chat_with_other_person,
+        is_live_now_ask,
+        is_owner_history_query,
+    )
+    from app.memory.life_archive.desk import is_chat_desk_query
     from app.memory.visual import is_keep_recall_query, is_visual_recall_query, keep_topic
+
+    newest_keep = _spoken_from_newest_keep(evidence, query)
+    if newest_keep is not None:
+        return newest_keep
 
     thread_names: list[str] = []
     thread_cards: list[tuple[str, int]] = []
     person_names: list[str] = []
     excerpts: list[str] = []
     chat_items: list[dict] = []
+    other_live: list[dict] = []
     preferred: list[str] = []
     loops: list[str] = []
     rest: list[str] = []
     visual_items: list[dict] = []
     person_chat = is_chat_with_other_person(query)
+    summary_ask = is_chat_summary_query(query)
+    desk_ask = is_chat_desk_query(query)
+    live_now = is_live_now_ask(query)
+    if summary_ask:
+        for item in evidence:
+            kind = str(item.get("memory_type") or item.get("kind") or "")
+            text = " ".join(str(item.get("text") or "").split()).strip()
+            if kind == "life.chat.session" and text:
+                return text[:520]
+        # Fall through and gist beats. Recitation is readout-only.
+    if desk_ask:
+        for item in evidence:
+            kind = str(item.get("memory_type") or item.get("kind") or "")
+            text = " ".join(str(item.get("text") or "").split()).strip()
+            if kind == "life.chat.desk" and text:
+                return text[:520]
+        return "I cannot find that particular record."
+    if any(str(item.get("memory_type") or "") == "life.chat.talk" for item in evidence):
+        for item in evidence:
+            kind = str(item.get("memory_type") or item.get("kind") or "")
+            text = " ".join(str(item.get("text") or "").split()).strip()
+            if kind == "life.chat.talk" and text:
+                return text[:520]
+
     for item in evidence:
         text = " ".join(str(item.get("text") or "").split()).strip()
         if not text:
@@ -581,12 +867,27 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
             if name and name not in person_names:
                 person_names.append(name[:48])
             continue
-        if kind == "life.chat.excerpt" or item.get("kind") == "live_life":
+        live_row = item.get("kind") in {"live_life", "live_mac"}
+        now_row = str(kind) in {
+            "call.history.recorded",
+            "photo.library.indexed",
+            "mail.envelope.received",
+            "contact.discovered",
+            "contact.updated",
+        }
+        chat_row = (
+            kind == "life.chat.excerpt"
+            or str(kind).startswith("message.")
+            or (live_row and bool(_LIVE_CHAT_LINE.match(text)))
+        )
+        if chat_row or now_row:
             if text not in excerpts:
                 excerpts.append(text[:400])
             beat = _parse_chat_beat(item if isinstance(item, dict) else {"text": text})
             if beat:
                 chat_items.append(beat)
+            elif isinstance(item, dict) and (now_row or live_row):
+                other_live.append(item)
             continue
         if person_chat:
             continue
@@ -609,28 +910,47 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
             from app.memory.visual import recall_spoken_from_keep
 
             keep_item = (
-                is_keep_recall_query(query)
-                or str(item.get("reason") or "") == "visual_keep"
-                or kind == "fact"
+                str(item.get("reason") or "") == "visual_keep"
+                or str(item.get("kind") or "") == "visual_keep"
+                or str(item.get("confidence") or "") == "visual_keep"
                 or "asked evie to remember" in blob
                 or "you asked me to remember" in blob
             )
             spoken_text = str(item.get("recall") or "").strip()
             if keep_item:
-                spoken_text = spoken_text or recall_spoken_from_keep(
+                spoken_text = recall_spoken_from_keep(
                     text, item if isinstance(item, dict) else None
                 )
-            visual_items.append(
-                {
-                    "text": (spoken_text or text)[:400],
-                    "match_text": text[:400],
-                    "recall": spoken_text[:400] if spoken_text else text[:400],
-                    "object": item.get("object") or "",
-                    "reason": item.get("reason") or "",
-                    "memory_type": kind,
-                    "when": item.get("when") or item.get("occurred_at"),
-                }
+            identity_only = (
+                str(item.get("reason") or "") == "visual_keep"
+                or str(item.get("kind") or "") == "visual_keep"
+                or "asked evie to remember" in blob
+                or "you asked me to remember" in blob
             )
+            if identity_only and not spoken_text:
+                pass
+            else:
+                visual_items.append(
+                    {
+                        "text": (spoken_text or ("" if keep_item else text))[:800],
+                        "match_text": text[:800],
+                        "recall": spoken_text[:800] if spoken_text else (
+                            "" if keep_item else text[:800]
+                        ),
+                        "description": str(item.get("description") or "").strip(),
+                        "object": item.get("object") or "",
+                        "surface": item.get("surface") or "",
+                        "placement": item.get("placement") or "",
+                        "reason": item.get("reason") or "",
+                        "kind": item.get("kind") or kind,
+                        "confidence": item.get("confidence") or "",
+                        "keep_request": item.get("keep_request") or "",
+                        "attachment_id": item.get("attachment_id") or "",
+                        "memory_type": kind,
+                        "when": item.get("when") or item.get("occurred_at"),
+                        "occurred_at": item.get("occurred_at"),
+                    }
+                )
         if kind == "open_loop" or blob.startswith("resolved:") or blob.startswith("open:"):
             if text not in loops:
                 loops.append(text[:400])
@@ -661,6 +981,10 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
 
         topic = keep_topic(query)
         recency_first = topic in {"", "this", "that", "it", "you"}
+        if recency_first and is_keep_recall_query(query):
+            visual_items = [
+                item for item in visual_items if _keepish_evidence(item)
+            ]
         wanted = visual_content_tokens(topic) if not recency_first else set()
         if wanted:
             matched = [
@@ -692,7 +1016,15 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
             ),
         )
         if ranked:
-            return ranked[0]["text"][:400]
+            from app.memory.room import looks_like_object_locate, spoken_object_locate
+
+            if looks_like_object_locate(query):
+                return spoken_object_locate(query, ranked[0])[:400]
+            line = str(ranked[0].get("text") or "").strip()
+            if line:
+                return line[:800]
+        if is_keep_recall_query(query):
+            return "I cannot find that particular record."
     if mode in {"solved", "leave_off", "still_open"}:
         lines = (loops + preferred)[:3] or rest[:3]
     elif owner_first:
@@ -704,10 +1036,57 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
             line if line.endswith((".", "!", "?")) else line.rstrip(".") + "."
             for line in lines
         )[:400]
-    if person_chat:
-        spoken = _speak_person_chat(query, chat_items, thread_names)
-        if spoken:
-            return spoken[:400]
+    has_connected = any(
+        str(item.get("kind") or "") == "live_mac"
+        or str(item.get("memory_type") or "").startswith("message.")
+        or str(item.get("memory_type") or "")
+        in {
+            "call.history.recorded",
+            "photo.library.indexed",
+            "mail.envelope.received",
+            "contact.discovered",
+            "contact.updated",
+        }
+        for item in evidence
+    )
+    if person_chat or has_connected or other_live:
+        from app.memory.mail_speak import SPOKEN_MAIL_CAP, SPOKEN_READOUT_CAP, is_mail_ask, is_mail_hit
+
+        extra = _speak_other_live(query, other_live)
+        if extra and (
+            is_mail_ask(query)
+            or (other_live and all(is_mail_hit(item) for item in other_live))
+        ):
+            cap = (
+                SPOKEN_READOUT_CAP
+                if extra.lower().startswith("reading it out")
+                else SPOKEN_MAIL_CAP
+            )
+            return extra[:cap]
+        if person_chat:
+            spoken = _speak_person_chat(
+                query, chat_items, thread_names, channel=_speak_channel(query, chat_items)
+            )
+            combined = " ".join(part for part in (spoken, extra) if part).strip()
+            if combined:
+                return combined[:520]
+        else:
+            from app.memory.message_speak import is_chat_hit, speak_messages
+
+            chat_rows = [
+                item
+                for item in evidence
+                if isinstance(item, dict) and is_chat_hit(item)
+            ]
+            spoken = speak_messages(query, chat_rows)
+            if spoken:
+                return spoken[:520]
+            if extra:
+                return extra[:520]
+        if live_now:
+            return _spoken_empty_connected(query)
+    if live_now:
+        return _spoken_empty_connected(query)
     chats = _speak_chat_overview(thread_cards) or _speak_name_list(
         "You talk on WhatsApp with", thread_names
     )
@@ -718,7 +1097,7 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
         return people[:400]
     if lines:
         return " ".join(lines)[:400]
-    return "I cannot find that particular record."
+    return _spoken_empty_connected(query)
 
 
 def _json_ready(value):
@@ -774,22 +1153,27 @@ def _finish_explicit_recall(
         },
     )
     extra = facet or {}
+    line_cap = 800 if is_visual_recall_query(query) or is_keep_recall_query(query) else 200
+    from app.memory.visual import owner_memory_hit_text
+
     lines = [
-        " ".join(str(item.get("text") or "").split()).strip()[:200]
+        owner_memory_hit_text(item.get("text"), item if isinstance(item, dict) else None)[:line_cap]
         for item in evidence[:8]
-        if str(item.get("text") or "").strip()
+        if str(item.get("text") or item.get("description") or "").strip()
     ]
     return _json_ready({
         "ok": bool(evidence),
         "intent": "explicit_recall" if intent != "fresh" else intent,
         "question": (query or "")[:240],
         "count": len(evidence),
-        "lines": lines,
+        "lines": [line for line in lines if line],
         "evidence": evidence,
         "results": [
             {
                 "id": item.get("id"),
-                "text": item.get("text"),
+                "text": owner_memory_hit_text(
+                    item.get("text"), item if isinstance(item, dict) else None
+                ),
                 "memory_type": item.get("memory_type") or item.get("kind"),
                 "score": item.get("score"),
                 "date": item.get("when"),
@@ -807,11 +1191,15 @@ def _finish_explicit_recall(
                 "score": row.get("score"),
             }
             for row in timeline_rows[:8]
-            if row.get("kind") in {"life", "live_life", "event"}
+            if row.get("kind") in {"life", "live_life", "live_mac", "event"}
         ],
         "degraded": False,
         "grounding": "evidence" if evidence else "no_reliable_record",
-        "spoken": _spoken_from_evidence(evidence, query) if evidence else "I cannot find that particular record.",
+        "spoken": (
+            _spoken_from_evidence(evidence, query)
+            if evidence
+            else _spoken_empty_connected(query)
+        ),
         "elapsed_ms": packed_ms,
         "facet": facet_mode,
         "life_shelf": shelf,
@@ -820,6 +1208,146 @@ def _finish_explicit_recall(
         "changes": extra.get("changes"),
         "project_state": extra.get("project_state"),
     })
+
+
+async def _apply_life_spoken(session: AsyncSession, query: str, pack: dict) -> dict:
+    """Twin rewind and leave-X misses get a human sentence, not a hedge."""
+
+    from app.ev.edith import looks_like_twin_query, spoken_twin
+    from app.memory.life_archive.locate import is_chat_summary_query
+    from app.memory.life_archive.sessions import summarize_chat_for_query
+    from app.memory.room import looks_like_object_locate, spoken_object_locate
+
+    if looks_like_twin_query(query):
+        line = await spoken_twin(session, query)
+        if line:
+            pack["spoken"] = line
+            pack["twin"] = True
+        return pack
+    from app.memory.life_archive.desk import answer_desk_query, is_chat_desk_query
+
+    if is_chat_desk_query(query):
+        result = await answer_desk_query(session, query)
+        if result and result.get("spoken"):
+            evidence = result["evidence"]
+            pack["spoken"] = result["spoken"]
+            pack["evidence"] = evidence
+            pack["results"] = [
+                {
+                    "id": item.get("id"),
+                    "text": item.get("text"),
+                    "memory_type": item.get("memory_type") or item.get("kind"),
+                    "score": item.get("score"),
+                    "date": item.get("when"),
+                    "provenance": item.get("provenance") or [],
+                }
+                for item in evidence
+            ]
+            pack["lines"] = [str(result["spoken"])[:200]]
+            pack["count"] = len(evidence)
+            pack["ok"] = True
+            pack["grounding"] = "evidence"
+            pack["life_shelf"] = "chats"
+        return pack
+    from app.memory.life_archive.talk import answer_talk_query, is_talk_pattern_query
+
+    if is_talk_pattern_query(query):
+        result = await answer_talk_query(session, query)
+        if result and result.get("spoken"):
+            evidence = result["evidence"]
+            pack["spoken"] = result["spoken"]
+            pack["evidence"] = evidence
+            pack["results"] = [
+                {
+                    "id": item.get("id"),
+                    "text": item.get("text"),
+                    "memory_type": item.get("memory_type") or item.get("kind"),
+                    "score": item.get("score"),
+                    "date": item.get("when"),
+                    "provenance": item.get("provenance") or [],
+                }
+                for item in evidence
+            ]
+            pack["lines"] = [str(result["spoken"])[:200]]
+            pack["count"] = len(evidence)
+            pack["ok"] = True
+            pack["grounding"] = "evidence"
+            pack["life_shelf"] = "chats"
+        return pack
+    if is_chat_summary_query(query):
+        result = await summarize_chat_for_query(session, query)
+        if result and result.get("spoken"):
+            evidence = result["evidence"]
+            pack["spoken"] = result["spoken"]
+            pack["evidence"] = evidence
+            pack["results"] = [
+                {
+                    "id": item.get("id"),
+                    "text": item.get("text"),
+                    "memory_type": item.get("memory_type") or item.get("kind"),
+                    "score": item.get("score"),
+                    "date": item.get("when"),
+                    "provenance": item.get("provenance") or [],
+                }
+                for item in evidence
+            ]
+            pack["lines"] = [str(result["spoken"])[:200]]
+            pack["count"] = len(evidence)
+            pack["ok"] = True
+            pack["grounding"] = "evidence"
+            pack["life_shelf"] = "chats"
+            return pack
+        # No session gist yet — fall through and speak a header+about line.
+    if looks_like_object_locate(query):
+        spoken = str(pack.get("spoken") or "")
+        lowered = spoken.lower()
+        if not spoken or "cannot find that particular record" in lowered:
+            pack["spoken"] = spoken_object_locate(query, None)
+            pack["ok"] = False
+            return pack
+
+    from app.ev.spark_task import bind_decision, decide_task, reset_decision
+    from app.memory.life_archive.locate import life_channel
+
+    shelf = str(pack.get("life_shelf") or "")
+    channel = life_channel(query)
+    if shelf in {"mail", "chats", "calls", "contacts", "calendar", "inbox"} or channel:
+        decision = await decide_task(query, family_hint=shelf or (channel or ""))
+        token = bind_decision(decision)
+        try:
+            pack["task_decision"] = decision.as_dict()
+            evidence = [item for item in (pack.get("evidence") or []) if isinstance(item, dict)]
+            if decision.family == "mail" or shelf == "mail" or channel == "mail":
+                from app.memory.mail_speak import fill_readout, is_mail_hit, speak_mail
+
+                rows = [item for item in evidence if is_mail_hit(item)] or evidence
+                if decision.manner == "readout" and rows:
+                    fill_readout(rows[0])
+                spoken = speak_mail(query, rows, decision=decision)
+                if spoken:
+                    pack["spoken"] = spoken
+            elif decision.family == "messages" or shelf == "chats" or channel in {
+                "imessage",
+                "whatsapp",
+            }:
+                from app.memory.life_archive.locate import is_chat_with_other_person
+                from app.memory.message_speak import speak_messages
+
+                if is_chat_with_other_person(query) and decision.manner != "readout":
+                    spoken = _spoken_from_evidence(evidence, query)
+                else:
+                    spoken = speak_messages(query, evidence, decision=decision)
+                    if not spoken:
+                        spoken = _spoken_from_evidence(evidence, query)
+                if spoken:
+                    pack["spoken"] = spoken
+            else:
+                spoken = _spoken_from_evidence(evidence, query)
+                if spoken:
+                    pack["spoken"] = spoken
+        finally:
+            reset_decision(token)
+    return pack
 
 
 async def build_explicit_recall_payload(
@@ -859,6 +1387,10 @@ async def build_explicit_recall_payload(
         if is_visual_recall_query(query) or is_keep_recall_query(query):
             # Camera keeps live in observation/fact rows, not a takeout drawer.
             shelf = None
+        from app.ev.edith import looks_like_twin_query
+
+        if looks_like_twin_query(query):
+            shelf = None
         archive = await locate_archive(session, query, shelf=shelf, k=min(MAX_ARCHIVE_HITS, k))
         log_memory(
             "memory.life_locate",
@@ -866,15 +1398,19 @@ async def build_explicit_recall_payload(
         )
         if shelf is not None:
             # One drawer, one small pack. Do not scan chat/memories/neighbors.
-            return _finish_explicit_recall(
-                query=query,
-                intent=intent,
-                evidence=archive[: max(1, min(k, MAX_ARCHIVE_HITS))],
-                started=started,
-                shelf=shelf,
-                timeline_rows=archive,
-                facet_mode=temporal.mode,
-                semantic_ms=0,
+            return await _apply_life_spoken(
+                session,
+                query,
+                _finish_explicit_recall(
+                    query=query,
+                    intent=intent,
+                    evidence=archive[: max(1, min(k, MAX_ARCHIVE_HITS))],
+                    started=started,
+                    shelf=shelf,
+                    timeline_rows=archive,
+                    facet_mode=temporal.mode,
+                    semantic_ms=0,
+                ),
             )
         events, _event_meta = await _search_events(
             session, query, expanded, k=max(12, k), until=temporal.until or temporal.as_of
@@ -928,20 +1464,29 @@ async def build_explicit_recall_payload(
         elif extras:
             evidence = extras + evidence
             evidence = evidence[: max(1, min(k, 12))]
-        return _finish_explicit_recall(
-            query=query,
-            intent=intent,
-            evidence=evidence,
-            started=started,
-            shelf=None,
-            timeline_rows=events,
-            facet_mode=temporal.mode,
-            semantic_ms=semantic_ms,
-            facet=facet,
+        return await _apply_life_spoken(
+            session,
+            query,
+            _finish_explicit_recall(
+                query=query,
+                intent=intent,
+                evidence=evidence,
+                started=started,
+                shelf=None,
+                timeline_rows=events,
+                facet_mode=temporal.mode,
+                semantic_ms=semantic_ms,
+                facet=facet,
+            ),
         )
     except Exception:  # noqa: BLE001 - tool must not crash the live turn
         logger.exception("explicit_recall_failed")
         log_memory("memory.degraded", extra={"error": "explicit_recall_failed"})
+        from app.memory.room import looks_like_object_locate, spoken_object_locate
+
+        spoken = "I cannot find that particular record."
+        if looks_like_object_locate(query):
+            spoken = spoken_object_locate(query, None)
         return {
             "ok": False,
             "intent": intent,
@@ -952,7 +1497,7 @@ async def build_explicit_recall_payload(
             "timeline": [],
             "degraded": True,
             "grounding": "no_reliable_record",
-            "spoken": "I cannot find that particular record.",
+            "spoken": spoken,
         }
 
 
@@ -1424,7 +1969,23 @@ def _pack_evidence(
             merged.append(item)
     owner_first = [item for item in merged if item.get("source") == "owner"]
     rest = [item for item in merged if item.get("source") != "owner"]
-    if is_visual_recall_query(query):
+    recency_keep = is_keep_recall_query(query) and keep_topic(query) in {
+        "",
+        "this",
+        "that",
+        "it",
+        "you",
+    }
+    if recency_keep:
+        keep_rows = [item for item in merged if _keepish_evidence(item)]
+        if keep_rows:
+            keep_rows.sort(
+                key=lambda item: -_when_epoch(item.get("when") or item.get("occurred_at"))
+            )
+            ordered = keep_rows[:1]
+        else:
+            ordered = owner_first + rest
+    elif is_visual_recall_query(query):
         visual = [
             item
             for item in merged
@@ -1439,11 +2000,10 @@ def _pack_evidence(
             if not is_memory_hedge_scene(str(item.get("text") or ""))
         ]
         visual.sort(
-            key=lambda item: (
-                0
-                if item.get("memory_type") == "fact"
-                or "asked evie to remember" in str(item.get("text") or "").lower()
-                else 1
+            key=lambda item: _visual_item_rank(
+                item,
+                recency_first=True,
+                topic=keep_topic(query),
             )
         )
         rest = [item for item in merged if item not in visual]
@@ -1481,6 +2041,19 @@ def _pack_evidence(
                 "confidence": item.get("confidence"),
                 "score": item.get("score"),
                 "provenance": item.get("provenance") or [],
+                "reason": item.get("reason"),
+                "recall": item.get("recall"),
+                "description": item.get("description"),
+                "object": item.get("object"),
+                "keep_request": item.get("keep_request"),
+                "attachment_id": item.get("attachment_id"),
+                "labels": item.get("labels"),
+                "colors": item.get("colors"),
+                "ocr_text": item.get("ocr_text"),
+                "printed": item.get("printed"),
+                "surface": item.get("surface"),
+                "placement": item.get("placement"),
+                "occurred_at": item.get("occurred_at"),
             }
         )
         if len(packed) >= k:

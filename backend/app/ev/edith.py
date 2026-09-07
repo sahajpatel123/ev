@@ -4,6 +4,7 @@ focus designation, device fleet, recognition log, ops center, digital twin.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
@@ -768,6 +769,82 @@ async def twin(session: AsyncSession, *, as_of: datetime | None = None) -> TwinO
         health=health,
         confidence=round(sum(confidences) / len(confidences), 3) if confidences else 0.0,
     )
+
+
+_TWIN_RE = re.compile(
+    r"\b(?:"
+    r"who was i\b|"
+    r"what was i like\b|"
+    r"what did i believe\b|"
+    r"what did i care about\b|"
+    r"digital twin|"
+    r"time[- ]travel|"
+    r"who am i becoming|"
+    r"what were my (?:goals|priorities)(?: last| in| as of)|"
+    r"as of last (?:year|month|week|"
+    r"january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def looks_like_twin_query(message: str | None) -> bool:
+    """True when they want a rewind of themselves, not a person card."""
+
+    text = (message or "").strip()
+    if not text:
+        return False
+    if re.search(r"\bwho (?:is|was) [A-Z][a-z]{2,}\b", text) and not re.search(
+        r"\bwho was i\b", text, re.IGNORECASE
+    ):
+        return False
+    return bool(_TWIN_RE.search(text))
+
+
+def _clip_twin_line(text: str) -> str:
+    blob = " ".join(str(text or "").split()).strip().rstrip(".")
+    if len(blob) > 140:
+        blob = blob[:137].rstrip() + "…"
+    return blob
+
+
+async def spoken_twin(session: AsyncSession, query: str) -> str:
+    """Speakable snapshot of the owner now, or as of a named past."""
+
+    from app.memory.state import classify_temporal_query
+
+    temporal = classify_temporal_query(query)
+    as_of = temporal.as_of or temporal.until
+    snap = await twin(session, as_of=as_of)
+    parts = [
+        line
+        for line in (
+            _clip_twin_line(str((snap.facts[0] or {}).get("text") or "") if snap.facts else ""),
+            _clip_twin_line(
+                str((snap.preferences[0] or {}).get("text") or "") if snap.preferences else ""
+            ),
+            _clip_twin_line(str((snap.goals[0] or {}).get("text") or "") if snap.goals else ""),
+        )
+        if line
+    ]
+    if not parts:
+        if as_of:
+            return (
+                "I don't have enough of you from then to rewind yet. "
+                "Keep living out loud and I'll have a twin to time-travel."
+            )
+        return (
+            "I don't have a twin of you yet — just this conversation. "
+            "Tell me what you care about and I'll remember who you were."
+        )
+    body = ". ".join(parts[:3])
+    if not body.endswith("."):
+        body += "."
+    if as_of:
+        stamp = as_of.strftime("%B %Y")
+        return f"As of {stamp}: {body}"[:400]
+    return f"Here's who you are from what I've kept. {body}"[:400]
 
 
 async def hud_focus(session: AsyncSession) -> HudFocusOut:

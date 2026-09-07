@@ -74,10 +74,10 @@ SYSTEM_PROMPT = (
 def curator_available() -> bool:
     if not settings.memory_curator_enabled:
         return False
-    from app.gateway.muse import muse_intelligence_active, muse_key_loaded
+    from app.gateway.muse import muse_intelligence_active, muse_spark_key_loaded
 
     if muse_intelligence_active():
-        return muse_key_loaded()
+        return muse_spark_key_loaded()
     return bool((settings.deepseek_api_key or "").strip())
 
 

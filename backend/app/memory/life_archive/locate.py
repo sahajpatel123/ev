@@ -36,6 +36,8 @@ SHELF_TYPES: dict[str, tuple[str, ...]] = {
     "bookmarks": ("life.bookmark",),
     "owner": ("life.owner.voice",),
     "health": ("life.health.metric",),
+    "calls": ("life.call.record",),
+    "inbox": ("life.inbox.live",),
 }
 
 AISLE_HEADERS = {
@@ -51,6 +53,8 @@ AISLE_HEADERS = {
     "bookmarks": "Saved links and reading lists.",
     "owner": "How the owner writes in WhatsApp. Open only for voice/style questions.",
     "health": "Recorded health snapshots. Open for health history, not live vitals.",
+    "calls": "Call history from this Mac (Continuity / iPhone forwarding). Open for who called, not to place a call.",
+    "inbox": "Live WhatsApp, iMessage/SMS, calls, and mail on this Mac. Open for new notifications or anything new.",
 }
 
 _STOP = frozenset(
@@ -94,6 +98,7 @@ _STOP = frozenset(
 )
 
 _SHELF_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("calls", ("call history", "missed call", "recent calls", "who called", "last call")),
     ("mail", ("email", "e-mail", "gmail", "inbox", "mailbox", "mail subject")),
     ("photos", ("photo", "photos", "picture", "pictures", "album", "screenshot", "selfie")),
     ("contacts", ("contact", "contacts", "address book", "phone book", "vcard")),
@@ -151,6 +156,144 @@ _WHO_I_TALK = re.compile(
 _PERSON_ASK = re.compile(
     r"\b(do i know|who is|who's|who was|named|called)\b",
     re.IGNORECASE,
+)
+CALL_HISTORY_RE = re.compile(
+    r"\b("
+    r"who called|who(?:'s| has) (?:been )?calling|"
+    r"miss(?:ed)? (?:a |any )?calls?|"
+    r"call history|recent calls?|last call|"
+    r"calls? i (?:got|missed|received)|"
+    r"did .{1,40} call me|anyone call|"
+    r"incoming calls?|outgoing calls?|"
+    r"new calls?|live calls?|call updates"
+    r")\b",
+    re.IGNORECASE,
+)
+_NOTIFICATION_ASK = re.compile(
+    r"\b("
+    r"notifications?|unread|"
+    r"did i miss anything|"
+    r"anything new|"
+    r"any updates?|new updates?"
+    r")\b",
+    re.IGNORECASE,
+)
+_WHATSAPP_WORD = re.compile(r"\bwhatsapp\b", re.IGNORECASE)
+_MAIL_WORD = re.compile(
+    r"\b(?:e-?mails?|gmail|inbox|mailbox|mails?)\b",
+    re.IGNORECASE,
+)
+_IMESSAGE_WORD = re.compile(
+    r"\b(?:imessage|i-message|sms|rcs)\b|"
+    r"\b(?:who texted|new messages|my messages|the messages|any messages)\b|"
+    r"\b(?:messages|texts|texted|messaged|message me)\b|"
+    r"\btext (?:me|from|from me)\b",
+    re.IGNORECASE,
+)
+_CONTACTS_WORD = re.compile(
+    r"\b(?:contacts?|address book|phone book|vcard)\b",
+    re.IGNORECASE,
+)
+_POSSESSIVE_CONTACT_FIELD = re.compile(
+    r"\b[A-Za-z][A-Za-z'-]+'s\s+(?:phone\s+)?(?:number|e-?mail|contact)\b|"
+    r"\b(?:phone\s+)?(?:number|e-?mail)\s+for\b",
+    re.IGNORECASE,
+)
+
+
+def life_channel(query: str) -> str | None:
+    """One spoken aisle. messages→iMessage, mail→mail, WhatsApp→WhatsApp.
+
+    Inbox-of-everything stays unclassified here so ``classify_shelf`` can open
+    the mixed notification drawer. Possessive ``Rahul's email`` is contacts,
+    not the mail envelope index.
+    """
+    blob = (query or "").strip().lower()
+    if not blob:
+        return None
+    if _WHATSAPP_WORD.search(blob):
+        return "whatsapp"
+    if _POSSESSIVE_CONTACT_FIELD.search(blob) or _CONTACTS_WORD.search(blob):
+        return "contacts"
+    if _MAIL_WORD.search(blob):
+        return "mail"
+    if _IMESSAGE_WORD.search(blob):
+        return "imessage"
+    return None
+
+
+def is_live_now_ask(query: str) -> bool:
+    """True when the owner wants current connected-app copies, not an aisle tour."""
+    blob = (query or "").strip().lower()
+    if not blob:
+        return False
+    if CALL_HISTORY_RE.search(blob):
+        return True
+    if _NOTIFICATION_ASK.search(blob):
+        return True
+    channel = life_channel(query)
+    if channel == "whatsapp" and re.search(r"\b(new|live|update|updates|unread|any)\b", blob):
+        return True
+    if channel == "mail" and re.search(r"\b(new|live|unread|recent|any|check|read)\b", blob):
+        return True
+    if channel == "imessage" and re.search(
+        r"\b(new|live|unread|recent|any|who texted|texts?|messages?)\b", blob
+    ):
+        return True
+    if re.search(
+        r"\b(new|live|recent)\b.{0,32}\bphotos?\b|\bphotos?\b.{0,32}\b(new|live|update|updates)\b",
+        blob,
+    ):
+        return True
+    return False
+
+
+_CHAT_ASK_WEAK = frozenset(
+    {
+        "alert",
+        "alerts",
+        "any",
+        "anyone",
+        "anybody",
+        "been",
+        "check",
+        "chat",
+        "chats",
+        "conversation",
+        "conversations",
+        "different",
+        "everybody",
+        "had",
+        "everyone",
+        "family",
+        "friends",
+        "inbox",
+        "latest",
+        "live",
+        "message",
+        "messages",
+        "new",
+        "notification",
+        "notifications",
+        "others",
+        "people",
+        "person",
+        "recent",
+        "someone",
+        "somebody",
+        "text",
+        "texts",
+        "there",
+        "time",
+        "times",
+        "unread",
+        "update",
+        "updates",
+        "various",
+        "whatsapp",
+        "imessage",
+        "sms",
+    }
 )
 _SEND_NOW = re.compile(
     r"^\s*(?:(?:hey|ok|okay|evie|e v)\s+)*"
@@ -236,6 +379,21 @@ _CHAT_WITH_OTHER = re.compile(
     r"(?:on|with|about)\s+(?:my\s+)?([A-Za-z][A-Za-z.'-]{1,30})"
     r"|"
     r"(?:latest|recent news|any word)\s+from\s+(?:my\s+)?([A-Za-z][A-Za-z.'-]{1,30})"
+    r"|"
+    r"(?:summar(?:y|ize|ise)|recap|rundown)\s+"
+    r"(?:of )?(?:my |the |our |yesterday'?s |today'?s |last night'?s )*"
+    r"(?:chat|chats|conversation|talk)s?\s+with\s+(?:my\s+)?([A-Za-z][A-Za-z.'-]{1,30})"
+    r"|"
+    r"(?:chat|conversation) with\s+(?:my\s+)?([A-Za-z][A-Za-z.'-]{1,30})\s+about"
+    r")\b",
+    re.IGNORECASE,
+)
+_SUMMARY_ASK = re.compile(
+    r"\b("
+    r"summar(?:y|ize|ise)|recap|rundown|"
+    r"whole (?:chat|conversation|session)|"
+    r"what (?:was|is) (?:the |that |my )?(?:whole )?(?:chat|conversation).{0,24}about|"
+    r"session(?:s)? of (?:the |that |my )?chat"
     r")\b",
     re.IGNORECASE,
 )
@@ -358,12 +516,38 @@ def classify_shelf(query: str, *, people: list[str] | tuple[str, ...] | None = N
     # Her own captures are camera.observation, not the Photos takeout drawer.
     if is_visual_recall_query(query):
         return None
+    if CALL_HISTORY_RE.search(blob):
+        return "calls"
+    channel = life_channel(query)
+    if channel == "whatsapp" and (
+        _NOTIFICATION_ASK.search(blob) or re.search(r"\b(new|live|update|updates)\b", blob)
+    ):
+        return "chats"
+    if channel == "mail" and (
+        _NOTIFICATION_ASK.search(blob)
+        or re.search(r"\b(new|live|unread|recent|check|read|show|list|any)\b", blob)
+    ):
+        return "mail"
+    if re.search(
+        r"\b(new|live|recent)\b.{0,32}\bphotos?\b|\bphotos?\b.{0,32}\b(new|live|update|updates)\b",
+        blob,
+    ):
+        return "photos"
+    if _NOTIFICATION_ASK.search(blob):
+        return "inbox"
     if _SEND_NOW.search(query or ""):
         return None
     if _ACT_NOW.search(query or ""):
         return None
     if _FAMILIARITY.search(blob):
         return "familiarity"
+    from app.memory.life_archive.desk import is_chat_desk_query
+    from app.memory.life_archive.talk import is_talk_pattern_query
+
+    if is_chat_desk_query(query or ""):
+        return "chats"
+    if is_talk_pattern_query(query or ""):
+        return "chats"
     if is_chat_with_other_person(query or ""):
         return "chats"
     if _CURRENT_TALK.search(blob):
@@ -371,13 +555,25 @@ def classify_shelf(query: str, *, people: list[str] | tuple[str, ...] | None = N
     if _CONVERSATION_AISLE.search(blob):
         return "people" if _WHO_I_TALK.search(blob) else "chats"
     # Mail before generic "message" so chat recall stays on the conversation shelf.
-    if re.search(r"\b(e-?mail|gmail|inbox|mailbox)\b", blob) or re.search(
-        r"\bmail(s|ed|ing)?\b", blob
+    # Possessive "Rahul's email" is contacts (life_channel), not envelopes.
+    if channel == "mail" or (
+        channel is None
+        and re.search(
+            r"\b(e-?mails?|gmail|inbox|mailbox)\b|\bmails?\b",
+            blob,
+        )
     ):
-        if "gmail" in blob or "email" in blob or "e-mail" in blob or "inbox" in blob:
-            return "mail"
-        if re.search(r"\b(mail subject|my mail|an email|the email)\b", blob):
-            return "mail"
+        return "mail"
+    if channel == "imessage" and re.search(
+        r"\b(who texted|new messages|my messages|any messages|texts)\b", blob
+    ):
+        return "chats"
+    if channel == "contacts":
+        return "contacts"
+    if channel == "imessage":
+        return "chats"
+    if channel == "whatsapp":
+        return "chats"
     for shelf, hints in _SHELF_HINTS:
         if any(hint in blob for hint in hints):
             return shelf
@@ -436,6 +632,13 @@ _GENERIC_CHAT_NAMES = frozenset(
         "somebody",
         "someone",
         "them",
+        "most",
+        "least",
+        "recently",
+        "lately",
+        "often",
+        "usually",
+        "today",
     }
 )
 
@@ -468,11 +671,39 @@ def is_chat_with_other_person(query: str) -> bool:
     return bool(_chat_person_query_token(text))
 
 
+def is_chat_summary_query(query: str) -> bool:
+    """True when they asked what a chat was about — including last talk with X.
+
+    Recitation is readout-only. Desk acts (hanging / leave it) stay on the desk path.
+    """
+
+    text = query or ""
+    if not is_chat_with_other_person(text):
+        return False
+    from app.memory.life_archive.desk import is_chat_desk_query
+
+    if is_chat_desk_query(text):
+        return False
+    from app.ev.spark_task import wants_readout
+
+    if wants_readout(text):
+        return False
+    return True
+
+
 def is_owner_history_query(query: str) -> bool:
     """True when they asked Evie about their own past with her, not a WhatsApp quote."""
 
     text = (query or "").strip()
     if not text:
+        return False
+    from app.memory.life_archive.desk import is_chat_desk_query
+
+    if is_chat_desk_query(text):
+        return False
+    from app.memory.life_archive.talk import is_talk_pattern_query
+
+    if is_talk_pattern_query(text):
         return False
     if _quote_from_other_person(text):
         return False
@@ -516,7 +747,15 @@ def life_shelf_for_memory_search(query: str, shelf: str | None) -> str | None:
         return shelf
     if is_chat_with_other_person(text):
         return shelf
+    if shelf == "calls":
+        return shelf
+    if shelf == "inbox":
+        return shelf
     if _CONVERSATION_AISLE.search(text) and not _CURRENT_TALK.search(text):
+        return shelf
+    from app.memory.life_archive.talk import is_talk_pattern_query
+
+    if is_talk_pattern_query(text):
         return shelf
     if is_owner_history_query(text) and shelf in {"chats", "people", "contacts"}:
         return None
@@ -751,8 +990,10 @@ def locate_tokens(query: str) -> list[str]:
         "contact",
         "contacts",
         "email",
+        "emails",
         "gmail",
         "mail",
+        "mails",
         "photo",
         "photos",
         "picture",
@@ -784,6 +1025,24 @@ def locate_tokens(query: str) -> list[str]:
         "health",
         "snapshot",
         "vitals",
+        "call",
+        "calls",
+        "called",
+        "calling",
+        "missed",
+        "history",
+        "notification",
+        "notifications",
+        "unread",
+        "update",
+        "updates",
+        "inbox",
+        "new",
+        "live",
+        "imessage",
+        "sms",
+        "alert",
+        "alerts",
     }
     return [token for token in tokens if token not in shelf_words][:8]
 
@@ -805,40 +1064,20 @@ async def locate_archive(
     if chosen == "familiarity":
         # The aisle is the answer. Do not AND "remember"/"know" against cards.
         distinctive = []
-    elif chosen in {"chats", "people"}:
+    elif chosen == "calls":
         distinctive = [
             token
             for token in distinctive
-            if token
-            not in {
-                "anyone",
-                "anybody",
-                "been",
-                "chat",
-                "chats",
-                "conversation",
-                "conversations",
-                "different",
-                "everybody",
-                "had",
-                "everyone",
-                "family",
-                "friends",
-                "message",
-                "messages",
-                "others",
-                "people",
-                "person",
-                "someone",
-                "somebody",
-                "text",
-                "texts",
-                "time",
-                "times",
-                "various",
-                "whatsapp",
-            }
+            if token not in {"anyone", "anybody", "recent", "incoming", "outgoing", "last"}
         ]
+    elif chosen == "mail":
+        from app.memory.mail_speak import selector_tokens
+
+        distinctive = selector_tokens(query)
+    elif chosen in {"inbox", "contacts"}:
+        distinctive = [token for token in distinctive if token not in _CHAT_ASK_WEAK]
+    elif chosen in {"chats", "people"}:
+        distinctive = [token for token in distinctive if token not in _CHAT_ASK_WEAK]
     person_token = _chat_person_query_token(query)
     if chosen == "chats" and person_token:
         # "last time" must not AND with the name — cards do not say "time".
@@ -902,12 +1141,45 @@ async def locate_archive(
                     "shelf": chosen,
                 }
             )
-    from app.memory.live_life import locate_live_life, merge_life_hits
-
-    live_hits = await locate_live_life(
-        session, query, shelf=chosen, tokens=distinctive, k=limit
+    from app.memory.live_life import (
+        locate_live_life,
+        merge_life_hits,
+        peek_account_life,
+        peek_mac_life,
     )
-    merged = merge_life_hits(live_hits, hits, limit=limit)
+
+    from app.memory.life_archive.desk import is_chat_desk_query
+    from app.memory.life_archive.talk import is_talk_pattern_query
+
+    # Thread overview is names, not a flood of live lines. Named chats and
+    # live notification asks still read the Mac copies. The correspondence
+    # desk loads its own tails.
+    skip_live_flood = (
+        is_chat_desk_query(query)
+        or (
+            chosen == "chats"
+            and not person_token
+            and (
+                bool(_CONVERSATION_AISLE.search(query or ""))
+                or is_talk_pattern_query(query)
+            )
+            and not is_live_now_ask(query)
+        )
+    )
+    mac_hits: list[dict[str, Any]] = []
+    live_hits: list[dict[str, Any]] = []
+    if chosen != "people" and not skip_live_flood:
+        mac_hits = peek_mac_life(query, shelf=chosen, tokens=distinctive, k=limit)
+        if chosen in {"contacts", "mail"}:
+            extra = await peek_account_life(
+                query, shelf=chosen, tokens=distinctive, k=limit
+            )
+            mac_hits = merge_life_hits(extra, mac_hits, limit=limit)
+    if not skip_live_flood:
+        live_hits = await locate_live_life(
+            session, query, shelf=chosen, tokens=distinctive, k=limit
+        )
+    merged = merge_life_hits(mac_hits, merge_life_hits(live_hits, hits, limit=limit), limit=limit)
     if distinctive and not merged:
         return []
     return merged

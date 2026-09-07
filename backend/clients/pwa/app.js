@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.02.06";
+const CLIENT_BUILD = "2026.09.05.03";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -54,6 +54,8 @@ const state = {
   webrtc: null,
   mediaBackend: "webrtc_strict",
   activeBackend: "none",
+  encodedPlaying: false,
+  encodedUrl: null,
   voiceHealth: null,
   connectionDiag: null,
   lastAsr: "",
@@ -700,7 +702,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -762,7 +764,7 @@ function initSwipes(openSurface) {
 
   function interactive(target) {
     return !!(target && target.closest &&
-      target.closest("button, input, a, textarea, select, form, .sheet, .rail, .scrim, .camera-ask, .choice-list, .quick-row"));
+      target.closest("button, input, a, textarea, select, form, .sheet, .scrim, .camera-ask, .choice-list, .quick-row"));
   }
 
   /* Paint at most once per frame, on the compositor (translate3d). */
@@ -1410,16 +1412,23 @@ async function sendText(text) {
   state.userLine = text;
   state.caption = "…";
   pushHistory("user", text);
+  setMood("Thinking");
   paintLive();
-  const body = await api("/v1/device-gateway/text", {
-    method: "POST",
-    body: JSON.stringify({
-      text,
-      instance_id: state.instanceId,
-      request_id: requestId,
-      idempotency_key: requestId,
-    }),
-  });
+  let body;
+  try {
+    body = await api("/v1/device-gateway/text", {
+      method: "POST",
+      body: JSON.stringify({
+        text,
+        instance_id: state.instanceId,
+        request_id: requestId,
+        idempotency_key: requestId,
+      }),
+    });
+  } catch (err) {
+    setMood(state.talking ? "Listening" : "Ready");
+    throw err;
+  }
   state.caption = body.reply || "";
   pushHistory("evie", body.reply || "");
   if (body.conversation_moved) await stopTalk();
@@ -1427,6 +1436,7 @@ async function sendText(text) {
   if (body.phone_action && window.EvieMobileActions) {
     window.EvieMobileActions.present(body.phone_action);
   }
+  setMood(state.talking ? "Listening" : "Ready");
   paintLive();
   return body;
 }
@@ -1495,6 +1505,37 @@ function b64ToBytes(b64) {
   return out;
 }
 
+function playEncodedFallback(msg, gen) {
+  const el = $("encoded-out");
+  if (!el || gen !== state.sessionGen || !state.audioLeader) return;
+  if (state.encodedUrl) URL.revokeObjectURL(state.encodedUrl);
+  const bytes = b64ToBytes(msg.audio_b64);
+  state.encodedUrl = URL.createObjectURL(
+    new Blob([bytes], { type: msg.content_type || "audio/mpeg" })
+  );
+  el.srcObject = null;
+  el.src = state.encodedUrl;
+  const finish = () => {
+    state.encodedPlaying = false;
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: "playback", active: false }));
+    }
+    if (state.talking && gen === state.sessionGen) setMood("Listening");
+    render();
+  };
+  el.onended = finish;
+  el.onerror = finish;
+  state.encodedPlaying = true;
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type: "playback", active: true }));
+  }
+  setMood("Speaking");
+  el.play().catch(() => {
+    state.caption = "Voice connected — tap to enable audio";
+    finish();
+  });
+}
+
 async function attachCapture(ws, stream) {
   const ctx = new AudioContext();
   if (ctx.state === "suspended") await ctx.resume();
@@ -1502,12 +1543,61 @@ async function attachCapture(ws, stream) {
   const mute = ctx.createGain();
   mute.gain.value = 0;
   const sourceRate = ctx.sampleRate;
-  const sendPcm = (float32) => {
-    if (!state.talking || ws.readyState !== WebSocket.OPEN) return;
-    if (engine.halfDuplex && engine.playing) return;
+  // Muse Voice (Meta ASR) clocks ingress at realtime. AudioWorklet posts
+  // 128-sample quanta (~2.7 ms @48k); sending each as its own WS frame is
+  // ~370 tiny frames/sec of jitter that Meta rejects as slower-than-realtime.
+  // Accumulate to 20 ms (320 samples @16k = 640 bytes) before sending so the
+  // backend forwards steady realtime frames. ScriptProcessor already emits
+  // ~85 ms frames and bypasses the accumulator.
+  const FRAME_SAMPLES = Math.floor(TARGET_RATE * 0.02);
+  let pending = new Int16Array(0);
+  const sendPcmBatched = (float32) => {
+    if (!state.talking || ws.readyState !== WebSocket.OPEN) {
+      pending = new Int16Array(0);
+      return;
+    }
+    if (engine.halfDuplex && engine.playing) {
+      pending = new Int16Array(0);
+      return;
+    }
     const pcm = downsample(float32, sourceRate, TARGET_RATE);
-    ws.send(pcm.buffer);
+    if (pcm.length >= FRAME_SAMPLES) {
+      // Large callback (ScriptProcessor): send immediately in 20 ms slices
+      // so one 85 ms burst does not arrive as a single jumbo frame.
+      const merged = new Int16Array(pending.length + pcm.length);
+      merged.set(pending, 0);
+      merged.set(pcm, pending.length);
+      pending = new Int16Array(0);
+      let off = 0;
+      while (off + FRAME_SAMPLES <= merged.length) {
+        if (!state.talking || ws.readyState !== WebSocket.OPEN) break;
+        if (engine.halfDuplex && engine.playing) break;
+        ws.send(merged.slice(off, off + FRAME_SAMPLES).buffer);
+        off += FRAME_SAMPLES;
+      }
+      if (off < merged.length) {
+        pending = merged.slice(off);
+      }
+      return;
+    }
+    const merged = new Int16Array(pending.length + pcm.length);
+    merged.set(pending, 0);
+    merged.set(pcm, pending.length);
+    pending = merged;
+    while (pending.length >= FRAME_SAMPLES) {
+      if (!state.talking || ws.readyState !== WebSocket.OPEN) {
+        pending = new Int16Array(0);
+        return;
+      }
+      if (engine.halfDuplex && engine.playing) {
+        pending = new Int16Array(0);
+        return;
+      }
+      ws.send(pending.slice(0, FRAME_SAMPLES).buffer);
+      pending = pending.slice(FRAME_SAMPLES);
+    }
   };
+  const sendPcm = (float32) => sendPcmBatched(float32);
   if (ctx.audioWorklet) {
     try {
       await ctx.audioWorklet.addModule("/evie/pcm-worklet.js" + ASSET_V);
@@ -1568,7 +1658,7 @@ async function handleLiveMessage(gen, ev) {
     if (!state.audioLeader || !engine) return;
     const contentType = msg.content_type || "audio/pcm";
     if (contentType.indexOf("mpeg") >= 0 || contentType.indexOf("mp3") >= 0) {
-      if (engine.playing || engine.metrics.chunks) return;
+      playEncodedFallback(msg, gen);
       return;
     }
     if (msg.index === 0) {
@@ -1598,6 +1688,24 @@ async function handleLiveMessage(gen, ev) {
     await handleCameraRequest(msg);
   }
   if (msg.type === "conversation_moved") loseAudio("conversation_moved");
+  if (msg.type === "error" && !msg.fatal) {
+    // Voice pipeline failures were previously silent: Thinking flashed then
+    // Listening returned with no caption. Surface Muse ASR/TTS/pipeline
+    // errors as the reply line so a quiet mic or rejected format is visible.
+    const code = String(msg.code || "");
+    const text = String(msg.text || msg.message || "").trim();
+    if (code.indexOf("asr") === 0 || code === "voice_pipeline" || code === "control_rejected" || code === "asr_unavailable") {
+      if (text) {
+        state.caption = text;
+        pushHistory("evie", text);
+      } else if (code === "asr_no_speech") {
+        state.caption = "I didn't catch that — say it again.";
+      }
+      if (state.talking) setMood("Listening");
+      render();
+    }
+    return;
+  }
   if (msg.type === "error" && msg.fatal) await stopTalk();
 }
 
@@ -1907,6 +2015,17 @@ function closeActiveBackend() {
   }
   if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.close();
   state.ws = null;
+  const encoded = $("encoded-out");
+  if (encoded) {
+    encoded.pause();
+    encoded.removeAttribute("src");
+    encoded.srcObject = null;
+    encoded.onended = null;
+    encoded.onerror = null;
+  }
+  if (state.encodedUrl) URL.revokeObjectURL(state.encodedUrl);
+  state.encodedUrl = null;
+  state.encodedPlaying = false;
   if (engine) engine.stop();
   state.activeBackend = "none";
 }
@@ -2206,17 +2325,25 @@ async function boot() {
     if (!$("text-form").hidden) $("text").focus();
   });
   $("more-btn").addEventListener("click", () => {
-    $("more-rail").hidden = !$("more-rail").hidden;
+    const sheet = $("more-sheet");
+    if (sheet && !sheet.hidden) {
+      showSheet("more-sheet", false);
+      stageReturn();
+      return;
+    }
+    stageSlideAside(1);
+    openSurface("more", "from-left");
   });
   function openSurface(surface, origin) {
     const map = {
+      more: "more-sheet",
       conversation: "conversation-sheet",
       devices: "devices-sheet",
       activity: "activity-sheet",
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -2224,7 +2351,6 @@ async function boot() {
       if (on && origin) el.classList.add(origin);
       showSheet(id, on);
     });
-    $("more-rail").hidden = true;
     if (surface === "inbox") refreshInbox();
   }
   document.querySelectorAll("[data-quick]").forEach((btn) => {
@@ -2239,7 +2365,7 @@ async function boot() {
         openSurface("inbox");
         return;
       }
-      const prompt = kind === "weather" ? "what's the weather" : (kind === "today" ? "what's on my calendar today" : "");
+      const prompt = kind === "weather" ? "what's the weather" : (kind === "today" ? "what's today's date" : "");
       if (!prompt) return;
       sendText(prompt).catch((err) => {
         state.caption = String(err.message || err);
@@ -2255,7 +2381,10 @@ async function boot() {
   initSwipes(openSurface);
   initSheetGestures();
   document.querySelectorAll(".sheet-close").forEach((btn) => {
-    btn.addEventListener("click", () => showSheet(btn.getAttribute("data-close"), false));
+    btn.addEventListener("click", () => {
+      showSheet(btn.getAttribute("data-close"), false);
+      stageReturn();
+    });
   });
   const appearance = $("appearance");
   if (appearance) {

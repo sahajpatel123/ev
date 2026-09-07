@@ -126,11 +126,11 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.09.02.06"
+    pwa_build: str = "2026.09.05.03"
     phone_audio_backend: str = "webrtc_strict"  # webrtc_strict | webrtc | pcm_ws | encoded | auto
     phone_asr_model: str = "gpt-4o-transcribe"
     phone_asr_language: str = "en"
-    phone_input_noise_reduction: str = "near_field"  # near_field | far_field | off
+    phone_input_noise_reduction: str = "far_field"  # near_field | far_field | off
     pwa_design_version: str = "veil-1"
     device_access_ttl_seconds: int = 900
     pairing_ttl_seconds: int = 900
@@ -450,14 +450,20 @@ class Settings(BaseSettings):
     # When set, typed chat / live pipeline / curator / turn-control share this
     # general-intelligence provider. Empty = follow EV_CHAT_PROVIDER.
     intelligence_provider: str = ""
-    # Meta Model API (Muse Voice Transcribe + Muse Spark 1.3 Contributor).
+    # Meta Model API (Muse Voice Transcribe). Muse Spark Contributor is served
+    # through OpenCode Go's Responses endpoint below.
     # Secret: META_MODEL_API_KEY in ~/.ev/secrets/production.env (also EV_META_MODEL_API_KEY).
     meta_model_api_key: str | None = None
     meta_model_base_url: str = "https://api.meta.ai/v1"
     meta_model_asr_realtime_url: str = "wss://api.meta.ai/v1/asr/realtime"
     muse_spark_model: str = "muse-spark-1.3-contributor"
+    muse_spark_base_url: str = "https://opencode.ai/zen/go/v1"
     muse_voice_model: str = "muse-voice-transcribe-1.0"
     muse_spark_reasoning_effort: str = "high"
+    # INTELLIGENCE LAYER (additive observer). "" = off. "spark" = Muse Spark
+    # Contributor reviews each completed spoken reply for bluff/filler/steer
+    # and reports to voice health. Never blocks or rewrites speech.
+    intelligence_layer: str = ""
     local_model_base_url: str | None = None  # OpenAI-compatible local server (Ollama/llama.cpp)
     local_model_name: str = "llama3"
     model_call_log_enabled: bool = True
@@ -478,8 +484,8 @@ class Settings(BaseSettings):
     xai_voice_realtime_url: str = "wss://api.x.ai/v1/realtime"
     xai_voice_vad_threshold: float = 0.72
     xai_voice_silence_ms: int = 550
-    # pipeline = Muse Voice Transcribe + existing chat + existing TTS (normal).
-    # openai / xai = explicit legacy S2S rollback. auto no longer opens S2S.
+    # auto = OpenAI Realtime if EV_OPENAI_API_KEY is set, else Grok Voice.
+    # openai / xai force one S2S provider. pipeline = ASR + chat + TTS.
     voice_live_brain: str = "auto"
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
@@ -490,8 +496,7 @@ class Settings(BaseSettings):
     # raise to medium/high when depth matters more than response time.
     openai_realtime_reasoning_effort: str = "low"
     openai_realtime_url: str = "wss://api.openai.com/v1/realtime"
-    # G1.3/G1.5 Turn Control Plane. Normal path is Muse Spark structured intent.
-    # openai + gpt-5.6-luna remains an explicit legacy rollback only.
+    # G1.3/G1.5 Turn Control Plane. Default openai + gpt-5.6-luna.
     turn_control_provider: str = "openai"
     turn_control_model: str = "gpt-5.6-luna"
     turn_control_fallback_model: str = "gpt-4o-mini"
@@ -732,8 +737,9 @@ class Settings(BaseSettings):
     life_confirm_unknown: bool = True
     life_helper_timeout_seconds: float = 20.0
     life_helper_max_output_bytes: int = 65_536
-    # Headless live-memory follower (iMessage/contacts deltas). Off in CI.
+    # Headless live-memory follower (iMessage/WhatsApp/calls/photos). Off in CI.
     # Also auto-runs when messaging_provider=macos_life and a helper path is set.
+    # Ask-time recall peeks those Mac DBs when this is on.
     life_stream_enabled: bool = False
     life_stream_interval_seconds: int = 20
     life_stream_cursor_path: str = "~/.ev/life_stream_cursor.json"
@@ -747,6 +753,7 @@ class Settings(BaseSettings):
     voice_shadow_budget_tokens: int = 900  # cap for the injected SHADOW MEMORY block
     voice_shadow_min_score: float = 0.0  # retrieval floor for shadow chunks
     ui_verb_tools_enabled: bool = True  # read/see/click/type/key/... registry toggle
+    voice_shadow_wait_ms: int = 350  # bound on shadow recall before bare response.create (shadow mode)
     # --- END EV VOICE CONTROL PLAN --------------------------------------------
 
 

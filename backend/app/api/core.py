@@ -1842,7 +1842,12 @@ async def run_chat_pipeline(
         )
         supports_native_tools = bool(getattr(provider, "supports_tools", True))
         dispatched_names = {item.name for item in receipts}
-        stream_tokens = text_delta_callback is not None and not write_needed
+        # A streamed no-tool turn cannot execute a read-only tool returned by
+        # the model. Keep streaming for genuinely tool-free replies only;
+        # when any tool is offered, route through the supervised loop so
+        # Responses function calls remain validated, dispatched, and replayed
+        # with their receipts before the answer is spoken.
+        stream_tokens = text_delta_callback is not None and not write_needed and not tool_specs
         if stream_tokens and text_delta_callback is not None:
             await _progress("model", {"streaming": True})
             call = None
@@ -1897,10 +1902,33 @@ async def run_chat_pipeline(
                 status_code=403,
                 detail=f"Model boundary blocked this request: {call.error}",
             )
-        if call.status == "error":
+        if call.status in {"error", "degraded"}:
+            from app.gateway.muse import MUSE_SPARK_PROVIDERS
+
             raise HTTPException(
                 status_code=503,
                 detail=f"Model provider unavailable: {call.error}",
+                headers={
+                    "X-Error-Code": (
+                        "muse_unavailable"
+                        if call.provider in MUSE_SPARK_PROVIDERS
+                        else "model_unavailable"
+                    )
+                },
+            )
+        if not (result.text or "").strip() and not result.tool_calls:
+            from app.gateway.muse import MUSE_SPARK_PROVIDERS
+
+            raise HTTPException(
+                status_code=503,
+                detail="Model provider returned no answer.",
+                headers={
+                    "X-Error-Code": (
+                        "muse_empty_response"
+                        if call.provider in MUSE_SPARK_PROVIDERS
+                        else "model_empty_response"
+                    )
+                },
             )
 
         await _progress("output_filter")

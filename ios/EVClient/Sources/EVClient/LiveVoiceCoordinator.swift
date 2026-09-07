@@ -40,12 +40,27 @@ public final class LiveVoiceCoordinator: ObservableObject {
     private var lastPartialRenderAt = Date.distantPast
     private let partialRenderInterval: TimeInterval = 0.12
     private var lastTtsAt = Date.distantPast
+    /// One native speech-perception recovery request per websocket. A
+    /// persistent MVT outage must not make the client reconnect in a tight
+    /// loop, while a fresh EV channel must still get a fresh ASR session.
+    private var asrRecoveryRequested = false
+    private var pendingASRRecovery = false
+    private var pendingASRRecoveryMessage: String?
+    private var speechPerceptionErrorVisible = false
 
     public init() {
 #if os(iOS) || os(macOS)
         player.onPlayingChange = { [weak self] playing in
             Task { @MainActor in
                 self?.connection?.sendPlayback(active: playing)
+                if !playing, self?.pendingASRRecovery == true {
+                    self?.pendingASRRecovery = false
+                    self?.pendingASRRecoveryMessage = nil
+                    // The recovery latch was claimed when the provider
+                    // error arrived. Close directly after playback ends;
+                    // requesting a second time would be deduplicated.
+                    self?.connection?.close()
+                }
             }
         }
         player.onError = { [weak self] detail in
@@ -85,6 +100,10 @@ public final class LiveVoiceCoordinator: ObservableObject {
     public func stop() {
         loopTask?.cancel()
         loopTask = nil
+        asrRecoveryRequested = false
+        pendingASRRecovery = false
+        pendingASRRecoveryMessage = nil
+        speechPerceptionErrorVisible = false
         tearDownChannel()
         isActive = false
         isRunning = false
@@ -285,6 +304,10 @@ public final class LiveVoiceCoordinator: ObservableObject {
         let connection = LiveVoiceConnection(baseURL: client.baseURL, token: client.token)
         self.connection = connection
         let stream = try await connection.connect(sessionId: opened.sessionId)
+        asrRecoveryRequested = false
+        pendingASRRecovery = false
+        pendingASRRecoveryMessage = nil
+        speechPerceptionErrorVisible = false
         isActive = true
         isMuted = false
         isPaused = false
@@ -348,6 +371,7 @@ public final class LiveVoiceCoordinator: ObservableObject {
         }
         switch event.type {
         case "ready":
+            speechPerceptionErrorVisible = false
             if let id = event.conversationId, !id.isEmpty {
                 conversationId = id
             }
@@ -366,10 +390,15 @@ public final class LiveVoiceCoordinator: ObservableObject {
         case "final_transcript":
             if let text = event.text, !text.isEmpty {
                 lastPartialRenderAt = .distantPast
+                speechPerceptionErrorVisible = false
                 transcript = text
             }
         case "partial":
             if let text = event.text, !text.isEmpty {
+                if speechPerceptionErrorVisible {
+                    lastError = nil
+                    speechPerceptionErrorVisible = false
+                }
                 let now = Date()
                 guard now.timeIntervalSince(lastPartialRenderAt) >= partialRenderInterval
                     || transcript.isEmpty
@@ -379,6 +408,10 @@ public final class LiveVoiceCoordinator: ObservableObject {
             }
         case "reply":
             if let text = event.text, !text.isEmpty {
+                if speechPerceptionErrorVisible {
+                    lastError = nil
+                    speechPerceptionErrorVisible = false
+                }
                 transcript = text
             }
 #if os(iOS) || os(macOS)
@@ -393,6 +426,10 @@ public final class LiveVoiceCoordinator: ObservableObject {
         case "tts_chunk":
             if let b64 = event.audioB64, let data = Data(base64Encoded: b64) {
 #if os(iOS) || os(macOS)
+                if speechPerceptionErrorVisible {
+                    speechPerceptionErrorVisible = false
+                    lastError = nil
+                }
                 // Tool-gap mic hold: continuation after a 0.4s+ silence gap
                 // must keep mic muted or ambient noise splits the answer.
                 let gap = Date().timeIntervalSince(lastTtsAt)
@@ -417,6 +454,18 @@ public final class LiveVoiceCoordinator: ObservableObject {
                 isMuted = muted == "true" || muted == "1"
             }
         case "error":
+            let recovery = LiveVoiceRecoveryPolicy.action(for: event)
+            if recovery == .reconnect {
+                let message = event.text ?? event.code ?? "Muse Voice input failed"
+                speechPerceptionErrorVisible = true
+                requestASRReconnect(message: message)
+            } else if recovery == .resetTurn {
+                // The socket remains usable for controls and text, but any
+                // unfinished semantic turn must not leave the UI appearing
+                // busy after the recognizer rejected it.
+                speechPerceptionErrorVisible = true
+                lastError = event.text ?? event.code
+            }
             if event.code == "realtime_disconnect" {
                 player.stop()
                 lastError = "Realtime voice disconnected. I’ll keep this session and reconnect."
@@ -700,5 +749,23 @@ public final class LiveVoiceCoordinator: ObservableObject {
         microphone.stop()
         player.stop()
 #endif
+    }
+
+    /// Reopen the EV live websocket when the backend reports a dead native
+    /// speech stream. Existing playback is allowed to finish before closing
+    /// the channel so reconnection never cuts a spoken sentence in half.
+    private func requestASRReconnect(message: String) {
+        guard !asrRecoveryRequested else { return }
+        asrRecoveryRequested = true
+        pendingASRRecoveryMessage = message
+#if os(iOS) || os(macOS)
+        if player.isPlaying {
+            pendingASRRecovery = true
+            return
+        }
+#endif
+        pendingASRRecovery = false
+        pendingASRRecoveryMessage = nil
+        connection?.close()
     }
 }

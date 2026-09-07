@@ -5,7 +5,8 @@ contract implemented in ``macos/Sources/EVLifeHelper/main.swift``:
 
 - CLI: ``EVLifeHelper <command> [--flag value ...]``
 - commands: ``contacts.list | contacts.resolve --query | messages.list
-  [--limit N] | messages.send --to --text | mail.list [--limit N] |
+  [--limit N] | messages.send --to --text | whatsapp.send --to --text |
+  mail.list [--limit N] |
   mail.send --to --subject --body | call.place --destination [--kind
   tel|facetime] | call.check | apps.frontmost | apps.activate |
   apps.quit | open.url``
@@ -17,7 +18,9 @@ contract implemented in ``macos/Sources/EVLifeHelper/main.swift``:
 - delivery evidence: ``messages.send`` / ``mail.send`` must set
   ``data.sent == true``, and ``call.place`` must set ``data.opened == true``.
   ``data.dry_run == true`` is NOT delivery. Without real confirmation the
-  backend refuses to report success.
+  backend refuses to report success. ``whatsapp.send`` confirms
+  ``data.opened == true`` (WhatsApp compose UI). It does not claim the
+  message was tapped Send.
 """
 
 from __future__ import annotations
@@ -40,12 +43,14 @@ DELIVERY_COMMANDS = {
     "messages.send",
     "mail.send",
     "call.place",
+    "whatsapp.send",
 }
 
 CONFIRMATION_FIELD = {
     "messages.send": "sent",
     "mail.send": "sent",
     "call.place": "opened",
+    "whatsapp.send": "opened",
 }
 
 COMMAND_FLAGS: dict[str, tuple[tuple[str, str], ...]] = {
@@ -55,6 +60,7 @@ COMMAND_FLAGS: dict[str, tuple[tuple[str, str], ...]] = {
     "contacts.update": (("id", "--id"), ("query", "--query"), ("name", "--name"), ("phone", "--phone"), ("email", "--email"), ("company", "--company")),
     "messages.list": (("limit", "--limit"),),
     "messages.send": (("to", "--to"), ("text", "--text")),
+    "whatsapp.send": (("to", "--to"), ("text", "--text")),
     "mail.list": (("limit", "--limit"),),
     "mail.send": (("to", "--to"), ("subject", "--subject"), ("body", "--body")),
     "call.place": (("destination", "--destination"), ("kind", "--kind")),

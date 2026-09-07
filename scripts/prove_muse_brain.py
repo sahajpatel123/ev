@@ -73,7 +73,9 @@ def _is_muse(body: dict | None) -> bool:
         and voice.get("provider") == "meta_muse_voice"
         and voice.get("model") == "muse-voice-transcribe-1.0"
         and turn.get("provider") == "meta_muse_spark"
+        and turn.get("model") == "muse-spark-1.3-contributor"
         and manager.get("provider") == "meta_muse_spark"
+        and manager.get("model") == "muse-spark-1.3-contributor"
         and muse.get("reasoning_effort") == "high"
         and tts_ok
         and sha == _head_sha()
@@ -91,7 +93,7 @@ def wait_for_muse(*, seconds: float = 90.0) -> dict:
     sys.stderr.write(
         "Talk sidecar on :18000 is not the current Muse brain "
         "(need chat=meta_muse_spark live=pipeline voice=meta_muse_voice "
-        "turn_control=meta_muse_spark manager=meta_muse_spark "
+        "turn_control=meta_muse_spark/1.3 manager=meta_muse_spark/1.3 "
         "tts=edge_tts reasoning_effort=high and git.sha=HEAD).\n"
     )
     raise SystemExit(3)
@@ -106,6 +108,18 @@ def main() -> None:
     ).expanduser()
     mod.load(secrets)
     mod.refuse_muse_without_key()
+    # Export Muse Talk selection before (re)starting the sidecar so its
+    # launcher keeps the Muse brain even when the repo .env selects S2S
+    # voice. The sidecar child inherits this process env.
+    for _key, _value in {
+        "EV_CHAT_PROVIDER": "meta_muse_spark",
+        "EV_INTELLIGENCE_PROVIDER": "meta_muse_spark",
+        "EV_TURN_CONTROL_PROVIDER": "meta_muse_spark",
+        "EV_VOICE_ASR_PROVIDER": "meta_muse_voice",
+        "EV_VOICE_TTS_PROVIDER": "edge_tts",
+        "EV_VOICE_LIVE_BRAIN": "pipeline",
+    }.items():
+        os.environ[_key] = _value
     if not _is_muse(_health()):
         subprocess.check_call(
             [sys.executable, str(REPO / "scripts" / "start_talk_sidecar.py")],

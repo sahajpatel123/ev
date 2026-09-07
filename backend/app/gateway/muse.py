@@ -1,21 +1,28 @@
-"""Muse / Meta Model API shared identity, secret access, and call counters.
+"""Muse identity, credentials, model selection, and call counters.
 
-Hearing (Muse Voice Transcribe) and intelligence (Muse Spark) share one
-credential. This module never logs, prints, or returns the secret value.
+Muse Voice Transcribe is the Meta Model API ear. Muse Spark Contributor is the
+OpenCode Go Responses brain. They use separate credentials and endpoints; this
+module never logs or prints secret values.
 """
 
 from __future__ import annotations
 
+import os
 import threading
+from pathlib import Path
 from typing import Any
 
 from app.config import settings
 
 META_API_BASE = "https://api.meta.ai/v1"
 META_ASR_REALTIME_URL = "wss://api.meta.ai/v1/asr/realtime"
+MUSE_SPARK_GO_BASE = "https://opencode.ai/zen/go/v1"
 
 # Official public model ids from https://dev.meta.ai/docs/models.md
 MUSE_VOICE_MODEL = "muse-voice-transcribe-1.0"
+# Evie is intentionally pinned to the exact Contributor model selected by the
+# owner. Do not silently drift to a different Spark slot when a stale .env
+# survives a migration.
 MUSE_SPARK_MODEL = "muse-spark-1.3-contributor"
 
 MUSE_SPARK_PROVIDERS = frozenset({"meta_muse_spark", "muse", "muse_spark"})
@@ -30,6 +37,16 @@ _COUNTERS: dict[str, Any] = {
     "spark_reasoning_tokens": 0,
     "voice_calls": 0,
     "voice_audio_ms": 0,
+    "asr_sessions_opened": 0,
+    "asr_sessions_completed": 0,
+    "asr_sessions_failed": 0,
+    "asr_audio_bytes_sent": 0,
+    "asr_client_pcm_bytes": 0,
+    "asr_keepalive_bytes": 0,
+    "asr_partials_received": 0,
+    "asr_finals_received": 0,
+    "asr_last_error_class": "",
+    "asr_last_client_rms": 0,
 }
 
 
@@ -60,9 +77,60 @@ def muse_key_loaded() -> bool:
     return bool(muse_api_key())
 
 
+def muse_spark_api_key() -> str:
+    """Return the OpenCode Go credential used by Spark Contributor.
+
+    Muse Voice Transcribe and Muse Spark Contributor are different API
+    surfaces. Voice keeps using the Meta Model API credential above, while
+    Spark Contributor is served by OpenCode Go and therefore requires the
+    dedicated ``OPENCODE_API_KEY`` credential. Keeping the credentials
+    separate prevents a configured Meta ASR key from making Spark look
+    healthy when the OpenCode integration has not been provisioned.
+    """
+
+    direct = (getattr(settings, "opencode_api_key", None) or "").strip()
+    if direct:
+        return direct
+    for name in ("EV_OPENCODE_API_KEY", "OPENCODE_API_KEY"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value
+    env_file = Path(
+        str(getattr(settings, "opencode_env_file", "~/.config/ev/opencode.env"))
+    ).expanduser()
+    try:
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key.strip() == "OPENCODE_API_KEY" and value.strip():
+                return value.strip().strip("'\"")
+    except OSError:
+        pass
+    return ""
+
+
+def muse_spark_key_loaded() -> bool:
+    return bool(muse_spark_api_key())
+
+
 def muse_spark_model() -> str:
     raw = (getattr(settings, "muse_spark_model", None) or "").strip()
-    return raw or MUSE_SPARK_MODEL
+    # Only the exact requested Contributor slot is valid. This guards a stale
+    # operator setting from changing the project model without an explicit
+    # code/config migration.
+    if raw == MUSE_SPARK_MODEL:
+        return raw
+    return MUSE_SPARK_MODEL
+
+
+def muse_spark_base_url() -> str:
+    """OpenCode Go Responses endpoint for Spark Contributor."""
+
+    raw = (
+        getattr(settings, "muse_spark_base_url", None)
+        or os.environ.get("EV_MUSE_SPARK_BASE_URL")
+        or ""
+    ).strip()
+    return raw.rstrip("/") or MUSE_SPARK_GO_BASE
 
 
 def muse_voice_model() -> str:
@@ -125,6 +193,15 @@ def require_muse_key(*, role: str) -> str:
     return key
 
 
+def require_muse_spark_key(*, role: str = "Muse Spark") -> str:
+    key = muse_spark_api_key()
+    if not key:
+        raise MuseProviderUnavailable(
+            f"{role} is unavailable: OPENCODE_API_KEY is missing"
+        )
+    return key
+
+
 def note_spark_call(*, usage: dict | None = None, model: str | None = None) -> None:
     del model  # identity is config; never put secrets or prompts here
     usage = usage or {}
@@ -148,6 +225,49 @@ def note_voice_call(*, audio_ms: int = 0) -> None:
         _COUNTERS["voice_audio_ms"] += max(0, int(audio_ms))
 
 
+def note_asr_session_opened() -> None:
+    with _LOCK:
+        _COUNTERS["asr_sessions_opened"] += 1
+
+
+def note_asr_session_completed() -> None:
+    with _LOCK:
+        _COUNTERS["asr_sessions_completed"] += 1
+
+
+def note_asr_session_failed(*, error_class: str = "") -> None:
+    with _LOCK:
+        _COUNTERS["asr_sessions_failed"] += 1
+        if error_class:
+            _COUNTERS["asr_last_error_class"] = str(error_class)[:80]
+
+
+def note_asr_audio_bytes(n: int) -> None:
+    with _LOCK:
+        _COUNTERS["asr_audio_bytes_sent"] += max(0, int(n))
+
+
+def note_asr_client_pcm(n: int, rms: float) -> None:
+    with _LOCK:
+        _COUNTERS["asr_client_pcm_bytes"] += max(0, int(n))
+        _COUNTERS["asr_last_client_rms"] = round(float(rms), 1)
+
+
+def note_asr_keepalive_bytes(n: int) -> None:
+    with _LOCK:
+        _COUNTERS["asr_keepalive_bytes"] += max(0, int(n))
+
+
+def note_asr_partial() -> None:
+    with _LOCK:
+        _COUNTERS["asr_partials_received"] += 1
+
+
+def note_asr_final() -> None:
+    with _LOCK:
+        _COUNTERS["asr_finals_received"] += 1
+
+
 def muse_counters_snapshot() -> dict[str, Any]:
     with _LOCK:
         audio_ms = int(_COUNTERS["voice_audio_ms"])
@@ -160,13 +280,23 @@ def muse_counters_snapshot() -> dict[str, Any]:
             "voice_calls": int(_COUNTERS["voice_calls"]),
             "voice_audio_ms": audio_ms,
             "voice_audio_minutes": round(audio_ms / 60000.0, 4),
+            "asr_sessions_opened": int(_COUNTERS["asr_sessions_opened"]),
+            "asr_sessions_completed": int(_COUNTERS["asr_sessions_completed"]),
+            "asr_sessions_failed": int(_COUNTERS["asr_sessions_failed"]),
+            "asr_audio_bytes_sent": int(_COUNTERS["asr_audio_bytes_sent"]),
+            "asr_client_pcm_bytes": int(_COUNTERS["asr_client_pcm_bytes"]),
+            "asr_keepalive_bytes": int(_COUNTERS["asr_keepalive_bytes"]),
+            "asr_last_client_rms": float(_COUNTERS["asr_last_client_rms"] or 0),
+            "asr_partials_received": int(_COUNTERS["asr_partials_received"]),
+            "asr_finals_received": int(_COUNTERS["asr_finals_received"]),
+            "asr_last_error_class": str(_COUNTERS["asr_last_error_class"] or ""),
         }
 
 
 def reset_muse_counters() -> None:
     with _LOCK:
         for key in list(_COUNTERS):
-            _COUNTERS[key] = 0
+            _COUNTERS[key] = "" if key == "asr_last_error_class" else 0
 
 
 def refuse_legacy_cloud_brain(name: str | None = None) -> None:

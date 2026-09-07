@@ -12,8 +12,8 @@ from __future__ import annotations
 import contextlib
 import re
 import time
-from uuid import UUID
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -81,11 +81,25 @@ class TurnController:
         self.device_id = device_id
         self.session_id = session_id
 
-    async def handle_turn(self, owner_turn: str, *, turn_id: str | None = None, context: dict | None = None) -> TurnResult:
+    async def handle_turn(
+        self,
+        owner_turn: str,
+        *,
+        turn_id: str | None = None,
+        context: dict | None = None,
+        release_db_before_classify: bool = False,
+    ) -> TurnResult:
         """Main entry: owner_turn is canonical final transcript (owner speech only).
         
         If turn_id is provided, it is preferred as reference to canonical transcript;
         backend resolves it. If only owner_turn string is given, it is used directly.
+
+        ``release_db_before_classify`` is used by latency-sensitive live voice
+        callers.  Context construction is a short read, but Luna classification
+        is a remote request (up to 20 seconds); rolling back the read-only
+        transaction before that await returns the connection to the pool.  The
+        controller reacquires a connection lazily when the deterministic route
+        executes.  Normal callers keep the historical transaction behavior.
         """
         start = time.perf_counter()
         # Resolve turn_id -> canonical transcript if provided
@@ -99,6 +113,12 @@ class TurnController:
         # Provide minimal context: known projects, current focus, capabilities
         if context is None:
             context = await self._build_luna_context()
+        if release_db_before_classify:
+            # ``_build_luna_context`` only performs reads, but callers may
+            # also provide a prebuilt context while their session still has a
+            # transaction open. End it before the remote classifier so a slow
+            # provider cannot pin one pool connection per live transcript.
+            await self.session.rollback()
 
         try:
             intent = await classify_intent(canonical_turn, context)
@@ -138,15 +158,12 @@ class TurnController:
         try:
             from app.models import Event
 
-            row = await self.session.get(Event, tid)
+            await self.session.get(Event, tid)
             return None  # transcript resolution is not indexed yet; row unused
         except Exception:
             with contextlib.suppress(Exception):
                 await self.session.rollback()
             return None
-        except Exception:
-            pass
-        return None
 
     async def _recent_owner_context_texts(self) -> list[str]:
         """Read recent owner text for pronoun-only cancel resolution.

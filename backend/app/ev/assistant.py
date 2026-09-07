@@ -671,7 +671,31 @@ async def handle_local_intent(
     if intent == "update_personality":
         current = await get_current(session)
         patch = _personality_from_phrase(str(args.get("phrase") or ""), to_dict(current))
-        updated = await update(session, PersonalityUpdate(**patch, reason_for_change="voice"))
+        owner_trusted = actor in {"master", "owner", "voice"}
+        if not owner_trusted and device_id is not None:
+            # HTTP/live callers identify a trusted owner device as
+            # ``device:<name>``. Resolve its server-side trust here; the
+            # transcript/model must never be able to assert that trust itself.
+            from app.models import Device
+
+            device = await session.get(Device, device_id)
+            owner_trusted = bool(device and device.trust_level == "owner")
+        try:
+            updated = await update(
+                session,
+                PersonalityUpdate(**patch, reason_for_change="voice"),
+                actor=actor,
+                origin="owner_voice",
+                owner_intent=True,
+                owner_trusted=owner_trusted,
+            )
+        except PermissionError:
+            return {
+                "reply": "Only you can change my personality.",
+                "kind": "personality",
+                "ok": False,
+                "error": "personality_owner_only",
+            }
         return {
             "reply": (
                 f"Updated. humor={updated.humor} formality={updated.formality} "

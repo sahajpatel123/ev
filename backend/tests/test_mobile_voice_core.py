@@ -60,8 +60,11 @@ def test_phone_session_uses_strong_asr_and_no_pcm_rate() -> None:
     assert "Wi-Fi" in inp["transcription"]["prompt"]
     assert "Spotify" in inp["transcription"]["prompt"]
     assert "format" not in inp
-    assert inp["noise_reduction"]["type"] == "near_field"
+    assert inp["noise_reduction"]["type"] == "far_field"
+    assert inp["turn_detection"]["threshold"] == 0.68
+    assert inp["turn_detection"]["silence_duration_ms"] == 700
     assert MOBILE_CONVERSATION_CONTRACT in session["instructions"]
+    assert "Personal facts and live state are not trivia" in MOBILE_CONVERSATION_CONTRACT
     assert session["include"] == ["item.input_audio_transcription.logprobs"]
 
 
@@ -104,7 +107,7 @@ def test_critical_tokens_and_logprobs() -> None:
     assert logprob_confidence(None) is None
 
 
-def test_pwa_strict_mode_never_falls_back_in_talk() -> None:
+def test_pwa_uses_server_selected_audio_lane() -> None:
     app_js = (ROOT / "clients" / "pwa" / "app.js").read_text()
     webrtc = (ROOT / "clients" / "pwa" / "webrtc.js").read_text()
     html = (ROOT / "clients" / "pwa" / "index.html").read_text()

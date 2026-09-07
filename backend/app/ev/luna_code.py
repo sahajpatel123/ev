@@ -11,6 +11,7 @@ clear script/test requests and otherwise reports degraded=true.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -34,6 +35,7 @@ from app.ev.code_runtime import (
     workspace_root,
     write_file,
 )
+from app.utils.text import utcnow
 
 logger = logging.getLogger("ev.luna_code")
 
@@ -66,6 +68,7 @@ Rules:
 - Never ask for a raw shell. Never touch secrets, .env files, or paths outside the project.
 - When done, answer with a short spoken summary Evie can say aloud: what you wrote, whether it ran, and the folder the file lives in (two or three sentences). Never just name the file.
 - Do not call yourself Luna, Mini, Grok, or DeepSeek.
+- If the owner request is a CODING GOAL SLICE, finish only that phase as real multi-file work. Do not ship a hello-world stub when they asked for a professional site, app UI, or calculator.
 """
 
 LUNA_CODE_TOOLS = [
@@ -216,6 +219,22 @@ _MAX_GOAL_CHARS = 8000
 _LIVE_JOB_SECONDS = 240.0
 _CHAT_JOB_SECONDS = 300.0
 _LAST_CODE_JOBS: dict[str, dict[str, Any]] = {}
+_OWNER_JOB_KEY = "owner"
+_MAX_RAM_JOBS = 12
+_INTERN_STALE_S = 20 * 60
+_INTERN_TASKS: set[asyncio.Task] = set()
+_DEFER_RE = re.compile(
+    r"\b(?:"
+    r"overnight|"
+    r"while i (?:sleep|am asleep|'m asleep|am gone|'m gone|am out)|"
+    r"keep (?:working|going)(?: on (?:this|it|that))?(?: overnight)?|"
+    r"work on (?:this|that|it) (?:overnight|in the background|while i.{0,20}sleep)|"
+    r"ghost intern|"
+    r"finish this later|"
+    r"keep coding"
+    r")\b",
+    re.IGNORECASE,
+)
 _CODE_FOLLOWUP_RE = re.compile(
     r"\b(?:"
     r"where (?:is|did you (?:save|put|write)|was) (?:it|that|the (?:file|script)|hello\.py|greet\.py)|"
@@ -224,6 +243,13 @@ _CODE_FOLLOWUP_RE = re.compile(
     r"what did you (?:write|create|make|code|save)|"
     r"did it work|"
     r"does it work|"
+    r"did you finish|"
+    r"are you done|"
+    r"did you keep going|"
+    r"how did overnight go|"
+    r"is (?:overnight|the intern) (?:done|finished)|"
+    r"did the intern|"
+    r"what happened overnight with (?:the )?(?:code|script|job|intern)|"
     r"what(?:'s| is) in (?:the )?(?:file|script)|"
     r"(?:show|tell) me (?:the )?(?:file|script|path|code|folder)"
     r")\b",
@@ -289,6 +315,10 @@ def looks_like_code_request(text: str | None) -> bool:
     raw = (text or "").strip()
     if not raw or len(raw) > _MAX_GOAL_CHARS:
         return False
+    from app.ev.code_studio import looks_like_background_task_ops
+
+    if looks_like_background_task_ops(raw):
+        return False
     lowered = raw.lower()
     if re.search(
         r"\b(?:text|message|email|mail|reminder|note to|write mom|write dad)\b",
@@ -297,7 +327,10 @@ def looks_like_code_request(text: str | None) -> bool:
         return False
     if re.search(r"\b(?:open|launch|quit|close)\s+(?:cursor|vscode|xcode|terminal)\b", lowered):
         return False
-    if re.search(r"\b(?:on my desktop|in my documents|in downloads)\b", lowered):
+    if re.search(
+        r"\b(?:on my desktop|inside my desktop|in my documents|in downloads)\b",
+        lowered,
+    ):
         return False
     if re.search(r"\b(?:open|launch|quit|close)\s+\S+", lowered) and re.search(
         r"\b(?:type|enter)\b", lowered
@@ -332,7 +365,13 @@ def looks_like_code_request(text: str | None) -> bool:
             r"(?:script|program|function|module|class|file)|"
             r"in (?:the |my |our )?\w{2,32} (?:repo|project|codebase|package)|"
             r"(?:this|the|my) (?:repo|codebase)|"
-            r"write .{0,48}hello world"
+            r"write .{0,48}hello world|"
+            r"coding goal|"
+            r"(?:clothing|fashion|boutique|shop) (?:site|website|storefront|ui)|"
+            r"build (?:me )?(?:a |an )?(?:professional )?(?:site|website|web app|landing page|dashboard)|"
+            r"(?:site|website|web app|landing page) ui|"
+            r"from scratch.{0,48}(?:site|website|ui|app)|"
+            r"create (?:me |a |an )?.{0,40}(?:app ui|calculator.{0,16}(?:app|ui)|todo app)"
             r")\b",
             lowered,
         )
@@ -353,6 +392,10 @@ def looks_like_code_continue(text: str | None) -> bool:
 
     raw = (text or "").strip()
     if not raw or len(raw) > 240:
+        return False
+    from app.ev.code_studio import looks_like_background_task_ops
+
+    if looks_like_background_task_ops(raw):
         return False
     lowered = raw.lower()
     if re.search(
@@ -375,27 +418,399 @@ def looks_like_code_followup(text: str | None) -> bool:
     raw = (text or "").strip()
     if not raw or looks_like_code_request(raw) or looks_like_code_continue(raw):
         return False
+    from app.ev.code_studio import looks_like_background_task_ops
+
+    if looks_like_background_task_ops(raw):
+        return False
     return bool(_CODE_FOLLOWUP_RE.search(raw))
 
 
 def remember_code_job(result: dict[str, Any], *, session_key: str = "owner") -> None:
-    key = (session_key or "owner").strip() or "owner"
-    _LAST_CODE_JOBS[key] = {
+    key = (session_key or _OWNER_JOB_KEY).strip() or _OWNER_JOB_KEY
+    payload = {
         "workspace": str(result.get("workspace") or ""),
         "project": str(result.get("project") or ""),
-        "files": [str(item) for item in (result.get("files_changed") or []) if item],
+        "files": [str(item) for item in (result.get("files_changed") or result.get("files") or []) if item],
         "spoken": str(result.get("spoken") or ""),
         "ok": bool(result.get("ok")),
         "goal": str(result.get("goal") or ""),
         "runs": list(result.get("runs") or []),
+        "session_key": key,
+        "at": utcnow().isoformat(),
     }
-    while len(_LAST_CODE_JOBS) > 8:
-        _LAST_CODE_JOBS.pop(next(iter(_LAST_CODE_JOBS)))
+    _LAST_CODE_JOBS[key] = payload
+    _LAST_CODE_JOBS[_OWNER_JOB_KEY] = payload
+    _persist_last_code_job(payload)
+    while len(_LAST_CODE_JOBS) > _MAX_RAM_JOBS:
+        victim = next((item for item in _LAST_CODE_JOBS if item != _OWNER_JOB_KEY), None)
+        if victim is None:
+            break
+        _LAST_CODE_JOBS.pop(victim, None)
 
 
 def last_code_job(session_key: str | None = None) -> dict[str, Any] | None:
-    key = (session_key or "owner").strip() or "owner"
-    return _LAST_CODE_JOBS.get(key)
+    key = (session_key or _OWNER_JOB_KEY).strip() or _OWNER_JOB_KEY
+    hit = _LAST_CODE_JOBS.get(key)
+    if hit:
+        return hit
+    if key != _OWNER_JOB_KEY:
+        return None
+    stored = _load_last_code_job()
+    if stored:
+        _LAST_CODE_JOBS[_OWNER_JOB_KEY] = stored
+    return stored
+
+
+def shared_code_job(session_key: str | None = None) -> dict[str, Any] | None:
+    """Session job, then the one-body owner/disk job. Unique keys never leak by themselves."""
+
+    return last_code_job(session_key) or last_code_job(_OWNER_JOB_KEY)
+
+
+def looks_like_deferred_code(text: str | None) -> bool:
+    """Overnight / keep-going work against a real coding job, not breakfast."""
+
+    raw = (text or "").strip()
+    if not raw or not _DEFER_RE.search(raw):
+        return False
+    if looks_like_code_request(raw) or looks_like_code_continue(raw):
+        return True
+    return bool(re.search(r"\b(?:this|that|it|the (?:script|code|job|file))\b", raw, re.IGNORECASE))
+
+
+def enqueue_code_intern(goal: str, *, session_key: str = "owner") -> dict[str, Any]:
+    request = (goal or "").strip()[:_MAX_GOAL_CHARS]
+    from app.ev.code_studio import register_intern_job
+
+    goal_id = register_intern_job(request, session_key=session_key)
+    payload = {
+        "kind": "intern",
+        "goal": request,
+        "goal_id": goal_id,
+        "session_key": (session_key or _OWNER_JOB_KEY).strip() or _OWNER_JOB_KEY,
+        "enqueued_at": utcnow().isoformat(),
+    }
+    from app.memory.paths import atomic_write_json
+
+    atomic_write_json(_pending_code_path(), payload)
+    return payload
+
+
+def intern_ack_spoken() -> str:
+    return "I'm running that in the background."
+
+
+def intern_busy_spoken() -> str:
+    return "I'm running that in the background."
+
+
+def intern_result_spoken(result: dict[str, Any]) -> str:
+    body = str(result.get("spoken") or "").strip()
+    files = [str(item) for item in (result.get("files_changed") or result.get("files") or []) if item]
+    names = ", ".join(Path(item).name for item in files[-8:]) if files else ""
+    if result.get("ok"):
+        lead = "The overnight job is done."
+        extra = f" {body}" if body and body.lower() not in lead.lower() else ""
+        where = f" Files: {names}." if names else ""
+        return f"{lead}{extra}{where}".strip()[:700]
+    lead = "The overnight job didn't finish cleanly."
+    extra = f" {body}" if body else ""
+    return f"{lead}{extra}".strip()[:700]
+
+
+def has_pending_code_intern() -> bool:
+    from app.memory.paths import read_json
+
+    pending = read_json(_pending_code_path())
+    return bool(pending and str(pending.get("kind") or "") in {"intern", "goal_slice"})
+
+
+def intern_in_flight() -> bool:
+    """Queued or actually running — pending is unlinked while Luna works."""
+
+    if has_pending_code_intern():
+        return True
+    if any(not task.done() for task in _INTERN_TASKS):
+        return True
+    from app.memory.paths import read_json
+
+    running = read_json(_running_code_path())
+    if running and str(running.get("kind") or "") in {"intern", "goal_slice"}:
+        started = running.get("started_at")
+        try:
+            age = time.time() - float(started)
+        except (TypeError, ValueError):
+            age = 0.0
+        if started is not None and age > _INTERN_STALE_S:
+            _running_code_path().unlink(missing_ok=True)
+        else:
+            return True
+    from app.ev.code_studio import load_studio
+
+    studio = load_studio()
+    return bool(studio and str(studio.get("status") or "") in {"queued", "running"})
+
+
+def abort_background_code() -> None:
+    """Kill the intern/studio task and drop queued/running markers. Studio JSON is the caller's."""
+
+    for task in list(_INTERN_TASKS):
+        if not task.done():
+            task.cancel()
+    _pending_code_path().unlink(missing_ok=True)
+    _running_code_path().unlink(missing_ok=True)
+
+
+def schedule_background_code_notify(spoken: str) -> None:
+    """Speak the finished-job brief now. Does not wait for the owner to ask."""
+
+    text = (spoken or "").strip()
+    if not text:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(_push_background_code_notify(text), name="ev-code-notify")
+
+
+def flush_background_code_notify() -> None:
+    """If a brief is waiting and a live mouth is here, say it without being asked."""
+
+    spoken = peek_code_intern_receipt()
+    if not spoken:
+        return
+    from app.voice.live.layer import active_lives
+
+    if not active_lives():
+        return
+    schedule_background_code_notify(spoken)
+
+
+async def _push_background_code_notify(spoken: str) -> None:
+    from app.voice.live.layer import active_lives
+
+    for live in active_lives():
+        if getattr(live, "_closed", False):
+            continue
+        try:
+            await live._speak_code_receipt(spoken)
+            consume_code_intern_receipt()
+            return
+        except Exception:  # noqa: BLE001 - notify must not kill the intern task
+            logger.exception("background code notify failed")
+
+
+def maybe_enqueue_code_intern(text: str, *, session_key: str = "owner") -> str | None:
+    """Queue overnight work and return the spoken ack, or None if this is not intern work."""
+
+    if not looks_like_deferred_code(text):
+        return None
+    from app.ev.code_studio import load_studio, studio_is_active
+
+    if studio_is_active():
+        studio = load_studio() or {}
+        return (
+            f"I'm already on {studio.get('title') or 'a coding goal'} in the background. "
+            "Pause or cancel that first if you want overnight intern on something else."
+        )
+    last_job = shared_code_job(session_key)
+    if not looks_like_code_request(text) and not last_job:
+        return None
+    goal = expand_code_goal(text, last_job) if last_job else (text or "").strip()[:_MAX_GOAL_CHARS]
+    enqueue_code_intern(goal, session_key=_OWNER_JOB_KEY)
+    return intern_ack_spoken()
+
+
+def spawn_pending_code_intern() -> bool:
+    """Start overnight drain off the daemon tick. Never blocks the caller."""
+
+    if any(not task.done() for task in _INTERN_TASKS):
+        return False
+    if not has_pending_code_intern():
+        from app.ev.code_studio import load_studio, _enqueue_slice
+
+        studio = load_studio()
+        if studio and str(studio.get("status") or "") in {"queued", "running"}:
+            _enqueue_slice(studio)
+        else:
+            return False
+    task = asyncio.create_task(drain_pending_code_jobs(), name="ev-code-intern")
+    _INTERN_TASKS.add(task)
+
+    def _done(done: asyncio.Task) -> None:
+        _INTERN_TASKS.discard(done)
+        if done.cancelled():
+            return
+        exc = done.exception()
+        if exc is not None:
+            logger.exception("code intern drain failed", exc_info=exc)
+
+    task.add_done_callback(_done)
+    return True
+
+
+async def drain_pending_code_jobs() -> dict[str, Any] | None:
+    """Run one intern job, or keep draining studio slices until the goal is parked."""
+
+    from app.memory.paths import atomic_write_json, read_json
+
+    last: dict[str, Any] | None = None
+    path = _pending_code_path()
+    while True:
+        pending = read_json(path)
+        kind = str((pending or {}).get("kind") or "")
+        if not pending or kind not in {"intern", "goal_slice"}:
+            from app.ev.code_studio import load_studio, _enqueue_slice
+
+            studio = load_studio()
+            if studio and str(studio.get("status") or "") in {"queued", "running"}:
+                _enqueue_slice(studio)
+                pending = read_json(path)
+                kind = str((pending or {}).get("kind") or "")
+            if not pending or kind not in {"intern", "goal_slice"}:
+                return last
+        goal = str(pending.get("goal") or "").strip()
+        if kind == "intern" and not goal:
+            path.unlink(missing_ok=True)
+            return last
+        running = {
+            "kind": kind,
+            "goal": goal,
+            "session_key": str(pending.get("session_key") or _OWNER_JOB_KEY),
+            "started_at": time.time(),
+            "enqueued_at": pending.get("enqueued_at"),
+            "goal_id": pending.get("goal_id"),
+        }
+        atomic_write_json(_running_code_path(), running)
+        path.unlink(missing_ok=True)
+        try:
+            if kind == "goal_slice":
+                from app.ev.code_studio import apply_slice_result, get_job, load_studio, slice_prompt
+
+                studio = get_job(str(pending.get("goal_id") or "")) or load_studio()
+                if not studio or str(studio.get("status") or "") in {"paused", "cancelled"}:
+                    continue
+                slice_goal = slice_prompt(studio)
+                if not slice_goal:
+                    continue
+                try:
+                    result = await run_code_job(
+                        slice_goal,
+                        session_key=str(pending.get("session_key") or _OWNER_JOB_KEY),
+                        channel="background",
+                    )
+                except asyncio.CancelledError:
+                    return last
+                out = apply_slice_result(studio, result)
+                note = str((out or {}).get("_notify") or "").strip()
+                if note:
+                    schedule_background_code_notify(note)
+                last = result
+                continue
+            try:
+                result = await run_code_job(
+                    goal,
+                    session_key=str(pending.get("session_key") or _OWNER_JOB_KEY),
+                    channel="background",
+                )
+            except asyncio.CancelledError:
+                return last
+            spoken = intern_result_spoken(result)
+            atomic_write_json(
+                _ready_code_path(),
+                {
+                    "ok": bool(result.get("ok")),
+                    "spoken": spoken,
+                    "at": utcnow().isoformat(),
+                },
+            )
+            from app.ev.code_studio import finish_intern_job
+
+            finish_intern_job(
+                str(pending.get("goal_id") or "") or None,
+                ok=bool(result.get("ok")),
+                spoken=spoken,
+            )
+            schedule_background_code_notify(spoken)
+            last = result
+            continue
+        finally:
+            _running_code_path().unlink(missing_ok=True)
+
+
+def peek_code_intern_receipt() -> str | None:
+    from app.memory.paths import read_json
+
+    data = read_json(_ready_code_path())
+    if not data:
+        return None
+    spoken = str(data.get("spoken") or "").strip()
+    return spoken or None
+
+
+def consume_code_intern_receipt() -> str | None:
+    spoken = peek_code_intern_receipt()
+    if not spoken:
+        return None
+    _ready_code_path().unlink(missing_ok=True)
+    return spoken
+
+
+def spoken_intern_followup() -> str | None:
+    """Still-going, studio status, or the overnight receipt."""
+
+    from app.ev.code_studio import load_studio, spoken_studio_status
+
+    studio = load_studio()
+    if intern_in_flight() or (studio and str(studio.get("status") or "") in {"queued", "running", "paused"}):
+        return spoken_studio_status()
+    return consume_code_intern_receipt()
+
+
+def _code_jobs_dir():
+    from app.memory.paths import ensure_tree
+
+    return ensure_tree() / "code-jobs"
+
+
+def _last_code_path():
+    return _code_jobs_dir() / "last.json"
+
+
+def _pending_code_path():
+    return _code_jobs_dir() / "pending.json"
+
+
+def _running_code_path():
+    return _code_jobs_dir() / "running.json"
+
+
+def _ready_code_path():
+    return _code_jobs_dir() / "ready.json"
+
+
+def _persist_last_code_job(payload: dict[str, Any]) -> None:
+    from app.memory.paths import atomic_write_json
+
+    try:
+        atomic_write_json(_last_code_path(), payload)
+    except OSError:
+        logger.warning("durable code job persist skipped", exc_info=True)
+
+
+def _load_last_code_job() -> dict[str, Any] | None:
+    from app.memory.paths import read_json
+
+    try:
+        stored = read_json(_last_code_path())
+    except OSError:
+        return None
+    if not stored:
+        return None
+    if not stored.get("workspace") and not stored.get("files"):
+        return None
+    return stored
 
 
 def expand_code_goal(request: str, prior: dict[str, Any] | None) -> str:
@@ -596,6 +1011,8 @@ async def run_code_job(
     prior = last_code_job(job_key)
     continue_work = looks_like_code_continue(request)
     continue_only = continue_work and not looks_like_code_request(request)
+    if continue_work and not prior:
+        prior = last_code_job(_OWNER_JOB_KEY)
     if continue_only and not prior:
         return _fail("no_last_job", "I don't have a script from this session to continue.")
     luna_goal = expand_code_goal(request, prior if continue_work else None)
@@ -605,24 +1022,40 @@ async def run_code_job(
         selected = prior_root
     token = set_active_project(selected)
     started = time.monotonic()
-    live = (channel or "").lower() == "voice" or actor == "voice"
-    if live:
+    channel_l = (channel or "").lower()
+    live = channel_l == "voice" or actor == "voice"
+    if channel_l in {"background", "intern"}:
+        live = False
+        budget = float(getattr(settings, "code_chat_job_seconds", _CHAT_JOB_SECONDS) or _CHAT_JOB_SECONDS)
+    elif live:
         budget = float(getattr(settings, "code_live_job_seconds", _LIVE_JOB_SECONDS) or _LIVE_JOB_SECONDS)
     else:
         budget = float(getattr(settings, "code_chat_job_seconds", _CHAT_JOB_SECONDS) or _CHAT_JOB_SECONDS)
     budget = max(30.0, min(budget, 600.0))
     try:
         workspace = str(workspace_root())
-        from app.gateway.muse import muse_api_key, muse_intelligence_active, muse_spark_model
+        from app.gateway.muse import (
+            MUSE_SPARK_PROVIDERS,
+            muse_intelligence_active,
+            muse_spark_key_loaded,
+            muse_spark_model,
+        )
 
-        spark_on = muse_intelligence_active()
-        spark_key = muse_api_key()
+        # Code-lane switch: EV_CODE_MODEL naming a Muse Spark model routes
+        # code jobs to Spark without flipping the global intelligence lane
+        # (chat stays on EV_CHAT_PROVIDER).
+        code_model_name = str(getattr(settings, "code_model", None) or "").strip()
+        code_wants_spark = code_model_name.lower() in MUSE_SPARK_PROVIDERS or (
+            bool(code_model_name) and code_model_name == muse_spark_model()
+        )
+
+        spark_on = muse_intelligence_active() or code_wants_spark
         if spark_on:
-            if not spark_key:
+            if not muse_spark_key_loaded():
                 return _finish_code_job(
                     _fail(
                         "spark_unavailable",
-                        "Coding intelligence is unavailable: META_MODEL_API_KEY is missing.",
+                        "Coding intelligence is unavailable: OPENCODE_API_KEY is missing.",
                     ),
                     request=request,
                     workspace=workspace,
@@ -763,7 +1196,7 @@ def execute_code_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             return run_argv([str(item) for item in argv])
     except CodeJailError as exc:
         return {"ok": False, "error": "code_jail", "detail": str(exc)}
-    return {"ok": False, "error": "unknown_code_tool", "name": name}
+    return {"ok": False, "error": "unknown_code_tool", "name": name    }
 
 
 async def _spark_code_loop(
@@ -1119,6 +1552,11 @@ def _heuristic_continue(goal: str, prior: dict[str, Any] | None) -> dict[str, An
 def _heuristic_job(goal: str, prior: dict[str, Any] | None = None) -> dict[str, Any]:
     lowered = goal.lower()
     try:
+        from app.ev.code_studio import try_heuristic_slice
+
+        sliced = try_heuristic_slice(goal)
+        if sliced is not None:
+            return sliced
         continued = _heuristic_continue(goal, prior)
         if continued is not None:
             return continued

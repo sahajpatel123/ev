@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -60,6 +61,349 @@ async def test_muse_live_protocol_partial_final_endpoint_no_duplicate() -> None:
     assert partials == ["Open Calc", "Open Calculator"]
     assert finals == ["Open Calculator"]
     assert session._got_final is True
+
+
+def test_muse_error_classifier_maps_close_1008_to_format() -> None:
+    from app.voice.muse_voice import classify_muse_stream_failure
+
+    code, spoken = classify_muse_stream_failure(
+        provider_message="Bad Request", close_code=1008, phase="sending"
+    )
+    assert code == "asr_rejected_format"
+    assert "format" in spoken.lower()
+    auth, auth_spoken = classify_muse_stream_failure(
+        provider_message="unauthorized", close_code=None, phase="handshake"
+    )
+    assert auth == "asr_auth_failed"
+    assert "authentication" in auth_spoken.lower()
+    slow, slow_spoken = classify_muse_stream_failure(
+        provider_message="Ingress audio slower than real-time",
+        close_code=None,
+        phase="sending",
+    )
+    assert slow == "asr_unusable"
+    assert "gaps" in slow_spoken.lower() or "try again" in slow_spoken.lower()
+
+
+@pytest.mark.asyncio
+async def test_muse_provider_error_after_abort_does_not_notify() -> None:
+    from app.voice.contracts import VoiceError
+    from app.voice.muse_voice import _MuseLiveSession
+
+    errors: list[VoiceError] = []
+
+    async def on_unusable(exc: VoiceError) -> None:
+        errors.append(exc)
+
+    session = _MuseLiveSession(
+        api_key="test-key",
+        model="muse-voice-transcribe-1.0",
+        encoding="PCM_16KHZ",
+        on_partial=None,
+        on_final=None,
+        on_unusable=on_unusable,
+    )
+    session.abort()
+
+    class _WS:
+        def __init__(self) -> None:
+            self._messages = ['{"type":"error","message":"Bad Request","sessionId":"s1"}']
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._messages:
+                raise StopAsyncIteration
+            return self._messages.pop(0)
+
+    await session._receive(_WS())
+    assert errors == []
+
+
+@pytest.mark.asyncio
+async def test_muse_endpointing_transcript_final_is_not_lost_without_speech_complete() -> None:
+    """Gateways may send a terminal transcript instead of speechComplete."""
+
+    from app.voice.muse_voice import _MuseLiveSession
+
+    finals: list[str] = []
+
+    async def on_final(text: str) -> None:
+        finals.append(text)
+
+    session = _MuseLiveSession(
+        api_key="test-key",
+        model="muse-voice-transcribe-1.0",
+        encoding="PCM_16KHZ",
+        on_partial=None,
+        on_final=on_final,
+        on_unusable=None,
+        mode="ENDPOINTING",
+    )
+
+    class _WS:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if hasattr(self, "done"):
+                raise StopAsyncIteration
+            self.done = True
+            return '{"type":"transcript_final","text":"Open Calculator"}'
+
+    await session._receive(_WS())
+    assert finals == ["Open Calculator"]
+    assert session._got_final is True
+
+
+@pytest.mark.asyncio
+async def test_live_asr_feed_idle_pcm_keeps_native_stream_fed() -> None:
+    fed: list[bytes] = []
+
+    class _Native:
+        name = "meta_muse_voice"
+        native_live_stream = True
+
+        def start_live(self, loop, **kwargs) -> None:
+            self.mode = kwargs.get("mode")
+
+        def feed_live(self, pcm: bytes) -> None:
+            fed.append(pcm)
+
+        def end_live(self) -> None:
+            raise AssertionError("idle must not endStream")
+
+        def abort_live(self) -> None:
+            return None
+
+    feed = LiveAsrFeed(_Native())
+    feed.note_idle(b"\x00\x00" * 80)
+    assert fed
+    assert feed.transcriber.mode == "ENDPOINTING"
+    feed.end_speech()
+    assert len(fed) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_asr_feed_native_error_retries_on_next_turn_only() -> None:
+    from app.voice.contracts import VoiceError
+
+    class _Native:
+        name = "meta_muse_voice"
+        native_live_stream = True
+
+        def __init__(self) -> None:
+            self.starts = 0
+            self.on_unusable = None
+
+        def start_live(self, loop, **kwargs) -> None:
+            del loop
+            self.starts += 1
+            self.on_unusable = kwargs["on_unusable"]
+
+        def feed_live(self, pcm: bytes) -> None:
+            del pcm
+
+        def abort_live(self) -> None:
+            return None
+
+    errors: list[VoiceError] = []
+
+    async def on_unusable(exc: VoiceError) -> None:
+        errors.append(exc)
+
+    native = _Native()
+    feed = LiveAsrFeed(native, on_unusable=on_unusable)
+    feed.begin()
+    assert native.starts == 1
+    await native.on_unusable(
+        VoiceError("provider unavailable", status=503, code="asr_connection_closed")
+    )
+    assert errors and errors[0].code == "asr_connection_closed"
+    assert feed._native_started is False
+
+    # PCM from the failed utterance must not open a new socket every block.
+    feed.feed(b"\x01\x00" * 160)
+    assert native.starts == 1
+
+    # A new VAD turn is the bounded retry point.
+    feed.begin()
+    assert native.starts == 2
+
+
+@pytest.mark.asyncio
+async def test_muse_live_run_drains_final_after_end_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The final transcript is delivered after the sender writes endStream."""
+
+    import app.voice.muse_voice as muse_voice
+
+    finals: list[str] = []
+    errors: list[object] = []
+
+    async def on_final(text: str) -> None:
+        finals.append(text)
+
+    async def on_unusable(exc) -> None:
+        errors.append(exc)
+
+    class _WS:
+        def __init__(self) -> None:
+            self._handshake = True
+            self._final_ready = asyncio.Event()
+            self._final_read = False
+            self.sent: list[object] = []
+
+        async def recv(self):
+            if self._handshake:
+                self._handshake = False
+                return '{"sessionId":"provider-session"}'
+            raise AssertionError("receiver should use the async iterator after handshake")
+
+        async def send(self, payload) -> None:
+            self.sent.append(payload)
+            if isinstance(payload, str) and json.loads(payload).get("type") == "endStream":
+                self._final_ready.set()
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._final_read:
+                raise StopAsyncIteration
+            await self._final_ready.wait()
+            self._final_read = True
+            return '{"type":"transcript","transcript":"Open Calculator","final":true}'
+
+        async def close(self, **kwargs) -> None:
+            del kwargs
+
+    class _Connection:
+        def __init__(self, ws) -> None:
+            self.ws = ws
+
+        async def __aenter__(self):
+            return self.ws
+
+        async def __aexit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return False
+
+    ws = _WS()
+    monkeypatch.setattr(muse_voice, "remote_processing_allowed", lambda *_: True)
+    monkeypatch.setattr(
+        muse_voice.websockets,
+        "connect",
+        lambda *args, **kwargs: _Connection(ws),
+    )
+    session = muse_voice._MuseLiveSession(
+        api_key="test-key",
+        model="muse-voice-transcribe-1.0",
+        encoding="PCM_16KHZ",
+        on_partial=None,
+        on_final=on_final,
+        on_unusable=on_unusable,
+        mode="PUSH_TO_TALK",
+    )
+    session.feed(b"\x01\x00" * 160)
+    session.end_input()
+
+    await asyncio.wait_for(session.run(), timeout=2)
+    assert finals == ["Open Calculator"]
+    assert errors == []
+    assert session._failed is False
+    assert json.loads(ws.sent[-1])["type"] == "endStream"
+
+
+@pytest.mark.asyncio
+async def test_muse_send_waits_for_handshake_ready() -> None:
+    from app.voice.muse_voice import _MuseLiveSession
+
+    sent: list[object] = []
+
+    class _WS:
+        async def send(self, payload) -> None:
+            sent.append(payload)
+
+    session = _MuseLiveSession(
+        api_key="test-key",
+        model="muse-voice-transcribe-1.0",
+        encoding="PCM_16KHZ",
+        on_partial=None,
+        on_final=None,
+        on_unusable=None,
+        mode="ENDPOINTING",
+    )
+    session.feed(b"\x00\x01" * 16)
+    sender = asyncio.create_task(session._send(_WS()))
+    await asyncio.sleep(0.05)
+    assert sent == []
+    session._ready.set()
+    session.end_input()
+    await asyncio.wait_for(sender, timeout=1)
+    assert sent
+    assert sent[0] != json.dumps({"type": "endStream"})
+    assert sent[-1] == json.dumps({"type": "endStream"})
+
+
+@pytest.mark.asyncio
+async def test_muse_endpointing_keeps_realtime_silence_when_mic_pauses() -> None:
+    from app.voice.muse_voice import _MuseLiveSession
+
+    sent: list[object] = []
+
+    class _WS:
+        async def send(self, payload) -> None:
+            sent.append(payload)
+
+    session = _MuseLiveSession(
+        api_key="test-key",
+        model="muse-voice-transcribe-1.0",
+        encoding="PCM_16KHZ",
+        on_partial=None,
+        on_final=None,
+        on_unusable=None,
+        mode="ENDPOINTING",
+    )
+    session._ready.set()
+    sender = asyncio.create_task(session._send(_WS()))
+    await asyncio.sleep(0.2)
+    session.abort()
+    await asyncio.wait_for(sender, timeout=1)
+    pcm = [item for item in sent if isinstance(item, (bytes, bytearray))]
+    assert pcm
+    assert all(len(frame) % 2 == 0 and frame for frame in pcm)
+
+
+@pytest.mark.asyncio
+async def test_live_asr_feed_hides_provider_error_after_final() -> None:
+    from app.voice.contracts import VoiceError
+
+    notified: list[VoiceError] = []
+    aborted: list[int] = []
+
+    class _Native:
+        name = "meta_muse_voice"
+        native_live_stream = True
+
+        def start_live(self, loop, **kwargs) -> None:
+            return None
+
+        def abort_live(self) -> None:
+            aborted.append(1)
+
+    async def on_unusable(exc: VoiceError) -> None:
+        notified.append(exc)
+
+    feed = LiveAsrFeed(_Native(), on_unusable=on_unusable)
+    feed._native_started = True
+    await feed._on_native_final("what is two plus two")
+    await feed._on_native_unusable(
+        VoiceError("Muse Voice rejected audio format", status=503, code="asr_rejected_format")
+    )
+    assert notified == []
+    assert aborted == [1]
+    assert feed._native_started is False
 
 
 def test_muse_live_handshake_puts_bearer_in_first_json_not_http_header() -> None:
@@ -223,7 +567,7 @@ async def test_muse_live_push_to_talk_commits_on_transcript_final() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transparency_chat_egress_names_meta_not_deepseek_when_muse_is_brain(
+async def test_transparency_chat_egress_names_opencode_not_legacy_when_muse_is_brain(
     client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
@@ -234,7 +578,7 @@ async def test_transparency_chat_egress_names_meta_not_deepseek_when_muse_is_bra
     chat = next(item for item in resp.json()["transmitted"] if item["kind"] == "chat")
     assert chat["provider"] == "meta_muse_spark"
     dest = (chat.get("destination") or "").lower()
-    assert "meta.ai" in dest
+    assert "opencode.ai/zen/go/v1" in dest
     assert "deepseek" not in dest
     assert "x.ai" not in dest
     assert "openai.com" not in dest
@@ -249,8 +593,10 @@ async def test_live_asr_feed_native_stream_commits_only_final() -> None:
     class _Native:
         name = "meta_muse_voice"
         native_live_stream = True
+        starts = 0
 
         def start_live(self, loop, **kwargs) -> None:
+            self.starts += 1
             self._on_partial = kwargs.get("on_partial")
             self._on_final = kwargs.get("on_final")
             self.mode = kwargs.get("mode")
@@ -272,14 +618,17 @@ async def test_live_asr_feed_native_stream_commits_only_final() -> None:
     native = _Native()
     feed = LiveAsrFeed(native, on_partial=on_partial)
     feed.begin()
-    assert native.mode == "PUSH_TO_TALK"
+    assert native.mode == "ENDPOINTING"
+    assert native.starts == 1
+    feed.begin()
+    assert native.starts == 1
     feed.feed(b"\x00\x01" * 160)
     await feed._on_native_partial("Open Calc")
     assert "Open Calc" in partials
     assert feed._final_text is None
     feed.end_speech()
-    await asyncio.wait_for(feed._final_ready.wait(), timeout=1)
-    assert ended["n"] == 1
+    assert ended["n"] == 0
+    await feed._on_native_final("Open Calculator")
     text = await feed.final_text(timeout_ms=50)
     assert text == "Open Calculator"
 
@@ -308,10 +657,17 @@ async def test_live_asr_feed_waits_for_speech_complete_not_partial() -> None:
         def abort_live(self) -> None:
             return None
 
-    feed = LiveAsrFeed(_Native())
+    native = _Native()
+    feed = LiveAsrFeed(native)
     feed.begin()
     await feed._on_native_partial("open calculator")
     feed.end_speech()
+
+    async def later() -> None:
+        await asyncio.sleep(0.04)
+        await feed._on_native_final("Open Calculator")
+
+    asyncio.get_running_loop().create_task(later())
     text = await feed.final_text(timeout_ms=400)
     assert text == "Open Calculator"
     assert text != "open calculator"
@@ -496,9 +852,13 @@ async def test_v1_chat_fails_closed_without_muse_key(client, monkeypatch: pytest
     monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "meta_model_api_key", None)
+    monkeypatch.setattr(settings, "opencode_api_key", None)
+    monkeypatch.setattr(settings, "opencode_env_file", "")
     monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
     monkeypatch.setenv("META_MODEL_API_KEY", "")
     monkeypatch.setenv("MODEL_API_KEY", "")
+    monkeypatch.setenv("EV_OPENCODE_API_KEY", "")
+    monkeypatch.setenv("OPENCODE_API_KEY", "")
     chat = await client.post("/v1/chat", json={"message": "hello there, how are you today"})
     assert chat.status_code == 503, chat.text
     detail = str(chat.json().get("detail") or "").lower()
@@ -720,7 +1080,7 @@ async def test_laptop_file_rewrite_fails_closed_without_muse_key(
     from app.ev import laptop_files
 
     monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
-    monkeypatch.setattr("app.gateway.muse.muse_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
 
     async def boom_legacy(*args, **kwargs):
         raise AssertionError("legacy file intelligence must not run")
@@ -740,9 +1100,13 @@ def test_memory_enrichment_uses_spark_and_fails_closed_without_key(
     monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "meta_model_api_key", None)
+    monkeypatch.setattr(settings, "opencode_api_key", None)
+    monkeypatch.setattr(settings, "opencode_env_file", "")
     monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
     monkeypatch.setenv("META_MODEL_API_KEY", "")
     monkeypatch.setenv("MODEL_API_KEY", "")
+    monkeypatch.setenv("EV_OPENCODE_API_KEY", "")
+    monkeypatch.setenv("OPENCODE_API_KEY", "")
     assert LLMExtractor().available is False
 
     class Spark:
@@ -944,9 +1308,13 @@ def test_preflight_reports_muse_spark_partial_without_key_not_deepseek_double(
     monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "meta_model_api_key", "")
+    monkeypatch.setattr(settings, "opencode_api_key", None)
+    monkeypatch.setattr(settings, "opencode_env_file", "")
     monkeypatch.setenv("META_MODEL_API_KEY", "")
     monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
     monkeypatch.setenv("MODEL_API_KEY", "")
+    monkeypatch.setenv("EV_OPENCODE_API_KEY", "")
+    monkeypatch.setenv("OPENCODE_API_KEY", "")
     kind, name, detail = _check_chat()
     assert kind == "PARTIAL"
     assert name == "meta_muse_spark"
@@ -963,6 +1331,8 @@ def test_preflight_reports_muse_spark_real_when_key_present(
     monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "intelligence_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "meta_model_api_key", "test-key-not-logged")
+    monkeypatch.setattr(settings, "opencode_api_key", "test-key-not-logged")
+    monkeypatch.setattr(settings, "opencode_env_file", "")
     kind, name, detail = _check_chat()
     assert kind == "REAL"
     assert name == "meta_muse_spark"

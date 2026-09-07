@@ -55,7 +55,8 @@ _RESUME_RE = re.compile(
 )
 _CANCEL_RE = re.compile(
     r"^(?:please\s+)?(?:cancel that|stop talking|stop speaking|never mind that|"
-    r"never mind|stop|don'?t click that)\s*[.!]?\s*$",
+    r"never mind|stop|stop it|stop that|stop this|enough|that'?s enough|"
+    r"forget it|don'?t click that)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
 
@@ -312,6 +313,14 @@ _LIVE_RESULT_KEEP = (
     "title",
     "display",
     "body",
+    # Timer receipts are canonical evidence, not optional presentation text.
+    # Keep both aliases because older adapters return ``id`` while the live
+    # contract exposes ``timer_id``.
+    "id",
+    "timer_id",
+    "fire_at",
+    "status",
+    "text",
     "path",
     "keys",
     "image_delivered",
@@ -326,6 +335,14 @@ _LIVE_RESULT_KEEP = (
     "ocr_text",
     "local_ocr",
     "media_kind",
+    "attachment_id",
+    "encoded_bytes",
+    "width",
+    "height",
+    "request_id",
+    "image_ready",
+    "kept",
+    "remembered",
     "files_changed",
     "project",
     "brain",
@@ -393,31 +410,46 @@ def compact_live_tool_json(payload: dict[str, Any], *, limit: int = _LIVE_TOOL_J
         "recall",
         "recall_history",
     }
-    if not memory_tool:
+    preserve_evidence = str(slim.get("name") or "") in {
+        "start_timer",
+        "cancel_timer",
+    }
+    if not memory_tool and not preserve_evidence:
         slim.pop("evidence", None)
     result = slim.get("result")
     if memory_tool and isinstance(result, dict):
+        from app.memory.visual import is_generic_label_scene, owner_memory_hit_text
+
         hits: list[str] = []
         raw_hits = result.get("lines") or result.get("results") or result.get("evidence") or []
         for item in raw_hits[:4]:
             if isinstance(item, str):
-                text = " ".join(item.split()).strip()
+                text = owner_memory_hit_text(item)
             elif isinstance(item, dict):
-                text = " ".join(str(item.get("text") or "").split()).strip()
+                text = owner_memory_hit_text(item.get("text") or item.get("description"), item)
             else:
                 continue
             if text:
-                hits.append(text[:240])
-        spoken = str(result.get("spoken") or slim.get("spoken") or "").strip()
+                hits.append(text[:800])
+        spoken = owner_memory_hit_text(
+            result.get("spoken") or slim.get("spoken"),
+            result,
+        )
+        if spoken and not is_generic_label_scene(spoken):
+            hits = [
+                text
+                for text in hits
+                if not is_generic_label_scene(text)
+            ]
         slim["result"] = {
             "count": result.get("count"),
             "grounding": result.get("grounding"),
             "life_shelf": result.get("life_shelf"),
-            "spoken": spoken[:400] or None,
+            "spoken": spoken[:800] or None,
             "hits": hits,
         }
         if spoken:
-            slim["spoken"] = spoken[:400]
+            slim["spoken"] = spoken[:800]
         slim.pop("evidence", None)
     elif isinstance(result, dict):
         kept = {
@@ -452,6 +484,28 @@ def compact_live_tool_json(payload: dict[str, Any], *, limit: int = _LIVE_TOOL_J
         slim.setdefault("app", result.get("app"))
         slim.setdefault("spoken", result.get("spoken"))
         slim.setdefault("error", result.get("error"))
+    if str(slim.get("name") or "") == "look":
+        from app.memory.visual import is_camera_prompt_echo
+
+        kept = bool(slim.get("kept"))
+        result_body = slim.get("result") if isinstance(slim.get("result"), dict) else {}
+        if result_body.get("kept"):
+            kept = True
+        for bucket in (slim, result_body if result_body else None):
+            if not isinstance(bucket, dict):
+                continue
+            if is_camera_prompt_echo(str(bucket.get("spoken") or "")):
+                bucket.pop("spoken", None)
+            if kept:
+                for key in (
+                    "labels",
+                    "visual_facts",
+                    "follow_up",
+                    "memory_text",
+                    "memory_note",
+                    "colors",
+                ):
+                    bucket.pop(key, None)
     goal = _slim_live_goal(slim.get("goal"))
     if goal is not None:
         slim["goal"] = goal
@@ -761,6 +815,12 @@ def register_live(live: LiveSession) -> None:
     device_id = getattr(live, "device_id", None)
     if device_id:
         _DEVICE_TO_SESSION[str(device_id)] = str(session_id)
+    try:
+        from app.ev.luna_code import flush_background_code_notify
+
+        flush_background_code_notify()
+    except Exception:  # noqa: BLE001 - live register must never fail closed
+        pass
 
 
 def unregister_live(live: LiveSession) -> None:

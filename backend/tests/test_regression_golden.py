@@ -137,10 +137,12 @@ def test_golden_voice_playback_buffer():
     smoke = (repo / "macos/Sources/EV/SmokeTest.swift").read_text()
     # Continuity repair 033d808 replaced minStartSeconds/maxPrimeWait with
     # duration-based aggregationMs/targetLeadMs/hardCeilingMs — contract is
-    # controlled lead, not a huge delay, and bounded buffering.
+    # controlled lead, not a huge delay, and bounded buffering. The shipped
+    # owner-run values (b38725d) are 250/900; keep the frozen contract on
+    # those exact shipped constants.
     assert "aggregationMs = 160" in tts
-    assert "startupPrebufferMs = 120" in tts
-    assert "targetLeadMs = 1500" in tts
+    assert "startupPrebufferMs = 250" in tts
+    assert "targetLeadMs = 900" in tts
     # Owner-proven (one word then silence): S2S providers generate whole
     # responses faster than realtime; the ceiling is a 60 s safety valve and
     # accepted-response speech is NEVER dropped. The E-fastgen continuity
