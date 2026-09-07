@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.33";
+const CLIENT_BUILD = "2026.09.08.34";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -2273,6 +2273,31 @@ async function handleCameraRequest(msg) {
   }
 }
 
+/* Cycle 80 — Wake Lock ambient mode: the screen stays on while the live
+   session is active (a hands-free conversation dies when the phone sleeps).
+   Released on stop or when the owner backgrounds the page; reacquired on
+   return while still talking. Unsupported browsers: honest no-op. */
+let wakeLockHandle = null;
+async function acquireWakeLock() {
+  if (!navigator.wakeLock || wakeLockHandle) return;
+  try {
+    wakeLockHandle = await navigator.wakeLock.request("screen");
+    wakeLockHandle.addEventListener("release", () => { wakeLockHandle = null; });
+    pushActivity("Screen staying on");
+  } catch (_err) {
+    wakeLockHandle = null;
+  }
+}
+async function releaseWakeLock() {
+  if (!wakeLockHandle) return;
+  try { await wakeLockHandle.release(); } catch (_err) {}
+  wakeLockHandle = null;
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && state.talking) acquireWakeLock().catch(() => {});
+  if (document.visibilityState === "hidden") releaseWakeLock().catch(() => {});
+});
+
 async function talk() {
   if (state._talkInflight) return;
   if (state.talking) {
@@ -2319,6 +2344,7 @@ async function talk() {
       return;
     }
     state.sessionId = opened.session_id;
+    acquireWakeLock().catch(() => {});
     state.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id);
     const want = opened.media_backend || "webrtc_strict";
     const strict = opened.strict_webrtc === true || want === "webrtc_strict" || !opened.ws_ticket;
@@ -2565,6 +2591,7 @@ function closeActiveBackend() {
 }
 
 async function stopTalk() {
+  releaseWakeLock().catch(() => {});
   if (window.EvieFeedback) window.EvieFeedback.emit("conversationStop", $("talk"));
   state.sessionGen += 1;
   if (engine) engine.socketGeneration = state.sessionGen;

@@ -133,3 +133,14 @@ def test_se_performance_profile_tunings():
     assert "EvieAudioProfile" in app
     assert "BATCH_S" in app
     assert '"playback" : "interactive"' in app
+
+
+def test_wake_lock_ambient_mode_wired():
+    """Cycle 80 — C40: the live session holds a screen Wake Lock while
+    talking; releases on stop and on backgrounding; reacquires on return."""
+    js = (PWA / "app.js").read_text()
+    assert "navigator.wakeLock" in js
+    assert 'wakeLock.request("screen")' in js
+    assert "acquireWakeLock" in js and "releaseWakeLock" in js
+    assert "visibilitychange" in js
+    assert js.index("acquireWakeLock().catch(() => {});") < js.index("async function stopTalk")
