@@ -59,3 +59,16 @@ self.addEventListener("fetch", (event) => {
       .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/evie/")))
   );
 });
+/* Cycle 24 — iPhone-only service-worker version display helper. Backward
+   compatible: additive self.EvieSwVersion (mirrored to window when present);
+   existing install/activate/fetch listeners untouched. */
+self.EvieSwVersion = {
+  build: BUILD,
+  label: function () {
+    return "Evie " + BUILD;
+  },
+  matches: function (clientBuild) {
+    return clientBuild === BUILD;
+  }
+};
+if (typeof window !== "undefined") window.EvieSwVersion = self.EvieSwVersion;
