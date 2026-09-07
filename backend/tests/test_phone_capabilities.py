@@ -474,3 +474,78 @@ async def test_battery_report_and_low_battery_nudge_gate(client, db_session):
         bypass_quiet=True, now=datetime(2026, 9, 8, 12, 0),
     )
     assert alarm["status"] == "sent"
+
+
+async def _pair_trusted(client: AsyncClient, name: str) -> AsyncClient:
+    minted = await client.post(
+        "/v1/device-gateway/pairing-tokens",
+        json={"role": "companion", "display_name": name},
+    )
+    assert minted.status_code == 200, minted.text
+    phone = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    paired = await phone.post(
+        "/v1/device-gateway/pair",
+        json={
+            "pairing_token": minted.json()["pairing_token"],
+            "display_name": name,
+            "protocol_version": "1",
+            "client_version": "2026.09.08.01",
+            "platform": "ios",
+            "instance_id": name + "-tab",
+            "memory_scope": "owner",
+        },
+    )
+    assert paired.status_code == 200, paired.text
+    phone.headers["Authorization"] = f"Bearer {paired.json()['device_token']}"
+    return phone
+
+
+async def test_offline_queue_executes_exactly_once(client, db_session):
+    """Cycle 53 — C13: a queued voice intent on a trusted phone executes
+    SERVER-side under the queue's idempotency key; a second replay is a
+    no-op that returns the same executed state (no double timer)."""
+    from sqlalchemy import func, select
+
+    from app.models import OwnerTimer
+
+    phone = await _pair_sandbox(client, "Queue-Pro")
+    device_id = (await phone.get("/v1/device-gateway/status")).json()["device_id"]
+    promoted = await client.post(
+        "/v1/device-gateway/admin/promote-owner",
+        headers={"Authorization": "Bearer test-key"},
+        json={"device_id": device_id, "reason": "owner"},
+    )
+    assert promoted.status_code == 200, promoted.text
+    stored = await phone.post(
+        "/v1/device-gateway/queue",
+        json={
+            "idempotency_key": "offline-timer-1",
+            "kind": "voice_intent",
+            "payload": {"text": "set a timer for five minutes"},
+        },
+    )
+    assert stored.status_code == 201, stored.text
+
+    first = await phone.post(
+        "/v1/device-gateway/queue/replay",
+        json={"idempotency_key": "offline-timer-1"},
+    )
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body.get("executed") is True, body
+    assert "timer" in str(body.get("reply") or "").lower()
+    count1 = (
+        await db_session.execute(select(func.count()).select_from(OwnerTimer))
+    ).scalar()
+    assert count1 == 1, f"exactly one timer expected, got {count1}"
+
+    second = await phone.post(
+        "/v1/device-gateway/queue/replay",
+        json={"idempotency_key": "offline-timer-1"},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json().get("executed") is True
+    count2 = (
+        await db_session.execute(select(func.count()).select_from(OwnerTimer))
+    ).scalar()
+    assert count2 == 1, "replay must NOT create a second timer"

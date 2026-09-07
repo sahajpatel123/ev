@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.07";
+const CLIENT_BUILD = "2026.09.08.08";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -630,28 +630,25 @@ async function replayOfflineQueue() {
   try {
     const listed = await api("/v1/device-gateway/queue");
     const items = listed.items || [];
-    const trust = (state.status && state.status.trust_state) || "";
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
-      if (!item || item.state !== "pending") continue;
-      const text = item.kind === "siri_capture" && item.payload && item.payload.text;
-      const mark = item.idempotency_key || text || "";
-      if (text && trust === "TRUSTED_OWNER_DEVICE" && mark && !state.drainedCaptures[mark]) {
-        try {
-          await sendText(text);
-          state.drainedCaptures[mark] = true;
-        } catch (_err) {
-          continue;
+      if (!item || item.state !== "pending" || !item.idempotency_key) continue;
+      // Cycle 53 — exactly-once: the SERVER executes queued voice intents
+      // under the queue's idempotency key (the turn gate dedupes on it).
+      // The client never re-sends the utterance itself — that used to mean
+      // a queued timer could fire twice. Non-voice items still replay to
+      // the accepted state for server-side handling.
+      try {
+        const out = await api("/v1/device-gateway/queue/replay", {
+          method: "POST",
+          body: JSON.stringify({ idempotency_key: item.idempotency_key }),
+        });
+        if (out && out.reply) {
+          pushHistory("evie", out.reply);
+          state.caption = out.reply;
+          render();
         }
-      }
-      if (item.idempotency_key) {
-        try {
-          await api("/v1/device-gateway/queue/replay", {
-            method: "POST",
-            body: JSON.stringify({ idempotency_key: item.idempotency_key }),
-          });
-        } catch (_err) {}
-      }
+      } catch (_err) {}
     }
   } catch (_err) {}
 }

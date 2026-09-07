@@ -1038,24 +1038,6 @@ async def offline_enqueue(
     return result
 
 
-@router.post("/queue/replay")
-async def offline_replay(
-    data: QueueReplayRequest,
-    request: Request,
-    device: Device = Depends(require_gateway_device),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    _check_origin(request)
-    from app.everywhere.offline_queue import replay
-
-    result = await replay(session, device=device, idempotency_key=data.idempotency_key)
-    await session.commit()
-    status = int(result.get("status") or 200)
-    if status in {404, 422}:
-        raise HTTPException(status_code=status, detail=result)
-    return result
-
-
 @router.get("/queue")
 async def offline_list(
     request: Request,
@@ -1066,6 +1048,8 @@ async def offline_list(
     from app.everywhere.offline_queue import list_pending
 
     return {"ok": True, "items": await list_pending(session, device_id=device.id)}
+
+
 
 
 @router.post("/healthkit/snapshot")
@@ -1090,6 +1074,89 @@ async def healthkit_snapshot(
     device.endpoint_profile = profile
     await session.commit()
     return {"ok": True, "freshness": freshness, "sent_to_model": False, "available": bool(available)}
+
+
+@router.post("/queue/replay")
+async def offline_replay(
+    data: QueueReplayRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.offline_queue import replay
+
+    result = await replay(session, device=device, idempotency_key=data.idempotency_key)
+    # Cycle 53 — exactly-once execution: for queued VOICE intents on a
+    # trusted device the SERVER runs the turn under the queue's idempotency
+    # key (the turn gate dedupes on it), so an offline timer or reminder
+    # fires exactly once. The reply rides back to the client.
+    item = result.get("item") if isinstance(result.get("item"), dict) else {}
+    text = str((item.get("payload") or {}).get("text") or "").strip()
+    if (
+        result.get("ok")
+        and not result.get("executed")
+        and item.get("kind") in {"siri_capture", "voice_intent"}
+        and text
+        and not is_sandbox_device(device)
+        and device.revoked_at is None
+    ):
+        from app.device_gateway.pipeline import run_trusted_device_turn
+        from app.everywhere.offline_queue import mark_executed
+
+        try:
+            turn = await run_trusted_device_turn(
+                session,
+                device=device,
+                text=text,
+                idempotency_key=item.get("idempotency_key") or data.idempotency_key,
+                ingest_conversation=True,
+            )
+            reply_text = str(turn.get("reply") or turn.get("spoken") or "")
+            if turn.get("conversational") and not reply_text:
+                reply_text = "Okay — I'll pick this up when you're back."
+            await mark_executed(
+                session,
+                device_id=device.id,
+                idempotency_key=item.get("idempotency_key") or data.idempotency_key,
+                reply=reply_text,
+            )
+            result = {
+                **result,
+                "executed": True,
+                "reply": reply_text,
+                "item": await _reload_queue_item(
+                    session, device_id=device.id, idempotency_key=data.idempotency_key
+                ),
+            }
+        except Exception:  # noqa: BLE001 - execution failure leaves it retryable
+            pass
+    await session.commit()
+    status = int(result.get("status") or 200)
+    if status in {404, 422}:
+        raise HTTPException(status_code=status, detail=result)
+    return result
+
+
+async def _reload_queue_item(
+    session: AsyncSession,
+    *,
+    device_id: UUID,
+    idempotency_key: str,
+) -> dict:
+    from sqlalchemy import select as _select
+
+    from app.everywhere.offline_queue import OfflineQueueItem, public_item
+
+    row = (
+        await session.execute(
+            _select(OfflineQueueItem).where(
+                OfflineQueueItem.device_id == device_id,
+                OfflineQueueItem.idempotency_key == (idempotency_key or "").strip()[:128],
+            )
+        )
+    ).scalar_one_or_none()
+    return public_item(row) if row is not None else {}
 
 
 @router.post("/push/register")
