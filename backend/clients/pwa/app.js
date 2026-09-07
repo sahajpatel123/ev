@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.01";
+const CLIENT_BUILD = "2026.09.08.02";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -1447,7 +1447,17 @@ async function sendText(text) {
 async function captureCamera(body, facing) {
   const action = (body && (body.camera_action || body.action)) || "look_once";
   $("camera-sheet").hidden = false;
-  textOf($("camera-copy"), action === "record_clip" ? "Recording a short clip" : "Opening perception");
+  const REASONS = {
+    explicit_this_phone: "You asked this phone to look",
+    preferred_camera: "Your preferred camera",
+    origin_preferred: "Your preferred camera",
+    only_ready_phone: "Only phone awake right now",
+  };
+  const why = body && body.reason ? REASONS[body.reason] || body.reason.replace(/_/g, " ") : "";
+  textOf(
+    $("camera-copy"),
+    (action === "record_clip" ? "Recording a short clip" : "Opening perception") + (why ? " · " + why : "")
+  );
   setMood(action === "record_clip" ? "Clip" : "Camera");
   const video = $("preview");
   const canvas = $("snap");
@@ -1734,10 +1744,25 @@ async function handleCameraRequest(msg) {
             last: true,
             action: msg.action || "look_once",
           };
-      await api("/v1/device-gateway/live/look-frame", {
+      const body = await api("/v1/device-gateway/live/look-frame", {
         method: "POST",
         body: JSON.stringify(live),
       });
+      // Cycle 44 — close the look loop: tell the owner what the look did.
+      if (body && body.vision && body.vision.ok) {
+        const kept = body.persisted_to_memory_os || body.vision.persisted_to_memory_os;
+        const seen = String(
+          body.vision.spoken
+            || (body.vision.labels && body.vision.labels.slice(0, 4).join(", "))
+            || (body.vision.ocr_text ? body.vision.ocr_text.slice(0, 120) : "")
+        ).trim();
+        state.caption = kept
+          ? "Seen" + (seen ? " — " + seen.slice(0, 140) : "") + ". Kept to memory."
+          : seen
+            ? "Seen — " + seen.slice(0, 140)
+            : "Seen.";
+        render();
+      }
     }
   } catch (_err) {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {

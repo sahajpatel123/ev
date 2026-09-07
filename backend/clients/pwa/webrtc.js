@@ -1106,6 +1106,10 @@
           type: "camera_request",
           request_id: parsed.camera_request_id,
           action: parsed.camera_action || parsed.action || args.action || "look_once",
+          reason: parsed.reason || "",
+          permission: parsed.permission || "",
+          freshness: parsed.freshness || "",
+          provenance: parsed.provenance || "",
         });
       }
       if (parsed.card && window.EvieMobileActions) window.EvieMobileActions.present(parsed);
