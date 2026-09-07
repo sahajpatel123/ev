@@ -1272,6 +1272,39 @@ async def morning_brief(
     }
 
 
+@router.get("/sense")
+async def ev_sense(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """Cycle 65 — EV Sense: the phone's CONSENTED sensor surface, stated
+    honestly. Everything here is already-reported device state (healthkit
+    snapshot availability, battery, storage, camera role, nudge policy);
+    nothing is inferred, nothing new is collected, and health numbers stay
+    off the model (sent_to_model is always False)."""
+
+    _check_origin(request)
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+    from app.everywhere.nudge import in_quiet_hours, nudge_prefs
+    prefs = nudge_prefs(device)
+    return {
+        "ok": True,
+        "healthkit": {
+            "available": bool(hk.get("available")),
+            "freshness": str(hk.get("freshness") or "unavailable"),
+            "sent_to_model": False,
+            "captured_at": hk.get("captured_at"),
+        },
+        "battery_percent": device.battery_percent,
+        "storage_free_bytes": device.storage_free_bytes,
+        "camera_capability": "camera" in (device.capabilities or []),
+        "push_delivery": str((profile.get("notifications") or {}).get("delivery") or "poll"),
+        "nudges": {**prefs, "quiet_now": in_quiet_hours(prefs)},
+        "never_to_model": ["health_numbers"],
+    }
+
+
 @router.post("/queue/replay")
 async def offline_replay(
     data: QueueReplayRequest,

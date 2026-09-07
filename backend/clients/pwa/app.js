@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.15";
+const CLIENT_BUILD = "2026.09.08.17";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -719,7 +719,27 @@ function showSheet(id, on) {
   if (on && id === "settings-sheet" && window.EvieCapabilities) {
     window.EvieCapabilities.refresh({ api: (path) => api(path, { _useDeviceToken: true }) });
   }
+  if (on && id === "settings-sheet") fillSense().catch(() => {});
   if (on && id === "more-sheet") loadQuickActions().catch(() => {});
+}
+
+/* Cycle 65 — EV Sense: the consented-sensor panel, rendered from the
+   server-computed /sense read. Values are shown as STATE, not data —
+   health numbers themselves never leave the phone. */
+async function fillSense() {
+  const body = await api("/v1/device-gateway/sense", { _useDeviceToken: true }).catch(() => null);
+  if (!body || body.ok === false) return;
+  const hk = body.healthkit || {};
+  const fmtBytes = (n) => (typeof n === "number" && n > 0 ? Math.round(n / 1e9) + " GB free" : "not reported");
+  const nudges = body.nudges || {};
+  fillDl("sense-meta", [
+    ["Health snapshot", (hk.available ? "shared · " + (hk.freshness || "reported") : "not shared") + " · never sent to a model"],
+    ["Battery", typeof body.battery_percent === "number" ? Math.round(body.battery_percent) + "%" : "not reported"],
+    ["Storage", fmtBytes(body.storage_free_bytes)],
+    ["Camera", body.camera_capability ? "allowed for Look" : "not granted"],
+    ["Push", String(body.push_delivery || "poll")],
+    ["Nudges", (nudges.enabled === false ? "off" : "on") + (nudges.quiet_now ? " · quiet hours now" : " · quiet " + (nudges.quiet_start || "") + "–" + (nudges.quiet_end || ""))],
+  ]);
 }
 
 /* Cycle 51 — one-tap quick actions: server-computed, capability-gated;

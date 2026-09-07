@@ -857,3 +857,33 @@ async def test_search_web_routed_from_phone(db_session):
     assert (
         "ramen" in reply or "disabled" in reply or "couldn't" in reply or "not connected" in reply
     ), reply
+
+
+async def test_sense_reports_consented_sensors_only(client, db_session):
+    """Cycle 65 — C25: EV Sense states the phone's consented sensor surface
+    honestly: health numbers stay off the model, availability is reported,
+    and nothing not-reported is invented."""
+    phone = await _pair_sandbox(client, "Sense-SE")
+    posted = await phone.post(
+        "/v1/device-gateway/healthkit/snapshot",
+        json={"snapshot": {}, "available": False, "reason": "no_entitlement"},
+    )
+    assert posted.status_code == 200
+    sense = (await phone.get("/v1/device-gateway/sense")).json()
+    assert sense["ok"] is True
+    assert sense["healthkit"]["sent_to_model"] is False
+    assert sense["healthkit"]["available"] is False
+    assert sense["healthkit"]["freshness"] == "unavailable"
+    assert "health_numbers" in sense["never_to_model"]
+    assert sense["nudges"]["quiet_start"] == "22:00"
+    assert isinstance(sense["nudges"]["quiet_now"], bool)
+    # Snapshot with data -> availability flips, values still never shown here.
+    granted = await phone.post(
+        "/v1/device-gateway/healthkit/snapshot",
+        json={"snapshot": {"steps": 999}, "captured_at": "2026-09-08T08:00:00Z"},
+    )
+    assert granted.status_code == 200
+    sense2 = (await phone.get("/v1/device-gateway/sense")).json()
+    assert sense2["healthkit"]["available"] is True
+    assert sense2["healthkit"]["freshness"] == "reported"
+    assert "steps" not in str(sense2["healthkit"])
