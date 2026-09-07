@@ -1140,12 +1140,30 @@ async def user_text_stream(
             reply_text = str(payload.get("reply") or "").strip()
             if reply_text and not getattr(device, "revoked_at", None):
                 try:
+                    from app.ev.interaction import EMOTION_SPEECH, detect_emotion
+                    from app.voice.contracts import SpeechStyle
                     from app.voice.speech import pop_speakable
                     from app.voice.tts import get_synthesizer
-                    from app.voice.contracts import SpeechStyle
 
                     synth = get_synthesizer()
-                    style = SpeechStyle()
+                    # Cycle 59 — same prosody map as the desk: the owner's
+                    # affect (EMOTION_SPEECH) drives warmth/urgency/brevity;
+                    # caps respected. The route keys (timers, reads) already
+                    # speak their own crisp lines.
+                    spec = EMOTION_SPEECH.get(
+                        detect_emotion(data.text or ""), EMOTION_SPEECH["neutral"]
+                    )
+                    urgency = min(
+                        1.0,
+                        max(0.0, float(spec.get("urgency_boost", 0.0))),
+                        float(spec.get("urgency_cap", 1.0)),
+                    )
+                    style = SpeechStyle(
+                        warmth=float(spec.get("warmth", 0.72)),
+                        brevity=float(spec.get("brevity", 0.45)),
+                        urgency=urgency,
+                        mode="casual",
+                    )
                     buffer = reply_text
                     index = 0
                     import base64 as _b64

@@ -654,3 +654,15 @@ def test_manifest_carries_voice_identity():
     tts = manifest.get("tts") or {}
     assert tts.get("same_as_desk") is True
     assert "engine" in tts and "voice" in tts
+
+
+def test_emotion_prosody_uses_shared_map():
+    """Cycle 59 — C19: the phone typed path derives prosody from the SAME
+    EMOTION_SPEECH map the Mac uses; stressed reads faster, sad warmer."""
+    from app.ev.interaction import EMOTION_SPEECH, detect_emotion
+
+    stressed = EMOTION_SPEECH[detect_emotion("this is ridiculous, it broke again and I'm late")]
+    neutral = EMOTION_SPEECH["neutral"]
+    assert stressed["urgency_boost"] > neutral["urgency_boost"]
+    sad = EMOTION_SPEECH[detect_emotion("I just feel so sad about everything these days")]
+    assert sad["warmth"] > neutral["warmth"]
