@@ -85,3 +85,18 @@ self.EvieDeviceRole = {
   }
 };
 if (typeof window !== "undefined") window.EvieDeviceRole = self.EvieDeviceRole;
+/* Cycle 41 — iPhone-only presence-heartbeat display model. Backward
+   compatible: additive self.EviePresenceHeartbeat pure model mapping
+   heartbeat age to tone+label; existing listeners untouched. */
+self.EviePresenceHeartbeat = {
+  model: function (lastSeenMs, nowMs) {
+    var now = Number(nowMs);
+    var seen = Number(lastSeenMs);
+    if (!isFinite(now) || !isFinite(seen)) return { tone: "neutral", label: "Presence unknown", ageS: -1 };
+    var ageS = Math.max(0, Math.floor((now - seen) / 1000));
+    if (ageS < 30) return { tone: "live", label: "Here now", ageS: ageS };
+    if (ageS < 120) return { tone: "stale", label: "Away " + ageS + "s", ageS: ageS };
+    return { tone: "gone", label: "Away " + Math.floor(ageS / 60) + "m", ageS: ageS };
+  }
+};
+if (typeof window !== "undefined") window.EviePresenceHeartbeat = self.EviePresenceHeartbeat;
