@@ -53,3 +53,9 @@ When claiming iPhone behavior, name the path and the evidence:
 
 - Path: Safari PWA (primary), EvieShell IPA (optional), or native EVApp (later)
 - Evidence: unit, packaged (`EvieBrokerCheck` / optional archive), or physical two-iPhone
+<!-- Cycle EAC-10 -->
+## iPhone-only Evie app-surface refresh
+
+iPhone-only notes; the Tailscale PWA path above is unchanged. The later native
+track adds a Today widget headline pair, a queue badge equal to pending offline
+captures, and opt-in copy for Health, notifications, and life access.

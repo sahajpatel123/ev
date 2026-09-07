@@ -67,3 +67,15 @@ if [ "$REQUIRE_PHYSICAL" = "1" ]; then
 fi
 
 echo "[physical] automated OK (Tailscale PWA path)"
+# Cycle EAC-10 — iPhone-only Evie app-surface checks (additive; backward compatible: gated off by default).
+# iPhone-only; existing gates above run unchanged.
+evie_check_today_state() {
+  echo "[physical] evie today-state: confirm Today widget headline matches latest HUD card"
+}
+evie_check_queue_badge() {
+  echo "[physical] evie queue badge: confirm app badge equals pending offline captures"
+}
+if [ "${EVIE_APP_SURFACE_CHECKS:-0}" = "1" ]; then
+  evie_check_today_state
+  evie_check_queue_badge
+fi

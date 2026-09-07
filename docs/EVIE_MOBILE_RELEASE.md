@@ -132,3 +132,10 @@ These require the same PWA origin on the iPhone 16 Pro and iPhone SE, Tailscale 
 6. Capture offline, reconnect, exactly-once sync (queued is never executed).
 7. Reload after a PWA build bump.
 8. Revoke one phone; the other stays usable; the revoked phone loses access.
+<!-- Cycle EAC-10 -->
+## iPhone-only Evie app-surface checks
+
+iPhone-only; release flow above is unchanged. `scripts/ios/physical-acceptance.sh`
+gains echo-gated `evie_check_today_state` / `evie_check_queue_badge` helpers
+(run with `EVIE_APP_SURFACE_CHECKS=1`), covering the Today widget headline and
+the offline queue badge on both phones.
