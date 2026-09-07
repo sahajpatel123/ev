@@ -21,6 +21,7 @@ async def ingest_phone_frame(
     request_id: str,
     jpeg_b64: str,
     action: str = "look",
+    note: str | None = None,
 ) -> dict[str, Any]:
     raw = jpeg_b64 or ""
     try:
@@ -63,6 +64,8 @@ async def ingest_phone_frame(
 
     persisted = False
     spoken = "I have the current camera frame from this iPhone."
+    if action == "remember":
+        spoken = "Kept. I'll remember this."
     if ocr_text:
         spoken = f"I can read: {ocr_text}"
     elif labels:
@@ -100,6 +103,8 @@ async def ingest_phone_frame(
                     "spoken": spoken,
                     "media_kind": "frame" if action in {"look", "look_once", "observe"} else action,
                     "visual_facts": "phone_camera",
+                    # Cycle 67 — "remember this": an explicit owner keep.
+                    "keep_request": (note or "remember this") if action == "remember" else None,
                 },
                 actor=f"device:{device.name}",
                 device_id=str(device.id),

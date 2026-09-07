@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.18";
+const CLIENT_BUILD = "2026.09.08.19";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -1724,10 +1724,30 @@ async function captureCamera(body, facing) {
       method: "POST",
       body: JSON.stringify({ request_id: body.camera_request_id, jpeg_b64: jpeg, action: action }),
     });
+    if (action !== "remember") lastLook = { jpeg };
+    if ($("keep-chip")) {
+      $("keep-chip").hidden = action === "remember";
+      $("keep-chip").onclick = () => keepLastLook().catch(() => {});
+    }
   }
   if (state.talking) setMood("Listening");
   else setMood("Ready");
   return jpeg;
+}
+
+/* Cycle 67 — "remember this": the owner keeps what Evie just looked at.
+   The SAME frame re-posts with action=remember; the server marks it as an
+   explicit owner keep with provenance. Optional note names the thing. */
+let lastLook = null;
+async function keepLastLook() {
+  if (!lastLook) return;
+  const note = (prompt("Name it (optional):") || "").trim();
+  await api("/v1/device-gateway/camera/result", {
+    method: "POST",
+    body: JSON.stringify({ request_id: crypto.randomUUID(), jpeg_b64: lastLook.jpeg, action: "remember", note: note || null }),
+  });
+  lastLook = null;
+  pushActivity("Kept to memory");
 }
 
 function downsample(float32, fromRate, toRate) {

@@ -201,6 +201,7 @@ class CameraResult(BaseModel):
     request_id: str
     jpeg_b64: str
     action: str | None = None
+    note: str | None = None
 
 
 class TurnReceiptRequest(BaseModel):
@@ -1887,6 +1888,7 @@ async def camera_result(
             request_id=data.request_id,
             jpeg_b64=data.jpeg_b64,
             action=data.action or "look",
+            note=data.note,
         )
         await session.commit()
     return {

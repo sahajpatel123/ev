@@ -928,3 +928,46 @@ async def test_heading_out_consent_gated_transitions(client, db_session, monkeyp
     assert out2.json()["transition"] is None, "no duplicate nudge"
     back = await phone.post("/v1/device-gateway/heading-out", json={"lat": 37.33, "lng": -122.01})
     assert back.json()["transition"] == "back_home"
+
+
+def test_remember_action_marks_explicit_keep(db_session):
+    """Cycle 67 — C27: action=remember carries the keep flag so the frame
+    persists as an EXPLICIT owner keep, not just another look event."""
+    import asyncio
+    import base64 as b64
+
+    # Minimal valid JPEG (SOI + EOI) — the validator checks structure, not pixels.
+    frame = b64.b64encode(b"\xff\xd8" + b"\x00" * 2048 + b"\xff\xd9").decode()
+    stored = {}
+
+    from app.device_gateway import phone_look as look_mod
+
+    look_mod.stash_observation = lambda obs: stored.setdefault("id", obs.request_id)
+    from types import SimpleNamespace
+
+    device = SimpleNamespace(id="keep-dev-1", name="Keep-SE", endpoint_profile={}, capabilities=["camera"], revoked_at=None)
+
+    import app.device_gateway.sandbox as sandbox_mod
+
+    orig = sandbox_mod.is_sandbox_device
+    sandbox_mod.is_sandbox_device = lambda d: False
+    import app.device_gateway.phone_look as look_mod
+
+    look_mod.is_sandbox_device = lambda d: False
+    try:
+        result = asyncio.run(
+            look_mod.ingest_phone_frame(
+                db_session,
+                device=device,
+                request_id="keep-req-1",
+                jpeg_b64=frame,
+                action="remember",
+                note="my bike",
+            )
+        )
+    finally:
+        sandbox_mod.is_sandbox_device = orig
+        look_mod.is_sandbox_device = orig
+    assert result["ok"] is True
+    assert result["spoken"].startswith("Kept")
+    assert result["persisted_to_memory_os"] is True
