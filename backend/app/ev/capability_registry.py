@@ -100,9 +100,13 @@ def _controller_bound_ops() -> tuple[set[str], bool]:
 
     from app.ev.luna_adapter import EMIT_INTENT_TOOL
 
-    enum = set(
-        EMIT_INTENT_TOOL["parameters"]["properties"]["operation"]["enum"]
-    )
+    raw_params = EMIT_INTENT_TOOL.get("parameters")
+    raw_properties = raw_params.get("properties") if isinstance(raw_params, dict) else None
+    properties: dict[str, Any] = raw_properties if isinstance(raw_properties, dict) else {}
+    raw_operation = properties.get("operation")
+    operation: dict[str, Any] = raw_operation if isinstance(raw_operation, dict) else {}
+    raw_enum = operation.get("enum")
+    enum = set(str(value) for value in list(raw_enum)) if isinstance(raw_enum, list) else set()
     try:
         from app.ev import turn_controller as _tc
 

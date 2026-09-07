@@ -90,8 +90,8 @@ async def memory_router_probe(
                 select(Memory).where(Memory.is_current.is_(True)).limit(limit)
             )
         ).scalars().all()
-        counts = Counter()
-        by_type: dict[str, Counter] = {}
+        counts: Counter[str] = Counter()
+        by_type: dict[str, Counter[str]] = {}
         for row in rows:
             elig = legacy_eligibility(row)
             counts[elig.value] += 1

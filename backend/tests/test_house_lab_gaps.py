@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from uuid import UUID
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ev.training_wheels import TRAINING_STEPS, complete_step
+from app.ev.training_wheels import TRAINING_STEPS
 from app.main import app
 from app.models import FeatureGate, Integration
 from app.utils.text import utcnow

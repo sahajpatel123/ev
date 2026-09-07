@@ -663,7 +663,9 @@ async def _calendar_read(session: AsyncSession, *, limit: int = 20) -> dict:
     next_event = signals.get("next_event") or {}
     summary = str(next_event.get("summary") or "").strip()
     spoken = f"Next: {summary}." if summary else "No upcoming calendar events."
-    source = signals.get("source") if isinstance(signals.get("source"), dict) else {}
+    raw_source = signals.get("source")
+    source = raw_source if isinstance(raw_source, dict) else {}
+    integration_config = integration.config if isinstance(integration.config, dict) else {}
     return {
         "ok": True,
         "next_event": next_event or None,
@@ -679,6 +681,6 @@ async def _calendar_read(session: AsyncSession, *, limit: int = 20) -> dict:
             "source": source.get("kind") or "calendar",
             "timestamp": utcnow().isoformat(),
             "event_ids": source.get("event_ids") or [],
-            "provider": integration.config.get("provider") if isinstance(integration.config, dict) else None,
+            "provider": integration_config.get("provider"),
         },
     }

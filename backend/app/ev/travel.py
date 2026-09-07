@@ -174,7 +174,7 @@ async def indoor_route(session: AsyncSession, to_room: str) -> dict:
         nxt = by_id.get(str(edge.to_node_id)) or by_id.get(str(edge.from_node_id))
         label = edge.instruction or (f"Go to {nxt.name}" if nxt else "Continue")
         steps.append({"instruction": label, "meters": edge.meters})
-    spoken = " ".join(step["instruction"] for step in steps) or f"You are at {dest.name}."
+    spoken = " ".join(str(step["instruction"]) for step in steps if step.get("instruction")) or f"You are at {dest.name}."
     return {
         "ok": True,
         "spoken": spoken,

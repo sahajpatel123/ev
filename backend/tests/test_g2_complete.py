@@ -6,25 +6,22 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.device_gateway.presence import note as note_presence, snapshot as presence_snapshot
+from app.auth import ActorContext
+from app.device_gateway.presence import note as note_presence
 from app.everywhere.device_actions import (
-    create_routed_action,
-    list_pending_for_target,
     claim_action,
     complete_action,
+    create_routed_action,
+    list_pending_for_target,
 )
 from app.everywhere.handoff_context import (
-    set_context,
     get_context,
-    public_context,
     resolve_pronoun,
-    clear_context,
+    set_context,
 )
-from app.models import Device, Event, OwnerHandoffContext
-from app.utils.text import utcnow
-
-from app.auth import ActorContext
 from app.life import service as life
+from app.models import Device, Event
+from app.utils.text import utcnow
 
 MASTER = "master"
 
@@ -47,7 +44,7 @@ async def make_sandbox(session: AsyncSession, name: str):
 # T1 trusted device reconnect same identity
 @pytest.mark.asyncio
 async def test_T1_trusted_reconnect_same_device(db_session: AsyncSession):
-    mac = await make_trusted(db_session, "T1 Mac", role="home_station", dtype="desktop", caps=["computer_control"])
+    await make_trusted(db_session, "T1 Mac", role="home_station", dtype="desktop", caps=["computer_control"])
     phone = await make_trusted(db_session, "T1 Phone")
     await db_session.commit()
     # reconnect: same device_id, re-hello should resolve same owner scope
@@ -90,14 +87,14 @@ async def test_T3_old_epoch_reset(db_session: AsyncSession):
     phone = await make_trusted(db_session, "T3 Phone")
     await db_session.commit()
     ctx = ctx_for(phone)
-    epoch = await state_epoch(db_session)
+    await state_epoch(db_session)
     foreign = format_v2_cursor("00000000-aaaa-bbbb-cccc-dddddddddddd", 5)
     res = await changes(db_session, ctx, cursor=foreign)
     assert res["ok"] is False and res["error"]=="STATE_EPOCH_MISMATCH" and res["reset_required"]
     # legacy cursor
     bad = await changes(db_session, ctx, cursor="garbage")
     assert bad["error"]=="CURSOR_INVALID"
-    stale = f"2020-01-01T00:00:00+00:00|00000000-0000-0000-0000-000000000000"
+    stale = "2020-01-01T00:00:00+00:00|00000000-0000-0000-0000-000000000000"
     bad2 = await changes(db_session, ctx, cursor=stale)
     assert bad2["reset_required"]
 
@@ -208,7 +205,7 @@ async def test_R2_duplicate_executes_once(db_session: AsyncSession):
     await db_session.commit()
     note_presence(mac.id, instance_id="mac", state="ready")
     note_presence(phone.id, instance_id="phone", state="ready")
-    ra = await create_routed_action(db_session, requesting_device=phone, capability="device.echo", arguments={}, action_id="r2-act", owner_scope="master")
+    await create_routed_action(db_session, requesting_device=phone, capability="device.echo", arguments={}, action_id="r2-act", owner_scope="master")
     await db_session.commit()
     await claim_action(db_session, action_id="r2-act", claiming_device=mac, owner_scope="master")
     await complete_action(db_session, action_id="r2-act", completing_device=mac, result={"ok": True}, success=True, owner_scope="master")
@@ -227,7 +224,7 @@ async def test_R2_duplicate_executes_once(db_session: AsyncSession):
 # R3 B offline queued / TARGET_DEVICE_OFFLINE no false success
 @pytest.mark.asyncio
 async def test_R3_offline_queued(db_session: AsyncSession):
-    mac = await make_trusted(db_session, "R3 Mac", role="home_station", dtype="desktop", caps=["computer_control"])
+    await make_trusted(db_session, "R3 Mac", role="home_station", dtype="desktop", caps=["computer_control"])
     phone = await make_trusted(db_session, "R3 Phone")
     await db_session.commit()
     # only phone online
@@ -252,7 +249,7 @@ async def test_R4_revoked_no_action(db_session: AsyncSession):
     await db_session.commit()
     note_presence(mac.id, instance_id="mac", state="ready")
     note_presence(phone.id, instance_id="phone", state="ready")
-    ra = await create_routed_action(db_session, requesting_device=phone, capability="device.echo", arguments={}, action_id="r4-act", owner_scope="master")
+    await create_routed_action(db_session, requesting_device=phone, capability="device.echo", arguments={}, action_id="r4-act", owner_scope="master")
     await db_session.commit()
     mac.revoked_at = utcnow()
     await db_session.commit()
@@ -411,7 +408,7 @@ async def test_S1_reconnect_delta(db_session: AsyncSession):
 # S2 B cursor too old fresh bootstrap
 @pytest.mark.asyncio
 async def test_S2_cursor_too_old_bootstrap(db_session: AsyncSession):
-    from app.everywhere.sync import changes, bootstrap
+    from app.everywhere.sync import bootstrap, changes
     phone = await make_trusted(db_session, "S2 Phone")
     await db_session.commit()
     ctx = ctx_for(phone)

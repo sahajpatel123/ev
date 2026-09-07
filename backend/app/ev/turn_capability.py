@@ -12,7 +12,7 @@ STATE_TOOLS = frozenset({
     "life_commitment_create", "life_commitment_update", "life_commitment_query",
     "life_relationship_set", "mission_control",
 })
-MANAGER_TOOLS = frozenset()  # No direct tools yet; scaffolded
+MANAGER_TOOLS: frozenset[str] = frozenset()  # No direct tools yet; scaffolded
 
 def _overlay_turn(entry: dict, readiness: dict) -> dict:
     entry.setdefault("fallback_reason", None)
@@ -34,7 +34,7 @@ def _overlay_manager(entry: dict, readiness: dict) -> dict:
 
 def _register():
     # Turn controller — Luna
-    turn_info = turn_control_model_info()
+    turn_control_model_info()
     register_capability(
         RegisteredCapability(
             name="evie.turn_controller",
@@ -57,7 +57,7 @@ def _register():
         )
     )
     # Manager — DeepSeek scaffolded
-    mgr = manager_model_info()
+    manager_model_info()
     register_capability(
         RegisteredCapability(
             name="evie.manager",

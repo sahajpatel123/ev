@@ -174,6 +174,7 @@ async def test_restore_drill_age_alert_past_35_days(client) -> None:
     from app.utils.text import utcnow
 
     marker = Path(settings.storage_root) / "ops" / "restore-drill.json"
+    marker.parent.mkdir(parents=True, exist_ok=True)
     old = (utcnow() - timedelta(days=40)).isoformat(timespec="seconds")
     marker.write_text(f'{{"last_success_at": "{old}"}}', encoding="utf-8")
 

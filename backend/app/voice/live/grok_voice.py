@@ -2247,6 +2247,12 @@ class GrokVoiceBridge:
         requested_tx = (
             audio_in.get("transcription") if isinstance(audio_in.get("transcription"), dict) else {}
         )
+        audio_raw = session_payload.get("audio")
+        audio = audio_raw if isinstance(audio_raw, dict) else {}
+        audio_in_raw = audio.get("input")
+        audio_in = audio_in_raw if isinstance(audio_in_raw, dict) else {}
+        requested_tx_raw = audio_in.get("transcription")
+        requested_tx = requested_tx_raw if isinstance(requested_tx_raw, dict) else {}
         self._input_transcription_requested = bool(requested_tx)
         self._input_transcription_model = (
             requested_tx.get("model") if isinstance(requested_tx, dict) else None
@@ -2394,6 +2400,10 @@ class GrokVoiceBridge:
             if now < self._echo_until:
                 return True
         return False
+        last_emit = self._last_audio_emit_at
+        if last_emit and (now - last_emit) < _SELF_ECHO_QUARANTINE_S:
+            return True
+        return now < self._echo_until
 
     async def append_pcm(self, pcm: bytes) -> None:
         if not pcm or self._closed:
@@ -2879,12 +2889,11 @@ class GrokVoiceBridge:
         for turn in self._owner_turns.values():
             if turn.provider_item_id == item_id:
                 return turn
-        turn = self._owner_turns.get(self._open_turn_id or "")
-        if turn is None or turn.transcription_received:
-            turn = self._commit_open_turn(item_id=item_id)
-        else:
-            turn.provider_item_id = item_id
-        return turn
+        open_turn = self._owner_turns.get(self._open_turn_id or "")
+        if open_turn is None or open_turn.transcription_received:
+            return self._commit_open_turn(item_id=item_id)
+        open_turn.provider_item_id = item_id
+        return open_turn
 
     def _turn_for_item(self, item_id: str | None) -> UserAudioTurn | None:
         if item_id:
@@ -3749,7 +3758,7 @@ class GrokVoiceBridge:
                 FinalTranscriptEvent(
                     at_ms=self._now(),
                     text=spoken,
-                    confidence=None,  # not_reported — provider does not report calibrated confidence
+                    confidence=0.0,  # not_reported — provider does not report calibrated confidence
                     provider="openai-realtime" if self._provider == "openai" else "grok-voice",
                     transcript_source=source,
                 )
@@ -3897,12 +3906,13 @@ class GrokVoiceBridge:
                 "missing_computer_tools": self._computer_schema_eval.get("missing_tools"),
                 "provider_mismatch": self._provider_mismatch,
             }
-            audio = session.get("audio") if isinstance(session.get("audio"), dict) else {}
-            audio_in = audio.get("input") if isinstance(audio.get("input"), dict) else {}
+            audio_raw = session.get("audio")
+            audio = audio_raw if isinstance(audio_raw, dict) else {}
+            audio_in_raw = audio.get("input")
+            audio_in = audio_in_raw if isinstance(audio_in_raw, dict) else {}
+            transcription_raw = audio_in.get("transcription")
             transcription = (
-                audio_in.get("transcription")
-                if isinstance(audio_in.get("transcription"), dict)
-                else {}
+                transcription_raw if isinstance(transcription_raw, dict) else {}
             )
             self._session_ack_metadata["acknowledged_audio_input_keys"] = sorted(audio_in)
             self._session_ack_metadata["input_transcription_model"] = transcription.get(
@@ -4040,6 +4050,7 @@ class GrokVoiceBridge:
                 and self._v2_pending_commit is not None
                 and not self._v2_pending_commit.done()
             ):
+            if self._turn_authority_v2 and self._v2_pending_commit is not None and not self._v2_pending_commit.done():
                 # CONTINUATION: speech restarted inside the grace window — the
                 # owner was still forming the thought. Cancel any pending
                 # commit; floor stays OWNER. (TA05)
@@ -4076,7 +4087,8 @@ class GrokVoiceBridge:
             self._last_audio_emit_at = 0.0
             self._turn_audio_bytes = 0
             self._turn_audio_chunks = 0
-            created = event.get("response") if isinstance(event.get("response"), dict) else {}
+            created_raw = event.get("response")
+            created = created_raw if isinstance(created_raw, dict) else {}
             self._response_id = (
                 str(event.get("response_id") or created.get("id") or event.get("id") or "") or None
             )
@@ -4123,6 +4135,9 @@ class GrokVoiceBridge:
             "response.output_item.added",
         }:
             item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if kind in {"conversation.item.done", "conversation.item.created", "response.output_item.added"}:
+            item_raw = event.get("item")
+            item = item_raw if isinstance(item_raw, dict) else {}
             item_id = _event_item_id(event) or (
                 str(item.get("id")).strip() if isinstance(item.get("id"), str) else None
             )
@@ -5150,7 +5165,8 @@ def _function_output_is_pending(raw: str) -> bool:
         return False
     if not isinstance(payload, dict):
         return False
-    body = payload.get("result") if isinstance(payload.get("result"), dict) else payload
+    result_raw = payload.get("result")
+    body = result_raw if isinstance(result_raw, dict) else payload
     return bool(
         payload.get("confirmation_required")
         or payload.get("needs_confirm")

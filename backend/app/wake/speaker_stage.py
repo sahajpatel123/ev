@@ -76,7 +76,7 @@ class SpeakerStage:
         """
         from app.voice.speaker import default_speaker_verifier
 
-        verifier = default_speaker_verifier()
+        default_speaker_verifier()
         # Decrypt enrollment lazily — mirrors lifecycle._decrypt_enrollment.
         # For the scaffold we assume enrollment payload is already available;
         # in production VoiceRuntime handles decryption.
@@ -94,7 +94,6 @@ class SpeakerStage:
             from app.voice.speaker import default_speaker_verifier
 
             verifier = default_speaker_verifier()
-        sample = {"audio_b64": accumulated_audio_b64} if accumulated_audio_b64 else {}
         # The actual verify is done via verifier.verify(sample, payload, threshold=full);
         # scaffold exposes the contract without hardcoding wake-host decoding.
         return SpeakerFullResult(

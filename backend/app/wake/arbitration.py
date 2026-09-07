@@ -81,18 +81,21 @@ class WakeArbitration:
             holder_candidate = next(
                 (c for c in candidates if c.device_id == holder), None
             )
-            if holder_candidate and holder_candidate.has_active_session:
-                if holder_candidate.confidence >= top.confidence - 0.10:
-                    return ArbitrationResult(
-                        winner_device_id=holder_candidate.device_id,
-                        winner_confidence=holder_candidate.confidence,
-                        reason="continuity_holder_within_margin",
-                        diagnostics={
-                            "candidates": len(candidates),
-                            "top_confidence": top.confidence,
-                            "holder_confidence": holder_candidate.confidence,
-                        },
-                    )
+            if (
+                holder_candidate
+                and holder_candidate.has_active_session
+                and holder_candidate.confidence >= top.confidence - 0.10
+            ):
+                return ArbitrationResult(
+                    winner_device_id=holder_candidate.device_id,
+                    winner_confidence=holder_candidate.confidence,
+                    reason="continuity_holder_within_margin",
+                    diagnostics={
+                        "candidates": len(candidates),
+                        "top_confidence": top.confidence,
+                        "holder_confidence": holder_candidate.confidence,
+                    },
+                )
 
         return ArbitrationResult(
             winner_device_id=top.device_id,
@@ -127,7 +130,9 @@ class WakeArbitration:
 
             resolved = await resolve_registry_device(session, str(winner.device_id))
             if resolved is None:
-                raise ValueError(f"cannot resolve device {winner.device_id!r} for lease claim")
+                raise ValueError(
+                    f"cannot resolve device {winner.device_id!r} for lease claim"
+                ) from None
             device_uuid = resolved.id  # type: ignore[assignment]
         return await claim_lease(
             session,

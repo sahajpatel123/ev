@@ -39,7 +39,7 @@ async def search_event_ids(
     ids: list[UUID] = []
     if dialect.startswith("postgres") and (query or "").strip():
         try:
-            stmt = text(
+            fts_stmt = text(
                 """
                 SELECT id FROM events
                 WHERE tombstoned_at IS NULL
@@ -54,7 +54,7 @@ async def search_event_ids(
                 """
             )
             rows = (
-                await session.execute(stmt, {"q": query[:200], "like": _like(query), "k": k})
+                await session.execute(fts_stmt, {"q": query[:200], "like": _like(query), "k": k})
             ).fetchall()
             ids = [row[0] for row in rows]
             note_index(fulltext_ready=True, fts_ms=(time.perf_counter() - started) * 1000)
@@ -63,7 +63,7 @@ async def search_event_ids(
             ids = []
     if not ids:
         needle = (query or "").strip().lower()
-        stmt = (
+        fallback_stmt = (
             select(Event.id, Event.content)
             .where(
                 Event.tombstoned_at.is_(None),
@@ -73,10 +73,10 @@ async def search_event_ids(
             .limit(800)
         )
         if since is not None:
-            stmt = stmt.where(Event.occurred_at >= since)
+            fallback_stmt = fallback_stmt.where(Event.occurred_at >= since)
         if until is not None:
-            stmt = stmt.where(Event.occurred_at <= until)
-        rows = (await session.execute(stmt)).all()
+            fallback_stmt = fallback_stmt.where(Event.occurred_at <= until)
+        rows = (await session.execute(fallback_stmt)).all()
         for event_id, content in rows:
             blob = str((content or {}).get("text") or "").lower()
             if needle and needle not in blob and not any(

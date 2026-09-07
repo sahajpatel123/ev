@@ -399,6 +399,13 @@ class LiveSession:
             dict(capability_manifest) if isinstance(capability_manifest, dict) else None
         )
         self._camera_state = self._normalize_camera_state(camera_state)
+        self.memory_scope: str | None = None
+        self.auth_revision: int | None = None
+        self.device_role: str | None = None
+        self.device_label: str | None = None
+        self.instance_id: str | None = None
+        self.gateway_origin: str | None = None
+        self.client_instance_id: str | None = None
         self._look_frame_queues: dict[str, asyncio.Queue] = {}
         self._look_frame_order: list[str] = []
         self._last_capture_status: str | None = None
@@ -419,6 +426,7 @@ class LiveSession:
         self._durable_jobs_cancelled = False
         self._asr_partial_interval_ms = asr_partial_interval_ms
         self.asr_feed: LiveAsrFeed | None = None
+        self.transport_ws: Any | None = None
         if transcriber is not None:
             self.asr_feed = LiveAsrFeed(
                 transcriber,
@@ -478,6 +486,9 @@ class LiveSession:
                 from app.db import SessionLocal
                 from app.ev.owner_turn import create_owner_turn
                 from app.ev.turn_gate import handle_owner_turn
+                from app.ev.turn_gate import (
+                    handle_owner_turn,
+                )
                 from app.utils.text import utcnow
 
                 # Create canonical OwnerTurn from FinalTranscriptEvent
@@ -615,6 +626,7 @@ class LiveSession:
         if isinstance(event, PartialTranscriptEvent) and getattr(event, "role", "user") == "assistant":
             self._persist_keep_identity_now(event.text)
         if persist_user:
+        if isinstance(event, FinalTranscriptEvent):
             from_s2s = event.provider in {"openai-realtime", "grok-voice"}
             from app.ev.laptop_files import is_system_confirmation
             from app.memory.visual import is_camera_prompt_echo, is_memory_hedge_scene
@@ -655,7 +667,7 @@ class LiveSession:
                 self._schedule_relationship_turn(
                     "user",
                     event.text,
-                    transcript_source=getattr(event, "transcript_source", None),
+                    transcript_source=event.transcript_source,
                 )
             # G1.6 TurnGate: authoritative control plane (shadow until cutover, then direct)
             from app.config import settings as _gate_settings
@@ -698,6 +710,8 @@ class LiveSession:
                     self._discard_outbound(lambda queued: queued is event, first_only=True)
                     return local_intent_resolution
         if persist_assistant:
+                    return
+        if isinstance(event, ReplyEvent) and persist_assistant:
             extra = None
             if getattr(event, "interrupted", False):
                 from app.voice.live.barge_in import interrupt_metadata
@@ -798,7 +812,9 @@ class LiveSession:
     def _discard_outbound(self, predicate, *, first_only: bool = False) -> bool:
         """Remove queued disposable events while preserving FIFO order."""
 
-        queue = self.outbound._queue
+        queue = getattr(self.outbound, "_queue", None)
+        if queue is None:
+            return False
         kept = []
         removed = 0
         for queued in queue:
@@ -810,9 +826,12 @@ class LiveSession:
             return False
         queue.clear()
         queue.extend(kept)
+        wakeup_next = getattr(self.outbound, "_wakeup_next", None)
+        putters = getattr(self.outbound, "_putters", None)
         for _ in range(removed):
             self.outbound.task_done()
-            self.outbound._wakeup_next(self.outbound._putters)
+            if callable(wakeup_next) and putters is not None:
+                wakeup_next(putters)
         return True
 
     async def emit_all(self, events: list[LiveEvent]) -> None:

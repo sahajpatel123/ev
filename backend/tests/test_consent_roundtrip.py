@@ -4,12 +4,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import ConsentRecord
 
+
 @pytest.mark.asyncio
 async def test_consent_roundtrip(client, db_session: AsyncSession):
     # initial absent → Live Listen blocked
-    from app.voice.lifecycle import VoiceRuntime
-    from app.config import settings
     from sqlalchemy import select
+
+    from app.config import settings
+    from app.voice.lifecycle import VoiceRuntime
 
     # ensure no consent
     rows = (await db_session.execute(select(ConsentRecord).where(ConsentRecord.track=="voice_enrollment", ConsentRecord.revoked_at.is_(None)))).scalars().all()
@@ -20,7 +22,7 @@ async def test_consent_roundtrip(client, db_session: AsyncSession):
     vr = VoiceRuntime(db_session, master_key=settings.master_key)
     try:
         await vr._require_voice_consent()
-        assert False, "should have required consent"
+        raise AssertionError("should have required consent")
     except Exception as e:
         assert "consent_required" in str(e).lower() or "Voice enrollment" in str(e)
     
@@ -53,7 +55,7 @@ async def test_consent_roundtrip(client, db_session: AsyncSession):
     vr3 = VoiceRuntime(db_session, master_key=settings.master_key)
     try:
         await vr3._require_voice_consent()
-        assert False
+        raise AssertionError()
     except Exception as e:
         assert "consent_required" in str(e).lower() or "Voice enrollment" in str(e)
     

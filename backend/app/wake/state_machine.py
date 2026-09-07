@@ -20,10 +20,10 @@ If final gate fails, cancel silently, bounded diagnostics only.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class WakeState(str, Enum):
+class WakeState(StrEnum):
     IDLE_EARS = "IDLE_EARS"
     WAKE_CANDIDATE = "WAKE_CANDIDATE"
     PRECISION_VERIFIED = "PRECISION_VERIFIED"

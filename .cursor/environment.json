@@ -1,0 +1,14 @@
+{
+  "name": "EV backend",
+  "install": "curl -LsSf https://astral.sh/uv/install.sh | sh && cd backend && $HOME/.local/bin/uv sync --extra s3 --extra dev",
+  "terminals": [
+    {
+      "name": "api",
+      "command": "export PATH=\"$HOME/.local/bin:$PATH\" && cd backend && uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+      "description": "EV FastAPI dev server with offline zero-setup defaults (SQLite, sync processing, hash embeddings, local object storage). Web workbench at /app, health at /v1/health, OpenAPI docs at /docs. Auth uses the default master key 'ev-local-dev-key'."
+    }
+  ],
+  "ports": [
+    { "name": "api", "port": 8000 }
+  ]
+}

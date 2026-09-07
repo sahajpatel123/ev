@@ -1,6 +1,7 @@
 """Mac TCC identity regression: EV.app must have stable bundle id and signing."""
 import pathlib
 import subprocess
+
 import pytest
 
 APP = pathlib.Path(__file__).resolve().parents[2] / "macos" / "build" / "EV.app"

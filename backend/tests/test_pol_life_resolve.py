@@ -1,6 +1,6 @@
 """Unit tests for the life I/O resolver (no provider I/O)."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from app.ev.resolve import (
     is_near_duplicate,
@@ -31,7 +31,7 @@ def test_score_and_pick_unique_vs_ambiguous() -> None:
 
 
 def test_parse_owner_when_relative_and_clock() -> None:
-    now = datetime(2026, 8, 17, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
     relative = parse_owner_when("in 10 minutes", now=now)
     assert relative == now + timedelta(minutes=10)
     hour = parse_owner_when("in an hour", now=now)
@@ -61,7 +61,7 @@ def test_near_duplicate_and_destination() -> None:
 
 
 def test_rank_plate_puts_imminent_timer_first() -> None:
-    now = datetime(2026, 8, 17, 10, 0, tzinfo=timezone.utc)
+    now = datetime(2026, 8, 17, 10, 0, tzinfo=UTC)
     ranked = rank_plate(
         calendar=[{"summary": "Dinner", "start": (now + timedelta(hours=8)).isoformat()}],
         mail=[{"subject": "Hello", "unread": False}],

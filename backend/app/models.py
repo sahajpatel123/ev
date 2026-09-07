@@ -18,6 +18,9 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy import (
+    event as _sa_event,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import Uuid
@@ -80,9 +83,6 @@ class EventStreamPosition(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
     last_seq: Mapped[int] = mapped_column(BigInteger(), nullable=False)
-
-
-from sqlalchemy import event as _sa_event
 
 
 def _assign_event_stream_seq(mapper, connection, target) -> None:

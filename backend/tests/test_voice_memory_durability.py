@@ -379,7 +379,7 @@ async def test_five_session_destruction_trials_persist_and_recall(db_session: As
                 phrase=phrase,
                 delay_s=0.15,
             )
-            await _wait_until(lambda: live_a.grok_voice.pending_voice_turn_count() == 1)
+            await _wait_until(lambda live=live_a: live.grok_voice.pending_voice_turn_count() == 1)
             live_a.note_client_gone()
             await live_a.drain_durable_voice_memory(timeout_s=2.0)
             await live_a.flush_relationship_turns(timeout_s=4.0)

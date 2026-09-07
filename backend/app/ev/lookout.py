@@ -327,7 +327,7 @@ def pick_layout(
     reply = (response or "").strip() or (body or "").strip()
     seed = stable_int(window_id or kind)
     if asks and reply and reply not in asks:
-        pool = ("ask", "reply", "split", "ledger", "stack")
+        pool: tuple[str, ...] = ("ask", "reply", "split", "ledger", "stack")
     elif asks:
         pool = ("ask", "stack", "ledger")
     elif items:

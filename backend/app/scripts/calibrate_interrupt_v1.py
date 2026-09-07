@@ -21,8 +21,8 @@ import numpy as np
 
 from app.voice.live.interrupt_v1 import (
     SAMPLE_RATE,
-    WINDOW_S,
     TEMPLATES_DIR,
+    WINDOW_S,
     EvieAddressSpotter,
     mel_energies,
 )

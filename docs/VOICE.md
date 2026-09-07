@@ -5,6 +5,11 @@ idle`) is provider-agnostic. The runtime depends only on the protocols in
 `backend/app/voice/contracts.py`; real engines are config-driven swaps behind
 that contract, and offline CI always runs on the deterministic dev doubles.
 
+**Hands-free production defaults are `auto`:** wake and ASR resolve to Vosk when
+the model is installed, TTS to Piper when the voice is installed, otherwise the
+echo/meta doubles. Tests pin `phrase` / `echo` / `meta` in `tests/conftest.py`
+so CI does not depend on which models a developer has pulled. See §13.
+
 This document covers the **real on-device engines** (Parakeet ASR, Kokoro TTS),
 the fail-closed/degradation rules, streaming, audio persistence, barge-in, and
 exactly what leaves the device under which flag. Since the host cannot run a
@@ -431,3 +436,66 @@ uv run mypy app clients
   clean-subset WER is already measured (5.90%).
 - A consented 30-minute owner-speech corpus for the ≤12% WER gate.
 - Microphone/playback wiring on target devices (Agent 3/17/18 surface work).
+
+## 13. Hands-free "EVIE" (Siri interaction model)
+
+Always-on listening is a single duplex stream, not a button:
+
+```
+idle (grammar wake spotter only)
+  → pending wake (UI lights)
+  → confirmed wake (session opens, no spoken challenge)
+  → listening (command ASR + silence endpoint)
+  → thinking / speaking
+  → follow-up (~12 s, no wake word)
+  → idle
+```
+
+Barge-in: sustained speech during playback interrupts EVIE. A client **must**
+send a `playback_finished` control frame when reply audio stops; that is what
+opens the follow-up window.
+
+### Install the local speech models
+
+```bash
+cd backend
+uv sync --extra voice --extra mic --extra dev
+uv run python -m app.voice.models_setup
+```
+
+This pulls the Vosk small en-US model (`~/.ev/models/vosk-model-small-en-us-0.15`)
+and the Piper `en_US-lessac-medium` voice. Check readiness:
+
+```bash
+curl -H "Authorization: Bearer $EV_MASTER_KEY" http://127.0.0.1:8000/v1/voice/live/status
+```
+
+`ready: false` lists `blockers` with the exact install command. Never guess.
+
+### Transports
+
+| Path | Role |
+| --- | --- |
+| `WS /v1/voice/live` | Always-on duplex. First JSON frame `{type:"auth", token, device_id}`, then 16 kHz mono PCM16 binary frames (20 ms / 640 bytes). Events: `ready`, `state`, `level`, `wake`, `partial`, `transcript`, `reply`, `audio`, `dismissed`, `barge_in`, `conversation_end`, `error`. Control: `playback_finished`, `cancel`, `ping`. |
+| `GET /v1/voice/live/status` | Engine readiness + blockers (auth required). |
+| `GET /v1/voice/live/diagnostics` | Status plus owner enrollment. |
+| `POST /v1/ears/wake` | Delivery from the older ears process: a VAD-segmented, already-gated utterance. Opens a hands-free session and runs the turn. |
+
+### Clients
+
+| Client | How to run |
+| --- | --- |
+| Web workbench | http://localhost:8000/app — panel **Hands-free — say EVIE** |
+| macOS menu bar | Toggle **Hands-free — say “EVIE”**. Permissions: see `macos/README.md` (Grant permissions, while EV is in the foreground, is what puts EV in each Privacy pane). |
+| Python | `uv run python -m clients.hands_free --api-url http://127.0.0.1:8000 --api-key "$EV_MASTER_KEY"` |
+
+Launchd (optional, not installed by `./launchd/install.sh`): copy
+`launchd/ev.hands_free.plist` into `~/Library/LaunchAgents/` or
+`make hands-free-up`.
+
+Turn-taking knobs (all in audio time): `EV_LIVE_ENDPOINT_SILENCE_MS` (900),
+`EV_LIVE_WAKE_GRACE_MS` (7000), `EV_LIVE_FOLLOW_UP_MS` (12000),
+`EV_LIVE_BARGE_IN_MS` (400). Unenrolled single-user installs are allowed by
+default (`EV_LIVE_ALLOW_UNENROLLED=true`); an enrolled voiceprint is verified
+passively from the wake audio when `EV_LIVE_VERIFY_SPEAKER=true`. Sensitive
+commands still require a `reverify_token`.

@@ -470,7 +470,7 @@ async def due_scan(
             .where(OwnerTimer.id == row.id, OwnerTimer.status == PENDING)
             .values(status=FIRED, late=late, fired_at=now)
         )
-        if int(claimed.rowcount or 0) != 1:
+        if int(getattr(claimed, "rowcount", 0) or 0) != 1:
             continue
         row.status = FIRED
         row.late = late

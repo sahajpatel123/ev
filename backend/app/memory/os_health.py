@@ -14,7 +14,7 @@ _BOOTSTRAP: dict[str, Any] = {
     "through_event_id": None,
     "tokens": 0,
 }
-_CURATOR = {
+_CURATOR: dict[str, Any] = {
     "calls": 0,
     "events": 0,
     "tokens": 0,
@@ -22,18 +22,18 @@ _CURATOR = {
     "last_status": None,
     "last_curated_event_id": None,
 }
-_INDEX = {
+_INDEX: dict[str, Any] = {
     "fulltext_ready": False,
     "vector_ready": False,
     "last_fts_ms": None,
     "last_vector_ms": None,
     "last_hybrid_ms": None,
 }
-_REFLECT = {
+_REFLECT: dict[str, Any] = {
     "last_at": None,
     "lag_events": 0,
 }
-_PREFETCH = {
+_PREFETCH: dict[str, Any] = {
     "last_ms": None,
     "hits": 0,
     "triggers": 0,
@@ -107,7 +107,7 @@ def note_prefetch(*, ms: float | None = None, hit: bool = False, trigger: str | 
 
 
 # F1 shadow-memory telemetry: bounded metadata only, never owner content.
-_SHADOW = {
+_SHADOW: dict[str, Any] = {
     "turns_classified": 0,
     "retrievals": 0,
     "injections": 0,
@@ -183,7 +183,7 @@ def _memory_epoch_value() -> int:
 
 
 # F5 candidate-pipeline + prospective metrics (bounded counts only).
-_F5 = {
+_F5: dict[str, Any] = {
     "candidates_write": 0,
     "candidates_reject_low_value": 0,
     "candidates_reject_secret": 0,

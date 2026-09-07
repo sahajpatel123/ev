@@ -7,7 +7,7 @@ This document is the operating plan for the phase *after* breadth is done.
 It is grounded in the current repo (WORK_BREAKDOWN, ROADMAP, AGENT_FLEET,
 AGENT_BRIEFS, code, tests), not in aspiration.
 
-**Multi-agent execution:** **exactly 15 agents (numbered 1→15)** with exclusive path ownership
+**Multi-agent execution:** **exactly 20 agents (numbered 1→20)** with exclusive path ownership
 for a personal shippable EVIE/EDITH stack (presence + perception + notifications
 + real training + EDITH software + tools) — not 19 equal domain agents and not
 Domain 20. Source of truth: [`AGENT_FLEET.md`](AGENT_FLEET.md). **Paste
@@ -345,8 +345,8 @@ Everything else can wait until those five feel ordinary.
 | --- | --- |
 | `WORK_BREAKDOWN.md` | Factor truth + Direction backlog (do not inflate domains) |
 | `ROADMAP.md` | Historical milestone structure; exit gates still useful |
-| **`AGENT_FLEET.md`** | **Multi-agent SSOT:** roster 1–15, exclusive paths, merge, bans, done-when |
-| **`AGENT_LAUNCH.md`** | **Elite paste-ready messages** — send in order 1→15 |
+| **`AGENT_FLEET.md`** | **Multi-agent SSOT:** roster 1–20, exclusive paths, merge, bans, done-when |
+| **`AGENT_LAUNCH.md`** | **Elite paste-ready messages** — send in order 1→20 |
 | **`AGENT_BRIEFS.md`** | Historical domain briefs; prefer AGENT_LAUNCH for fan-out |
 | `DEMO.md` | Acceptance scripts — run them on the personal stack, not only CI |
 | `DECISIONS.md` | Record choices when tracks force them |

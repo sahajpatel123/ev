@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import array
 import asyncio
-import contextlib
 import base64
+import contextlib
 
 from app.voice.asr import EchoTranscriber
 from app.voice.contracts import SynthesisResult, Transcript, VoiceError

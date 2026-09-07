@@ -20,6 +20,7 @@ sync clients are not yet established, making this a clean cutover.
 from __future__ import annotations
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision = "p2q3r4s5t6u7"
@@ -44,23 +45,44 @@ def upgrade() -> None:
         op.add_column("events", sa.Column("stream_seq", sa.BigInteger(), nullable=True))
 
     # Deterministic backfill: prior semantic order defines initial positions.
-    bind.execute(
-        sa.text(
-            """
-            WITH ordered AS (
-                SELECT id, ROW_NUMBER() OVER (
-                    ORDER BY occurred_at ASC, id ASC
-                ) AS rn
-                FROM events
+    # Postgres supports UPDATE…FROM; SQLite needs a correlated subquery.
+    if bind.dialect.name == "sqlite":
+        bind.execute(
+            sa.text(
+                """
+                UPDATE events
+                SET stream_seq = (
+                    SELECT rn FROM (
+                        SELECT id,
+                               ROW_NUMBER() OVER (
+                                   ORDER BY occurred_at ASC, id ASC
+                               ) AS rn
+                        FROM events
+                    ) ordered
+                    WHERE ordered.id = events.id
+                )
                 WHERE stream_seq IS NULL
+                """
             )
-            UPDATE events e
-            SET stream_seq = o.rn
-            FROM ordered o
-            WHERE e.id = o.id AND e.stream_seq IS NULL
-            """
         )
-    )
+    else:
+        bind.execute(
+            sa.text(
+                """
+                WITH ordered AS (
+                    SELECT id, ROW_NUMBER() OVER (
+                        ORDER BY occurred_at ASC, id ASC
+                    ) AS rn
+                    FROM events
+                    WHERE stream_seq IS NULL
+                )
+                UPDATE events e
+                SET stream_seq = o.rn
+                FROM ordered o
+                WHERE e.id = o.id AND e.stream_seq IS NULL
+                """
+            )
+        )
 
     existing_ix = {
         ix["name"] for ix in sa.inspect(bind).get_indexes("events")
@@ -82,17 +104,34 @@ def upgrade() -> None:
     max_row = bind.execute(
         sa.text("SELECT COALESCE(MAX(stream_seq), 0) FROM events")
     ).scalar_one()
-    bind.execute(
-        sa.text(
-            """
-            INSERT INTO event_stream_position (id, last_seq)
-            VALUES (1, :seed)
-            ON CONFLICT (id) DO UPDATE
-              SET last_seq = GREATEST(event_stream_position.last_seq, EXCLUDED.last_seq)
-            """
-        ),
-        {"seed": int(max_row)},
-    )
+    if bind.dialect.name == "sqlite":
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO event_stream_position (id, last_seq)
+                VALUES (1, :seed)
+                ON CONFLICT(id) DO UPDATE SET
+                  last_seq = CASE
+                    WHEN excluded.last_seq > event_stream_position.last_seq
+                    THEN excluded.last_seq
+                    ELSE event_stream_position.last_seq
+                  END
+                """
+            ),
+            {"seed": int(max_row)},
+        )
+    else:
+        bind.execute(
+            sa.text(
+                """
+                INSERT INTO event_stream_position (id, last_seq)
+                VALUES (1, :seed)
+                ON CONFLICT (id) DO UPDATE
+                  SET last_seq = GREATEST(event_stream_position.last_seq, EXCLUDED.last_seq)
+                """
+            ),
+            {"seed": int(max_row)},
+        )
 
 
 def downgrade() -> None:

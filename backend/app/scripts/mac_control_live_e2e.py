@@ -11,6 +11,7 @@ same Realtime session EV.app uses, and verifies real application state.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -81,16 +82,12 @@ def pids_for(pattern: str) -> list[int]:
 
 def terminate(pattern: str) -> None:
     for pid in pids_for(pattern):
-        try:
+        with contextlib.suppress(OSError):
             os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
     time.sleep(0.6)
     for pid in pids_for(pattern):
-        try:
+        with contextlib.suppress(OSError):
             os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
 
 
 def fingerprint_runtime() -> dict[str, Any]:
@@ -141,8 +138,9 @@ def restart_api() -> int:
             env.setdefault(key.strip(), value.strip().strip('"').strip("'"))
     log_dir = Path.home() / "Library" / "Logs" / "ev"
     log_dir.mkdir(parents=True, exist_ok=True)
-    stdout = open(log_dir / "api.e2e.out.log", "ab")
-    stderr = open(log_dir / "api.e2e.err.log", "ab")
+    # Keep handles open for the lifetime of the uvicorn child process.
+    stdout = open(log_dir / "api.e2e.out.log", "ab")  # noqa: SIM115
+    stderr = open(log_dir / "api.e2e.err.log", "ab")  # noqa: SIM115
     proc = subprocess.Popen(
         ["uv", "run", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
         cwd=str(BACKEND),
@@ -566,7 +564,6 @@ def run_notes(timeout: int) -> dict[str, Any]:
 
 
 def run_safari(timeout: int) -> dict[str, Any]:
-    query = "OpenAI"
     utterance = "Open Safari, search for OpenAI, and open the first result."
     result = run_live_case(utterance, timeout, expect="session")
     tab = safari_tab()

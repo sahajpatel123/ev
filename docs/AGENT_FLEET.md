@@ -4,8 +4,8 @@
 **Authority:** ownership, merge protocol, done-when.
 **First action for every agent:** read [`FLEET_LAW.md`](FLEET_LAW.md) — it is
 binding and unedited.
-**Paste-ready messages:** [`AGENT_LAUNCH.md`](AGENT_LAUNCH.md) (v2 launch pack;
-Agent 1 publishes the v3 pack as Agent 3–20 briefs land).
+**Paste-ready messages:** [`AGENT_LAUNCH.md`](AGENT_LAUNCH.md) (v3 launch pack;
+Agents 1–20 match this roster).
 **Strategy:** [`NEXT_STEPS.md`](NEXT_STEPS.md) and the human's Fleet-of-20 plan.
 
 This is not process theatre. The job is a **personal product you can live in**

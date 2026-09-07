@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from app.device_gateway import PWA_BUILD
 import json
 import subprocess
 from pathlib import Path
@@ -12,6 +11,7 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from app.device_gateway import PWA_BUILD
 from app.device_gateway.webrtc_live import (
     SIGNALING_IMPLEMENTATION,
     SIGNALING_VERSION,

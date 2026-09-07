@@ -392,11 +392,11 @@ async def memory_recall(
         "query": q,
         "memories": [
             {
-                "id": str(h.memory.id),
-                "memory_type": h.memory.memory_type,
-                "text": h.memory.text,
-                "importance": h.memory.importance,
-                "event_time": h.memory.event_time.isoformat() if h.memory.event_time else None,
+                "id": str(h.memory_id),
+                "memory_type": h.memory_type,
+                "text": h.text,
+                "importance": h.importance,
+                "event_time": h.event_time.isoformat() if h.event_time else None,
             }
             for h in hits
         ],
@@ -470,7 +470,7 @@ async def device_action_route(
     if result.get("ok") is not True and result.get("error_code") == "TARGET_DEVICE_OFFLINE":
         # Queue case is handled as ok True with queued flag; this is hard no-target
         raise HTTPException(status_code=409, detail={"error_code": "TARGET_DEVICE_OFFLINE", "capability": body.capability})
-    status_code = result.get("status") or "ROUTED"
+    result.get("status") or "ROUTED"
     # Surface QUEUED as 202 but keep payload truthful
     await session.commit()
     return {"ok": True, **result}
@@ -514,8 +514,9 @@ async def device_action_get(
     if row is None:
         raise HTTPException(status_code=404, detail={"error_code": "NOT_FOUND"})
     # Only requesting or target device or master may see
-    allowed = {str(ctx.device.id) if ctx.device else "", str(row.requesting_device_id), str(row.target_device_id)}
-    if ctx.data_scope != "master" and str(ctx.device.id) not in allowed:
+    device_id = str(ctx.device.id) if ctx.device is not None else ""
+    allowed = {device_id, str(row.requesting_device_id), str(row.target_device_id)}
+    if ctx.data_scope != "master" and device_id not in allowed:
         raise HTTPException(status_code=403, detail={"error_code": "DEVICE_NOT_TRUSTED"})
     from app.everywhere.device_actions import _public_action
 
@@ -529,7 +530,6 @@ async def device_action_claim(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
-    from sqlalchemy import select as _select
 
     from app.everywhere.device_actions import claim_action
     from app.models import Device
@@ -560,7 +560,6 @@ async def device_action_complete(
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_actor_context),
 ) -> dict:
-    from sqlalchemy import select as _select
 
     from app.everywhere.device_actions import complete_action
     from app.models import Device
@@ -707,9 +706,9 @@ async def diagnostics(
     hs = await health_summary(session)
     universe = await capability_universe(session)
     # State epoch + cursor + context revision
-    from app.everywhere.sync import current_cursor, state_epoch
     from sqlalchemy import select as _select
 
+    from app.everywhere.sync import current_cursor, state_epoch
     from app.models import DeviceRoutedAction
 
     epoch = await state_epoch(session)

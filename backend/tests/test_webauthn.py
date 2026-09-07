@@ -575,10 +575,10 @@ async def test_webauthn_assertion_approves_parked_action_without_reverify_header
     db_session: AsyncSession,
     webauthn_defaults,
 ) -> None:
-    from tests.test_identity_trust import _client, create_device
-    from tests.test_pol_policy import _unlock_life
     from app.ev.tools import dispatch
     from app.models import ApprovedAction
+    from tests.test_identity_trust import _client, create_device
+    from tests.test_pol_policy import _unlock_life
 
     await _create_owner(client)
     await _unlock_life(db_session)

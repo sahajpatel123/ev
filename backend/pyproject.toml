@@ -43,6 +43,17 @@ face = [
   "opencv-python-headless>=4.10,<5",
   "pillow>=10",
 ]
+# Hands-free "EVIE": local wake-word spotting + ASR (vosk/Kaldi) and a local
+# reply voice (piper). Models are fetched by app.voice.models_setup.
+voice = [
+  # vosk publishes manylinux wheels only; macOS uses the OpenAI/Grok live path.
+  "vosk>=0.3.45; sys_platform == 'linux'",
+  "piper-tts>=1.6",
+]
+# Always-on microphone client (clients.hands_free / clients.ears).
+mic = [
+  "sounddevice>=0.5",
+]
 dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.24",

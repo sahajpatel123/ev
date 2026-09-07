@@ -1448,7 +1448,8 @@ def computer_tools_from_specs(tools: list[dict] | tuple[dict, ...] | None) -> li
 def computer_tool_schema_hash(tools: list[dict] | tuple[dict, ...] | None) -> str:
     canonical: list[dict[str, Any]] = []
     for item in computer_tools_from_specs(tools):
-        parameters = item.get("parameters") if isinstance(item.get("parameters"), dict) else {}
+        raw_params = item.get("parameters")
+        parameters: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
         canonical.append(
             {
                 "name": item.get("name"),
@@ -1524,7 +1525,8 @@ def computer_envelope(
     ok = out.get("ok") is True
     executed = bool(out.get("executed", ok))
     verified = bool(out.get("verified"))
-    goal = out.get("goal") if isinstance(out.get("goal"), dict) else {}
+    raw_goal = out.get("goal")
+    goal: dict[str, Any] = raw_goal if isinstance(raw_goal, dict) else {}
     terminal = str(goal.get("status") or "") in {"complete", "failed", "cancelled"}
     goal_complete = bool(goal.get("status") == "complete" and (goal.get("verified") or verified))
     must_continue = bool(out.get("must_continue"))

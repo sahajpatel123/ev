@@ -14,20 +14,9 @@ from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
-from . import ACTION_TTL_S, BRIDGE_PROTOCOL, BRIDGE_VERSION, NATIVE_BROKER_VERSION
-from . import apps as app_registry
+from . import ACTION_TTL_S, BRIDGE_PROTOCOL, BRIDGE_VERSION, store
 from . import registry as reg
-from . import store
 from .strategy import route
-from .trust import (
-    classify_utterance,
-    confirmation_ttl_s,
-    freeze_hash,
-    is_negated,
-    mutate_duration_seconds,
-    pending_query_spoken,
-    wants_draft,
-)
 
 _DURATION_WORDS = {
     "a": 1,
@@ -152,12 +141,14 @@ def parse_when_iso(args: dict[str, Any], *, handshake: dict[str, Any], transcrip
     blob = " ".join(str(part) for part in (args.get("when"), args.get("date_time"), transcript) if part)
     if not blob.strip():
         return None
+    now = datetime.now(_tz(handshake))
+    parsed = None
     try:
         from app.ev.resolve import parse_owner_when
+
+        parsed = parse_owner_when(blob, now=now)
     except Exception:
-        parse_owner_when = None  # type: ignore[assignment]
-    now = datetime.now(_tz(handshake))
-    parsed = parse_owner_when(blob, now=now) if parse_owner_when else None
+        pass
     if parsed is None:
         return None
     if parsed.tzinfo is None:
@@ -252,8 +243,11 @@ def sanitize_complete(payload: dict[str, Any]) -> dict[str, Any]:
 def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
     operation = str(row.get("operation") or "")
     failure = str(row.get("failure") or "")
-    result = str((row.get("receipt") or {}).get("result") or row.get("result") or "")
-    args = row.get("normalized") if isinstance(row.get("normalized"), dict) else {}
+    receipt_raw = row.get("receipt")
+    receipt: dict[str, Any] = receipt_raw if isinstance(receipt_raw, dict) else {}
+    result = str(receipt.get("result") or row.get("result") or "")
+    normalized_raw = row.get("normalized")
+    args: dict[str, Any] = normalized_raw if isinstance(normalized_raw, dict) else {}
     if failure == "NATIVE_SHELL_REQUIRED":
         return "Open Evie as the iPhone app to do that on this phone. The Home Screen page can't run that native action."
     if failure == "NATIVE_ACTIONS_DISABLED":
@@ -279,7 +273,13 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
         return f"Your iPhone needs permission to let Evie use {perm} for this action."
     if failure == "CONTACT_AMBIGUOUS":
         names = row.get("choices") or []
-        labels = [item.get("name") for item in names if isinstance(item, dict) and item.get("name")]
+        labels = [
+            str(name)
+            for item in (names if isinstance(names, list) else [])
+            if isinstance(item, dict)
+            for name in [item.get("name")]
+            if name
+        ]
         if labels:
             return "I found more than one match. Did you mean " + " or ".join(labels[:3]) + "?"
         return "I found more than one contact. Which one?"
@@ -374,7 +374,8 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
 
 
 def _card(row: dict[str, Any], *, launch_url: str | None, open_url: str | None) -> dict[str, Any]:
-    args = row.get("normalized") if isinstance(row.get("normalized"), dict) else {}
+    normalized_raw = row.get("normalized")
+    args: dict[str, Any] = normalized_raw if isinstance(normalized_raw, dict) else {}
     operation = str(row.get("operation") or "")
     title = {
         "create_timer": "TIMER",
@@ -450,7 +451,8 @@ def _card(row: dict[str, Any], *, launch_url: str | None, open_url: str | None) 
 def _launch_payload(row: dict[str, Any], *, origin: str) -> dict[str, Any]:
     from .bridge import build_run_url, callback_urls
 
-    run = row.get("authorized_run") if isinstance(row.get("authorized_run"), dict) else {}
+    authorized_raw = row.get("authorized_run")
+    run: dict[str, Any] = authorized_raw if isinstance(authorized_raw, dict) else {}
     launch_url = None
     if row.get("method") == "shortcuts_bridge":
         launch_url = build_run_url(
@@ -1071,9 +1073,7 @@ def complete_action(
         state = "executed"
         executed = True
         if not result:
-            if str(row.get("operation")) in {"call_contact", "facetime_contact", "start_directions", "open_maps"}:
-                result = "SYSTEM_UI_OPENED"
-            elif str(row.get("operation")) == "message_contact":
+            if str(row.get("operation")) in {"call_contact", "facetime_contact", "start_directions", "open_maps"} or str(row.get("operation")) == "message_contact":
                 result = "SYSTEM_UI_OPENED"
             elif str(row.get("operation")) in {"create_timer", "create_reminder", "create_alarm", "create_calendar_event"}:
                 result = "CREATED"

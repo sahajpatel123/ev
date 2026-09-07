@@ -8,12 +8,14 @@ world-model router without introducing a second storage implementation.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ev import world_memory as memory
+from app.ev.world_memory import EpistemicKind
 from app.models import CameraState, ObservationRecord, OwnerObject
 from app.services.access_log import log_access
 from app.utils.text import normalize_text, utcnow
@@ -36,6 +38,13 @@ CAMERA_STATE_ALIASES = {
 }
 PERSON_CONSENT_STATES = {"granted", "explicit", "owner_confirmed", "consented"}
 DEFAULT_STALE_AFTER_SECONDS = memory.DEFAULT_STALE_AFTER_SECONDS
+_EPISTEMIC_KINDS = frozenset({"observed", "reported", "inferred", "guessed"})
+
+
+def _epistemic_kind(value: str) -> EpistemicKind:
+    if value in _EPISTEMIC_KINDS:
+        return cast(EpistemicKind, value)
+    return "observed"
 
 
 def _as_utc(value: datetime | None) -> datetime:
@@ -99,7 +108,7 @@ async def record_observation(
             consent_state=consent_state,
             retention_class=retention_class,
             stale_after_seconds=stale_after_seconds,
-            fact_kind=fact_kind,
+            fact_kind=_epistemic_kind(fact_kind),
             metadata=payload,
         ),
         actor=actor,
@@ -178,7 +187,7 @@ async def record_object_observation(
             consent_state="owner_confirmed",
             retention_class="standard",
             stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
-            fact_kind=fact_kind,
+            fact_kind=_epistemic_kind(fact_kind),
             metadata={**payload, "raw_frame_requested": bool(persist_raw_frame)},
         ),
         actor=actor,
@@ -216,6 +225,7 @@ async def last_seen_object(
     observed_at = latest.get("observed_at") or latest.get("timestamp")
     observed_dt = _as_utc(datetime.fromisoformat(observed_at)) if isinstance(observed_at, str) else observed_at
     stale_note = " I have not observed it since." if latest["freshness_state"] == "stale" else ""
+    observed_label = observed_dt.isoformat() if observed_dt is not None else "unknown time"
     return {
         "object_id": str(obj.id),
         "name": obj.name,
@@ -227,7 +237,7 @@ async def last_seen_object(
         "confidence": latest["confidence"],
         "uncertainty": latest["uncertainty"],
         "fact_kind": latest["fact_kind"],
-        "answer": f"The strongest evidence puts your {obj.name} at {latest['location']} at {observed_dt.isoformat()}.{stale_note}",
+        "answer": f"The strongest evidence puts your {obj.name} at {latest['location']} at {observed_label}.{stale_note}",
         "why": {
             "source_device": latest["source_device"],
             "evidence_ref": latest["evidence_ref"],

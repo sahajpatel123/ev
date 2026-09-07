@@ -702,7 +702,7 @@ async def capability_reply(
 
     runtime = await build_manifest(
         session,
-        actor=actor,
+        actor=actor or "",
         device_id=device_id,
         realtime_provider=realtime_provider,
         channel=channel,

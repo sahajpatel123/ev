@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+
 @dataclass(frozen=True)
 class OwnerTurn:
     turn_id: str  # canonical turn id (Event.id or uuid)

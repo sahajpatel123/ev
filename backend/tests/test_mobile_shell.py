@@ -11,7 +11,12 @@ from app.device_gateway.mobile_actions.engine import (
 )
 from app.device_gateway.mobile_actions.service import complete_action
 from app.device_gateway.mobile_actions.store import get_action, put_handshake, reset_for_tests
-from app.device_gateway.mobile_actions.trust import classify_utterance, freeze_hash, is_negated, wants_draft
+from app.device_gateway.mobile_actions.trust import (
+    classify_utterance,
+    freeze_hash,
+    is_negated,
+    wants_draft,
+)
 
 DEVICE = "11111111-1111-1111-1111-111111111111"
 ORIGIN = "https://home.example.ts.net"
