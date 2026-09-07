@@ -251,5 +251,19 @@
     return { pill: pill };
   })();
   </script>
+  <!-- Cycle 23 — iPhone-only update-available toast model. Backward
+       compatible: additive window.EvieUpdate namespace; compares hello
+       latest_web_build against the running build, no markup changed. -->
+  <script>
+  window.EvieUpdate = (function () {
+    function toast(hello, currentBuild) {
+      var latest = hello && hello.latest_web_build != null ? String(hello.latest_web_build) : "";
+      var current = currentBuild != null ? String(currentBuild) : "";
+      if (!latest || !current || latest === current) return null;
+      return { title: "Update available", body: "Evie " + latest + " is ready.", cta: "Reload" };
+    }
+    return { toast: toast };
+  })();
+  </script>
 </body>
 </html>
