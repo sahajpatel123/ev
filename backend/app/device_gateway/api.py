@@ -122,6 +122,8 @@ class ClaimRequest(BaseModel):
     session_id: str | None = None
     lease_id: str | None = None
     client_generation: int | None = None
+    battery_percent: float | None = None
+    connectivity: str | None = None
 
 
 class SdpOffer(BaseModel):
@@ -554,6 +556,14 @@ async def heartbeat(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
+    if data.battery_percent is not None:
+        # Cycle 52 — battery awareness: clamp to a sane range, persist so
+        # nudges and the capability manifest can respect a dying phone.
+        try:
+            battery = max(0.0, min(100.0, float(data.battery_percent)))
+            device.battery_percent = battery
+        except (TypeError, ValueError):
+            pass
     note_presence(device.id, instance_id=data.instance_id, state="ready")
     lease = await heartbeat_lease(session, device_id=device.id, instance_id=data.instance_id)
     await session.commit()

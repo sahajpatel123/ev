@@ -426,3 +426,51 @@ async def test_quick_actions_gated_by_trust(client):
     for action in data["actions"]:
         assert action.get("utterance"), action
         assert "tools" not in action  # no client-side dispatch surface
+
+
+async def test_battery_report_and_low_battery_nudge_gate(client, db_session):
+    """Cycle 52 — C12: heartbeat persists a clamped battery level; status
+    exposes it; send_nudge holds non-alarm nudges at <=15% but alarms pass."""
+    from datetime import datetime
+    from uuid import uuid4
+
+    from app.everywhere.nudge import send_nudge
+    from app.models import Device
+
+    phone = await _pair_sandbox(client, "Batt-SE")
+    hb = await phone.post(
+        "/v1/device-gateway/heartbeat",
+        json={"instance_id": "Batt-SE-tab", "method": "battery", "battery_percent": 420},
+    )
+    assert hb.status_code == 200, hb.text
+    status = (await phone.get("/v1/device-gateway/status")).json()
+    assert status.get("battery_percent") == 100.0, status.get("battery_percent")
+
+    d = Device(
+        name="Low Battery Phone",
+        token_hash="lowbatt-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+    held = await send_nudge(
+        db_session, d, kind="pattern", title="Nudge", body="hi",
+        now=datetime(2026, 9, 8, 12, 0),
+    )
+    # battery not reported on this device row → nudge still goes
+    assert held["status"] == "sent"
+    d.battery_percent = 12.0
+    db_session.add(d)
+    await db_session.commit()
+    low = await send_nudge(
+        db_session, d, kind="pattern", title="Nudge", body="hi",
+        now=datetime(2026, 9, 8, 12, 0),
+    )
+    assert low["status"] == "low_battery"
+    alarm = await send_nudge(
+        db_session, d, kind="timer", title="Timer", body="done",
+        bypass_quiet=True, now=datetime(2026, 9, 8, 12, 0),
+    )
+    assert alarm["status"] == "sent"

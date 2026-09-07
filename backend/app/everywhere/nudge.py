@@ -85,17 +85,15 @@ async def send_nudge(
     bypass_quiet: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """One proactive nudge to one device. Quiet-hours gated unless bypassed.
-
-    Returns {"status": "quiet" | "disabled" | "sent", "item": ...} — the
-    caller decides whether a quiet-hold nudge should be re-scheduled.
-    """
-
     prefs = nudge_prefs(device)
     if not prefs["enabled"]:
         return {"status": "disabled", "item": None}
     if not bypass_quiet and in_quiet_hours(prefs, now=now):
         return {"status": "quiet", "item": None}
+    battery = getattr(device, "battery_percent", None)
+    if not bypass_quiet and battery is not None and float(battery) <= 15.0:
+        # Cycle 52 — a dying phone keeps its silence except for alarms.
+        return {"status": "low_battery", "item": None}
     from app.everywhere.inbox import push_inbox
 
     item = await push_inbox(

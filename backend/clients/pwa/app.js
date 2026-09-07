@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.06";
+const CLIENT_BUILD = "2026.09.08.07";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -422,7 +422,8 @@ function fillSettings(hello, device) {
     ["Owner scope", status.owner_scope || status.scope || "—"],
     ["Auth revision", String(status.auth_revision || device.auth_revision || "—")],
     ["Next action", status.next_action || "—"],
-    ["Backend", status.backend_build || hello.backend_sha || "—"],
+    ["Trust", status.trust_state || hello.environment || "—"],
+    ["Battery", typeof status.battery_percent === "number" ? Math.round(status.battery_percent) + "%" + (status.battery_percent <= 15 ? " · low — alarms only" : "") : "not reported"],
     ["Product", status.product || "Tailscale PWA"],
     ["Connection", state.conn],
     ["Home Station", homeLine(hello)],
@@ -661,6 +662,7 @@ async function syncPhoneLife() {
   await pullEverywhere().catch(() => {});
   await replayOfflineQueue().catch(() => {});
   await refreshInbox().catch(() => {});
+  await reportBattery().catch(() => {});
   try {
     const snap = await api("/v1/device-gateway/status");
     if (snap) {
@@ -668,6 +670,24 @@ async function syncPhoneLife() {
       if (state.hello) state.hello.status = snap;
     }
   } catch (_err) {}
+}
+
+/* Cycle 52 — battery awareness: report once per sync when the platform
+   exposes the Battery Status API (Android/desktop Chrome). iOS Safari
+   does not expose it; the row then reads "not reported". */
+async function reportBattery() {
+  if (!state.deviceToken) return;
+  if (!navigator.getBattery) return;
+  const b = await navigator.getBattery();
+  if (!b || typeof b.level !== "number") return;
+  await api("/v1/device-gateway/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      instance_id: state.instanceId,
+      method: "battery",
+      battery_percent: Math.round(b.level * 100),
+    }),
+  });
 }
 
 function pushHistory(role, text) {

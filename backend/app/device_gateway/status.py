@@ -81,6 +81,10 @@ def device_status_payload(device: Device, *, extra: dict[str, Any] | None = None
         "endpoint_profile": getattr(device, "endpoint_profile", None) or {},
         "healthkit": _healthkit_public(device),
         "notifications": _notifications_public(device),
+        # Cycle 52 — battery/connectivity awareness: the phone's own state,
+        # reported by heartbeat, surfaced wherever the device is displayed.
+        "battery_percent": device.battery_percent,
+        "last_seen_at": device.last_seen_at.isoformat() if device.last_seen_at else None,
     }
     if extra:
         payload.update(extra)
