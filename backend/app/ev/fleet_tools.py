@@ -662,7 +662,42 @@ async def _calendar_read(session: AsyncSession, *, limit: int = 20) -> dict:
     signals = await calendar_feed.calendar_signals(session, limit=min(limit, 500))
     next_event = signals.get("next_event") or {}
     summary = str(next_event.get("summary") or "").strip()
-    spoken = f"Next: {summary}." if summary else "No upcoming calendar events."
+    # Cycle 61 — a real voice summary, not "Next: X.": relative time for the
+    # next event, today's density, and the leave-by nudge when it applies.
+    from datetime import datetime as _dt
+
+    now = utcnow()
+    parts: list[str] = []
+    if summary:
+        when = ""
+        try:
+            start = _dt.fromisoformat(str(next_event.get("start")))
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=now.tzinfo)
+            hours = (start - now).total_seconds() / 3600.0
+            if hours <= 0:
+                when = "happening now"
+            elif hours < 1:
+                when = f"in {max(1, int(hours * 60))} minutes"
+            elif hours < 24:
+                when = f"in {int(hours)} hours" if hours >= 2 else "within the hour"
+            else:
+                days = int(hours / 24)
+                when = f"in {days} days" if days > 1 else "tomorrow"
+        except (TypeError, ValueError):
+            when = ""
+        parts.append(f"Next up {summary}" + (f", {when}" if when else ""))
+    density = signals.get("day_density") or []
+    today_row = density[0] if isinstance(density, list) and density and isinstance(density[0], dict) else {}
+    today_count = int(today_row.get("event_count") or 0)
+    if today_count:
+        parts.append(f"{today_count} event{'s' if today_count != 1 else ''} today")
+    leave_by = str(signals.get("leave_by") or "")
+    if leave_by and summary and when:
+        hhmm = leave_by[11:16]
+        if hhmm:
+            parts.append(f"leave by {hhmm} if you're going")
+    spoken = ". ".join(parts) + ("." if parts else "") or "No upcoming calendar events."
     raw_source = signals.get("source")
     source = raw_source if isinstance(raw_source, dict) else {}
     integration_config = integration.config if isinstance(integration.config, dict) else {}

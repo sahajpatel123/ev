@@ -698,3 +698,50 @@ async def test_brief_endpoint_shape(client, db_session):
     brief = again.json()
     assert brief["inbox_unread"] >= 1
     assert any("Walk" in (n.get("title") or "") for n in brief["nudges"])
+
+
+async def test_calendar_summary_spoken_shape(db_session, monkeypatch):
+    """Cycle 61 — C21: the calendar read speaks a real summary — relative
+    time, today's density, leave-by — not just 'Next: X.'"""
+    from datetime import timedelta
+    from uuid import uuid4
+
+    import app.ev.calendar as calendar_feed
+    from app.ev.fleet_tools import _calendar_read
+    from app.models import Integration
+    from app.utils.text import utcnow
+
+    integ = Integration(
+        adapter="calendar",
+        slug="calendar-test",
+        name="Calendar Test",
+        status="active",
+        live_channel_id=uuid4(),
+        config={},
+    )
+    db_session.add(integ)
+    await db_session.commit()
+
+    now = utcnow()
+    signals = {
+        "next_event": {
+            "summary": "Dentist",
+            "start": (now + timedelta(hours=3)).isoformat(),
+            "end": (now + timedelta(hours=4)).isoformat(),
+        },
+        "leave_by": (now + timedelta(hours=3) - timedelta(minutes=30)).isoformat(),
+        "today": {"count": 2},
+        "day_density": [{"date": now.date().isoformat(), "event_count": 2, "busy_minutes": 90}],
+    }
+
+    async def _fake_signals(session, *, limit=500):
+        return signals
+
+    monkeypatch.setattr(calendar_feed, "calendar_signals", _fake_signals)
+
+    result = await _calendar_read(db_session, limit=20)
+    assert result.get("ok") is True
+    spoken = str(result.get("spoken") or "")
+    assert "Dentist" in spoken
+    assert "in 3 hours" in spoken or "in 2 hours" in spoken
+    assert "2 events today" in spoken or "leave by" in spoken
