@@ -84,6 +84,30 @@ async def deliver_digest(
         body=body,
         payload={"digest_time": local_now.strftime("%H:%M"), "timezone": cfg["timezone"]},
     )
+    item_id = str(item.get("id") or "")
+    from app.device_gateway.push import attempt_push
+
+    push = await attempt_push(
+        session,
+        device=device,
+        title=str(item.get("title") or "Evie digest"),
+        body=str(item.get("body") or "")[:300],
+        kind="digest",
+        item_id=item_id,
+    )
+    if isinstance(item.get("payload"), dict):
+        item["payload"]["push"] = push
+    try:
+        from uuid import UUID as _UUID
+
+        from app.models import DeviceInboxItem as _InboxRow
+
+        row = await session.get(_InboxRow, _UUID(item_id))
+        if row is not None:
+            row.payload = dict(row.payload or {})
+            row.payload["push"] = push
+    except Exception:  # noqa: BLE001 - payload enrichment is best-effort
+        pass
     cfg["last_digest_at"] = now.isoformat()
     profile = dict(getattr(device, "endpoint_profile", None) or {})
     profile["routines"] = cfg

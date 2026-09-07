@@ -159,3 +159,38 @@ async def test_digest_tick_delivers_once_and_honors_state(
     later = now + timedelta(minutes=2)
     again = await phone_digest_tick(db_session, now=later)
     assert again == []
+
+
+async def test_digest_push_state_honest_poll_fallback(
+    client: AsyncClient, owner_phone, db_session
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.device_gateway.digest import phone_digest_tick
+
+    _body, owner = owner_phone
+    put = await owner.put(
+        "/v1/device-gateway/routines",
+        json={"enabled": True, "digest_times": ["21:00"], "timezone": "Asia/Kolkata"},
+    )
+    assert put.status_code == 200
+    # No push token registered -> delivery stays poll, reason recorded.
+    now = datetime(2026, 9, 8, 15, 30, tzinfo=UTC)
+    delivered = await phone_digest_tick(db_session, now=now)
+    assert len(delivered) == 1
+
+    from app.models import DeviceInboxItem
+
+    rows = (
+        (
+            await db_session.execute(
+                select(DeviceInboxItem).order_by(DeviceInboxItem.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert rows
+    push = (rows[0].payload or {}).get("push") or {}
+    assert push.get("state") == "poll"
+    assert push.get("reason")
