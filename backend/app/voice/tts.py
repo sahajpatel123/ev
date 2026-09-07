@@ -812,8 +812,10 @@ def get_synthesizer() -> Synthesizer:
         "xai",
     }:
         provider = "edge_tts"
-    provider = settings.voice_tts_provider
     if provider == "auto":
+        # Origin chain: first real engine whose weights are installed, else
+        # the offline Meta metadata voice. Kept alongside the Muse guard so a
+        # fresh clone still speaks without any provider configuration.
         voice = piper_voice_path()
         binary = piper_binary_path()
         if voice and binary:

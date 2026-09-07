@@ -336,10 +336,11 @@ class Settings(BaseSettings):
     # Voice ASR (speech-to-text). echo = offline transcript hints (dev/test);
     # openai_compat = any OpenAI-compatible /audio/transcriptions endpoint.
     # faster_whisper = local Whisper-class transcription (faster-whisper).
-    voice_asr_provider: str = "echo"  # echo | openai_compat | faster_whisper | meta_muse_voice
     # auto = first real engine whose weights are installed (vosk, then
-    # parakeet), else the echo double that refuses audio outright.
-    voice_asr_provider: str = "auto"  # auto | vosk | echo | openai_compat | faster_whisper | parakeet
+    # parakeet), else the echo double that refuses audio outright. The
+    # owner's device pins faster_whisper via .env, so auto stays a safe
+    # default for fresh clones and CI; meta_muse_voice remains a valid slot.
+    voice_asr_provider: str = "auto"  # auto | vosk | echo | openai_compat | faster_whisper | parakeet | meta_muse_voice
     voice_asr_base_url: str | None = None
     voice_asr_api_key: str | None = None
     voice_asr_model: str = "whisper-1"

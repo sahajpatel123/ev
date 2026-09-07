@@ -486,9 +486,6 @@ class LiveSession:
                 from app.db import SessionLocal
                 from app.ev.owner_turn import create_owner_turn
                 from app.ev.turn_gate import handle_owner_turn
-                from app.ev.turn_gate import (
-                    handle_owner_turn,
-                )
                 from app.utils.text import utcnow
 
                 # Create canonical OwnerTurn from FinalTranscriptEvent
@@ -709,8 +706,6 @@ class LiveSession:
                 ):
                     self._discard_outbound(lambda queued: queued is event, first_only=True)
                     return local_intent_resolution
-        if persist_assistant:
-                    return
         if isinstance(event, ReplyEvent) and persist_assistant:
             extra = None
             if getattr(event, "interrupted", False):

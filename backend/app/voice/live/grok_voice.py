@@ -2240,13 +2240,6 @@ class GrokVoiceBridge:
                 [item for item in session_tools if isinstance(item, dict)]
             ),
         }
-        audio = (
-            session_payload.get("audio") if isinstance(session_payload.get("audio"), dict) else {}
-        )
-        audio_in = audio.get("input") if isinstance(audio.get("input"), dict) else {}
-        requested_tx = (
-            audio_in.get("transcription") if isinstance(audio_in.get("transcription"), dict) else {}
-        )
         audio_raw = session_payload.get("audio")
         audio = audio_raw if isinstance(audio_raw, dict) else {}
         audio_in_raw = audio.get("input")
@@ -2400,10 +2393,6 @@ class GrokVoiceBridge:
             if now < self._echo_until:
                 return True
         return False
-        last_emit = self._last_audio_emit_at
-        if last_emit and (now - last_emit) < _SELF_ECHO_QUARANTINE_S:
-            return True
-        return now < self._echo_until
 
     async def append_pcm(self, pcm: bytes) -> None:
         if not pcm or self._closed:
@@ -4045,11 +4034,6 @@ class GrokVoiceBridge:
             # User started a turn. Do not send response.cancel — that errors
             # with "no active response" and can kill the next spoken answer.
             self._ensure_open_turn()
-            if (
-                self._turn_authority_v2
-                and self._v2_pending_commit is not None
-                and not self._v2_pending_commit.done()
-            ):
             if self._turn_authority_v2 and self._v2_pending_commit is not None and not self._v2_pending_commit.done():
                 # CONTINUATION: speech restarted inside the grace window — the
                 # owner was still forming the thought. Cancel any pending
@@ -4129,12 +4113,6 @@ class GrokVoiceBridge:
             elif text:
                 await self._emit_user_transcript(text, final=False, item_id=item_id)
             return
-        if kind in {
-            "conversation.item.done",
-            "conversation.item.created",
-            "response.output_item.added",
-        }:
-            item = event.get("item") if isinstance(event.get("item"), dict) else {}
         if kind in {"conversation.item.done", "conversation.item.created", "response.output_item.added"}:
             item_raw = event.get("item")
             item = item_raw if isinstance(item_raw, dict) else {}
