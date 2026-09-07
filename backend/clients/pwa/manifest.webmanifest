@@ -18,5 +18,13 @@
       "sizes": "180x180",
       "type": "image/png"
     }
-  ]
+  ],
+  "x-evie-cycle-42-turn-receipts": {
+    "note": "Cycle 42 \u2014 iPhone-only turn-receipts list model. Backward compatible: additive namespaced key; statuses enumerate per-turn delivery states.",
+    "statuses": [
+      "sent",
+      "delivered",
+      "played"
+    ]
+  }
 }
