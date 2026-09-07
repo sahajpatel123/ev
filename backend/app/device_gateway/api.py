@@ -1696,6 +1696,25 @@ async def put_phone_routines(
     return {"ok": True, "routines": candidate}
 
 
+@router.get("/contacts")
+async def device_contacts(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The phone's own contacts snapshot (names only, sent_to_model false
+    unless Evie later routes an explicit call/message request)."""
+    _check_origin(request)
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    contacts = profile.get("contacts") or {}
+    return {
+        "ok": True,
+        "contacts": contacts.get("contacts") or [],
+        "captured_at": contacts.get("captured_at"),
+        "sent_to_model": False,
+    }
+
+
 @router.get("/sync/bootstrap")
 async def phone_sync_bootstrap(
     request: Request,
@@ -1959,6 +1978,10 @@ async def camera_get(
         "request_id": request_id,
         "has_frame": bool(row.get("jpeg_b64")),
         "target_device_id": row.get("target_device_id"),
+        "created_at": row.get("created_at"),
+        "received_at": row.get("received_at"),
+        "expires_at": row.get("expires_at"),
+        "expired": False,
         "persisted_to_memory_os": False,
     }
 

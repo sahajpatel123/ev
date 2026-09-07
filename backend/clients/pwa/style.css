@@ -726,3 +726,7 @@ html, body {
 .evie-routine-chip button { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 0; }
 .evie-routine-add, .evie-routine-quiet { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .evie-routine-quiet input, .evie-routine-add input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--stroke); border-radius: 12px; background: var(--elevated); color: var(--ink); font: inherit; }
+/* Cycle EAC76 (iPhone-only): people sheet. Additive-only namespace. */
+.evie-people-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; }
+.evie-people-row > span { font-size: 15px; }
+.evie-people-actions { display: inline-flex; gap: 6px; flex: none; }

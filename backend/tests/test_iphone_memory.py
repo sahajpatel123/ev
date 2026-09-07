@@ -230,3 +230,18 @@ async def test_offline_queue_drop_own_device_only(owner_phone, gateway_phone) ->
     again = await owner.delete(f"/v1/device-gateway/queue/{item_id}")
     assert again.status_code == 200
     assert again.json()["idempotent"] is True
+
+
+async def test_contacts_read_returns_snapshot(owner_phone) -> None:
+    _body, phone = owner_phone
+    posted = await phone.post(
+        "/v1/device-gateway/contacts/snapshot",
+        json={"contacts": [{"name": "Aarav Mehta"}, {"name": "Priya Shah"}], "captured_at": "2026-09-08T07:00:00Z"},
+    )
+    assert posted.status_code == 200
+    res = await phone.get("/v1/device-gateway/contacts")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert [c["name"] for c in body["contacts"]] == ["Aarav Mehta", "Priya Shah"]
+    assert body["sent_to_model"] is False
+    assert body["captured_at"] == "2026-09-08T07:00:00Z"

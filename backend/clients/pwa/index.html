@@ -86,6 +86,11 @@
           <strong>Chat</strong>
           <span>The conversation on this phone</span>
         </button>
+        <button type="button" class="folio-card" data-surface="people">
+          <span class="folio-kicker">People</span>
+          <strong>People</strong>
+          <span>Who Evie can reach</span>
+        </button>
         <button type="button" class="folio-card" data-surface="routines">
           <span class="folio-kicker">Daily</span>
           <strong>Routines</strong>
@@ -137,6 +142,18 @@
           <span>Camera, trust, appearance</span>
         </button>
       </div>
+    </section>
+
+    <section id="people-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="people-sheet" aria-label="Close">✕</button>
+      <h2>People</h2>
+      <p class="quiet">Contacts Evie can reach — actions run through Home Station, never guessed numbers.</p>
+      <form id="people-filter-form" class="composer">
+        <label class="sr-only" for="people-q">Filter contacts</label>
+        <input id="people-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Filter people">
+      </form>
+      <ol id="people-list" class="timeline"></ol>
+      <p class="quiet" id="people-meta"></p>
     </section>
 
     <section id="routines-sheet" class="sheet" hidden>

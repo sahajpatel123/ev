@@ -977,6 +977,57 @@ async function saveRoutines() {
   }
 }
 
+let peopleCache = [];
+
+async function refreshPeople(filterText) {
+  const list = $("people-list");
+  const meta = $("people-meta");
+  const needle = (filterText || "").trim().toLowerCase();
+  try {
+    if (!peopleCache.length) {
+      const body = await api("/v1/device-gateway/contacts");
+      peopleCache = (body.contacts || []).map((c) => String(c.name || "")).filter(Boolean);
+    }
+    if (list) {
+      while (list.firstChild) list.removeChild(list.firstChild);
+    }
+    const shown = needle ? peopleCache.filter((n) => n.toLowerCase().indexOf(needle) !== -1) : peopleCache;
+    if (!shown.length) {
+      const li = document.createElement("li");
+      li.className = "evie-today-empty";
+      li.textContent = needle ? "No matching contact." : "No contacts yet — grant Contacts access in the native app.";
+      if (list) list.appendChild(li);
+      textOf(meta, "");
+      return;
+    }
+    shown.forEach((name) => {
+      const li = document.createElement("li");
+      li.className = "evie-people-row";
+      const span = document.createElement("span");
+      span.textContent = name;
+      li.appendChild(span);
+      const actions = document.createElement("span");
+      actions.className = "evie-people-actions";
+      ["Call", "Message"].forEach((verb) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "evie-queue-drop";
+        btn.textContent = verb;
+        btn.addEventListener("click", () => {
+          openSurface("conversation");
+          sendText(verb === "Call" ? "Call " + name : "Message " + name).catch(() => {});
+        });
+        actions.appendChild(btn);
+      });
+      li.appendChild(actions);
+      if (list) list.appendChild(li);
+    });
+    textOf(meta, shown.length + " of " + peopleCache.length + " contacts · snapshot from this phone");
+  } catch (err) {
+    textOf(meta, "People unavailable: " + String(err.message || err));
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -1163,7 +1214,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -2847,6 +2898,7 @@ async function boot() {
     const map = {
       more: "more-sheet",
       today: "today-sheet",
+      people: "people-sheet",
       routines: "routines-sheet",
       queue: "queue-sheet",
       capture: "capture-sheet",
@@ -2858,7 +2910,7 @@ async function boot() {
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "today-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "today-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -2871,6 +2923,7 @@ async function boot() {
     if (surface === "memory") refreshMemories();
     if (surface === "queue") refreshQueue();
     if (surface === "routines") loadRoutines();
+    if (surface === "people") refreshPeople();
   }
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -2922,6 +2975,14 @@ async function boot() {
     captureForm.addEventListener("submit", (ev) => {
       ev.preventDefault();
       submitCapture();
+    });
+  }
+  const peopleFilter = $("people-filter-form");
+  if (peopleFilter) {
+    peopleFilter.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const q = $("people-q");
+      refreshPeople(q ? q.value : "");
     });
   }
   const routinesEnabled = $("routines-enabled");
