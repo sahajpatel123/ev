@@ -30,5 +30,9 @@
   "x-evie-cycle-43-large-text": {
     "note": "Cycle 43 \u2014 iPhone-only large-text accessibility flag. Backward compatible: additive namespaced key; default off.",
     "default": false
+  },
+  "x-evie-cycle-44-low-data": {
+    "note": "Cycle 44 \u2014 iPhone-only low-data mode flag. Backward compatible: additive namespaced key; default off.",
+    "default": false
   }
 }
