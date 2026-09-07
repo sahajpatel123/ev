@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.05";
+const CLIENT_BUILD = "2026.09.08.06";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -702,6 +702,29 @@ function showSheet(id, on) {
   if (on && id === "settings-sheet" && window.EvieCapabilities) {
     window.EvieCapabilities.refresh({ api: (path) => api(path, { _useDeviceToken: true }) });
   }
+  if (on && id === "more-sheet") loadQuickActions().catch(() => {});
+}
+
+/* Cycle 51 — one-tap quick actions: server-computed, capability-gated;
+   tapping a chip sends its utterance through the same trusted text path a
+   spoken turn would take. No new authority lives client-side. */
+async function loadQuickActions() {
+  const host = $("qa-chips");
+  if (!host) return;
+  const body = await api("/v1/device-gateway/quick-actions").catch(() => null);
+  host.textContent = "";
+  (body && body.actions ? body.actions : []).forEach((action) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip chip-plain qa-chip";
+    chip.textContent = action.label || action.id;
+    chip.title = action.hint || "";
+    chip.addEventListener("click", () => {
+      showSheet("more-sheet", false);
+      sendText(action.utterance);
+    });
+    host.appendChild(chip);
+  });
 }
 
 function anySheetOpen() {

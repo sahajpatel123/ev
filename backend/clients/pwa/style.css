@@ -681,3 +681,7 @@ html, body {
 .tmr-track { fill: none; stroke: var(--line, #d8d5cf); stroke-width: 6; }
 .tmr-arc { fill: none; stroke: #3a9c58; stroke-width: 6; stroke-linecap: round; stroke-dasharray: 188.5; stroke-dashoffset: 0; }
 .tmr-remaining { font-size: 24px; font-weight: 700; margin: 0; font-variant-numeric: tabular-nums; }
+
+/* Cycle 51 — one-tap quick action chips. */
+.qa-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
+.qa-chip { padding: 8px 14px; font-size: 13px; border-radius: 999px; }

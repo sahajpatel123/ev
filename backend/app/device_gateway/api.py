@@ -1192,6 +1192,41 @@ async def set_nudge_prefs(
     return {"ok": True, **prefs}
 
 
+
+@router.get("/quick-actions")
+async def quick_actions(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """Capability-gated one-tap actions for the phone. Each action is an
+    utterance the PWA sends through the SAME trusted text path a spoken turn
+    would take — no new authority, no client-side tool dispatch."""
+
+    _check_origin(request)
+    from .capability_manifest import capability_manifest
+
+    manifest = capability_manifest(device)
+    trusted = manifest["trust_state"] == "TRUSTED_OWNER_DEVICE"
+    actions: list[dict[str, str]] = []
+    if trusted:
+        actions.extend(
+            [
+                {"id": "timer", "label": "5 min timer", "hint": "Home Station runs it", "utterance": "set a timer for five minutes"},
+                {"id": "weather", "label": "Weather", "hint": "Local forecast", "utterance": "what's the weather"},
+                {"id": "calendar", "label": "Calendar", "hint": "Today's events", "utterance": "what's on my calendar today"},
+                {"id": "recall", "label": "What did we say", "hint": "Recall recent context", "utterance": "what did we talk about most recently"},
+                {"id": "look", "label": "Look", "hint": "Camera + vision", "utterance": "look"},
+            ]
+        )
+    else:
+        actions.extend(
+            [
+                {"id": "chat", "label": "Catch up", "hint": "Chat only in sandbox", "utterance": "what can you do on this phone right now"},
+            ]
+        )
+    return {"ok": True, "actions": actions, "trust_state": manifest["trust_state"]}
+
+
 @router.post("/calendar/snapshot")
 async def calendar_snapshot(
     data: CalendarSnapshotRequest,

@@ -411,3 +411,18 @@ async def test_send_nudge_quiet_and_alarm_bypass(db_session):
         now=__import__("datetime").datetime(2026, 9, 8, 2, 30),
     )
     assert alarm["status"] == "sent" and alarm["item"] is not None
+
+
+async def test_quick_actions_gated_by_trust(client):
+    """Cycle 51 — C11: quick actions are server-computed per trust state;
+    each action carries an utterance (no client-side tool authority)."""
+    phone = await _pair_sandbox(client, "QA-SE")
+    body = await phone.get("/v1/device-gateway/quick-actions")
+    assert body.status_code == 200, body.text
+    data = body.json()
+    assert data["ok"] is True
+    assert data["trust_state"] == "PAIRED_SANDBOX"
+    assert data["actions"], "sandbox still gets a chat-oriented action"
+    for action in data["actions"]:
+        assert action.get("utterance"), action
+        assert "tools" not in action  # no client-side dispatch surface
