@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.09.08.01"
+    pwa_build: str = "2026.09.08.02"
     phone_audio_backend: str = "webrtc_strict"  # webrtc_strict | webrtc | pcm_ws | encoded | auto
     phone_asr_model: str = "gpt-4o-transcribe"
     phone_asr_language: str = "en"

@@ -730,3 +730,7 @@ html, body {
 .evie-people-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; }
 .evie-people-row > span { font-size: 15px; }
 .evie-people-actions { display: inline-flex; gap: 6px; flex: none; }
+/* Cycle EAC77 (iPhone-only): composer chips. Additive-only namespace. */
+.evie-composer-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.evie-composer-chips button { padding: 8px 12px; border: 1px solid var(--stroke); border-radius: 999px; background: var(--elevated); font-size: 13px; color: var(--ink); }
+.evie-composer-chips button:active { background: color-mix(in srgb, var(--ink) 10%, transparent); }

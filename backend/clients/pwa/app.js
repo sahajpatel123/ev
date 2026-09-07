@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.01";
+const CLIENT_BUILD = "2026.09.08.02";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -2881,8 +2881,38 @@ async function boot() {
     });
   });
   $("type-btn").addEventListener("click", () => {
-    $("text-form").hidden = !$("text-form").hidden;
-    if (!$("text-form").hidden) $("text").focus();
+    const visible = $("text-form").hidden;
+    $("text-form").hidden = !visible;
+    const chips = $("composer-chips");
+    if (chips) chips.hidden = !visible;
+    if (visible) $("text").focus();
+  });
+  document.querySelectorAll("[data-chip]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const kind = btn.getAttribute("data-chip");
+      if (kind === "note") {
+        $("text-form").hidden = true;
+        const chips = $("composer-chips");
+        if (chips) chips.hidden = true;
+        openSurface("capture");
+        return;
+      }
+      const prompts = {
+        remind: "Remind me in 30 minutes",
+        timer: "Start a 10 minute timer",
+        day: "What's today looking like",
+        weather: "What's the weather",
+      };
+      const prompt = prompts[kind];
+      if (!prompt) return;
+      $("text-form").hidden = true;
+      const chips = $("composer-chips");
+      if (chips) chips.hidden = true;
+      sendText(prompt).catch((err) => {
+        state.caption = String(err.message || err);
+        paintLive();
+      });
+    });
   });
   $("more-btn").addEventListener("click", () => {
     const sheet = $("more-sheet");
