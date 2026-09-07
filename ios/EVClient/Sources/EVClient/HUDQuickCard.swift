@@ -67,3 +67,12 @@ public struct HUDQuickCard: Codable, Sendable, Equatable {
         ].joined(separator: "\n")
     }
 }
+// Cycle EAC-06 — HUDQuickCard two-line renderer.
+/// iPhone-only additive helper; backward compatible (new method, renderText untouched).
+public extension HUDQuickCard {
+    /// Compact two-line form for widgets and complications: headline + detail.
+    func evieTwoLineRender() -> (headline: String, subline: String) {
+        let subline = nextAction ?? topRisk ?? summary
+        return (headline: objective, subline: subline)
+    }
+}
