@@ -1152,6 +1152,108 @@ async def contacts_snapshot(
     return {"ok": True, "count": len(people), "sent_to_model": False}
 
 
+@router.get("/today")
+async def device_today(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """One-call phone dashboard: HUD card, health, calendar, reminders,
+    memory highlights, pending inbox. Additive and phone-scoped; Mac clients
+    and existing endpoints are untouched."""
+    _check_origin(request)
+    from app.ev.alert_radar import list_alerts
+    from app.ev.hud import status_card
+    from app.ev.workbench import last_hud_payload
+    from app.everywhere.inbox import list_inbox
+    from app.models import Memory
+    from app.utils.text import utcnow as _utcnow
+
+    memory_enabled = not is_sandbox_device(device)
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+
+    card: dict | None = None
+    last = await last_hud_payload(session)
+    if last and last.get("schema_version") == "ev.hud.card.v1":
+        card = {
+            "schema_version": "ev.hud.card.v1",
+            "generated_at": last.get("generated_at"),
+            "title": last.get("title") or "EV",
+            "body": last.get("body") or "",
+            "priority": last.get("priority") or 0.0,
+            "meta": last.get("meta") if isinstance(last.get("meta"), dict) else {},
+        }
+    else:
+        try:
+            sc = await status_card(session)
+            card = sc.model_dump() if hasattr(sc, "model_dump") else dict(sc)
+        except Exception:
+            card = None
+
+    healthkit = profile.get("healthkit") or {}
+    calendar = profile.get("calendar") or {}
+    reminders = await list_alerts(session, status="pending", kind="reminder", limit=20)
+    memories: list[dict] = []
+    if memory_enabled:
+        rows = (
+            (
+                await session.execute(
+                    select(Memory)
+                    .where(Memory.is_current.is_(True))
+                    .order_by(Memory.updated_time.desc())
+                    .limit(5)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        memories = [
+            {
+                "id": str(m.id),
+                "memory_type": m.memory_type,
+                "text": str(m.text or "")[:280],
+                "importance": m.importance,
+                "updated_time": m.updated_time.isoformat() if m.updated_time else None,
+            }
+            for m in rows
+        ]
+    inbox_items = await list_inbox(session, device_id=device.id, limit=50)
+    return {
+        "ok": True,
+        "generated_at": _utcnow().isoformat(),
+        "device": {
+            "id": str(device.id),
+            "role": device.role or "companion",
+            "display_name": device.name or "This iPhone",
+        },
+        "memory_enabled": memory_enabled,
+        "memory_scope": memory_scope_of(device),
+        "hud": card,
+        "health": {
+            "available": bool(healthkit.get("available")),
+            "freshness": healthkit.get("freshness") or "unavailable",
+            "captured_at": healthkit.get("captured_at"),
+            "metrics": healthkit.get("snapshot") if isinstance(healthkit.get("snapshot"), dict) else {},
+            "sent_to_model": False,
+        },
+        "calendar": {
+            "events": calendar.get("events") or [],
+            "captured_at": calendar.get("captured_at"),
+            "sent_to_model": False,
+        },
+        "reminders": [
+            {
+                "id": str(row.id),
+                "text": str(row.body or row.title or "untitled"),
+                "status": str(row.status or "pending"),
+            }
+            for row in reminders
+        ],
+        "memories": memories,
+        "inbox_pending": sum(1 for item in inbox_items if item.get("unread")),
+    }
+
+
 @router.get("/sync/bootstrap")
 async def phone_sync_bootstrap(
     request: Request,
