@@ -120,3 +120,16 @@ def test_compact_density_profile_wired():
     html = open("clients/pwa/index.html").read()
     assert 'id="density"' in html
     assert 'data-density="compact"' in html
+
+
+def test_se_performance_profile_tunings():
+    """Cycle 76 — C36: SE-class phones get a bigger jitter cushion, a
+    larger prime, a coarser capture batch, and a playback latency hint."""
+    audio = (PWA / "audio.js").read_text()
+    assert "detectSeProfile" in audio
+    assert "SE_PROFILE" in audio
+    assert "0.28" in audio and "0.34" in audio and "0.09" in audio
+    app = (PWA / "app.js").read_text()
+    assert "EvieAudioProfile" in app
+    assert "BATCH_S" in app
+    assert '"playback" : "interactive"' in app

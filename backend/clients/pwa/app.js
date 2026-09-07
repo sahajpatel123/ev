@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.27";
+const CLIENT_BUILD = "2026.09.08.28";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -2016,7 +2016,11 @@ function playEncodedFallback(msg, gen) {
 }
 
 async function attachCapture(ws, stream) {
-  const ctx = new AudioContext();
+  // Cycle 76 — SE performance profile: a bigger capture batch cuts
+  // per-second WS frame count (CPU + radio wakeups) on SE-class phones.
+  const sePerf = !!(window.EvieAudioProfile && window.EvieAudioProfile.se);
+  const BATCH_S = sePerf ? 0.04 : 0.02;
+  const ctx = new AudioContext({ latencyHint: sePerf ? "playback" : "interactive" });
   if (ctx.state === "suspended") await ctx.resume();
   const source = ctx.createMediaStreamSource(stream);
   const mute = ctx.createGain();
@@ -2028,7 +2032,7 @@ async function attachCapture(ws, stream) {
   // Accumulate to 20 ms (320 samples @16k = 640 bytes) before sending so the
   // backend forwards steady realtime frames. ScriptProcessor already emits
   // ~85 ms frames and bypasses the accumulator.
-  const FRAME_SAMPLES = Math.floor(TARGET_RATE * 0.02);
+  const FRAME_SAMPLES = Math.floor(TARGET_RATE * BATCH_S);
   let pending = new Int16Array(0);
   const sendPcmBatched = (float32) => {
     if (!state.talking || ws.readyState !== WebSocket.OPEN) {

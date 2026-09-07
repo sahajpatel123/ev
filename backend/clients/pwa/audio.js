@@ -10,10 +10,24 @@
   // late). 220 ms absorbs normal jitter for ~130 ms of extra first-word
   // latency. Mid-response restarts never re-prime (the worklet stays primed
   // across transient starves); only true provider gaps re-buffer.
-  const PRIME_S = 0.22;
+  // Cycle 76 — SE performance profile: SE-class phones (small CPU + a
+  // jitterier audio clock) need a larger jitter cushion. Detected once;
+  // the app reads root.EvieAudioProfile.se for its own tunings too.
+  function detectSeProfile() {
+    try {
+      const cores = navigator.hardwareConcurrency || 4;
+      const small = Math.min(window.innerWidth || 999, (window.screen && window.screen.width) || 999) <= 380;
+      return small || cores <= 4;
+    } catch (_err) {
+      return false;
+    }
+  }
+  const SE = detectSeProfile();
+  root.EvieAudioProfile = { se: SE, cores: navigator.hardwareConcurrency || 0 };
+  const PRIME_S = SE ? 0.28 : 0.22;
   const SLIP_S = 0.012;
-  const JITTER_MIN_S = 0.06;
-  const JITTER_MAX_S = 0.28;
+  const JITTER_MIN_S = SE ? 0.09 : 0.06;
+  const JITTER_MAX_S = SE ? 0.34 : 0.28;
 
   function nextPlayTime(ctxNow, queuedUntil, duration, primeS) {
     const prime = primeS == null ? PRIME_S : primeS;
@@ -616,6 +630,7 @@
     PRIME_S: PRIME_S,
     JITTER_MIN_S: JITTER_MIN_S,
     JITTER_MAX_S: JITTER_MAX_S,
+    SE_PROFILE: SE,
     nextPlayTime: nextPlayTime,
     pcm16ToFloat32: pcm16ToFloat32,
     int16BytesToFloat32: int16BytesToFloat32,
