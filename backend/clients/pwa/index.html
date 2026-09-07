@@ -265,5 +265,20 @@
     return { toast: toast };
   })();
   </script>
+  <!-- Cycle 26 — iPhone-only install helper model. Backward compatible:
+       additive window.EvieInstall namespace; Add-to-Home-Screen steps for
+       Safari on 16 Pro / SE, no markup changed. -->
+  <script>
+  window.EvieInstall = (function () {
+    function steps() {
+      return [
+        "Open Safari and load your Home Station /evie/ URL",
+        "Tap Share, then Add to Home Screen",
+        "Open Evie from the Home Screen and pair with a Mac-issued code",
+      ];
+    }
+    return { steps: steps };
+  })();
+  </script>
 </body>
 </html>
