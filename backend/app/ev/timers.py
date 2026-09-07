@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ev.actuator import evidence_base, fingerprint, record_actuator
 from app.ev.callouts import emit_callout
 from app.ev.resolve import ambiguous_spoken, candidate_names, parse_owner_when, pick_unique
-from app.models import OwnerTimer, VoiceSession
+from app.models import Device, OwnerTimer, VoiceSession
 from app.utils.text import utcnow
 
 LOGGER = logging.getLogger("ev.timers")
@@ -484,6 +484,36 @@ async def due_scan(
             owner_scheduled=True,
         )
         fired += 1
+        # Cycle 50 — the timer also reaches the paired phones as an alarm
+        # nudge: alarms bypass quiet hours (the owner asked for this one),
+        # Web Push delivers when the PWA is backgrounded, and the inbox row
+        # remains the durable copy. Best-effort: never fails the sweep.
+        try:
+            from sqlalchemy import select as _select
+
+            from app.everywhere.nudge import send_nudge
+
+            phones = (
+                await session.execute(
+                    _select(Device).where(
+                        Device.revoked_at.is_(None),
+                        (Device.device_type == "phone") | (Device.role == "companion"),
+                    )
+                )
+            ).scalars().all()
+            for phone in phones:
+                await send_nudge(
+                    session,
+                    phone,
+                    kind="timer",
+                    title="Timer",
+                    body=body,
+                    payload={"timer_id": str(row.id), "late": late},
+                    bypass_quiet=True,
+                    now=now,
+                )
+        except Exception as exc:  # noqa: BLE001 - nudge must not kill the sweep
+            LOGGER.info("timer phone nudge skipped: %s", exc)
     await session.flush()
     return {"fired": fired, "scanned": len(rows)}
 

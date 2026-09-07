@@ -253,6 +253,12 @@ class PushRegisterRequest(BaseModel):
     authorization: str | None = None
 
 
+class NudgePrefsRequest(BaseModel):
+    enabled: bool = True
+    quiet_start: str = "22:00"
+    quiet_end: str = "07:00"
+
+
 class WebPushSubscriptionRequest(BaseModel):
     endpoint: str
     keys: dict[str, str] = {}
@@ -1150,6 +1156,40 @@ async def push_web_subscription(
     stored = store_web_subscription(device, endpoint=endpoint, keys=keys)
     await session.commit()
     return {"ok": True, "registered": True, "registered_at": stored.get("registered_at")}
+
+
+@router.get("/nudge-prefs")
+async def get_nudge_prefs(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """This phone's nudge policy: enabled + quiet hours (Home Station local)."""
+
+    _check_origin(request)
+    from app.everywhere.nudge import in_quiet_hours, nudge_prefs
+
+    prefs = nudge_prefs(device)
+    return {"ok": True, **prefs, "quiet_now": in_quiet_hours(prefs)}
+
+
+@router.post("/nudge-prefs")
+async def set_nudge_prefs(
+    data: NudgePrefsRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.nudge import store_nudge_prefs
+
+    prefs = store_nudge_prefs(
+        device,
+        enabled=data.enabled,
+        quiet_start=data.quiet_start,
+        quiet_end=data.quiet_end,
+    )
+    await session.commit()
+    return {"ok": True, **prefs}
 
 
 @router.post("/calendar/snapshot")

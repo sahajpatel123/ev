@@ -355,3 +355,59 @@ async def test_push_inbox_survives_without_web_push(db_session):
     item = await push_inbox(db_session, device_id=d.id, kind="notice", title="Nudge", body="hello")
     assert item.get("title") == "Nudge"
     await asyncio.sleep(0.05)
+
+
+def test_quiet_hours_wrap_and_gate():
+    """Cycle 50 — C10: quiet hours wrap midnight (22:00–07:00); the 3pm nudge
+    passes, the 2am nudge holds, and a timer alarm bypasses the hold."""
+    from datetime import datetime
+
+    from app.everywhere.nudge import in_quiet_hours, nudge_prefs
+
+    class _FakeDevice:
+        endpoint_profile = {}
+
+    prefs = nudge_prefs(_FakeDevice())
+    assert prefs["enabled"] is True
+    assert prefs["quiet_start"] == "22:00" and prefs["quiet_end"] == "07:00"
+    assert not in_quiet_hours(prefs, now=datetime(2026, 9, 8, 15, 0))
+    assert in_quiet_hours(prefs, now=datetime(2026, 9, 8, 2, 30))
+    assert in_quiet_hours(prefs, now=datetime(2026, 9, 8, 23, 10))
+
+
+async def test_send_nudge_quiet_and_alarm_bypass(db_session):
+    from uuid import uuid4
+
+    from app.everywhere.nudge import send_nudge
+    from app.models import Device
+
+    d = Device(
+        name="Quiet Phone",
+        token_hash="quiet-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+
+    quiet = await send_nudge(
+        db_session,
+        d,
+        kind="pattern",
+        title="Pattern",
+        body="You usually walk at this hour",
+        now=__import__("datetime").datetime(2026, 9, 8, 2, 30),
+    )
+    assert quiet["status"] == "quiet" and quiet["item"] is None
+
+    alarm = await send_nudge(
+        db_session,
+        d,
+        kind="timer",
+        title="Timer",
+        body="Ramen timer done",
+        bypass_quiet=True,
+        now=__import__("datetime").datetime(2026, 9, 8, 2, 30),
+    )
+    assert alarm["status"] == "sent" and alarm["item"] is not None
