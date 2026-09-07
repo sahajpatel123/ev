@@ -55,6 +55,27 @@ async def record_turn_receipt(
     session.add(row)
     await session.flush()
 
+    if trusted and (row.kind or "") == "final_transcript" and (row.transcript or "").strip():
+        from .phone_core import maybe_phone_core_read
+        from .phone_mac import maybe_phone_mac_act
+
+        core = await maybe_phone_core_read(session, device=device, text=row.transcript)
+        if core is None:
+            core = await maybe_phone_mac_act(
+                session,
+                device=device,
+                text=row.transcript,
+                idempotency_key=key,
+            )
+        spoken = str((core or {}).get("reply") or "").strip()
+        if spoken:
+            ev = dict(row.evidence or {})
+            ev["core_takeover"] = True
+            ev["core_reply"] = spoken[:800]
+            ev["core_route"] = str(core.get("route") or "")
+            row.evidence = ev
+            await session.flush()
+
     from app.everywhere.sync import emit_everywhere_event
 
     await emit_everywhere_event(
@@ -78,7 +99,8 @@ async def record_turn_receipt(
 
 
 def public_receipt(row: PhoneTurnReceipt, *, replayed: bool = False) -> dict[str, Any]:
-    return {
+    evidence = row.evidence if isinstance(row.evidence, dict) else {}
+    payload: dict[str, Any] = {
         "ok": True,
         "receipt_id": str(row.id),
         "idempotency_key": row.idempotency_key,
@@ -91,3 +113,8 @@ def public_receipt(row: PhoneTurnReceipt, *, replayed: bool = False) -> dict[str
         "kind": row.kind,
         "created_at": row.created_at.isoformat() if row.created_at else utcnow().isoformat(),
     }
+    if evidence.get("core_takeover") and evidence.get("core_reply"):
+        payload["core_takeover"] = True
+        payload["core_reply"] = str(evidence["core_reply"])
+        payload["core_route"] = str(evidence.get("core_route") or "")
+    return payload

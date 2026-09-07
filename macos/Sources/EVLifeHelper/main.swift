@@ -113,6 +113,14 @@ func hideProcess(_ name: String) {
     _ = try? runAppleScript(script)
 }
 
+func bundleIsRunning(_ bundleID: String) -> Bool {
+    NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first != nil
+}
+
+func quitBundle(_ bundleID: String) {
+    NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.terminate()
+}
+
 func openURLHeadless(_ url: URL) -> Bool {
     let config = NSWorkspace.OpenConfiguration()
     config.activates = false
@@ -126,6 +134,16 @@ func openURLHeadless(_ url: URL) -> Bool {
     }
     _ = sema.wait(timeout: .now() + 2.0)
     return opened
+}
+
+func digitsOnly(_ value: String) -> String {
+    value.filter(\.isNumber)
+}
+
+func queryEncode(_ value: String) -> String {
+    var allowed = CharacterSet.urlQueryAllowed
+    allowed.remove(charactersIn: "&+=")
+    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
 }
 
 func compileAppleScript(_ source: String) throws -> Bool {
@@ -185,6 +203,7 @@ guard arguments.count >= 2 else {
               contacts.update [--id <id>] [--query <name>] [--name <name>] [--phone <phone>] [--email <email>] [--company <company>]
               messages.list [--limit N]
               messages.send --to <buddy> --text <message> [--dry-run]
+              whatsapp.send --to <phone> --text <message>
               mail.list [--limit N]
               mail.send --to <email> --subject <subject> --body <body> [--dry-run]
               call.place --destination <number> [--kind tel|facetime]
@@ -296,43 +315,63 @@ case "messages.send":
         fail(.failed, "failed", "messages.send failed: \(error)")
     }
 
+case "whatsapp.send":
+    guard let recipient = argumentValue("--to"), !recipient.isEmpty else {
+        fail(.badArguments, "bad_arguments", "whatsapp.send requires --to")
+    }
+    guard let text = argumentValue("--text"), !text.isEmpty else {
+        fail(.badArguments, "bad_arguments", "whatsapp.send requires --text")
+    }
+    let phone = digitsOnly(recipient)
+    guard phone.count >= 8 else {
+        fail(.badArguments, "bad_arguments", "whatsapp.send --to must be a phone number")
+    }
+    let encoded = queryEncode(text)
+    let candidates = [
+        "whatsapp://send?phone=\(phone)&text=\(encoded)",
+        "https://wa.me/\(phone)?text=\(encoded)",
+    ]
+    var opened = false
+    launchBundleHeadless("net.whatsapp.WhatsApp")
+    for raw in candidates {
+        guard let url = URL(string: raw) else { continue }
+        if openURLHeadless(url) {
+            opened = true
+            break
+        }
+    }
+    hideProcess("WhatsApp")
+    if opened {
+        success([
+            "to": phone,
+            "channel": "whatsapp",
+            "opened": true,
+            "sent": false,
+            "headless": true,
+            "focus_stolen": false,
+            "system_ui": true,
+        ])
+    } else {
+        fail(
+            .notAvailable,
+            "not_available",
+            "whatsapp.send could not open WhatsApp without stealing focus"
+        )
+    }
+
 // MARK: - Mail
 
 case "mail.list":
     let limit = Int(argumentValue("--limit") ?? "10") ?? 10
-    do {
-        let script = """
-        tell application "Mail" to launch
-        tell application "Mail"
-            set n to count of messages of inbox
-            if n > \(limit) then set n to \(limit)
-            set out to ""
-            if n > 0 then
-                repeat with i from 1 to n
-                    set m to message i of inbox
-                    set out to out & (subject of m) & "|" & (sender of m) & "|" & ((date received of m) as string) & linefeed
-                end repeat
-            end if
-            return out
-        end tell
-        """
-        launchBundleHeadless("com.apple.mail")
-        let output = try runAppleScript(script)
-        hideProcess("Mail")
-        let messages = output
-            .split(separator: "\n", omittingEmptySubsequences: true)
-            .map { line -> [String: Any] in
-                let parts = line.split(separator: "|", maxSplits: 2, omittingEmptySubsequences: false)
-                return [
-                    "subject": parts.count > 0 ? String(parts[0]) : "",
-                    "sender": parts.count > 1 ? String(parts[1]) : "",
-                    "received": parts.count > 2 ? String(parts[2]) : "",
-                ]
-            }
-        success(["messages": messages])
-    } catch {
-        fail(.failed, "failed", "mail.list failed: \(error)")
+    let messages = try? listMail(limit: limit)
+    guard let messages else {
+        fail(
+            .failed,
+            "failed",
+            "mail.list failed (Full Disk Access or Mail Envelope Index unavailable)"
+        )
     }
+    success(["messages": messages, "headless": true, "focus_stolen": false])
 
 case "mail.send":
     guard let to = argumentValue("--to"), !to.isEmpty else {
@@ -344,7 +383,6 @@ case "mail.send":
     let body = argumentValue("--body") ?? ""
     do {
         let script = """
-        tell application "Mail" to launch
         tell application "Mail"
             set newMessage to make new outgoing message with properties {subject:"\(appleScriptEscape(subject))", content:"\(appleScriptEscape(body))", visible:false}
             tell newMessage
@@ -364,9 +402,16 @@ case "mail.send":
             _ = try compileAppleScript(script)
             success(["to": to, "subject": subject, "dry_run": true, "compiled": true, "headless": true])
         }
-        launchBundleHeadless("com.apple.mail")
+        let wasRunning = bundleIsRunning("com.apple.mail")
+        if !wasRunning {
+            launchBundleHeadless("com.apple.mail")
+        }
         _ = try runAppleScript(script)
-        hideProcess("Mail")
+        if wasRunning {
+            hideProcess("Mail")
+        } else {
+            quitBundle("com.apple.mail")
+        }
         success(["to": to, "subject": subject, "sent": true, "headless": true, "focus_stolen": false])
     } catch {
         fail(.failed, "failed", "mail.send failed: \(error)")
@@ -735,6 +780,81 @@ func listMessages(limit: Int) throws -> [[String: Any]] {
                 "date": ISO8601DateFormatter().string(from: date),
                 "text": String(parts[2]),
                 "handle": String(parts[3]),
+            ]
+        }
+}
+
+func mailEnvelopeIndexPath() -> String? {
+    let root = NSHomeDirectory() + "/Library/Mail"
+    let fm = FileManager.default
+    guard let names = try? fm.contentsOfDirectory(atPath: root) else { return nil }
+    let versions = names.compactMap { name -> (Int, String)? in
+        guard name.hasPrefix("V"), let number = Int(name.dropFirst()) else { return nil }
+        return (number, name)
+    }.sorted { $0.0 > $1.0 }
+    for (_, name) in versions {
+        let path = "\(root)/\(name)/MailData/Envelope Index"
+        if fm.isReadableFile(atPath: path) {
+            return path
+        }
+    }
+    return nil
+}
+
+func listMail(limit: Int) throws -> [[String: Any]] {
+    let mailRoot = NSHomeDirectory() + "/Library/Mail"
+    guard FileManager.default.fileExists(atPath: mailRoot) else {
+        fail(.notAvailable, "not_available", "Apple Mail data is not present on this Mac")
+    }
+    guard let dbPath = mailEnvelopeIndexPath() else {
+        fail(
+            .permissionDenied,
+            "permission_denied",
+            "Mail Envelope Index requires Full Disk Access. Grant EV in System Settings → Privacy & Security → Full Disk Access."
+        )
+    }
+    let sqlite = URL(fileURLWithPath: "/usr/bin/sqlite3")
+    guard FileManager.default.isExecutableFile(atPath: sqlite.path) else {
+        fail(.notAvailable, "not_available", "sqlite3 is not available on this system")
+    }
+    let cap = max(1, min(limit, 100))
+    let sql = """
+    SELECT replace(replace(COALESCE(s.subject, ''), char(9), ' '), char(10), ' '), \
+    CASE WHEN a.comment != '' THEN a.comment || ' <' || a.address || '>' ELSE COALESCE(a.address, '') END, \
+    m.date_received \
+    FROM messages m \
+    LEFT JOIN subjects s ON m.subject = s.ROWID \
+    LEFT JOIN addresses a ON m.sender = a.ROWID \
+    LEFT JOIN mailboxes mb ON m.mailbox = mb.ROWID \
+    WHERE m.deleted = 0 AND (mb.url LIKE '%/INBOX' OR mb.url LIKE '%/INBOX/') \
+    ORDER BY m.date_received DESC LIMIT \(cap);
+    """
+    let task = Process()
+    task.executableURL = sqlite
+    task.arguments = ["-readonly", "-separator", "\t", dbPath, sql]
+    let pipe = Pipe()
+    task.standardOutput = pipe
+    task.standardError = Pipe()
+    try task.run()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    task.waitUntilExit()
+    guard task.terminationStatus == 0,
+          let output = String(data: data, encoding: .utf8) else {
+        throw LifeError.failed("sqlite3 exit \(task.terminationStatus)")
+    }
+    return output
+        .split(separator: "\n", omittingEmptySubsequences: true)
+        .compactMap { line -> [String: Any]? in
+            let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count >= 3 else { return nil }
+            let raw = Double(parts[2]) ?? 0
+            let date = raw > 1_000_000_000
+                ? Date(timeIntervalSince1970: raw)
+                : Date(timeIntervalSinceReferenceDate: raw)
+            return [
+                "subject": String(parts[0]),
+                "sender": String(parts[1]),
+                "received": ISO8601DateFormatter().string(from: date),
             ]
         }
 }

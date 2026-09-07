@@ -44,7 +44,12 @@ from app.voice.live.layer import (
 )
 from app.voice.live.session import LiveSession
 from app.voice.live.turn_taking import TurnTakingConfig
-from app.voice.pipeline import PipelineOutcome, TtsChunk, stream_chat_tts_pipeline
+from app.voice.pipeline import (
+    PipelineOutcome,
+    TtsChunk,
+    device_playable_audio,
+    stream_chat_tts_pipeline,
+)
 from app.voice.tts import get_synthesizer
 
 logger = logging.getLogger("ev.voice.live.transport")
@@ -123,6 +128,15 @@ def make_pipeline_responder(
             ):
                 if kind == "tts_chunk" and isinstance(payload, TtsChunk):
                     audio = getattr(payload.tts, "audio", None)
+                    content_type = getattr(payload.tts, "content_type", None)
+                    if audio:
+                        # EV.app / iOS TTSPlayer reject MP3 containers, which
+                        # muted every Edge TTS reply in pipeline mode. The
+                        # live WS lane must always carry PCM WAV.
+                        converted = await device_playable_audio(audio)
+                        if converted is not audio:
+                            content_type = "audio/wav"
+                        audio = converted
                     audio_b64 = (
                         base64.b64encode(audio).decode("ascii")
                         if audio and len(audio) <= 1_500_000
@@ -134,7 +148,7 @@ def make_pipeline_responder(
                         text=payload.text,
                         audio_b64=audio_b64,
                         audio_ref=getattr(payload.tts, "audio_ref", None),
-                        content_type=getattr(payload.tts, "content_type", None),
+                        content_type=content_type,
                         duration_ms=getattr(payload.tts, "duration_ms", None),
                         provider=getattr(payload.tts, "provider", "tts"),
                     )
@@ -311,28 +325,34 @@ async def serve_live_websocket(
                     return
                 continue
             try:
-                payload = event.as_dict()
-                await asyncio.wait_for(
-                    websocket.send_json(payload), timeout=10.0
-                )
-            except TimeoutError:
-                logger.warning(
-                    "live send timed out; retrying the same event so speech is not dropped"
-                )
                 try:
+                    payload = event.as_dict()
                     await asyncio.wait_for(
                         websocket.send_json(payload), timeout=10.0
                     )
                 except TimeoutError:
-                    logger.warning("live send timed out twice; dropping this event")
-                    continue
+                    logger.warning(
+                        "live send timed out; retrying the same event so speech is not dropped"
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            websocket.send_json(payload), timeout=10.0
+                        )
+                    except TimeoutError:
+                        logger.warning("live send timed out twice; dropping this event")
+                        continue
+                    except (WebSocketDisconnect, RuntimeError):
+                        return
                 except (WebSocketDisconnect, RuntimeError):
                     return
-            except (WebSocketDisconnect, RuntimeError):
-                return
-            if getattr(event, "fatal", False):
-                live.close()
-                return
+                if getattr(event, "fatal", False):
+                    live.close()
+                    return
+            finally:
+                # Every get must be balanced even when a send retries, drops,
+                # or exits the loop. This keeps queue backpressure/diagnostic
+                # joins truthful during long voice sessions.
+                live.outbound.task_done()
 
     recv = asyncio.create_task(recv_loop(), name="ev-live-recv")
     tick = asyncio.create_task(tick_loop(), name="ev-live-tick")
@@ -859,6 +879,16 @@ def _grok_tool_runner(*, actor: str, device_id, live: LiveSession, sandbox: bool
                 result.error == "confirmation_required" or body.get("confirmation_required")
             ),
         }
+        if name == "look":
+            live.note_keep_look(arguments=args, body=body, transcript=transcript)
+            from app.memory.visual import kick_keep_identity_reread_from_look
+
+            kick_keep_identity_reread_from_look(
+                body,
+                arguments=args,
+                transcript=transcript,
+                actor=actor,
+            )
         return compact_live_tool_json(payload)
 
     return on_tool

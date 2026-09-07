@@ -76,6 +76,14 @@ class MemoryWriter:
 
             inherit_loop_identity(prev, candidate)
         if prev is not None and canonical_json(prev.payload) != canonical_json(candidate.payload):
+            from app.memory.visual import retain_visual_keep_identity
+
+            if retain_visual_keep_identity(
+                prev.payload, prev.text, candidate.payload, candidate.text
+            ):
+                await self._add_provenance(prev, event)
+                prev.updated_time = utcnow()
+                return WriteResult(str(prev.id), candidate.memory_type, "updated", prev.text)
             memory = await self._create_memory(event, candidate, prev=prev, reason="Value changed")
             prev.is_current = False
             prev.superseded_by_id = memory.id
@@ -230,6 +238,12 @@ class MemoryWriter:
             goal = normalize_text((payload.get("topic") or payload.get("goal") or "")[:80])
             return ("goal", goal) if goal else None
         if memory_type == "fact":
+            if (payload or {}).get("kind") == "visual_keep":
+                from app.memory.visual import visual_keep_semantic_key
+
+                keep_key = visual_keep_semantic_key(payload)
+                if keep_key is not None:
+                    return keep_key
             subject = normalize_text((payload.get("subject") or "")[:80])
             prop = normalize_text((payload.get("property") or "")[:80])
             return ("fact", subject, prop) if subject and prop else None

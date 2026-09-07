@@ -189,12 +189,17 @@ def test_live_realtime_prefers_openai_when_both_keys(monkeypatch) -> None:
     monkeypatch.setattr(settings, "voice_live_brain", "auto")
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     monkeypatch.setattr(settings, "xai_api_key", "xai-test")
+    monkeypatch.setattr(settings, "chat_provider", "xai")
+    monkeypatch.setattr(settings, "intelligence_provider", "")
+    monkeypatch.setattr(settings, "voice_asr_provider", "echo")
     assert live_realtime_provider() == "openai"
     monkeypatch.setattr(settings, "voice_live_brain", "xai")
     assert live_realtime_provider() == "xai"
     monkeypatch.setattr(settings, "voice_live_brain", "openai")
     monkeypatch.setattr(settings, "openai_api_key", "")
     assert live_realtime_provider() is None
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    assert live_realtime_provider() == "openai"
 
 
 def test_openai_realtime_url_pins_mini() -> None:

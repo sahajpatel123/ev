@@ -2,8 +2,9 @@
 
 The realtime voice model is not the editor. It states a file goal; this
 module (and MacControlService.file_op) touches the disk. Intelligent edits
-use GPT-5.6 Luna, then DeepSeek. The sandbox jail is a different path and
-never substitutes for the owner's Desktop/Documents/Downloads.
+use Muse Spark when it is the configured brain. OpenAI Luna then DeepSeek
+remain legacy-only. The sandbox jail is a different path and never
+substitutes for the owner's Desktop/Documents/Downloads.
 """
 
 from __future__ import annotations
@@ -69,6 +70,8 @@ FOLDER_ALIASES = {
     "photos": "Pictures",
     "music": "Music",
     "code": "Code",
+    "icloud": "Library/Mobile Documents/com~apple~CloudDocs",
+    "icloud drive": "Library/Mobile Documents/com~apple~CloudDocs",
 }
 DENY_PARTS = frozenset(
     {
@@ -107,11 +110,12 @@ APP_STEAL = re.compile(
 )
 FILE_CUE = re.compile(
     r"(?:"
-    r"\b(?:desktop|desk|downloads?)\b|"
+    r"\b(?:desktop|downloads?)\b|"
     r"\bdocuments?\s+folder\b|"
     r"\b(?:in|into|to|on)\s+(?:my\s+|the\s+)?documents\b|"
-    r"on\s+(?:my\s+)?(?:the\s+)?(?:desk(?:top)?|desktop)|"
-    r"files? (?:on|in|from) (?:my )?(?:the )?(?:desk(?:top)?|desktop|documents|downloads)|"
+    r"on\s+(?:my\s+|the\s+)?(?:desk(?:top)?|desktop)|"
+    r"files? (?:on|in|from) (?:my )?(?:the )?(?:desk(?:top)?|desktop|documents|downloads|icloud)|"
+    r"\bicloud drive\b|"
     r"\blocal files?\b|"
     r"~/|"
     r"\.(?:txt|md|markdown|json|csv|py|swift|js|ts|html|htm|css|yml|yaml|log|sh|pdf|png|jpg|jpeg)\b"
@@ -143,11 +147,11 @@ REPLACE_RE = re.compile(
     re.I,
 )
 FOLDER_RE = re.compile(
-    r"\b(?:on|in|into|to|inside)\s+(?:my\s+|the\s+)?(desk(?:top)?|desktop|documents|docs|downloads?|movies|pictures|photos|code)\b",
+    r"\b(?:on|in|into|to|inside)\s+(?:my\s+|the\s+)?(icloud(?:\s+drive)?|desk(?:top)?|desktop|documents|docs|downloads?|movies|pictures|photos|code)\b",
     re.I,
 )
 DEST_FOLDER_RE = re.compile(
-    r"\b(?:to|into)\s+(?:my\s+|the\s+)?(desk(?:top)?|desktop|documents|docs|downloads?|movies|pictures|photos|code)\b",
+    r"\b(?:to|into)\s+(?:my\s+|the\s+)?(icloud(?:\s+drive)?|desk(?:top)?|desktop|documents|docs|downloads?|movies|pictures|photos|code)\b",
     re.I,
 )
 RENAME_TO_RE = re.compile(
@@ -156,7 +160,7 @@ RENAME_TO_RE = re.compile(
 )
 FILE_FOLLOWUP_RE = re.compile(
     r"(?:(?:can|could)\s+you\s+|please\s+)?"
-    r"(?:"
+    r"\b(?:"
     r"read\s+(?:it|that|this)|"
     r"open\s+(?:it|that|this)|"
     r"what(?:'s|s| is) (?:in|inside) (?:it|that|this)|"
@@ -168,8 +172,7 @@ FILE_FOLLOWUP_RE = re.compile(
     r"append\s+(?:to\s+)?(?:it|that|this)|"
     r"rename\s+(?:it|that|this)|"
     r"(?:copy|duplicate|move)\s+(?:it|that|this)|"
-    r"(?:run|execute)\s+(?:it|that|this)|"
-    r"(?:delete|remove|trash)\s+(?:it|that|this|the file|the note)"
+    r"(?:run|execute)\s+(?:it|that|this)"
     r")\b",
     re.I,
 )
@@ -217,12 +220,20 @@ RUN_FILE_RE = re.compile(
 )
 CONTENT_MUTATE_RE = re.compile(
     r"\b(?:"
-    r"delete everything|remove everything|keep (?:just |only )|just keep|"
+    r"delete everything|remove everything|"
+    r"keep (?:just |only )|just keep (?:the |only )|"
     r"keep(?:ing)? (?:just |only )|leave(?:ing)? (?:just |only )|"
-    r"except |clear (?:it|that|this|the file)|wipe (?:it|that|this)|"
-    r"empty (?:it|the file|the note)|rewrite |replace |"
-    r"delete|remove|erase|trash"
+    r"clear (?:it|that|this|the file)|wipe (?:it|that|this)|"
+    r"empty (?:it|the file|the note)|rewrite (?:it|that|this)|replace everything"
     r")\b",
+    re.I,
+)
+DROP_NOT_FILE_RE = re.compile(
+    r"\b(?:from my|from the|calendar|reminder|email|message|inbox|alarm|event)\b",
+    re.I,
+)
+JUST_KEEP_CHAT_RE = re.compile(
+    r"\bjust keep (?:going|doing|trying|talking|it up)\b",
     re.I,
 )
 RUNNABLE_SUFFIXES = {
@@ -232,7 +243,7 @@ RUNNABLE_SUFFIXES = {
     ".rb": ("ruby",),
 }
 NOTE_CREATE_RE = re.compile(
-    r"\b(?:drop|leave|create|write|jot|make|put)\s+(?:down\s+)?(?:a\s+|the\s+|new\s+)?note\b",
+    r"\b(?:drop|leave|create|write|jot|make|put|add)\s+(?:down\s+)?(?:a\s+|the\s+|new\s+)?note\b",
     re.I,
 )
 KIND_RE = re.compile(
@@ -317,6 +328,9 @@ def allowed_roots() -> list[Path]:
         elif name in {"Desktop", "Documents", "Downloads"}:
             path.mkdir(parents=True, exist_ok=True)
             roots.append(path.resolve())
+    icloud = (home / "Library/Mobile Documents/com~apple~CloudDocs").resolve()
+    if icloud.exists() and icloud.is_dir():
+        roots.append(icloud)
     return roots
 
 
@@ -386,7 +400,12 @@ WRITE_ON_RE = re.compile(
 def normalize_file_utterance(text: str) -> str:
     raw = (text or "").strip()
     raw = re.sub(r"\bdesk\s+top\b", "desktop", raw, flags=re.I)
-    raw = re.sub(r"\b(?:my\s+|the\s+)?desk\b(?!\s*top)", "desktop", raw, flags=re.I)
+    raw = re.sub(
+        r"\bon\s+(?:my\s+|the\s+)?desk\b(?!\s*top)",
+        "on desktop",
+        raw,
+        flags=re.I,
+    )
     raw = re.sub(r"\bdownload folder\b", "downloads", raw, flags=re.I)
     raw = re.sub(r"\bdot\s+(txt|md|json|csv|py|html|pdf)\b", r".\1", raw, flags=re.I)
     return raw
@@ -399,9 +418,211 @@ def is_system_confirmation(text: str) -> bool:
     return bool(CONFIRMATION_RE.search(raw))
 
 
-def looks_like_file_followup(text: str, last_path: str | None = None) -> bool:
+def _has_file_referent(last_path: str | None = None) -> bool:
+    if str(last_path or "").strip():
+        return True
     from app.ev.desk_scene import referent_file_path, scene_is_live
 
+    return scene_is_live() or referent_file_path() is not None
+
+
+_APPEND_ADD_RE = re.compile(
+    r"\b(?:add|append|include|put|jot(?:\s+down)?|stick|throw|toss|plus)\b",
+    re.I,
+)
+_APPEND_ALSO_RE = re.compile(r"^(?:and\s+)?(?:also|plus)\b", re.I)
+_APPEND_QUANT_RE = re.compile(
+    r"\b(?:\d+|two|three|four|five|six|seven|eight|nine|ten|"
+    r"a couple(?: of)?|a few|some)\s+(?:more\s+)?(?:things?|items?|lines?|entries|bits)\b",
+    re.I,
+)
+_APPEND_POLITE_RE = re.compile(
+    r"^(?:please\s+|can you\s+|could you\s+|would you\s+)?",
+    re.I,
+)
+_APPEND_DEST_TAIL_RE = re.compile(
+    r"(?:"
+    r"\s+to\s+(?:it|that|this|the (?:file|note|list))"
+    r"|\s+on\s+(?:there|it|(?:the |my )?(?:list|note|file))"
+    r"|\s+as well|\s+too|\s+underneath|\s+below|\s+under (?:it|that)"
+    r")+$",
+    re.I,
+)
+_APPEND_FRAME_RE = re.compile(
+    r"^(?:add|append|include|put|jot(?:\s+down)?|stick|throw|toss|plus|also(?:\s+add)?)\s+"
+    r"(?:(?:\d+|two|three|four|five|six|seven|eight|nine|ten|a couple(?: of)?|a few|some)\s+)?"
+    r"(?:more\s+)?"
+    r"(?:things?|items?|lines?|entries|bits)?"
+    r"[,:]?\s*"
+    r"(?:the (?:text|line|words?)\s+)?"
+    r"(.+)$",
+    re.I,
+)
+_APPEND_SKIP_ITEMS = frozenset(
+    {
+        "things",
+        "thing",
+        "items",
+        "item",
+        "more",
+        "it",
+        "that",
+        "this",
+        "them",
+        "stuff",
+        "some",
+        "few",
+        "couple",
+        "lines",
+        "line",
+        "entries",
+        "entry",
+        "bits",
+        "bit",
+        "note",
+        "file",
+        "list",
+    }
+)
+_APPEND_FOREIGN_DEST_RE = re.compile(
+    r"\b(?:calendar|reminder|email|message|inbox|alarm|event|timer)\b",
+    re.I,
+)
+
+
+def _is_new_file_write(raw: str) -> bool:
+    if NOTE_CREATE_RE.search(raw) and not re.search(
+        r"\bin\s+(?:the\s+)?notes?\s+app\b", raw, re.I
+    ):
+        return True
+    if FILE_CUE.search(raw) and re.search(
+        r"\b(?:write|create|save|make|drop|leave|dump)\b", raw, re.I
+    ):
+        return True
+    return False
+
+
+def _split_list_items(payload: str) -> list[str]:
+    blob = _spoken_file_body(payload)
+    if not blob:
+        return []
+    blob = re.sub(r"\s+(?:and|then|&)\s+", ",", blob, flags=re.I)
+    out: list[str] = []
+    for part in blob.split(","):
+        item = part.strip(" .,'\"")
+        if not item or len(item) > 80:
+            continue
+        if item.lower() in _APPEND_SKIP_ITEMS:
+            continue
+        if re.search(r"\b(?:i|i'm|im|we|you|because|should)\b", item, re.I):
+            continue
+        out.append(item)
+    return out
+
+
+def extract_append_items(text: str) -> list[str]:
+    """Pull addable items from a follow-up. Meaning, not a canned phrase."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    if _is_new_file_write(raw) or _APPEND_FOREIGN_DEST_RE.search(raw):
+        return []
+    from app.ev.desk_acts import UNDO_RE
+
+    if UNDO_RE.search(raw):
+        return []
+    if re.match(r"^\s*(?:i|i'm|im|we|you)\b", raw, re.I):
+        return []
+    from app.ev.desk_scene import BELONGS_RE, LAND_NAME, OTHER_RE, PACKET_PUT_RE
+
+    if BELONGS_RE.search(raw) or OTHER_RE.search(raw):
+        return []
+    if PACKET_PUT_RE.search(raw) and (
+        "packet" in raw.lower() or "visa" in raw.lower() or LAND_NAME.search(raw)
+    ):
+        return []
+    has_intent = bool(
+        _APPEND_ADD_RE.search(raw) or _APPEND_ALSO_RE.search(raw) or _APPEND_QUANT_RE.search(raw)
+    )
+    if not has_intent:
+        from app.ev.desk_presence import extract_bare_list_items
+
+        return extract_bare_list_items(raw)
+    body = _APPEND_POLITE_RE.sub("", raw).strip()
+    body = _APPEND_DEST_TAIL_RE.sub("", body).strip()
+    match = _APPEND_FRAME_RE.search(body)
+    payload = match.group(1).strip() if match else ""
+    if not payload and _APPEND_ALSO_RE.search(body):
+        payload = re.sub(r"^(?:and\s+)?(?:also|plus)(?:\s+add)?\s+", "", body, flags=re.I)
+    if not payload and _APPEND_QUANT_RE.search(body):
+        payload = _APPEND_QUANT_RE.sub("", body, count=1).strip(" :,")
+    items = _split_list_items(payload)
+    return items
+
+
+def parse_referent_append(
+    text: str, last_path: str | None = None
+) -> dict[str, Any] | None:
+    """Append extracted items to the live note/file, if this turn means that."""
+
+    raw = normalize_file_utterance(text)
+    if not raw or is_system_confirmation(raw):
+        return None
+    items = extract_append_items(raw)
+    if not items:
+        return None
+    from app.ev.desk_acts import maybe_ambiguous_append
+
+    asked = maybe_ambiguous_append(raw, items)
+    if asked is not None:
+        return asked
+    from app.ev.desk_scene import last_note_object, referent_file_path
+
+    found = referent_file_path(last_path)
+    note = last_note_object()
+    note_path = None
+    if note is not None:
+        from app.ev.desk_scene import _live_path
+
+        note_path = _live_path(note)
+    if found is not None and found.suffix.lower() not in TEXT_EXTENSIONS and note_path is not None:
+        found = note_path
+    elif found is None:
+        found = note_path
+    if found is None:
+        return None
+    return {
+        "action": "append",
+        "path": str(found),
+        "query": found.name,
+        "content": "\n".join(items),
+        "items": items,
+        "receipt": "append",
+        "goal": raw,
+    }
+
+
+def _drop_line_followup(raw: str) -> bool:
+    if DROP_NOT_FILE_RE.search(raw):
+        return False
+    match = DROP_ITEM_RE.search(raw)
+    if not match:
+        return False
+    from app.ev.desk_meaning import strip_reason_clause
+
+    body = strip_reason_clause(re.sub(r"[.!?]+$", "", (match.group(1) or "").strip(" \"'")))
+    if not body or len(body) > 80:
+        return False
+    words = body.split()
+    if not words or len(words) > 8:
+        return False
+    if words[0].lower() in {"i", "i'm", "im", "we", "you", "he", "she", "they"}:
+        return False
+    return bool(re.match(r"^[A-Za-z0-9][\w'+\-]*(?:\s+[A-Za-z0-9][\w'+\-]*){0,7}$", body))
+
+
+def looks_like_file_followup(text: str, last_path: str | None = None) -> bool:
     raw = normalize_file_utterance(text)
     if not raw or is_system_confirmation(raw):
         return False
@@ -409,15 +630,21 @@ def looks_like_file_followup(text: str, last_path: str | None = None) -> bool:
     # wired. Sending it to inspect_ui/click is the Talk retry loop.
     if ADD_TO_DEIXIS_RE.search(raw):
         return True
-    if not last_path and not scene_is_live() and referent_file_path() is None:
-        return False
-    if FILE_FOLLOWUP_RE.search(raw) or CONTENT_MUTATE_RE.search(raw) or RUN_FILE_RE.search(raw):
+    if parse_referent_append(raw, last_path) is not None:
         return True
-    if KEEP_ONLY_RE.search(raw) or CLEAR_RE.search(raw) or FILE_DELETE_RE.search(raw):
-        return True
-    from app.ev.desk_names import BIND_RE
+    from app.ev.desk_acts import looks_like_desk_file_act
 
-    if BIND_RE.search(raw):
+    if looks_like_desk_file_act(raw, last_path):
+        return True
+    if not _has_file_referent(last_path):
+        return False
+    if FILE_FOLLOWUP_RE.search(raw) or RUN_FILE_RE.search(raw):
+        return True
+    if CONTENT_MUTATE_RE.search(raw) or CLEAR_RE.search(raw) or FILE_DELETE_RE.search(raw):
+        return True
+    if KEEP_ONLY_RE.search(raw) and not JUST_KEEP_CHAT_RE.search(raw):
+        return True
+    if _drop_line_followup(raw):
         return True
     if REPLACE_RE.search(raw):
         from app.ev.luna_code import looks_like_code_request
@@ -431,6 +658,15 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
     if not raw or is_system_confirmation(raw):
         return False
     if looks_like_file_followup(raw, last_path=last_path):
+        return True
+    from app.ev.desk_acts import looks_like_desk_file_act
+    from app.ev.desk_meaning import looks_like_desk_job, spark_desk_candidate
+
+    if (
+        looks_like_desk_file_act(raw, last_path)
+        or looks_like_desk_job(raw)
+        or spark_desk_candidate(raw)
+    ):
         return True
     from app.ev.luna_code import looks_like_code_request
 
@@ -451,13 +687,17 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
         resolve_spoken_object(raw) is not None and raw
     )
     if named and (
-        FILE_VERBS.search(raw)
-        or re.search(
-            r"\b(?:add|append|what's on|what is on|what's in|what is in|packet|"
-            r"delete|remove|keep|clear|run|execute|trash)\b",
+        re.search(
+            r"\b(?:add|append|what's on|what is on|what's in|what is in|"
+            r"read|open|pull up|packet)\b",
             raw,
             re.I,
         )
+        or FILE_FOLLOWUP_RE.search(raw)
+        or KEEP_ONLY_RE.search(raw)
+        or FILE_DELETE_RE.search(raw)
+        or CONTENT_MUTATE_RE.search(raw)
+        or _drop_line_followup(raw)
     ):
         return True
     if WEB_STEAL_RE.search(raw) and not FILE_CUE.search(raw):
@@ -512,6 +752,7 @@ def parse_file_goal(
         or KEEP_ONLY_RE.search(raw)
         or RUN_FILE_RE.search(raw)
         or FILE_DELETE_RE.search(raw)
+        or _drop_line_followup(raw)
     ):
         from app.ev.desk_scene import referent_file_path
 
@@ -564,7 +805,9 @@ def parse_file_goal(
             "path": str(named[0]),
             "query": named[0].name,
             "content": added,
+            "items": _split_list_items(added),
             "instruction": raw,
+            "receipt": "append",
             "goal": raw,
         }
     if named is not None and re.search(
@@ -583,12 +826,21 @@ def parse_file_goal(
             "query": named[1],
             "goal": raw,
         }
+    from app.ev.desk_acts import parse_desk_file_goal
+
+    desk_goal = parse_desk_file_goal(raw, last_path)
+    if desk_goal is not None:
+        return desk_goal
+    appended = parse_referent_append(raw, last_path)
+    if appended is not None and not _is_new_file_write(raw):
+        return appended
     if last_path and not name and (
         FILE_FOLLOWUP_RE.search(raw)
         or CONTENT_MUTATE_RE.search(raw)
         or KEEP_ONLY_RE.search(raw)
         or RUN_FILE_RE.search(raw)
         or FILE_DELETE_RE.search(raw)
+        or _drop_line_followup(raw)
     ):
         last = Path(last_path)
         if last.name and last.name != ".":
@@ -597,16 +849,17 @@ def parse_file_goal(
             folder = str(last.parent)
     content, instruction = _content_and_instruction(raw, name)
     if not name and folder and re.search(
-        r"\b(?:write|create|save|make|put|jot|drop|leave|dump)\b", lowered
+        r"\b(?:write|create|save|make|put|jot|drop|leave|dump|add)\b", lowered
     ) and not kind and not re.search(
         r"\b(?:list|what's on|what is on|show files|files on|find|search|rename|copy|move)\b",
         lowered,
     ):
         name = DEFAULT_WRITE_NAME
-    if not folder and NOTE_CREATE_RE.search(raw) and not re.search(
+    if NOTE_CREATE_RE.search(raw) and not re.search(
         r"\bin\s+(?:the\s+)?notes?\s+app\b", raw, re.I
     ):
-        folder = _alias_folder("desktop")
+        if not folder:
+            folder = _alias_folder("desktop")
         if not name:
             name = DEFAULT_WRITE_NAME
     name = _with_text_suffix(name) if name and not kind else name
@@ -728,8 +981,10 @@ def parse_file_goal(
             if added:
                 payload["content"] = added
         return payload
-    if re.search(r"\b(?:write|create|save|make|put|jot|drop|leave|dump)\b", lowered) and (
+    if re.search(r"\b(?:write|create|save|make|put|jot|drop|leave|dump|add)\b", lowered) and (
         name or folder
+    ) and not (
+        looks_like_file_followup(raw, last_path=last_path) and not _is_new_file_write(raw)
     ):
         payload = {
             "action": "write",
@@ -787,7 +1042,7 @@ def parse_file_goal(
 def _folder_from_text(text: str) -> str:
     override = str(getattr(settings, "laptop_files_root", None) or "").strip()
     source = re.search(
-        r"\b(?:on|in|inside)\s+(?:my\s+|the\s+)?(desk(?:top)?|desktop|documents|docs|downloads?|movies|pictures|photos|code)\b",
+        r"\b(?:on|in|inside)\s+(?:my\s+|the\s+)?(icloud(?:\s+drive)?|desk(?:top)?|desktop|documents|docs|downloads?|movies|pictures|photos|code)\b",
         text,
         re.I,
     )
@@ -1346,6 +1601,8 @@ def prepare_file_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
         "confirm_land",
         "scene_other",
         "scene_turns",
+        "ask_which",
+        "undo",
     } or not action:
         return args
     if action == "write":
@@ -1354,6 +1611,8 @@ def prepare_file_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
             query,
             unique_default=not bool(args.get("overwrite")),
         )
+        if dest is not None and args.get("unique_name") and dest.exists() and not args.get("overwrite"):
+            dest = _unique_path(dest)
         if dest is not None:
             args["path"] = str(dest)
             args["query"] = dest.name
@@ -1929,11 +2188,22 @@ def apply_simple_edit(current: str, instruction: str) -> str | None:
             return pattern.sub(new, body)
     dropped = DROP_ITEM_RE.search(text)
     if dropped and not KEEP_ONLY_RE.search(text) and not FILE_DELETE_RE.search(text):
-        token = _mutation_token(dropped.group(1))
-        if token and token.lower() not in {"everything", "all", "the rest", "it", "that", "this"}:
-            edited = _drop_token_lines(body, token)
-            if edited is not None:
-                return edited
+        from app.ev.desk_meaning import strip_reason_clause
+
+        blob = strip_reason_clause(dropped.group(1) or "")
+        parts = [part.strip() for part in re.split(r"\s*(?:,\s*(?:and\s+)?|\s+and\s+)\s*", blob) if part.strip()]
+        tokens = [_mutation_token(part) for part in (parts or [blob])]
+        edited = body
+        changed = False
+        for token in tokens:
+            if not token or token.lower() in {"everything", "all", "the rest", "it", "that", "this"}:
+                continue
+            nxt = _drop_token_lines(edited, token)
+            if nxt is not None:
+                edited = nxt
+                changed = True
+        if changed:
+            return edited
     if re.search(r"\b(?:append|add)\b", text, re.I):
         addition = SAYS_RE.search(text)
         extra = addition.group(1).strip(" \"'") if addition else text
@@ -2011,15 +2281,38 @@ async def plan_file_content(
     current: str,
     instruction: str,
     content: str,
+    label: str = "",
+    receipt: str = "",
 ) -> tuple[str, str]:
     """Return (new_content, intelligence_source)."""
 
     if action == "write":
-        if content:
-            return content, "literal"
+        from app.ev.desk_meaning import is_kind_echo, resolve_write_body
+
+        body, source, _items = await resolve_write_body(
+            instruction,
+            proposed=content,
+            label=label,
+            receipt=receipt,
+        )
+        if source in {"inventory", "spark"}:
+            return body, source
+        if source == "empty":
+            from app.ev.desk_meaning import leftover_needs_model
+
+            if leftover_needs_model(instruction, [], label=label) and _has_substance(instruction):
+                drafted, intel = await _intelligent_rewrite("", instruction, create=True)
+                if drafted and not is_kind_echo(drafted, label):
+                    return drafted, intel
+            return body, "empty"
+        if body and not is_kind_echo(body, label):
+            return body, source or "literal"
         if instruction and _has_substance(instruction) and not _is_naming_only(instruction):
-            drafted, source = await _intelligent_rewrite("", instruction, create=True)
-            return drafted, source
+            drafted, intel = await _intelligent_rewrite("", instruction, create=True)
+            if drafted and not is_kind_echo(drafted, label):
+                return drafted, intel
+        if receipt in {"named_list", "dated_note"}:
+            return "", "empty"
         return "Note from Evie.\n", "literal"
     if action == "append" and content:
         prefix = current if current.endswith("\n") or not current else current + "\n"
@@ -2032,17 +2325,67 @@ async def plan_file_content(
 
 
 async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) -> tuple[str, str]:
-    prompt = (
-        "Create a new local text file for the owner. Return JSON "
-        '{"content":"..."} with the full file body only.\n'
-        f"Instruction: {instruction[:4000]}"
-        if create
-        else (
+    from app.ev.desk_meaning import wants_generated_contents
+
+    if create and wants_generated_contents(instruction, []):
+        prompt = (
+            "Create a new local text file for the owner. Return JSON "
+            '{"content":"..."} with the full file body only. They asked you to '
+            "propose the contents for a situation or kind of list and did not "
+            "enumerate the lines. The situation (a flight, interview, trip) is "
+            "why the list exists, not a line in it. Write 6-12 concrete real-world "
+            "items, one per line — never the occasion phrase, never the list kind "
+            "or title, never the filename, and never the folder "
+            "(desktop/documents).\n"
+            f"Instruction: {instruction[:4000]}"
+        )
+    elif create:
+        prompt = (
+            "Create a new local text file for the owner. Return JSON "
+            '{"content":"..."} with the full file body only. Write the named '
+            "items, tasks, or note text — never the list kind or title, never "
+            "the filename, and never the folder (desktop/documents). "
+            "If they named no contents, return {\"content\":\"\"}.\n"
+            f"Instruction: {instruction[:4000]}"
+        )
+    else:
+        prompt = (
             "Edit this local text file. Apply the instruction. Return JSON "
             '{"content":"..."} with the FULL new file body, not a patch.\n'
             f"Instruction: {instruction[:2000]}\n---\nCURRENT FILE:\n{current[:MAX_FILE_BYTES]}"
         )
+    from app.gateway.muse import (
+        MuseProviderUnavailable,
+        muse_intelligence_active,
+        muse_spark_key_loaded,
     )
+
+    spark_lane = muse_intelligence_active() or muse_spark_key_loaded()
+    if spark_lane:
+        if not muse_spark_key_loaded():
+            raise RuntimeError("file_intelligence_unavailable")
+        try:
+            from app.contracts import ChatMessage
+            from app.gateway.muse import muse_spark_model
+            from app.gateway.muse_spark import muse_spark_provider
+
+            result = await muse_spark_provider().chat(
+                [
+                    ChatMessage(
+                        role="system",
+                        content='You edit local files for Evie. Reply with JSON {"content": "..."} only.',
+                    ),
+                    ChatMessage(role="user", content=prompt),
+                ],
+                model=muse_spark_model(),
+            )
+        except MuseProviderUnavailable as exc:
+            raise RuntimeError("file_intelligence_unavailable") from exc
+        parsed = _parse_content_json(result.text or "")
+        if parsed is None:
+            raise RuntimeError("file_intelligence_unavailable")
+        return parsed, "spark"
+
     luna = await _call_chat_model(
         provider="openai",
         model=(getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-5.6-luna",
@@ -2077,6 +2420,9 @@ async def _call_chat_model(
 ) -> str | None:
     if not api_key or not model:
         return None
+    from app.gateway.muse import refuse_legacy_cloud_brain
+
+    refuse_legacy_cloud_brain(provider)
     import httpx
 
     models = [model]
@@ -2135,6 +2481,156 @@ def _parse_content_json(raw: str) -> str | None:
     return None
 
 
+def _file_spoken_receipt(
+    args: dict[str, Any], result: dict[str, Any], original_action: str
+) -> str | None:
+    if original_action not in {"append", "edit", "write", "checkoff", "undo", "drop"}:
+        return None
+    from app.ev.desk_acts import spoken_receipt
+
+    items = [str(item).strip() for item in (args.get("items") or []) if str(item).strip()]
+    if not items:
+        items = _receipt_items_from_bodies(
+            str(args.get("_before") or ""),
+            str(args.get("content") or result.get("content") or ""),
+        )
+    instruction = str(args.get("instruction") or args.get("goal") or "")
+    receipt = str(args.get("receipt") or original_action)
+    name = Path(str(result.get("path") or args.get("path") or "")).name
+    if original_action == "edit":
+        keep = KEEP_ONLY_RE.search(instruction)
+        if keep:
+            token = _mutation_token(next((group for group in keep.groups() if group), ""))
+            if token:
+                spoken = spoken_receipt(action="keep_only", items=[token])
+                if spoken:
+                    return spoken
+        dropped = DROP_ITEM_RE.search(instruction)
+        if (
+            dropped
+            and not FILE_DELETE_RE.search(instruction)
+            and not KEEP_ONLY_RE.search(instruction)
+        ):
+            token = _mutation_token(dropped.group(1))
+            if token and token.lower() not in {"everything", "all", "the rest", "it", "that", "this"}:
+                spoken = spoken_receipt(action="drop", items=[token])
+                if spoken:
+                    return spoken
+        return f"Updated {name}." if name else None
+    if original_action == "drop" and items:
+        spoken = spoken_receipt(action="drop", items=items)
+        if spoken:
+            return spoken
+        return f"Updated {name}." if name else None
+    if original_action == "append":
+        spoken = spoken_receipt(action="append", items=items, name=name)
+        return spoken if items else (f"Added that to {name}." if name else None)
+    if original_action == "write" and receipt in {"named_list", "dated_note"}:
+        return spoken_receipt(
+            action=receipt,
+            items=items,
+            name=name,
+            label=str(args.get("label") or ""),
+            when_label=str(args.get("when_label") or ""),
+            instruction=instruction,
+            preview=str(args.get("content") or "")[:160],
+        )
+    if original_action == "write":
+        spoken = spoken_receipt(
+            action="write_note",
+            items=items,
+            name=name,
+            label=str(args.get("label") or ""),
+        )
+        if spoken:
+            return spoken
+        preview = str(args.get("content") or result.get("content") or "").strip()
+        first = next((line.strip() for line in preview.splitlines() if line.strip()), "")
+        first = re.sub(r"^[\-\*\d\.\)\s]+", "", first).strip()
+        first = re.sub(r"^\[x\]\s*", "", first, flags=re.I).strip()
+        if first and not re.match(r"^note from evie\.?$", first, re.I):
+            return spoken_receipt(
+                action="write_note",
+                items=[first[:80]],
+                name=name,
+                label=str(args.get("label") or ""),
+            )
+        return None
+    return spoken_receipt(
+        action=receipt,
+        items=items,
+        name=name,
+        label=str(args.get("label") or ""),
+        when_label=str(args.get("when_label") or ""),
+        instruction=instruction,
+        preview=str(args.get("content") or "")[:160],
+    )
+
+
+def _receipt_items_from_bodies(before: str, after: str) -> list[str]:
+    old = {line.strip() for line in (before or "").splitlines() if line.strip()}
+    out: list[str] = []
+    for line in (after or "").replace("\r\n", "\n").splitlines():
+        token = line.strip()
+        if not token or token in old:
+            continue
+        if re.match(r"^note from evie\.?$", token, re.I):
+            continue
+        cleaned = re.sub(r"^[\-\*\d\.\)\s]+", "", token).strip()
+        cleaned = re.sub(r"^\[x\]\s*", "", cleaned, flags=re.I).strip()
+        if cleaned:
+            out.append(cleaned)
+        if len(out) >= 12:
+            break
+    return out
+
+
+async def _run_undo(args: dict[str, Any]) -> dict[str, Any]:
+    from app.ev.desk_scene import forget_file, last_mutating_entry, remember_file, record_mutation
+
+    entry = last_mutating_entry()
+    if entry is None:
+        return _fail("not_found", "There's nothing to undo on the desk.")
+    path = Path(str(entry.get("path") or args.get("path") or "")).expanduser()
+    denied = path_denied(path)
+    if denied:
+        return _fail(denied, "I won't touch that path.")
+    before = str(entry.get("before") or "")
+    current = ""
+    try:
+        if path.is_file():
+            current = path.read_text(encoding="utf-8")
+    except OSError:
+        current = ""
+    previous = str(entry.get("action") or "")
+    created = previous == "write" and not before.strip()
+    if created and path.is_file():
+        try:
+            path.unlink()
+        except OSError as exc:
+            return _fail("undo_failed", f"I couldn't put that back. {type(exc).__name__}")
+        forget_file(path)
+        record_mutation(path, action="undo", before=current)
+        return {
+            "ok": True,
+            "executed": True,
+            "verified": not path.exists(),
+            "action": "undo",
+            "path": str(path),
+            "spoken": "Put it back.",
+            "source": "desk_acts",
+        }
+    result = _write_file(path, before, spoken="Put it back.")
+    if result.get("ok"):
+        remember_file(path, source="undo", before=current, content=before)
+        result["action"] = "undo"
+        result["spoken"] = "Put it back."
+        from app.ev.desk_scene import set_last_spoken
+
+        set_last_spoken("Put it back.")
+    return result
+
+
 async def run_file_goal(
     arguments: dict[str, Any],
     *,
@@ -2153,6 +2649,31 @@ async def run_file_goal(
     scene_result = await run_scene_action(args)
     if scene_result is not None:
         return scene_result
+    if original_action == "ask_which":
+        from app.ev.desk_scene import set_pending_choice
+
+        set_pending_choice(
+            {
+                "kind": "append",
+                "items": list(args.get("items") or []),
+                "candidates": list(args.get("candidates") or []),
+                "goal": str(args.get("goal") or ""),
+            }
+        )
+        spoken = str(args.get("spoken") or "Which note did you mean?")
+        from app.ev.desk_scene import set_last_spoken
+
+        set_last_spoken(spoken)
+        return {
+            "ok": True,
+            "executed": True,
+            "verified": True,
+            "action": "ask_which",
+            "spoken": spoken,
+            "source": "desk_acts",
+        }
+    if original_action == "undo":
+        return await _run_undo(args)
     if original_action == "bind":
         from app.ev.desk_names import remember_file
 
@@ -2175,52 +2696,109 @@ async def run_file_goal(
             "spoken": f"I'll remember {name} as your {alias}.",
             "source": "laptop_files",
         }
-    if original_action in {"edit", "append", "write"}:
+    if original_action in {"edit", "append", "write", "checkoff", "drop"}:
         current = ""
-        if original_action in {"edit", "append"}:
+        if original_action in {"edit", "append", "checkoff", "drop"}:
             read_args = {**args, "action": "read"}
             existing = await execute_file_op(read_args, live=live, request_id=request_id)
-            if not existing.get("ok") and original_action in {"edit", "append"}:
+            if not existing.get("ok") and original_action in {"edit", "append", "checkoff", "drop"}:
                 return existing
             current = str(existing.get("content") or "")
-        try:
-            planned, source = await plan_file_content(
-                action=original_action,
-                current=current,
-                instruction=str(args.get("instruction") or ""),
-                content=str(args.get("content") or ""),
-            )
-        except RuntimeError:
-            return {
-                "ok": False,
-                "executed": False,
-                "verified": False,
-                "error": "file_intelligence_unavailable",
-                "spoken": "I found the file, but I couldn't plan that edit yet.",
-            }
-        args["content"] = planned
-        args["intelligence"] = source
-        if original_action in {"append", "edit"}:
+        elif original_action == "write":
+            dest = Path(str(args.get("path") or "")).expanduser()
+            try:
+                if dest.is_file():
+                    current = dest.read_text(encoding="utf-8")
+            except OSError:
+                current = ""
+        if original_action == "checkoff":
+            from app.ev.desk_acts import apply_checkoff
+
+            tokens = [str(item) for item in (args.get("items") or []) if str(item).strip()]
+            planned, hit = apply_checkoff(current, tokens)
+            if not hit:
+                return _fail("not_found", "I don't see that on the list.")
+            args["content"] = planned
+            args["items"] = hit
+            args["intelligence"] = "checkoff"
             args["action"] = "write"
             args["overwrite"] = True
+        elif original_action == "drop":
+            from app.ev.desk_acts import apply_drop
+
+            tokens = [str(item) for item in (args.get("items") or []) if str(item).strip()]
+            planned, hit = apply_drop(current, tokens)
+            if not hit:
+                return _fail("not_found", "I don't see that on the list.")
+            args["content"] = planned
+            args["items"] = hit
+            args["intelligence"] = "drop"
+            args["action"] = "write"
+            args["overwrite"] = True
+        else:
+            try:
+                planned, source = await plan_file_content(
+                    action=original_action,
+                    current=current,
+                    instruction=str(args.get("instruction") or args.get("goal") or ""),
+                    content=str(args.get("content") or ""),
+                    label=str(args.get("label") or ""),
+                    receipt=str(args.get("receipt") or original_action),
+                )
+            except RuntimeError:
+                return {
+                    "ok": False,
+                    "executed": False,
+                    "verified": False,
+                    "error": "file_intelligence_unavailable",
+                    "spoken": "I found the file, but I couldn't plan that edit yet.",
+                }
+            args["content"] = planned
+            args["intelligence"] = source
+            if original_action == "write" and planned:
+                landed = [
+                    re.sub(r"^[\-\*\d\.\)\s]+", "", line).strip()
+                    for line in planned.splitlines()
+                    if line.strip()
+                ]
+                if landed:
+                    args["items"] = landed
+            if original_action in {"append", "edit"}:
+                args["action"] = "write"
+                args["overwrite"] = True
+        args["_before"] = current
+    if original_action == "delete":
+        dest = Path(str(args.get("path") or "")).expanduser()
+        try:
+            if dest.is_file() and dest.suffix.lower() in TEXT_EXTENSIONS:
+                args["_before"] = dest.read_text(encoding="utf-8")
+        except OSError:
+            args["_before"] = ""
     result = await execute_file_op(args, live=live, request_id=request_id)
     if args.get("intelligence"):
         result["intelligence"] = args["intelligence"]
-    if result.get("ok") and original_action in {"edit", "append"}:
-        name = Path(str(result.get("path") or args.get("path") or "")).name
-        if name and original_action == "edit":
-            result["spoken"] = f"Updated {name}."
-        elif name and original_action == "append":
-            result["spoken"] = f"Added that to {name}."
-    if result.get("ok") and original_action == "delete":
-        from app.ev.desk_scene import forget_file
+    if result.get("ok"):
+        spoken = _file_spoken_receipt(args, result, original_action)
+        if spoken:
+            result["spoken"] = spoken
+        heard = str(result.get("spoken") or "").strip()
+        if heard:
+            from app.ev.desk_scene import set_last_spoken
 
-        forget_file(result.get("path") or args.get("path"))
+            set_last_spoken(heard)
+    if result.get("ok") and original_action == "delete":
+        from app.ev.desk_scene import forget_file, record_mutation
+
+        gone = result.get("path") or args.get("path")
+        record_mutation(gone, action="delete", before=str(args.get("_before") or ""))
+        forget_file(gone)
         return result
     if result.get("ok") and original_action in {
         "write",
         "append",
         "edit",
+        "checkoff",
+        "drop",
         "open",
         "read",
         "search",
@@ -2230,16 +2808,21 @@ async def run_file_goal(
         "run",
     }:
         from app.ev.desk_names import remember_file
+        from app.ev.desk_scene import clear_pending_choice
 
         remember_file(
             result.get("path") or args.get("path"),
             goal=str(args.get("goal") or ""),
             content=str(args.get("content") or "")
-            if original_action in {"write", "append", "edit"}
+            if original_action in {"write", "append", "edit", "checkoff", "drop"}
             else "",
             query=str(args.get("query") or ""),
+            aliases=[str(item) for item in (args.get("aliases") or []) if str(item).strip()],
             source=original_action,
+            before=str(args.get("_before") or ""),
         )
+        if original_action in {"write", "append", "edit", "checkoff", "drop"} or args.get("clear_choice"):
+            clear_pending_choice()
     return result
 
 

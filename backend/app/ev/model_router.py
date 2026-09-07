@@ -33,21 +33,66 @@ class ModelInfo:
 
 
 def voice_model_info() -> ModelInfo:
+    from app.gateway.muse import (
+        muse_api_key,
+        muse_asr_realtime_url,
+        muse_hearing_active,
+        muse_voice_model,
+    )
+
+    if muse_hearing_active():
+        return ModelInfo(
+            role="voice",
+            provider="meta_muse_voice",
+            model=muse_voice_model(),
+            base_url=muse_asr_realtime_url(),
+            available=bool(muse_api_key()),
+        )
+    from app.voice.live.grok_voice import live_realtime_provider
+
+    live = live_realtime_provider()
+    if live == "xai":
+        return ModelInfo(
+            role="voice",
+            provider="xai-realtime",
+            model=(settings.xai_voice_model or "grok-voice-think-fast-2.0").strip(),
+            base_url=(settings.xai_voice_realtime_url or "").strip(),
+            available=bool((settings.xai_api_key or "").strip()),
+        )
+    if live == "openai":
+        return ModelInfo(
+            role="voice",
+            provider="openai-realtime",
+            model=(settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip(),
+            base_url=(settings.openai_realtime_url or "wss://api.openai.com/v1/realtime").strip(),
+            available=bool((settings.openai_api_key or "").strip()),
+        )
     return ModelInfo(
         role="voice",
-        provider="openai-realtime",
-        model=(settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip(),
-        base_url=(settings.openai_realtime_url or "wss://api.openai.com/v1/realtime").strip(),
-        available=bool((settings.openai_api_key or "").strip()),
+        provider=(settings.voice_asr_provider or "pipeline").strip() or "pipeline",
+        model=(settings.voice_asr_model or "").strip() or "pipeline",
+        base_url=None,
+        available=True,
     )
 
 
 def turn_control_model_info() -> ModelInfo:
-    # Luna is GPT-5.6 Luna via OpenAI text/Responses path.  Falls back to
-    # gpt-4o-mini when the Luna model ID is not yet available in the account;
-    # the structured contract and prompt are identical.
+    from app.gateway.muse import (
+        muse_intelligence_active,
+        muse_spark_base_url,
+        muse_spark_key_loaded,
+        muse_spark_model,
+    )
+
+    if muse_intelligence_active():
+        return ModelInfo(
+            role="turn_control",
+            provider="meta_muse_spark",
+            model=muse_spark_model(),
+            base_url=muse_spark_base_url(),
+            available=muse_spark_key_loaded(),
+        )
     raw = (getattr(settings, "turn_control_model", None) or getattr(settings, "openai_chat_model", None) or "gpt-5.6-luna").strip()
-    # Model alias: allow Luna to be served by available chat model when Luna is not yet provisioned
     provider = (getattr(settings, "turn_control_provider", None) or "openai").strip() or "openai"
     base_url = (getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").strip()
     available = bool((settings.openai_api_key or "").strip())
@@ -61,6 +106,21 @@ def turn_control_model_info() -> ModelInfo:
 
 
 def manager_model_info() -> ModelInfo:
+    from app.gateway.muse import (
+        muse_intelligence_active,
+        muse_spark_base_url,
+        muse_spark_key_loaded,
+        muse_spark_model,
+    )
+
+    if muse_intelligence_active():
+        return ModelInfo(
+            role="manager",
+            provider="meta_muse_spark",
+            model=muse_spark_model(),
+            base_url=muse_spark_base_url(),
+            available=muse_spark_key_loaded(),
+        )
     return ModelInfo(
         role="manager",
         provider="deepseek",
@@ -80,6 +140,8 @@ def all_models() -> dict[str, ModelInfo]:
 
 def health_snapshot() -> dict:
     """Model health for /v1/health and Mission Control."""
+    from app.gateway.muse import muse_counters_snapshot, muse_spark_reasoning_effort
+
     infos = all_models()
     return {
         "voice": {
@@ -96,5 +158,9 @@ def health_snapshot() -> dict:
             "provider": infos["manager"].provider,
             "model": infos["manager"].model,
             "available": infos["manager"].available,
+        },
+        "muse": {
+            "reasoning_effort": muse_spark_reasoning_effort(),
+            **muse_counters_snapshot(),
         },
     }

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 
+from app.memory.life_archive.locate import CALL_HISTORY_RE, life_channel
 from app.ev.continuity import classify_memory_intent
+from app.ev.send_intent import parse_send_intent
 from app.schemas import ToolSelectionResponse
 from app.search.live import is_weather_query, looks_world_knowledge
 
@@ -22,9 +24,12 @@ PERSON_PATTERNS = [
 ]
 TEXT_PHRASE_RE = re.compile(
     r"\b(?:text|imessage|ping)\b|"
-    r"\bsend(?: a)? (?:text|message|note|sms|whatsapp)\b|"
+    r"\btell\s+(?!me\b|us\b|you\b)(?:my\s+)?[A-Za-z]|"
+    r"\blet\s+\S+\s+know\b|"
+    r"\bsend(?: a)? (?:text|message|note|sms|whatsapp|e-?mail)\b|"
     r"\bsend \w+ a (?:text|message|note|sms|whatsapp)\b|"
-    r"\bmessage \S+",
+    r"\bmessage \S+|"
+    r"\b(?:e-?mail)\s+\S+",
     re.IGNORECASE,
 )
 CALL_PHRASE_RE = re.compile(
@@ -75,9 +80,24 @@ SHOW_PHRASE_RE = re.compile(
     r")",
     re.IGNORECASE,
 )
+_HUD_EXPLICIT_RE = re.compile(
+    r"\b(?:"
+    r"hud|visor|overlay|lookout|command center|suit hud|"
+    r"on (?:my |the )?(?:screen|overlay|visor)"
+    r")\b",
+    re.IGNORECASE,
+)
 MESSAGES_LIST_RE = re.compile(
     r"\b(?:messages|texts|who texted|new messages)\b",
     re.IGNORECASE,
+)
+CONTACT_LOOKUP_RE = re.compile(
+    r"\b(?P<name>[A-Za-z][A-Za-z'-]+)'s\s+(?:phone\s+)?(?:number|email|contact)\b|"
+    r"\b(?:phone\s+)?(?:number|email)\s+for\s+(?P<name2>[A-Za-z][A-Za-z'-]+)\b",
+    re.IGNORECASE,
+)
+_CONTACT_LOOKUP_SKIP = frozenset(
+    {"who", "what", "that", "this", "there", "here", "it", "today", "life", "the"}
 )
 SEARCH_WEB_RE = re.compile(
     r"\b(?:search(?:\s+it|\s+this|\s+that)?(?:\s+on)?(?:\s+the)?\s+web|"
@@ -106,8 +126,15 @@ LEAVE_BY_RE = re.compile(
     re.IGNORECASE,
 )
 TIME_RE = re.compile(
-    r"\b(?:what(?:'s| is) the (?:time|date)|what time is it|what day is it|"
-    r"today'?s date|current time)\b",
+    r"\b(?:"
+    r"what(?:'s| is) the (?:time|date)(?!\s+(?:for|of|at|in)\b)|"
+    r"what time is it|"
+    r"what day is it(?:\s+today)?|"
+    r"what(?:'s| is) today(?:'s date)?|"
+    r"today'?s date|"
+    r"current time|"
+    r"(?:tell me|check) the time"
+    r")\b",
     re.IGNORECASE,
 )
 CAPABILITIES_RE = re.compile(
@@ -214,6 +241,7 @@ LIVE_VOICE_TOOLS = frozenset(
         "recall",
         "computer",
         "code",
+        "set_quiet_hours",
     }
 )
 
@@ -337,6 +365,12 @@ LOOK_RE = re.compile(
     r"what do you see|"
     r"what(?:'s| is) (?:that|this|on (?:the |my )?camera|in (?:the )?frame|in front(?: of (?:you|the camera))?|on my desk)|"
     r"what am i holding|"
+    r"what(?:'s| is) in my hand|"
+    r"the (?:thing|item|object) i(?:'m| am) holding|"
+    r"this item i(?:'m| am) holding|"
+    r"i want you to look at|"
+    r"look at (?:the (?:thing|item|object)|what i(?:'m| am))|"
+    r"tell me (?:more )?(?:info )?about (?:this|that) (?:item|thing|object)|"
     r"what am i wearing|"
     r"what (?:t-?shirt|shirt|top|hoodie|jacket) am i|"
     r"what(?:'s| is) my (?:t-?shirt|shirt|top|hoodie|jacket|hat|outfit)|"
@@ -424,6 +458,40 @@ def parse_heading_out(message: str | None) -> dict | None:
     return args
 
 
+def parse_hud_present(message: str | None) -> dict | None:
+    """Transcript → present HUD card. Explicit overlay phrasing only."""
+
+    text = (message or "").strip()
+    if not text or not _HUD_EXPLICIT_RE.search(text):
+        return None
+    lowered = text.lower()
+    if re.search(r"\bwhat(?:'s| is) on (?:my |the )?screen\b", lowered):
+        return None
+    from app.memory.room import looks_like_object_locate
+    from app.memory.visual import is_visual_recall_query, wants_keep_visible
+
+    if looks_like_object_locate(text) or is_visual_recall_query(text) or wants_keep_visible(text):
+        return None
+    from app.ev.luna_code import peek_code_intern_receipt, shared_code_job
+
+    intern = peek_code_intern_receipt()
+    job = shared_code_job()
+    if intern:
+        title, body = "Overnight", intern
+    elif job and (job.get("spoken") or job.get("files")):
+        files = ", ".join(
+            str(item).rsplit("/", 1)[-1] for item in (job.get("files") or [])[:4] if item
+        )
+        title, body = "Coding", str(job.get("spoken") or files or "Last coding job.")
+    else:
+        title = "HUD"
+        body = (
+            "Next action stays here. Ask me to pin a timer, a brief, "
+            "or the last coding job."
+        )
+    return {"title": title, "body": body[:4000], "kind": "auto"}
+
+
 def _look_intent(message: str, lowered: str) -> bool:
     from app.memory.visual import wants_current_visual, wants_keep_visible, wants_past_visual
 
@@ -453,13 +521,14 @@ def select_tool(message: str) -> ToolSelectionResponse:
 
     if ARITHMETIC_RE.search(message) or PERCENT_OF_RE.search(message) or CALC_PHRASE_RE.search(message):
         add("calculate", 4, "The message contains an arithmetic expression.")
-    if TEXT_PHRASE_RE.search(message):
+    if TEXT_PHRASE_RE.search(message) or parse_send_intent(message):
         add("send_message", 6, "The message asks to send a text/message.")
         add("resolve_contact", 4, "Life sends should resolve the recipient first.")
     from app.memory.visual import wants_keep_visible as _keep_from_sight
 
     if (
         CALL_PHRASE_RE.search(message)
+        and not CALL_HISTORY_RE.search(message)
         and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", lowered)
         and not _keep_from_sight(message)
         and not re.search(
@@ -469,13 +538,18 @@ def select_tool(message: str) -> ToolSelectionResponse:
     ):
         add("place_call", 6, "The message asks to place a call.")
         add("resolve_contact", 4, "Life calls should resolve the recipient first.")
-    if MAIL_PHRASE_RE.search(message):
+    if MAIL_PHRASE_RE.search(message) and life_channel(message) == "mail":
         read_mail = bool(MAIL_READ_RE.search(message))
         add(
             "list_mail",
             10 if read_mail else 5,
             "The message asks about mail/email.",
         )
+    lookup = CONTACT_LOOKUP_RE.search(message)
+    if lookup:
+        found = (lookup.group("name") or lookup.group("name2") or "").strip().lower()
+        if found and found not in _CONTACT_LOOKUP_SKIP:
+            add("resolve_contact", 11, "The owner asked for a contact number or email.")
     if OPEN_URL_RE.search(message):
         add("open_url", 6, "The message asks to open a URL.")
     open_app = OPEN_APP_RE.search(message)
@@ -488,10 +562,14 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_reminder", 5, "The message asks to set a reminder.")
     if TIMER_RE.search(message):
         add("start_timer", 7, "The message asks to start a timer.")
-    if MESSAGES_LIST_RE.search(message):
-        add("list_messages", 4, "The message asks about recent messages.")
+    if MESSAGES_LIST_RE.search(message) and life_channel(message) not in {"whatsapp", "mail"}:
+        add("list_messages", 4, "The message asks about recent iMessage/SMS.")
     if SHOW_PHRASE_RE.search(message):
         add("present", 5, "The message asks EVIE to show something on screen.")
+    if _HUD_EXPLICIT_RE.search(message) and not re.search(
+        r"\bwhat(?:'s| is) on (?:my |the )?screen\b", lowered
+    ):
+        add("present", 10, "The owner asked for the HUD overlay.")
     person_request = any(pattern.search(message) for pattern in PERSON_PATTERNS) or re.search(
         r"\bwhere(?:'s| is) [A-Z][a-z]+\b", message
     )
@@ -552,9 +630,59 @@ def select_tool(message: str) -> ToolSelectionResponse:
     if any(p in lowered for p in ("hit my head", "i hit my head", "concussion", "head injury")):
         add("head_injury_screen", 8, "The owner reported a head injury.")
     if lowered.strip() in {"brief me", "brief us"} or lowered.startswith("brief me"):
-        add("brief_me", 7, "The owner asked for a tactical brief.")
+        add("brief_me", 8, "The owner asked for a tactical brief.")
+    if any(
+        phrase in lowered
+        for phrase in (
+            "morning brief",
+            "what's today look like",
+            "whats today look like",
+            "what's on for today",
+            "whats on for today",
+        )
+    ):
+        add("brief_me", 9, "The owner asked for a morning / heading brief.")
+    if any(
+        phrase in lowered
+        for phrase in (
+            "too isolated",
+            "been isolated",
+            "have i been lonely",
+            "am i isolated",
+            "isolation check",
+            "been too isolated",
+        )
+    ):
+        add("brief_me", 10, "The owner asked whether they have been isolated.")
+    if any(
+        phrase in lowered
+        for phrase in (
+            "how's the house",
+            "hows the house",
+            "how is the house",
+            "home status",
+            "house status",
+        )
+    ):
+        add("home_status", 8, "The owner asked how the house is.")
+    if re.search(r"\b(?:turn|switch)\s+(on|off)\b", lowered) and any(
+        word in lowered for word in ("light", "lamp", "heating", "thermostat")
+    ):
+        add("home_act", 8, "The owner asked to actuate a house device.")
+    if re.search(
+        r"\b(?:lock|unlock)\s+(?:the\s+)?(?:front\s+)?door\b|"
+        r"\b(?:open|close)\s+(?:the\s+)?garage\b",
+        lowered,
+    ):
+        add("home_act", 9, "The owner asked to lock a door or move the garage.")
+    from app.memory.room import looks_like_object_locate
+    from app.ev.edith import looks_like_twin_query
+
+    if looks_like_twin_query(message):
+        add("search_memory", 12, "The owner asked to rewind who they were.")
     if (
         not person_request
+        and not looks_like_object_locate(message)
         and ("where is " in lowered or lowered.startswith("where's ") or "whereabouts" in lowered)
     ):
         add("where_is", 6, "The owner asked where someone is.")
@@ -584,8 +712,18 @@ def select_tool(message: str) -> ToolSelectionResponse:
 
     if looks_like_code_request(message):
         add("code", 12, "The owner asked Evie to write, fix, or run software.")
-    elif looks_like_file_task(message):
-        add("computer", 13, "The owner asked Evie to read, write, or edit a local file.")
+    else:
+        from app.ev.desk_acts import parse_desk_act
+
+        desk_act = parse_desk_act(message)
+        if desk_act is not None and desk_act.get("channel") == "tool":
+            add(
+                str(desk_act["name"]),
+                14,
+                "The owner asked to remind or send the live desk list.",
+            )
+        elif looks_like_file_task(message):
+            add("computer", 13, "The owner asked Evie to read, write, or edit a local file.")
     if RECORD_RE.search(message):
         add("record_video", 10, "The owner asked to record a video clip.")
     if CAPTURE_RE.search(message):
@@ -626,8 +764,6 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("calendar_read", 7, "The message asks to read the owner's calendar.")
     if LEAVE_BY_RE.search(message):
         add("get_upcoming_alerts", 6, "The message asks for leave-by or route timing.")
-    if TIME_RE.search(message):
-        add("get_upcoming_alerts", 2, "Clock/date questions still benefit from today's commitments.")
     if CAPABILITIES_RE.search(message) or "protocol" in lowered:
         add("list_protocols", 6, "The owner asked what protocols they have.")
     if any(
@@ -637,11 +773,25 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_assistant_name", 6, "The owner is setting the spoken nickname.")
     if any(phrase in lowered for phrase in ("be funnier", "more formal", "less formal", "more concise")):
         add("update_personality", 5, "The owner is changing personality sliders.")
-    if "quiet until" in lowered or "go quiet" in lowered:
-        add("set_quiet_hours", 6, "The owner is setting quiet hours.")
+    if any(
+        phrase in lowered
+        for phrase in (
+            "quiet until",
+            "go quiet",
+            "quiet hours",
+            "don't ping me until",
+            "do not ping me until",
+            "mute pings until",
+        )
+    ):
+        add("set_quiet_hours", 8, "The owner is setting quiet hours.")
     if "what just happened" in lowered:
         add("list_callouts", 6, "The owner asked what just happened.")
     from app.memory.life_archive.locate import classify_shelf, is_owner_history_query
+    from app.memory.life_archive.desk import is_chat_desk_query
+
+    if is_chat_desk_query(message):
+        add("recall_history", 12, "The owner asked the WhatsApp correspondence desk.")
 
     owner_history = is_owner_history_query(message) and not is_visual_recall_query(message)
     if owner_history:
@@ -659,10 +809,8 @@ def select_tool(message: str) -> ToolSelectionResponse:
 
     life_shelf = classify_shelf(message)
     live_list_now = _live_list_scored(scores)
-    contact_ask = life_shelf == "contacts" or any(
-        phrase in lowered
-        for phrase in ("my contacts", "in my contacts", "address book", "phone book")
-    )
+    # Possessive number/email is the address book even without the word "contacts".
+    contact_ask = _explicit_address_book_ask(message) or life_channel(message) == "contacts"
     if not live_list_now and not _is_app_window_command(message) and (
         life_shelf
         in {
@@ -677,8 +825,10 @@ def select_tool(message: str) -> ToolSelectionResponse:
             "familiarity",
             "mail",
             "health",
+            "calls",
+            "inbox",
         }
-        or (contact_ask and not person_request)
+        or contact_ask
     ):
         add("recall_history", 10, "The owner asked about a stored life-archive aisle.")
     if not scores:
@@ -695,6 +845,14 @@ def select_tool(message: str) -> ToolSelectionResponse:
         selected=best[0],
         alternatives=alternatives,
         rationale=best[2],
+    )
+
+
+def _explicit_address_book_ask(text: str) -> bool:
+    lowered = (text or "").lower()
+    return any(
+        phrase in lowered
+        for phrase in ("my contacts", "in my contacts", "address book", "phone book")
     )
 
 
@@ -716,9 +874,9 @@ def _live_list_action(text: str) -> tuple[str, dict] | None:
     """Live inbox/calendar reads beat recorded shelves. History questions stay on recall."""
     if _is_app_window_command(text):
         return None
-    if MAIL_READ_RE.search(text):
-        return "list_mail", {}
-    if MESSAGES_LIST_RE.search(text):
+    if MAIL_READ_RE.search(text) and life_channel(text) == "mail":
+        return "list_mail", {"query": text[:400]}
+    if MESSAGES_LIST_RE.search(text) and life_channel(text) not in {"whatsapp", "mail"}:
         return "list_messages", {}
     if CALENDAR_READ_RE.search(text):
         return "calendar_read", {}
@@ -741,15 +899,25 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     from app.memory.visual import (
         is_keep_recall_query,
         is_visual_recall_query,
+        wants_held_object_look,
         wants_keep_visible,
     )
 
     # Memorize-from-sight is a look, not a file/code goal, even if the
-    # utterance also names a folder or a book file.
-    if wants_keep_visible(text):
+    # utterance also names a folder or a book file. First-try "look at
+    # what I'm holding" is the same job — Mini must not refuse it.
+    from app.ev.spark_look import fallback_camera_action
+
+    camera = fallback_camera_action(text)
+    if wants_keep_visible(text) or wants_held_object_look(text):
         return "look", {"prompt": text[:400], "focus": "auto"}
     if looks_like_code_request(text):
         return "code", {"goal": text[:4000]}
+    from app.ev.desk_acts import parse_desk_act
+
+    desk_act = parse_desk_act(text)
+    if desk_act is not None and desk_act.get("channel") == "tool":
+        return str(desk_act["name"]), dict(desk_act.get("args") or {})
     if looks_like_file_task(text):
         return "computer", {"goal": text[:500]}
     from app.memory.life_archive.locate import (
@@ -771,11 +939,26 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         "calendar",
         "bookmarks",
         "health",
+        "calls",
+        "inbox",
     }
     live_list = _live_list_action(text)
     if live_list is not None:
         return live_list
+    lookup = CONTACT_LOOKUP_RE.search(text)
+    if lookup:
+        found = (lookup.group("name") or lookup.group("name2") or "").strip()
+        if found and found.lower() not in _CONTACT_LOOKUP_SKIP:
+            return "resolve_contact", {"name": found}
     if len(text) > 240:
+        from app.memory.life_archive.desk import is_chat_desk_query
+
+        if camera == "look":
+            return "look", {"prompt": text[:400], "focus": "auto"}
+        if camera == "recall":
+            return "search_memory", {"query": text[:400]}
+        if is_chat_desk_query(text):
+            return "recall", {"query": text[:1000]}
         if wants_keep_visible(text):
             return "look", {"prompt": text[:400], "focus": "auto"}
         if (
@@ -786,6 +969,8 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
             return "search_memory", {"query": text[:400]}
         if not _is_app_window_command(text):
             life_shelf = life_shelf_for_memory_search(text, classify_shelf(text))
+            if life_shelf == "contacts" and not _explicit_address_book_ask(text):
+                life_shelf = None
             if life_shelf in _life_recall_shelves:
                 return "recall", {"query": text[:1000]}
         return None
@@ -795,18 +980,34 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     heading = parse_heading_out(text)
     if heading is not None:
         return "heading_out", heading
+    from app.ev.home import parse_home_act
+
+    home = parse_home_act(text)
+    if home is not None:
+        return "home_act", home
+    hud = parse_hud_present(text)
+    if hud is not None:
+        return "present", hud
     weather = is_weather_query(text)
     if weather:
         return "get_weather", {}
     call = CALL_TARGET_RE.search(text)
-    if call and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", text, re.IGNORECASE):
+    if (
+        call
+        and not CALL_HISTORY_RE.search(text)
+        and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", text, re.IGNORECASE)
+    ):
         return "place_call", {"name": call.group(1)}
     remind = REMIND_TARGET_RE.search(text)
     if remind:
         return "set_reminder", {"text": remind.group(1).strip()[:200]}
-    send = TEXT_TARGET_RE.search(text)
+    send = parse_send_intent(text)
     if send:
-        return "send_message", {"to": send.group(1), "text": send.group(2).strip()[:500]}
+        return "send_message", send
+    from app.memory.life_archive.desk import is_chat_desk_query
+
+    if is_chat_desk_query(text):
+        return "recall", {"query": text[:1000]}
     if wants_keep_visible(text):
         return "look", {"prompt": text[:400], "focus": "auto"}
     if (
@@ -817,6 +1018,8 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         return "search_memory", {"query": text[:400]}
     if not _is_app_window_command(text):
         life_shelf = life_shelf_for_memory_search(text, classify_shelf(text))
+        if life_shelf == "contacts" and not _explicit_address_book_ask(text):
+            life_shelf = None
         if life_shelf in _life_recall_shelves:
             return "recall", {"query": text[:1000]}
     open_app = OPEN_APP_RE.search(text)
@@ -851,6 +1054,10 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         "heading_out",
         "code",
         "computer",
+        "brief_me",
+        "set_quiet_hours",
+        "home_act",
+        "present",
     }:
         if name == "calculate":
             return name, {"expression": text}
@@ -868,5 +1075,31 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
             return name, {"goal": text[:4000]}
         if name == "computer":
             return name, {"goal": text[:500]}
+        if name == "brief_me":
+            topic = "isolation" if any(
+                p in text.lower()
+                for p in ("isolated", "lonely", "isolation")
+            ) else "morning" if "morning" in text.lower() or "today look" in text.lower() or "on for today" in text.lower() else (text[:200] if text.lower().strip() not in {"brief me", "brief us"} else "today")
+            return name, {"topic": topic}
+        if name == "set_quiet_hours":
+            from app.ev.assistant import QUIET_RANGE_RE, QUIET_UNTIL_RE
+
+            ranged = QUIET_RANGE_RE.search(text)
+            if ranged:
+                return name, {"start": ranged.group(1), "end": ranged.group(2)}
+            until = QUIET_UNTIL_RE.search(text)
+            if until:
+                return name, {"until": until.group(1)}
+            return name, {}
+        if name == "home_act":
+            from app.ev.home import parse_home_act
+
+            return name, parse_home_act(text) or {}
+        if name == "present":
+            return name, parse_hud_present(text) or {
+                "title": "HUD",
+                "body": text[:400],
+                "kind": "auto",
+            }
         return name, {}
     return None

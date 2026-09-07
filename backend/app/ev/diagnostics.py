@@ -110,15 +110,19 @@ async def run_calibration(
         started = time.perf_counter()
         try:
             provider = get_chat_provider()
+            from app.gateway.muse import muse_intelligence_active, muse_spark_model
+
+            if muse_intelligence_active() or provider.name in {"meta_muse_spark", "muse", "muse_spark"}:
+                ping_model = muse_spark_model()
+            elif provider.name == "xai":
+                ping_model = settings.xai_model
+            elif provider.name == "deepseek":
+                ping_model = settings.deepseek_model
+            else:
+                ping_model = None
             result = await provider.chat(
                 [ChatMessage(role="user", content="EV calibration ping")],
-                model=(
-                    settings.xai_model
-                    if provider.name == "xai"
-                    else settings.deepseek_model
-                    if provider.name == "deepseek"
-                    else None
-                ),
+                model=ping_model,
             )
             checks.append(
                 _check(

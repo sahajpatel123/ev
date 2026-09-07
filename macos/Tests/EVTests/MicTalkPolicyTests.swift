@@ -484,6 +484,12 @@ enum EVMicTalkTests {
                 appModel.contains("live.sendOwnerUtterance(trimmed)")
                     && appModel.contains("A parallel /ask stream would")
             )
+            check(
+                "wired-AppModel-live-presentation-deduplicated",
+                appModel.contains("setPublishedIfChanged")
+                    && appModel.contains("guard storedLastError != newValue")
+                    && appModel.contains("var diagnostics = liveRuntimeDiagnostics")
+            )
             let credStore = try read(root.appendingPathComponent("Sources/EV/DeviceCredentialStore.swift"))
             check(
                 "wired-DeviceCredential-file-before-keychain-heal",
@@ -530,12 +536,31 @@ enum EVMicTalkTests {
             let menu = try read(root.appendingPathComponent("Sources/EV/MenuBarView.swift"))
             check("wired-MenuBarView-toggleAudio", menu.contains("model.toggleAudioControl()"))
             check("wired-MenuBarView-no-late-hotkey", !menu.contains("hotkey.start"))
+            check("wired-MenuBarView-appearance-does-not-start-voice", !menu.contains("model.start()"))
             check("wired-MenuBarView-confirm-hold", menu.contains("model.confirmHudAction()"))
             check("wired-MenuBarView-capability-summary", menu.contains("capabilitySummary"))
             check("wired-MenuBarView-empty-capability-copy", menu.contains("none reported"))
             check("wired-MenuBarView-device-summary", menu.contains("deviceSummary"))
             check("wired-MenuBarView-grant-report", !menu.contains("Backend bridges"))
             check("wired-MenuBarView-one-shot-connect", !menu.contains("Connect granted bridges"))
+            check("wired-MenuBarView-lazy-conversation", menu.contains("LazyVStack(alignment: .leading"))
+            check(
+                "wired-PermissionsPanel-status-probe-off-main",
+                permissions.contains("detachedAccessibilityStatus")
+                    && permissions.contains("Task.detached(priority: .utility)")
+            )
+            check(
+                "wired-PermissionsPanel-refresh-does-not-track-audio-loop",
+                permissions.contains("Timer.publish(every: 10, on: .main, in: .default)")
+                    && permissions.contains("guard !isLoading else { return }")
+                    && !permissions.contains("Timer.publish(every: 2, on: .main, in: .common)")
+            )
+            check(
+                "wired-PermissionsPanel-appearance-is-read-only",
+                permissions.contains("Appearing is deliberately read-only")
+                    && !permissions.contains("statuses = await PermissionCenter.requestPending()")
+                    && !permissions.contains("ev.permissions.autoRequestedVersion")
+            )
 
             let live = try read(root.appendingPathComponent("Sources/EV/LiveConversation.swift"))
             check("wired-LiveConversation-requestAccess", live.contains("MicrophoneAuthorization.requestAccess"))
@@ -576,6 +601,8 @@ enum EVMicTalkTests {
             check("wired-TTSPlayer-prompt-scheduling", tts.contains("minBytes") && tts.contains("alignedMax"))
             check("wired-TTSPlayer-starved-resume", tts.contains("starvedResume"))
             check("wired-TTSPlayer-jitter-prime", tts.contains("startupPrebufferMs = 250"))
+            check("wired-TTSPlayer-restart-prebuffer", tts.contains("restartPrebufferMs = 180"))
+            check("wired-TTSPlayer-adopt-response", tts.contains("func adoptResponse"))
             // OWNER DECISION 2026-08-23: the ungated barge-in detector that
             // chopped long answers (92 mid-response stops) is REMOVED from
             // the live path. Interruption V1 (explicit address) replaces it,
@@ -818,6 +845,12 @@ enum EVMicTalkTests {
                     && !live.contains("model?.player.cancelResponse(playbackResponseID)")
             )
             check(
+                "wired-LiveConversation-muse-error-recovers",
+                live.contains("LiveVoiceRecoveryPolicy.action(for: event)")
+                    && live.contains("requestASRReconnect(for: eventGeneration")
+                    && live.contains("pendingASRRecoveryGeneration")
+            )
+            check(
                 "wired-LiveConversation-watchdog-does-not-kill-socket",
                 live.contains("WDOG_NO_RESPONSE") && !live.contains("self.tearDownChannel(for: gen)")
             )
@@ -840,7 +873,14 @@ enum EVMicTalkTests {
             check("wired-LiveVoiceCoordinator-confirmHold", coordinator.contains("func confirmHold"))
             check("wired-LiveVoiceCoordinator-long-mute", coordinator.contains("timeIntervalSince($0) >= 20"))
             check("wired-LiveVoiceCoordinator-no-transcript-chop", !coordinator.contains("case \"final_transcript\":\n            player.stop()"))
+            check(
+                "wired-LiveVoiceCoordinator-muse-error-recovers",
+                coordinator.contains("LiveVoiceRecoveryPolicy.action(for: event)")
+                    && coordinator.contains("requestASRReconnect(message: message)")
+                    && coordinator.contains("pendingASRRecovery")
+            )
             check("wired-LivePCMPlayer", liveMic.contains("class LivePCMPlayer"))
+            check("wired-LivePCMPlayer-physical-playing", liveMic.contains("public var isPlaying"))
             check("wired-LivePCMPlayer-no-overrun-reset", !liveMic.contains("maxLeadSeconds"))
 
             let apiClient = try read(

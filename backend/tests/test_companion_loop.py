@@ -38,6 +38,15 @@ from app.schemas import RouteBriefingOut
 from app.utils.text import utcnow
 
 
+async def _await_s2s(live, event):
+    """Wait for transcript routing. emit() only schedules it for grok/realtime."""
+
+    routed = await live.emit(event)
+    if routed is not None:
+        await routed
+    return routed
+
+
 def test_visual_observation_text_keeps_object_color_and_path() -> None:
     text = visual_observation_text(
         labels=["remote", "person"],
@@ -84,6 +93,17 @@ def test_visual_recall_phrases_route_to_memory_not_live_look() -> None:
     resolved = resolve_live_action("when was the last time you saw me with this remote")
     assert resolved is not None
     assert resolved[0] == "search_memory"
+    from app.memory.room import looks_like_object_locate
+
+    assert looks_like_object_locate("where did I leave my charger")
+    assert looks_like_object_locate("where's my keys")
+    assert not looks_like_object_locate("where is Rahul")
+    assert not looks_like_object_locate("where's my mom")
+    assert not looks_like_object_locate("where is the file saved")
+    assert is_visual_recall_query("where did I leave my charger")
+    assert not is_visual_recall_query("where is Rahul")
+    assert select_tool("where did I leave my charger").selected == "search_memory"
+    assert select_tool("where's my charger").selected == "search_memory"
 
 
 def test_keep_visible_routes_to_look_not_a_glance_refusal() -> None:
@@ -141,6 +161,63 @@ def test_keep_visible_routes_to_look_not_a_glance_refusal() -> None:
     )
     assert safari == "computer"
     assert safari_args["goal"] == "open Safari"
+    recall_keep, recall_args = remap_keep_sight_call(
+        "recall",
+        {"query": "Mummy"},
+        last_transcript="I am holding something. Memorize this.",
+    )
+    assert recall_keep == "look"
+    assert "memorize" in str(recall_args.get("prompt") or "").lower()
+    keep_recall, keep_recall_args = remap_keep_sight_call(
+        "recall",
+        {"query": "What did I just ask you to remember?"},
+        last_transcript="What did I just ask you to remember?",
+    )
+    assert keep_recall == "recall"
+    assert keep_recall_args["query"] == "What did I just ask you to remember?"
+    web_keep, web_args = remap_keep_sight_call(
+        "search_web",
+        {"query": "what's in my hand", "limit": 3},
+        last_transcript="I am holding something. Memorize this.",
+    )
+    assert web_keep == "look"
+    web_weather, weather_args = remap_keep_sight_call(
+        "search_web",
+        {"query": "weather in Surat", "limit": 3},
+        last_transcript="Other like today?",
+    )
+    assert web_weather == "search_web"
+    assert weather_args["query"] == "weather in Surat"
+    holding_look = (
+        "Look at the thing I'm holding in my hand. I want you to look at it "
+        "and tell me more info about this item I'm holding"
+    )
+    web_hold, _ = remap_keep_sight_call(
+        "search_web",
+        {"query": "item in hand", "limit": 3},
+        last_transcript=holding_look,
+    )
+    assert web_hold == "look"
+    computer_hold, _ = remap_keep_sight_call(
+        "computer",
+        {"goal": "open Photo Booth"},
+        last_transcript=holding_look,
+    )
+    assert computer_hold == "look"
+    from app.ev.spark_look import fallback_camera_action
+    from app.memory.visual import wants_held_object_look
+    from app.voice.live.session import _owner_memory_live_action
+
+    assert wants_current_visual(holding_look)
+    assert wants_held_object_look(holding_look)
+    assert not wants_keep_visible(holding_look)
+    assert fallback_camera_action(holding_look) == "look"
+    assert _owner_memory_live_action(holding_look) == (
+        "look",
+        {"prompt": holding_look[:400], "focus": "auto"},
+    )
+    assert fallback_camera_action("look this up on the web") is None
+    assert not wants_held_object_look("I'm holding a meeting at three")
     assert not wants_keep_visible("did you memorize the lantern")
     assert not wants_keep_visible("did you remember the mug")
     assert not wants_keep_visible("have you memorized the lantern")
@@ -150,6 +227,18 @@ def test_keep_visible_routes_to_look_not_a_glance_refusal() -> None:
     assert is_keep_recall_query("what did I just ask you to remember")
     assert is_keep_recall_query("Just ask you to remember.")
     assert is_keep_recall_query("just ask you to remember")
+    assert is_keep_recall_query("What I ask you to memorize or remember")
+    assert is_keep_recall_query("What I ask you to memorize and remember")
+    assert is_keep_recall_query("What I tell you to memorize")
+    assert wants_keep_visible("memorize this")
+    assert not is_keep_recall_query("memorize this")
+    from app.memory.visual import is_keep_recall_echo
+
+    assert is_keep_recall_echo("What I ask you to memorize and remember")
+    assert is_keep_recall_echo("What I ask you to memorize or remember?")
+    assert not is_keep_recall_echo(
+        "A Davidoff mocha chewing coffee candy tin with gold lettering."
+    )
     assert not wants_keep_visible("Just ask you to remember.")
     assert classify_memory_intent("what did I just ask you to remember") == "explicit_recall"
     assert classify_memory_intent("Just ask you to remember.") == "explicit_recall"
@@ -191,10 +280,11 @@ def test_keep_visible_routes_to_look_not_a_glance_refusal() -> None:
     titled = resolve_live_action("what was the book called")
     assert titled is not None
     assert titled[0] == "search_memory"
-    from app.ev.look import resolve_keep_request
+    from app.ev.look import KEEP_LOOK_PROMPT, resolve_keep_request
 
     assert resolve_keep_request("memorize a lantern") == "memorize a lantern"
     assert resolve_keep_request("Describe visible people, objects, colors, and the scene.") == ""
+    assert resolve_keep_request(KEEP_LOOK_PROMPT) == ""
     prefer = resolve_live_action("What did I prefer before?")
     assert prefer is not None
     assert prefer[0] == "search_memory"
@@ -208,6 +298,107 @@ def test_keep_visible_routes_to_look_not_a_glance_refusal() -> None:
     leave = resolve_live_action("Where did we leave off?")
     assert leave is not None
     assert leave[0] == "search_memory"
+
+
+def test_mini_look_prompt_keeps_owner_memorize_phrase(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.ev.look import KEEP_LOOK_PROMPT, resolve_keep_request
+
+    monkeypatch.setattr(
+        "app.ev.look.live_owner_transcript",
+        lambda *args, **kwargs: "memorize this",
+    )
+    assert resolve_keep_request(KEEP_LOOK_PROMPT, live_session_id="live-1") == "memorize this"
+
+
+def test_reuse_keep_frame_peeks_hold_copy() -> None:
+    from app.ev.camera_runtime import (
+        CameraObservation,
+        peek_observations,
+        reset_pending_observations,
+        stash_observation,
+    )
+    from app.ev.look import KEEP_HOLD_CALL_ID, _reuse_pending_keep_frame
+
+    reset_pending_observations()
+    jpeg = b"\xff\xd8" + b"\x00" * 40 + b"\xff\xd9"
+    stash_observation(
+        CameraObservation(
+            request_id="owner-keep",
+            call_id=KEEP_HOLD_CALL_ID,
+            jpeg=jpeg,
+            width=1280,
+            height=720,
+            detail="high",
+        )
+    )
+    frame = _reuse_pending_keep_frame("call-mini-look")
+    assert frame is not None
+    assert frame.jpeg == jpeg
+    assert frame.attachment_id is None
+    broker = _reuse_pending_keep_frame("owner-keep")
+    assert broker is not None
+    assert broker.jpeg == jpeg
+    held = peek_observations(KEEP_HOLD_CALL_ID)
+    assert held and held[0].jpeg == jpeg
+    reset_pending_observations()
+
+
+def test_reuse_keep_frame_carries_attachment_uuid() -> None:
+    from app.ev.camera_runtime import (
+        CameraObservation,
+        peek_observations,
+        reset_pending_observations,
+        stash_observation,
+    )
+    from app.ev.look import KEEP_HOLD_CALL_ID, _reuse_pending_keep_frame
+
+    reset_pending_observations()
+    jpeg = b"\xff\xd8" + b"\x00" * 40 + b"\xff\xd9"
+    aid = "11111111-1111-1111-1111-111111111111"
+    stash_observation(
+        CameraObservation(
+            request_id=aid,
+            call_id=KEEP_HOLD_CALL_ID,
+            jpeg=jpeg,
+            width=1280,
+            height=720,
+            detail="high",
+        )
+    )
+    frame = _reuse_pending_keep_frame("call-mini-look")
+    assert frame is not None
+    assert frame.jpeg == jpeg
+    assert frame.attachment_id == aid
+    held = peek_observations(KEEP_HOLD_CALL_ID)
+    assert held and held[0].request_id == aid
+    reset_pending_observations()
+
+
+def test_stale_keep_hold_is_not_reused() -> None:
+    from app.ev.camera_runtime import (
+        CameraObservation,
+        now_mono,
+        reset_pending_observations,
+        stash_observation,
+    )
+    from app.ev.look import KEEP_HOLD_CALL_ID, _reuse_pending_keep_frame
+
+    reset_pending_observations()
+    jpeg = b"\xff\xd8" + b"\x00" * 40 + b"\xff\xd9"
+    stash_observation(
+        CameraObservation(
+            request_id="old-hold",
+            call_id=KEEP_HOLD_CALL_ID,
+            jpeg=jpeg,
+            width=1280,
+            height=720,
+            detail="high",
+            t0=now_mono() - 60.0,
+        )
+    )
+    assert _reuse_pending_keep_frame("owner-keep") is None
+    assert _reuse_pending_keep_frame("call-mini-look") is None
+    reset_pending_observations()
 
 
 def test_visual_content_match_ignores_question_scaffolding() -> None:
@@ -300,6 +491,10 @@ async def test_boilerplate_look_plus_spoken_scene_is_recallable(
             "media_kind": "frame",
             "spoken": prompt,
             "request_id": "look-boilerplate-1",
+            "keep_request": "memorize this",
+            "attachment_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "encoded_bytes": 120000,
+            "image_ready": True,
         },
         actor="owner",
         device_id="mac-1",
@@ -659,6 +854,54 @@ def test_compact_memory_json_keeps_spoken_hits() -> None:
     assert "evidence" not in parsed
 
 
+def test_compact_memory_json_does_not_hand_mini_a_container_header() -> None:
+    import json
+
+    from app.voice.live.layer import compact_live_tool_json
+
+    blob = compact_live_tool_json(
+        {
+            "ok": True,
+            "name": "search_memory",
+            "spoken": (
+                "You asked me to remember a container. "
+                "A stainless steel thermos with a black lid."
+            ),
+            "result": {
+                "count": 1,
+                "grounding": "evidence",
+                "spoken": (
+                    "You asked me to remember a container. "
+                    "A stainless steel thermos with a black lid."
+                ),
+                "lines": [
+                    "You asked me to remember a container. "
+                    "A stainless steel thermos with a black lid and a dent near the base."
+                ],
+                "results": [
+                    {
+                        "text": "You asked me to remember a container.",
+                        "description": (
+                            "A stainless steel thermos with a black lid "
+                            "and a dent near the base."
+                        ),
+                        "kind": "visual_keep",
+                    }
+                ],
+            },
+        }
+    )
+    parsed = json.loads(blob)
+    spoken = str(parsed.get("spoken") or "").lower()
+    hits = " ".join(parsed["result"]["hits"]).lower()
+    assert "thermos" in spoken
+    assert "thermos" in hits
+    assert "you asked me to remember" not in spoken
+    assert "you asked me to remember" not in hits
+    assert "container-shaped" not in spoken
+    assert "container-shaped" not in hits
+
+
 def test_live_memory_speech_is_not_a_pause_ack() -> None:
     import inspect
 
@@ -674,6 +917,19 @@ def test_live_memory_speech_is_not_a_pause_ack() -> None:
     assert "speak this to the owner now" in record
     assert "do not have that in" in record
     assert "answer the owner from this now" not in record
+
+
+def test_look_tool_kicks_keep_reread_after_commit() -> None:
+    import inspect
+
+    from app.voice.live.transport import _grok_tool_runner
+
+    source = inspect.getsource(_grok_tool_runner)
+    assert "await db.commit()" in source
+    assert "kick_keep_identity_reread_from_look" in source
+    assert source.index("await db.commit()") < source.index(
+        "kick_keep_identity_reread_from_look"
+    )
 
 
 @pytest.mark.asyncio
@@ -945,8 +1201,17 @@ async def test_live_s2s_memorize_runs_look_from_transcript() -> None:
             {
                 "ok": True,
                 "name": name,
-                "spoken": "A red book. I'll remember that.",
-                "result": {"kept": True, "spoken": "A red book. I'll remember that."},
+                "spoken": (
+                    "A paperback with a torn yellow cover titled Atomic Habits. "
+                    "I'll remember that."
+                ),
+                "result": {
+                    "kept": True,
+                    "spoken": (
+                        "A paperback with a torn yellow cover titled Atomic Habits. "
+                        "I'll remember that."
+                    ),
+                },
             }
         )
 
@@ -971,12 +1236,13 @@ async def test_live_s2s_memorize_runs_look_from_transcript() -> None:
     live.run_live_tool = runner
     live.grok_voice = _Grok()
     try:
-        await live.emit(
+        await _await_s2s(
+            live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="memorize this book",
                 provider="grok-voice",
-            )
+            ),
         )
         assert seen
         assert seen[0][0] == "look"
@@ -984,6 +1250,1138 @@ async def test_live_s2s_memorize_runs_look_from_transcript() -> None:
         assert spoken
         assert not spoken[0].startswith("ack:")
         assert "remember" in spoken[0].lower() or "book" in spoken[0].lower()
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_first_try_hold_look_runs_camera_and_stops_mini_refusal() -> None:
+    import json
+
+    from app.ev.look import LIVE_CAPTURED_SPOKEN
+    from app.voice.live.events import FinalTranscriptEvent, PartialTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    seen: list[tuple[str, dict, str]] = []
+    spoken: list[str] = []
+    cancelled = {"n": 0}
+    holding = (
+        "Look at the thing I'm holding in my hand. I want you to look at it "
+        "and tell me more info about this item I'm holding"
+    )
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        seen.append((name, dict(args), call_id))
+        return json.dumps(
+            {
+                "ok": True,
+                "name": name,
+                "spoken": LIVE_CAPTURED_SPOKEN,
+                "result": {
+                    "spoken": LIVE_CAPTURED_SPOKEN,
+                    "image_ready": True,
+                },
+            }
+        )
+
+    class _Grok:
+        _provider = "xai"
+        supports_function_calls = True
+        _open_turn_id = "turn-hold-look"
+        _shadow_response_for_turn = None
+        _response_active = True
+        _assistant_open = True
+        _last_input_transcript = holding
+        _pending_tools = 0
+        _response_tool_choice_supported = True
+        created: list[dict] = []
+
+        async def cancel(self) -> None:
+            cancelled["n"] += 1
+            self._response_active = False
+            self._assistant_open = False
+
+        async def _send(self, payload, timeout_s: float = 2.0) -> bool:
+            self.created.append(payload)
+            return True
+
+        async def send_text(self, text: str) -> None:
+            spoken.append("ask:" + text)
+
+        async def _deliver_camera_images(self, name: str, call_id: str, output: str) -> dict:
+            spoken.append("inject:" + call_id)
+            return {"image_delivered": True}
+
+        async def speak_ack(self, text: str) -> bool:
+            spoken.append("ack:" + text)
+            return True
+
+        async def speak_honesty(self, text: str) -> bool:
+            spoken.append("honesty:" + text)
+            return True
+
+        async def speak_life_record(self, text: str) -> bool:
+            spoken.append(text)
+            return True
+
+    live = LiveSession(session_id="owner-hold-look", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _Grok()
+    try:
+        await live.emit(
+            PartialTranscriptEvent(at_ms=1, text=holding, sequence=1)
+        )
+        assert cancelled["n"] >= 1
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(
+                at_ms=2,
+                text=holding,
+                provider="grok-voice",
+            ),
+        )
+        assert seen
+        assert seen[0][0] == "look"
+        assert seen[0][2] == "owner-look"
+        assert "inject:owner-look" in spoken
+        assert live._awaiting_keep_identity is False
+        creates = live.grok_voice.created
+        assert any(item.get("type") == "response.create" for item in creates)
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_live_memorize_leaves_mini_to_name_the_jpeg() -> None:
+    import json
+
+    from app.ev.look import KEEP_CAPTURED_SPOKEN
+    from app.voice.live.events import FinalTranscriptEvent, PartialTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    seen: list[tuple[str, dict, str]] = []
+    spoken: list[str] = []
+    cancelled = {"n": 0}
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        seen.append((name, dict(args), call_id))
+        return json.dumps(
+            {
+                "ok": True,
+                "name": name,
+                "spoken": KEEP_CAPTURED_SPOKEN,
+                "result": {"kept": True, "spoken": KEEP_CAPTURED_SPOKEN, "image_ready": True},
+            }
+        )
+
+    class _Grok:
+        _provider = "xai"
+        supports_function_calls = True
+        _open_turn_id = "turn-keep-jpeg"
+        _shadow_response_for_turn = None
+        _response_active = True
+        _assistant_open = True
+        _last_input_transcript = "memorize this"
+        _pending_tools = 0
+        _response_tool_choice_supported = True
+        created: list[dict] = []
+
+        async def cancel(self) -> None:
+            cancelled["n"] += 1
+
+        async def _send(self, payload, timeout_s: float = 2.0) -> bool:
+            self.created.append(payload)
+            return True
+
+        async def send_text(self, text: str) -> None:
+            spoken.append("ask:" + text)
+
+        async def _deliver_camera_images(self, name: str, call_id: str, output: str) -> str:
+            spoken.append("inject:" + call_id)
+            return output
+
+        async def speak_ack(self, text: str) -> bool:
+            spoken.append("ack:" + text)
+            return True
+
+        async def speak_honesty(self, text: str) -> bool:
+            spoken.append("honesty:" + text)
+            return True
+
+        async def speak_life_record(self, text: str) -> bool:
+            spoken.append(text)
+            return True
+
+    live = LiveSession(session_id="owner-keep-jpeg", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _Grok()
+    try:
+        await live.emit(
+            PartialTranscriptEvent(
+                at_ms=1,
+                text="memorize this",
+                sequence=1,
+            )
+        )
+        assert cancelled["n"] == 0
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(
+                at_ms=2,
+                text="memorize this",
+                provider="grok-voice",
+            ),
+        )
+        assert seen
+        assert seen[0][0] == "look"
+        assert seen[0][2] == "owner-keep"
+        assert "inject:owner-keep" in spoken
+        assert not any(item.startswith("ask:") for item in spoken)
+        creates = live.grok_voice.created
+        assert any(item.get("type") == "response.create" for item in creates)
+        blob = str(creates).lower()
+        assert "concrete noun" in blob
+        assert "do not read these instructions" in blob
+        assert live.grok_voice._last_input_transcript == "memorize this"
+        assert live.grok_voice._continuation_sent is True
+        assert not any(item == KEEP_CAPTURED_SPOKEN for item in spoken)
+        assert not any(item.startswith("ack:") for item in spoken)
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_delayed_memorize_transcript_does_not_recapture_keep() -> None:
+    import json
+
+    from app.ev.camera_runtime import (
+        CameraObservation,
+        now_mono,
+        reset_pending_observations,
+        stash_observation,
+    )
+    from app.ev.look import KEEP_HOLD_CALL_ID
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    seen: list[str] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        seen.append(call_id)
+        return json.dumps({"ok": True, "name": name})
+
+    class _Grok:
+        _provider = "openai"
+        supports_function_calls = True
+        _open_turn_id = "turn-keep-skip"
+        _pending_tools = 0
+        _last_input_transcript = "memorize this"
+
+        async def cancel(self) -> None:
+            return None
+
+    reset_pending_observations()
+    stash_observation(
+        CameraObservation(
+            request_id="11111111-1111-1111-1111-111111111111",
+            call_id=KEEP_HOLD_CALL_ID,
+            jpeg=b"\xff\xd8" + b"\x00" * 40 + b"\xff\xd9",
+            width=1280,
+            height=720,
+            detail="high",
+            t0=now_mono(),
+        )
+    )
+    live = LiveSession(session_id="keep-skip-recapture", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _Grok()
+    live.note_keep_look(
+        arguments={"prompt": "memorize this"},
+        body={
+            "kept": True,
+            "keep_request": "memorize this",
+            "image_ready": True,
+            "attachment_id": "11111111-1111-1111-1111-111111111111",
+        },
+        transcript="memorize this",
+    )
+    try:
+        await live.emit(
+            FinalTranscriptEvent(
+                at_ms=3,
+                text="memorize this",
+                provider="openai-realtime",
+            )
+        )
+        assert seen == []
+        assert live._awaiting_keep_identity is True
+    finally:
+        live.close()
+        reset_pending_observations()
+
+
+@pytest.mark.asyncio
+async def test_keep_describe_create_after_skip_create_goes_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.voice.live.session import LiveSession
+
+    monkeypatch.setattr("app.voice.live.session._KEEP_DESCRIBE_IDLE_POLL_S", 0.05)
+    monkeypatch.setattr("app.voice.live.session._KEEP_DESCRIBE_IDLE_GRACE_S", 0.05)
+
+    class _Grok:
+        supports_function_calls = True
+        _provider = "openai"
+        _pending_tools = 0
+        _tool_boundary_pending = False
+        _continuation_sent = True
+        _response_active = True
+        _assistant_open = True
+        _response_tool_choice_supported = True
+        created: list[dict] = []
+
+        async def cancel(self) -> None:
+            return None
+
+        async def _send(self, payload, timeout_s: float = 2.0) -> bool:
+            self.created.append(payload)
+            return True
+
+    live = LiveSession(session_id="keep-describe-idle", backchannel_enabled=False)
+    live.grok_voice = _Grok()
+    live.note_keep_look(
+        arguments={"prompt": "memorize this"},
+        body={
+            "kept": True,
+            "keep_request": "memorize this",
+            "image_ready": True,
+            "attachment_id": "11111111-1111-1111-1111-111111111111",
+        },
+        transcript="memorize this",
+    )
+    try:
+        await asyncio.sleep(0.15)
+        assert live.grok_voice.created == []
+        live.grok_voice._continuation_sent = False
+        live.grok_voice._response_active = False
+        live.grok_voice._assistant_open = False
+        for _ in range(40):
+            if any(item.get("type") == "response.create" for item in live.grok_voice.created):
+                break
+            await asyncio.sleep(0.05)
+        creates = [item for item in live.grok_voice.created if item.get("type") == "response.create"]
+        assert creates
+        blob = str(creates).lower()
+        assert "concrete noun" in blob
+        assert live._keep_idle_describe_sent is True
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_keep_jpeg_inject_falls_back_to_hold_copy() -> None:
+    import json
+
+    from app.ev.camera_runtime import (
+        CameraObservation,
+        peek_observations,
+        reset_pending_observations,
+        stash_observation,
+    )
+    from app.ev.look import KEEP_CAPTURED_SPOKEN, KEEP_HOLD_CALL_ID
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession, _KEEP_INJECT_CALL_ID
+
+    reset_pending_observations()
+    jpeg = b"\xff\xd8" + b"\x00" * 40 + b"\xff\xd9"
+    stash_observation(
+        CameraObservation(
+            request_id="owner-keep",
+            call_id=KEEP_HOLD_CALL_ID,
+            jpeg=jpeg,
+            width=1280,
+            height=720,
+            detail="high",
+        )
+    )
+    seen: list[str] = []
+    injects: list[str] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        seen.append(call_id)
+        return json.dumps(
+            {
+                "ok": True,
+                "name": name,
+                "spoken": KEEP_CAPTURED_SPOKEN,
+                "result": {"kept": True, "spoken": KEEP_CAPTURED_SPOKEN},
+            }
+        )
+
+    class _Grok:
+        _provider = "xai"
+        supports_function_calls = True
+        _open_turn_id = "turn-keep-hold"
+        _shadow_response_for_turn = None
+        _response_active = True
+        _assistant_open = True
+        _last_input_transcript = "memorize this"
+        _pending_tools = 0
+        _response_tool_choice_supported = True
+        created: list[dict] = []
+
+        async def cancel(self) -> None:
+            return None
+
+        async def _send(self, payload, timeout_s: float = 2.0) -> bool:
+            self.created.append(payload)
+            return True
+
+        async def _deliver_camera_images(self, name: str, call_id: str, output: str) -> str:
+            injects.append(call_id)
+            if call_id == "owner-keep":
+                return json.dumps({"ok": True, "image_delivered": False, "frames": 0})
+            return json.dumps({"ok": True, "image_delivered": True, "frames": 1})
+
+        async def speak_life_record(self, text: str) -> bool:
+            return True
+
+    live = LiveSession(session_id="owner-keep-hold", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _Grok()
+    try:
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(
+                at_ms=2,
+                text="memorize this",
+                provider="grok-voice",
+            ),
+        )
+        assert seen == ["owner-keep"]
+        assert injects == ["owner-keep", _KEEP_INJECT_CALL_ID]
+        assert peek_observations(KEEP_HOLD_CALL_ID)
+        assert any(item.get("type") == "response.create" for item in live.grok_voice.created)
+    finally:
+        live.close()
+        reset_pending_observations()
+
+
+@pytest.mark.asyncio
+async def test_keep_jpeg_offered_when_compact_spoken_is_stripped() -> None:
+    import json
+
+    from app.ev.camera_runtime import (
+        CameraObservation,
+        reset_pending_observations,
+        stash_observation,
+    )
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    reset_pending_observations()
+    jpeg = b"\xff\xd8" + b"\x00" * 40 + b"\xff\xd9"
+    stash_observation(
+        CameraObservation(
+            request_id="owner-keep",
+            call_id="owner-keep",
+            jpeg=jpeg,
+            width=1280,
+            height=720,
+            detail="high",
+        )
+    )
+    injects: list[str] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        return json.dumps(
+            {
+                "ok": True,
+                "name": name,
+                "result": {
+                    "kept": True,
+                    "attachment_id": "11111111-1111-1111-1111-111111111111",
+                    "image_ready": True,
+                    "encoded_bytes": 140000,
+                },
+            }
+        )
+
+    class _Grok:
+        _provider = "xai"
+        supports_function_calls = True
+        _open_turn_id = "turn-keep-stripped"
+        _shadow_response_for_turn = None
+        _response_active = True
+        _assistant_open = True
+        _last_input_transcript = "memorize this"
+        _pending_tools = 0
+        _response_tool_choice_supported = True
+        created: list[dict] = []
+
+        async def cancel(self) -> None:
+            return None
+
+        async def _send(self, payload, timeout_s: float = 2.0) -> bool:
+            self.created.append(payload)
+            return True
+
+        async def _deliver_camera_images(self, name: str, call_id: str, output: str) -> str:
+            injects.append(call_id)
+            return json.dumps({"ok": True, "image_delivered": True, "frames": 1})
+
+        async def speak_life_record(self, text: str) -> bool:
+            raise AssertionError("stripped keep look must not speak the prompt")
+
+    live = LiveSession(session_id="owner-keep-stripped", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _Grok()
+    try:
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(
+                at_ms=2,
+                text="memorize this",
+                provider="grok-voice",
+            ),
+        )
+        assert injects == ["owner-keep"]
+        assert any(item.get("type") == "response.create" for item in live.grok_voice.created)
+    finally:
+        live.close()
+        reset_pending_observations()
+
+
+@pytest.mark.asyncio
+async def test_keep_look_timeout_speech_still_offers_jpeg() -> None:
+    import json
+
+    from app.ev.look import TIMEOUT_SPOKEN
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession
+    from app.ev.camera_runtime import reset_pending_observations
+
+    injects: list[str] = []
+    spoken: list[str] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        return json.dumps(
+            {
+                "ok": True,
+                "name": name,
+                "spoken": TIMEOUT_SPOKEN,
+                "result": {
+                    "kept": True,
+                    "spoken": TIMEOUT_SPOKEN,
+                    "attachment_id": "11111111-1111-1111-1111-111111111111",
+                    "image_ready": True,
+                    "encoded_bytes": 140000,
+                },
+            }
+        )
+
+    class _Grok:
+        _provider = "xai"
+        supports_function_calls = True
+        _open_turn_id = "turn-keep-timeout-jpeg"
+        _shadow_response_for_turn = None
+        _response_active = True
+        _assistant_open = True
+        _last_input_transcript = "memorize this"
+        _pending_tools = 0
+        _response_tool_choice_supported = True
+        created: list[dict] = []
+
+        async def cancel(self) -> None:
+            return None
+
+        async def _send(self, payload, timeout_s: float = 2.0) -> bool:
+            self.created.append(payload)
+            return True
+
+        async def _deliver_camera_images(self, name: str, call_id: str, output: str) -> str:
+            injects.append(call_id)
+            return json.dumps({"ok": True, "image_delivered": True, "frames": 1})
+
+        async def speak_life_record(self, text: str) -> bool:
+            spoken.append(text)
+            return True
+
+    live = LiveSession(session_id="owner-keep-timeout-jpeg", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _Grok()
+    try:
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(
+                at_ms=2,
+                text="memorize this",
+                provider="grok-voice",
+            ),
+        )
+        assert injects == ["owner-keep"]
+        assert spoken == []
+    finally:
+        live.close()
+        reset_pending_observations()
+
+
+def test_compact_look_json_keeps_attachment_id() -> None:
+    import json
+
+    from app.voice.live.layer import compact_live_tool_json
+
+    parsed = json.loads(
+        compact_live_tool_json(
+            {
+                "ok": True,
+                "name": "look",
+                "spoken": "A current camera image is attached.",
+                "result": {
+                    "ok": True,
+                    "spoken": "A current camera image is attached.",
+                    "attachment_id": "11111111-1111-1111-1111-111111111111",
+                    "encoded_bytes": 140000,
+                    "width": 1280,
+                    "height": 720,
+                    "image_ready": True,
+                    "kept": True,
+                    "labels": ["container", "indoor"],
+                    "visual_facts": "container, indoor",
+                    "follow_up": "This look is stored as durable memory.",
+                },
+            }
+        )
+    )
+    assert parsed["result"]["attachment_id"] == "11111111-1111-1111-1111-111111111111"
+    assert parsed["result"]["encoded_bytes"] == 140000
+    assert parsed["result"]["kept"] is True
+    assert "spoken" not in parsed
+    assert "spoken" not in parsed["result"]
+    assert "labels" not in parsed["result"]
+    assert "visual_facts" not in parsed["result"]
+    assert "follow_up" not in parsed["result"]
+
+
+@pytest.mark.asyncio
+async def test_keep_jpeg_inject_reloads_stored_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from app.ev.camera_runtime import reset_pending_observations
+    from app.ev.look import KEEP_CAPTURED_SPOKEN
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession, _KEEP_INJECT_CALL_ID
+
+    reset_pending_observations()
+    jpeg = b"\xff\xd8" + b"\x00" * 40 + b"\xff\xd9"
+    attachment_id = "11111111-1111-1111-1111-111111111111"
+    loaded: list[str] = []
+
+    async def fake_jpeg(_session, needle: str):
+        loaded.append(needle)
+        return jpeg
+
+    monkeypatch.setattr("app.ev.look.jpeg_bytes_for_keep_attachment", fake_jpeg)
+
+    class _Sess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
+    injects: list[str] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        return json.dumps(
+            {
+                "ok": True,
+                "name": name,
+                "spoken": KEEP_CAPTURED_SPOKEN,
+                "result": {
+                    "kept": True,
+                    "spoken": KEEP_CAPTURED_SPOKEN,
+                    "attachment_id": attachment_id,
+                    "encoded_bytes": len(jpeg),
+                    "image_ready": True,
+                },
+            }
+        )
+
+    class _Grok:
+        _provider = "xai"
+        supports_function_calls = True
+        _open_turn_id = "turn-keep-att"
+        _shadow_response_for_turn = None
+        _response_active = True
+        _assistant_open = True
+        _last_input_transcript = "memorize this"
+        _pending_tools = 0
+        _response_tool_choice_supported = True
+        created: list[dict] = []
+
+        async def cancel(self) -> None:
+            return None
+
+        async def _send(self, payload, timeout_s: float = 2.0) -> bool:
+            self.created.append(payload)
+            return True
+
+        async def _deliver_camera_images(self, name: str, call_id: str, output: str) -> str:
+            injects.append(call_id)
+            if call_id == "owner-keep":
+                return json.dumps({"ok": True, "image_delivered": False, "frames": 0})
+            return json.dumps({"ok": True, "image_delivered": True, "frames": 1})
+
+        async def speak_life_record(self, text: str) -> bool:
+            return True
+
+    live = LiveSession(session_id="owner-keep-att", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _Grok()
+    try:
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(
+                at_ms=2,
+                text="memorize this",
+                provider="grok-voice",
+            ),
+        )
+        assert loaded == [attachment_id]
+        assert injects == ["owner-keep", _KEEP_INJECT_CALL_ID]
+        assert any(item.get("type") == "response.create" for item in live.grok_voice.created)
+    finally:
+        live.close()
+        reset_pending_observations()
+
+
+def test_mini_called_look_still_awaits_keep_identity() -> None:
+    from app.voice.live.session import LiveSession
+
+    live = LiveSession(session_id="mini-keep-flag", backchannel_enabled=False)
+    try:
+        live.note_keep_look(
+            arguments={"prompt": "what is this"},
+            body={"ok": True, "spoken": "A current camera image is attached."},
+            transcript="hello",
+        )
+        assert live._awaiting_keep_identity is False
+        live.note_keep_look(
+            arguments={"prompt": "memorize this"},
+            body={"ok": True, "kept": True, "keep_request": "memorize this"},
+            transcript="memorize this",
+        )
+        assert live._awaiting_keep_identity is False
+        live.note_keep_look(
+            arguments={"prompt": "memorize this"},
+            body={
+                "ok": True,
+                "kept": True,
+                "keep_request": "memorize this",
+                "image_ready": True,
+                "attachment_id": "11111111-1111-1111-1111-111111111111",
+            },
+            transcript="memorize this",
+        )
+        assert live._awaiting_keep_identity is True
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_mini_first_look_speech_persists_without_broker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.voice.live.events import ReplyEvent
+    from app.voice.live.session import LiveSession
+
+    written: dict[str, str] = {}
+
+    async def fake_remember(session, text, **kwargs):
+        written["text"] = text
+        return {"kept": True}
+
+    class _Sess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
+    monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
+
+    class _Grok:
+        _model = "gpt-realtime"
+        _last_input_transcript = "memorize this"
+
+    live = LiveSession(session_id="mini-keep-persist", backchannel_enabled=False)
+    live.grok_voice = _Grok()
+    live.note_keep_look(
+        arguments={"prompt": "memorize this"},
+        body={
+            "kept": True,
+            "keep_request": "memorize this",
+            "image_ready": True,
+            "attachment_id": "11111111-1111-1111-1111-111111111111",
+        },
+        transcript="memorize this",
+    )
+    try:
+        await live.emit(
+            ReplyEvent(
+                at_ms=3,
+                text=(
+                    "A matte black handset with a silver rim, a dent on the left "
+                    "edge, and tiny white lettering near the base."
+                ),
+                model="gpt-realtime",
+            )
+        )
+        for _ in range(20):
+            if written:
+                break
+            await asyncio.sleep(0.05)
+        assert "handset" in written.get("text", "").lower()
+        assert "dent" in written.get("text", "").lower()
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_assistant_partial_persists_keep_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.voice.live.events import PartialTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    written: dict[str, str] = {}
+
+    async def fake_remember(session, text, **kwargs):
+        written["text"] = text
+        return {"kept": True}
+
+    class _Sess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
+    monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
+
+    class _Grok:
+        _model = "gpt-realtime"
+        _last_input_transcript = "memorize this"
+
+    live = LiveSession(session_id="mini-keep-partial", backchannel_enabled=False)
+    live.grok_voice = _Grok()
+    live.note_keep_look(
+        arguments={"prompt": "memorize this"},
+        body={
+            "kept": True,
+            "keep_request": "memorize this",
+            "image_ready": True,
+            "attachment_id": "11111111-1111-1111-1111-111111111111",
+        },
+        transcript="memorize this",
+    )
+    try:
+        await live.emit(
+            PartialTranscriptEvent(
+                at_ms=3,
+                text=(
+                    "A matte black handset with a silver rim, a dent on the left "
+                    "edge, and tiny white lettering near the base."
+                ),
+                sequence=1,
+                role="assistant",
+            )
+        )
+        for _ in range(20):
+            if written:
+                break
+            await asyncio.sleep(0.05)
+        assert "handset" in written.get("text", "").lower()
+        assert "dent" in written.get("text", "").lower()
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_keep_awaiting_stays_until_identity_row_lands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.voice.live.events import ReplyEvent
+    from app.voice.live.session import LiveSession
+
+    calls: list[str] = []
+
+    async def fake_remember(session, text, **kwargs):
+        calls.append(text)
+        if len(calls) == 1:
+            return None
+        return {"kept": True}
+
+    class _Sess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def commit(self):
+            return None
+
+        async def rollback(self):
+            return None
+
+    monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
+    monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
+
+    class _Grok:
+        _model = "gpt-realtime"
+        _last_input_transcript = "memorize this"
+
+    identity = (
+        "A matte black handset with a silver rim, a dent on the left "
+        "edge, and tiny white lettering near the base."
+    )
+    live = LiveSession(session_id="mini-keep-retry", backchannel_enabled=False)
+    live.grok_voice = _Grok()
+    live.note_keep_look(
+        arguments={"prompt": "memorize this"},
+        body={
+            "kept": True,
+            "keep_request": "memorize this",
+            "image_ready": True,
+            "attachment_id": "11111111-1111-1111-1111-111111111111",
+        },
+        transcript="memorize this",
+    )
+    try:
+        await live.emit(ReplyEvent(at_ms=3, text=identity, model="gpt-realtime"))
+        for _ in range(20):
+            if calls:
+                break
+            await asyncio.sleep(0.05)
+        assert live._awaiting_keep_identity is True
+        richer = identity.replace("lettering", "SERIAL 4K2 lettering")
+        await live.emit(ReplyEvent(at_ms=4, text=richer, model="gpt-realtime"))
+        for _ in range(20):
+            if len(calls) >= 2 and live._awaiting_keep_identity is False:
+                break
+            await asyncio.sleep(0.05)
+        assert len(calls) >= 2
+        assert live._awaiting_keep_identity is False
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_thin_class_stub_is_not_persisted_as_keep_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.voice.live.events import ReplyEvent
+    from app.voice.live.session import LiveSession
+
+    written: dict[str, str] = {}
+
+    async def fake_remember(session, text, **kwargs):
+        written["text"] = text
+        return {"kept": True}
+
+    class _Sess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
+    monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
+
+    class _Grok:
+        _model = "gpt-realtime"
+        _last_input_transcript = "memorize this"
+
+    live = LiveSession(session_id="mini-keep-thin", backchannel_enabled=False)
+    live.grok_voice = _Grok()
+    live.note_keep_look(
+        arguments={"prompt": "memorize this"},
+        body={
+            "kept": True,
+            "keep_request": "memorize this",
+            "image_ready": True,
+            "attachment_id": "11111111-1111-1111-1111-111111111111",
+        },
+        transcript="memorize this",
+    )
+    try:
+        await live.emit(
+            ReplyEvent(
+                at_ms=3,
+                text="That's a phone.",
+                model="gpt-realtime",
+            )
+        )
+        await asyncio.sleep(0.2)
+        assert written == {}
+        assert live._awaiting_keep_identity is True
+        await live.emit(
+            ReplyEvent(
+                at_ms=4,
+                text=(
+                    "A matte black handset with a silver rim, a dent on the left "
+                    "edge, and tiny white lettering near the base."
+                ),
+                model="gpt-realtime",
+            )
+        )
+        for _ in range(20):
+            if written:
+                break
+            await asyncio.sleep(0.05)
+        assert "handset" in written.get("text", "").lower()
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_archive_speech_does_not_persist_as_keep_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from app.voice.live.events import ReplyEvent
+    from app.voice.live.session import LiveSession
+
+    written: dict[str, str] = {}
+
+    async def fake_remember(session, text, **kwargs):
+        written["text"] = text
+        return {"kept": True}
+
+    class _Sess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def commit(self):
+            return None
+
+    monkeypatch.setattr("app.memory.visual.remember_spoken_scene", fake_remember)
+    monkeypatch.setattr("app.db.SessionLocal", lambda: _Sess())
+
+    class _Grok:
+        _model = "gpt-realtime"
+        _last_input_transcript = "I am holding something. Memorize this."
+
+    mummy = (
+        'I can see "Mummy" as a contact, but I don\'t have the phone number listed.'
+    )
+    live = LiveSession(session_id="mini-keep-archive", backchannel_enabled=False)
+    live.grok_voice = _Grok()
+    try:
+        await live.emit(ReplyEvent(at_ms=3, text=mummy, model="gpt-realtime"))
+        await asyncio.sleep(0.2)
+        assert written == {}
+        live.note_keep_look(
+            arguments={"prompt": "memorize this"},
+            body={
+            "kept": True,
+            "keep_request": "memorize this",
+            "image_ready": True,
+            "attachment_id": "11111111-1111-1111-1111-111111111111",
+        },
+            transcript="memorize this",
+        )
+        await live.emit(ReplyEvent(at_ms=4, text=mummy, model="gpt-realtime"))
+        await asyncio.sleep(0.2)
+        assert written == {}
+        await live.emit(
+            ReplyEvent(
+                at_ms=5,
+                text=(
+                    "A matte black handset with a silver rim, a dent on the left "
+                    "edge, and tiny white lettering near the base."
+                ),
+                model="gpt-realtime",
+            )
+        )
+        for _ in range(20):
+            if written:
+                break
+            await asyncio.sleep(0.05)
+        assert "handset" in written.get("text", "").lower()
+        assert "mummy" not in written.get("text", "").lower()
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_keep_look_captures_while_mini_recall_in_flight() -> None:
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    seen: list[tuple[str, str]] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        seen.append((name, call_id))
+        return json.dumps({"ok": True, "kept": True, "image_ready": True})
+
+    class _Grok:
+        supports_function_calls = True
+        _provider = "openai"
+        _pending_tools = 1
+        _tool_boundary_pending = False
+        _continuation_sent = True
+        _response_active = True
+        _assistant_open = True
+
+        async def cancel(self) -> None:
+            return None
+
+        async def _deliver_camera_images(self, *args, **kwargs):
+            return {"image_delivered": True}
+
+        async def _send(self, payload, timeout_s: float = 2.0) -> bool:
+            return True
+
+    live = LiveSession(session_id="keep-look-during-tool", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _Grok()
+    try:
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(
+                at_ms=3,
+                text="I am holding something. Memorize this.",
+                provider="openai-realtime",
+            ),
+        )
+        assert seen == [("look", "owner-keep")]
+        assert live._keep_idle_look_sent is False
     finally:
         live.close()
 
@@ -1029,6 +2427,9 @@ async def test_live_partial_memory_cancels_hedge_before_final() -> None:
     live.run_live_tool = runner
     live.grok_voice = _Grok()
     try:
+        from app.ev.camera_runtime import reset_pending_observations
+
+        reset_pending_observations()
         await live.emit(
             PartialTranscriptEvent(
                 at_ms=1,
@@ -1038,12 +2439,13 @@ async def test_live_partial_memory_cancels_hedge_before_final() -> None:
         )
         assert cancelled["n"] == 1
         assert seen == []
-        await live.emit(
+        await _await_s2s(
+            live,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="did you remember the book",
                 provider="grok-voice",
-            )
+            ),
         )
         assert seen == [
             (
@@ -1117,10 +2519,27 @@ async def test_live_session_memorize_then_new_session_recalls_from_store(
     from app.voice.live.events import FinalTranscriptEvent
     from app.voice.live.session import LiveSession
 
-    async def no_frame(*_args, **_kwargs):
-        return {"ok": False, "spoken": "I could not see that.", "error": "no_frame"}
+    async def seen_keep(*_args, **_kwargs):
+        written = await persist_keep_intent(
+            db_session,
+            "memorize this book",
+            actor="owner",
+            device_id="mac-1",
+            scene="You're holding a red book titled The Pragmatic Programmer.",
+            labels=["book"],
+        )
+        await db_session.commit()
+        spoken_line = (
+            "You're holding a red book titled The Pragmatic Programmer. "
+            "I'll remember that."
+        )
+        return {
+            "ok": True,
+            "kept": bool(written and written.get("kept")),
+            "spoken": spoken_line,
+        }
 
-    monkeypatch.setattr("app.ev.look.look_now", no_frame)
+    monkeypatch.setattr("app.ev.look.look_now", seen_keep)
 
     spoken: list[str] = []
 
@@ -1182,12 +2601,13 @@ async def test_live_session_memorize_then_new_session_recalls_from_store(
     first.run_live_tool = runner
     first.grok_voice = _Grok()
     try:
-        await first.emit(
+        await _await_s2s(
+            first,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="memorize this book",
                 provider="grok-voice",
-            )
+            ),
         )
         assert spoken
         assert (
@@ -1203,12 +2623,13 @@ async def test_live_session_memorize_then_new_session_recalls_from_store(
     later.run_live_tool = runner
     later.grok_voice = _Grok()
     try:
-        await later.emit(
+        await _await_s2s(
+            later,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="did you remember the book",
                 provider="grok-voice",
-            )
+            ),
         )
         assert spoken
         blob = spoken[-1].lower()
@@ -1404,6 +2825,49 @@ async def test_clarity_hedge_after_keep_is_cancelled_and_forced_ack() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shape_paraphrase_after_keep_is_cancelled_and_forced_ack() -> None:
+    import json
+
+    from app.voice.live.grok_voice import GrokVoiceBridge
+
+    class _WS:
+        def __init__(self) -> None:
+            self.sent: list[dict] = []
+
+        async def send(self, raw: str) -> None:
+            self.sent.append(json.loads(raw))
+
+    ws = _WS()
+    bridge = GrokVoiceBridge(on_event=lambda _e: None, api_key="k", provider="openai")
+    bridge._ws = ws
+    bridge._audio_accepting = True
+    bridge._response_active = True
+    bridge._honesty_speech = True
+    bridge._pending_life_record = (
+        "A stainless steel thermos with a black lid and a dent near the base."
+    )
+    await bridge._handle_upstream(
+        {
+            "type": "response.output_audio_transcript.delta",
+            "delta": "You're holding a container-shaped thing.",
+        }
+    )
+    kinds = [item.get("type") for item in ws.sent]
+    assert "response.cancel" in kinds
+    acks = [
+        item
+        for item in ws.sent
+        if item.get("type") == "conversation.item.create"
+        and "system confirmation" in str(item)
+    ]
+    assert acks
+    blob = json.dumps(acks[0]).lower()
+    assert "thermos" in blob
+    assert "dent" in blob or "lid" in blob
+    assert "container-shaped" not in blob
+
+
+@pytest.mark.asyncio
 async def test_live_no_record_phrase_is_cancelled_and_forced_ack() -> None:
     import json
 
@@ -1458,6 +2922,10 @@ def test_life_record_force_line_prefers_the_scene() -> None:
     line = life_record_force_line(keep).lower()
     assert "night sky" in line
     assert "asked evie" not in line
+    stub = life_record_force_line(
+        "You asked me to remember a container-shaped thing."
+    )
+    assert stub == ""
     leaked = (
         "(life record — answer the owner from this now; do not deny) " + keep
     )
@@ -1663,16 +3131,23 @@ async def test_keep_look_speaks_stored_scene_not_camera_prompt(
     await db_session.commit()
     spoken = (result.get("spoken") or "").lower()
     assert result.get("kept") is True
-    assert "camera image is attached" not in spoken
-    assert "atomic" in spoken
     pack = await build_explicit_recall_payload(
         db_session, "what was the book called", k=6
     )
     blob = " ".join(
         str(item.get("text") or "") for item in pack.get("evidence") or []
     ).lower()
+    recalled = " ".join(
+        (
+            blob,
+            str(pack.get("spoken") or ""),
+            spoken,
+        )
+    ).lower()
     assert pack.get("grounding") == "evidence"
-    assert "atomic" in blob or "atomic" in str(pack.get("spoken") or "").lower()
+    assert "atomic" in recalled
+    assert "camera image is attached" not in blob
+    assert "describe what you actually see" not in blob
 
 
 @pytest.mark.asyncio
@@ -1747,6 +3222,12 @@ async def test_empty_look_is_not_the_keep_and_later_remote_is(
         "search_memory",
         {"query": "Just ask you to remember."},
     )
+    holding = "I am holding something in my hand. Can you memorize this?"
+    assert wants_keep_visible(holding)
+    assert _owner_memory_live_action(holding) == (
+        "look",
+        {"prompt": holding, "focus": "auto"},
+    )
     empty = await persist_visual_observation(
         db_session,
         {
@@ -1812,6 +3293,26 @@ async def test_memorize_does_not_reroute_look_to_screen(
         live_session_id=None,
         device_id="mac-1",
         request_id="keep-1",
+    )
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_memorize_does_not_reroute_look_to_files_when_haystack_has_desktop_talk(
+    db_session: AsyncSession,
+) -> None:
+    from app.ev.tools import _reroute_look_to_screen
+
+    out = await _reroute_look_to_screen(
+        db_session,
+        {
+            "prompt": "memorize this",
+            "goal": "list all the files on the desktop",
+        },
+        actor="owner",
+        live_session_id=None,
+        device_id="mac-1",
+        request_id="owner-keep",
     )
     assert out is None
 

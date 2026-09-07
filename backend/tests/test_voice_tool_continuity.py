@@ -15,12 +15,14 @@ Two failure modes made EVERY tool turn glitch:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from types import SimpleNamespace
 
 import pytest
 
 from app.voice.live import grok_voice as gv
+from app.voice.live.events import FinalTranscriptEvent, ReplyEvent
 from app.voice.live.session import LiveSession
 
 
@@ -125,6 +127,119 @@ def test_tool_gap_gate_constants_cover_long_tools() -> None:
     """Backend mic gate must cover 5-15s computer/camera round-trips."""
     assert gv._TOOL_GAP_GATE_S >= 10.0
     assert gv._TOOL_GAP_CONTINUATION_GATE_S >= 3.0
+
+
+@pytest.mark.asyncio
+async def test_tool_is_reserved_before_worker_gets_event_loop_time() -> None:
+    """Back-to-back response.done must already see a pending tool boundary."""
+
+    events: list = []
+
+    async def _on_event(event) -> None:
+        events.append(event)
+
+    bridge = gv.GrokVoiceBridge(
+        on_event=_on_event,
+        now_ms=lambda: 0,
+        provider="openai",
+        api_key="test-key",
+        capability_manifest={},
+        approved_tool_specs=[],
+    )
+    tool = {
+        "name": "search_memory",
+        "call_id": "call-race",
+        "arguments": "{}",
+        "response_id": "resp-tool",
+    }
+
+    # Intentionally do not yield after enqueue. This models the provider
+    # placing function_call_arguments.done and response.done in the same read
+    # burst, before the sibling worker can start.
+    bridge._spawn_tool(tool)
+    bridge._spawn_tool(tool)
+    assert bridge._pending_tools == 0
+    assert bridge._scheduled_tool_calls == {"call-race"}
+    assert bridge._tool_boundary_pending is True
+    assert bridge._response_id == "resp-tool"
+    assert bridge._tool_gap_gate_until > time.monotonic()
+    assert bridge._tool_queue.qsize() == 1
+
+    bridge._reply_text = "Let me check."
+    await bridge._handle_upstream(
+        {
+            "type": "response.done",
+            "response": {
+                "id": "resp-tool",
+                "output": [{"type": "function_call"}],
+            },
+        }
+    )
+    assert bridge._pending_tools == 0
+    assert bridge._scheduled_tool_calls == {"call-race"}
+    assert not any(isinstance(event, ReplyEvent) for event in events)
+
+    bridge._cancel_tool_worker()
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_upstream_queue_preserves_control_boundaries_over_audio() -> None:
+    """A full provider queue must not evict response/VAD control events."""
+
+    bridge = gv.GrokVoiceBridge(
+        on_event=lambda _event: asyncio.sleep(0),
+        now_ms=lambda: 0,
+        provider="openai",
+        api_key="test-key",
+        capability_manifest={},
+        approved_tool_specs=[],
+    )
+    queue = asyncio.Queue(maxsize=2)
+    bridge._upstream_events = queue
+    queue.put_nowait({"type": "response.output_audio.delta", "delta": "old"})
+    queue.put_nowait({"type": "response.done", "response": {"id": "r1"}})
+
+    # This models a control event arriving after the queue filled with audio
+    # and a boundary. The audio slice may be sacrificed; response.done must
+    # remain in FIFO order and the new response.created must be admitted.
+    assert bridge._drop_upstream_audio() is True
+    queue.put_nowait({"type": "response.created", "response": {"id": "r2"}})
+    assert [item["type"] for item in queue._queue] == [
+        "response.done",
+        "response.created",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_s2s_final_transcript_publishes_before_slow_tool_route() -> None:
+    """Final transcript delivery must not inherit recall/computer latency."""
+
+    release = asyncio.Event()
+    session = LiveSession(session_id="s-route")
+
+    async def slow_route(_text: str, *, from_grok: bool) -> bool:
+        assert from_grok is True
+        await release.wait()
+        return True
+
+    session._maybe_local_intent = slow_route  # type: ignore[method-assign]
+    routing = await asyncio.wait_for(
+        session.emit(
+            FinalTranscriptEvent(
+                at_ms=1,
+                text="recall the file from yesterday",
+                provider="openai-realtime",
+            )
+        ),
+        timeout=0.1,
+    )
+    assert isinstance(routing, asyncio.Task)
+    assert [event.type for event in session.outbound._queue] == ["final_transcript"]
+    assert not routing.done()
+
+    release.set()
+    assert await routing is True
 
 
 @pytest.mark.asyncio

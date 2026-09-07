@@ -12,8 +12,10 @@
   };
 
   /* After spoken audio ends, room / speaker tail can still hit the mic.
-     Mac live voice keeps capture muted across that tail; phones must too. */
-  const PLAYBACK_MIC_TAIL_MS = 220;
+     Mac live voice keeps capture muted across that tail; phones must too.
+     iPhone speakerphone needs a longer tail than 220ms — echo was becoming
+     a new owner turn ("yes I got you") via server_vad create_response. */
+  const PLAYBACK_MIC_TAIL_MS = 800;
 
   const STATES = [
     "IDLE",
@@ -503,6 +505,8 @@
     this.signaling = "unified_calls";
     this._playbackHold = false;
     this._micTailTimer = 0;
+    this._spokenResponseId = "";
+    this._allowNextResponse = false;
     this._uiState = "";
   }
 
@@ -541,16 +545,60 @@
     if (speaking) {
       this._playbackHold = true;
       this._setMicCaptureEnabled(false);
+      this._send({ type: "input_audio_buffer.clear" });
+      this._setVadCreateResponse(false);
       return;
     }
     this._playbackHold = false;
     this._micTailTimer = window.setTimeout(function () {
       self._micTailTimer = 0;
+      self._spokenResponseId = "";
       if (self.closed || self.runtime === "EVIE_SPEAKING") return;
+      self._setVadCreateResponse(true);
       self._setMicCaptureEnabled(true);
       self._emitState("listening");
       self.onHealth(self.snapshot());
     }, PLAYBACK_MIC_TAIL_MS);
+  };
+
+  EvieWebRTC.prototype._setVadCreateResponse = function _setVadCreateResponse(on) {
+    this._send({
+      type: "session.update",
+      session: {
+        type: "realtime",
+        audio: {
+          input: {
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.68,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 700,
+              interrupt_response: false,
+              create_response: !!on,
+            },
+          },
+        },
+      },
+    });
+  };
+
+  EvieWebRTC.prototype._speakCore = function _speakCore(text) {
+    const spoken = String(text || "").replace(/\s+/g, " ").trim().slice(0, 500);
+    if (!spoken || this.closed) return;
+    this._allowNextResponse = true;
+    this._send({ type: "response.cancel" });
+    this._send({ type: "input_audio_buffer.clear" });
+    this._gateMicForPlayback(true);
+    this._send({
+      type: "response.create",
+      response: {
+        output_modalities: ["audio"],
+        instructions:
+          "Speak this Core answer once, then stop. Do not greet. Do not acknowledge. "
+          + "Do not add another sentence. Do not call tools. Say: "
+          + spoken,
+      },
+    });
   };
 
   EvieWebRTC.prototype._liveBody = function _liveBody(extra) {
@@ -578,7 +626,10 @@
 
   EvieWebRTC.prototype.start = async function start(opened, options) {
     const opts = options || {};
-    const generation = this.generation + 1;
+    const boundGeneration = Number(opened && opened.client_generation);
+    const generation = Number.isInteger(boundGeneration) && boundGeneration > 0
+      ? boundGeneration
+      : this.generation + 1;
     this.stop();
     this.generation = generation;
     this.closed = false;
@@ -593,6 +644,8 @@
     this.signaling = opts.signaling || opened.signaling || "unified_calls";
     this._playbackHold = false;
     this._micTailTimer = 0;
+    this._spokenResponseId = "";
+    this._allowNextResponse = false;
     this._uiState = "";
     this.diag = new ConnectionDiag(this.attemptId);
     this.diag.peer_generation = generation;
@@ -914,6 +967,7 @@
 
   EvieWebRTC.prototype._onProvider = function _onProvider(msg) {
     if (!msg || this.closed) return;
+    const rtc = this;
     const type = msg.type || "";
     if (this._echoHold() && (
       type === "input_audio_buffer.speech_started" ||
@@ -921,10 +975,27 @@
       type === "conversation.item.input_audio_transcription.delta" ||
       type === "conversation.item.input_audio_transcription.completed"
     )) {
+      if (type === "input_audio_buffer.speech_started") {
+        this._send({ type: "input_audio_buffer.clear" });
+      }
       this.onHealth(this.snapshot());
       return;
     }
     this.responses.note(msg);
+    if (type === "response.created") {
+      const rid = (msg.response && msg.response.id) || msg.response_id || "";
+      if (this._allowNextResponse) {
+        this._allowNextResponse = false;
+        if (rid) this._spokenResponseId = rid;
+      } else if (this._echoHold() && this._spokenResponseId && rid && rid !== this._spokenResponseId) {
+        this._send({ type: "response.cancel", response_id: rid });
+        this._send({ type: "input_audio_buffer.clear" });
+        this.onHealth(this.snapshot());
+        return;
+      } else if (rid && !this._spokenResponseId) {
+        this._spokenResponseId = rid;
+      }
+    }
     if (type === "session.created") {
       this.sessionCreated = true;
       this.sessionModel = (msg.session && msg.session.model) || this.sessionModel;
@@ -952,6 +1023,13 @@
       });
       this._setRuntime("PROCESSING");
       this._emitState("thinking");
+      // The receipt is the authoritative phone action coordinator. Cancel
+      // Realtime's automatic response before asking Core whether this
+      // transcript is an action. Otherwise Realtime and Home Station can
+      // race: one may speak or call a tool while the other is still deciding.
+      // If Core returns no takeover, the same conversation turn is resumed
+      // below with a fresh response.create.
+      this._send({ type: "response.cancel" });
       this.api("/v1/device-gateway/live/turn-receipt", {
         method: "POST",
         body: JSON.stringify(this._liveBody({
@@ -960,6 +1038,17 @@
           provider_item_id: msg.item_id || "",
           kind: "final_transcript",
         })),
+      }).then(function (body) {
+        if (body && body.core_takeover && body.core_reply) {
+          rtc._speakCore(body.core_reply);
+          return;
+        }
+        // No canonical read/action claimed the turn. Let Realtime answer
+        // ordinary conversation, camera requests, and visual follow-ups.
+        if (!rtc.closed) {
+          rtc._allowNextResponse = true;
+          rtc._send({ type: "response.create" });
+        }
       }).catch(function () { /* receipt is server authority; client failure is retried next turn */ });
     }
     if (type === "response.output_audio_transcript.delta" && msg.delta) this.onCaption(msg.delta, false);
@@ -972,7 +1061,11 @@
       this._setRuntime("EVIE_SPEAKING");
       this._emitState("speaking");
     }
-    if (type === "output_audio_buffer.stopped") {
+    if (
+      type === "output_audio_buffer.stopped" ||
+      type === "response.output_audio.done" ||
+      type === "response.audio.done"
+    ) {
       this.playing = false;
       if (!this.closed) {
         this._setRuntime("VOICE_READY");
@@ -1004,11 +1097,12 @@
         type: "conversation.item.create",
         item: { type: "function_call_output", call_id: msg.call_id, output: result.output || "{}" },
       });
+      this._allowNextResponse = true;
       this._send({ type: "response.create" });
       let parsed = {};
       try { parsed = JSON.parse(result.output || "{}"); } catch (_err) { parsed = {}; }
       if (parsed.needs_camera) {
-        await self.onCamera({
+        await this.onCamera({
           type: "camera_request",
           request_id: parsed.camera_request_id,
           action: parsed.camera_action || parsed.action || args.action || "look_once",
@@ -1025,6 +1119,7 @@
           output: JSON.stringify({ ok: false, spoken: String(err.message || "tool failed") }),
         },
       });
+      this._allowNextResponse = true;
       this._send({ type: "response.create" });
       this.onHud({ kind: "result", name: msg.name, ok: false });
     }
@@ -1035,6 +1130,7 @@
   };
 
   EvieWebRTC.prototype.commitTurn = function commitTurn() {
+    this._allowNextResponse = true;
     this._send({ type: "input_audio_buffer.commit" });
     this._send({ type: "response.create" });
   };

@@ -100,6 +100,36 @@ STYLE_HEDGE_RE = re.compile(
 )
 STYLE_BULLET_RE = re.compile(r"(?:^|\n)\s*(?:[-*•]|\d+[.)])")
 
+_TOPIC_STEERING_RE = re.compile(
+    r"\s*(?<=[.!?])\s*(?:Should I (?:do|edit|open|add|remove|update|send|call|check|create|run|close)\b[^?]*\?|"
+    r"Do you want me to (?:do|edit|open|add|remove|update|send|call|check|create|run|close)\b[^?]*\?|"
+    r"Want me to (?:do|edit|open|add|remove|update|send|call|check|create|run|close)\b[^?]*\?|"
+    r"Shall I (?:do|edit|open|add|remove|update|send|call|check|create|run|close)\b[^?]*\?|"
+    r"What(?:'s|s| is) on the list\?|"
+    r"Let me know if[^.!]*[.!]|Does that help(?:\?|\.|!)|Hope that helps(?:\?|\.|!))\s*$",
+    re.IGNORECASE,
+)
+_STANDALONE_TOPIC_STEERING_RE = re.compile(
+    r"^\s*(?:"
+    r"Should I (?:do|edit|open|add|remove|update|send|call|check|create|run|close) "
+    r"(?:that|it|this|the list|the file)\??|"
+    r"Do you want me to (?:do|edit|open|add|remove|update|send|call|check|create|run|close) "
+    r"(?:that|it|this|the list|the file)\??|"
+    r"Want me to (?:do|edit|open|add|remove|update|send|call|check|create|run|close) "
+    r"(?:that|it|this|the list|the file)\??|"
+    r"What(?:'s|s| is) on (?:the )?(?:list|note|file)\??"
+    r")\s*$",
+    re.IGNORECASE,
+)
+
+def _strip_topic_steering(text: str) -> str:
+    """TOPIC NEUTRALITY backstop: remove trailing steering/offers at finalize."""
+
+    if _STANDALONE_TOPIC_STEERING_RE.fullmatch(text or ""):
+        return ""
+    return _TOPIC_STEERING_RE.sub("", text).strip()
+
+
 HUD_CONTRACTS: dict[str, dict] = {
     "ev.hud.card.v1": {"required": ["schema_version", "generated_at", "title", "body"]},
     "ev.hud.briefing.v1": {
@@ -537,6 +567,19 @@ ACTION_COMMITMENT = (
 UNCERTAIN_DELIVERY = (
     "I can't confirm that was sent until the runtime reports delivery."
 )
+APP_CHECK_HEDGE_RE = re.compile(
+    r"whatsapp\s*web|web\.whatsapp|"
+    r"check (?:it|them|whatsapp|messages|mail|photos|your (?:phone|app)) "
+    r"(?:yourself|manually|in the app|on the web)|"
+    r"you can (?:just )?(?:open|check) (?:whatsapp|messages|mail|photos|the app)|"
+    r"open (?:it|whatsapp|messages|mail) (?:yourself|manually|on your phone)|"
+    r"manually open|"
+    r"open it (?:yourself|manually|on your phone)",
+    re.IGNORECASE,
+)
+HONEST_LIVE_APP = (
+    "I read that on this Mac. I won't send you to WhatsApp Web or ask you to check the app by hand."
+)
 REMEDIATION_NEXT_STEP = (
     "Next step: set EV_LIFE_HELPER_PATH to the EVLifeHelper binary and grant "
     "the messaging permission in System Settings → Privacy & Security, then retry."
@@ -616,6 +659,20 @@ def _apply_wave_life_policy(text: str) -> tuple[str, dict, list[FilterFlag]]:
                     "delivery_claim_ungrounded",
                     "high",
                     detail="Delivery claimed without runtime evidence; downgraded to uncertainty",
+                    action="refine",
+                )
+            )
+        elif APP_CHECK_HEDGE_RE.search(sentence):
+            sentence = HONEST_LIVE_APP
+            persona["app_check_hedge_rewritten"] = (
+                persona.get("app_check_hedge_rewritten", 0) + 1
+            )
+            flags.append(
+                FilterFlag(
+                    "output",
+                    "app_check_hedge_rewritten",
+                    "high",
+                    detail="Told the owner to check WhatsApp Web or the app by hand",
                     action="refine",
                 )
             )
@@ -821,6 +878,20 @@ def enforce_persona(
         text,
         flags=re.IGNORECASE,
     )
+
+    _original_after_chops = text
+    text = _strip_topic_steering(text)
+    if text != _original_after_chops:
+        persona["topic_steering_removed"] = True
+        flags.append(
+            FilterFlag(
+                "output",
+                "topic_steering_removed",
+                "low",
+                detail="Removed trailing offer/steering question",
+                action="refine",
+            )
+        )
     text, guardrails, guardrail_flags = apply_persona_guardrails(text, claims=claims)
     persona.update(guardrails)
     flags.extend(guardrail_flags)
@@ -845,6 +916,11 @@ def enforce_persona(
         if target:
             lo = max(5, int(target * 0.7))
             hi = max(lo, int(target * 1.25))
+    # Training-derived style signals can tune detail for a mode, but they may
+    # not expand the owner-frozen spoken contract.  In particular, a learned
+    # long-answer preference must never turn casual voice replies into essays.
+    if strategy.mode in {"casual", "social"}:
+        hi = min(hi, 32)
     if strict:
         hi = max(lo, int(hi * 0.8))
     words = text.split()

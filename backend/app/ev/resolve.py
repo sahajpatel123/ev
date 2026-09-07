@@ -80,6 +80,50 @@ def owner_tz() -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+def owner_now() -> datetime:
+    return datetime.now(owner_tz())
+
+
+def clock_line(*, now: datetime | None = None) -> str:
+    """Owner-local stamp for briefings and live instructions. Never guess."""
+
+    moment = now or owner_now()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=owner_tz())
+    else:
+        moment = moment.astimezone(owner_tz())
+    place = (getattr(settings, "location_place", None) or "").strip()
+    stamp = moment.strftime("%A %d %B %Y, %H:%M %Z")
+    if place:
+        return f"Local time: {stamp}. Place: {place}."
+    return f"Local time: {stamp}."
+
+
+def spoken_clock(text: str = "", *, now: datetime | None = None) -> str:
+    """One spoken sentence for 'what day/time is it'."""
+
+    moment = now or owner_now()
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=owner_tz())
+    else:
+        moment = moment.astimezone(owner_tz())
+    weekday = moment.strftime("%A")
+    month = moment.strftime("%B")
+    hour = moment.strftime("%I").lstrip("0") or "12"
+    minute = moment.strftime("%M")
+    ampm = moment.strftime("%p")
+    time_spoken = f"{hour}:{minute} {ampm}"
+    date_spoken = f"{weekday}, {month} {moment.day}, {moment.year}"
+    lowered = (text or "").lower()
+    wants_time = bool(re.search(r"\btime\b", lowered))
+    wants_day = bool(re.search(r"\b(?:day|date|today)\b", lowered))
+    if wants_time and not wants_day:
+        return f"It's {time_spoken}."
+    if wants_day and not wants_time:
+        return f"It's {date_spoken}."
+    return f"It's {date_spoken}, {time_spoken}."
+
+
 @dataclass(frozen=True)
 class Match[T]:
     status: MatchStatus

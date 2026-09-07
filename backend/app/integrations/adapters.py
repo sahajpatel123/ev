@@ -1004,6 +1004,9 @@ class MessagingAdapter(Adapter):
             "messaging.send": "messages.send",
         }[action]
         if action == "messaging.send":
+            channel = str(args.get("channel") or "").strip().lower()
+            if channel in {"whatsapp", "wa"}:
+                command = "whatsapp.send"
             helper_args, policy = _life_action_common(
                 action=action,
                 args=args,

@@ -371,6 +371,14 @@ def stash_observation(observation: CameraObservation) -> None:
     )
 
 
+def peek_observations(call_id: str | None) -> list[CameraObservation]:
+    """Copy stashed frames without consuming them."""
+
+    if not call_id:
+        return []
+    return list(_PENDING.get(str(call_id), []))
+
+
 def pop_observations(call_id: str | None) -> list[CameraObservation]:
     if not call_id:
         return []
@@ -569,8 +577,8 @@ def camera_model_instructions(readiness: CameraReadiness | dict[str, Any] | None
             "Do not open the Camera app for those jobs. Do not guess. Do not "
             "claim you cannot see. After look, capture_photo, record_video, or "
             "observe_camera returns, attached images are already in the "
-            "conversation. Speak two to four natural sentences about people, "
-            "clothing and its colors, pose, objects, and the overall scene. If "
+            "conversation. Speak only the details needed to answer the owner's "
+            "question, in one or two short sentences. If "
             "a garment or object is visible, name its color from the image; "
             "labels may miss it. Listed colors are scene hints, not a reason "
             "to hedge. For a recorded clip, say what they are doing. Do not "
@@ -616,16 +624,21 @@ def camera_image_prompt(name: str, *, index: int = 0, total: int = 1) -> str:
             else "current photo from the owner's MacBook camera"
         )
         return (
-            f"This is a {kind}. Look at the image and describe it in natural "
-            "speech: people, clothing, pose, objects, colors, and the setting. "
-            "Do not only list labels. Mention printed text only if you can read "
-            "it. Missing text is not a failure. Do not say it is too dark, "
-            "darkened, blurry, or that you cannot see the image clearly when people, objects, "
-            "or colors are visible. If they named the object, use that name. This look is stored as memory. If they asked "
-            "you to remember what they showed, say you will remember it. Never "
-            "say you cannot guarantee future recall. Follow-up questions about this image should "
-            "talk about those visual facts, not darkness or missing text. Do "
-            "not name people unless enrolled."
+            f"This is a {kind}. Start with a, an, or the plus the specific thing "
+            "in two short sentences: a concrete noun (not container, object, item, "
+            "shape, device, or a vague class like phone or bottle), its colors, any "
+            "printed text, and one distinctive detail. Also "
+            "mention people, clothing, pose, and the setting when they are "
+            "visible. Do not only list labels. Mention printed text only if you "
+            "can read it. Missing text is not a failure. Do not say it is too "
+            "dark, darkened, blurry, or that you cannot see the image clearly "
+            "when people, objects, or colors are visible. If they named the "
+            "object, use that name. This look is stored as memory. If they "
+            "asked you to remember what they showed, say you will remember it "
+            "after you have named it. Never say you cannot guarantee future "
+            "recall. Follow-up questions about this image should talk about "
+            "those visual facts, not darkness or missing text. Do not name "
+            "people unless enrolled."
         )
     if name in {"screen_look", "see", "click", "double_click", "right_click", "drag", "ui_action"}:
         return "Window screenshot from the owner's Mac. Describe only visible UI."

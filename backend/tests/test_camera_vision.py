@@ -951,6 +951,8 @@ def test_camera_image_prompt_asks_for_a_real_description() -> None:
     capture = camera_image_prompt("capture_photo").lower()
     record = camera_image_prompt("record_video", index=1, total=3).lower()
     assert "clothing" in look
+    assert "concrete noun" in look
+    assert "not container" in look
     assert "missing text is not a failure" in look
     assert "photo you just took" in capture
     assert "frame 2 of 3" in record
@@ -1076,5 +1078,73 @@ async def test_record_delivery_asks_the_model_to_describe_the_clip(monkeypatch) 
     live = openai_realtime_instructions().lower()
     assert "describe the attached images in natural speech" in live
     assert "read the function json aloud" in live
+    reset_pending_observations()
+
+
+async def test_keep_look_delivery_does_not_force_a_label_stub(monkeypatch) -> None:
+    from app.ev.look import KEEP_CAPTURED_SPOKEN
+
+    reset_pending_observations()
+    sent: list[dict] = []
+
+    async def fake_send(self, payload, *, timeout_s: float = 2.0) -> bool:
+        sent.append(payload)
+        return True
+
+    monkeypatch.setattr(GrokVoiceBridge, "_send", fake_send)
+    bridge = GrokVoiceBridge(on_event=lambda event: asyncio.sleep(0), provider="openai")
+    bridge._last_input_transcript = "memorize this"
+    call_id = "call-keep-deliver"
+    stash_observation(
+        CameraObservation(
+            request_id="req-keep-deliver",
+            call_id=call_id,
+            jpeg=_jpeg(),
+            width=1280,
+            height=720,
+            detail="high",
+        )
+    )
+    aid = "11111111-1111-1111-1111-111111111111"
+    output = await bridge._deliver_camera_images(
+        "look",
+        call_id,
+        json.dumps(
+            {
+                "ok": True,
+                "spoken": KEEP_CAPTURED_SPOKEN,
+                "kept": True,
+                "attachment_id": aid,
+                "image_ready": True,
+                "encoded_bytes": 140000,
+                "labels": ["container", "indoor"],
+                "width": 1280,
+                "height": 720,
+            }
+        ),
+    )
+    payload = json.loads(output)
+    spoken = str(payload.get("spoken") or "").lower()
+    assert payload["image_delivered"] is True
+    assert payload.get("kept") is True
+    assert payload.get("attachment_id") == aid
+    assert "container" not in spoken
+    assert "current camera image is attached" not in spoken
+    assert not spoken
+    assert "labels" not in payload
+    assert "visual_facts" not in payload
+    assert "follow_up" not in payload
+    pending = str(getattr(bridge, "_pending_life_record", "") or "").lower()
+    assert "container" not in pending
+    assert "current camera image is attached" not in pending
+    prompts = [
+        item["item"]["content"][0]["text"].lower()
+        for item in sent
+        if item.get("type") == "conversation.item.create"
+    ]
+    assert prompts
+    assert any("concrete noun" in text for text in prompts)
+    assert any("not container" in text for text in prompts)
+    assert all("clothing" not in text for text in prompts)
     reset_pending_observations()
 

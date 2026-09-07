@@ -60,7 +60,20 @@ final class AppModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
     @Published var hudCard: HUDCard?
     @Published var queueCount = 0
-    @Published var lastError: String?
+    // TTS chunks clear transient errors as they arrive. A normal reply can
+    // contain dozens of chunks, and assigning nil to an already-nil
+    // `@Published` property invalidates the open menu every time. Keep this
+    // projection observable, but publish only a real value transition so UI
+    // rendering cannot compete with live-event delivery on the main actor.
+    private var storedLastError: String?
+    var lastError: String? {
+        get { storedLastError }
+        set {
+            guard storedLastError != newValue else { return }
+            objectWillChange.send()
+            storedLastError = newValue
+        }
+    }
     @Published var needsComputerAccessibility = false
     @Published var isLiveMuted = false
     @Published var isLiveActive = false
@@ -495,9 +508,10 @@ final class AppModel: ObservableObject {
         capabilityErrors: [String]
     ) {
         if let provider, !provider.isEmpty {
-            activeLiveProvider = provider
+            setPublishedIfChanged(\AppModel.activeLiveProvider, Optional(provider))
         }
-        liveRuntimeDiagnostics.updateRuntime(
+        var diagnostics = liveRuntimeDiagnostics
+        diagnostics.updateRuntime(
             provider: provider,
             model: model,
             advertisedTools: advertisedTools,
@@ -505,6 +519,7 @@ final class AppModel: ObservableObject {
             providerSessionReady: providerSessionReady,
             capabilityErrors: capabilityErrors
         )
+        setPublishedIfChanged(\AppModel.liveRuntimeDiagnostics, diagnostics)
     }
 
     func noteLiveCapabilityError(_ error: String) {
@@ -592,28 +607,42 @@ final class AppModel: ObservableObject {
         capabilityError: String? = nil
     ) {
         if let provider, !provider.isEmpty {
-            activeLiveProvider = provider
+            setPublishedIfChanged(\AppModel.activeLiveProvider, Optional(provider))
         }
         if let model, !model.isEmpty {
-            activeLiveModel = model
+            setPublishedIfChanged(\AppModel.activeLiveModel, Optional(model))
         }
         if let ttsDeviceID, !ttsDeviceID.isEmpty {
-            liveTTSDeviceID = ttsDeviceID
+            setPublishedIfChanged(\AppModel.liveTTSDeviceID, Optional(ttsDeviceID))
         }
         if let advertisedTools {
-            advertisedLiveToolNames = advertisedTools
+            setPublishedIfChanged(\AppModel.advertisedLiveToolNames, advertisedTools)
         }
         if let acknowledgedTools {
-            providerAcknowledgedToolNames = acknowledgedTools
+            setPublishedIfChanged(\AppModel.providerAcknowledgedToolNames, acknowledgedTools)
         }
-        liveToolsReported = liveToolsReported || toolsReported
-        self.providerToolsReported = self.providerToolsReported || providerToolsReported
+        setPublishedIfChanged(\AppModel.liveToolsReported, liveToolsReported || toolsReported)
+        setPublishedIfChanged(
+            \AppModel.providerToolsReported,
+            self.providerToolsReported || providerToolsReported
+        )
         if let providerSessionReady {
-            self.providerSessionReady = providerSessionReady
+            setPublishedIfChanged(\AppModel.providerSessionReady, providerSessionReady)
         }
         if let capabilityError, !capabilityError.isEmpty {
-            self.capabilityError = capabilityError
+            setPublishedIfChanged(\AppModel.capabilityError, Optional(capabilityError))
         }
+    }
+
+    /// Assign an observable presentation value only when it changed.
+    /// `@Published` emits before assignment even for equal values, so this
+    /// guard is required on the high-frequency live-event path.
+    private func setPublishedIfChanged<Value: Equatable>(
+        _ keyPath: ReferenceWritableKeyPath<AppModel, Value>,
+        _ value: Value
+    ) {
+        guard self[keyPath: keyPath] != value else { return }
+        self[keyPath: keyPath] = value
     }
 
     func noteProviderToolMismatch(acknowledgedTools: [String], message: String) {

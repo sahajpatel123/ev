@@ -11,6 +11,8 @@ EV FLEET LAW — binding on all 20 agents
 3. SHARED APPEND-ONLY FILES. Makefile, .env.example, compose.yaml,
    docs/ENVIRONMENT.md, app/config.py, app/models.py, app/schemas.py, and
    app/api/{core,ev,edith,companion,tools}.py are shared. Rules:
+   EXCEPT app/ev/personality.py: see rule 13 — persona is owner-frozen,
+   append-only for nothing, off-limits to every agent.
      - Append inside a block marked  # --- AGENT <N> <CODENAME> ---
      - Never modify, reorder, reformat, or delete another agent's lines.
      - Never change an existing endpoint signature, table column, or setting
@@ -61,8 +63,22 @@ EV FLEET LAW — binding on all 20 agents
 
 12. REPORT FOOTER IS MANDATORY. No footer means the work is incomplete
     regardless of quality.
+13. PERSONA IS OWNER-FROZEN. Evie's spoken personality lives in ONE place:
+    ``SPEECH_STYLE_INSTRUCTIONS`` (``app/ev/personality.py``, "EV SPEECH
+    CONTRACT") plus ``DEFAULT_PROFILE``. No agent may edit,
+    retune, or re-prompt around them. If your feature changes how Evie should
+    behave, write a DEPENDENCY NOTE for the owner — never a prompt edit.
+    You MAY add features, tools, pipelines, and real systems; you may NOT:
+    - add capability-specific style, preamble, or "should I…" steering text;
+    - prime prompts with your feature so Evie refers to it unprompted
+      (every capability is background machinery — computer, data, memory,
+      camera, messages, timers are all equal);
+    - change tools that feed spoken output to advertise or suggest their
+      feature in replies.
+    Enforced by ``backend/tests/test_personality_lock.py`` — any build that
+    drifts the law fails the suite.
 
-13. INFERENCE TOPOLOGY. Reasoning runs through a hosted API (DeepSeek). No
+14. INFERENCE TOPOLOGY. Reasoning runs through a hosted API (DeepSeek). No
     agent may place a local LLM on a required path. Small local models are
     permitted and preferred ONLY where an API is impossible or clearly worse:
     wake word (continuous mic), OCR (Apple Vision, free), speaker verification

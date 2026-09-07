@@ -9,15 +9,17 @@ from .registry import advertised_operations
 from .store import handshake_of
 
 MOBILE_ACTION_CONTRACT = (
-    "MOBILE ACTION CONTRACT: This iPhone acts through phone_action only. "
-    "Never invent a run_shortcut function. Never invent phone numbers. "
-    "Timers, reminders, calls, messages, maps, and opening apps use phone_action, "
-    "not Mac tools and not Shortcuts. Keep message recipient and body separate. "
-    "For Apple Messages do not ask Evie are you sure — prepare the composer; "
-    "Apple's Send is the confirmation. For explicit timers and reminders, do not "
-    "ask to confirm. If awaiting confirmation, wait for yes/no. If only system UI "
-    "opened, say you opened or prepared it — never that the call connected or the "
-    "message sent. Remote control of another iPhone is not available."
+    "MOBILE ACTION CONTRACT: Safari Evie cannot run iPhone Clock or Reminders. "
+    "Timers, reminders, opening Calculator/Safari/Spotify, mail, calendar, and "
+    "Mac apps run on Home Station. Prefer evie_home_action or evie_state_query "
+    "with their exact words; Home Station executes the real Mac tool. "
+    "phone_action is only for a native iPhone broker (maps URLs, tel/sms when "
+    "a number is given). Never invent a run_shortcut function. Never invent "
+    "phone numbers. Never tell them to open a separate iPhone app for a timer "
+    "or reminder — Home Station does it. Keep message recipient and body separate. "
+    "If awaiting confirmation, wait for yes/no. Never claim a call connected or "
+    "a message sent unless the tool result says so. Remote control of another "
+    "iPhone is not available."
 )
 
 PHONE_ACTION_DESCRIPTION = (
@@ -100,6 +102,51 @@ def phone_action_tool_spec() -> dict[str, Any]:
     }
 
 
+async def _home_station_phone_action(
+    *,
+    device_id: str,
+    arguments: dict[str, Any],
+    transcript: str,
+) -> dict[str, Any] | None:
+    """Safari PWA has no native Clock; run the same job on Home Station."""
+
+    from uuid import UUID
+
+    from app.db import SessionLocal
+    from app.device_gateway.phone_mac import maybe_phone_mac_act, utterance_from_phone_action
+    from app.models import Device
+
+    text = utterance_from_phone_action(arguments, transcript)
+    if not text:
+        return None
+    try:
+        did = UUID(str(device_id))
+    except (TypeError, ValueError):
+        return None
+    async with SessionLocal() as db:
+        device = await db.get(Device, did)
+        if device is None or device.revoked_at is not None:
+            return None
+        acted = await maybe_phone_mac_act(db, device=device, text=text)
+        if acted is None:
+            return None
+        await db.commit()
+    return {
+        "ok": True,
+        "accepted": True,
+        "executed": bool(acted.get("executed")),
+        "verified": bool(acted.get("verified")),
+        "operation": str(acted.get("tool") or arguments.get("operation") or "home_station"),
+        "spoken": acted.get("reply"),
+        "home_station": True,
+        "route": acted.get("route"),
+        "requires_user_interaction": False,
+        "method": "home_station",
+        "must_continue": True,
+        "completion_claim_allowed": False,
+    }
+
+
 async def dispatch_phone_action(
     *,
     device_id: str,
@@ -136,6 +183,14 @@ async def dispatch_phone_action(
             device_label=device_label,
             confirm=bool(args.get("confirm_action_id")),
         )
+        if str(result.get("failure") or "") == "NATIVE_SHELL_REQUIRED":
+            home = await _home_station_phone_action(
+                device_id=device_id,
+                arguments=args,
+                transcript=transcript,
+            )
+            if home is not None:
+                result = home
         action_id = str(result.get("action_id") or "")
         if action_id:
             from app.db import SessionLocal

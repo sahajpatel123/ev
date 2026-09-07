@@ -80,7 +80,28 @@ def _check_opencode() -> tuple[str, str, str]:
 
 
 def _check_chat() -> tuple[str, str, str]:
-    provider = settings.chat_provider
+    from app.gateway.muse import (
+        MUSE_SPARK_PROVIDERS,
+        configured_intelligence_provider,
+        muse_intelligence_active,
+        muse_spark_key_loaded,
+        muse_spark_model,
+    )
+
+    provider = configured_intelligence_provider() or settings.chat_provider
+    if provider.lower() in MUSE_SPARK_PROVIDERS or muse_intelligence_active():
+        if muse_spark_key_loaded():
+            return (
+                "REAL",
+                "meta_muse_spark",
+                f"Muse Spark ({muse_spark_model()}); live: pipeline",
+            )
+        return (
+            "PARTIAL",
+            "meta_muse_spark",
+            "configured Muse Spark but OPENCODE_API_KEY is missing — "
+            "intelligence fails closed; no silent Grok/DeepSeek substitute",
+        )
     if provider == "opencode":
         return _check_opencode()
     if provider == "deepseek":
@@ -168,6 +189,21 @@ def _check_asr() -> tuple[str, str, str]:
             "(or switch to EV_VOICE_ASR_PROVIDER=openai_compat + "
             "EV_ALLOW_REMOTE_ASR=true with a key)",
         )
+    if provider in ("meta_muse_voice", "muse_voice"):
+        from app.gateway.muse import muse_key_loaded, muse_voice_model
+
+        if muse_key_loaded():
+            return (
+                "REAL",
+                "meta_muse_voice",
+                f"Muse Voice Transcribe ({muse_voice_model()})",
+            )
+        return (
+            "PARTIAL",
+            "meta_muse_voice",
+            "configured Muse Voice but META_MODEL_API_KEY is missing — "
+            "hearing fails closed; no silent Whisper/OpenAI substitute",
+        )
     if provider == "openai_compat":
         if settings.voice_asr_base_url and settings.voice_asr_api_key:
             return "REAL", "openai_compat", "hosted ASR configured"
@@ -216,6 +252,9 @@ def _check_tts() -> tuple[str, str, str]:
             f"`uv run python -m app.ml.cli pull tts-{engine}` "
             "(kokoro package also required)",
         )
+    if provider == "edge_tts":
+        voice = (settings.voice_tts_edge_voice or "en-US-AvaNeural").strip()
+        return "REAL", "edge_tts", f"Edge neural TTS ({voice})"
     if provider == "openai_compat":
         if settings.voice_tts_base_url and settings.voice_tts_api_key:
             return "REAL", "openai_compat", "hosted TTS configured"

@@ -50,10 +50,7 @@ MEMORY_BEHAVIOR = (
     "never generalize that into not knowing them. Distinguish current vs "
     "original when both exist. If they ask where you left off or what is still "
     "open, use current project state and unresolved loops. Do not mention those "
-    "on a fresh unrelated question. Never mention loop IDs, cards, or curators. "
-    "Do not close with automatic offers "
-    "to elaborate. Keep replies casual, concise, and direct: do not speak too much, "
-    "and never repeat points or restate the question."
+    "on a fresh unrelated question. Never mention loop IDs, cards, or curators."
 )
 
 MAX_CARD_TOKENS = 220
@@ -141,6 +138,7 @@ async def attach_relationship_memory(
 
 
 def live_memory_instructions(manifest: dict | None) -> str:
+    from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
     from app.memory.bootstrap import bootstrap_instructions
 
     raw = manifest if isinstance(manifest, dict) else {}
@@ -152,7 +150,7 @@ def live_memory_instructions(manifest: dict | None) -> str:
                 "\nMemory lookup is degraded for specific older quotes. "
                 "You still know this owner; do not say you have no history with them."
             )
-        return text
+        return text.rstrip() + "\n" + SPEECH_STYLE_INSTRUCTIONS
     parts = [MEMORY_BEHAVIOR]
     card = str(raw.get("relationship") or "").strip()
     if card:
@@ -162,6 +160,7 @@ def live_memory_instructions(manifest: dict | None) -> str:
             "Memory lookup is degraded for specific older quotes. "
             "You still know this owner; do not say you have no history with them."
         )
+    parts.append(SPEECH_STYLE_INSTRUCTIONS)
     return "\n".join(parts)
 
 

@@ -78,6 +78,14 @@ def is_strict_webrtc(backend: str | None) -> bool:
 def resolve_phone_audio_backend(requested: str | None = None) -> str:
     """Choose one media backend. Never run two. Diagnostic default is WebRTC-only."""
 
+    from app.gateway.muse import muse_hearing_active, muse_intelligence_active
+
+    # Direct WebRTC terminates at OpenAI Realtime, so it cannot carry the
+    # Muse Voice -> Spark -> TTS pipeline. A stale client preference or
+    # leftover OpenAI key must not silently bypass the selected Muse brain.
+    if muse_hearing_active() or muse_intelligence_active():
+        return "pcm_ws"
+
     want = (requested or phone_audio_backend_setting() or "webrtc_strict").strip().lower()
     if want not in AUDIO_ARCHITECTURES:
         want = "webrtc_strict"
@@ -101,13 +109,17 @@ def resolve_phone_audio_backend(requested: str | None = None) -> str:
 
 
 _OWNER_STATE_CHANNEL_CONTRACT = (
-    "OWNER STATE CHANNEL: Projects, goals, commitments, mission-control, "
-    "weather, calendar, contacts, notifications/inbox, and visual memory "
-    "are answered by Evie Core. When the owner asks about those, call "
-    "evie_state_query with their exact words, then speak ONLY the canonical "
-    "result it returns. Never invent a forecast, calendar, contact list, or "
-    "Health numbers. HealthKit is never sent to a model. Never claim you "
-    "lack access to Core data — the canonical result is authoritative."
+    "OWNER STATE CHANNEL: Their name, the date and time, weather, calendar, "
+    "contacts, notifications/inbox, visual memory, projects, goals, "
+    "commitments, mission-control, timers, reminders, opening Mac apps, "
+    "mail, and messages are answered or executed by Evie Core / Home Station. "
+    "When the owner asks about those, call evie_state_query with their exact "
+    "words, then speak ONLY the canonical result it returns. Never invent a "
+    "name, forecast, calendar, contact list, or Health numbers. HealthKit is "
+    "never sent to a model. Never claim you lack access to Core data — the "
+    "canonical result is authoritative. Answer day, date, and time from the "
+    "Local time line in these instructions when the tool is unnecessary, "
+    "and still call evie_state_query if you are unsure."
 )
 
 
@@ -115,10 +127,13 @@ def _evie_state_query_spec() -> dict[str, Any]:
     return {
         "name": "evie_state_query",
         "description": (
-            "Authoritative Evie Core lookup for the owner's projects, goals, "
-            "commitments, status, recent changes, weather, calendar, contacts, "
-            "notifications, or visual memory. Pass the owner's exact words. "
-            "Returns the canonical answer to speak. Do not invent those facts."
+            "Authoritative Evie Core lookup AND Home Station action for the "
+            "owner's name, date, time, weather, calendar, contacts, "
+            "notifications, visual memory, projects, goals, timers, "
+            "reminders, opening Mac apps, mail, or recent changes. Pass the "
+            "owner's exact words. Returns the canonical answer to speak. "
+            "Do not invent those facts. Call this when they ask who they are "
+            "or what their name is, and when they want a Mac action."
         ),
         "parameters": {
             "type": "object",
@@ -166,8 +181,9 @@ def _evie_home_action_spec() -> dict[str, Any]:
     return {
         "name": "evie_home_action",
         "description": (
-            "Route a safe Home Station action: device.echo, mac.notify, "
-            "mac.echo, computer.open_calculator, computer.close_calculator. "
+            "Run a Home Station / Mac action from this iPhone: timers, "
+            "reminders, open/close Calculator and other Mac apps, mail, "
+            "calendar, notify, or echo. Safari cannot run iPhone Clock. "
             "Never expose shell, credentials, payments, or arbitrary URLs."
         ),
         "parameters": {
@@ -182,16 +198,25 @@ def _evie_home_action_spec() -> dict[str, Any]:
                         "mac.echo",
                         "computer.open_calculator",
                         "computer.close_calculator",
+                        "start_timer",
+                        "set_reminder",
+                        "open_app",
+                        "close_app",
+                        "calendar_read",
+                        "list_mail",
+                        "list_messages",
+                        "get_weather",
                     ],
                 },
                 "arguments": {"type": "object"},
+                "text": {"type": "string"},
             },
             "required": ["capability"],
         },
     }
 
 
-def phone_webrtc_session(*, device: Device | None = None) -> dict[str, Any]:
+def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None = None) -> dict[str, Any]:
     """GA Realtime session for the phone.
 
     SANDBOX devices: tools stay sandboxed (legacy satellite behavior).
@@ -201,8 +226,26 @@ def phone_webrtc_session(*, device: Device | None = None) -> dict[str, Any]:
     model only verbalizes the canonical result (G1 law, PART 7).
     """
     from app.device_gateway.sandbox import is_sandbox_device
+    from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
     trusted_owner = device is not None and not is_sandbox_device(device)
+    identity_line = ""
+    saved = (owner_name or "").strip()
+    if trusted_owner and saved:
+        identity_line = (
+            f"\nOWNER IDENTITY: The person you are speaking with is {saved}. "
+            "When they ask their name, say it. Still call evie_state_query for "
+            "weather, calendar, inbox, memory, and anything you are unsure of.\n"
+        )
+    if trusted_owner:
+        from app.search.live import default_place
+
+        place = default_place()
+        if place:
+            identity_line += (
+                f"HOME PLACE: {place}. Weather still requires evie_state_query; "
+                "never invent a forecast.\n"
+            )
 
     if trusted_owner:
         manifest: dict[str, Any] = {"memory_scope": "owner"}
@@ -229,6 +272,9 @@ def phone_webrtc_session(*, device: Device | None = None) -> dict[str, Any]:
             + MOBILE_ACTION_CONTRACT
             + "\n"
             + _OWNER_STATE_CHANNEL_CONTRACT
+            + identity_line
+            + "\n"
+            + SPEECH_STYLE_INSTRUCTIONS
         )
     else:
         specs = sandbox_live_tool_specs(device=device)
@@ -245,12 +291,17 @@ def phone_webrtc_session(*, device: Device | None = None) -> dict[str, Any]:
             + MOBILE_CONVERSATION_CONTRACT
             + "\n"
             + MOBILE_ACTION_CONTRACT
+            + "\n"
+            + SPEECH_STYLE_INSTRUCTIONS
         )
     voice = (settings.openai_realtime_voice or "marin").strip() or "marin"
     model = (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip()
     asr_model = (getattr(settings, "phone_asr_model", None) or "gpt-4o-transcribe").strip()
     asr_language = (getattr(settings, "phone_asr_language", None) or "en").strip() or "en"
-    noise = (getattr(settings, "phone_input_noise_reduction", None) or "near_field").strip()
+    # iPhone Talk is speaker-to-mic. near_field left echo for server_vad
+    # (phantom "yes I got you" turns). Allow off for diagnostics only.
+    requested_noise = (getattr(settings, "phone_input_noise_reduction", None) or "far_field").strip()
+    noise = "off" if requested_noise == "off" else "far_field"
     inp: dict[str, Any] = {
         "transcription": {
             "model": asr_model,
@@ -259,9 +310,11 @@ def phone_webrtc_session(*, device: Device | None = None) -> dict[str, Any]:
         },
         "turn_detection": {
             "type": "server_vad",
-            "threshold": 0.5,
-            "prefix_padding_ms": 200,
-            "silence_duration_ms": 400,
+            # Speakerphone on iPhone: higher than Mac. Echo of her own voice
+            # was creating extra owner turns ("yes I got you") with create_response.
+            "threshold": 0.68,
+            "prefix_padding_ms": 300,
+            "silence_duration_ms": 700,
             # Match Mac golden create_response. interrupt_response stays False
             # until barge-in is isolated; overlapping cancel was a duplicate-voice suspect.
             "interrupt_response": False,
@@ -421,13 +474,21 @@ def _signaling_http_exception(*, stage: str, message: str, info: dict[str, Any],
     )
 
 
+async def _session_owner_name() -> str | None:
+    from app.db import SessionLocal
+    from app.device_gateway.phone_core import _owner_spoken_name
+
+    async with SessionLocal() as db:
+        return await _owner_spoken_name(db)
+
+
 async def mint_ephemeral_secret(*, device: Device) -> dict[str, Any]:
     """Mint a 60s ek_ credential. Permanent key never leaves Home Station."""
 
     key = (settings.openai_api_key or "").strip()
     if not key:
         raise HTTPException(status_code=503, detail="Live speech isn't connected.")
-    session_cfg = phone_webrtc_session(device=device)
+    session_cfg = phone_webrtc_session(device=device, owner_name=await _session_owner_name())
     body = {
         "expires_after": {"anchor": "created_at", "seconds": 60},
         "session": session_cfg,
@@ -479,7 +540,7 @@ async def create_realtime_call(*, device: Device, offer_sdp: str, attempt_id: st
     if not key:
         raise HTTPException(status_code=503, detail="Live speech isn't connected.")
     offer = prepare_offer_sdp(offer_sdp)
-    session_cfg = phone_webrtc_session(device=device)
+    session_cfg = phone_webrtc_session(device=device, owner_name=await _session_owner_name())
     offer_meta = summarize_sdp(offer)
     LOGGER.info(
         "realtime/calls start attempt=%s audio=%s app=%s opus=%s ice=%s fp=%s dir=%s bytes=%s",
@@ -734,6 +795,7 @@ async def run_phone_tool(
                 idempotency_key=call_id,
                 focus_title=a.get("entity_name"),
             )
+            await db.commit()
         if result.get("conversational"):
             # PART 6/11: hand back to the provider's own conversation.
             # F1: turn-scoped recalled history, clearly labeled and bound to
@@ -827,11 +889,51 @@ async def run_phone_tool(
         )
     if name == "evie_home_action":
         from app.db import SessionLocal
-        from app.everywhere.device_actions import create_routed_action
+        from app.everywhere.device_actions import ALLOWED_ROUTED_CAPABILITIES, create_routed_action
         from app.models import Device as DeviceRow
+
+        from .phone_mac import maybe_phone_mac_act, utterance_from_phone_action
 
         cap = str((args or {}).get("capability") or "")
         extra = (args or {}).get("arguments") if isinstance((args or {}).get("arguments"), dict) else {}
+        extra = dict(extra or {})
+        if (args or {}).get("text") and not extra.get("text"):
+            extra["text"] = (args or {}).get("text")
+        grok = getattr(live, "grok_voice", None)
+        transcript = str(getattr(grok, "_last_input_transcript", "") or extra.get("text") or "").strip()
+        direct = {
+            "computer.open_calculator": "open calculator",
+            "computer.close_calculator": "close calculator",
+            "calendar_read": "what's on my calendar",
+            "list_mail": "check my mail",
+            "list_messages": "check my messages",
+            "get_weather": "what's the weather",
+        }.get(cap)
+        if cap == "start_timer":
+            minutes = extra.get("minutes") or extra.get("duration_minutes")
+            direct = f"set a timer for {minutes} minutes" if minutes else (transcript or "")
+        elif cap == "set_reminder":
+            title = str(extra.get("text") or extra.get("title") or "").strip()
+            direct = f"remind me to {title}" if title else transcript
+        elif cap in {"open_app", "close_app"}:
+            app = str(extra.get("name") or extra.get("app") or "").strip()
+            verb = "open" if cap == "open_app" else "close"
+            direct = f"{verb} {app}" if app else transcript
+        utterance = (direct or transcript or utterance_from_phone_action({"operation": cap, **extra}, transcript)).strip()
+        use_dispatch = bool(utterance) and (
+            cap not in ALLOWED_ROUTED_CAPABILITIES
+            or cap.startswith("computer.")
+            or cap in {
+                "start_timer",
+                "set_reminder",
+                "open_app",
+                "close_app",
+                "calendar_read",
+                "list_mail",
+                "list_messages",
+                "get_weather",
+            }
+        )
         async with SessionLocal() as db:
             drow = (
                 await db.execute(select(DeviceRow).where(DeviceRow.id == UUID(str(live.device_id))))
@@ -840,6 +942,23 @@ async def run_phone_tool(
                 return compact_live_tool_json(
                     {"ok": False, "error_code": "DEVICE_REVOKED", "spoken": "This device is no longer trusted."}
                 )
+            if use_dispatch:
+                acted = await maybe_phone_mac_act(
+                    db,
+                    device=drow,
+                    text=utterance,
+                    idempotency_key=str(call_id or "")[:80] or None,
+                )
+                await db.commit()
+                if acted is not None:
+                    return compact_live_tool_json(
+                        {
+                            **acted,
+                            "spoken": acted.get("reply"),
+                            "executed": bool(acted.get("executed")),
+                            "verified": bool(acted.get("verified")),
+                        }
+                    )
             broker = await create_routed_action(
                 db,
                 requesting_device=drow,

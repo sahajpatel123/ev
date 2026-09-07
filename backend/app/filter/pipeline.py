@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.contracts import ChatMessage, ChatProvider, MemoryRef, RequestEnvelope, RetrievedMemory
 from app.ev.interaction import build_strategy, strategy_block
+from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 from app.ev.user_state import build_user_state
 from app.filter.envelope import (
     GroundingMaterial,
@@ -167,7 +168,10 @@ async def run_full_filter_pipeline(
         "You reason over memory that EV's system has retrieved for you; never invent memories. "
         "Be honest about uncertainty, cite dates/sources when you use them, and keep the user's "
         "goals in mind.\n\n"
-        f"{context}"
+        f"{context}\n\n"
+        # Memory/context is dynamic. Keep the owner-frozen communication law
+        # last so training or feature agents cannot retune the voice.
+        + SPEECH_STYLE_INSTRUCTIONS
     )
     gateway = ModelGateway(provider)
     call = await gateway.chat(

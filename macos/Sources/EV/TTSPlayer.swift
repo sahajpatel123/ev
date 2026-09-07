@@ -22,9 +22,11 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     // ran the node dry — 4-6 underruns/second on EVERY response, heard as
     // constant jitter with and without tools. 250 ms absorbs normal jitter
     // (±150-200 ms) for ~170 ms of extra first-word latency, still prompt.
-    // Mid-response restarts NEVER re-prime (starvedResume in
-    // maybeStartPlayback): only true provider gaps re-buffer, one chunk.
     private static let startupPrebufferMs = 250
+    /// Restart lead margin after starvation/gap (~180 ms). Prevents single-chunk
+    /// underrun loops where an 80 ms arrival immediately restarts playback with
+    /// zero lead, starving on every subsequent packet.
+    private static let restartPrebufferMs = 180
     /// Steady PlayerNode lead ceiling after the ~250 ms prime. 500 ms ran dry
     /// on ~14–20 s replies (underruns with overflow=0). 900 ms absorbs
     /// provider/WS bursts without delaying the first word and keeps the
@@ -340,6 +342,21 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         }
     }
 
+    /// Adopt a continuation response ID (e.g. after a tool call or preamble
+    /// transition) without stopping or resetting the audio graph, converter,
+    /// or queued buffers. Seamlessly binds the active response ID and resets
+    /// sequence tracking and finish state so the continuation appends into the
+    /// same audible stream without hardware pops or speaking flips.
+    func adoptResponse(_ responseID: String) {
+        guard !responseID.isEmpty else { return }
+        syncOnAudioQueue {
+            activeResponseID = responseID
+            responseFinished = false
+            lastSequence = nil
+            responseSummaryLogged = false
+        }
+    }
+
     /// Decode and enqueue away from MainActor. No Task is created per delta.
     func enqueueBase64PCM(
         _ base64: String,
@@ -355,6 +372,49 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
                 return
             }
             ingest(data, contentType: contentType, sampleRate: sampleRate, responseID: responseID, sequence: sequence)
+        }
+    }
+
+    /// Low-latency Realtime ingress used by ``LiveVoiceConnection``.  The
+    /// websocket receive task calls this before yielding its event to the
+    /// MainActor, so opening the menu cannot put a render/layout task in front
+    /// of the next PCM packet.  Only provider-tagged chunks use this path;
+    /// pipeline ``audio_ref`` events continue through the normal handler.
+    func enqueueRealtimeChunk(_ event: LiveVoiceEvent) {
+        guard let base64 = event.audioB64,
+              !base64.isEmpty,
+              let providerID = event.providerResponseId,
+              !providerID.isEmpty
+        else { return }
+        let contentType = event.contentType
+        let sampleRate = Double(event.sampleRate ?? 16_000)
+        let sequence = event.index
+        audioQueue.async { [weak self] in
+            guard let self else { return }
+            // The stream consumer may not have processed response.created yet.
+            // Bind the first packet on this serial queue instead of dropping
+            // it; subsequent MainActor adopt/begin calls see the same ID and
+            // remain no-ops.
+            if activeResponseID == nil {
+                activeResponseID = providerID
+                responseFinished = false
+            } else if activeResponseID != providerID {
+                activeResponseID = providerID
+                responseFinished = false
+                lastSequence = nil
+                responseSummaryLogged = false
+            }
+            guard let data = Data(base64Encoded: base64), !data.isEmpty else {
+                invalidOrIncompleteFrameCount += 1
+                return
+            }
+            ingest(
+                data,
+                contentType: contentType,
+                sampleRate: sampleRate,
+                responseID: providerID,
+                sequence: sequence
+            )
         }
     }
 
@@ -521,7 +581,6 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         // The lead gate below bounds PLAYED latency; the aggregate absorbs
         // whole-response generation bursts. Reaching a pathological backlog
         // is counted and logged, never silently deleted.
-        let incomingMs = Double(alignedCount / Self.sourceBytesPerFrame) * 1000 / rate
         let backlogMs = Double(totalBacklogMs())
         if backlogMs > Double(Self.hardCeilingMs) {
             overflowEvents += 1
@@ -569,8 +628,9 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         }
         // First-word prime: schedule the remainder so startupPrebufferMs is
         // duration of real audio, not "two full 160 ms blocks" (~320 ms).
+        let prebufferTarget = underrunEvents > 0 ? Self.restartPrebufferMs : Self.startupPrebufferMs
         if !force, !playerStarted, aggregateAvailable > 0,
-           scheduledLeadMs() < Self.startupPrebufferMs {
+           scheduledLeadMs() < prebufferTarget {
             let chunk = takeAllAggregate()
             schedulePCM(chunk, sourceRate: rate)
         }
@@ -582,16 +642,15 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
         // Cold start needs a real prime (~250 ms) so the first word does not
         // stutter on the second chunk and the ride has jitter margin.
         let primed = responseFinished || scheduledLeadMs() >= Self.startupPrebufferMs
-        // Mid-response restart: ANY newly scheduled audio restarts output at
-        // once. After a true provider gap (tool silence) waiting for a fuller
-        // prime only extends the silence; after scheduling jitter the next
-        // drip is already here. Glitch protection across gaps is the mic mute
-        // (toolGapMuteUntil), not a delayed start.
-        let starvedResume = underrunEvents > 0 && !responseFinished && scheduledLeadMs() > 0
-        // Mid-word jitter: resume immediately even before the lead crosses
-        // the prime (completion just fired, next drip already scheduled).
+        // Mid-response restart: mid-sentence starvation or tool gap recovery
+        // must re-accumulate a safe cushion (~180 ms) before restarting playback.
+        // Resuming on a single ~80 ms chunk with zero lead margin traps the player
+        // in an inescapable cascade of ~5-12 underruns per second on network jitter.
+        let restartTargetMs = underrunEvents > 0 ? Self.restartPrebufferMs : Self.startupPrebufferMs
+        let starvedResume = underrunEvents > 0 && (responseFinished || scheduledLeadMs() >= restartTargetMs)
+        // Mid-word jitter: resume once lead reaches restartTargetMs or if the response has completed.
         let recentHole = Date().timeIntervalSince(lastCompletionAt) < 0.35
-        let resumeHole = underrunEvents > 0 && !responseFinished && recentHole
+        let resumeHole = underrunEvents > 0 && (responseFinished || scheduledLeadMs() >= restartTargetMs || (recentHole && scheduledLeadMs() >= restartTargetMs))
         guard primed || resumeHole || starvedResume else { return }
         playerStarted = true
         lastCompletionAt = Date()
@@ -664,6 +723,7 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
                         // bar and unmuted the mic into Evie's own voice.
                         underrunEvents += 1
                         playerStarted = false
+                        playerNode.pause()
                         // Tool-gap underrun: provider is silent 0.3-15s while
                         // running memory/computer tools. The adopt-time hold
                         // (8s) can expire mid-gap on long tools; re-hold here
@@ -747,6 +807,9 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
             "overflow": overflowEvents,
             "dropped": droppedFrames,
             "restarts": engineRestartCount,
+            "min_lead_ms": minScheduledLeadMs == Int.max ? 0 : minScheduledLeadMs,
+            "max_lead_ms": maxScheduledLeadMs,
+            "cur_lead_ms": scheduledLeadMs(),
             "ts_ms": Int(Date().timeIntervalSince1970 * 1000),
         ]
         guard JSONSerialization.isValidJSONObject(payload),

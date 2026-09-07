@@ -100,6 +100,7 @@ SEMANTIC_CANDIDATES: dict[str, list[str]] = {
         "computer_status", "open_app", "activate_app", "close_app", "list_apps",
         "ui_action", "inspect_ui", "open_url", "screen_look",
         "code",
+        "set_quiet_hours",
     )
 }
 
@@ -110,6 +111,9 @@ ALWAYS_AVAILABLE_SEMANTIC = frozenset(
         "get_gear_status", "brief_me", "calibrate", "list_protocols", "present",
         "heading_out",
         "code",
+        "set_quiet_hours",
+        "home_status",
+        "home_act",
     }
 )
 
@@ -501,7 +505,14 @@ async def _semantic_available(capability: str, session: Any, device_scope: str) 
                     )
                 )
             ).scalars().all()
-            return (len(rows) > 0), ("integration_active" if rows else "integration_missing")
+            if rows:
+                return True, "integration_active"
+            if capability == "list_mail":
+                from app.services.life_stream_daemon import life_stream_should_run
+
+                if life_stream_should_run():
+                    return True, "mac_hub_copy"
+            return False, "integration_missing"
         except Exception:  # noqa: BLE001 - availability must never raise
             return False, "availability_check_failed"
     return False, "unknown_capability"
