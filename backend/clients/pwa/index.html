@@ -315,5 +315,18 @@
     return { label: label };
   })();
   </script>
+  <!-- Cycle 30 — iPhone-only environment pill model. Backward compatible:
+       additive window.EvieEnv namespace; SANDBOX vs owner use at a glance. -->
+  <script>
+  window.EvieEnv = (function () {
+    function pill(env) {
+      var e = String(env || "").toUpperCase();
+      if (e === "SANDBOX") return { tone: "neutral", label: "Sandbox" };
+      if (e === "OWNER" || e === "PRODUCTION") return { tone: "good", label: "Owner" };
+      return { tone: "neutral", label: e || "Unknown" };
+    }
+    return { pill: pill };
+  })();
+  </script>
 </body>
 </html>
