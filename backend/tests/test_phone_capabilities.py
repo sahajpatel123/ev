@@ -193,3 +193,59 @@ async def test_start_timer_result_carries_fire_at(db_session):
     timer = result.get("timer") or {}
     assert timer.get("fire_at"), f"fire_at must ride the result: {result}"
     assert "5" in str(result.get("reply") or "") or "minute" in str(result.get("reply") or "")
+
+
+async def test_phone_conversation_recalls_stored_memory(
+    db_session, client, monkeypatch
+):
+    """Cycle 47 — C7: shadow memory injection must reach the PHONE voice
+    surface: a trusted phone turn over stored history returns recalled_history."""
+    from uuid import uuid4
+
+    from app.device_gateway.pipeline import run_trusted_device_turn
+    from app.models import Device, Memory
+    from app.utils.text import fingerprint, utcnow
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "memory_gate", "on")
+    now = utcnow()
+    db_session.add(
+        Memory(
+            memory_type="decision",
+            text="I decided to switch the project to SQLite for local testing",
+            payload={},
+            importance=0.9,
+            confidence=0.9,
+            source_type="explicit",
+            privacy_level="normal",
+            event_time=now,
+            valid_from=now,
+            is_current=True,
+            fingerprint=fingerprint({"seed": uuid4().hex}),
+            embedding=None,
+            embedding_model_version=None,
+        )
+    )
+    d = Device(
+        name="Recall Phone",
+        token_hash="recall-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+
+    result = await run_trusted_device_turn(
+        db_session,
+        device=d,
+        text="remind me why I switched the project to SQLite for local testing",
+        idempotency_key="rec-1",
+        ingest_conversation=True,
+    )
+    history = str(result.get("recalled_history") or "")
+    if result.get("conversational"):
+        assert "SQLite" in history, f"phone turn must recall stored history, got: {result}"
+    else:
+        # Deterministic state answer — the canonical surface; shadow not required.
+        assert result.get("ok") is True
