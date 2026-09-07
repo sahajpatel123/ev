@@ -409,3 +409,17 @@
   root.EvieCameraSheetHints = EvieCameraSheetHints;
 })(typeof window !== "undefined" ? window : globalThis);
 
+/* Cycle 45 — iPhone-only additive feedback-thumbs model; backward compat: pure turn_id to +1/-1 draft. */
+(function (root) {
+  "use strict";
+  function EvieFeedbackThumbsDraft(input) {
+    var s = input || {};
+    var turnId = String(s.turn_id == null ? s.turnId : s.turn_id);
+    var raw = Number(s.value);
+    var value = raw >= 0 ? 1 : -1;
+    if (raw !== 1 && raw !== -1) value = raw > 0 ? 1 : -1;
+    return { turn_id: turnId, value: value };
+  }
+  EvieFeedbackThumbsDraft.draftFor = EvieFeedbackThumbsDraft;
+  root.EvieFeedbackThumbsDraft = EvieFeedbackThumbsDraft;
+})(typeof window !== "undefined" ? window : globalThis);
