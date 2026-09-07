@@ -61,15 +61,34 @@ async def ingest_phone_frame(
         labels = [str(item)[:48] for item in derived[:8]]
     except Exception:
         ocr_text = None
-
     persisted = False
+    enrolled_names: list[str] = []
     spoken = "I have the current camera frame from this iPhone."
     if action == "remember":
+        # Cycle 68 — recognition against the enrolled roster: if the keep
+        # note names an enrolled person, say so. No biometrics: the OWNER
+        # names who it is; Evie remembers who owns the name.
+        wanted = (note or "").strip()
+        if wanted:
+            from sqlalchemy import select as _select
+            from app.models import Entity as _Entity
+
+            wanted_low = wanted.casefold()
+            try:
+                rows = (
+                    await session.execute(_select(_Entity).where(_Entity.entity_type == "person"))
+                ).scalars().all()
+                enrolled_names = [r.name for r in rows if r.name and r.name.casefold() == wanted_low]
+            except Exception:
+                enrolled_names = []
         spoken = "Kept. I'll remember this."
-    if ocr_text:
-        spoken = f"I can read: {ocr_text}"
-    elif labels:
-        spoken = "I can see " + ", ".join(labels[:4]) + "."
+        if enrolled_names:
+            spoken = f"Kept — {enrolled_names[0]}. I'll remember this."
+    if action != "remember":
+        if ocr_text:
+            spoken = f"I can read: {ocr_text}"
+        elif labels:
+            spoken = "I can see " + ", ".join(labels[:4]) + "."
     if not is_sandbox_device(device) and device.revoked_at is None:
         from app.everywhere.sync import emit_everywhere_event
 
@@ -116,6 +135,7 @@ async def ingest_phone_frame(
         "ok": True,
         "request_id": request_id,
         "target_device_id": str(device.id),
+        "recognized_person": enrolled_names[0] if enrolled_names else None,
         "ocr_text": ocr_text,
         "labels": labels,
         "observation_id": request_id,

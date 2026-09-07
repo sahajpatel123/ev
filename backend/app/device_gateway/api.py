@@ -1273,6 +1273,51 @@ async def morning_brief(
     }
 
 
+class PersonEnrollRequest(BaseModel):
+    name: str
+    relation: str = "other"
+    note: str | None = None
+
+
+@router.get("/people")
+async def people_roster(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The enrolled-people roster (owner graph, no biometrics)."""
+
+    _check_origin(request)
+    from app.life.people import list_relationships
+
+    return {"ok": True, "people": await list_relationships(session)}
+
+
+@router.post("/people/enroll")
+async def people_enroll(
+    data: PersonEnrollRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Enroll a person into the owner's roster. Explicit only; relation
+    vocabulary comes from the existing G1 set."""
+
+    _check_origin(request)
+    from app.life.people import set_relationship
+
+    result = await set_relationship(
+        session,
+        actor=f"device:{device.name}",
+        person_name=data.name.strip()[:256],
+        relation=data.relation,
+        note=data.note,
+        device_id=str(device.id),
+    )
+    await session.commit()
+    return {"ok": result.get("ok", False), **result}
+
+
 class HeadingOutRequest(BaseModel):
     consent: bool | None = None
     radius_meters: float | None = None
@@ -1338,6 +1383,7 @@ async def heading_out_update(
 async def ev_sense(
     request: Request,
     device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Cycle 65 — EV Sense: the phone's CONSENTED sensor surface, stated
     honestly. Everything here is already-reported device state (healthkit
@@ -1350,6 +1396,7 @@ async def ev_sense(
     hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
     from app.everywhere.heading_out import heading_out_consent
     from app.everywhere.nudge import in_quiet_hours, nudge_prefs
+    from app.life.people import list_relationships
     prefs = nudge_prefs(device)
     return {
         "ok": True,
@@ -1364,6 +1411,7 @@ async def ev_sense(
         "camera_capability": "camera" in (device.capabilities or []),
         "push_delivery": str((profile.get("notifications") or {}).get("delivery") or "poll"),
         "nudges": {**prefs, "quiet_now": in_quiet_hours(prefs)},
+        "people_count": len(await list_relationships(session)),
         "heading_out": heading_out_consent(device),
         "never_to_model": ["health_numbers", "location_history"],
     }

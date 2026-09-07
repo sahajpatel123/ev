@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.19";
+const CLIENT_BUILD = "2026.09.08.20";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -740,7 +740,28 @@ async function fillSense() {
     ["Push", String(body.push_delivery || "poll")],
     ["Nudges", (nudges.enabled === false ? "off" : "on") + (nudges.quiet_now ? " · quiet hours now" : " · quiet " + (nudges.quiet_start || "") + "–" + (nudges.quiet_end || ""))],
     ["Heading out", headingLabel(body)],
+    ["People", body.people_count ? body.people_count + " enrolled" : "roster — tap to add"],
   ]);
+  const peopleRow = document.querySelector("#sense-meta dt:last-of-type");
+  if (peopleRow) peopleRow.onclick = () => enrollPerson().catch(() => {});
+}
+
+/* Cycle 68 — enrolled people: the owner names who matters; no biometrics.
+   The roster lives in the owner's memory graph and feeds every Look. */
+async function enrollPerson() {
+  const name = (prompt("Person's name:") || "").trim();
+  if (!name) return;
+  const relation = (prompt("Relation (friend, family, colleague, other):") || "other").trim() || "other";
+  const res = await api("/v1/device-gateway/people/enroll", {
+    method: "POST",
+    body: JSON.stringify({ name, relation }),
+  });
+  if (res.ok === false) {
+    pushActivity("Could not enroll: " + String(res.error || "unknown relation"));
+    return;
+  }
+  pushActivity(name + " enrolled");
+  fillSense().catch(() => {});
 }
 
 /* Cycle 66 — heading-out: opt-in, foreground-only geofence against the

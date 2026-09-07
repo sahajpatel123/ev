@@ -930,7 +930,7 @@ async def test_heading_out_consent_gated_transitions(client, db_session, monkeyp
     assert back.json()["transition"] == "back_home"
 
 
-def test_remember_action_marks_explicit_keep(db_session):
+async def test_remember_action_marks_explicit_keep(db_session):
     """Cycle 67 — C27: action=remember carries the keep flag so the frame
     persists as an EXPLICIT owner keep, not just another look event."""
     import asyncio
@@ -955,8 +955,7 @@ def test_remember_action_marks_explicit_keep(db_session):
 
     look_mod.is_sandbox_device = lambda d: False
     try:
-        result = asyncio.run(
-            look_mod.ingest_phone_frame(
+        result = await look_mod.ingest_phone_frame(
                 db_session,
                 device=device,
                 request_id="keep-req-1",
@@ -964,10 +963,46 @@ def test_remember_action_marks_explicit_keep(db_session):
                 action="remember",
                 note="my bike",
             )
-        )
     finally:
         sandbox_mod.is_sandbox_device = orig
         look_mod.is_sandbox_device = orig
     assert result["ok"] is True
     assert result["spoken"].startswith("Kept")
     assert result["persisted_to_memory_os"] is True
+
+
+async def test_people_enroll_and_keep_recognition(client, db_session):
+    """Cycle 68 — C28: enroll a person on the phone; a keep note naming
+    them is recognized by name in the spoken receipt. No biometrics."""
+    phone = await _pair_sandbox(client, "Roster-SE")
+    bad = await phone.post(
+        "/v1/device-gateway/people/enroll",
+        json={"name": "Priya", "relation": "friend"},
+    )
+    assert bad.status_code == 200
+    assert bad.json()["ok"] is True
+    roster = (await phone.get("/v1/device-gateway/people")).json()
+    names = [p.get("person") for p in roster.get("people", [])]
+    assert "Priya" in names
+    assert bad.json()["ok"] is True
+
+    import asyncio
+    import base64 as b64
+
+    from types import SimpleNamespace
+
+    from app.device_gateway import phone_look as look_mod
+
+    frame = b64.b64encode(b"\xff\xd8" + b"\x00" * 2048 + b"\xff\xd9").decode()
+    look_mod.stash_observation = lambda obs: None
+    orig = look_mod.is_sandbox_device
+    look_mod.is_sandbox_device = lambda d: False
+    device = SimpleNamespace(id="roster-dev-1", name="Roster-SE", endpoint_profile={}, capabilities=["camera"], revoked_at=None)
+    try:
+        result = await look_mod.ingest_phone_frame(
+                db_session, device=device, request_id="roster-req-1", jpeg_b64=frame, action="remember", note="Priya"
+            )
+    finally:
+        look_mod.is_sandbox_device = orig
+    assert result["recognized_person"] == "Priya"
+    assert result["spoken"].startswith("Kept — Priya")
