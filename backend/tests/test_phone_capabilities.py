@@ -302,3 +302,56 @@ async def test_phone_history_recall_read(db_session):
         assert result.get("ok") is True
         assert "garden" in spoken.lower() or result.get("count", 0) >= 0
         assert result.get("provenance") == "memory.history"
+
+
+async def test_web_push_subscription_roundtrip(client):
+    """Cycle 49 — C9: the PWA can store a browser push subscription and read
+    the server's applicationServerKey; unconfigured keys are a no-op."""
+    phone = await _pair_sandbox(client, "Push-SE")
+    key = await phone.get("/v1/device-gateway/vapid-public-key")
+    assert key.status_code == 200, key.text
+    body = key.json()
+    assert body["ok"] is True
+    assert body["configured"] is False
+    assert body["application_server_key"] == ""
+
+    stored = await phone.post(
+        "/v1/device-gateway/push/web-subscription",
+        json={
+            "endpoint": "https://push.example.com/sub/abc",
+            "keys": {"p256dh": "k" * 40, "auth": "a" * 20},
+        },
+    )
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["registered"] is True
+
+    bad = await phone.post(
+        "/v1/device-gateway/push/web-subscription",
+        json={"endpoint": "http://insecure.example.com", "keys": {"p256dh": "x", "auth": "y"}},
+    )
+    assert bad.status_code == 422
+
+
+async def test_push_inbox_survives_without_web_push(db_session):
+    """Cycle 49 — C9: an inbox write on a device with no subscription and no
+    VAPID keys must succeed (push is best-effort, never blocking)."""
+    import asyncio
+
+    from uuid import uuid4
+
+    from app.everywhere.inbox import push_inbox
+    from app.models import Device
+
+    d = Device(
+        name="NoPush Phone",
+        token_hash="nopush-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+
+    item = await push_inbox(db_session, device_id=d.id, kind="notice", title="Nudge", body="hello")
+    assert item.get("title") == "Nudge"
+    await asyncio.sleep(0.05)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -9,7 +11,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import DeviceInboxItem
+from app.models import Device, DeviceInboxItem
 from app.utils.text import utcnow
 
 
@@ -39,6 +41,22 @@ async def push_inbox(
     )
     session.add(row)
     await session.flush()
+    # Cycle 49 — Web Push (VAPID): best-effort, non-blocking; a push
+    # failure never fails the inbox write. No-op when unconfigured or
+    # when the device has no stored browser subscription.
+    try:
+        device = (
+            await session.execute(select(Device).where(Device.id == UUID(str(device_id))))
+        ).scalar_one_or_none()
+        if device is not None:
+            from app.everywhere.web_push import send_web_push
+
+            asyncio.create_task(
+                send_web_push(device, title=title, body=body, url="/evie/"),
+                name="ev-web-push",
+            )
+    except Exception:  # noqa: BLE001 - push is best-effort by law
+        pass
     return public_item(row)
 
 

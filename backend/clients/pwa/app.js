@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.04";
+const CLIENT_BUILD = "2026.09.08.05";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -1376,7 +1376,36 @@ async function hello() {
   }
   setMood("Ready");
   setConn("READY");
+  subscribeWebPush().catch(() => {});
   await syncPhoneLife().catch(() => {});
+}
+
+/* Cycle 49 — Web Push (VAPID): subscribe when the PWA has notification
+   permission (installed PWAs on iOS 16.4+/Android/desktop). Never blocks
+   READY, never requests permission without a user-visible context, no-ops
+   on unsupported browsers or when the server has no VAPID keys yet. */
+async function subscribeWebPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  if (typeof Notification === "undefined") return;
+  if (Notification.permission !== "granted") return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  if (!reg) return;
+  const keyBody = await api("/v1/device-gateway/vapid-public-key").catch(() => null);
+  const key = keyBody && keyBody.application_server_key;
+  if (!key) return;
+  const keyBytes = Uint8Array.from(atob(key.replace(/-/g, "+").replace(/_/g, "/")), (c) => c.charCodeAt(0));
+  const existing = await reg.pushManager.getSubscription();
+  const sub = existing || await reg.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: keyBytes.buffer,
+  });
+  const json = sub.toJSON();
+  if (!json.endpoint || !json.keys) return;
+  await api("/v1/device-gateway/push/web-subscription", {
+    method: "POST",
+    body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
+  });
+  pushActivity("Push notifications on");
 }
 
 async function pair() {

@@ -1,4 +1,4 @@
-const BUILD = "2026.09.08.04";
+const BUILD = "2026.09.08.05";
 const CACHE = "evie-static-" + BUILD;
 const STATIC = [
   "/evie/",
@@ -58,6 +58,33 @@ self.addEventListener("fetch", (event) => {
         return resp;
       })
       .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/evie/")))
+  );
+});
+
+/* Cycle 49 — Web Push (VAPID): show inbox nudges as notifications when the
+   PWA is backgrounded. Click focuses or opens /evie/. Handler only —
+   subscription lives in app.js. */
+self.addEventListener("push", (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch (_err) { data = {}; }
+  const title = String(data.title || "Evie");
+  const body = String(data.body || "").slice(0, 300);
+  const url = String(data.url || "/evie/");
+  event.waitUntil(
+    self.registration.showNotification(title, { body: body, data: { url: url }, tag: "evie-inbox" })
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const target = (event.notification.data && event.notification.data.url) || "/evie/";
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const client of list) {
+        if (client.url.includes("/evie")) return client.focus();
+      }
+      return self.clients.openWindow(target);
+    })
   );
 });
 /* Cycle 24 — iPhone-only service-worker version display helper. Backward

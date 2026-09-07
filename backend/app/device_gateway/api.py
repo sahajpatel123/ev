@@ -253,6 +253,11 @@ class PushRegisterRequest(BaseModel):
     authorization: str | None = None
 
 
+class WebPushSubscriptionRequest(BaseModel):
+    endpoint: str
+    keys: dict[str, str] = {}
+
+
 class MarkHomeStationRequest(BaseModel):
     device_id: UUID
 
@@ -1111,6 +1116,40 @@ async def push_register(
     )
     await session.commit()
     return {"ok": True, "registered": True, "delivery": "apns"}
+
+
+@router.get("/vapid-public-key")
+async def vapid_public_key(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """applicationServerKey for the PWA's pushManager.subscribe() call."""
+
+    _check_origin(request)
+    from app.everywhere.web_push import vapid_configured, vapid_public_key
+
+    return {"ok": True, "application_server_key": vapid_public_key(), "configured": vapid_configured()}
+
+
+@router.post("/push/web-subscription")
+async def push_web_subscription(
+    data: WebPushSubscriptionRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Store the browser push subscription (endpoint + p256dh/auth keys)."""
+
+    _check_origin(request)
+    endpoint = (data.endpoint or "").strip()
+    keys = data.keys if isinstance(data.keys, dict) else {}
+    if not endpoint.startswith("https://") or not keys.get("p256dh") or not keys.get("auth"):
+        raise HTTPException(status_code=422, detail="Invalid web push subscription")
+    from app.everywhere.web_push import store_web_subscription
+
+    stored = store_web_subscription(device, endpoint=endpoint, keys=keys)
+    await session.commit()
+    return {"ok": True, "registered": True, "registered_at": stored.get("registered_at")}
 
 
 @router.post("/calendar/snapshot")
