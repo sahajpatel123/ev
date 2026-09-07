@@ -636,3 +636,14 @@ extension CNAuthorizationStatus {
     }
 }
 #endif
+
+// Cycle 34 — iPhone-only, backward compat: comment-only capability matrix (16 Pro / SE).
+// No code change; documents which advertised capabilities need newer hardware.
+// | capability        | iPhone 16 Pro | iPhone SE (2nd/3rd gen) | notes                    |
+// |-------------------|---------------|-------------------------|--------------------------|
+// | foreground_voice  | yes           | yes                     | mic permission required  |
+// | camera            | yes           | yes                     | standard rank on SE      |
+// | haptic            | yes           | yes                     | Taptic Engine both       |
+// | facetime_contact  | yes           | yes                     | FaceTime app required    |
+// | current_location  | yes           | yes                     | location permission      |
+// | open_app          | yes           | yes                     | registry allow-list only |
