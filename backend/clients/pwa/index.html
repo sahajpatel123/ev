@@ -280,5 +280,17 @@
     return { steps: steps };
   })();
   </script>
+  <!-- Cycle 27 — iPhone-only pairing helper model. Backward compatible:
+       additive window.EviePairing namespace; no markup changed. -->
+  <script>
+  window.EviePairing = (function () {
+    function hint(state) {
+      if (state === "PAIRED_SANDBOX") return "Ask the Mac to promote this iPhone to owner device.";
+      if (state === "TRUSTED_OWNER_DEVICE") return "This iPhone is paired and trusted.";
+      return "Enter the pairing code shown on the Mac.";
+    }
+    return { hint: hint };
+  })();
+  </script>
 </body>
 </html>
