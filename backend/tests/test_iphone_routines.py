@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo
 import pytest
 from httpx import AsyncClient
 
+from sqlalchemy import select
+
 from app.device_gateway.phone_routines import due_times, in_quiet_hours, normalize, valid_time, valid_timezone
 
 
@@ -107,3 +109,53 @@ async def test_routines_roundtrip_and_validation(client: AsyncClient, gateway_ph
 
     again = (await phone.get("/v1/device-gateway/routines")).json()["routines"]
     assert again["digest_times"] == ["07:30", "21:00"]
+
+
+async def test_digest_tick_delivers_once_and_honors_state(
+    client: AsyncClient, gateway_phone, owner_phone, db_session
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from app.device_gateway.digest import phone_digest_tick
+    from app.device_gateway.phone_routines import normalize
+
+    _sbody, sandbox = gateway_phone
+    body, owner = owner_phone
+    tz = "Asia/Kolkata"
+    # Owner phone: enable a 21:00 digest.
+    put = await owner.put(
+        "/v1/device-gateway/routines",
+        json={"enabled": True, "digest_times": ["21:00"], "timezone": tz},
+    )
+    assert put.status_code == 200
+    # Sandbox phone: enable the same digest; must NOT receive it.
+    sput = await sandbox.put(
+        "/v1/device-gateway/routines",
+        json={"enabled": True, "digest_times": ["21:00"], "timezone": tz},
+    )
+    assert sput.status_code == 200
+
+    now = datetime(2026, 9, 8, 15, 30, tzinfo=UTC)  # 21:00 in Asia/Kolkata
+    delivered = await phone_digest_tick(db_session, now=now)
+    assert len(delivered) == 1, delivered  # only the owner phone
+
+    from app.models import DeviceInboxItem
+
+    items = (
+        (
+            await db_session.execute(
+                select(DeviceInboxItem).order_by(DeviceInboxItem.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(items) == 1
+    assert items[0].kind == "digest"
+    assert "Health: unavailable." in (items[0].body or "")
+    assert items[0].title == "Evie digest"
+
+    # Repeat tick a minute later must not double-deliver.
+    later = now + timedelta(minutes=2)
+    again = await phone_digest_tick(db_session, now=later)
+    assert again == []

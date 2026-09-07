@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     pairing_ttl_seconds: int = 900
     conversation_lease_ttl_seconds: int = 45
     active_conversation_ttl_seconds: int = 3600
+    # --- AGENT EAC (iPhone device gateway) ---
+    phone_digest_poll_seconds: int = 30
+    # --- END AGENT EAC (iPhone device gateway) ---
     sandbox_namespace: str = "cross_platform_test"
     home_station_mode: bool = True
     home_station_keep_awake_on_ac: bool = True
