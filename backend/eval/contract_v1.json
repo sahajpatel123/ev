@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-08-18T13:33:24.585731+00:00",
+  "locked_at": "2026-09-07T23:56:47.303412+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -61,6 +61,9 @@
       "post"
     ],
     "/v1/backup/restore": [
+      "post"
+    ],
+    "/v1/backup/restore/prepare": [
       "post"
     ],
     "/v1/backup/verify": [
@@ -135,6 +138,231 @@
     "/v1/decisions/{decision_id}/outcome": [
       "post"
     ],
+    "/v1/device-gateway/admin/mark-home-station": [
+      "post"
+    ],
+    "/v1/device-gateway/admin/promote-owner": [
+      "post"
+    ],
+    "/v1/device-gateway/admin/rename": [
+      "post"
+    ],
+    "/v1/device-gateway/admin/revoke": [
+      "post"
+    ],
+    "/v1/device-gateway/admin/sandbox/clear": [
+      "post"
+    ],
+    "/v1/device-gateway/audio-diag/d2": [
+      "get"
+    ],
+    "/v1/device-gateway/audio-diag/incident": [
+      "post"
+    ],
+    "/v1/device-gateway/audio-diag/known.pcm": [
+      "get"
+    ],
+    "/v1/device-gateway/audio-diag/known.wav": [
+      "get"
+    ],
+    "/v1/device-gateway/audio-diag/truth": [
+      "get"
+    ],
+    "/v1/device-gateway/brief": [
+      "get"
+    ],
+    "/v1/device-gateway/calendar/snapshot": [
+      "post"
+    ],
+    "/v1/device-gateway/camera/result": [
+      "post"
+    ],
+    "/v1/device-gateway/camera/{request_id}": [
+      "get"
+    ],
+    "/v1/device-gateway/capabilities": [
+      "get"
+    ],
+    "/v1/device-gateway/contacts/snapshot": [
+      "post"
+    ],
+    "/v1/device-gateway/conversation/claim": [
+      "post"
+    ],
+    "/v1/device-gateway/conversation/release": [
+      "post"
+    ],
+    "/v1/device-gateway/conversation/wake": [
+      "post"
+    ],
+    "/v1/device-gateway/devices": [
+      "get"
+    ],
+    "/v1/device-gateway/heading-out": [
+      "get",
+      "post"
+    ],
+    "/v1/device-gateway/health": [
+      "get"
+    ],
+    "/v1/device-gateway/healthkit/snapshot": [
+      "post"
+    ],
+    "/v1/device-gateway/heartbeat": [
+      "post"
+    ],
+    "/v1/device-gateway/hello": [
+      "post"
+    ],
+    "/v1/device-gateway/history": [
+      "get"
+    ],
+    "/v1/device-gateway/inbox": [
+      "get"
+    ],
+    "/v1/device-gateway/inbox/ack": [
+      "post"
+    ],
+    "/v1/device-gateway/live/close": [
+      "post"
+    ],
+    "/v1/device-gateway/live/events": [
+      "get"
+    ],
+    "/v1/device-gateway/live/look-frame": [
+      "post"
+    ],
+    "/v1/device-gateway/live/open": [
+      "post"
+    ],
+    "/v1/device-gateway/live/tool": [
+      "post"
+    ],
+    "/v1/device-gateway/live/turn-receipt": [
+      "post"
+    ],
+    "/v1/device-gateway/live/webrtc/client-secret": [
+      "post"
+    ],
+    "/v1/device-gateway/live/webrtc/sdp": [
+      "post"
+    ],
+    "/v1/device-gateway/memory": [
+      "get"
+    ],
+    "/v1/device-gateway/mobile-actions/bridge-link": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/bridge.shortcut": [
+      "get"
+    ],
+    "/v1/device-gateway/mobile-actions/confirm-utterance": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/handshake": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/prepare": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/resolve": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/status": [
+      "get"
+    ],
+    "/v1/device-gateway/mobile-actions/{action_id}/cancel": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/{action_id}/claim": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/{action_id}/client-complete": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/{action_id}/complete": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/{action_id}/confirm": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-actions/{action_id}/native-execute": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-voice/asr-oracle": [
+      "post"
+    ],
+    "/v1/device-gateway/mobile-voice/fingerprint": [
+      "get"
+    ],
+    "/v1/device-gateway/mobile-voice/misheard": [
+      "post"
+    ],
+    "/v1/device-gateway/nudge-prefs": [
+      "get",
+      "post"
+    ],
+    "/v1/device-gateway/pair": [
+      "post"
+    ],
+    "/v1/device-gateway/pairing-tokens": [
+      "post"
+    ],
+    "/v1/device-gateway/people": [
+      "get"
+    ],
+    "/v1/device-gateway/people/enroll": [
+      "post"
+    ],
+    "/v1/device-gateway/push/register": [
+      "post"
+    ],
+    "/v1/device-gateway/push/web-subscription": [
+      "post"
+    ],
+    "/v1/device-gateway/queue": [
+      "get",
+      "post"
+    ],
+    "/v1/device-gateway/queue/replay": [
+      "post"
+    ],
+    "/v1/device-gateway/quick-actions": [
+      "get"
+    ],
+    "/v1/device-gateway/sense": [
+      "get"
+    ],
+    "/v1/device-gateway/session": [
+      "post"
+    ],
+    "/v1/device-gateway/status": [
+      "get"
+    ],
+    "/v1/device-gateway/sync/bootstrap": [
+      "get"
+    ],
+    "/v1/device-gateway/sync/changes": [
+      "get"
+    ],
+    "/v1/device-gateway/tactical": [
+      "get"
+    ],
+    "/v1/device-gateway/text": [
+      "post"
+    ],
+    "/v1/device-gateway/text/stream": [
+      "post"
+    ],
+    "/v1/device-gateway/vapid-public-key": [
+      "get"
+    ],
+    "/v1/device-gateway/voice/enroll": [
+      "post"
+    ],
+    "/v1/device-gateway/voice/verify": [
+      "post"
+    ],
     "/v1/devices": [
       "get",
       "post"
@@ -191,6 +419,72 @@
     "/v1/events/{event_id}": [
       "delete",
       "get"
+    ],
+    "/v1/everywhere/approvals/pending": [
+      "get"
+    ],
+    "/v1/everywhere/bootstrap": [
+      "get"
+    ],
+    "/v1/everywhere/capabilities": [
+      "get"
+    ],
+    "/v1/everywhere/capabilities/resolve": [
+      "post"
+    ],
+    "/v1/everywhere/changes": [
+      "get"
+    ],
+    "/v1/everywhere/commands": [
+      "post"
+    ],
+    "/v1/everywhere/context": [
+      "get"
+    ],
+    "/v1/everywhere/context/focus": [
+      "post"
+    ],
+    "/v1/everywhere/context/resolve": [
+      "post"
+    ],
+    "/v1/everywhere/conversation/resume_context": [
+      "get"
+    ],
+    "/v1/everywhere/device-actions/pending": [
+      "get"
+    ],
+    "/v1/everywhere/device-actions/route": [
+      "post"
+    ],
+    "/v1/everywhere/device-actions/{action_id}": [
+      "get"
+    ],
+    "/v1/everywhere/device-actions/{action_id}/claim": [
+      "post"
+    ],
+    "/v1/everywhere/device-actions/{action_id}/complete": [
+      "post"
+    ],
+    "/v1/everywhere/devices": [
+      "get"
+    ],
+    "/v1/everywhere/diagnostics": [
+      "get"
+    ],
+    "/v1/everywhere/health-summary": [
+      "get"
+    ],
+    "/v1/everywhere/memory/recall": [
+      "get"
+    ],
+    "/v1/everywhere/mission-control/status": [
+      "get"
+    ],
+    "/v1/everywhere/notifications": [
+      "get"
+    ],
+    "/v1/everywhere/notifications/{notification_id}/ack": [
+      "post"
     ],
     "/v1/export": [
       "post"
@@ -418,6 +712,45 @@
     "/v1/interaction/mode": [
       "post"
     ],
+    "/v1/life/changes": [
+      "get"
+    ],
+    "/v1/life/checkpoint": [
+      "get",
+      "post"
+    ],
+    "/v1/life/commitments": [
+      "get",
+      "post"
+    ],
+    "/v1/life/commitments/{commitment_id}": [
+      "patch"
+    ],
+    "/v1/life/goals": [
+      "get",
+      "post"
+    ],
+    "/v1/life/goals/{goal_id}": [
+      "get",
+      "patch"
+    ],
+    "/v1/life/goals/{goal_id}/steps": [
+      "post"
+    ],
+    "/v1/life/people/relationships": [
+      "get",
+      "put"
+    ],
+    "/v1/life/projects": [
+      "get",
+      "post"
+    ],
+    "/v1/life/projects/{project_id}": [
+      "patch"
+    ],
+    "/v1/life/situation": [
+      "get"
+    ],
     "/v1/live/channels": [
       "get",
       "post"
@@ -480,11 +813,17 @@
     "/v1/memory/rebuild": [
       "post"
     ],
+    "/v1/migrations/parity": [
+      "get"
+    ],
     "/v1/notify/{notification_id}/receipt": [
       "post"
     ],
     "/v1/ops/center": [
       "get"
+    ],
+    "/v1/ops/memory-router/probe": [
+      "post"
     ],
     "/v1/ops/metrics": [
       "get"
