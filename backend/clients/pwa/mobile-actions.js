@@ -129,9 +129,45 @@
       return true;
     },
 
+    /* Cycle 46 — countdown ring for a voice-set timer: driven by the
+       canonical fire_at from the Home Station dispatch, never a re-parse
+       of the spoken sentence. */
+    presentTimerRing: function (timer) {
+      const root = $("timer-ring-card");
+      const arc = $("tmr-arc");
+      if (!root || !arc || !timer || !timer.fire_at) return;
+      const fireAt = Date.parse(timer.fire_at);
+      if (!isFinite(fireAt)) return;
+      const totalMs = Math.max(1000, fireAt - Date.now());
+      const CIRC = 2 * Math.PI * 30;
+      arc.style.strokeDasharray = String(CIRC);
+      textOf($("tmr-fire"), "until " + new Date(fireAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+      root.hidden = false;
+      clearTimeout(this._tmrTimer);
+      const self = this;
+      const tick = function () {
+        const remain = fireAt - Date.now();
+        if (remain <= 0) {
+          textOf($("tmr-remaining"), "done");
+          arc.style.strokeDashoffset = String(CIRC);
+          clearTimeout(self._tmrTimer);
+          haptic("confirmation_accepted");
+          setTimeout(function () { root.hidden = true; }, 8000);
+          return;
+        }
+        const mins = Math.floor(remain / 60000);
+        const secs = Math.floor((remain % 60000) / 1000);
+        textOf($("tmr-remaining"), (mins > 0 ? mins + ":" : "") + String(secs).padStart(mins > 0 ? 2 : 1, "0"));
+        arc.style.strokeDashoffset = String(CIRC * (1 - remain / totalMs));
+        self._tmrTimer = setTimeout(tick, 1000);
+      };
+      tick();
+    },
+
     /* Cycle 45 — ev.hud.card.v1 result view: what the tool DID, with
        provenance chips (route, executed, verified, error). Pure display. */
     presentResult: function (parsed, toolName) {
+      if (parsed && parsed.timer && parsed.executed) this.presentTimerRing(parsed.timer);
       const root = $("tool-result-card");
       if (!root) return;
       const chips = $("tr-chips");

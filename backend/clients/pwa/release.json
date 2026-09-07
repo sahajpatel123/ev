@@ -1,25 +1,25 @@
 {
-  "web_build": "2026.09.08.03",
+  "web_build": "2026.09.08.04",
   "web_protocol": 1,
   "api_protocol": "1",
   "web_protocol_min": 1,
   "web_protocol_max": 1,
-  "generated_at": "2026-09-07T20:10:29.438720+00:00",
+  "generated_at": "2026-09-07T20:14:15.279447+00:00",
   "files": {
-    "index.html": "b1e00cb6dbe286073f054438df802092eb049220c53a54387eb53090c98bd4bf",
-    "app.js": "39b1e3ab866573c46a4208ac81bec0625f46e478d17853fe9b2a4a070449ace2",
+    "index.html": "720bd1d4eca9ed237c9dafba6c6d246e78e5f4f968eeab49dfc89430a8397aa0",
+    "app.js": "a0cbfb0899333d42e3a20419db3bf3eb28fb2405d3be33c28edc230ab76bc1b7",
     "capabilities.js": "844f1de3b966cd7e58be4b717186d0611518a7ce74a9cf20c28926fa78befbed",
-    "sw.js": "76344b0854e9d09c6272c1d03ff54aa54ea65b314be51fb5e08fb7808ce497f1",
+    "sw.js": "e410fd24b11b786c53ccbcee201eaa7760247a681ad57bfb6d4e6733e8efb86c",
     "audio.js": "d001b00ea05f605295b4bc9f06fd184d482cd25af8c7beb5e6fcfd3872f8cd39",
     "webrtc.js": "bf2b897052b66936e4eb2513b62a39ccaa31c9fa18ade93d64593669f8811915",
-    "mobile-actions.js": "fcc7635f35e6682ec1c5cfe2c352bf6d5728467e01324b60e0292b09adc6a9ce",
+    "mobile-actions.js": "5feb04b27850a3f307ee2d04a49b5a35b9ed62a54f775e6f61e8f99c24985425",
     "presence.js": "55afac3c0a53ed14ce0fffc7768898c622dfb558eef3b65690e24cff16755060",
     "orb.js": "119fdf144d970af320c2ca9b963fab08b1bca7bde4ce70734661e66f261c9748",
     "pcm-worklet.js": "153f30b0616ef32a560af572642f7246b72b5d5593bef27ed8ec10690c24c6c5",
     "playback-worklet.js": "e9959d2a2e162bedcaf0671f6b97c766d60a04b5ccce7dbc911d23dc8453d602",
     "feedback.js": "736a976751c2c7978c94cd5f5b53524ebaf13b2fb9125b3020560b9075c472d3",
-    "style.css": "3540f4276f84eff19937476e1bad50ad44e1161fc4fd8c78379a3139e3f5f6d4",
+    "style.css": "8f712b902bc8ede35f396d3b296eaefdac08cc63c7e1d9e6322be5acd8ac2508",
     "manifest.webmanifest": "2adb4ce4ceda7ca22df030c7bca54a609e3d11b445709f981324907844ee4f47"
   },
-  "asset_manifest_hash": "d4aa77d379510bc353fc89a6341d69bf230003fc0f038021a27f88630b72b6e3"
+  "asset_manifest_hash": "eb3959c58017bcb7838a86dfa6788ee7967879cea0c631e469d6a413b59f9a1a"
 }

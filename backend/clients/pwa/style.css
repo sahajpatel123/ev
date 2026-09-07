@@ -674,3 +674,10 @@ html, body {
 .chip-good { border-color: #3a9c58; color: #2c7a44; }
 .chip-warn { border-color: #c79a3a; color: #8a6a1f; }
 .chip-bad { border-color: #b3554e; color: #93403a; }
+
+/* Cycle 46 — timer countdown ring. */
+.tmr-row { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+.tmr-ring { width: 72px; height: 72px; transform: rotate(-90deg); }
+.tmr-track { fill: none; stroke: var(--line, #d8d5cf); stroke-width: 6; }
+.tmr-arc { fill: none; stroke: #3a9c58; stroke-width: 6; stroke-linecap: round; stroke-dasharray: 188.5; stroke-dashoffset: 0; }
+.tmr-remaining { font-size: 24px; font-weight: 700; margin: 0; font-variant-numeric: tabular-nums; }

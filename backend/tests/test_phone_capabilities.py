@@ -163,3 +163,33 @@ async def test_voice_conversation_turn_ingested_to_memory(db_session):
     ingested = [r for r in rows if (r.metadata_ or {}).get("surface") == "phone_voice"]
     assert ingested, "phone voice turn must be recorded into the event store"
     assert "ramen" in (ingested[0].content or {}).get("text", "")
+
+
+async def test_start_timer_result_carries_fire_at(db_session):
+    """Cycle 46 — the phone countdown ring needs the canonical fire time;
+    maybe_phone_mac_act must pass the timer payload through, not just the
+    spoken sentence."""
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.models import Device
+
+    d = Device(
+        name="Timer Phone",
+        token_hash="timer-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(d)
+    await db_session.commit()
+
+    result = await maybe_phone_mac_act(
+        db_session,
+        device=d,
+        text="set a timer for five minutes",
+        idempotency_key="tmr-1",
+    )
+    assert result is not None
+    assert result.get("tool") == "start_timer"
+    timer = result.get("timer") or {}
+    assert timer.get("fire_at"), f"fire_at must ride the result: {result}"
+    assert "5" in str(result.get("reply") or "") or "minute" in str(result.get("reply") or "")

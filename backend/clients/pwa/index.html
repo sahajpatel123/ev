@@ -9,13 +9,13 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.09.08.03">
+  <meta name="evie-build" content="2026.09.08.04">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.09.08.03">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.09.08.04">
   <title>Evie</title>
 </head>
 <body>
@@ -57,6 +57,19 @@
         <p class="ma-op" id="tr-title"></p>
         <p class="ma-body" id="tr-spoken"></p>
         <div class="ma-chips" id="tr-chips"></div>
+      </article>
+      <article class="mobile-action-card" id="timer-ring-card" hidden>
+        <p class="ma-kicker" id="tmr-kicker">Timer running</p>
+        <div class="tmr-row">
+          <svg class="tmr-ring" viewBox="0 0 72 72" aria-hidden="true">
+            <circle class="tmr-track" cx="36" cy="36" r="30"></circle>
+            <circle class="tmr-arc" id="tmr-arc" cx="36" cy="36" r="30"></circle>
+          </svg>
+          <div>
+            <p class="tmr-remaining" id="tmr-remaining">--:--</p>
+            <p class="quiet" id="tmr-fire"></p>
+          </div>
+        </div>
       </article>
       <article id="camera-ask" class="camera-ask" hidden>
         <p class="camera-ask-title">Which iPhone is this?</p>
@@ -223,14 +236,14 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.09.08.03"></script>
-  <script src="/evie/presence.js?v=2026.09.08.03"></script>
-  <script src="/evie/orb.js?v=2026.09.08.03"></script>
-  <script src="/evie/feedback.js?v=2026.09.08.03"></script>
-  <script src="/evie/webrtc.js?v=2026.09.08.03"></script>
-  <script src="/evie/mobile-actions.js?v=2026.09.08.03"></script>
-  <script src="/evie/capabilities.js?v=2026.09.08.03"></script>
-  <script src="/evie/app.js?v=2026.09.08.03"></script>
+  <script src="/evie/audio.js?v=2026.09.08.04"></script>
+  <script src="/evie/presence.js?v=2026.09.08.04"></script>
+  <script src="/evie/orb.js?v=2026.09.08.04"></script>
+  <script src="/evie/feedback.js?v=2026.09.08.04"></script>
+  <script src="/evie/webrtc.js?v=2026.09.08.04"></script>
+  <script src="/evie/mobile-actions.js?v=2026.09.08.04"></script>
+  <script src="/evie/capabilities.js?v=2026.09.08.04"></script>
+  <script src="/evie/app.js?v=2026.09.08.04"></script>
   <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
        additive window.EvieTrust namespace; no existing markup changed. -->
   <script>

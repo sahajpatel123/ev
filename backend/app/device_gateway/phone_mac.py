@@ -225,10 +225,18 @@ async def maybe_phone_mac_act(
     executed = bool(response.ok and payload.get("ok", True) is not False and not payload.get("degraded"))
     if name == "calendar_read" and payload.get("error") == "not_connected":
         executed = False
+    extra: dict[str, Any] = {"tool_ok": bool(response.ok), "tool_error": response.error}
+    if name == "start_timer" and payload.get("ok") is not False:
+        # Cycle 46 — the phone renders a countdown ring; it needs the
+        # canonical fire time, not a re-parse of the spoken sentence.
+        extra["timer"] = {
+            "id": str(payload.get("timer_id") or payload.get("id") or ""),
+            "fire_at": str(payload.get("fire_at") or ""),
+        }
     return _ok(
         spoken,
         route="HOME_STATION",
         tool=name,
         executed=executed,
-        extra={"tool_ok": bool(response.ok), "tool_error": response.error},
+        extra=extra,
     )
