@@ -690,3 +690,26 @@ html, body {
 #talk.holding { transform: scale(0.96); filter: brightness(1.12); }
 .cap-quiet { margin: 0 0 10px; font-size: 12px; opacity: 0.6; }
 .cap-sensitive { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line, #d8d5cf); }
+
+/* Cycle 71 — live partial transcript: the owner's words appear as they
+   speak. A partial is a hypothesis (translucent, with a live dot); the
+   final transcript sets it in ink; a reply clears it. */
+.user-line.partial {
+  color: var(--muted);
+  opacity: 0.75;
+  font-style: italic;
+}
+.user-line.partial::after {
+  content: "…";
+  animation: live-dot 1.1s steps(3) infinite;
+}
+.user-line.final {
+  color: var(--ink);
+  opacity: 1;
+  font-style: normal;
+}
+@keyframes live-dot {
+  0% { opacity: 0.2; }
+  50% { opacity: 1; }
+  100% { opacity: 0.2; }
+}

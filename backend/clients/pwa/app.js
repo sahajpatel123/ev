@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.22";
+const CLIENT_BUILD = "2026.09.08.23";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -1999,12 +1999,22 @@ async function handleLiveMessage(gen, ev) {
   if (msg.type === "final_transcript" && msg.text) {
     state.userLine = msg.text;
     pushHistory("user", msg.text);
+    const line = $("user-line");
+    if (line) {
+      line.classList.remove("partial");
+      line.classList.add("final");
+    }
     setMood("Thinking");
     render();
   }
   if (msg.type === "partial" && msg.text) {
     state.userLine = msg.text;
     textOf($("user-line"), msg.text);
+    const line = $("user-line");
+    if (line) {
+      line.classList.remove("final");
+      line.classList.add("partial");
+    }
   }
   if (msg.type === "barge_in" && engine) engine.stop();
   if (msg.type === "hud") {
@@ -2024,6 +2034,11 @@ async function handleLiveMessage(gen, ev) {
     state.caption = msg.text;
     pushHistory("evie", msg.text);
     if (engine && engine.endStream) engine.endStream();
+    const userLineEl = $("user-line");
+    if (userLineEl) {
+      userLineEl.classList.remove("partial", "final");
+      state.userLine = "";
+    }
     render();
   }
   if (msg.type === "tts_chunk" && msg.audio_b64) {

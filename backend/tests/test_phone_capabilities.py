@@ -1076,3 +1076,20 @@ async def test_send_message_requires_speaker_verify(client, db_session, monkeypa
         assert allowed["executed"] is True
     finally:
         mac_mod.is_sandbox_device = _real_sandbox
+
+
+def test_partial_transcript_wire_frame_shape():
+    """Cycle 71 — C31: the live pipeline emits partials with text, sequence,
+    and stable=False — the contract the PWA live transcript UI renders."""
+    from app.voice.live.events import PartialTranscriptEvent
+
+    ev = PartialTranscriptEvent(at_ms=0, text="hello there", sequence=1, stable=False)
+    assert ev.text == "hello there"
+    assert ev.sequence == 1
+    assert ev.stable is False
+    css = open("clients/pwa/style.css").read()
+    assert ".user-line.partial" in css
+    assert ".user-line.final" in css
+    js = open("clients/pwa/app.js").read()
+    assert 'line.classList.add("partial")' in js
+    assert 'line.classList.add("final")' in js
