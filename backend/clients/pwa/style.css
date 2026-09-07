@@ -731,3 +731,18 @@ html, body {
   font-size: 12px;
 }
 .chip.off { opacity: 0.55; }
+
+/* Cycle 75 — SE compact layout profile. Auto: screens ≤ 380 CSS px (iPhone
+   SE class) get the dense profile; the Density segment overrides. Tighter
+   padding, smaller type, shorter sheets — same components, no feature cuts. */
+body.compact .sheet { padding: 14px 16px 20px; }
+body.compact h2 { font-size: 17px; margin: 10px 0 6px; }
+body.compact h3 { font-size: 14px; margin: 14px 0 4px; }
+body.compact .user-line, body.compact .reply { font-size: 14px; }
+body.compact .folio-grid { gap: 8px; }
+body.compact .folio-card { padding: 10px 12px; }
+body.compact .folio-card strong { font-size: 14px; }
+body.compact .turn { padding: 6px 0; }
+body.compact .turn-text { font-size: 13px; }
+body.compact .chip { font-size: 11px; padding: 2px 8px; }
+body.compact .meta { font-size: 13px; }

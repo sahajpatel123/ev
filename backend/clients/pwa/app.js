@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.26";
+const CLIENT_BUILD = "2026.09.08.27";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -2966,6 +2966,27 @@ function voiceMode() {
     appearance.addEventListener("click", (ev) => {
       const btn = ev.target.closest("button");
       if (btn) applyAppearance(btn.getAttribute("data-appearance"));
+    });
+  }
+  /* Cycle 75 — density: auto (≤380px = SE compact), compact, comfortable. */
+  const densitySeg = $("density");
+  const applyDensity = (mode) => {
+    const compact = mode === "compact" || (mode === "auto" && Math.min(window.innerWidth || 999, window.screen && window.screen.width || 999) <= 380);
+    document.body.classList.toggle("compact", compact);
+    localStorage.setItem("evie-density", mode);
+    const buttons = (densitySeg && densitySeg.querySelectorAll("button")) || [];
+    for (let i = 0; i < buttons.length; i += 1) {
+      buttons[i].classList.toggle("on", buttons[i].getAttribute("data-density") === mode);
+    }
+  };
+  if (densitySeg) {
+    applyDensity(localStorage.getItem("evie-density") || "auto");
+    densitySeg.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (btn) applyDensity(btn.getAttribute("data-density"));
+    });
+    window.addEventListener("resize", () => {
+      applyDensity(localStorage.getItem("evie-density") || "auto");
     });
   }
   /* Cycle 56 — voice mode: continuous (server VAD auto-responds) vs

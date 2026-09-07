@@ -105,3 +105,18 @@ def test_native_actions_kill_switch_does_not_remove_pwa_surface() -> None:
     chunk = app_js[hello_idx:ready_idx]
     assert "await window.EvieNativeShell" not in chunk
     assert "await EvieNativeShell" not in chunk
+
+
+def test_compact_density_profile_wired():
+    """Cycle 75 — C35: SE compact layout profile is real CSS + a Density
+    segment; auto detects ≤380px screens, override persists."""
+    css = open("clients/pwa/style.css").read()
+    assert "body.compact" in css
+    assert "Cycle 75" in css
+    js = open("clients/pwa/app.js").read()
+    assert "evie-density" in js
+    assert "data-density" in js or 'getAttribute("data-density")' in js
+    assert "380" in js
+    html = open("clients/pwa/index.html").read()
+    assert 'id="density"' in html
+    assert 'data-density="compact"' in html
