@@ -2583,3 +2583,19 @@ window.EvieSearch = (function () {
   }
   return { filterTurns: filterTurns };
 })();
+// Cycle 06 — iPhone-only quick-action row model. Backward compatible: new
+// window.EvieQuickActions namespace only; actions() returns a fresh array of
+// {id,label,hint} rows (briefing/look/memory) so callers cannot mutate it.
+window.EvieQuickActions = (function () {
+  var ACTIONS = [
+    { id: "briefing", label: "Briefing", hint: "Catch up on today" },
+    { id: "look", label: "Look", hint: "Share what the camera sees" },
+    { id: "memory", label: "Memory", hint: "Recall saved context" }
+  ];
+  function actions() {
+    return ACTIONS.map(function (a) {
+      return { id: a.id, label: a.label, hint: a.hint };
+    });
+  }
+  return { actions: actions };
+})();
