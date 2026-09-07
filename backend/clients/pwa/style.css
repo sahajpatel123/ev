@@ -667,3 +667,10 @@ html, body {
 .cap-limits { margin: 10px 0 0; padding-left: 18px; font-size: 12px; opacity: 0.75; }
 .cap-hint { margin: 10px 0 0; font-size: 13px; font-weight: 600; }
 .cap-revoked { border-color: #b3554e; }
+
+/* Cycle 45 — provenance chips on tool result cards. */
+.ma-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line, #d8d5cf); opacity: 0.85; }
+.chip-good { border-color: #3a9c58; color: #2c7a44; }
+.chip-warn { border-color: #c79a3a; color: #8a6a1f; }
+.chip-bad { border-color: #b3554e; color: #93403a; }

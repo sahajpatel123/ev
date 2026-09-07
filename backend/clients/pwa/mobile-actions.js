@@ -97,7 +97,27 @@
 
     presentFromHud: function (ev) {
       const card = (ev && ev.hud) || ev || {};
-      if (card.kind !== "phone_action" && (ev && ev.kind) !== "phone_action") return false;
+      const kind = card.kind || (ev && ev.kind) || "";
+      const meta = card.meta || {};
+      if (kind === "result") {
+        this.presentResult(card.phone_action || card, (ev && ev.name) || card.name || "");
+        return true;
+      }
+      if (kind === "tool_result" || meta.kind === "tool_result") {
+        this.presentResult(
+          {
+            ok: meta.success !== false,
+            executed: meta.success !== false,
+            verified: meta.verified !== false,
+            error_code: meta.error || "",
+            spoken: card.body || "",
+            card: { title: card.title || "" },
+          },
+          meta.tool || ""
+        );
+        return true;
+      }
+      if (kind !== "phone_action") return false;
       if (card.receipt && this.current && card.action_id === this.current.action_id) {
         this.current.card = Object.assign({}, this.current.card, card);
         this.current.done = true;
@@ -107,6 +127,48 @@
       }
       this.present({ card: card, action_id: card.action_id });
       return true;
+    },
+
+    /* Cycle 45 — ev.hud.card.v1 result view: what the tool DID, with
+       provenance chips (route, executed, verified, error). Pure display. */
+    presentResult: function (parsed, toolName) {
+      const root = $("tool-result-card");
+      if (!root) return;
+      const chips = $("tr-chips");
+      const route = String(parsed.route || "").replace(/_/g, " ").toLowerCase();
+      const operation = String(parsed.operation || "").replace(/_/g, " ").toLowerCase();
+      const title = parsed.card && parsed.card.title
+        ? parsed.card.title
+        : (parsed.capability || toolName || "tool").replace(/_/g, " ");
+      textOf($("tr-kicker"), (parsed.executed ? "Executed" : parsed.ok === false ? "Failed" : "Answered") + " · this turn");
+      textOf($("tr-title"), title);
+      const spoken = String(parsed.spoken || "").trim();
+      if (spoken) {
+        $("tr-spoken").hidden = false;
+        textOf($("tr-spoken"), spoken);
+      } else {
+        $("tr-spoken").hidden = true;
+      }
+      chips.textContent = "";
+      const chipDefs = [];
+      if (route) chipDefs.push({ label: route, tone: "plain" });
+      if (operation && operation !== "unknown") chipDefs.push({ label: operation, tone: "plain" });
+      chipDefs.push({ label: parsed.executed ? "executed ✓" : "not executed", tone: parsed.executed ? "good" : "warn" });
+      if (parsed.verified != null) {
+        chipDefs.push({ label: parsed.verified ? "verified ✓" : "unverified", tone: parsed.verified ? "good" : "warn" });
+      }
+      if (parsed.error_code) chipDefs.push({ label: String(parsed.error_code).toLowerCase(), tone: "bad" });
+      chipDefs.forEach(function (def) {
+        const chip = document.createElement("span");
+        chip.className = "chip chip-" + def.tone;
+        chip.textContent = def.label;
+        chips.appendChild(chip);
+      });
+      root.hidden = false;
+      clearTimeout(window.__trTimer);
+      window.__trTimer = setTimeout(function () {
+        root.hidden = true;
+      }, parsed.ok === false ? 12000 : 7000);
     },
 
     render: function () {

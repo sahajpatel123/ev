@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.02";
+const CLIENT_BUILD = "2026.09.08.03";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -1652,12 +1652,16 @@ async function handleLiveMessage(gen, ev) {
   }
   if (msg.type === "barge_in" && engine) engine.stop();
   if (msg.type === "hud") {
-    const kind = (msg.hud && msg.hud.kind) || msg.kind || "";
+    const hud = msg.hud || msg;
+    const kind = hud.kind || msg.kind || (hud.meta && hud.meta.kind) || "";
     if (kind === "progress") {
       setMood("Working on MacBook");
       textOf($("action-card"), "MacBook · working");
       $("action-card").hidden = false;
       pushActivity("Working on MacBook");
+    } else if ((kind === "result" || kind === "tool_result") && window.EvieMobileActions) {
+      // Cycle 45 — provenance chips ride the same card renderer on PCM path.
+      window.EvieMobileActions.presentFromHud(hud);
     }
   }
   if (msg.type === "reply" && msg.text) {

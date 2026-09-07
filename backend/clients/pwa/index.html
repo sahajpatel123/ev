@@ -9,13 +9,13 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.09.08.02">
+  <meta name="evie-build" content="2026.09.08.03">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.09.08.02">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.09.08.03">
   <title>Evie</title>
 </head>
 <body>
@@ -45,12 +45,19 @@
         <p class="ma-target" id="ma-target"></p>
         <p class="ma-body" id="ma-body" hidden></p>
         <p class="ma-status" id="ma-status"></p>
+        <div class="ma-chips" id="ma-chips" hidden></div>
         <div class="ma-actions">
           <button type="button" id="ma-go" class="dock-primary">Run</button>
           <button type="button" id="ma-cancel" class="ghost">Cancel</button>
         </div>
       </article>
       <p class="action-card" id="action-card" hidden></p>
+      <article class="mobile-action-card" id="tool-result-card" hidden>
+        <p class="ma-kicker" id="tr-kicker">Result</p>
+        <p class="ma-op" id="tr-title"></p>
+        <p class="ma-body" id="tr-spoken"></p>
+        <div class="ma-chips" id="tr-chips"></div>
+      </article>
       <article id="camera-ask" class="camera-ask" hidden>
         <p class="camera-ask-title">Which iPhone is this?</p>
         <p class="quiet">Tap one. Evie uses this for Look — it is not inferred from the name.</p>
@@ -216,14 +223,14 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.09.08.02"></script>
-  <script src="/evie/presence.js?v=2026.09.08.02"></script>
-  <script src="/evie/orb.js?v=2026.09.08.02"></script>
-  <script src="/evie/feedback.js?v=2026.09.08.02"></script>
-  <script src="/evie/webrtc.js?v=2026.09.08.02"></script>
-  <script src="/evie/mobile-actions.js?v=2026.09.08.02"></script>
-  <script src="/evie/capabilities.js?v=2026.09.08.02"></script>
-  <script src="/evie/app.js?v=2026.09.08.02"></script>
+  <script src="/evie/audio.js?v=2026.09.08.03"></script>
+  <script src="/evie/presence.js?v=2026.09.08.03"></script>
+  <script src="/evie/orb.js?v=2026.09.08.03"></script>
+  <script src="/evie/feedback.js?v=2026.09.08.03"></script>
+  <script src="/evie/webrtc.js?v=2026.09.08.03"></script>
+  <script src="/evie/mobile-actions.js?v=2026.09.08.03"></script>
+  <script src="/evie/capabilities.js?v=2026.09.08.03"></script>
+  <script src="/evie/app.js?v=2026.09.08.03"></script>
   <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
        additive window.EvieTrust namespace; no existing markup changed. -->
   <script>
