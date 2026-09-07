@@ -670,3 +670,10 @@ html, body {
 .evie-memory-mat .evie-memory-card { padding: 12px 14px; border: 1px solid var(--stroke); border-radius: 16px; background: var(--elevated); box-shadow: var(--shadow); font-size: 13px; line-height: 1.5; }
 .evie-memory-mat .evie-memory-card strong { display: block; font-size: 13px; margin-bottom: 4px; }
 .evie-memory-mat .evie-memory-card span { color: var(--muted); }
+/* Cycle 15 (iPhone-only): camera sheet. Additive-only: new .evie-lens namespace
+   incl. role badge; every existing selector untouched. Dark/light via existing
+   vars, so Mac browsers without this markup render exactly as before. */
+.evie-lens { position: relative; overflow: hidden; border-radius: 24px; border: 1px solid var(--stroke); background: #111; }
+.evie-lens video, .evie-lens img { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; }
+.evie-lens .evie-lens-badge { position: absolute; top: 12px; left: 12px; padding: 6px 12px; border-radius: 999px; background: var(--elevated); backdrop-filter: blur(var(--blur)); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink); }
+.evie-lens .evie-lens-badge.is-live { background: var(--talk); color: var(--talk-ink); }

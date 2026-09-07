@@ -245,3 +245,14 @@
     return "evie-memory-mat is-" + s;
   };
 })(typeof window !== "undefined" ? window : globalThis);
+// Cycle 15 (iPhone-only): camera-sheet state hook. Additive-only: new
+// EviePresence.prototype.cycle15StateClass; draw/membrane untouched. Pure
+// state -> CSS-class mapper (no DOM), so Mac behavior is unchanged.
+(function (root) {
+  var P = root.EviePresence && root.EviePresence.prototype;
+  if (!P || P.cycle15StateClass) return;
+  P.cycle15StateClass = function cycle15StateClass(state) {
+    var s = String(state || (this && this.state) || "idle").toLowerCase().replace(/[^a-z]/g, "") || "idle";
+    return "evie-lens is-" + s;
+  };
+})(typeof window !== "undefined" ? window : globalThis);
