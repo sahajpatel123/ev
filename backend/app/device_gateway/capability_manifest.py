@@ -100,6 +100,16 @@ def capability_manifest(device: Device) -> dict[str, Any]:
             "tools": TRUSTED_REALTIME_TOOLS if trusted else (),
             "interrupt": "client_confirmed",
         },
+        "tts": {
+            # Cycle 58 — the phone speaks with the SAME voice identity as the
+            # desk: engine + voice + rate come straight from the canonical
+            # EV_VOICE_TTS_* settings. Display-only; changing the timbre is a
+            # settings decision, never a per-surface one.
+            "engine": str(settings.voice_tts_engine or "auto"),
+            "voice": str(settings.voice_tts_voice or ""),
+            "provider": str(settings.voice_tts_provider or ""),
+            "same_as_desk": True,
+        },
         "tools": tools,
         "reads": reads,
         "memory": {

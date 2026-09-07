@@ -1,4 +1,4 @@
-const BUILD = "2026.09.08.12";
+const BUILD = "2026.09.08.13";
 const CACHE = "evie-static-" + BUILD;
 const STATIC = [
   "/evie/",

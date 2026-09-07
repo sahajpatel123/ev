@@ -643,3 +643,14 @@ async def test_text_stream_includes_tts_events(client, db_session, monkeypatch):
     wav = b64.b64decode(data["audio_b64"])
     assert wav[:4] == b"RIFF", f"payload must be WAV, got {wav[:8]}"
     assert data["content_type"] == "audio/wav"
+
+
+def test_manifest_carries_voice_identity():
+    """Cycle 58 — C18: the manifest states the phone speaks with the same
+    canonical voice identity as the desk (engine/voice from EV_VOICE_TTS_*)."""
+    from app.device_gateway.capability_manifest import capability_manifest
+
+    manifest = capability_manifest(_trusted_device())
+    tts = manifest.get("tts") or {}
+    assert tts.get("same_as_desk") is True
+    assert "engine" in tts and "voice" in tts

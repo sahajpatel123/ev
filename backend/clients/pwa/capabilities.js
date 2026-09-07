@@ -69,6 +69,11 @@
     });
     card.appendChild(grid);
     if (!anyTools) grid.classList.add("cap-muted");
+    if (manifest.tts) {
+      var ttsLine = "Voice: " + (manifest.tts.voice || manifest.tts.engine || "default") +
+        (manifest.tts.same_as_desk ? " · same as MacBook" : "");
+      card.appendChild(el("p", "cap-quiet", ttsLine));
+    }
 
     var limits = manifest.limits || [];
     if (limits.length) {
