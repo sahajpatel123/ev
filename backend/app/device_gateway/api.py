@@ -1076,6 +1076,75 @@ async def healthkit_snapshot(
     return {"ok": True, "freshness": freshness, "sent_to_model": False, "available": bool(available)}
 
 
+@router.post("/text/stream")
+async def user_text_stream(
+    data: TextRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Cycle 54 — streaming STATES for the typed path: an SSE body that
+    yields the turn's stages (routing → thinking → reply) so the phone
+    shows honest progress instead of a silent wait. Token streaming is a
+    later, separate change; this endpoint never fakes it."""
+
+    _check_origin(request)
+    if device.revoked_at is not None:
+        raise HTTPException(status_code=401, detail="Device revoked")
+
+    from collections.abc import AsyncIterator
+
+    from fastapi.responses import StreamingResponse
+
+    async def events() -> AsyncIterator[str]:
+        yield "event: state\ndata: {\"stage\": \"routing\"}\n\n"
+        try:
+            if not is_sandbox_device(device):
+                from app.device_gateway.pipeline import run_trusted_device_text
+
+                yield "event: state\ndata: {\"stage\": \"thinking\"}\n\n"
+                result = await run_trusted_device_text(
+                    session,
+                    device=device,
+                    text=data.text or "",
+                    idempotency_key=data.request_id or getattr(data, "idempotency_key", None),
+                )
+                await session.commit()
+                payload = {
+                    "reply": str(result.get("reply") or ""),
+                    "route": result.get("route"),
+                    "conversational": bool(result.get("conversational")),
+                }
+            else:
+                lease = await claim_lease(
+                    session, device_id=device.id, instance_id=data.instance_id or "default", method="manual"
+                )
+                note_presence(device.id, instance_id=data.instance_id or "default", state="active")
+                result = await handle_user_text(
+                    session,
+                    device=device,
+                    text=data.text,
+                    request_id=data.request_id or data.idempotency_key,
+                    instance_id=data.instance_id or "default",
+                    origin=gateway_origin(request),
+                )
+                await session.commit()
+                payload = {"reply": str(result.get("reply") or result.get("text") or "")}
+            import json as _json
+
+            yield f"event: reply\ndata: {_json.dumps(payload)}\n\n"
+        except Exception as exc:  # noqa: BLE001 - SSE must end with an error event
+            import json as _json
+
+            yield (
+                "event: error\ndata: "
+                + _json.dumps({"error_code": "TEXT_STREAM_FAILED", "message": str(exc)[:200]})
+                + "\n\n"
+            )
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
 @router.post("/queue/replay")
 async def offline_replay(
     data: QueueReplayRequest,

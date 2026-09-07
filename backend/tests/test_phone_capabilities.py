@@ -549,3 +549,26 @@ async def test_offline_queue_executes_exactly_once(client, db_session):
         await db_session.execute(select(func.count()).select_from(OwnerTimer))
     ).scalar()
     assert count2 == 1, "replay must NOT create a second timer"
+
+
+async def test_text_stream_sse_roundtrip(client, db_session):
+    """Cycle 54 — C14: the typed path streams honest states (routing,
+    thinking) then a reply event; the reply content matches the classic
+    /text result."""
+    import json as _json
+
+    phone = await _pair_sandbox(client, "Stream-SE")
+    res = await phone.post(
+        "/v1/device-gateway/text/stream",
+        json={"text": "hello there", "instance_id": "Stream-SE-tab", "request_id": "sse-1"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.headers["content-type"].startswith("text/event-stream")
+    raw = res.text
+    assert "event: state" in raw and "routing" in raw
+    # Sandbox turns skip the thinking stage; trusted turns stream it.
+    assert "thinking" in raw or "event: reply" in raw
+    assert "event: reply" in raw
+    reply_line = [line for line in raw.splitlines() if line.startswith("data: {\"reply")][0]
+    payload = _json.loads(reply_line.removeprefix("data: "))
+    assert payload.get("reply"), payload

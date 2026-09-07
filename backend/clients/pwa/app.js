@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.08";
+const CLIENT_BUILD = "2026.09.08.09";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -1486,6 +1486,14 @@ async function sendText(text) {
   pushHistory("user", text);
   setMood("Thinking");
   paintLive();
+  // Cycle 54 — streamed states first (routing → thinking → reply). Falls
+  // back to the classic request/response turn when SSE is unavailable.
+  try {
+    const streamed = await sendTextStreamed(text, requestId);
+    if (streamed) return streamed;
+  } catch (_err) {
+    // fall through to the classic path; it owns the error surface
+  }
   let body;
   try {
     body = await api("/v1/device-gateway/text", {
@@ -1511,6 +1519,61 @@ async function sendText(text) {
   setMood(state.talking ? "Listening" : "Ready");
   paintLive();
   return body;
+}
+
+/* Cycle 54 — POST + ReadableStream SSE parse (EventSource cannot POST).
+   state events update the caption honestly; the reply event completes the
+   turn through the SAME code path as the classic response. */
+async function sendTextStreamed(text, requestId) {
+  const res = await fetch("/v1/device-gateway/text/stream", {
+    method: "POST",
+    headers: Object.assign({ "content-type": "application/json" }, state.deviceToken ? { Authorization: "Bearer " + state.deviceToken } : {}),
+    body: JSON.stringify({
+      text,
+      instance_id: state.instanceId,
+      request_id: requestId,
+      idempotency_key: requestId,
+    }),
+  });
+  if (!res.ok || !res.body || !/text\/event-stream/.test(res.headers.get("content-type") || "")) {
+    return null;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalBody = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf("\n\n")) >= 0) {
+      const chunk = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+      const lines = chunk.split("\n");
+      const event = (lines.find((l) => l.startsWith("event:")) || "").replace(/^event:\s*/, "").trim();
+      const dataLine = lines.find((l) => l.startsWith("data:")) || "";
+      let data = {};
+      try { data = JSON.parse(dataLine.replace(/^data:\s*/, "")); } catch (_err) { data = {}; }
+      if (event === "state" && data.stage === "routing") {
+        state.caption = "Routing your request…";
+        paintLive();
+      } else if (event === "state" && data.stage === "thinking") {
+        state.caption = "Thinking…";
+        paintLive();
+      } else if (event === "reply") {
+        finalBody = data;
+      } else if (event === "error") {
+        finalBody = { reply: "That didn't complete — try again." };
+      }
+    }
+  }
+  if (!finalBody) return null;
+  state.caption = finalBody.reply || "";
+  pushHistory("evie", finalBody.reply || "");
+  setMood(state.talking ? "Listening" : "Ready");
+  paintLive();
+  return finalBody;
 }
 
 async function captureCamera(body, facing) {
