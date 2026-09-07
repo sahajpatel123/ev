@@ -1,4 +1,4 @@
-// Cycle EAC-40 — iPhone device-tier capability flags.
+// Cycle EAC-46 — iPhone device-tier capability flags.
 /// iPhone-only additive helper; backward compatible (new type, no existing API touched).
 ///
 /// The two phones differ physically (iPhone 16 Pro vs iPhone SE): Dynamic
