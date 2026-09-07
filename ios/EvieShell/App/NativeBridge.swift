@@ -73,3 +73,24 @@ final class NativeBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         decisionHandler(.grant)
     }
 }
+
+// Cycle 31 — iPhone-only, backward compat: additive bridge haptic event catalog.
+// Maps web-visible haptic names to native HapticEvent values; existing bridge unchanged.
+public enum EvieBridgeHapticEvent: String, Sendable, CaseIterable {
+    case selection
+    case voiceStarted = "voice_started"
+    case voiceStopped = "voice_stopped"
+    case actionUnderstood = "action_understood"
+    case confirmationRequested = "confirmation_requested"
+    case confirmationAccepted = "confirmation_accepted"
+    case actionSuccess = "action_success"
+    case actionFailure = "action_failure"
+    case visionCapture = "vision_capture"
+    case deviceSwitch = "device_switch"
+    case orbPulse = "orb_pulse"
+    case orbSettled = "orb_settled"
+
+    public var hapticEvent: HapticEvent {
+        HapticEvent(rawValue: rawValue) ?? .selection
+    }
+}
