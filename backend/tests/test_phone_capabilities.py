@@ -666,3 +666,35 @@ def test_emotion_prosody_uses_shared_map():
     assert stressed["urgency_boost"] > neutral["urgency_boost"]
     sad = EMOTION_SPEECH[detect_emotion("I just feel so sad about everything these days")]
     assert sad["warmth"] > neutral["warmth"]
+
+
+async def test_brief_endpoint_shape(client, db_session):
+    """Cycle 60 — C20: the morning brief is server-computed from existing
+    deterministic surfaces — date, calendar-today, inbox-unread, battery."""
+    phone = await _pair_sandbox(client, "Brief-SE")
+    res = await phone.get("/v1/device-gateway/brief")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is True
+    assert body["trust_state"] == "PAIRED_SANDBOX"
+    assert isinstance(body["date"], str) and body["date"]
+    assert isinstance(body["calendar_today"], list)
+    assert isinstance(body["inbox_unread"], int)
+    assert isinstance(body["nudges"], list)
+    # A pushed inbox item lands in the brief.
+    from app.everywhere.inbox import push_inbox
+
+    drow = None
+    from sqlalchemy import select
+
+    from app.models import Device
+
+    rows = (await db_session.execute(select(Device).where(Device.name == "Brief-SE"))).scalars().all()
+    assert rows, "paired device must exist"
+    drow = rows[0]
+    await push_inbox(db_session, device_id=drow.id, kind="notice", title="Walk time", body="You usually walk now")
+    await db_session.commit()
+    again = await phone.get("/v1/device-gateway/brief")
+    brief = again.json()
+    assert brief["inbox_unread"] >= 1
+    assert any("Walk" in (n.get("title") or "") for n in brief["nudges"])

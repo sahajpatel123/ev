@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.14";
+const CLIENT_BUILD = "2026.09.08.15";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -2567,7 +2567,14 @@ async function boot() {
         openSurface("inbox");
         return;
       }
-      const prompt = kind === "weather" ? "what's the weather" : (kind === "today" ? "what's today's date" : "");
+      if (kind === "today") {
+        showBrief().catch((err) => {
+          state.caption = String(err.message || err);
+          render();
+        });
+        return;
+      }
+      const prompt = kind === "weather" ? "what's the weather" : "";
       if (!prompt) return;
       sendText(prompt).catch((err) => {
         state.caption = String(err.message || err);
@@ -2575,6 +2582,30 @@ async function boot() {
       });
   });
   });
+
+/* Cycle 60 — the Today card: server-computed morning brief rendered into
+   the conversation surface. Read-only data the phone already owns. */
+async function showBrief() {
+  const body = await api("/v1/device-gateway/brief");
+  const lines = [];
+  lines.push(body.date || "");
+  if (body.greeting_name) lines[0] += " · " + body.greeting_name;
+  (body.calendar_today || []).forEach((ev) => {
+    const hhmm = String(ev.start || "").slice(11, 16);
+    lines.push((hhmm ? hhmm + " " : "") + (ev.title || "Event"));
+  });
+  if (!(body.calendar_today || []).length) lines.push("No events on the calendar today.");
+  lines.push("Inbox: " + (body.inbox_unread || 0) + " unread");
+  (body.nudges || []).forEach((n) => lines.push("• " + (n.title || "") + (n.body ? " — " + n.body : "")));
+  if (typeof body.battery_percent === "number" && body.battery_percent <= 20) {
+    lines.push("Battery " + Math.round(body.battery_percent) + "% — consider charging.");
+  }
+  state.caption = lines.join(" · ").slice(0, 600);
+  pushHistory("evie", lines.join("\n"));
+  openSurface("conversation");
+  render();
+}
+
 function voiceMode() {
   return localStorage.getItem("evie-voice-mode") || "continuous";
 }

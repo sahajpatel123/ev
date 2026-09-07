@@ -1218,6 +1218,60 @@ async def user_text_stream(
     return StreamingResponse(events(), media_type="text/event-stream")
 
 
+@router.get("/brief")
+async def morning_brief(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 60 — the morning brief, server-computed from the SAME
+    deterministic surfaces the phone already reads (clock, calendar
+    snapshot, inbox, name) — no model call, nothing new leaves the house.
+    The PWA renders it as the Today card; the desk voice summary is a
+    later, separate lane."""
+
+    _check_origin(request)
+    if device.revoked_at is not None:
+        raise HTTPException(status_code=401, detail="Device revoked")
+    from datetime import datetime as _dt
+
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    cal = profile.get("calendar") if isinstance(profile.get("calendar"), dict) else {}
+    events = cal.get("events") if isinstance(cal.get("events"), list) else []
+    today = _dt.now()
+    today_events = []
+    for item in events[:20]:
+        if not isinstance(item, dict):
+            continue
+        start = str(item.get("start") or "")
+        if start[:10] == today.strftime("%Y-%m-%d"):
+            today_events.append(
+                {
+                    "title": str(item.get("title") or "Event")[:120],
+                    "start": start,
+                }
+            )
+    from app.everywhere.inbox import list_inbox
+
+    inbox = await list_inbox(session, device_id=device.id, limit=20)
+    unread = [item for item in inbox if item.get("unread")]
+    from .sandbox import is_sandbox_device
+
+    return {
+        "ok": True,
+        "trust_state": "TRUSTED_OWNER_DEVICE" if not is_sandbox_device(device) else "PAIRED_SANDBOX",
+        "date": today.strftime("%A, %B %-d"),
+        "greeting_name": (device.name or "").split()[0] if (device.name or "").strip() else "",
+        "calendar_today": today_events[:8],
+        "inbox_unread": len(unread),
+        "battery_percent": device.battery_percent,
+        "nudges": [
+            {"title": item.get("title") or "", "body": (item.get("body") or "")[:140]}
+            for item in unread[:3]
+        ],
+    }
+
+
 @router.post("/queue/replay")
 async def offline_replay(
     data: QueueReplayRequest,
