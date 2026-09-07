@@ -628,3 +628,18 @@
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.EvieAudio = api;
 })(typeof window !== "undefined" ? window : globalThis);
+/* Cycle 07 — iPhone-only additive barge-in hint model; backward compat: existing engine untouched. */
+(function (root) {
+  "use strict";
+  function EvieBargeInHint(state) {
+    var s = state || {};
+    var partial = String(s.partial == null ? "" : s.partial).trim();
+    if (!s.speaking) return "";
+    if (!partial) return "Listening — go ahead";
+    var short = partial.length > 48 ? partial.slice(0, 48) + "…" : partial;
+    return "Heard \u201c" + short + "\u201d — keep going or tap to send";
+  }
+  EvieBargeInHint.hintFor = EvieBargeInHint;
+  root.EvieBargeInHint = EvieBargeInHint;
+  if (typeof module !== "undefined" && module.exports) module.exports.EvieBargeInHint = EvieBargeInHint;
+})(typeof window !== "undefined" ? window : globalThis);
