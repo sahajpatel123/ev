@@ -223,3 +223,58 @@ async def db_session() -> AsyncIterator[AsyncSession]:
     reset_people_cache()
     async with SessionLocal() as session:
         yield session
+
+
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# --- AGENT EAC (iPhone gateway) ---
+# Device-gateway phone fixtures: sandbox pair and owner-promoted pair.
+# Additive only; never edit existing fixtures above.
+# --------------------------------------------------------------------------- #
+async def _pair_gateway_phone(client: AsyncClient) -> tuple[dict, AsyncClient]:
+    from httpx import ASGITransport, AsyncClient as _Client
+
+    from app.main import app as _app
+
+    minted = await client.post(
+        "/v1/device-gateway/pairing-tokens",
+        json={"role": "primary_companion", "display_name": "Fixture iPhone"},
+    )
+    assert minted.status_code == 200, minted.text
+    phone = _Client(transport=ASGITransport(app=_app), base_url="http://test")
+    paired = await phone.post(
+        "/v1/device-gateway/pair",
+        json={
+            "pairing_token": minted.json()["pairing_token"],
+            "display_name": "Fixture iPhone",
+            "protocol_version": "1",
+            "client_version": "2026.09.08.01",
+            "platform": "ios",
+            "capabilities": ["foreground_voice", "camera", "text"],
+            "instance_id": "fixture-phone-tab",
+            "memory_scope": "owner",
+            "role": "primary_companion",
+        },
+    )
+    assert paired.status_code == 200, paired.text
+    phone.headers["Authorization"] = f"Bearer {paired.json()['device_token']}"
+    return paired.json(), phone
+
+
+@pytest.fixture
+async def gateway_phone(client: AsyncClient) -> AsyncIterator[tuple[dict, AsyncClient]]:
+    body, phone = await _pair_gateway_phone(client)
+    yield body, phone
+    await phone.aclose()
+
+
+@pytest.fixture
+async def owner_phone(client: AsyncClient) -> AsyncIterator[tuple[dict, AsyncClient]]:
+    body, phone = await _pair_gateway_phone(client)
+    promoted = await client.post(
+        "/v1/device-gateway/admin/promote-owner",
+        json={"device_id": body["device"]["device_id"], "reason": "owner"},
+    )
+    assert promoted.status_code == 200, promoted.text
+    yield body, phone
+    await phone.aclose()

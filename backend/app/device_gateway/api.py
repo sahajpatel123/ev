@@ -1254,6 +1254,107 @@ async def device_today(
     }
 
 
+@router.get("/memories")
+async def device_memories(
+    request: Request,
+    q: str | None = Query(default=None),
+    memory_type: str | None = Query(default=None),
+    limit: int = Query(default=30, ge=1, le=100),
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Phone-scoped memory browser. Sandbox devices get an explicit off state;
+    owner devices get current memories with optional semantic search."""
+    _check_origin(request)
+    if is_sandbox_device(device):
+        return {"ok": True, "memory_enabled": False, "memories": [], "total": 0}
+    from app.models import Memory
+    from app.memory.retrieval import Retriever
+
+    stmt = select(Memory).where(Memory.is_current.is_(True))
+    if memory_type:
+        stmt = stmt.where(Memory.memory_type == memory_type)
+    rows = list((await session.execute(stmt)).scalars().all())
+    if q:
+        retriever = Retriever(session)
+        hits = await retriever.search(
+            q,
+            k=limit,
+            access="master",
+            memory_types=[memory_type] if memory_type else None,
+        )
+        hit_ids = {UUID(h.memory_id) for h in hits}
+        rows = [m for m in rows if m.id in hit_ids]
+        rows.sort(key=lambda m: next(h.score for h in hits if h.memory_id == str(m.id)), reverse=True)
+    rows = rows[:limit]
+    return {
+        "ok": True,
+        "memory_enabled": True,
+        "memories": [_phone_memory(m) for m in rows],
+        "total": len(rows),
+        "query": q,
+    }
+
+
+@router.get("/memories/{memory_id}")
+async def device_memory_detail(
+    memory_id: UUID,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """One memory with its source-event provenance for the phone surface."""
+    _check_origin(request)
+    if is_sandbox_device(device):
+        return {"ok": True, "memory_enabled": False, "memory": None}
+    from app.models import Event, Memory, MemoryEvent
+
+    memory = await session.get(Memory, memory_id)
+    if memory is None or not memory.is_current:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    source_rows = (
+        (
+            await session.execute(
+                select(Event)
+                .join(MemoryEvent, MemoryEvent.event_id == Event.id)
+                .where(MemoryEvent.memory_id == memory.id)
+                .order_by(Event.occurred_at.desc())
+                .limit(20)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "ok": True,
+        "memory_enabled": True,
+        "memory": _phone_memory(memory),
+        "sources": [
+            {
+                "id": str(ev.id),
+                "kind": ev.event_type,
+                "text": str((ev.content or {}).get("text") or "")[:400],
+                "occurred_at": ev.occurred_at.isoformat() if ev.occurred_at else None,
+            }
+            for ev in source_rows
+        ],
+    }
+
+
+def _phone_memory(memory: Memory) -> dict:
+    return {
+        "id": str(memory.id),
+        "memory_type": memory.memory_type,
+        "text": str(memory.text or "")[:2000],
+        "importance": memory.importance,
+        "confidence": memory.confidence,
+        "source_type": memory.source_type,
+        "privacy_level": memory.privacy_level,
+        "event_time": memory.event_time.isoformat() if memory.event_time else None,
+        "updated_time": memory.updated_time.isoformat() if memory.updated_time else None,
+    }
+
+
 @router.get("/sync/bootstrap")
 async def phone_sync_bootstrap(
     request: Request,
