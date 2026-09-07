@@ -887,3 +887,44 @@ async def test_sense_reports_consented_sensors_only(client, db_session):
     assert sense2["healthkit"]["available"] is True
     assert sense2["healthkit"]["freshness"] == "reported"
     assert "steps" not in str(sense2["healthkit"])
+
+
+async def test_heading_out_consent_gated_transitions(client, db_session, monkeypatch):
+    """Cycle 66 — C26: heading-out is strictly consented (no consent → no
+    evaluation), fires exactly once on home→out, and resets on return."""
+    phone = await _pair_sandbox(client, "Geo-SE")
+    from app.config import settings as _settings
+
+    monkeypatch.setattr(_settings, "home_lat", 37.33, raising=False)
+    monkeypatch.setattr(_settings, "home_lon", -122.01, raising=False)
+
+    def _fake_home():
+        return (37.33, -122.01)
+
+    import app.search.live as live
+    from app.everywhere import heading_out as ho
+
+    monkeypatch.setattr(ho, "home_coords", _fake_home)
+    monkeypatch.setattr(live, "home_coords", _fake_home)
+
+    # No consent: samples are refused.
+    refused = await phone.post(
+        "/v1/device-gateway/heading-out",
+        json={"lat": 37.9, "lng": -122.5},
+    )
+    assert refused.status_code == 200
+    assert refused.json()["reason"] == "no_consent"
+
+    granted = await phone.post(
+        "/v1/device-gateway/heading-out",
+        json={"consent": True},
+    )
+    assert granted.status_code == 200
+    assert granted.json()["consent"] is True
+
+    out1 = await phone.post("/v1/device-gateway/heading-out", json={"lat": 37.9, "lng": -122.5})
+    assert out1.json()["transition"] == "heading_out"
+    out2 = await phone.post("/v1/device-gateway/heading-out", json={"lat": 37.9, "lng": -122.5})
+    assert out2.json()["transition"] is None, "no duplicate nudge"
+    back = await phone.post("/v1/device-gateway/heading-out", json={"lat": 37.33, "lng": -122.01})
+    assert back.json()["transition"] == "back_home"

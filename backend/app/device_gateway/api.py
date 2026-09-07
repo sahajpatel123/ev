@@ -1272,6 +1272,67 @@ async def morning_brief(
     }
 
 
+class HeadingOutRequest(BaseModel):
+    consent: bool | None = None
+    radius_meters: float | None = None
+    lat: float | None = None
+    lng: float | None = None
+
+
+@router.get("/heading-out")
+async def heading_out_state(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """Consent state + whether a home anchor exists (nothing else)."""
+
+    _check_origin(request)
+    from app.everywhere.heading_out import heading_out_consent
+    from app.search.live import home_coords
+
+    state = heading_out_consent(device)
+    home = home_coords()
+    return {
+        "ok": True,
+        **state,
+        "home_anchor": home is not None,
+    }
+
+
+@router.post("/heading-out")
+async def heading_out_update(
+    data: HeadingOutRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Consent toggle and/or one consented position sample."""
+
+    _check_origin(request)
+    from app.everywhere.heading_out import evaluate_heading_out, heading_out_consent, set_heading_out_consent
+
+    if data.consent is not None:
+        set_heading_out_consent(device, consent=data.consent, radius_meters=data.radius_meters)
+        await session.commit()
+    if data.lat is None or data.lng is None:
+        state = heading_out_consent(device)
+        return {"ok": True, **state, "transition": None}
+    outcome = evaluate_heading_out(device, lat=data.lat, lng=data.lng)
+    await session.commit()
+    if outcome.get("transition") == "heading_out":
+        from app.everywhere.nudge import send_nudge
+
+        await send_nudge(
+            session,
+            device,
+            kind="heading_out",
+            title="Heading out",
+            body="You've left home. Ask me for anything you need on the way.",
+        )
+    await session.commit()
+    return {"ok": True, **heading_out_consent(device), **outcome}
+
+
 @router.get("/sense")
 async def ev_sense(
     request: Request,
@@ -1286,6 +1347,7 @@ async def ev_sense(
     _check_origin(request)
     profile = dict(getattr(device, "endpoint_profile", None) or {})
     hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+    from app.everywhere.heading_out import heading_out_consent
     from app.everywhere.nudge import in_quiet_hours, nudge_prefs
     prefs = nudge_prefs(device)
     return {
@@ -1301,7 +1363,8 @@ async def ev_sense(
         "camera_capability": "camera" in (device.capabilities or []),
         "push_delivery": str((profile.get("notifications") or {}).get("delivery") or "poll"),
         "nudges": {**prefs, "quiet_now": in_quiet_hours(prefs)},
-        "never_to_model": ["health_numbers"],
+        "heading_out": heading_out_consent(device),
+        "never_to_model": ["health_numbers", "location_history"],
     }
 
 

@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.17";
+const CLIENT_BUILD = "2026.09.08.18";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -739,7 +739,56 @@ async function fillSense() {
     ["Camera", body.camera_capability ? "allowed for Look" : "not granted"],
     ["Push", String(body.push_delivery || "poll")],
     ["Nudges", (nudges.enabled === false ? "off" : "on") + (nudges.quiet_now ? " · quiet hours now" : " · quiet " + (nudges.quiet_start || "") + "–" + (nudges.quiet_end || ""))],
+    ["Heading out", headingLabel(body)],
   ]);
+}
+
+/* Cycle 66 — heading-out: opt-in, foreground-only geofence against the
+   Home Station's home anchor. Tapping the row asks for consent + location
+   permission once; while consented and the page is visible, position
+   samples post to /heading-out. */
+function headingLabel(body) {
+  const ho = body.heading_out || {};
+  if (!ho.consent) return "off · tap to enable";
+  return "on · " + (ho.state || "unknown") + (ho.quiet_now ? "" : "");
+}
+
+async function toggleHeadingOut() {
+  const current = await api("/v1/device-gateway/heading-out", { _useDeviceToken: true }).catch(() => null);
+  const consented = !!(current && current.consent);
+  if (consented) {
+    await api("/v1/device-gateway/heading-out", {
+      method: "POST",
+      body: JSON.stringify({ consent: false }),
+    });
+    pushActivity("Heading out off");
+    return;
+  }
+  if (!navigator.geolocation) throw new Error("No location on this phone");
+  const pos = await new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000, maximumAge: 60000 });
+  });
+  await api("/v1/device-gateway/heading-out", {
+    method: "POST",
+    body: JSON.stringify({ consent: true, lat: pos.coords.latitude, lng: pos.coords.longitude }),
+  });
+  pushActivity("Heading out on · foreground only");
+  startHeadingOutWatcher();
+}
+
+let headingWatchId = null;
+function startHeadingOutWatcher() {
+  if (headingWatchId !== null || !navigator.geolocation) return;
+  headingWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      api("/v1/device-gateway/heading-out", {
+        method: "POST",
+        body: JSON.stringify({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      }).catch(() => {});
+    },
+    () => {},
+    { enableHighAccuracy: false, maximumAge: 120000, timeout: 20000 }
+  );
 }
 
 /* Cycle 51 — one-tap quick actions: server-computed, capability-gated;
