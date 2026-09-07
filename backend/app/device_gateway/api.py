@@ -235,6 +235,14 @@ class CaptureAudioRequest(BaseModel):
     request_id: str = Field(default="", max_length=128)
 
 
+class RoutinesPutRequest(BaseModel):
+    enabled: bool = False
+    digest_times: list[str] = Field(default_factory=list)
+    quiet_hours_start: str | None = None
+    quiet_hours_end: str | None = None
+    timezone: str = "UTC"
+
+
 class QueueReplayRequest(BaseModel):
     idempotency_key: str
 
@@ -1646,6 +1654,46 @@ async def gateway_audio_capture(
         "kind": event.event_type,
         "size_bytes": len(raw),
     }
+
+
+@router.get("/routines")
+async def get_phone_routines(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from .phone_routines import normalize
+
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    return {"ok": True, "routines": normalize(profile.get("routines"))}
+
+
+@router.put("/routines")
+async def put_phone_routines(
+    data: RoutinesPutRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from .phone_routines import normalize
+
+    candidate = normalize(
+        {
+            "enabled": data.enabled,
+            "digest_times": data.digest_times,
+            "quiet_hours_start": data.quiet_hours_start,
+            "quiet_hours_end": data.quiet_hours_end,
+            "timezone": data.timezone,
+            "updated_at": utcnow().isoformat(),
+        }
+    )
+    if data.enabled and not candidate["digest_times"]:
+        raise HTTPException(status_code=422, detail="Enable requires at least one digest time")
+    _stash_profile(device, "routines", candidate)
+    await session.commit()
+    return {"ok": True, "routines": candidate}
 
 
 @router.get("/sync/bootstrap")
