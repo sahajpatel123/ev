@@ -1358,3 +1358,30 @@
   root.EvieMobileVoice = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(typeof window !== "undefined" ? window : globalThis);
+/* Cycle 09 — iPhone-only additive offline-queue badge counter model; backward compat: pure, no transport changes. */
+(function (root) {
+  "use strict";
+  function EvieOfflineQueueBadge(queue) {
+    var n = Array.isArray(queue) ? queue.length : 0;
+    return { count: n, badge: n > 0 ? String(Math.min(n, 99)) : "", visible: n > 0 };
+  }
+  EvieOfflineQueueBadge.badgeFor = EvieOfflineQueueBadge;
+  root.EvieOfflineQueueBadge = EvieOfflineQueueBadge;
+  if (typeof module !== "undefined" && module.exports) module.exports.EvieOfflineQueueBadge = EvieOfflineQueueBadge;
+})(typeof window !== "undefined" ? window : globalThis);
+
+/* Cycle 10 — iPhone-only additive background-sync indicator model; backward compat: pure, no transport changes. */
+(function (root) {
+  "use strict";
+  function EvieBackgroundSyncState(state) {
+    var s = state || {};
+    var pending = Math.max(0, Number(s.pending) || 0);
+    var online = s.online !== false;
+    var visible = pending > 0 || !online;
+    var label = !online ? "Offline — will sync" : pending > 0 ? "Syncing " + pending + "…" : "Up to date";
+    return { pending: pending, online: online, visible: visible, label: label };
+  }
+  EvieBackgroundSyncState.stateFor = EvieBackgroundSyncState;
+  root.EvieBackgroundSyncState = EvieBackgroundSyncState;
+  if (typeof module !== "undefined" && module.exports) module.exports.EvieBackgroundSyncState = EvieBackgroundSyncState;
+})(typeof window !== "undefined" ? window : globalThis);

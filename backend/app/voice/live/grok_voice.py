@@ -2247,6 +2247,12 @@ class GrokVoiceBridge:
         requested_tx = (
             audio_in.get("transcription") if isinstance(audio_in.get("transcription"), dict) else {}
         )
+        audio_raw = session_payload.get("audio")
+        audio = audio_raw if isinstance(audio_raw, dict) else {}
+        audio_in_raw = audio.get("input")
+        audio_in = audio_in_raw if isinstance(audio_in_raw, dict) else {}
+        requested_tx_raw = audio_in.get("transcription")
+        requested_tx = requested_tx_raw if isinstance(requested_tx_raw, dict) else {}
         self._input_transcription_requested = bool(requested_tx)
         self._input_transcription_model = (
             requested_tx.get("model") if isinstance(requested_tx, dict) else None
@@ -4124,6 +4130,9 @@ class GrokVoiceBridge:
             "response.output_item.added",
         }:
             item = event.get("item") if isinstance(event.get("item"), dict) else {}
+        if kind in {"conversation.item.done", "conversation.item.created", "response.output_item.added"}:
+            item_raw = event.get("item")
+            item = item_raw if isinstance(item_raw, dict) else {}
             item_id = _event_item_id(event) or (
                 str(item.get("id")).strip() if isinstance(item.get("id"), str) else None
             )

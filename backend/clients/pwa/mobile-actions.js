@@ -341,3 +341,85 @@
 
   window.EvieMobileActions = MobileActions;
 })();
+/* Cycle 13 — iPhone-only additive HUD-card render-text helper; backward compat: pure, mirrors ev.hud.card.v1 minimal. */
+(function (root) {
+  "use strict";
+  function EvieHudCardText(card) {
+    var c = card || {};
+    var lines = [];
+    if (c.title != null && String(c.title) !== "") lines.push(String(c.title));
+    if (c.body != null && String(c.body) !== "") lines.push(String(c.body));
+    var action = c.actionLabel != null ? c.actionLabel : c.action;
+    if (action != null && String(action) !== "") lines.push("› " + String(action));
+    return lines.join("\n");
+  }
+  EvieHudCardText.textFor = EvieHudCardText;
+  root.EvieHudCardText = EvieHudCardText;
+})(typeof window !== "undefined" ? window : globalThis);
+
+/* Cycle 14 — iPhone-only additive share-target intake model; backward compat: pure draft capture. */
+(function (root) {
+  "use strict";
+  var URL_RE = /https?:\/\/[^\s"<>]+/;
+  function EvieShareTargetDraft(input) {
+    var s = input || {};
+    var text = String(s.text == null ? "" : s.text);
+    var url = String(s.url == null ? "" : s.url).trim();
+    var title = String(s.title == null ? "" : s.title).trim();
+    if (!url) {
+      var m = URL_RE.exec(text);
+      if (m) url = m[0];
+    }
+    return { text: text, url: url, title: title, hasContent: !!(text.trim() || url) };
+  }
+  EvieShareTargetDraft.draftFor = EvieShareTargetDraft;
+  root.EvieShareTargetDraft = EvieShareTargetDraft;
+})(typeof window !== "undefined" ? window : globalThis);
+
+/* Cycle 19 — iPhone-only additive Today-widget view model; backward compat: pure HUD+next action to lines. */
+(function (root) {
+  "use strict";
+  function EvieTodayWidgetLines(input) {
+    var s = input || {};
+    var lines = [];
+    var hud = s.hud == null ? "" : String(s.hud);
+    var next = s.nextAction == null ? "" : String(s.nextAction);
+    if (hud.trim() !== "") lines.push(hud.trim());
+    if (next.trim() !== "") lines.push("Next: " + next.trim());
+    return lines.slice(0, 3);
+  }
+  EvieTodayWidgetLines.linesFor = EvieTodayWidgetLines;
+  root.EvieTodayWidgetLines = EvieTodayWidgetLines;
+})(typeof window !== "undefined" ? window : globalThis);
+
+/* Cycle 20 — iPhone-only additive camera-sheet upgrade model; backward compat: pure role-aware hints. */
+(function (root) {
+  "use strict";
+  var HINTS = {
+    default: ["Center the subject", "Hold steady"],
+    receipt: ["Fit the full receipt in frame", "Avoid glare on paper"],
+    document: ["Align edges with the guides", "Use good lighting"],
+    face: ["Face the light", "Keep your face in the oval"],
+  };
+  function EvieCameraSheetHints(role) {
+    var key = String(role == null ? "default" : role).toLowerCase();
+    return (HINTS[key] || HINTS.default).slice();
+  }
+  EvieCameraSheetHints.hintsFor = EvieCameraSheetHints;
+  root.EvieCameraSheetHints = EvieCameraSheetHints;
+})(typeof window !== "undefined" ? window : globalThis);
+
+/* Cycle 45 — iPhone-only additive feedback-thumbs model; backward compat: pure turn_id to +1/-1 draft. */
+(function (root) {
+  "use strict";
+  function EvieFeedbackThumbsDraft(input) {
+    var s = input || {};
+    var turnId = String(s.turn_id == null ? s.turnId : s.turn_id);
+    var raw = Number(s.value);
+    var value = raw >= 0 ? 1 : -1;
+    if (raw !== 1 && raw !== -1) value = raw > 0 ? 1 : -1;
+    return { turn_id: turnId, value: value };
+  }
+  EvieFeedbackThumbsDraft.draftFor = EvieFeedbackThumbsDraft;
+  root.EvieFeedbackThumbsDraft = EvieFeedbackThumbsDraft;
+})(typeof window !== "undefined" ? window : globalThis);

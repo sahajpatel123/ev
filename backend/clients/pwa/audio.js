@@ -628,3 +628,37 @@
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.EvieAudio = api;
 })(typeof window !== "undefined" ? window : globalThis);
+/* Cycle 07 — iPhone-only additive barge-in hint model; backward compat: existing engine untouched. */
+(function (root) {
+  "use strict";
+  function EvieBargeInHint(state) {
+    var s = state || {};
+    var partial = String(s.partial == null ? "" : s.partial).trim();
+    if (!s.speaking) return "";
+    if (!partial) return "Listening — go ahead";
+    var short = partial.length > 48 ? partial.slice(0, 48) + "…" : partial;
+    return "Heard \u201c" + short + "\u201d — keep going or tap to send";
+  }
+  EvieBargeInHint.hintFor = EvieBargeInHint;
+  root.EvieBargeInHint = EvieBargeInHint;
+  if (typeof module !== "undefined" && module.exports) module.exports.EvieBargeInHint = EvieBargeInHint;
+})(typeof window !== "undefined" ? window : globalThis);
+/* Cycle 08 — iPhone-only additive audio-output picker model; backward compat: pure mapping, never auto-switches. */
+(function (root) {
+  "use strict";
+  function EvieOutputPickerOptions(devices) {
+    var list = Array.isArray(devices) ? devices : [];
+    return list
+      .filter(function (d) { return d && d.kind === "audiooutput"; })
+      .map(function (d, i) {
+        return {
+          deviceId: String(d.deviceId || ""),
+          label: String(d.label || "Speaker " + (i + 1)),
+          selected: false,
+        };
+      });
+  }
+  EvieOutputPickerOptions.optionsFor = EvieOutputPickerOptions;
+  root.EvieOutputPickerOptions = EvieOutputPickerOptions;
+  if (typeof module !== "undefined" && module.exports) module.exports.EvieOutputPickerOptions = EvieOutputPickerOptions;
+})(typeof window !== "undefined" ? window : globalThis);
