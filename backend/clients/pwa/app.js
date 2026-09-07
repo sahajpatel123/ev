@@ -2567,3 +2567,19 @@ window.EvieTranscript = (function () {
   }
   return { toText: toText, toBlob: toBlob, download: download };
 })();
+// Cycle 05 — iPhone-only conversation-search filter. Backward compatible: new
+// window.EvieSearch namespace only; filterTurns is a pure function over
+// turns[] with no DOM dependency and no existing-code changes.
+window.EvieSearch = (function () {
+  function filterTurns(turns, query) {
+    if (!Array.isArray(turns)) return [];
+    var q = String(query == null ? "" : query).trim().toLowerCase();
+    if (!q) return turns.slice();
+    return turns.filter(function (t) {
+      var role = t && t.role != null ? String(t.role) : "";
+      var text = t && t.text != null ? String(t.text) : "";
+      return (role + " " + text).toLowerCase().indexOf(q) !== -1;
+    });
+  }
+  return { filterTurns: filterTurns };
+})();
