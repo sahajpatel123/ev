@@ -376,3 +376,19 @@
   root.EvieShareTargetDraft = EvieShareTargetDraft;
 })(typeof window !== "undefined" ? window : globalThis);
 
+/* Cycle 19 — iPhone-only additive Today-widget view model; backward compat: pure HUD+next action to lines. */
+(function (root) {
+  "use strict";
+  function EvieTodayWidgetLines(input) {
+    var s = input || {};
+    var lines = [];
+    var hud = s.hud == null ? "" : String(s.hud);
+    var next = s.nextAction == null ? "" : String(s.nextAction);
+    if (hud.trim() !== "") lines.push(hud.trim());
+    if (next.trim() !== "") lines.push("Next: " + next.trim());
+    return lines.slice(0, 3);
+  }
+  EvieTodayWidgetLines.linesFor = EvieTodayWidgetLines;
+  root.EvieTodayWidgetLines = EvieTodayWidgetLines;
+})(typeof window !== "undefined" ? window : globalThis);
+
