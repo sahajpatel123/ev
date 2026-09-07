@@ -45,6 +45,7 @@ struct EvieBrokerCheck {
         check("executed-not-verified", !(receipt.executed && receipt.verified && receipt.result == "SYSTEM_UI_OPENED"))
         check("broker-version", BrokerVersion.version == "1.0.0")
         check("cycle48-orb-states", evieCycle48SelfTestCase())
+        check("cycle78-planner", evieCycle78PlannerSelfTestCase())
 
         if failed > 0 {
             fputs("EvieBrokerCheck failed \(failed) assertion(s)\n", stderr)
@@ -61,4 +62,28 @@ func evieCycle48SelfTestCase() -> Bool {
     assert(!states.isEmpty, "Cycle 48: orb states must not be empty")
     assert(Set(states).count == states.count, "Cycle 48: orb states must be unique")
     return !states.isEmpty && Set(states).count == states.count
+}
+
+// Cycle 78 — iPhone-only, backward compat: pure action-planner self-test.
+func evieCycle78PlannerSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL cycle78: \(name)") }
+    }
+    let all = Set(["contacts", "health", "notifications", "calendar", "reminders"])
+    expect("haptic-local", EvieActionPlanner.plan(for: "haptic", grantedPermissions: []).kind == .local)
+    let msg = EvieActionPlanner.plan(for: "send_message", grantedPermissions: [])
+    expect("message-systemui", msg.kind == .systemUI)
+    expect("message-permission", msg.permissionRequired == "contacts")
+    expect("message-reason", msg.reason == "PERMISSION_REQUIRED")
+    let msgOk = EvieActionPlanner.plan(for: "send_message", grantedPermissions: all)
+    expect("message-granted", msgOk.permissionRequired == nil && msgOk.reason == nil)
+    expect("timer-server", EvieActionPlanner.plan(for: "start_timer", grantedPermissions: []).kind == .serverRouted)
+    expect("reminder-permission", EvieActionPlanner.permission(for: "set_reminder") == "reminders")
+    expect("unknown", EvieActionPlanner.plan(for: "bank_heist", grantedPermissions: all).kind == .unavailable)
+    expect("empty", EvieActionPlanner.plan(for: "  ", grantedPermissions: all).reason == "EMPTY_CAPABILITY")
+    expect("case-normalized", EvieActionPlanner.plan(for: "Haptic", grantedPermissions: []).kind == .local)
+    expect("missing-multi", EvieActionPlanner.missingPermissions(for: "send_message", granted: []).count == 1)
+    expect("missing-none", EvieActionPlanner.missingPermissions(for: "start_timer", granted: []).isEmpty)
+    return ok
 }
