@@ -4,21 +4,21 @@
   "api_protocol": "1",
   "web_protocol_min": 1,
   "web_protocol_max": 1,
-  "generated_at": "2026-09-07T19:24:53.553572+00:00",
+  "generated_at": "2026-09-07T19:37:22.439518+00:00",
   "files": {
-    "index.html": "9c22475a98e1d065ec7a0b681802ad067a0cfd966a410c261563865604f71d9b",
-    "app.js": "ea5cec638ea48caa2ab1c69b1d675f8e64159c8da7125b4c037337f752fb95ed",
-    "sw.js": "022218ca3803d33098526e995af2c225e8bfd8a5db32a511ce611f19b53269af",
-    "audio.js": "fa022222fbdbfd2b3b23b81ad3e473562d1b44223236626217ff54968a01f354",
-    "webrtc.js": "28a9cf8a148bf6cece57a9d9fa502eee305d077d73cad5e856ced54cd67324db",
-    "mobile-actions.js": "580d5f3febb87285b9c6eb1be42c0138d6cfb5004d9a93615ffd403a9070fa2a",
-    "presence.js": "55afac3c0a53ed14ce0fffc7768898c622dfb558eef3b65690e24cff16755060",
+    "index.html": "649d205258ff16709264e641b44ce46ffdffc9b321f7cfac65813b8d57772124",
+    "app.js": "3c943d4ed1b02c266a52bbc40de94686a75f813407d085becfb688624acd5a12",
+    "sw.js": "c46c7d0209e1c226a9f9227500c1ca3bf86cded64a937c1627e8d2ed96c750f1",
+    "audio.js": "d001b00ea05f605295b4bc9f06fd184d482cd25af8c7beb5e6fcfd3872f8cd39",
+    "webrtc.js": "7a3de2035a04202f96da4cec79b10b36123ab99a2e73df10048c6f7fef8b0c4c",
+    "mobile-actions.js": "800e774263a55c234a7673c7b011721cc47f64000548b2deb9723d0ed35a32ea",
+    "presence.js": "33804de3182c451a785561981437aecf82b7a9802c5579079a5301f3fbf5ea50",
     "orb.js": "119fdf144d970af320c2ca9b963fab08b1bca7bde4ce70734661e66f261c9748",
     "pcm-worklet.js": "153f30b0616ef32a560af572642f7246b72b5d5593bef27ed8ec10690c24c6c5",
     "playback-worklet.js": "e9959d2a2e162bedcaf0671f6b97c766d60a04b5ccce7dbc911d23dc8453d602",
     "feedback.js": "736a976751c2c7978c94cd5f5b53524ebaf13b2fb9125b3020560b9075c472d3",
-    "style.css": "6852cc404d555a276af64365153eb75b48fd7933dbf59b8ed54284544b23842a",
-    "manifest.webmanifest": "2adb4ce4ceda7ca22df030c7bca54a609e3d11b445709f981324907844ee4f47"
+    "style.css": "27936208f5d1f974dfc03bee2f0d596c715edad45046bcda972f4f40dc295f7e",
+    "manifest.webmanifest": "dd7a814eea117511b16398af11bbee5a55fa341c73313a5d693122d5816c349a"
   },
-  "asset_manifest_hash": "54c812436ddcc84f889cc40e74d8bff34fc8d3feabf3b9bd8515c9de800a8c5c"
+  "asset_manifest_hash": "76ca7b2aa1feffcca6d54c406c2e2b99d53ee1f0a07e68f60d79206453c0993d"
 }
