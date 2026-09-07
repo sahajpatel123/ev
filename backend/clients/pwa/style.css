@@ -684,3 +684,10 @@ html, body {
 .evie-share .evie-share-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--stroke); border-radius: 16px; background: var(--elevated); font-size: 15px; }
 .evie-share .evie-share-row:active { background: color-mix(in srgb, var(--ink) 10%, transparent); }
 .evie-share .evie-share-hint { font-size: 13px; color: var(--muted); }
+/* Cycle 17 (iPhone-only): location opt-in card. Additive-only: new .evie-loc
+   namespace; every existing selector untouched. Dark/light via existing vars,
+   so Mac browsers without this markup render exactly as before. */
+.evie-loc { display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--stroke); border-radius: 20px; background: var(--elevated); }
+.evie-loc .evie-loc-title { font-size: 16px; font-weight: 600; }
+.evie-loc .evie-loc-copy { font-size: 14px; line-height: 1.55; color: var(--muted); }
+.evie-loc .evie-loc-actions { display: flex; gap: 10px; }

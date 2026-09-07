@@ -267,3 +267,14 @@
     return "evie-share is-" + s;
   };
 })(typeof window !== "undefined" ? window : globalThis);
+// Cycle 17 (iPhone-only): location opt-in state hook. Additive-only: new
+// EviePresence.prototype.cycle17StateClass; draw/membrane untouched. Pure
+// state -> CSS-class mapper (no DOM), so Mac behavior is unchanged.
+(function (root) {
+  var P = root.EviePresence && root.EviePresence.prototype;
+  if (!P || P.cycle17StateClass) return;
+  P.cycle17StateClass = function cycle17StateClass(state) {
+    var s = String(state || (this && this.state) || "idle").toLowerCase().replace(/[^a-z]/g, "") || "idle";
+    return "evie-loc is-" + s;
+  };
+})(typeof window !== "undefined" ? window : globalThis);
