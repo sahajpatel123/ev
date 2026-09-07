@@ -2536,3 +2536,34 @@ async function boot() {
 }
 
 boot();
+// Cycle 04 — iPhone-only transcript-export helper. Backward compatible: new
+// window.EvieTranscript namespace only; no existing code modified. toText and
+// toBlob are pure (turns[] -> string/Blob, no DOM dependency); download is a
+// thin DOM helper kept separate so tests can use the pure path.
+window.EvieTranscript = (function () {
+  function lineOf(turn) {
+    var role = turn && turn.role != null ? String(turn.role) : "unknown";
+    var text = turn && turn.text != null ? String(turn.text) : "";
+    return role + ": " + text;
+  }
+  function toText(turns) {
+    if (!Array.isArray(turns) || turns.length === 0) return "";
+    return turns.map(lineOf).join("\n");
+  }
+  function toBlob(turns) {
+    return new Blob([toText(turns)], { type: "text/plain;charset=utf-8" });
+  }
+  function download(turns, filename) {
+    var name = filename || "evie-transcript.txt";
+    var url = URL.createObjectURL(toBlob(turns));
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    return name;
+  }
+  return { toText: toText, toBlob: toBlob, download: download };
+})();
