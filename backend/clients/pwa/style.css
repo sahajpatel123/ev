@@ -720,3 +720,9 @@ html, body {
 #capture-text { width: 100%; box-sizing: border-box; resize: vertical; padding: 12px 14px; border: 1px solid var(--stroke); border-radius: 16px; background: var(--elevated); color: var(--ink); font: inherit; font-size: 15px; line-height: 1.5; margin-bottom: 12px; }
 /* Cycle EAC71 (iPhone-only): queue sheet. Additive-only namespace. */
 .evie-queue-drop { margin-left: 8px; font-size: 12px; padding: 2px 10px; border: 1px solid var(--stroke); border-radius: 999px; background: transparent; color: var(--muted); }
+/* Cycle EAC75 (iPhone-only): routines sheet. Additive-only namespace. */
+.evie-routine-times { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+.evie-routine-chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border: 1px solid var(--stroke); border-radius: 999px; background: var(--elevated); font-size: 14px; }
+.evie-routine-chip button { border: 0; background: transparent; color: var(--muted); font-size: 12px; padding: 0; }
+.evie-routine-add, .evie-routine-quiet { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.evie-routine-quiet input, .evie-routine-add input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--stroke); border-radius: 12px; background: var(--elevated); color: var(--ink); font: inherit; }

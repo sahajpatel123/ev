@@ -86,6 +86,11 @@
           <strong>Chat</strong>
           <span>The conversation on this phone</span>
         </button>
+        <button type="button" class="folio-card" data-surface="routines">
+          <span class="folio-kicker">Daily</span>
+          <strong>Routines</strong>
+          <span>Digest times and quiet hours</span>
+        </button>
         <button type="button" class="folio-card" data-surface="queue">
           <span class="folio-kicker">Offline</span>
           <strong>Queue</strong>
@@ -132,6 +137,33 @@
           <span>Camera, trust, appearance</span>
         </button>
       </div>
+    </section>
+
+    <section id="routines-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="routines-sheet" aria-label="Close">✕</button>
+      <h2>Routines</h2>
+      <p class="quiet">Evie drops a digest into this phone's Inbox at set times — built from real server state, never a model call.</p>
+      <h3>Daily digest</h3>
+      <div class="segment" id="routines-enabled">
+        <button type="button" data-rv="on">On</button>
+        <button type="button" data-rv="off" class="on">Off</button>
+      </div>
+      <div id="routines-times" class="evie-routine-times"></div>
+      <form id="routines-add-form" class="evie-routine-add">
+        <label class="sr-only" for="routines-new-time">Add digest time</label>
+        <input id="routines-new-time" type="time">
+        <button type="submit" class="secondary">Add time</button>
+      </form>
+      <h3>Quiet hours</h3>
+      <p class="quiet">No digests inside this window. Leave empty for none.</p>
+      <form id="routines-quiet-form" class="evie-routine-quiet">
+        <label class="sr-only" for="routines-q-start">Quiet hours start</label>
+        <input id="routines-q-start" type="time">
+        <label class="sr-only" for="routines-q-end">Quiet hours end</label>
+        <input id="routines-q-end" type="time">
+      </form>
+      <button type="button" id="routines-save-btn" class="dock-primary">Save routines</button>
+      <p class="quiet" id="routines-meta"></p>
     </section>
 
     <section id="queue-sheet" class="sheet" hidden>

@@ -158,6 +158,21 @@ function showHomeStationResult(payload) {
   return true;
 }
 
+function showCameraStatus(status) {
+  const line = "Camera · " + String(status || "working").trim();
+  const card = $("action-card");
+  if (card) {
+    card.hidden = false;
+    card.setAttribute("role", "status");
+    card.setAttribute("aria-live", "polite");
+    textOf(card, line);
+  }
+  if (state._lastCameraStatus !== line) {
+    state._lastCameraStatus = line;
+    pushActivity(line);
+  }
+}
+
 function setMood(label) {
   state.mood = label;
   textOf($("mood"), label);
@@ -885,6 +900,83 @@ async function refreshQueue() {
   }
 }
 
+let routineTimes = [];
+
+function renderRoutineTimes() {
+  const box = $("routines-times");
+  if (!box) return;
+  while (box.firstChild) box.removeChild(box.firstChild);
+  routineTimes.forEach((t) => {
+    const chip = document.createElement("span");
+    chip.className = "evie-routine-chip";
+    chip.textContent = t;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.textContent = "✕";
+    x.setAttribute("aria-label", "Remove " + t);
+    x.addEventListener("click", () => {
+      routineTimes = routineTimes.filter((v) => v !== t);
+      renderRoutineTimes();
+    });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
+}
+
+async function loadRoutines() {
+  if (!state.deviceToken) return;
+  const meta = $("routines-meta");
+  try {
+    const body = await api("/v1/device-gateway/routines");
+    const cfg = body.routines || {};
+    routineTimes = (cfg.digest_times || []).slice(0, 4);
+    renderRoutineTimes();
+    const seg = $("routines-enabled");
+    if (seg) {
+      seg.querySelectorAll("button").forEach((btn) => {
+        const on = btn.getAttribute("data-rv") === "on";
+        btn.classList.toggle("on", on === !!cfg.enabled);
+      });
+    }
+    const qs = $("routines-q-start");
+    const qe = $("routines-q-end");
+    if (qs) qs.value = cfg.quiet_hours_start || "";
+    if (qe) qe.value = cfg.quiet_hours_end || "";
+    textOf(meta, cfg.enabled ? "Digest is on — " + (cfg.digest_times || []).join(", ") : "Digest is off.");
+  } catch (err) {
+    textOf(meta, "Routines unavailable: " + String(err.message || err));
+  }
+}
+
+async function saveRoutines() {
+  const meta = $("routines-meta");
+  const seg = $("routines-enabled");
+  const enabled = !!(seg && seg.querySelector("button.on") && seg.querySelector("button.on").getAttribute("data-rv") === "on");
+  const timezone = (Intl.DateTimeFormat && Intl.DateTimeFormat().resolvedOptions && Intl.DateTimeFormat().resolvedOptions().timeZone) || "UTC";
+  const qs = $("routines-q-start");
+  const qe = $("routines-q-end");
+  try {
+    const body = await api("/v1/device-gateway/routines", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: enabled,
+        digest_times: routineTimes,
+        quiet_hours_start: qs && qs.value ? qs.value : null,
+        quiet_hours_end: qe && qe.value ? qe.value : null,
+        timezone: timezone,
+      }),
+    });
+    if (body && body.ok) {
+      textOf(meta, "Saved. Timezone: " + timezone + ".");
+    } else {
+      textOf(meta, "Could not save routines.");
+    }
+  } catch (err) {
+    if (err && err.status === 422) textOf(meta, "Enable requires at least one digest time.");
+    else textOf(meta, "Save failed: " + String(err.message || err));
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -1071,7 +1163,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -1803,6 +1895,7 @@ async function sendText(text) {
   showHomeStationResult(body);
   if (body.conversation_moved) await stopTalk();
   if (body.needs_camera) await captureCamera(body);
+  else if (body.camera_request_id) await waitForCameraReceipt(body);
   if (body.phone_action && window.EvieMobileActions) {
     window.EvieMobileActions.present(body.phone_action);
   }
@@ -1839,14 +1932,50 @@ async function captureCamera(body, facing) {
   video.srcObject = null;
   $("camera-sheet").hidden = true;
   if (body && body.camera_request_id) {
-    await api("/v1/device-gateway/camera/result", {
+    const receipt = await api("/v1/device-gateway/camera/result", {
       method: "POST",
       body: JSON.stringify({ request_id: body.camera_request_id, jpeg_b64: jpeg, action: action }),
     });
+    showCameraStatus(
+      receipt && receipt.ok
+        ? "frame received · Evie is analyzing"
+        : "frame upload failed"
+    );
   }
   if (state.talking) setMood("Listening");
   else setMood("Ready");
   return jpeg;
+}
+
+async function waitForCameraReceipt(body) {
+  const requestId = String((body && body.camera_request_id) || "").trim();
+  if (!requestId) return null;
+  const generation = Number(state._cameraReceiptGeneration || 0) + 1;
+  state._cameraReceiptGeneration = generation;
+  const current = () => generation === Number(state._cameraReceiptGeneration || 0);
+  if (String((body && body.freshness) || "").toUpperCase() === "OFFLINE") {
+    if (current()) showCameraStatus("preferred phone offline · look queued");
+    return null;
+  }
+  if (current()) showCameraStatus("waiting for the preferred phone");
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const receipt = await api("/v1/device-gateway/camera/" + encodeURIComponent(requestId));
+      if (receipt && receipt.request_id === requestId && receipt.expired) {
+        if (current()) showCameraStatus("camera request expired · ask me to look again");
+        return receipt;
+      }
+      if (receipt && receipt.request_id === requestId && receipt.has_frame) {
+        if (current()) showCameraStatus("frame received · Evie is analyzing");
+        return receipt;
+      }
+    } catch (_err) {
+      // The request may still be queued or the target may be offline.
+    }
+  }
+  if (current()) showCameraStatus("still waiting · no frame received yet");
+  return null;
 }
 
 function downsample(float32, fromRate, toRate) {
@@ -2718,6 +2847,7 @@ async function boot() {
     const map = {
       more: "more-sheet",
       today: "today-sheet",
+      routines: "routines-sheet",
       queue: "queue-sheet",
       capture: "capture-sheet",
       search: "search-sheet",
@@ -2728,7 +2858,7 @@ async function boot() {
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "today-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "today-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -2740,6 +2870,7 @@ async function boot() {
     if (surface === "today") refreshToday();
     if (surface === "memory") refreshMemories();
     if (surface === "queue") refreshQueue();
+    if (surface === "routines") loadRoutines();
   }
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -2792,6 +2923,31 @@ async function boot() {
       ev.preventDefault();
       submitCapture();
     });
+  }
+  const routinesEnabled = $("routines-enabled");
+  if (routinesEnabled) {
+    routinesEnabled.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      routinesEnabled.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+    });
+  }
+  const routinesAdd = $("routines-add-form");
+  if (routinesAdd) {
+    routinesAdd.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const input = $("routines-new-time");
+      const value = input && input.value;
+      if (value && routineTimes.length < 4 && routineTimes.indexOf(value) === -1) {
+        routineTimes.push(value);
+        renderRoutineTimes();
+      }
+      if (input) input.value = "";
+    });
+  }
+  const routinesSave = $("routines-save-btn");
+  if (routinesSave) {
+    routinesSave.addEventListener("click", () => saveRoutines());
   }
   const queueRefresh = $("queue-refresh-btn");
   if (queueRefresh) {
