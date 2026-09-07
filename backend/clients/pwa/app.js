@@ -732,6 +732,38 @@ function openSearch() {
   if (input) input.focus();
 }
 
+async function submitCapture() {
+  const input = $("capture-text");
+  const meta = $("capture-meta");
+  const text = input ? input.value.trim() : "";
+  if (!text) {
+    textOf(meta, "Write something first.");
+    return;
+  }
+  const key = "note-" + crypto.randomUUID();
+  try {
+    const body = await api("/v1/device-gateway/capture", {
+      method: "POST",
+      body: JSON.stringify({ text: text, idempotency_key: key }),
+    });
+    if (body && body.ok) {
+      if (input) input.value = "";
+      textOf(meta, body.duplicate ? "Already saved (duplicate)." : "Saved to memory.");
+    } else {
+      textOf(meta, "Could not save right now.");
+    }
+  } catch (err) {
+    const code = err && err.body && err.body.error_code;
+    if (code === "capture_requires_owner") {
+      textOf(meta, "This phone is still sandboxed — approve it from the Mac first.");
+    } else if (err && err.status === 422) {
+      textOf(meta, "Note is empty.");
+    } else {
+      textOf(meta, "Offline or unreachable — try again when Home Station is back.");
+    }
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -918,7 +950,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -2565,6 +2597,7 @@ async function boot() {
     const map = {
       more: "more-sheet",
       today: "today-sheet",
+      capture: "capture-sheet",
       search: "search-sheet",
       memory: "memory-sheet",
       conversation: "conversation-sheet",
@@ -2573,7 +2606,7 @@ async function boot() {
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "today-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "today-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -2628,6 +2661,13 @@ async function boot() {
       ev.preventDefault();
       const q = $("search-q");
       runSearch(q ? q.value : "");
+    });
+  }
+  const captureForm = $("capture-form");
+  if (captureForm) {
+    captureForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      submitCapture();
     });
   }
   initSwipes(openSurface);

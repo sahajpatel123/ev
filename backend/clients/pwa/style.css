@@ -716,3 +716,5 @@ html, body {
 .evie-memory-row span { font-size: 15px; line-height: 1.45; }
 /* Cycle EAC68 (iPhone-only): search sheet. Additive-only namespace. */
 #search-sheet h3 { margin-top: 16px; }
+/* Cycle EAC69 (iPhone-only): capture sheet. Additive-only namespace. */
+#capture-text { width: 100%; box-sizing: border-box; resize: vertical; padding: 12px 14px; border: 1px solid var(--stroke); border-radius: 16px; background: var(--elevated); color: var(--ink); font: inherit; font-size: 15px; line-height: 1.5; margin-bottom: 12px; }

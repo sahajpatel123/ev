@@ -221,6 +221,12 @@ class QueueEnqueueRequest(BaseModel):
     ttl_seconds: int = 86400
 
 
+class CaptureNoteRequest(BaseModel):
+    text: str = Field(default="", max_length=4000)
+    idempotency_key: str = Field(default="", max_length=128)
+    request_id: str = Field(default="", max_length=128)
+
+
 class QueueReplayRequest(BaseModel):
     idempotency_key: str
 
@@ -1446,6 +1452,84 @@ async def device_search(
         "events": events,
         "reminders": reminders[:limit],
         "contacts": contacts[:limit],
+    }
+
+
+@router.post("/capture", response_model=None)
+async def gateway_capture(
+    data: CaptureNoteRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Phone-scoped note capture into the owner event stream.
+
+    Trusted owner devices write a note event exactly like /v1/events does
+    (idempotent, processed, curated). Sandbox devices cannot write owner
+    memory — honest 403 instead of a fake capture."""
+    _check_origin(request)
+    if is_sandbox_device(device):
+        raise HTTPException(
+            status_code=403,
+            detail="Capture requires Mac promotion (TRUSTED_OWNER_DEVICE).",
+            headers={"X-Error-Code": "capture_requires_owner"},
+        )
+    text = (data.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Capture text is empty")
+    key = (data.idempotency_key or "").strip()[:128]
+    from app.models import Event
+    from app.schemas import EventCreate
+    from app.services.event_service import EventService
+    from app.services.processor import ensure_processed
+    from app.utils.text import sha256_hex
+    from uuid import uuid4
+
+    if key:
+        existing = (
+            (
+                await session.execute(
+                    select(Event).where(Event.idempotency_key_hash == sha256_hex(key))
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing is not None:
+            await session.commit()
+            return {
+                "ok": True,
+                "duplicate": True,
+                "event_id": str(existing.id),
+                "kind": existing.event_type,
+            }
+    service = EventService(session, actor="master")
+    event = await service.create(
+        EventCreate(
+            source="owner.phone",
+            event_type="note",
+            text=text[:2000],
+            device_id=str(device.id),
+            privacy_level="normal",
+        ),
+        request_id=data.request_id or str(uuid4()),
+        idempotency_key=key or None,
+    )
+    from app.routines.service import consider_event
+
+    await consider_event(session, event=event)
+    await session.commit()
+    deltas = await ensure_processed(event.id)
+    try:
+        schedule_curation(limit=1)
+    except Exception:  # noqa: BLE001 - capture already succeeded
+        pass
+    return {
+        "ok": True,
+        "duplicate": False,
+        "event_id": str(event.id),
+        "kind": event.event_type,
+        "memory_delta": [{"id": d.get("id"), "memory_type": d.get("memory_type")} for d in deltas],
     }
 
 

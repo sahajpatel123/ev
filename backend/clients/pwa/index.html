@@ -86,6 +86,11 @@
           <strong>Chat</strong>
           <span>The conversation on this phone</span>
         </button>
+        <button type="button" class="folio-card" data-surface="capture">
+          <span class="folio-kicker">Note</span>
+          <strong>Capture</strong>
+          <span>Save something to memory</span>
+        </button>
         <button type="button" class="folio-card folio-wide" data-surface="search">
           <span class="folio-kicker">Find</span>
           <strong>Search</strong>
@@ -122,6 +127,18 @@
           <span>Camera, trust, appearance</span>
         </button>
       </div>
+    </section>
+
+    <section id="capture-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="capture-sheet" aria-label="Close">✕</button>
+      <h2>Capture</h2>
+      <p class="quiet">A note lands in your event stream and becomes memory.</p>
+      <form id="capture-form">
+        <label class="sr-only" for="capture-text">Note text</label>
+        <textarea id="capture-text" rows="4" maxlength="2000" placeholder="What do you want to remember?"></textarea>
+        <button type="submit" class="dock-primary">Save to memory</button>
+      </form>
+      <p class="quiet" id="capture-meta"></p>
     </section>
 
     <section id="search-sheet" class="sheet" hidden>

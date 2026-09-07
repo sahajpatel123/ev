@@ -145,3 +145,35 @@ async def test_search_finds_reminders_and_contacts(owner_phone, db_session) -> N
     res = await phone.get("/v1/device-gateway/search", params={"q": "basil"})
     assert res.status_code == 200
     assert any("basil" in r["text"] for r in res.json()["reminders"])
+
+
+async def test_capture_note_owner_and_sandbox_gate(
+    owner_phone, gateway_phone, client: AsyncClient, db_session
+) -> None:
+    _body, owner = owner_phone
+    _sbody, sandbox = gateway_phone
+
+    denied = await sandbox.post(
+        "/v1/device-gateway/capture",
+        json={"text": "sneaky note", "idempotency_key": "sandbox-capture-1"},
+    )
+    assert denied.status_code == 403
+    assert denied.headers.get("X-Error-Code") == "capture_requires_owner"
+
+    res = await owner.post(
+        "/v1/device-gateway/capture",
+        json={"text": "Note: buy turmeric at the market", "idempotency_key": "eac69-note-1"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is True
+    assert body["kind"] == "note"
+    assert body["duplicate"] is False
+
+    dup = await owner.post(
+        "/v1/device-gateway/capture",
+        json={"text": "Note: buy turmeric at the market", "idempotency_key": "eac69-note-1"},
+    )
+    assert dup.status_code == 200
+    assert dup.json()["duplicate"] is True
+    assert dup.json()["event_id"] == body["event_id"]
