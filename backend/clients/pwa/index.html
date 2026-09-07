@@ -237,5 +237,19 @@
     return { banner: banner };
   })();
   </script>
+  <!-- Cycle 22 — iPhone-only lease-status pill model. Backward compatible:
+       additive window.EvieLease namespace; no existing markup changed. -->
+  <script>
+  window.EvieLease = (function () {
+    function pill(lease) {
+      var status = String((lease && lease.status) || "unknown").toLowerCase();
+      if (status === "active") return { tone: "good", label: "Lease active" };
+      if (status === "expiring") return { tone: "warn", label: "Lease expiring" };
+      if (status === "expired" || status === "revoked") return { tone: "bad", label: "Lease " + status };
+      return { tone: "neutral", label: "Lease " + status };
+    }
+    return { pill: pill };
+  })();
+  </script>
 </body>
 </html>
