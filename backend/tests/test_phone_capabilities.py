@@ -1162,3 +1162,33 @@ async def test_tactical_brief_read_only(client, db_session):
     assert body["devices_online"] >= 1
     assert isinstance(body["voice_lease"], bool)
     assert body["heading_out"] == "unknown"
+
+
+async def test_two_iphone_lease_arbitration(client, db_session):
+    """Cycle 77 — C37: a second iPhone cannot silently steal an ACTIVE
+    conversation. First claim refused with holder info; explicit takeover
+    (takeover=True) wins and reports took_over."""
+    first = await _pair_sandbox(client, "Lease-A")
+    second = await _pair_sandbox(client, "Lease-B")
+    held = await first.post(
+        "/v1/device-gateway/conversation/claim",
+        json={"instance_id": "inst-a", "method": "manual"},
+    )
+    assert held.status_code == 200
+    refused = await second.post(
+        "/v1/device-gateway/conversation/claim",
+        json={"instance_id": "inst-b", "method": "manual"},
+    )
+    assert refused.status_code == 200
+    body = refused.json()
+    assert body["ok"] is False
+    assert body["refused"] == "lease_active"
+    assert body["holder"]["name"] == "Lease-A"
+    taken = await second.post(
+        "/v1/device-gateway/conversation/claim",
+        json={"instance_id": "inst-b", "method": "manual", "takeover": True},
+    )
+    assert taken.status_code == 200
+    taken_body = taken.json()
+    assert taken_body["ok"] is True
+    assert taken_body["took_over"] is True

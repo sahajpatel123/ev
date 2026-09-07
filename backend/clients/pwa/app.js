@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.29";
+const CLIENT_BUILD = "2026.09.08.30";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;

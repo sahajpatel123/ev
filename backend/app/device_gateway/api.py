@@ -33,7 +33,15 @@ from .auth import (
 from .camera import get_frame, put_frame
 from .handoff import current_state, state_public
 from .health import snapshot as health_snapshot
-from .lease import claim_lease, heartbeat_lease, lease_belongs, lease_public, release_lease
+from .lease import (
+    _when as _lease_when,
+    claim_lease,
+    current_lease,
+    heartbeat_lease,
+    lease_belongs,
+    lease_public,
+    release_lease,
+)
 from .mobile_actions.engine import status_snapshot as mobile_actions_status
 from .mobile_actions.routes import gateway_origin
 from .mobile_actions.routes import router as mobile_actions_router
@@ -124,6 +132,7 @@ class ClaimRequest(BaseModel):
     client_generation: int | None = None
     battery_percent: float | None = None
     connectivity: str | None = None
+    takeover: bool = False
 
 
 class SdpOffer(BaseModel):
@@ -587,6 +596,29 @@ async def heartbeat(
     return payload
 
 
+async def _refuse_active_lease(session: AsyncSession, existing: Any) -> dict | None:
+    """Cycle 77 — refuse a claim on a lease another device holds ACTIVELY.
+    Returns the refusal body, or None when the holder went quiet (stale
+    lease falls through to a normal claim)."""
+
+    from datetime import timedelta as _timedelta
+
+    last_active = _lease_when(existing.last_activity)
+    active_recently = last_active is not None and (
+        utcnow() - last_active
+    ) <= _timedelta(seconds=max(45, int(settings.conversation_lease_ttl_seconds) // 2))
+    if not active_recently:
+        return None
+    holder = await session.get(Device, existing.device_id)
+    holder_name = ((holder.name or "").split() or ["another device"])[0] if holder else "another device"
+    return {
+        "ok": False,
+        "refused": "lease_active",
+        "holder": {"device_id": str(existing.device_id), "name": holder_name},
+        "spoken": f"Evie is talking with {holder_name}. Tap again to take over here.",
+    }
+
+
 @router.post("/conversation/claim")
 async def conversation_claim(
     data: ClaimRequest,
@@ -595,11 +627,21 @@ async def conversation_claim(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
+    # Cycle 77 — two-iPhone arbitration: a SECOND phone does not silently
+    # rip the conversation from the first. If another device holds an
+    # ACTIVE lease, the first claim is refused with who holds it; only an
+    # EXPLICIT takeover (second tap) takes the lease.
+    existing = await current_lease(session)
+    previous_holder_id = existing.device_id if existing is not None else None
+    if previous_holder_id is not None and previous_holder_id != device.id and data.takeover is not True:
+        refused = await _refuse_active_lease(session, existing)
+        if refused is not None:
+            return refused
     lease = await claim_lease(session, device_id=device.id, instance_id=data.instance_id, method=data.method)
     note_presence(device.id, instance_id=data.instance_id, state="active")
     await session.commit()
     emit("conversation.claimed", device_id=str(device.id), method=data.method)
-    return {"ok": True, "lease": lease_public(lease)}
+    return {"ok": True, "lease": lease_public(lease), "took_over": previous_holder_id is not None and previous_holder_id != device.id}
 
 
 @router.post("/conversation/release")
@@ -670,6 +712,13 @@ async def live_open(
     """Open the existing live voice session without lowering /v1/voice/live/open trust."""
 
     _check_origin(request)
+    # Cycle 77 — the talk button arbitrates like conversation/claim.
+    existing = await current_lease(session)
+    previous_holder_id = existing.device_id if existing is not None else None
+    if previous_holder_id is not None and previous_holder_id != device.id and data.takeover is not True:
+        refused = await _refuse_active_lease(session, existing)
+        if refused is not None:
+            return refused
     lease = await claim_lease(
         session,
         device_id=device.id,
