@@ -31,3 +31,14 @@ struct EvieShellApp: App {
         }
     }
 }
+
+// Cycle 47 — iPhone-only, backward compat: additive theme-token struct (light/dark hex).
+// Pure value type; EvieShellApp scene unchanged.
+struct EvieThemeTokens: Sendable, Equatable {
+    var backgroundLightHex: String = "#FFFFFF"
+    var backgroundDarkHex: String = "#000000"
+    var foregroundLightHex: String = "#111111"
+    var foregroundDarkHex: String = "#F5F5F7"
+    var accentLightHex: String = "#0A84FF"
+    var accentDarkHex: String = "#0A84FF"
+}
