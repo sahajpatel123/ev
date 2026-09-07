@@ -677,3 +677,10 @@ html, body {
 .evie-lens video, .evie-lens img { display: block; width: 100%; aspect-ratio: 3 / 4; object-fit: cover; }
 .evie-lens .evie-lens-badge { position: absolute; top: 12px; left: 12px; padding: 6px 12px; border-radius: 999px; background: var(--elevated); backdrop-filter: blur(var(--blur)); font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink); }
 .evie-lens .evie-lens-badge.is-live { background: var(--talk); color: var(--talk-ink); }
+/* Cycle 16 (iPhone-only): share sheet. Additive-only: new .evie-share namespace;
+   every existing selector untouched. Dark/light via existing vars, so Mac
+   browsers without this markup render exactly as before. */
+.evie-share { display: flex; flex-direction: column; gap: 10px; }
+.evie-share .evie-share-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--stroke); border-radius: 16px; background: var(--elevated); font-size: 15px; }
+.evie-share .evie-share-row:active { background: color-mix(in srgb, var(--ink) 10%, transparent); }
+.evie-share .evie-share-hint { font-size: 13px; color: var(--muted); }

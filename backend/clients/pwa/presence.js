@@ -256,3 +256,14 @@
     return "evie-lens is-" + s;
   };
 })(typeof window !== "undefined" ? window : globalThis);
+// Cycle 16 (iPhone-only): share-sheet state hook. Additive-only: new
+// EviePresence.prototype.cycle16StateClass; draw/membrane untouched. Pure
+// state -> CSS-class mapper (no DOM), so Mac behavior is unchanged.
+(function (root) {
+  var P = root.EviePresence && root.EviePresence.prototype;
+  if (!P || P.cycle16StateClass) return;
+  P.cycle16StateClass = function cycle16StateClass(state) {
+    var s = String(state || (this && this.state) || "idle").toLowerCase().replace(/[^a-z]/g, "") || "idle";
+    return "evie-share is-" + s;
+  };
+})(typeof window !== "undefined" ? window : globalThis);
