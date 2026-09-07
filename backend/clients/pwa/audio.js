@@ -253,6 +253,8 @@
     this._batch = [];
     this._batchFrames = 0;
     this.metrics = {
+      ttfaMs: 0,
+      lastTtfaMs: 0,
       chunks: 0,
       duplicateDropped: 0,
       staleDropped: 0,
@@ -424,6 +426,15 @@
   };
 
   EvieAudioPlaybackEngine.prototype._emitPlaying = function _emitPlaying(active) {
+    if (active && this._ttfaStart) {
+      // Cycle 83 — TTFA: request sent → first audio actually playing.
+      const ms = Math.round(performance.now() - this._ttfaStart);
+      if (ms >= 0 && (!this.metrics.ttfaMs || ms < this.metrics.ttfaMs)) {
+        this.metrics.ttfaMs = ms;
+      }
+      this.metrics.lastTtfaMs = ms;
+      this._ttfaStart = 0;
+    }
     if (this.onPlayingChange) this.onPlayingChange(!!active);
   };
 

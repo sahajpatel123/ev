@@ -144,3 +144,16 @@ def test_wake_lock_ambient_mode_wired():
     assert "acquireWakeLock" in js and "releaseWakeLock" in js
     assert "visibilitychange" in js
     assert js.index("acquireWakeLock().catch(() => {});") < js.index("async function stopTalk")
+
+
+def test_ttfa_metrics_and_dev_overlay():
+    """Cycle 83 — C43: TTFA (request → first audio playing) is measured in
+    the engine, marked on each request, and viewable in a dev-only overlay
+    (triple-tap the mood line)."""
+    audio = (PWA / "audio.js").read_text()
+    assert "ttfaMs" in audio and "lastTtfaMs" in audio
+    app = (PWA / "app.js").read_text()
+    assert "markTtfaStart" in app
+    assert 'id="latency-overlay"' in app or 'latency-overlay' in app
+    assert 'taps >= 3' in app
+    assert 'id="mood"' in (PWA / "index.html").read_text()

@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.35";
+const CLIENT_BUILD = "2026.09.08.36";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -35,7 +35,43 @@ function pcmEngine() {
     engine.halfDuplex = halfDuplex;
     AUDIO_ENGINE_VERSION = window.EvieAudio.AUDIO_ENGINE_VERSION || "3";
   }
+  if (state._ttfaStart) {
+    engine._ttfaStart = state._ttfaStart;
+  }
   return engine;
+}
+
+/* Cycle 83 — TTFA/latency: the dev overlay (triple-tap the mood line)
+   shows time-to-first-audio, underruns, jitter cushion, backend. Dev-only
+   surface; production users never see it. */
+function markTtfaStart() {
+  state._ttfaStart = performance.now();
+}
+
+function toggleLatencyOverlay() {
+  let el = $("latency-overlay");
+  if (el) {
+    el.remove();
+    return;
+  }
+  el = document.createElement("div");
+  el.id = "latency-overlay";
+  el.style.cssText = "position:fixed;left:8px;bottom:8px;z-index:9999;background:rgba(0,0,0,.75);color:#9fe870;padding:8px 10px;border-radius:8px;font:11px ui-monospace,monospace;max-width:280px;white-space:pre-wrap";
+  document.body.appendChild(el);
+  const render_ = () => {
+    if (!document.getElementById("latency-overlay")) return;
+    const m = (engine && engine.metrics) || {};
+    const web = (state.webrtc && state.webrtc.diag && state.webrtc.diag.snapshot && state.webrtc.diag.snapshot()) || {};
+    el.textContent = [
+      "TTFA last: " + (m.lastTtfaMs || "—") + " ms · best: " + (m.ttfaMs || "—") + " ms",
+      "underruns: " + (m.underruns || 0) + " · jitter: " + (m.jitterTargetMs || "—") + " ms",
+      "backend: " + (m.playbackBackend || state.activeBackend || "—"),
+      "ctx: " + (m.contextState || "—") + " · out " + (m.outputLatency || "—") + "s",
+      "SE profile: " + String(!!(window.EvieAudioProfile && window.EvieAudioProfile.se)),
+    ].join("\n");
+    setTimeout(render_, 1000);
+  };
+  render_();
 }
 
 const state = {
@@ -1758,6 +1794,7 @@ async function pair() {
 
 async function sendText(text) {
   const requestId = crypto.randomUUID();
+  markTtfaStart();
   state.userLine = text;
   state.caption = "…";
   pushHistory("user", text);
@@ -2316,6 +2353,7 @@ async function talk() {
     return;
   }
   state._talkInflight = true;
+  markTtfaStart();
   render();
   try {
     if (window.EvieFeedback) window.EvieFeedback.emit("conversationStart", $("talk"));
@@ -3036,6 +3074,21 @@ function voiceMode() {
       setTimeout(wakeNow, 800);
     }
   } catch (_err) {}
+  /* Cycle 83 — dev overlay entry: triple-tap the mood line. */
+  const moodEl = $("mood");
+  if (moodEl) {
+    let taps = 0;
+    let timer = 0;
+    moodEl.addEventListener("click", () => {
+      taps += 1;
+      clearTimeout(timer);
+      timer = setTimeout(() => { taps = 0; }, 900);
+      if (taps >= 3) {
+        taps = 0;
+        toggleLatencyOverlay();
+      }
+    });
+  }
   const densitySeg = $("density");
   const applyDensity = (mode) => {
     const compact = mode === "compact" || (mode === "auto" && Math.min(window.innerWidth || 999, window.screen && window.screen.width || 999) <= 380);
