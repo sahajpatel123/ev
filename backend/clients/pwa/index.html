@@ -303,5 +303,17 @@
     return { warning: warning };
   })();
   </script>
+  <!-- Cycle 29 — iPhone-only auth-revision display model. Backward
+       compatible: additive window.EvieAuthRev namespace; no markup changed. -->
+  <script>
+  window.EvieAuthRev = (function () {
+    function label(rev) {
+      var n = Number(rev);
+      if (!isFinite(n)) return "auth rev unknown";
+      return "auth rev " + n;
+    }
+    return { label: label };
+  })();
+  </script>
 </body>
 </html>
