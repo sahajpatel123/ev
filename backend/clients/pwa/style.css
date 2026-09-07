@@ -699,3 +699,11 @@ html, body {
 .evie-health .evie-health-chip strong { display: block; font-size: 20px; letter-spacing: -0.02em; }
 .evie-health .evie-health-chip span { color: var(--muted); font-size: 12px; }
 .evie-health .evie-health-wide { grid-column: 1 / -1; }
+/* Cycle EAC63 (iPhone-only): Today sheet. Additive-only: new .evie-today
+   namespace; every existing selector untouched. Dark/light via existing vars,
+   so Mac browsers without this markup render exactly as before. */
+.evie-today-hud { padding: 16px; border: 1px solid var(--stroke); border-radius: 20px; background: var(--elevated); margin-bottom: 12px; }
+.evie-today-hud .evie-today-hud-title { font-size: 17px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 6px; }
+.evie-today-hud .evie-today-hud-body { font-size: 14px; line-height: 1.55; color: var(--muted); }
+/* Cycle EAC63 (iPhone-only): Today empty-state line. Additive-only. */
+.evie-today-empty { color: var(--muted); font-size: 13px; }

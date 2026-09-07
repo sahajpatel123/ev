@@ -9,13 +9,13 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.09.05.03">
+  <meta name="evie-build" content="2026.09.08.01">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.09.05.03">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.09.08.01">
   <title>Evie</title>
 </head>
 <body>
@@ -91,6 +91,11 @@
           <strong>Devices</strong>
           <span>This iPhone and Home Station</span>
         </button>
+        <button type="button" class="folio-card" data-surface="today">
+          <span class="folio-kicker">Today</span>
+          <strong>Today</strong>
+          <span>Health, calendar, memory</span>
+        </button>
         <button type="button" class="folio-card" data-surface="activity">
           <span class="folio-kicker">Pulse</span>
           <strong>Now</strong>
@@ -107,6 +112,25 @@
           <span>Camera, trust, appearance</span>
         </button>
       </div>
+    </section>
+
+    <section id="today-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="today-sheet" aria-label="Close">✕</button>
+      <h2>Today</h2>
+      <p class="quiet">Your day at a glance, from Home Station.</p>
+      <article class="evie-today-hud" id="today-hud" hidden>
+        <p class="evie-today-hud-title" id="today-hud-title"></p>
+        <p class="evie-today-hud-body" id="today-hud-body"></p>
+      </article>
+      <h3>Health</h3>
+      <dl class="meta" id="today-health"></dl>
+      <h3>Calendar</h3>
+      <ol id="today-calendar" class="timeline"></ol>
+      <h3>Reminders</h3>
+      <ol id="today-reminders" class="timeline"></ol>
+      <h3>Memory</h3>
+      <ol id="today-memories" class="timeline"></ol>
+      <p class="quiet" id="today-meta"></p>
     </section>
 
     <section id="conversation-sheet" class="sheet" hidden>
@@ -213,13 +237,13 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.09.05.03"></script>
-  <script src="/evie/presence.js?v=2026.09.05.03"></script>
-  <script src="/evie/orb.js?v=2026.09.05.03"></script>
-  <script src="/evie/feedback.js?v=2026.09.05.03"></script>
-  <script src="/evie/webrtc.js?v=2026.09.05.03"></script>
-  <script src="/evie/mobile-actions.js?v=2026.09.05.03"></script>
-  <script src="/evie/app.js?v=2026.09.05.03"></script>
+  <script src="/evie/audio.js?v=2026.09.08.01"></script>
+  <script src="/evie/presence.js?v=2026.09.08.01"></script>
+  <script src="/evie/orb.js?v=2026.09.08.01"></script>
+  <script src="/evie/feedback.js?v=2026.09.08.01"></script>
+  <script src="/evie/webrtc.js?v=2026.09.08.01"></script>
+  <script src="/evie/mobile-actions.js?v=2026.09.08.01"></script>
+  <script src="/evie/app.js?v=2026.09.08.01"></script>
   <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
        additive window.EvieTrust namespace; no existing markup changed. -->
   <script>

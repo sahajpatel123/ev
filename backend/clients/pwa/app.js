@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.05.03";
+const CLIENT_BUILD = "2026.09.08.01";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -547,6 +547,73 @@ async function refreshInbox() {
   } catch (_err) {}
 }
 
+function fillOl(id, items, limit, emptyLabel) {
+  const list = $(id);
+  if (!list) return;
+  while (list.firstChild) list.removeChild(list.firstChild);
+  const rows = (items || []).slice(0, limit || 12);
+  if (!rows.length) {
+    const li = document.createElement("li");
+    li.className = "evie-today-empty";
+    li.textContent = emptyLabel || "Nothing here yet.";
+    list.appendChild(li);
+    return;
+  }
+  rows.forEach((entry) => {
+    const li = document.createElement("li");
+    li.textContent = String(entry);
+    list.appendChild(li);
+  });
+}
+
+function todayTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function metricLabel(key) {
+  const names = { steps: "Steps", sleep_hours: "Sleep", heart_rate: "Heart rate", active_energy: "Active energy", resting_hr: "Resting heart rate", vo2: "VO₂", weight: "Weight" };
+  return names[key] || key.replace(/_/g, " ");
+}
+
+async function refreshToday() {
+  if (!state.deviceToken) return;
+  const hud = $("today-hud");
+  const meta = $("today-meta");
+  try {
+    const body = await api("/v1/device-gateway/today");
+    const card = body.hud || null;
+    if (card && hud) {
+      hud.hidden = false;
+      textOf($("today-hud-title"), card.title || "Today");
+      textOf($("today-hud-body"), card.body || "");
+    } else if (hud) {
+      hud.hidden = true;
+    }
+    const health = body.health || {};
+    const rows = [["Status", health.freshness || "unavailable"]];
+    const metrics = health.metrics || {};
+    Object.keys(metrics).slice(0, 5).forEach((key) => {
+      const value = metrics[key];
+      rows.push([metricLabel(key), typeof value === "number" ? String(value) : String(value || "—")]);
+    });
+    fillDl("today-health", rows);
+    const calendar = (body.calendar || {}).events || [];
+    fillOl("today-calendar", calendar.map((ev) => (todayTime(ev.start) ? todayTime(ev.start) + " · " : "") + (ev.title || "Event")), 6, "Nothing scheduled.");
+    const reminders = (body.reminders || []).map((row) => row.text || "Reminder");
+    fillOl("today-reminders", reminders, 8, "No pending reminders.");
+    const memories = (body.memories || []).map((row) => (row.memory_type ? row.memory_type + " — " : "") + row.text);
+    fillOl("today-memories", memories, 6, "No memories yet.");
+    const scope = body.memory_enabled ? body.memory_scope || "owner" : "sandbox";
+    const unread = body.inbox_pending || 0;
+    textOf(meta, "Memory: " + scope + (unread ? " · " + unread + " unread in Inbox" : ""));
+  } catch (err) {
+    textOf(meta, "Today is unavailable: " + String(err.message || err));
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -733,7 +800,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -2379,13 +2446,14 @@ async function boot() {
   function openSurface(surface, origin) {
     const map = {
       more: "more-sheet",
+      today: "today-sheet",
       conversation: "conversation-sheet",
       devices: "devices-sheet",
       activity: "activity-sheet",
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "today-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -2394,6 +2462,7 @@ async function boot() {
       showSheet(id, on);
     });
     if (surface === "inbox") refreshInbox();
+    if (surface === "today") refreshToday();
   }
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -2407,7 +2476,11 @@ async function boot() {
         openSurface("inbox");
         return;
       }
-      const prompt = kind === "weather" ? "what's the weather" : (kind === "today" ? "what's today's date" : "");
+      if (kind === "today") {
+        openSurface("today");
+        return;
+      }
+      const prompt = kind === "weather" ? "what's the weather" : "";
       if (!prompt) return;
       sendText(prompt).catch((err) => {
         state.caption = String(err.message || err);
