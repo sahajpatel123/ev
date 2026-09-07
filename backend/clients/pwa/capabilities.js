@@ -74,6 +74,19 @@
         (manifest.tts.same_as_desk ? " · same as MacBook" : "");
       card.appendChild(el("p", "cap-quiet", ttsLine));
     }
+    if (manifest.sensitive_reads) {
+      var sens = el("div", "cap-grid cap-sensitive");
+      var sensLabels = { list_mail: "Mail", list_messages: "Messages" };
+      Object.keys(sensLabels).forEach(function (name) {
+        if (name in manifest.sensitive_reads) {
+          sens.appendChild(flagRow(name, !!manifest.sensitive_reads[name], sensLabels));
+        }
+      });
+      card.appendChild(sens);
+      if (manifest.privacy_note) {
+        card.appendChild(el("p", "cap-quiet", manifest.privacy_note));
+      }
+    }
 
     var limits = manifest.limits || [];
     if (limits.length) {

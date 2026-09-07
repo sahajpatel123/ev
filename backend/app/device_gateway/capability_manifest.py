@@ -80,6 +80,16 @@ def capability_manifest(device: Device) -> dict[str, Any]:
     reads: dict[str, bool] = {}
     for name in PHONE_CORE_READS:
         reads[name] = trusted
+    sensitive_reads: dict[str, bool] = {
+        "list_mail": trusted,
+        "list_messages": trusted,
+    }
+    privacy_note = (
+        "Mail and Messages read back as short gists for this turn only — "
+        "bodies are never stored, ingested into memory, or sent anywhere."
+        if trusted
+        else ""
+    )
 
     limits: list[str] = []
     if not trusted:
@@ -90,6 +100,7 @@ def capability_manifest(device: Device) -> dict[str, Any]:
                 "Camera look is off: no photo understanding from this phone.",
             ]
         )
+
 
     manifest: dict[str, Any] = {
         "trust_state": trust,
@@ -112,6 +123,8 @@ def capability_manifest(device: Device) -> dict[str, Any]:
         },
         "tools": tools,
         "reads": reads,
+        "sensitive_reads": sensitive_reads,
+        "privacy_note": privacy_note,
         "memory": {
             "scope": "owner" if trusted else "sandbox",
             "history_k": 3 if trusted else 0,

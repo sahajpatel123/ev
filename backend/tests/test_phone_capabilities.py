@@ -803,3 +803,26 @@ async def test_list_reminders_spoken_shape(db_session):
     )
     assert turn is not None and turn.get("tool") == "list_reminders", turn
     assert "dentist" in str(turn.get("reply") or "").lower()
+
+
+def test_manifest_marks_sensitive_reads_with_privacy_note():
+    """Cycle 63 — C23: mail/messages are a distinct SENSITIVE read tier;
+    trusted phones see the tier + the turn-only privacy note; sandbox sees
+    it locked with no note."""
+    from app.device_gateway.capability_manifest import capability_manifest
+
+    trusted = capability_manifest(_trusted_device())
+    sensitive = trusted.get("sensitive_reads") or {}
+    assert sensitive.get("list_mail") is True
+    assert sensitive.get("list_messages") is True
+    assert "gists" in str(trusted.get("privacy_note") or "")
+
+    sandbox = capability_manifest(_trusted_device().__class__(
+        name="SE",
+        platform="ios",
+        token_hash="h2",
+        memory_scope="sandbox",
+    ))
+    sensitive_sbx = sandbox.get("sensitive_reads") or {}
+    assert sensitive_sbx.get("list_mail") is False
+    assert sandbox.get("privacy_note") == ""

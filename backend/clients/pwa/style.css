@@ -689,3 +689,4 @@ html, body {
 /* Cycle 56 — hold-to-talk visual state. */
 #talk.holding { transform: scale(0.96); filter: brightness(1.12); }
 .cap-quiet { margin: 0 0 10px; font-size: 12px; opacity: 0.6; }
+.cap-sensitive { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--line, #d8d5cf); }
