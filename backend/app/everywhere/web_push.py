@@ -81,7 +81,7 @@ def _send_sync(device: Device, *, title: str, body: str, url: str) -> str:
                 "endpoint": sub["endpoint"],
                 "keys": dict(sub.get("keys") or {}),
             },
-            data=json.dumps({"title": title, "body": body, "url": url}),
+            data=json.dumps({"title": title, "body": body, "url": url, "wake": bool(wake)}),
             vapid_private_key=(settings.web_push_vapid_private_key or "").strip(),
             vapid_claims={"sub": settings.web_push_vapid_subject or "mailto:owner@evie.local"},
         )
@@ -104,8 +104,13 @@ async def send_web_push(
     title: str,
     body: str,
     url: str = "/evie/",
+    wake: bool = False,
 ) -> str:
-    """Fire-and-forget-friendly, non-blocking best-effort send."""
+    """Fire-and-forget-friendly, non-blocking best-effort send.
+
+    wake: the notification click tells the PWA to open the live session
+    (Cycle 79 push-to-wake); the payload carries the ?wake=1 entry link.
+    """
 
     if not vapid_configured() or web_subscription(device) is None:
         return "skipped"

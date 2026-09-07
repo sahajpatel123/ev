@@ -694,6 +694,35 @@ async def user_text(
     return result
 
 
+class WakeRequest(BaseModel):
+    body: str | None = None
+
+
+@router.post("/conversation/wake")
+async def conversation_wake(
+    data: WakeRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 79 — push-to-wake: a doorbell push that opens the live session
+    on arrival. The intent is expressed elsewhere (quick action, Home
+    Station); the push itself just opens the door with ?wake=1."""
+
+    _check_origin(request)
+    from app.everywhere.web_push import send_web_push
+
+    outcome = await send_web_push(
+        device,
+        title="Evie",
+        body=(data.body or "Tap to start talking.")[:280],
+        url="/evie/?wake=1",
+        wake=True,
+    )
+    await session.commit()
+    return {"ok": True, "push": outcome}
+
+
 @router.post("/live/open")
 async def live_open(
     data: ClaimRequest,

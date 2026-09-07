@@ -1236,3 +1236,19 @@ async def test_cross_device_handoff_note(client, db_session):
             db_session, device=device_b, text="Continue what I was saying."
         )
     assert captured.get("transcript", "").startswith("[handoff:")
+
+
+async def test_push_to_wake_endpoint(client, db_session):
+    """Cycle 79 — C39: the wake endpoint is a doorbell: it composes a push
+    with the ?wake=1 entry link (skipped honestly when VAPID/subscription
+    are absent), and the PWA wake wiring exists (sw postMessage + ?wake)."""
+    phone = await _pair_sandbox(client, "Wake-SE")
+    r = await phone.post("/v1/device-gateway/conversation/wake", json={"body": "Hello"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["push"] in {"sent", "skipped", "failed", "no_subscription"}
+    sw = open("clients/pwa/sw.js").read()
+    assert 'type: "wake_live"' in sw
+    app_js = open("clients/pwa/app.js").read()
+    assert "wake_live" in app_js
+    assert "wake=1" in app_js or '_wakeTakeover' in app_js

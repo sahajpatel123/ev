@@ -1,4 +1,4 @@
-const BUILD = "2026.09.08.32";
+const BUILD = "2026.09.08.33";
 const CACHE = "evie-static-" + BUILD;
 const STATIC = [
   "/evie/",
@@ -81,7 +81,15 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
       for (const client of list) {
-        if (client.url.includes("/evie")) return client.focus();
+        if (client.url.includes("/evie")) {
+          client.focus();
+          // Cycle 79 — push-to-wake: a wake notification not only focuses
+          // the PWA, it tells it to open the live session (takeover).
+          if (event.notification.data && event.notification.data.wake) {
+            client.postMessage({ type: "wake_live" });
+          }
+          return undefined;
+        }
       }
       return self.clients.openWindow(target);
     })

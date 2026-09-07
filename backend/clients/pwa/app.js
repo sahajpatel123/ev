@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.32";
+const CLIENT_BUILD = "2026.09.08.33";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -2305,8 +2305,19 @@ async function talk() {
         method: "manual",
         media_backend: "webrtc_strict",
         client_generation: (state.sessionGen || 0) + 1,
+        // Cycle 79 — a wake tap (or the second tap after a refusal) is
+        // explicit takeover intent.
+        takeover: !!(state._wakeTakeover || state._takeoverArmed),
       }),
     });
+    state._takeoverArmed = false;
+    if (opened.ok === false && opened.refused === "lease_active") {
+      state._takeoverArmed = true;
+      state.caption = opened.spoken || "Evie is talking on another device — tap again to take over.";
+      setMood("Busy elsewhere");
+      render();
+      return;
+    }
     state.sessionId = opened.session_id;
     state.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id);
     const want = opened.media_backend || "webrtc_strict";
@@ -2978,6 +2989,26 @@ function voiceMode() {
     });
   }
   /* Cycle 75 — density: auto (≤380px = SE compact), compact, comfortable. */
+  /* Cycle 79 — push-to-wake: the service worker (or the ?wake=1 entry
+     link) tells the app to open the live session on arrival, with the
+     explicit takeover flag from lease arbitration. */
+  const wakeNow = () => {
+    if (state.talking) return;
+    state._wakeTakeover = true;
+    talk().finally(() => { state._wakeTakeover = false; }).catch(() => {});
+  };
+  if (navigator.serviceWorker) {
+    navigator.serviceWorker.addEventListener("message", (ev) => {
+      if (ev.data && ev.data.type === "wake_live") wakeNow();
+    });
+  }
+  try {
+    const wakeParam = new URLSearchParams(location.search).get("wake");
+    if (wakeParam === "1") {
+      history.replaceState(null, "", location.pathname);
+      setTimeout(wakeNow, 800);
+    }
+  } catch (_err) {}
   const densitySeg = $("density");
   const applyDensity = (mode) => {
     const compact = mode === "compact" || (mode === "auto" && Math.min(window.innerWidth || 999, window.screen && window.screen.width || 999) <= 380);
