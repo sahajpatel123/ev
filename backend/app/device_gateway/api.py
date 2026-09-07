@@ -1132,10 +1132,65 @@ async def user_text_stream(
                 payload = {"reply": str(result.get("reply") or result.get("text") or "")}
             import json as _json
 
+
+            # Cycle 57 — streamed TTS on the typed path: the phone's typed
+            # answer gets a voice, sentence by sentence, using the SAME
+            # synthesizer the Mac pipeline uses. Skipped silently when the
+            # synthesizer has no audio for the text (or synth is degraded).
+            reply_text = str(payload.get("reply") or "").strip()
+            if reply_text and not getattr(device, "revoked_at", None):
+                try:
+                    from app.voice.speech import pop_speakable
+                    from app.voice.tts import get_synthesizer
+                    from app.voice.contracts import SpeechStyle
+
+                    synth = get_synthesizer()
+                    style = SpeechStyle()
+                    buffer = reply_text
+                    index = 0
+                    import base64 as _b64
+
+                    from app.voice.pipeline import device_playable_audio
+
+                    while True:
+                        sentence, buffer = pop_speakable(buffer)
+                        if not sentence:
+                            break
+                        spoken = await synth.synthesize(sentence, style=style)
+                        wav = await device_playable_audio(spoken.audio) if getattr(spoken, "audio", None) else b""
+                        if wav:
+                            yield (
+                                "event: tts\ndata: "
+                                + _json.dumps(
+                                    {
+                                        "index": index,
+                                        "audio_b64": _b64.b64encode(wav).decode("ascii"),
+                                        "content_type": "audio/wav",
+                                    }
+                                )
+                                + "\n\n"
+                            )
+                            index += 1
+                    leftover, _ = pop_speakable(buffer, flush=True)
+                    if leftover:
+                        spoken = await synth.synthesize(leftover, style=style)
+                        wav = await device_playable_audio(spoken.audio) if getattr(spoken, "audio", None) else b""
+                        if wav:
+                            yield (
+                                "event: tts\ndata: "
+                                + _json.dumps(
+                                    {
+                                        "index": index,
+                                        "audio_b64": _b64.b64encode(wav).decode("ascii"),
+                                        "content_type": "audio/wav",
+                                    }
+                                )
+                                + "\n\n"
+                            )
+                except Exception:  # noqa: BLE001 - speech is best-effort on the typed path
+                    pass
             yield f"event: reply\ndata: {_json.dumps(payload)}\n\n"
         except Exception as exc:  # noqa: BLE001 - SSE must end with an error event
-            import json as _json
-
             yield (
                 "event: error\ndata: "
                 + _json.dumps({"error_code": "TEXT_STREAM_FAILED", "message": str(exc)[:200]})

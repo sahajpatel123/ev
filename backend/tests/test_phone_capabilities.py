@@ -572,3 +572,74 @@ async def test_text_stream_sse_roundtrip(client, db_session):
     reply_line = [line for line in raw.splitlines() if line.startswith("data: {\"reply")][0]
     payload = _json.loads(reply_line.removeprefix("data: "))
     assert payload.get("reply"), payload
+
+
+async def test_text_stream_includes_tts_events(client, db_session, monkeypatch):
+    """Cycle 57 — C17: the typed path streams sentence-level tts events with
+    playable WAV payloads before the reply event."""
+    phone = await _pair_sandbox(client, "TTS-SE")
+
+    import base64 as b64
+    import struct
+    import wave
+    from io import BytesIO
+
+    import app.voice.pipeline as vp
+    import app.voice.tts as tts_mod
+
+    class _FakeResult:
+        audio = b""
+
+    class _FakeSynth:
+        name = "fake"
+
+        async def synthesize(self, text, *, style=None):
+            buf = BytesIO()
+            with wave.open(buf, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(struct.pack("<h", 0) * 1600)  # 0.1s of silence
+            res = _FakeResult()
+            res.audio = buf.getvalue()
+            res.text = text
+            res.provider = "fake"
+            res.degraded = False
+            res.details = {}
+            return res
+
+    async def _passthrough(audio, *, sample_rate: int = 24000):
+        return audio
+
+    monkeypatch_obj = tts_mod
+    from app.config import settings as _settings
+
+    real_synth = tts_mod.get_synthesizer
+    real_playable = vp.device_playable_audio
+    tts_mod.get_synthesizer = lambda: _FakeSynth()
+    vp.device_playable_audio = _passthrough
+    try:
+        res = await phone.post(
+            "/v1/device-gateway/text/stream",
+            json={
+                "text": "tell me a one sentence fact about Saturn",
+                "instance_id": "TTS-SE-tab",
+                "request_id": "tts-1",
+            },
+        )
+    finally:
+        tts_mod.get_synthesizer = real_synth
+        vp.device_playable_audio = real_playable
+    assert res.status_code == 200, res.text
+    raw = res.text
+    assert "event: reply" in raw
+    assert "event: tts" in raw, f"forced synth must emit tts events: {raw[:300]}"
+    import json as j
+
+    lines = raw.splitlines()
+    tts_lines = [l for l in lines if l.startswith("data: {\"index")]
+    assert tts_lines, "tts event must carry data"
+    data = j.loads(tts_lines[0].removeprefix("data: "))
+    wav = b64.b64decode(data["audio_b64"])
+    assert wav[:4] == b"RIFF", f"payload must be WAV, got {wav[:8]}"
+    assert data["content_type"] == "audio/wav"

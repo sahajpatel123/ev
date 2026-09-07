@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.11";
+const CLIENT_BUILD = "2026.09.08.12";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -1561,6 +1561,10 @@ async function sendTextStreamed(text, requestId) {
       } else if (event === "state" && data.stage === "thinking") {
         state.caption = "Thinking…";
         paintLive();
+      } else if (event === "tts" && data.audio_b64) {
+        // Cycle 57 — the typed answer speaks: queued sentence WAVs play in
+        // order. Skipped while a live voice session owns the speaker.
+        if (!state.talking) playTypedTts(data.audio_b64, data.content_type || "audio/wav");
       } else if (event === "reply") {
         finalBody = data;
       } else if (event === "error") {
@@ -1574,6 +1578,39 @@ async function sendTextStreamed(text, requestId) {
   setMood(state.talking ? "Listening" : "Ready");
   paintLive();
   return finalBody;
+}
+
+/* Cycle 57 — sequential playback of typed-path sentence WAVs. One shared
+   element, chained ended-events; a new reply replaces any queue still
+   playing. */
+const typedTts = { audio: null, queue: [], playing: false };
+function playTypedTts(audioB64, contentType) {
+  if (!typedTts.audio) {
+    typedTts.audio = new Audio();
+    typedTts.audio.addEventListener("ended", () => {
+      typedTts.playing = false;
+      const next = typedTts.queue.shift();
+      if (next) playTypedTts(next.audioB64, next.contentType);
+    });
+  }
+  if (typedTts.playing) {
+    typedTts.queue.push({ audioB64, contentType });
+    return;
+  }
+  try {
+    typedTts.audio.src = "data:" + contentType + ";base64," + audioB64;
+    typedTts.playing = true;
+    const done = typedTts.audio.play();
+    if (done && done.catch) {
+      done.catch(() => {
+        typedTts.playing = false;
+        const next = typedTts.queue.shift();
+        if (next) playTypedTts(next.audioB64, next.contentType);
+      });
+    }
+  } catch (_err) {
+    typedTts.playing = false;
+  }
 }
 
 async function captureCamera(body, facing) {
