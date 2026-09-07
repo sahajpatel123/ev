@@ -1,4 +1,4 @@
-const BUILD = "2026.09.02.06";
+const BUILD = "2026.09.05.03";
 const CACHE = "evie-static-" + BUILD;
 const STATIC = [
   "/evie/",
@@ -59,3 +59,44 @@ self.addEventListener("fetch", (event) => {
       .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/evie/")))
   );
 });
+/* Cycle 24 — iPhone-only service-worker version display helper. Backward
+   compatible: additive self.EvieSwVersion (mirrored to window when present);
+   existing install/activate/fetch listeners untouched. */
+self.EvieSwVersion = {
+  build: BUILD,
+  label: function () {
+    return "Evie " + BUILD;
+  },
+  matches: function (clientBuild) {
+    return clientBuild === BUILD;
+  }
+};
+if (typeof window !== "undefined") window.EvieSwVersion = self.EvieSwVersion;
+/* Cycle 25 — iPhone-only device-role label. Backward compatible: additive
+   self.EvieDeviceRole pure helper; owner-declared input only (never probed
+   from hardware); existing listeners untouched. */
+self.EvieDeviceRole = {
+  label: function (declared) {
+    var d = String(declared == null ? "" : declared).trim().toLowerCase();
+    if (d === "se" || d.indexOf("se ") === 0 || d.indexOf(" se") !== -1) {
+      return "iPhone SE (fallback)";
+    }
+    return "iPhone 16 Pro (preferred)";
+  }
+};
+if (typeof window !== "undefined") window.EvieDeviceRole = self.EvieDeviceRole;
+/* Cycle 41 — iPhone-only presence-heartbeat display model. Backward
+   compatible: additive self.EviePresenceHeartbeat pure model mapping
+   heartbeat age to tone+label; existing listeners untouched. */
+self.EviePresenceHeartbeat = {
+  model: function (lastSeenMs, nowMs) {
+    var now = Number(nowMs);
+    var seen = Number(lastSeenMs);
+    if (!isFinite(now) || !isFinite(seen)) return { tone: "neutral", label: "Presence unknown", ageS: -1 };
+    var ageS = Math.max(0, Math.floor((now - seen) / 1000));
+    if (ageS < 30) return { tone: "live", label: "Here now", ageS: ageS };
+    if (ageS < 120) return { tone: "stale", label: "Away " + ageS + "s", ageS: ageS };
+    return { tone: "gone", label: "Away " + Math.floor(ageS / 60) + "m", ageS: ageS };
+  }
+};
+if (typeof window !== "undefined") window.EviePresenceHeartbeat = self.EviePresenceHeartbeat;

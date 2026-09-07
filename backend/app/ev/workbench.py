@@ -537,16 +537,70 @@ async def handle_heading_out(
 
 async def handle_brief_me(session: AsyncSession, topic: str | None = None) -> dict:
     from app.ev import tactical
+    from app.ev.companionship import isolation_nudge_text, scan_isolation
+    from app.ev.health_radar import morning_brief
+    from app.ev.luna_code import intern_in_flight, last_code_job, peek_code_intern_receipt
+    from app.ev.code_studio import spoken_studio_status
+
+    wanted = " ".join(str(topic or "today").split()).strip() or "today"
+    lowered = wanted.lower()
+    if any(token in lowered for token in ("isolated", "lonely", "isolation")):
+        scan = await scan_isolation(session)
+        if scan.detected:
+            spoken = (scan.recommendation or isolation_nudge_text(None)).strip()
+        else:
+            spoken = (
+                "You're not looking isolated from the last couple of weeks — "
+                "there are real people in the mix. I'm still not a substitute for them."
+            )
+        return {
+            "ok": True,
+            "topic": "isolation",
+            "isolation": scan.model_dump(mode="json"),
+            "spoken": spoken[:400],
+            "hud": hud_card("Check-in", spoken, {"detected": scan.detected}),
+        }
 
     brief = await tactical.build_briefing(
         session,
-        TacticalBriefRequest(topic=topic or "today", include_options=True),
+        TacticalBriefRequest(topic=wanted, include_options=True),
     )
     payload = brief.model_dump(mode="json")
-    spoken = (
+    bits: list[str] = []
+    health = await morning_brief(session)
+    if health.get("readiness") is not None:
+        rec = str(health.get("recommendation") or "").strip()
+        line = f"Readiness {health.get('readiness')} ({health.get('band')})"
+        if rec:
+            line += f". {rec}"
+        bits.append(line.rstrip(".") + ".")
+    elif lowered in {"morning", "today"} or "morning" in lowered:
+        bits.append(str(health.get("recommendation") or "").strip())
+    tactical_spoken = (
         f"{brief.objective}. {brief.recommendation or ''} "
         f"{(brief.risks[0].description if brief.risks else '')}"
     ).strip()
+    if tactical_spoken:
+        bits.append(tactical_spoken)
+    intern_job = last_code_job()
+    intern_line = ""
+    if intern_in_flight():
+        intern_line = spoken_studio_status()
+    else:
+        ready = peek_code_intern_receipt()
+        if ready:
+            intern_line = ready.split(". ")[0].strip().rstrip(".") + "."
+    if intern_line:
+        bits.append(intern_line)
+    if intern_job and intern_job.get("ok") is False and "morning" in lowered and not intern_line:
+        bits.append("Last coding job didn't finish cleanly — ask me to keep going if you want it.")
+    if lowered in {"morning", "today"} or "morning" in lowered:
+        isolation = await scan_isolation(session)
+        if isolation.detected:
+            nudge = (isolation.recommendation or isolation_nudge_text(None)).strip()
+            if nudge:
+                bits.append(nudge)
+    spoken = " ".join(part for part in bits if part).strip() or tactical_spoken
     return {
         "ok": True,
         "objective": brief.objective,
@@ -556,7 +610,11 @@ async def handle_brief_me(session: AsyncSession, topic: str | None = None) -> di
         "options": payload.get("options") or [],
         "recommendation": brief.recommendation,
         "talking_points": payload.get("talking_points") or [],
-        "spoken": spoken[:400],
+        "health": {
+            "readiness": health.get("readiness"),
+            "band": health.get("band"),
+        },
+        "spoken": spoken[:520],
         "hud": payload,
         "briefing": payload,
     }

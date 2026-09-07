@@ -40,6 +40,7 @@ from app.api import (
 )
 from app.config import settings
 from app.db import init_db
+from app.gateway.muse import MuseProviderUnavailable
 from app.device_gateway import api as device_gateway_api
 from app.device_gateway import pwa as device_gateway_pwa
 from app.device_gateway import release_portal
@@ -153,6 +154,19 @@ app = FastAPI(
     description="EV — persistent personal AI companion (E.V.-inspired).",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(MuseProviderUnavailable)
+async def _muse_unavailable(_request: Request, exc: MuseProviderUnavailable):
+    """Fail closed: missing or rejected Muse credentials are not a 500."""
+
+    return JSONResponse(
+        status_code=503,
+        content={"detail": str(exc) or "Intelligence provider is unavailable"},
+        headers={"X-Error-Code": "muse_unavailable"},
+    )
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,

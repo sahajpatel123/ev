@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Literal, cast
@@ -44,6 +45,8 @@ from app.services.event_service import EventService
 from app.services.model_call import log_model_call
 from app.storage.object_store import get_object_store
 from app.vision.providers import get_vision_provider
+
+logger = logging.getLogger("ev.vision")
 
 # Model processing is denied for these privacy levels (matches the live-data
 # model slice: sensitive content stays out of provider context entirely).
@@ -108,9 +111,65 @@ def _extract_summary(text: str) -> str:
     text = text.strip()
     if not text:
         return "No summary returned by the perception provider."
-    summary = text.split("\n")[0]
-    summary = re.sub(r"^SUMMARY\s*:\s*", "", summary, flags=re.IGNORECASE)
-    return summary.strip()[:1000] or "Perception completed."
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if re.match(r"^LABEL\s*:", line, re.IGNORECASE):
+            continue
+        line = re.sub(r"^SUMMARY\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+        if line:
+            lines.append(line)
+        if len(" ".join(lines)) >= 700:
+            break
+    summary = " ".join(lines).strip()
+    try:
+        from app.memory.visual import is_generic_label_scene, _remainder_has_identity
+    except Exception:  # noqa: BLE001 - perception must still return something
+        return summary[:1000] or "Perception completed."
+    identity_lines = [
+        line
+        for line in lines
+        if line and not is_generic_label_scene(line) and _remainder_has_identity(line)
+    ]
+    if identity_lines:
+        summary = " ".join(identity_lines).strip()
+    return summary[:1000] or "Perception completed."
+
+
+def _keep_perception_prompt(prompt: str | None) -> bool:
+    blob = str(prompt or "").lower()
+    return "concrete noun" in blob or "not container" in blob
+
+
+def _perception_system_prompt(prompt: str | None) -> str:
+    if _keep_perception_prompt(prompt):
+        return (
+            "You are EV's perception layer. Name the specific thing in the image "
+            "in two short sentences: a concrete noun (not container, object, item, "
+            "shape, device, or a vague class), its colors, any printed text, and "
+            "one distinctive detail. Do not output LABEL: lines. Do not say you "
+            "cannot see the image."
+        )
+    return (
+        "You are EV's perception layer. Describe only what the user has "
+        "explicitly shared. Do not speculate about identity or location; "
+        "report observable scene content. Return a short summary and a "
+        "list of suggested labels as 'LABEL: name 0.95' lines."
+    )
+
+
+def _usable_perception_labels(labels: list[dict], *, raw_sent: bool) -> list[dict]:
+    if not raw_sent or not labels:
+        return labels
+    from app.memory.visual import _JUNK_OBJECT
+
+    return [
+        item
+        for item in labels
+        if str(item.get("label") or "").strip().lower() not in _JUNK_OBJECT
+    ]
 
 
 def _suggest_labels_from_ocr(text: str) -> list[dict]:
@@ -292,6 +351,45 @@ async def _run_local_perception(
     )
 
 
+def _provider_name(provider: ChatProvider | None) -> str:
+    return (getattr(provider, "name", "") or "").strip().lower()
+
+
+def _may_send_raw_pixels(provider: ChatProvider | None) -> bool:
+    """Official DeepSeek chat is text-only. Muse Spark (or a test fake) may see JPEGs."""
+
+    if provider is None or not bool(getattr(provider, "supports_media", False)):
+        return False
+    name = _provider_name(provider)
+    if name == "deepseek":
+        return False
+    from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_intelligence_active
+
+    if (
+        muse_intelligence_active()
+        and name not in MUSE_SPARK_PROVIDERS
+        and not name.startswith("fake")
+    ):
+        return False
+    return True
+
+
+def _spark_for_pixels() -> ChatProvider | None:
+    try:
+        from app.gateway.muse import muse_spark_api_key
+        from app.gateway.muse_spark import muse_spark_provider
+
+        if not muse_spark_api_key():
+            return None
+        return muse_spark_provider()
+    except Exception:  # noqa: BLE001 - keep look can still store the frame
+        logger.info("spark pixel provider skipped", exc_info=True)
+        return None
+
+
+_OFFLINE_PIXEL_PROVIDERS = frozenset({"echo", "mock"})
+
+
 async def analyze_attachment(
     session: AsyncSession,
     attachment_id: UUID,
@@ -310,7 +408,28 @@ async def analyze_attachment(
     if event is None or event.tombstoned_at is not None:
         raise PermissionError("Attachment's source event is unavailable")
 
-    provider = provider or get_chat_provider()
+    if provider is None:
+        from app.gateway.muse import MuseProviderUnavailable
+
+        try:
+            provider = get_chat_provider()
+        except MuseProviderUnavailable:
+            provider = None
+    from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_intelligence_active
+
+    if allow_raw and (attachment.content_type or "").startswith("image/"):
+        if not _may_send_raw_pixels(provider):
+            name = _provider_name(provider)
+            if name not in _OFFLINE_PIXEL_PROVIDERS and not name.startswith("fake"):
+                spark = _spark_for_pixels()
+                if _may_send_raw_pixels(spark):
+                    provider = spark
+    elif (
+        muse_intelligence_active()
+        and provider is not None
+        and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS
+    ):
+        provider = None
     privacy = event.privacy_level or "normal"
     if not permission:
         raise PermissionError(
@@ -350,10 +469,9 @@ async def analyze_attachment(
                 )
             )
 
-    supports_media = bool(getattr(provider, "supports_media", False))
     raw_allowed = bool(
         allow_raw
-        and supports_media
+        and _may_send_raw_pixels(provider)
         and privacy not in RAW_BLOCKED_LEVELS
         and (attachment.content_type or "").startswith("image/")
     )
@@ -390,13 +508,8 @@ async def analyze_attachment(
         )
         derived_text_used = True
 
-    if model_allowed and media:
-        system = (
-            "You are EV's perception layer. Describe only what the user has "
-            "explicitly shared. Do not speculate about identity or location; "
-            "report observable scene content. Return a short summary and a "
-            "list of suggested labels as 'LABEL: name 0.95' lines."
-        )
+    if model_allowed and media and provider is not None:
+        system = _perception_system_prompt(prompt)
         user_content = (
             prompt
             or (
@@ -441,7 +554,9 @@ async def analyze_attachment(
             labels = _suggest_labels_from_ocr(derived)
         request_id_value = request_id
     else:
-        if not model_allowed:
+        if provider is None:
+            summary = "Intelligence provider is unavailable."
+        elif not model_allowed:
             summary = (
                 "Perception blocked: the source event's privacy level does not "
                 "permit model processing."
@@ -460,10 +575,12 @@ async def analyze_attachment(
         request_id_value = None
 
     labels = _dedupe_labels(local_labels + labels)[:MAX_SUGGESTED_LABELS]
+    if raw_sent:
+        labels = _usable_perception_labels(labels, raw_sent=True)
     payload = _perception_payload(
         summary=summary,
         labels=labels,
-        provider=provider.name,
+        provider=(getattr(provider, "name", None) or "none"),
         raw_sent=raw_sent,
         actor=actor,
         attachment=attachment,

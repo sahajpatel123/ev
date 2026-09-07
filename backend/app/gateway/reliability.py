@@ -53,6 +53,18 @@ def http_timeout() -> httpx.Timeout:
     )
 
 
+def http_timeout_for_media() -> httpx.Timeout:
+    """JPEG vision reads longer than a text chat turn."""
+
+    base = http_timeout()
+    return httpx.Timeout(
+        connect=base.connect,
+        read=max(float(base.read or 60.0), 120.0),
+        write=max(float(base.write or 30.0), 60.0),
+        pool=base.pool,
+    )
+
+
 def retry_delay_seconds(attempt: int) -> float:
     """Jittered exponential backoff for one retry attempt (0-based)."""
 

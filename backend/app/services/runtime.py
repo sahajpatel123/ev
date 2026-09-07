@@ -8,6 +8,7 @@ observable and recoverable instead of silently disappearing.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from typing import Literal
 from uuid import UUID
@@ -1544,12 +1545,23 @@ async def _asr_tts_checks() -> list[dict]:
     from app.voice.tts import get_synthesizer
 
     checks: list[dict] = []
+    asr_model = settings.voice_asr_model
     try:
         transcriber = get_transcriber()
         if transcriber.name == "echo":
             await transcriber.transcribe(text_hint="ev health probe")
             asr_status = "ok"
             asr_detail: dict = {"probe": "echo"}
+        elif getattr(transcriber, "name", "") in {"meta_muse_voice", "muse_voice"}:
+            from app.gateway.muse import muse_key_loaded, muse_voice_model
+
+            asr_model = muse_voice_model()
+            if muse_key_loaded():
+                asr_status = "ok"
+                asr_detail = {"provider": transcriber.name}
+            else:
+                asr_status = "degraded"
+                asr_detail = {"reason": "META_MODEL_API_KEY missing"}
         elif settings.voice_asr_base_url:
             asr_status = "ok"
             asr_detail = {}
@@ -1564,7 +1576,7 @@ async def _asr_tts_checks() -> list[dict]:
             "name": "asr",
             "status": asr_status,
             "provider": settings.voice_asr_provider,
-            "model": settings.voice_asr_model,
+            "model": asr_model,
             **asr_detail,
         }
     )
@@ -1581,6 +1593,9 @@ async def _asr_tts_checks() -> list[dict]:
             await synthesizer.synthesize("ev health probe", style=SpeechStyle())
             tts_status = "ok"
             tts_detail = {"probe": "meta"}
+        elif synthesizer.name == "edge_tts":
+            tts_status = "ok"
+            tts_detail = {"provider": "edge_tts"}
         elif settings.voice_tts_base_url:
             tts_status = "ok"
             tts_detail = {}
@@ -1673,11 +1688,19 @@ async def runtime_health(session: AsyncSession) -> dict:
     checks.append(
         {"name": "queue", "status": queue_status, "mode": settings.processing_mode}
     )
+    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active, muse_spark_key_loaded
+
+    intel = configured_intelligence_provider() or settings.chat_provider
+    chat_status = "ok"
+    chat_detail: dict = {"provider": intel}
+    if muse_intelligence_active() and not muse_spark_key_loaded():
+        chat_status = "degraded"
+        chat_detail["reason"] = "OPENCODE_API_KEY missing"
     checks.append(
         {
             "name": "chat_provider",
-            "status": "ok",
-            "provider": settings.chat_provider,
+            "status": chat_status,
+            **chat_detail,
         }
     )
     checks.extend(await _asr_tts_checks())
@@ -1784,6 +1807,12 @@ async def daemon_tick(session: AsyncSession) -> dict:
     print_poll = await poll_print_jobs(session)
     feed_poll = await poll_public_feeds(session)
     sense_pass = await fused_sense_pass(session)
+    from app.ev.luna_code import spawn_pending_code_intern
+
+    intern = spawn_pending_code_intern()
+    from app.ev.luna_code import flush_background_code_notify
+
+    flush_background_code_notify()
     recalibration = await maybe_recalibrate_filter(session)
     notifications = await deliver_pending_alerts(session)
     dlq_escalations = await deliver_dlq_escalations(session)
@@ -1817,6 +1846,7 @@ async def daemon_tick(session: AsyncSession) -> dict:
             "print_poll": print_poll,
             "feed_poll": feed_poll,
             "sense_pass": {k: sense_pass.get(k) for k in ("callout", "stored", "candidates")},
+            "code_intern": intern,
         },
     )
 
@@ -1836,6 +1866,7 @@ async def daemon_tick(session: AsyncSession) -> dict:
         "timers": timers,
         "empties": empties,
         "health": health,
+        "code_intern": intern,
     }
 
 

@@ -202,6 +202,14 @@ class OpenAICompatSynthesizer:
         self._client = client
 
     async def synthesize(self, text: str, *, style: SpeechStyle) -> SynthesisResult:
+        from app.gateway.muse import muse_hearing_active, muse_intelligence_active
+
+        if (settings.voice_tts_provider or "").strip().lower() == "edge_tts" or (
+            muse_intelligence_active() or muse_hearing_active()
+        ):
+            raise RuntimeError(
+                "OpenAI TTS is blocked while Edge TTS is the Talk mouth"
+            )
         if not remote_processing_allowed("voice_tts"):
             raise RuntimeError(
                 "Remote TTS is denied by regional policy; set EV_ALLOW_REMOTE_TTS=true"
@@ -792,6 +800,18 @@ def real_tts_available() -> bool:
 
 
 def get_synthesizer() -> Synthesizer:
+    provider = (settings.voice_tts_provider or "").strip().lower()
+    from app.gateway.muse import muse_hearing_active, muse_intelligence_active
+
+    # Leftover EV_VOICE_TTS_PROVIDER=openai_compat must not open a second
+    # cloud mouth while Muse hearing or Spark is the Talk brain.
+    if (muse_intelligence_active() or muse_hearing_active()) and provider in {
+        "openai_compat",
+        "openai",
+        "grok",
+        "xai",
+    }:
+        provider = "edge_tts"
     provider = settings.voice_tts_provider
     if provider == "auto":
         voice = piper_voice_path()

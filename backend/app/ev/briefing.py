@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +40,9 @@ WRITE_TOOLS = frozenset(
         "code",
     }
 )
+# Profile mutations are handled only by the deterministic owner-intent path.
+# Never expose them to a model or let the read-ahead briefing prefetch them.
+OWNER_PROFILE_TOOLS = frozenset({"update_personality"})
 CORE_TURN_TOOLS = (
     "search_memory",
     "search_web",
@@ -192,6 +194,11 @@ def extract_reminder_when(message: str) -> str | None:
 def infer_send_message_args(message: str) -> dict[str, Any] | None:
     """Extract ``to`` + ``text`` for an explicit send/text command."""
 
+    from app.ev.send_intent import parse_send_intent
+
+    parsed = parse_send_intent(message)
+    if parsed:
+        return parsed
     text = (message or "").strip()
     if not text:
         return None
@@ -201,7 +208,10 @@ def infer_send_message_args(message: str) -> dict[str, Any] | None:
             to = match.group("to").strip()
             body = (match.group("text") or "").strip()
             if to and body:
-                return {"to": to, "text": body}
+                payload = {"to": to, "text": body}
+                if "whatsapp" in text.lower():
+                    payload["channel"] = "whatsapp"
+                return payload
     person = extract_person_name(text)
     if not person:
         return None
@@ -213,7 +223,10 @@ def infer_send_message_args(message: str) -> dict[str, Any] | None:
         flags=re.IGNORECASE,
     ).strip()
     if remainder and remainder.lower() != text.lower():
-        return {"to": person, "text": remainder}
+        payload = {"to": person, "text": remainder}
+        if "whatsapp" in text.lower():
+            payload["channel"] = "whatsapp"
+        return payload
     return None
 
 
@@ -351,7 +364,11 @@ def tools_for_turn(message: str) -> list[dict]:
     wanted.update(selection.alternatives[:3])
     if detect_life_action(message) or selection.selected in LIFE_ACTION_NAMES:
         wanted.update(LIFE_TURN_TOOLS)
-    specs = [spec for spec in tools.list_tools() if spec["name"] in wanted]
+    specs = [
+        spec
+        for spec in tools.list_tools()
+        if spec["name"] in wanted and spec["name"] not in OWNER_PROFILE_TOOLS
+    ]
     order = {name: index for index, name in enumerate([*CORE_TURN_TOOLS, *LIFE_TURN_TOOLS])}
     specs.sort(key=lambda spec: order.get(spec["name"], 80))
     return specs
@@ -381,12 +398,9 @@ def _clip(payload: Any, limit: int = RESULT_CHARS) -> str:
 
 
 def _clock_line() -> str:
-    now = datetime.now().astimezone()
-    place = (settings.location_place or "").strip()
-    stamp = now.strftime("%A %d %B %Y, %H:%M %Z")
-    if place:
-        return f"Local time: {stamp}. Place: {place}."
-    return f"Local time: {stamp}."
+    from app.ev.resolve import clock_line
+
+    return clock_line()
 
 
 async def _situational(session: AsyncSession, message: str, *, allow_sensitive: bool) -> list[str]:
@@ -463,6 +477,8 @@ def _prefetch_names(message: str) -> list[str]:
     selection = select_tool(message)
     names: list[str] = []
     for name in (selection.selected, *selection.alternatives):
+        if name in OWNER_PROFILE_TOOLS:
+            continue
         if name in WRITE_TOOLS:
             continue
         if name == "search_memory":

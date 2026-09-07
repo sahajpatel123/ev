@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.core import _memory_out
-from app.auth import ActorContext, require_actor, require_actor_context
+from app.auth import ActorContext, require_actor, require_actor_context, require_owner_trust
 from app.db import get_session
 from app.ev import (
     companionship,
@@ -463,9 +463,16 @@ async def get_personality(
 async def update_personality(
     data: PersonalityUpdate,
     session: AsyncSession = Depends(get_session),
-    actor: str = Depends(require_actor),
+    ctx: ActorContext = Depends(require_owner_trust),
 ) -> PersonalityOut:
-    profile = await personality.update(session, data)
+    profile = await personality.update(
+        session,
+        data,
+        actor=ctx.actor,
+        origin="owner_api",
+        owner_intent=True,
+        owner_trusted=ctx.is_master or bool(ctx.device and ctx.device.trust_level == "owner"),
+    )
     await session.commit()
     return PersonalityOut.model_validate(profile)
 

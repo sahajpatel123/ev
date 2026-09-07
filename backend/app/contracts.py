@@ -76,18 +76,22 @@ class MediaPart:
 
 
 @dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict
+
+
+@dataclass
 class ChatMessage:
     role: str  # system | user | assistant | tool
     content: str
     name: str | None = None
     media: list[MediaPart] = field(default_factory=list)
-
-
-@dataclass
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict
+    # Meta Chat Completions requires assistant.tool_calls paired with
+    # tool.tool_call_id. Orphan tool rows are HTTP 400.
+    tool_calls: list[ToolCall] | None = None
+    tool_call_id: str | None = None
 
 
 @dataclass

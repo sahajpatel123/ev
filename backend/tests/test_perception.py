@@ -458,6 +458,84 @@ async def test_vision_analyze_raw_sends_data_url_when_permitted(
     assert media[0].sha256
 
 
+async def test_vision_analyze_raw_never_sends_pixels_to_deepseek(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DeepSeekLike:
+        name = "deepseek"
+        supports_media = True
+
+        def __init__(self) -> None:
+            self.seen_messages = []
+
+        async def chat(self, messages, *, model=None, temperature=0.7):
+            self.seen_messages.extend(messages)
+            return ChatResult(
+                text="SUMMARY: from derived text only.\nLABEL: paper 0.9",
+                usage={},
+                model="deepseek-v4-flash",
+            )
+
+        async def list_models(self) -> list[str]:
+            return ["deepseek-v4-flash"]
+
+    monkeypatch.setattr("app.ev.vision._spark_for_pixels", lambda: None)
+    attachment_id = await upload_attachment(client)
+    provider = DeepSeekLike()
+    row = await vision.analyze_attachment(
+        db_session,
+        UUID(attachment_id),
+        actor="master",
+        permission=True,
+        allow_raw=True,
+        provider=provider,
+    )
+    await db_session.commit()
+    assert row.payload["raw_sent"] is False
+    for message in provider.seen_messages:
+        for part in message.media or []:
+            assert not getattr(part, "data_url", None)
+
+
+async def test_vision_analyze_raw_uses_spark_instead_of_deepseek(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spark = FakeVisionProvider()
+    spark.name = "meta_muse_spark"
+    monkeypatch.setattr("app.ev.vision._spark_for_pixels", lambda: spark)
+    class DeepSeekLike:
+        name = "deepseek"
+        supports_media = True
+
+        def __init__(self) -> None:
+            self.seen_messages = []
+
+        async def chat(self, messages, *, model=None, temperature=0.7):
+            self.seen_messages.extend(messages)
+            raise AssertionError("DeepSeek must not receive keep JPEGs")
+
+        async def list_models(self) -> list[str]:
+            return ["deepseek-v4-flash"]
+
+    attachment_id = await upload_attachment(client)
+    row = await vision.analyze_attachment(
+        db_session,
+        UUID(attachment_id),
+        actor="master",
+        permission=True,
+        allow_raw=True,
+        provider=DeepSeekLike(),
+    )
+    await db_session.commit()
+    assert row.payload["raw_sent"] is True
+    media = spark.seen_messages[1].media
+    assert media[0].data_url and media[0].data_url.startswith("data:image/png;base64,")
+
+
 async def test_vision_analyze_blocks_raw_for_sensitive_source(
     client: AsyncClient,
     db_session: AsyncSession,

@@ -1057,7 +1057,25 @@ def not_connected_payload(decision: PolicyDecision, *, next_step: str | None = N
         )
         payload["count"] = 0
         payload["results"] = []
+    payload["spoken"] = _spoken_not_connected(decision)
     return payload
+
+
+def _spoken_not_connected(decision: PolicyDecision) -> str:
+    label = _provider_label(decision.provider or "")
+    if decision.provider == "messaging":
+        return (
+            f"I couldn't send that. {label} on this Mac isn't ready — "
+            "grant Messages automation for EVLifeHelper in System Settings."
+        )
+    if decision.provider == "mail":
+        return f"I couldn't send mail. {label} on this Mac isn't ready yet."
+    if decision.provider == "phone":
+        return f"I couldn't place that call. {label} on this Mac isn't ready yet."
+    spoken = str(decision.spoken or "").strip()
+    if spoken and spoken.lower() not in {"not connected", "not_connected"}:
+        return spoken
+    return f"I couldn't finish that. {label} isn't connected on this Mac."
 
 
 def confirmation_from_request(
@@ -1147,7 +1165,24 @@ async def provider_connected(session: AsyncSession, name: str, spec: dict | None
     # adapter remains responsible for credential/configuration health and must
     # return an honest provider error if the active row is unusable; tests and
     # local doubles deliberately exercise that adapter boundary.
-    return row is not None
+    if row is not None:
+        return True
+    # iMessage uses the messaging adapter. Mail/contacts often have none.
+    # This Mac still has Envelope Index + CNContactStore when life stream runs.
+    if name in {
+        "list_mail",
+        "resolve_contact",
+        "list_messages",
+        "send_message",
+        "place_call",
+        "send_mail",
+        "send_email",
+    }:
+        from app.ev.apps import discover_life_helper_path
+        from app.services.life_stream_daemon import life_stream_should_run
+
+        return bool(life_stream_should_run() or discover_life_helper_path())
+    return False
 
 
 async def capability_manifest(

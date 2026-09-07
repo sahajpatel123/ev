@@ -1072,7 +1072,10 @@ def test_live_intent_resolver_is_high_precision() -> None:
         "set_reminder",
         {"text": "call mom"},
     )
-    assert resolve_live_action("check my inbox") == ("list_mail", {})
+    assert resolve_live_action("check my inbox") == (
+        "list_mail",
+        {"query": "check my inbox"},
+    )
 
 
 async def test_pipeline_transcript_dispatches_pol_tool() -> None:

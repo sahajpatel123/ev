@@ -98,3 +98,33 @@ return .adoptProviderId // was .drop
 - `make test` – full suite green
 - Manual soak: `make compose-up && curl /v1/health` + Mac EV.app talk test with memory recall + computer tool -> `~/Library/Logs/EV/tts-metrics.jsonl` shows `underruns ≤1` and `gap` handling, no `overflow` or `gaps` >0
 - `~/Library/Logs/EV/startup-trace.jsonl` shows no dead-link reconnections during tool turns
+
+## 7. Addendum 2026-09-06 — RC6: shadow recall blocks first audio (fixed)
+
+Symptom: intermittent lag + glitch on *ordinary* spoken turns (not only tool
+turns). `tts-metrics.jsonl` showed 9–74 underruns per response vs the ≤1 gate,
+even on short answers — every response started thin.
+
+Root cause: with `EV_VOICE_LIVE_MODE=shadow`, `create_response=false`, so the
+provider stays silent until the bridge sends `response.create`. The bridge
+awaited Postgres `build_shadow_memory` (unbounded, on the single upstream
+event-loop task) *after* the final transcript and *before* `response.create`.
+Every millisecond of recall latency was dead air followed by a zero-lead
+thin start. Fast cache hits and broker-deferred turns sounded clean, which is
+why it struck intermittently.
+
+Fix (shadow path only; supervised frozen path byte-identical):
+`backend/app/voice/live/grok_voice.py` recalls concurrently on partial
+transcripts (`_shadow_prefetch`, never awaited) and bounds the final wait to
+`EV_VOICE_SHADOW_WAIT_MS` (default 350 ms, `backend/app/config.py`). On
+timeout it sends a bare `response.create` — `recall_history` stays advertised
+as fallback. Stale/diverged prefetches are cancelled, never reused
+(prefix-match on the first 32 chars); barge-in cancel drops in-flight recall.
+The `shadow.response_create` trace now carries `source=prefetch-ready |
+prefetch-hit-ms=N | recall-ms=N | prefetch-timeout | recall-timeout`.
+
+Tests: `backend/tests/test_shadow_prefetch.py` (6: hit, pending-hit, timeout
+fallback, diverged, supervised-inert, cancel). Verify audibly after the next
+:18000/:8000 restart (the running servers predate this patch): talk a few
+memory-grounded turns and confirm `tts-metrics.jsonl` underruns ≤1 and the
+trace shows `prefetch-ready`/`prefetch-hit-ms`.

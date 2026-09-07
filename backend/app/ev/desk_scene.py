@@ -51,10 +51,38 @@ GROCERY_HINT = re.compile(
 )
 BIND_RE = re.compile(
     r"(?:"
-    r"(?:that(?:'s| is)|this is)\s+(?:my\s+|the\s+|called\s+)?"
+    r"(?:that(?:'s| is)|this is)\s+(?:my|the|called)\s+"
     r"|(?:call this|name this|remember this as|remember that as)\s+(?:my\s+|the\s+)?"
-    r")(.+?)$",
+    r")(.+)$",
     re.I,
+)
+BIND_CHAT = frozenset(
+    {
+        "fine",
+        "ok",
+        "okay",
+        "good",
+        "great",
+        "cool",
+        "true",
+        "right",
+        "point",
+        "question",
+        "life",
+        "day",
+        "fault",
+        "problem",
+        "idea",
+        "thing",
+        "one",
+        "way",
+        "call",
+        "turn",
+        "favorite",
+        "opinion",
+        "bad",
+        "better",
+    }
 )
 ADD_TO_NAMED_RE = re.compile(
     r"\b(?:add|append)\s+(?:the (?:text|line|words?)\s+)?(.+?)\s+to\s+(?:the\s+|my\s+)?(.+?)$",
@@ -69,11 +97,14 @@ BELONGS_RE = re.compile(
     re.I,
 )
 ALSO_RE = re.compile(
-    r"^(?:and\s+)?also(?:\s+add)?\s+(.+)$",
+    r"^(?:and\s+)?also(?:\s+add)?\s+"
+    r"(?!i\b|i'm\b|im\b|we\b|you\b|he\b|she\b|they\b|it\b)"
+    r"([A-Za-z0-9][\w'+\-]{0,40}(?:\s+[A-Za-z0-9][\w'+\-]{0,20}){0,3})"
+    r"\s*[.!?]*$",
     re.I,
 )
 OTHER_RE = re.compile(
-    r"\b(?:no[,.]?\s+)?(?:the\s+)?other(?:\s+(?:pdf|file|one|document))?\b",
+    r"\b(?:no[,.]?\s+)?(?:the\s+)?other(?:\s+(?:pdf|file|one|document))\b",
     re.I,
 )
 ADD_SLOT_RE = re.compile(
@@ -85,7 +116,7 @@ OPEN_SLOT_RE = re.compile(
     re.I,
 )
 YES_RE = re.compile(
-    r"^\s*(?:yes|yeah|yep|ok|okay|do it|add it|file it|yes please)\b",
+    r"^\s*(?:yes|yeah|yep|do it|add it|file it|yes please)\b",
     re.I,
 )
 LAND_NAME = re.compile(
@@ -93,8 +124,8 @@ LAND_NAME = re.compile(
     re.I,
 )
 FRAGMENT_RE = re.compile(
-    r"\b(?:add (?:it|that|this)|the other|put (?:it|that|this) in|"
-    r"belongs to|also\b|visa packet|file it|the new one)\b",
+    r"\b(?:add (?:it|that|this)|the other (?:pdf|file|one|document)|"
+    r"belongs to|visa packet|file it|the new one)\b",
     re.I,
 )
 
@@ -142,6 +173,8 @@ def _empty_scene() -> dict[str, Any]:
         "slots": {"focus": None, "that": None, "other": None, "landed": None, "also": None},
         "ledger": [],
         "pending_offer": None,
+        "pending_choice": None,
+        "last_spoken": "",
         "session_id": None,
     }
 
@@ -157,6 +190,9 @@ def _load() -> dict[str, Any]:
         scene.setdefault("objects", [])
         scene.setdefault("slots", _empty_scene()["slots"])
         scene.setdefault("ledger", [])
+        scene.setdefault("pending_offer", None)
+        scene.setdefault("pending_choice", None)
+        scene.setdefault("last_spoken", "")
         _STORE = scene
         return _STORE
     legacy = read_json(names_store_path()) or {}
@@ -229,6 +265,8 @@ def held_items_from_content(content: str) -> list[str]:
     items: list[str] = []
     for line in (content or "").splitlines():
         raw = re.sub(r"^[\-\*\d\.\)\s]+", "", line).strip()
+        raw = re.sub(r"^\[x\]\s*", "", raw, flags=re.I).strip()
+        raw = re.sub(r"^[✓✔]\s*", "", raw).strip()
         if not raw:
             continue
         items.append(raw[:80])
@@ -242,7 +280,7 @@ def scene_is_live() -> bool:
     slots = scene.get("slots") or {}
     if any(slots.get(key) for key in ("focus", "that", "landed", "also")):
         return True
-    return bool(scene.get("pending_offer"))
+    return bool(scene.get("pending_offer") or scene.get("pending_choice"))
 
 
 def set_session_id(session_id: str | None) -> None:
@@ -358,6 +396,11 @@ def _promote_focus(oid: str | None) -> None:
     _save(scene)
 
 
+MUTATING_ACTIONS = frozenset(
+    {"write", "append", "edit", "checkoff", "drop", "undo", "delete", "clear"}
+)
+
+
 def _ledger(action: str, obj: dict[str, Any] | None, *, detail: str = "", before: str = "") -> None:
     scene = _load()
     scene.setdefault("ledger", []).append(
@@ -370,6 +413,98 @@ def _ledger(action: str, obj: dict[str, Any] | None, *, detail: str = "", before
             "before": before[:4000],
         }
     )
+    _save(scene)
+
+
+def last_mutating_entry() -> dict[str, Any] | None:
+    for entry in reversed(list(_load().get("ledger") or [])):
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("action") or "") not in MUTATING_ACTIONS:
+            continue
+        if not str(entry.get("path") or "").strip():
+            continue
+        return dict(entry)
+    return None
+
+
+def record_mutation(
+    path_raw: str | Path | None,
+    *,
+    action: str,
+    before: str = "",
+    detail: str = "",
+) -> None:
+    if not path_raw:
+        return
+    obj = None
+    try:
+        wanted = str(Path(str(path_raw)).expanduser().resolve())
+    except OSError:
+        wanted = str(path_raw)
+    for item in _objects():
+        if str(item.get("path") or "") in {wanted, str(path_raw)}:
+            obj = item
+            break
+    if obj is None:
+        obj = {"id": None, "path": str(path_raw)}
+    _ledger(action, obj, detail=detail, before=before)
+
+
+def text_note_objects() -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    notes: list[dict[str, Any]] = []
+    for obj in _objects():
+        if obj.get("kind") != "note":
+            continue
+        path = _live_path(obj)
+        if path is None:
+            continue
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        notes.append(obj)
+    notes.sort(key=lambda item: float(item.get("touched_at") or 0), reverse=True)
+    return notes
+
+
+def object_label(obj: dict[str, Any] | None) -> str:
+    if not obj:
+        return "note"
+    for alias in obj.get("aliases") or []:
+        token = normalize_alias(str(alias))
+        if token and token not in GENERIC_ALIASES:
+            return token
+    name = str(obj.get("name") or Path(str(obj.get("path") or "")).stem or "")
+    label = name.replace("-", " ").replace("_", " ").strip()
+    return label or "note"
+
+
+def pending_choice() -> dict[str, Any] | None:
+    found = _load().get("pending_choice")
+    if isinstance(found, dict) and found.get("candidates"):
+        return dict(found)
+    return None
+
+
+def set_pending_choice(payload: dict[str, Any] | None) -> None:
+    scene = _load()
+    scene["pending_choice"] = payload
+    _save(scene)
+
+
+def clear_pending_choice() -> None:
+    set_pending_choice(None)
+
+
+def last_spoken() -> str:
+    return str(_load().get("last_spoken") or "").strip()
+
+
+def set_last_spoken(text: str) -> None:
+    scene = _load()
+    scene["last_spoken"] = str(text or "").strip()[:400]
     _save(scene)
 
 
@@ -399,6 +534,7 @@ def remember_file(
     query: str = "",
     aliases: list[str] | None = None,
     source: str = "touch",
+    before: str = "",
 ) -> dict[str, Any] | None:
     if not path_raw:
         return None
@@ -468,7 +604,12 @@ def remember_file(
             _promote_focus(oid)
     else:
         _promote_focus(oid)
-    _ledger(source, record, detail=",".join(record.get("aliases") or [])[:80])
+    _ledger(
+        source,
+        record,
+        detail=",".join(record.get("aliases") or [])[:80],
+        before=before,
+    )
     logger.info("desk_scene path=%s aliases=%s source=%s", path.name, ",".join(record["aliases"]), source)
     return record
 
@@ -565,7 +706,9 @@ def parse_bind_goal(text: str, last_path: str | None) -> dict[str, Any] | None:
     if not match:
         return None
     alias = normalize_alias(match.group(1))
-    if not alias or alias in GENERIC_ALIASES or len(alias) < 2:
+    if not alias or alias in GENERIC_ALIASES or alias in BIND_CHAT or len(alias) < 2:
+        return None
+    if alias.split()[0] in BIND_CHAT and len(alias.split()) == 1:
         return None
     if len(alias.split()) > 6:
         return None
@@ -692,6 +835,14 @@ def bind_visible_text(*chunks: str) -> dict[str, Any] | None:
     return slot_object("that")
 
 
+def _packet_put_intent(text: str) -> bool:
+    raw = text or ""
+    if not PACKET_PUT_RE.search(raw):
+        return False
+    lowered = raw.lower()
+    return "packet" in lowered or "visa" in lowered or bool(LAND_NAME.search(raw))
+
+
 def looks_like_scene_turn(text: str) -> bool:
     raw = (text or "").strip()
     if not raw:
@@ -707,7 +858,11 @@ def looks_like_scene_turn(text: str) -> bool:
         return True
     if resolve_spoken_object(raw) and FRAGMENT_RE.search(raw):
         return True
-    if BELONGS_RE.search(raw) or PACKET_PUT_RE.search(raw):
+    if BELONGS_RE.search(raw) and (
+        "packet" in raw.lower() or "visa" in raw.lower() or LAND_NAME.search(raw)
+    ):
+        return True
+    if _packet_put_intent(raw):
         return True
     return False
 
@@ -793,7 +948,10 @@ def _parse_one_scene(raw: str, last_path: str | None) -> dict[str, Any] | None:
             }
         return None
     packet_name = _packet_name_from(raw)
-    if packet_name and (BELONGS_RE.search(raw) or PACKET_PUT_RE.search(raw)):
+    belongs = BELONGS_RE.search(raw) and (
+        "packet" in lowered or "visa" in lowered or LAND_NAME.search(raw)
+    )
+    if packet_name and (belongs or _packet_put_intent(raw)):
         source = last_path or scene_file_path("that", "landed", "focus", "other")
         if source is None:
             return None

@@ -370,6 +370,123 @@ async def recall_history(
             "spoken": "I need a question to search your history.",
         }
     k = max(1, min(int(k or 8), 20))
+    from app.memory.life_archive.locate import is_chat_summary_query
+    from app.memory.life_archive.sessions import summarize_chat_for_query
+    from app.memory.life_archive.desk import answer_desk_query, is_chat_desk_query
+
+    if is_chat_desk_query(query):
+        desk = await answer_desk_query(session, query)
+        if desk and str(desk.get("spoken") or "").strip():
+            spoken = str(desk["spoken"]).strip()
+            rows = desk.get("evidence") or []
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            return {
+                "ok": True,
+                "count": len(rows),
+                "total": len(rows),
+                "query": query,
+                "time_range": str(time_range or "all_time"),
+                "as_of": None,
+                "memory_type": "life.chat.desk",
+                "chunk_mode": str(chunk_mode or "brief").strip().lower(),
+                "offset": 0,
+                "results": [
+                    {
+                        "chunk_id": 1,
+                        "memory_id": item.get("id"),
+                        "text": spoken[:_BRIEF_LIMIT_CHARS],
+                        "memory_type": "life.chat.desk",
+                        "date": item.get("when"),
+                        "score": 1.0,
+                        "components": {},
+                        "importance": 0.5,
+                        "confidence": "correspondence_desk",
+                        "source_type": "life",
+                        "source_event_ids": [str(item.get("id") or "")],
+                    }
+                    for item in rows[:1]
+                ],
+                "has_more": False,
+                "next_cursor": None,
+                "elapsed_ms": elapsed_ms,
+                "spoken": spoken[:520],
+            }
+    from app.memory.life_archive.talk import answer_talk_query, is_talk_pattern_query
+
+    if is_talk_pattern_query(query):
+        talk = await answer_talk_query(session, query)
+        if talk and str(talk.get("spoken") or "").strip():
+            spoken = str(talk["spoken"]).strip()
+            rows = talk.get("evidence") or []
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            return {
+                "ok": True,
+                "count": len(rows),
+                "total": len(rows),
+                "query": query,
+                "time_range": str(time_range or "all_time"),
+                "as_of": None,
+                "memory_type": "life.chat.talk",
+                "chunk_mode": str(chunk_mode or "brief").strip().lower(),
+                "offset": 0,
+                "results": [
+                    {
+                        "chunk_id": 1,
+                        "memory_id": item.get("id"),
+                        "text": spoken[:_BRIEF_LIMIT_CHARS],
+                        "memory_type": "life.chat.talk",
+                        "date": item.get("when"),
+                        "score": 1.0,
+                        "components": {},
+                        "importance": 0.5,
+                        "confidence": "talk_pattern",
+                        "source_type": "life",
+                        "source_event_ids": [str(item.get("id") or "")],
+                    }
+                    for item in rows[:1]
+                ],
+                "has_more": False,
+                "next_cursor": None,
+                "elapsed_ms": elapsed_ms,
+                "spoken": spoken[:520],
+            }
+    if is_chat_summary_query(query):
+        summary = await summarize_chat_for_query(session, query)
+        if summary and str(summary.get("spoken") or "").strip():
+            spoken = str(summary["spoken"]).strip()
+            rows = summary.get("evidence") or []
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+            return {
+                "ok": True,
+                "count": len(rows),
+                "total": len(rows),
+                "query": query,
+                "time_range": str(time_range or "all_time"),
+                "as_of": None,
+                "memory_type": "life.chat.session",
+                "chunk_mode": str(chunk_mode or "brief").strip().lower(),
+                "offset": 0,
+                "results": [
+                    {
+                        "chunk_id": 1,
+                        "memory_id": item.get("id"),
+                        "text": spoken[:_BRIEF_LIMIT_CHARS],
+                        "memory_type": "life.chat.session",
+                        "date": item.get("when"),
+                        "score": 1.0,
+                        "components": {},
+                        "importance": 0.5,
+                        "confidence": "session_summary",
+                        "source_type": "life",
+                        "source_event_ids": [str(item.get("id") or "")],
+                    }
+                    for item in rows[:1]
+                ],
+                "has_more": False,
+                "next_cursor": None,
+                "elapsed_ms": elapsed_ms,
+                "spoken": spoken[:520],
+            }
     mode = str(chunk_mode or "brief").strip().lower()
     if mode not in {"brief", "full"}:
         mode = "brief"
@@ -421,6 +538,31 @@ async def recall_history(
         for item in results[:3]
         if str(item.get("text") or "").strip()
     ]
+    from app.memory.recall import _spoken_empty_connected, _spoken_from_evidence
+
+    evidence = []
+    for hit in page:
+        payload = getattr(hit, "payload", None) or {}
+        kind = payload.get("kind") if isinstance(payload, dict) else None
+        when = hit.event_time.isoformat() if getattr(hit, "event_time", None) else None
+        evidence.append(
+            {
+                "text": hit.text,
+                "kind": kind,
+                "memory_type": hit.memory_type,
+                "when": when,
+            }
+        )
+    if evidence:
+        spoken = _spoken_from_evidence(evidence, query)
+    else:
+        spoken = _spoken_empty_connected(query)
+    if not spoken:
+        spoken = (
+            " ".join(spoken_bits)[:400]
+            if spoken_bits
+            else _spoken_empty_connected(query)
+        )
     return {
         "ok": True,
         "count": len(page),
@@ -435,7 +577,7 @@ async def recall_history(
         "has_more": has_more,
         "next_cursor": encode_cursor(offset + k, fp) if has_more else None,
         "elapsed_ms": elapsed_ms,
-        "spoken": " ".join(spoken_bits)[:400] if spoken_bits else "I cannot find that particular record.",
+        "spoken": spoken[:400],
     }
 
 

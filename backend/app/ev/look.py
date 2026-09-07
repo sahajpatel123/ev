@@ -11,6 +11,7 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -26,8 +27,10 @@ from app.ev.camera_runtime import (
     OBSERVE_DEFAULT_INTERVAL,
     OBSERVE_MAX_FRAMES,
     CameraObservation,
+    LookFrame,
     clamp_observe_duration,
     clamp_record_duration,
+    clear_observations,
     lighting_from_luminance,
     log_camera,
     looks_like_dark_excuse,
@@ -48,7 +51,26 @@ from app.vision.providers import VisionBinaryError, VisionEngineError, VisionPro
 logger = logging.getLogger("ev.look")
 
 LOOK_TIMEOUT_SECONDS = 12.0
-KEEP_ANALYZE_TIMEOUT_SECONDS = 14.0
+KEEP_ANALYZE_TIMEOUT_SECONDS = 22.0
+# Must outlast Spark JPEG HTTP read. A shorter wait_for cancelled the body
+# mid-download and left only classifier labels for reopen recall.
+KEEP_ANALYZE_REREAD_SECONDS = 140.0
+
+
+def keep_reread_timeout_seconds() -> float:
+    """Reread budget: never cancel Spark while the JPEG response is still arriving."""
+
+    from app.config import settings
+
+    http_budget = (
+        float(settings.model_connect_timeout_seconds)
+        + max(float(settings.model_read_timeout_seconds), 120.0)
+        + max(float(settings.model_write_timeout_seconds), 60.0)
+        + 15.0
+    )
+    return max(KEEP_ANALYZE_REREAD_SECONDS, http_budget)
+
+
 OCR_SNIPPET = 280
 MAX_LABELS = 8
 
@@ -62,7 +84,7 @@ MALFORMED_SPOKEN = "The camera frame could not be transferred. I did not see any
 TIMEOUT_SPOKEN = "The camera did not return a frame in time. I did not see anything."
 LIVE_CAPTURED_SPOKEN = (
     "A current camera image is attached. Describe what you actually see in "
-    "two or three natural sentences: people, clothing and its colors, pose, "
+    "one or two short sentences: people, clothing and its colors, pose, "
     "held objects, and the setting. Name garment and object colors from the "
     "image itself. Do not hedge when a person, garment, or object is visible. "
     "Labels may miss objects; the image is the source of truth. If they asked "
@@ -100,17 +122,28 @@ DEFAULT_LOOK_PROMPT = (
     "text only if it is actually readable. Do not name people unless enrolled."
 )
 KEEP_LOOK_PROMPT = (
-    "Name the main thing they are showing in two short sentences: what it is, "
-    "its colors, any printed text, and one distinctive detail. Do not say you "
-    "can see it now, do not repeat their request, and do not name people "
+    "Start with a, an, or the plus the specific thing they are showing: a concrete "
+    "noun (not container, object, item, shape, device, or a vague class like phone "
+    "or bottle), its colors, any printed text, and one distinctive detail. Do not "
+    "say you can see it now, do not repeat their request, and do not name people "
     "unless enrolled."
 )
-KEEP_CAPTURED_SPOKEN = (
-    "A current camera image is attached. Name the main thing they are showing "
-    "in two short sentences: what it is, colors, any printed text, and one "
-    "distinctive detail. Do not say you can see it now. Do not repeat their "
-    "request. Do not name people unless enrolled."
+KEEP_REREAD_PROMPT = (
+    KEEP_LOOK_PROMPT
+    + " Write only those two sentences. Do not output LABEL lines. "
+    "Do not call it a container, object, item, shape, or device."
 )
+KEEP_CAPTURED_SPOKEN = (
+    "A current camera image is attached. Name the specific thing they are showing "
+    "in two short sentences: a concrete noun (not container, object, item, or "
+    "shape), colors, any printed text, and one distinctive detail. Do not say you "
+    "can see it now. Do not repeat their request. Do not name people unless enrolled."
+)
+# Inject pops ``owner-keep``. Mini's later look uses this copy of the same JPEG.
+KEEP_HOLD_CALL_ID = "owner-keep-hold"
+# Same-turn Mini+broker only. A later "memorize this" must capture a new frame.
+KEEP_HOLD_REUSE_SECONDS = 15.0
+_KEEP_FRAME_GATE = asyncio.Lock()
 
 
 def _card(spoken: str, meta: dict[str, Any]) -> dict:
@@ -210,16 +243,25 @@ async def _wait_for_live_frame(
     request_id: str | None = None,
     detail: str | None = None,
     action: str = "capture",
+    wait_for_client: bool = False,
 ):
     from app.ev.camera_runtime import LookFrame
     from app.voice.live.layer import live_for_device, live_for_session
 
+    deadline = now_mono() + max(0.4, float(timeout))
     live = live_for_session(live_session_id) or live_for_device(device_id)
+    if live is None and wait_for_client:
+        # EV.app often reconnects just after Talk restart; keep-from-sight
+        # must wait for that socket instead of immediately storing no JPEG.
+        while live is None and now_mono() < deadline - 2.0:
+            await asyncio.sleep(0.12)
+            live = live_for_session(live_session_id) or live_for_device(device_id)
     if live is None:
         return None, None
+    remaining = max(0.4, deadline - now_mono())
     try:
         frame = await live.request_look_frame(
-            timeout=timeout,
+            timeout=remaining,
             request_id=request_id,
             detail=detail,
             action=action,
@@ -373,7 +415,7 @@ def _spoken_from_frame(
             save = " After the description, mention the recorded clip is saved."
         spoken = (
             "Frames from the video you just recorded are attached. Describe "
-            "the clip in two or three natural sentences: who is in it, "
+            "the clip in one or two short sentences: who is in it, "
             "clothing, objects, colors, and what they are doing. Do not only "
             "say that you saved a file."
             + grounding
@@ -489,6 +531,319 @@ def _stash_frame(
     )
 
 
+def _stash_keep_hold(
+    *,
+    request_id: str,
+    jpeg: bytes,
+    width: int | None,
+    height: int | None,
+    camera_name: str | None,
+    detail: str,
+    t0: float,
+) -> None:
+    """Keep a second copy so Realtime inject can pop ``owner-keep``."""
+
+    clear_observations(KEEP_HOLD_CALL_ID)
+    _stash_frame(
+        call_id=KEEP_HOLD_CALL_ID,
+        request_id=request_id,
+        jpeg=jpeg,
+        width=width,
+        height=height,
+        camera_name=camera_name,
+        detail=detail,
+        t0=t0,
+    )
+
+
+def keep_hold_is_fresh(item: Any | None = None) -> bool:
+    """True when this-turn hold JPEG is still the current memorize frame."""
+
+    from app.ev.camera_runtime import now_mono, peek_observations
+
+    if item is None:
+        pending = peek_observations(KEEP_HOLD_CALL_ID)
+        item = pending[0] if pending else None
+    if item is None or not getattr(item, "jpeg", None):
+        return False
+    t0 = float(getattr(item, "t0", 0) or 0)
+    if t0 <= 0:
+        return True
+    return (now_mono() - t0) <= KEEP_HOLD_REUSE_SECONDS
+
+
+def _reuse_pending_keep_frame(call_id: str | None) -> LookFrame | None:
+    """Hand a later look the memorize JPEG already captured this turn.
+
+    Broker looks use call_id ``owner-keep``. That must reuse the hold copy
+    Mini already captured, not snap a second live frame.
+    """
+
+    if not call_id:
+        return None
+    from app.ev.camera_runtime import peek_observations
+
+    pending = peek_observations(KEEP_HOLD_CALL_ID)
+    if not pending and call_id not in {"owner-keep", KEEP_HOLD_CALL_ID}:
+        pending = peek_observations("owner-keep")
+    if not pending or not pending[0].jpeg:
+        return None
+    if not keep_hold_is_fresh(pending[0]):
+        return None
+    item = pending[0]
+    from app.memory.visual import _attachment_uuid
+
+    aid = _attachment_uuid(item.request_id)
+    return LookFrame(
+        request_id=item.request_id or call_id,
+        jpeg=item.jpeg,
+        attachment_id=aid or None,
+        width=item.width,
+        height=item.height,
+        camera_name=item.camera_name,
+        last=True,
+    )
+
+
+async def _recent_keep_frame(session: AsyncSession) -> LookFrame | None:
+    """Reload the JPEG Mini should name when the in-memory hold was already popped."""
+
+    from app.memory.visual import recent_keep_attachment_id
+
+    needle = await recent_keep_attachment_id(
+        session, max_age_s=KEEP_HOLD_REUSE_SECONDS
+    )
+    if not needle:
+        return None
+    jpeg = await jpeg_bytes_for_keep_attachment(session, needle)
+    if not jpeg:
+        return None
+    dims = validate_jpeg(jpeg)
+    return LookFrame(
+        request_id=needle,
+        jpeg=jpeg,
+        attachment_id=needle,
+        width=dims[1] if dims else None,
+        height=dims[2] if dims else None,
+        last=True,
+    )
+
+
+async def _keep_attachment_id_for_reused_frame(
+    session: AsyncSession, frame: LookFrame
+) -> str | None:
+    """Bind a reused JPEG only to this frame, never last week's keep."""
+
+    from app.memory.visual import _attachment_uuid
+
+    existing = _attachment_uuid(frame.attachment_id or frame.request_id)
+    if existing:
+        return existing
+    if not frame.jpeg:
+        return None
+    recent = await _recent_keep_frame(session)
+    if recent is None or not recent.jpeg or recent.jpeg != frame.jpeg:
+        return None
+    return _attachment_uuid(recent.attachment_id or recent.request_id) or None
+
+
+async def _keep_live_look_result(
+    session: AsyncSession,
+    *,
+    actor: str,
+    device_id: str | None,
+    call_id: str | None,
+    capture_id: str,
+    keep_request: str,
+    live_session_id: str | None,
+    detail_value: str,
+    focus_value: str,
+    t0: float,
+) -> dict[str, Any] | None:
+    """Capture or reuse one memorize JPEG. Concurrent Mini looks wait and reuse."""
+
+    async with _KEEP_FRAME_GATE:
+        reused = _reuse_pending_keep_frame(call_id)
+        if (
+            reused is None
+            and call_id
+            and call_id not in {"owner-keep", KEEP_HOLD_CALL_ID}
+        ):
+            reused = await _recent_keep_frame(session)
+        if reused is not None:
+            live, frame = True, reused
+        else:
+            live, frame = await _wait_for_live_frame(
+                live_session_id=live_session_id,
+                device_id=device_id,
+                request_id=capture_id,
+                detail=detail_value,
+                wait_for_client=True,
+            )
+        if frame is not None and frame.error:
+            spoken = _spoken_for_capture_error(frame.error, frame.permission)
+            return {
+                "ok": False,
+                "spoken": spoken,
+                "error": frame.error,
+                "degraded": True,
+                "source": "live_camera",
+                "request_id": frame.request_id or capture_id,
+                "model_image_delivered": False,
+                "hud": _card(spoken, {"ok": False, "error": frame.error}),
+            }
+        if frame is None or not frame.jpeg or live is None:
+            error = (
+                "client_disconnected"
+                if live is None
+                else ("empty_frame" if frame is not None else "timeout")
+            )
+            spoken = _spoken_for_capture_error(error)
+            log_camera(
+                "keep.look_no_jpeg",
+                request_id=capture_id,
+                extra={
+                    "live": live is not None,
+                    "frame": frame is not None,
+                    "error": error,
+                },
+            )
+            return {
+                "ok": False,
+                "spoken": spoken,
+                "error": error,
+                "degraded": True,
+                "source": "live_camera",
+                "request_id": (getattr(frame, "request_id", None) or capture_id),
+                "model_image_delivered": False,
+                "hud": _card(spoken, {"ok": False, "error": error}),
+            }
+        labels = _frame_labels(frame)
+        colors = _frame_colors(frame)
+        ocr = getattr(frame, "ocr_text", None)
+        lighting = getattr(frame, "lighting", None) or lighting_from_luminance(
+            getattr(frame, "luminance", None)
+        )
+        spoken = _spoken_from_frame(
+            purpose="look",
+            frame=frame,
+            labels=labels,
+            colors=colors,
+            ocr_text=ocr,
+            lighting=lighting,
+            width=frame.width,
+            height=frame.height,
+            keep_request=keep_request,
+        )
+        _stash_frame(
+            call_id=call_id,
+            request_id=frame.request_id or capture_id,
+            jpeg=frame.jpeg,
+            width=frame.width,
+            height=frame.height,
+            camera_name=frame.camera_name,
+            detail=detail_value,
+            t0=t0,
+        )
+        _stash_keep_hold(
+            request_id=frame.request_id or capture_id,
+            jpeg=frame.jpeg,
+            width=frame.width,
+            height=frame.height,
+            camera_name=frame.camera_name,
+            detail=detail_value,
+            t0=t0,
+        )
+        live_image = _live_image_result(
+            request_id=frame.request_id or capture_id,
+            source="live_camera",
+            width=frame.width,
+            height=frame.height,
+            encoded_bytes=len(frame.jpeg),
+            camera_name=frame.camera_name,
+            focus=focus_value,
+            ocr_text=ocr,
+            labels=labels,
+            spoken=spoken,
+            lighting=lighting,
+            luminance=getattr(frame, "luminance", None),
+            face_count=getattr(frame, "face_count", None),
+            person_count=getattr(frame, "person_count", None),
+            colors=colors,
+            media_kind=getattr(frame, "media_kind", None) or "frame",
+            keep_request=keep_request,
+        )
+        existing_id = None
+        if reused is not None:
+            existing_id = await _keep_attachment_id_for_reused_frame(session, reused)
+        if existing_id:
+            live_image["attachment_id"] = existing_id
+            log_camera(
+                "keep.look_reused_jpeg",
+                request_id=existing_id,
+                extra={"bytes": len(frame.jpeg)},
+            )
+            needle = existing_id
+            _stash_keep_hold(
+                request_id=needle,
+                jpeg=frame.jpeg,
+                width=frame.width,
+                height=frame.height,
+                camera_name=frame.camera_name,
+                detail=detail_value,
+                t0=t0,
+            )
+            live_image["kept"] = True
+            live_image["remembered"] = True
+            live_image["follow_up"] = KEEP_STORED_HINT
+            live_image["memory_note"] = KEEP_STORED_HINT
+            return live_image
+        else:
+            try:
+                attachment = await store_frame_attachment(
+                    session,
+                    frame.jpeg,
+                    actor=actor,
+                    device_id=device_id,
+                    filename="look-keep.jpg",
+                )
+            except Exception:  # noqa: BLE001 - still persist Mac OCR
+                logger.warning("keep frame store skipped", exc_info=True)
+                attachment = None
+            if attachment is None:
+                return await _finish_vision_result(
+                    session,
+                    live_image,
+                    actor=actor,
+                    device_id=device_id,
+                    keep_request=keep_request,
+                )
+            live_image["attachment_id"] = str(attachment.id)
+            log_camera(
+                "keep.look_stored_jpeg",
+                request_id=str(attachment.id),
+                extra={"bytes": len(frame.jpeg)},
+            )
+        needle = str(live_image.get("attachment_id") or "")
+        if needle:
+            _stash_keep_hold(
+                request_id=needle,
+                jpeg=frame.jpeg,
+                width=frame.width,
+                height=frame.height,
+                camera_name=frame.camera_name,
+                detail=detail_value,
+                t0=t0,
+            )
+        return await _finish_vision_result(
+            session,
+            live_image,
+            actor=actor,
+            device_id=device_id,
+            keep_request=keep_request,
+        )
+
+
 async def _jpeg_from_attachment(session: AsyncSession, attachment: Attachment) -> bytes | None:
     try:
         data = await get_object_store().get(attachment.storage_key)
@@ -500,6 +855,18 @@ async def _jpeg_from_attachment(session: AsyncSession, attachment: Attachment) -
         validated = validate_jpeg(data)
         return validated[0] if validated else data
     return data
+
+
+async def jpeg_bytes_for_keep_attachment(
+    session: AsyncSession, attachment_id: str
+) -> bytes | None:
+    """Load the stored memorize JPEG so Mini can name it after stash is gone."""
+
+    try:
+        attachment = await _resolve_attachment(session, UUID(str(attachment_id)))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return await _jpeg_from_attachment(session, attachment)
 
 
 async def _resolve_attachment(
@@ -702,18 +1069,38 @@ def _compose_spoken(
         and "blocked" not in lowered
         and "without a provider" not in lowered
         and "describe the people, objects" not in lowered
+        and "intelligence provider is unavailable" not in lowered
+        and "metadata only" not in lowered
+        and "raw transmission was not permitted" not in lowered
+        and "no raw media" not in lowered
         and not is_empty_visual_scene(cleaned)
         and not is_memory_hedge_scene(cleaned)
     )
     if usable_summary:
-        parts.append(cleaned.split("\n")[0][:400].rstrip("."))
+        from app.memory.visual import is_clarity_hedge, is_generic_label_scene
+
+        if keep:
+            sentences = [
+                part.strip()
+                for part in re.split(r"(?<=[.!?])\s+", cleaned)
+                if part.strip()
+            ]
+            body = " ".join(sentences[:3])[:700].rstrip(".")
+            if is_clarity_hedge(body) or is_generic_label_scene(body):
+                body = ""
+        else:
+            body = cleaned.split("\n")[0][:400].rstrip(".")
+        if body:
+            parts.append(body)
     elif keep and thing_names:
         parts.append("I can see " + ", ".join(thing_names))
     elif keep and labels:
+        from app.memory.visual import _JUNK_OBJECT
+
         useful = [
             name
             for name in labels[:5]
-            if name.lower() not in {"person", "people", "human", "adult", "structure"}
+            if name.lower() not in _JUNK_OBJECT
         ]
         if useful:
             parts.append("I can see " + ", ".join(useful))
@@ -745,7 +1132,18 @@ def _compose_spoken(
             parts.append("Previously confirmed: " + ", ".join(extra[:4]) + ".")
 
     if not parts:
-        if usable_summary:
+        from app.memory.visual import is_clarity_hedge, is_generic_label_scene
+
+        if keep:
+            if (
+                usable_summary
+                and not is_generic_label_scene(cleaned)
+                and not is_clarity_hedge(cleaned)
+            ):
+                parts.append(cleaned.split("\n")[0][:400])
+            else:
+                parts.append("Hold it in the camera so I can see it")
+        elif usable_summary:
             parts.append(cleaned.split("\n")[0][:400])
         else:
             parts.append(
@@ -759,10 +1157,31 @@ def _compose_spoken(
 
 
 async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
-    """Optional DeepSeek wording pass over derived facts. Never sends pixels."""
+    """Optional Spark wording pass over derived facts. Never sends pixels."""
 
-    provider = get_chat_provider()
+    from app.gateway.muse import (
+        MUSE_SPARK_PROVIDERS,
+        MuseProviderUnavailable,
+        muse_intelligence_active,
+    )
+    from app.memory.visual import is_clarity_hedge, is_generic_label_scene
+
+    cleaned_draft = (draft or "").strip()
+    if payload.get("keep") and cleaned_draft:
+        if (
+            not is_generic_label_scene(cleaned_draft)
+            and not is_clarity_hedge(cleaned_draft)
+            and "hold it in the camera" not in cleaned_draft.lower()
+        ):
+            return cleaned_draft[:800]
+
+    try:
+        provider = get_chat_provider()
+    except MuseProviderUnavailable:
+        return draft
     if getattr(provider, "name", "") in {"echo", "mock"} or not getattr(provider, "api_key", True):
+        return draft
+    if muse_intelligence_active() and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS:
         return draft
     if provider.name == "deepseek" and not settings.deepseek_api_key:
         return draft
@@ -788,9 +1207,10 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
                         "people, brands, or locations. Do not name a person unless they are "
                         "listed as an enrolled match. Do not mention DeepSeek, Grok, or OpenAI."
                         + (
-                            " Name the main object, its colors, printed text, and one "
-                            "distinctive detail. Do not say you can see it now or repeat "
-                            "the owner's request."
+                            " Name the specific object with a concrete noun (not "
+                            "container, object, item, shape, or device), its colors, "
+                            "printed text, and one distinctive detail. Do not say you "
+                            "can see it now or repeat the owner's request."
                             if payload.get("keep")
                             else ""
                         )
@@ -803,7 +1223,23 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
             ],
             envelope=envelope,
         )
-        text = (call.result.text or "").strip().split("\n")[0].strip()
+        text = (call.result.text or "").strip()
+        if payload.get("keep"):
+            sentences = [
+                part.strip()
+                for part in re.split(r"(?<=[.!?])\s+", text)
+                if part.strip()
+            ]
+            text = " ".join(sentences[:3]).strip()
+            if (
+                draft
+                and text
+                and (is_generic_label_scene(text) or is_clarity_hedge(text))
+                and not is_generic_label_scene(draft)
+            ):
+                return draft[:800]
+        else:
+            text = text.split("\n")[0].strip()
         return text[:800] if text else draft
     except Exception:  # noqa: BLE001 - wording polish is optional
         logger.info("look wording polish skipped", exc_info=True)
@@ -837,7 +1273,17 @@ def _live_image_result(
     frames_summary: list[dict[str, Any]] | None = None,
     keep_request: str | None = None,
 ) -> dict[str, Any]:
-    text = (spoken or (OBSERVE_CAPTURED_SPOKEN if observe else LIVE_CAPTURED_SPOKEN)).strip()
+    if spoken:
+        text = spoken.strip()
+    else:
+        from app.memory.visual import wants_keep_visible
+
+        if observe:
+            text = OBSERVE_CAPTURED_SPOKEN
+        elif wants_keep_visible(keep_request):
+            text = KEEP_CAPTURED_SPOKEN
+        else:
+            text = LIVE_CAPTURED_SPOKEN
     facts = _visual_facts(
         labels=labels,
         colors=colors,
@@ -954,7 +1400,14 @@ def resolve_keep_request(
     live_session_id: str | None = None,
     device_id: str | None = None,
 ) -> str:
-    """Bind a keep-from-sight request to this look, not a later DB read."""
+    """Bind a keep-from-sight request to this look, not a later DB read.
+
+    Mini's look prompt is a JPEG instruction, not the owner's memorize
+    phrase. Prefer the live transcript when the tool prompt is a camera
+    echo, so the second look still reuses the first JPEG.
+    """
+
+    from app.memory.visual import is_camera_prompt_echo, wants_keep_visible
 
     for text in (
         " ".join(str(prompt or "").split()).strip(),
@@ -964,7 +1417,10 @@ def resolve_keep_request(
             continue
         if text.lower().startswith("describe visible people"):
             continue
-        return text[:400]
+        if is_camera_prompt_echo(text):
+            continue
+        if wants_keep_visible(text):
+            return text[:400]
     return ""
 
 
@@ -976,12 +1432,24 @@ def _look_vision_prompt(keep_request: str) -> str:
     named = keep_topic(keep_request)
     if named and named.lower() not in {"this", "that", "it", "you"}:
         return (
-            f"Name the {named} they are showing in two short sentences: what "
-            "it is, its colors, any printed text, and one distinctive detail. "
-            "Do not say you can see it now. Do not repeat their request. "
-            "Do not name people unless enrolled."
+            f"Name the {named} they are showing in two short sentences: a concrete "
+            "noun (not container, object, item, shape, or device), its colors, any printed "
+            "text, and one distinctive detail. Do not say you can see it now. Do not "
+            "repeat their request. Do not name people unless enrolled."
         )
     return KEEP_LOOK_PROMPT
+
+
+def _keep_injection_only(result: dict[str, Any]) -> bool:
+    """True when spoken is the Mini JPEG prompt, not a named scene.
+
+    Classifier labels (phone, bottle, book) are not identity. Mini must
+    name the attached pixels. OCR still persists on the keep row.
+    """
+
+    from app.memory.visual import is_keep_injection_spoken
+
+    return is_keep_injection_spoken(str(result.get("spoken") or ""))
 
 
 async def _finish_vision_result(
@@ -997,18 +1465,13 @@ async def _finish_vision_result(
     asked = " ".join(str(keep_request or result.get("keep_request") or "").split()).strip()
     if asked:
         result["keep_request"] = asked[:400]
-    if result.get("ok"):
-        try:
-            from app.memory.visual import persist_visual_observation
+    from app.memory.visual import (
+        keep_owner_spoken,
+        wants_keep_visible,
+    )
 
-            await persist_visual_observation(
-                session, result, actor=actor, device_id=device_id
-            )
-        except Exception:  # noqa: BLE001
-            logger.warning("visual memory persist skipped", exc_info=True)
-    if result.get("kept"):
-        from app.memory.visual import keep_owner_spoken
-
+    injection = _keep_injection_only(result)
+    if result.get("ok") and wants_keep_visible(asked) and not injection:
         result["spoken"] = keep_owner_spoken(
             scene=result.get("spoken"),
             ocr=result.get("ocr_text") or result.get("local_ocr"),
@@ -1018,6 +1481,43 @@ async def _finish_vision_result(
             frame_ok=_frame_was_delivered(result),
         )
         result["summary"] = result["spoken"]
+    if result.get("ok"):
+        try:
+            from app.memory.visual import persist_visual_observation
+
+            persist_body = dict(result)
+            if injection:
+                persist_body["spoken"] = ""
+            written = await persist_visual_observation(
+                session,
+                persist_body,
+                actor=actor,
+                device_id=device_id,
+                adopt_spoken=not injection,
+            )
+            if written:
+                if persist_body.get("kept") or written.get("kept"):
+                    result["kept"] = True
+                    result["remembered"] = True
+                if persist_body.get("memory_id") or written.get("memory_id"):
+                    result["memory_id"] = persist_body.get("memory_id") or written.get(
+                        "memory_id"
+                    )
+        except Exception:  # noqa: BLE001
+            logger.warning("visual memory persist skipped", exc_info=True)
+    if result.get("kept") and not injection:
+        result["spoken"] = keep_owner_spoken(
+            scene=result.get("spoken"),
+            ocr=result.get("ocr_text") or result.get("local_ocr"),
+            labels=list(result.get("labels") or []),
+            colors=list(result.get("colors") or []),
+            keep_request=asked,
+            frame_ok=_frame_was_delivered(result),
+        )
+        result["summary"] = result["spoken"]
+        result["follow_up"] = KEEP_STORED_HINT
+        result["memory_note"] = KEEP_STORED_HINT
+    elif result.get("kept") and injection:
         result["follow_up"] = KEEP_STORED_HINT
         result["memory_note"] = KEEP_STORED_HINT
     return result
@@ -1070,16 +1570,50 @@ async def look_now(
             }
 
     if attachment is None:
-        live, frame = await _wait_for_live_frame(
-            live_session_id=live_session_id,
-            device_id=device_id,
-            request_id=capture_id,
-            detail=detail_value,
-        )
-        live_connected = live is not None
-        if frame is not None and (frame.jpeg or frame.attachment_id) and not frame.error:
-            source = "live_camera"
-            if frame.jpeg:
+        from app.memory.visual import is_camera_prompt_echo, wants_keep_visible
+
+        prompt_echo = is_camera_prompt_echo(prompt)
+        broker_keep = call_id in {"owner-keep", KEEP_HOLD_CALL_ID}
+        keepish = wants_keep_visible(keep_request) or prompt_echo or broker_keep
+        if keepish and not keep_request:
+            keep_request = "memorize this"
+        if keepish:
+            kept = await _keep_live_look_result(
+                session,
+                actor=actor,
+                device_id=device_id,
+                call_id=call_id,
+                capture_id=capture_id,
+                keep_request=keep_request,
+                live_session_id=live_session_id,
+                detail_value=detail_value,
+                focus_value=focus_value,
+                t0=t0,
+            )
+            if kept is not None:
+                return kept
+        else:
+            live, frame = await _wait_for_live_frame(
+                live_session_id=live_session_id,
+                device_id=device_id,
+                request_id=capture_id,
+                detail=detail_value,
+            )
+            live_connected = live is not None
+            if frame is not None and frame.error:
+                spoken = _spoken_for_capture_error(frame.error, frame.permission)
+                return {
+                    "ok": False,
+                    "spoken": spoken,
+                    "error": frame.error,
+                    "degraded": True,
+                    "source": "live_camera",
+                    "request_id": frame.request_id or capture_id,
+                    "model_image_delivered": False,
+                    "hud": _card(spoken, {"ok": False, "error": frame.error}),
+                }
+            if frame is not None and frame.jpeg and not frame.error:
+                source = "live_camera"
                 labels = _frame_labels(frame)
                 colors = _frame_colors(frame)
                 ocr = getattr(frame, "ocr_text", None)
@@ -1107,11 +1641,8 @@ async def look_now(
                     detail=detail_value,
                     t0=t0,
                 )
-                from app.memory.visual import wants_keep_visible
-
                 captured_ocr = " ".join(str(ocr or "").split()).strip()
                 captured_labels = list(labels)
-
                 live_image = _live_image_result(
                     request_id=frame.request_id or capture_id,
                     source=source,
@@ -1131,53 +1662,20 @@ async def look_now(
                     media_kind=getattr(frame, "media_kind", None) or "frame",
                     keep_request=keep_request,
                 )
-                if wants_keep_visible(keep_request):
-                    try:
-                        attachment = await store_frame_attachment(
-                            session,
-                            frame.jpeg,
-                            actor=actor,
-                            device_id=device_id,
-                            filename="look-keep.jpg",
-                        )
-                    except Exception:  # noqa: BLE001 - still persist Mac OCR
-                        logger.warning("keep frame store skipped", exc_info=True)
-                        attachment = None
-                    if attachment is None:
-                        return await _finish_vision_result(
-                            session,
-                            live_image,
-                            actor=actor,
-                            device_id=device_id,
-                            keep_request=keep_request,
-                        )
-                    # Read the frame here. Mini is cancelled on memorize, so
-                    # the injection prompt is not a stored scene.
-                else:
-                    return await _finish_vision_result(
-                        session,
-                        live_image,
-                        actor=actor,
-                        device_id=device_id,
-                        keep_request=keep_request,
-                    )
-            elif frame.attachment_id:
+                return await _finish_vision_result(
+                    session,
+                    live_image,
+                    actor=actor,
+                    device_id=device_id,
+                    keep_request=keep_request,
+                )
+            if frame is not None and frame.attachment_id:
                 try:
-                    attachment = await _resolve_attachment(session, UUID(str(frame.attachment_id)))
+                    attachment = await _resolve_attachment(
+                        session, UUID(str(frame.attachment_id))
+                    )
                 except (KeyError, ValueError):
                     attachment = None
-        elif frame is not None and frame.error:
-            spoken = _spoken_for_capture_error(frame.error, frame.permission)
-            return {
-                "ok": False,
-                "spoken": spoken,
-                "error": frame.error,
-                "degraded": True,
-                "source": "live_camera",
-                "request_id": frame.request_id or capture_id,
-                "model_image_delivered": False,
-                "hud": _card(spoken, {"ok": False, "error": frame.error}),
-            }
 
     if attachment is None and not live_connected:
         local, spoken_error = await _capture_local_frame(
@@ -1203,15 +1701,24 @@ async def look_now(
     if live_session_id:
         from app.memory.visual import wants_keep_visible
 
-        if not wants_keep_visible(keep_request):
-            jpeg = await _jpeg_from_attachment(session, attachment)
-            if jpeg:
-                dims = validate_jpeg(jpeg)
-                width = dims[1] if dims else None
-                height = dims[2] if dims else None
-                _stash_frame(
-                    call_id=call_id,
-                    request_id=capture_id,
+        jpeg = await _jpeg_from_attachment(session, attachment)
+        if jpeg:
+            dims = validate_jpeg(jpeg)
+            width = dims[1] if dims else None
+            height = dims[2] if dims else None
+            _stash_frame(
+                call_id=call_id,
+                request_id=capture_id,
+                jpeg=jpeg,
+                width=width,
+                height=height,
+                camera_name=None,
+                detail=detail_value,
+                t0=t0,
+            )
+            if wants_keep_visible(keep_request):
+                _stash_keep_hold(
+                    request_id=str(attachment.id),
                     jpeg=jpeg,
                     width=width,
                     height=height,
@@ -1219,25 +1726,26 @@ async def look_now(
                     detail=detail_value,
                     t0=t0,
                 )
-                return await _finish_vision_result(
-                    session,
-                    _live_image_result(
-                        request_id=capture_id,
-                        source=source,
-                        width=width,
-                        height=height,
-                        encoded_bytes=len(jpeg),
-                        camera_name=None,
-                        focus=focus_value,
-                        keep_request=keep_request,
-                    ),
-                    actor=actor,
-                    device_id=device_id,
+            return await _finish_vision_result(
+                session,
+                _live_image_result(
+                    request_id=capture_id,
+                    source=source,
+                    width=width,
+                    height=height,
+                    encoded_bytes=len(jpeg),
+                    camera_name=None,
+                    focus=focus_value,
                     keep_request=keep_request,
-                )
+                    attachment_id=str(attachment.id),
+                ),
+                actor=actor,
+                device_id=device_id,
+                keep_request=keep_request,
+            )
 
     from app.ev.vision import analyze_attachment
-    from app.memory.visual import wants_keep_visible
+    from app.memory.visual import keep_perception_allow_raw, wants_keep_visible
 
     look_prompt = _look_vision_prompt(keep_request)
     analyze = analyze_attachment(
@@ -1245,7 +1753,7 @@ async def look_now(
         attachment.id,
         actor=actor,
         permission=True,
-        allow_raw=False,
+        allow_raw=keep_perception_allow_raw(keep_request),
         prompt=look_prompt,
     )
     try:
@@ -1259,24 +1767,23 @@ async def look_now(
         logger.warning("look analysis skipped", exc_info=True)
         if not wants_keep_visible(keep_request):
             raise
-        from app.memory.visual import keep_owner_spoken
-
-        spoken = keep_owner_spoken(
-            ocr=captured_ocr, labels=captured_labels, keep_request=keep_request, frame_ok=True
-        )
         return await _finish_vision_result(
             session,
             {
                 "ok": True,
-                "spoken": spoken,
-                "summary": spoken,
+                "spoken": KEEP_CAPTURED_SPOKEN,
                 "ocr_text": captured_ocr or None,
                 "labels": captured_labels,
                 "source": source,
                 "attachment_id": str(attachment.id),
                 "keep_request": keep_request or None,
                 "media_kind": "frame",
-                "hud": _card(spoken, {"ok": True, "source": source, "visor": True}),
+                "image_ready": True,
+                "encoded_bytes": 1,
+                "hud": _card(
+                    KEEP_CAPTURED_SPOKEN,
+                    {"ok": True, "source": source, "visor": True},
+                ),
             },
             actor=actor,
             device_id=device_id,
@@ -1361,7 +1868,7 @@ async def look_now(
         "source": source,
         "attachment_id": str(attachment.id),
         "perception_event_id": str(perception.id),
-        "raw_sent": False,
+        "raw_sent": bool(payload.get("raw_sent")),
         "degraded": bool(payload.get("local_degraded")),
         "hud": _card(
             spoken,
@@ -1402,7 +1909,7 @@ async def look_with_timeout(
     try:
         result = await asyncio.wait_for(
             look_now(session, **kwargs),
-            timeout=LOOK_TIMEOUT_SECONDS + KEEP_ANALYZE_TIMEOUT_SECONDS + 4.0,
+            timeout=LOOK_TIMEOUT_SECONDS + 6.0,
         )
     except TimeoutError:
         spoken = TIMEOUT_SPOKEN
@@ -1431,14 +1938,23 @@ async def look_with_timeout(
             device_id=device,
         )
         if attached is None:
+            injection = _keep_injection_only(result)
             attached = await persist_keep_intent(
                 session,
                 asked,
                 actor=actor,
                 device_id=device,
-                scene=str(result.get("spoken") or "") if result.get("ok") else None,
-                ocr=str(result.get("ocr_text") or "") if result.get("ok") else None,
-                labels=list(result.get("labels") or []) if result.get("ok") else None,
+                scene=(
+                    None
+                    if injection
+                    else (str(result.get("spoken") or "") if result.get("ok") else None)
+                ),
+                ocr=(
+                    None
+                    if injection
+                    else (str(result.get("ocr_text") or "") if result.get("ok") else None)
+                ),
+                labels=None,
             )
         really_kept = bool(
             result.get("kept")
@@ -1447,7 +1963,13 @@ async def look_with_timeout(
         scene = " ".join(str(result.get("spoken") or "").split()).strip()
         frame_ok = _frame_was_delivered(result)
         hedge = is_empty_visual_scene(scene) or is_clarity_hedge(scene)
-        if really_kept and (not hedge or frame_ok):
+        if _keep_injection_only(result):
+            result["kept"] = really_kept
+            result["remembered"] = really_kept
+            if really_kept:
+                result["follow_up"] = KEEP_STORED_HINT
+                result["memory_note"] = KEEP_STORED_HINT
+        elif really_kept and (not hedge or frame_ok):
             result["kept"] = True
             result["remembered"] = True
             result["spoken"] = keep_owner_spoken(
@@ -1938,4 +2460,3 @@ async def record_video_with_timeout(session: AsyncSession, **kwargs: Any) -> dic
             "model_image_delivered": False,
             "hud": _card(spoken, {"ok": False, "error": "timeout"}),
         }
-

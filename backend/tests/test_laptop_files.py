@@ -10,8 +10,10 @@ from app.config import settings
 from app.ev.computer_strategy import resolve_generic_computer_goal
 from app.ev.laptop_files import (
     apply_simple_edit,
+    extract_append_items,
     looks_like_file_task,
     parse_file_goal,
+    parse_referent_append,
     path_denied,
     perform_local,
     plan_file_content,
@@ -20,6 +22,14 @@ from app.ev.laptop_files import (
 from app.ev.luna_code import looks_like_code_request
 from app.ev.tool_select import resolve_live_action
 from app.ev.desk_names import reset_desk_names
+
+
+async def _route_transcript(live, event) -> None:
+    """S2S emit returns the routing task; wait so file side effects land."""
+
+    routed = await live.emit(event)
+    if routed is not None:
+        await routed
 
 
 @pytest.fixture(autouse=True)
@@ -326,21 +336,23 @@ async def test_live_openai_transcript_writes_file(files_root: Path) -> None:
     live.grok_voice = _OpenAI()
     goal = "Write a file called evie-talk-proof.txt on my desktop that says hello from talk"
     try:
-        await live.emit(
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime")
+        await _route_transcript(
+            live,
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
         )
         assert cancelled["n"] == 1
         assert seen == [("computer", {"goal": goal, "session_id": "owner-file-talk"}, "owner-file")]
         assert (files_root / "evie-talk-proof.txt").read_text(encoding="utf-8") == "hello from talk"
         assert spoken
-        assert "evie-talk-proof.txt" in spoken[0] or "Wrote" in spoken[0]
+        assert "hello from talk" in spoken[0].lower()
         live._last_life_action = None
-        await live.emit(
+        await _route_transcript(
+            live,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="(system confirmation — speak this to the owner now) Wrote evie-talk-proof.txt.",
                 provider="openai-realtime",
-            )
+            ),
         )
         assert seen == [("computer", {"goal": goal, "session_id": "owner-file-talk"}, "owner-file")]
         live._last_life_action = None
@@ -350,8 +362,9 @@ async def test_live_openai_transcript_writes_file(files_root: Path) -> None:
             "List the files on my desktop",
             "Open index.html on my desktop",
         ):
-            await live.emit(
-                FinalTranscriptEvent(at_ms=3, text=extra, provider="openai-realtime")
+            await _route_transcript(
+                live,
+                FinalTranscriptEvent(at_ms=3, text=extra, provider="openai-realtime"),
             )
             live._last_life_action = None
         assert [item[0] for item in seen] == ["computer"] * 5
@@ -848,20 +861,22 @@ async def test_live_transcript_add_eggs_after_note(files_root: Path) -> None:
     live.run_live_tool = runner
     live.grok_voice = _OpenAI()
     try:
-        await live.emit(
+        await _route_transcript(
+            live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="Drop a note on the desktop that says buy milk",
                 provider="openai-realtime",
-            )
+            ),
         )
         live._last_life_action = None
-        await live.emit(
+        await _route_transcript(
+            live,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="add eggs to it",
                 provider="openai-realtime",
-            )
+            ),
         )
         assert [item[2] for item in seen] == ["owner-file", "owner-file"]
         assert seen[1][1]["goal"] == "add eggs to it"
@@ -1065,4 +1080,138 @@ async def test_desk_twin_packet_fragment_and_landed_file(files_root: Path) -> No
     that = slot_object("that")
     assert that is not None
     assert "Resume" in str(that.get("name") or "")
+
+
+def test_append_intent_is_meaning_not_a_fixed_phrase() -> None:
+    """Same job, different English. Never require 'add X to it'."""
+
+    assert extract_append_items("add 2 more things, oats and honey") == ["oats", "honey"]
+    assert extract_append_items("put rice and dal on there too") == ["rice", "dal"]
+    assert extract_append_items("include soap as well") == ["soap"]
+    assert extract_append_items("throw tape and nails on the list") == ["tape", "nails"]
+    assert extract_append_items("also toothpaste") == ["toothpaste"]
+    assert extract_append_items("plus jam and butter") == ["jam", "butter"]
+    assert extract_append_items("can you add batteries") == ["batteries"]
+    assert extract_append_items("two more things: oats, honey") == ["oats", "honey"]
+    assert extract_append_items("I'm also tired") == []
+    assert extract_append_items("that's fine") == []
+    assert extract_append_items("add that to my calendar") == []
+    assert extract_append_items("add a note on the desktop saying pick up dry cleaning") == []
+    assert extract_append_items("how are you") == []
+
+
+@pytest.mark.asyncio
+async def test_live_note_followup_accepts_paraphrased_adds(files_root: Path) -> None:
+    from app.ev.laptop_files import run_file_goal
+
+    written = await run_file_goal(
+        parse_file_goal("add a note on the desktop saying pick up dry cleaning")
+    )
+    assert written["ok"] is True
+    path = Path(written["path"])
+    assert path.read_text(encoding="utf-8") == "pick up dry cleaning"
+
+    first = parse_referent_append("add 2 more things, oats and honey")
+    assert first is not None
+    assert first["action"] == "append"
+    assert Path(first["path"]) == path.resolve() or Path(first["path"]).name == path.name
+    assert first["content"] == "oats\nhoney"
+    ran = await run_file_goal(first)
+    assert ran["ok"] is True
+    body = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    assert body == "pick up dry cleaning\noats\nhoney"
+    assert not (files_root / "evie-note-2.txt").exists()
+
+    second = parse_file_goal("put rice and dal on there too")
+    assert second is not None and second["action"] == "append"
+    await run_file_goal(second)
+    third = parse_file_goal("include soap as well")
+    assert third is not None and third["action"] == "append"
+    await run_file_goal(third)
+    final = path.read_text(encoding="utf-8").replace("\r\n", "\n")
+    for token in ("oats", "honey", "rice", "dal", "soap", "pick up dry cleaning"):
+        assert token in final
+    assert not (files_root / "evie-note-2.txt").exists()
+    assert looks_like_file_task("throw tape on the list")
+    assert not looks_like_file_task("I'm also tired")
+    assert parse_file_goal("I'm also tired") is None
+
+
+@pytest.mark.asyncio
+async def test_ordinary_chat_is_not_a_file_job_after_a_note(files_root: Path) -> None:
+    """A live desk note must not steal Grok. Chat stays chat."""
+
+    import json
+
+    from app.ev.laptop_files import run_file_goal
+    from app.voice.live.session import LiveSession
+
+    written = await run_file_goal(
+        parse_file_goal("drop a note on the desktop that says buy milk")
+    )
+    assert written["ok"] is True
+    last = str(written["path"])
+    chats = (
+        "what day is it",
+        "that's fine",
+        "that's interesting",
+        "I'm also tired",
+        "also I think we should go",
+        "the other day I was tired",
+        "just keep going",
+        "okay",
+        "how are you",
+        "check with me at my desk",
+        "this is crazy",
+        "remove that from my calendar",
+        "undo my calendar",
+        "I got it",
+        "I got home",
+        "remind me to call mom",
+        "text Mom I'm late",
+    )
+    for chat in chats:
+        assert looks_like_file_task(chat, last_path=last) is False, chat
+        assert parse_file_goal(chat, last_path=last) is None, chat
+        resolved = resolve_live_action(chat)
+        assert resolved is None or resolved[0] != "computer", (chat, resolved)
+
+    assert looks_like_file_task("add eggs to it")
+    assert looks_like_file_task("read it", last_path=last)
+    assert looks_like_file_task("also eggs")
+    assert looks_like_file_task("that's my resume", last_path=last)
+    assert looks_like_file_task("delete everything and just keep the bread", last_path=last)
+
+    seen: list[tuple[str, dict, str]] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        seen.append((name, dict(args), call_id))
+        return json.dumps({"ok": True, "spoken": "ok"})
+
+    class _OpenAI:
+        _provider = "openai"
+        supports_function_calls = True
+
+        async def cancel(self) -> None:
+            return None
+
+        async def speak_ack(self, text: str) -> bool:
+            return True
+
+    live = LiveSession(session_id="owner-chat-not-file", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = _OpenAI()
+    try:
+        assert await live._maybe_local_intent("what day is it", from_grok=True) is True
+        assert seen == []
+        for chat in ("that's fine", "I'm also tired", "how are you"):
+            live._last_life_action = None
+            handled = await live._maybe_local_intent(chat, from_grok=True)
+            assert handled is False, chat
+        assert seen == []
+        handled = await live._maybe_local_intent("add eggs to it", from_grok=True)
+        assert handled is True
+        assert seen and seen[0][2] == "owner-file"
+    finally:
+        live.close()
 

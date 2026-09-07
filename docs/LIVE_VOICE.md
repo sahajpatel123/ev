@@ -5,9 +5,10 @@ The HTTP voice path (`POST /v1/voice/utterance`, SSE `/utterance/stream`) is a
 of voice assistants.
 
 EV LIVE is the continuous conversational operating system. It does not replace
-wake, owner verification, ASR, TTS, memory, or DeepSeek. It sits in front of
-them and decides *when* to listen, wait, acknowledge, interrupt, speak, or
-delegate deep work.
+wake, owner verification, memory, or EV Core policy. Muse Voice Transcribe is
+the hearing lane; Muse Spark 1.2 Contributor is the reasoning/tool-planning
+lane; TTS is the speaking lane. EV LIVE coordinates them and decides *when* to
+listen, wait, acknowledge, interrupt, speak, or delegate deep work.
 
 ```text
                  EV LIVE (real-time nervous system)
@@ -27,17 +28,18 @@ delegate deep work.
                          │
          ┌───────────────┼───────────────┐
          ↓               ↓               ↓
-      DeepSeek         Memory           Tools
-      reasoning       retrieval         APIs
+      Muse Spark       Memory           Tools
+      Contributor      retrieval         APIs
 ```
 
 The most important split:
 
 ```text
-EV LIVE  = ears + timing + conversational behavior + voice
-DeepSeek = deep reasoning
-Memory   = long-term identity and life context
-Tools    = actions and external information
+EV LIVE       = timing + conversational behavior + voice transport
+Muse Voice    = speech perception only (transcript/endpointing)
+Spark         = reasoning, planning, tool calls, and replies
+EV Core       = authorization, execution, verification, and audit
+Memory/Tools  = long-term identity, life context, and external actions
 ```
 
 Always-on ears (VAD, wake word) stay a **low-power local runtime**. EV LIVE
@@ -47,7 +49,7 @@ raw microphone audio 24/7.
 ## 1. What this is not
 
 ```text
-Speech-to-Text → LLM → Text-to-Speech
+Muse Voice Transcribe → Muse Spark 1.2 Contributor → Text-to-Speech
 ```
 
 That pipeline still exists (`app.voice.pipeline`) and LIVE **reuses it** when
@@ -113,7 +115,7 @@ Server → client (`LiveEvent.as_dict()`):
 | `reply` | full reply metadata; chunks already streamed. May include `device_id` / `tts_device_id` |
 | `hud` | `{card, kind}` — progress, evidence, or approval-hold `ev.hud.card.v1` card |
 | `barge_in` | **stop playback immediately** (speech only; durable jobs keep running) |
-| `error` | `{code, message, fatal}` — `fatal: true` closes the channel. `realtime_disconnect` / `realtime_connect` are **non-fatal**; the EV socket stays open and the bridge reconnects. Missing API key is fatal for the upstream, not the host process. |
+| `error` | `{code, message, fatal}` — `fatal: true` closes the channel. `realtime_disconnect` / `realtime_connect` are **non-fatal**; the EV socket stays open and the bridge reconnects. Native ASR failures (`asr_connection_closed`, `asr_timeout`, `asr_unusable`) request one client-side live-channel recovery per connection generation; auth/quota/format failures reset the incomplete turn and remain visible for controls/text. `asr_empty_result` / `asr_no_speech` are ordinary no-speech outcomes. |
 
 The engine ticks ~20 Hz (`EV_VOICE_LIVE_TICK_MS`, default 50).
 
@@ -124,7 +126,7 @@ keep running. R3/R4 tools emit an approval-hold HUD card (`confirmation_channel:
 hud_or_biometric`); wake verification is not an independent factor, and the
 audio loop never waits for the tap. Quiet hours suppress proactive live
 speech; emergencies still speak. Devices share one live `conversation_id`
-and keep per-device `VoiceSession` rows. OpenAI Realtime live uses a
+and keep per-device `VoiceSession` rows. Muse Spark 1.2 Contributor uses a
 function-tool projection computed from the current runtime capability
 manifest. Only available, live-eligible tools are advertised; every call is
 validated and sent through `evaluate_policy`/`dispatch` before execution.
@@ -132,10 +134,9 @@ The ready/state capability manifest retains the same runtime manifest,
 live-tool projection, approved/executable tool names, current device/provider,
 setup gaps, and confirmation requirements used for that session's HUD.
 R3/R4 confirmation holds keep the same session alive, then the approved result
-is returned to Realtime and a new `response.create` continues spoken output.
+is returned to Spark and the continuation resumes spoken output.
 The transcript regex resolver (`resolve_live_action`) is pipeline-only and is
-not used by realtime providers. xAI Grok Voice may call the same dynamic
-projection. iOS opens the same live door via
+not used by Spark. iOS opens the same live door via
 `LiveVoiceCoordinator` (shared `LiveVoiceConnection` + microphone). Mac
 EV.app still uses `LiveConversation`. Live injects that miss an in-process
 socket are parked on the Callout table (`voice.live.inject`) and drained by
@@ -153,11 +154,11 @@ The acceptance harness has two explicit modes:
   only event types, tool names, argument keys, call IDs, evidence presence, and
   continuation requests. It is the deterministic CI gate for the complete
   voice → function → policy → adapter → evidence → spoken-result chain.
-- `real_provider`: set `EV_VOICE_LIVE_BRAIN=openai` or `xai` and provide the
-  corresponding API key. The bridge records safe metadata for provider
-  selection, session update, acknowledged tool names, function-call argument
-  keys, function output status, and continuation requests. It never logs API
-  keys, raw audio, or raw private tool payloads.
+- `real_provider`: provide the Muse Spark Contributor and Muse Voice Transcribe
+  credentials. The adapters record safe metadata for provider selection,
+  session readiness, tool names, function-call argument keys, function output
+  status, ASR endpointing, and continuation requests. They never log API keys,
+  raw audio, or raw private tool payloads.
 
 The local mode proves architecture and is safe to run without external side
 effects. Real-provider mode requires outbound WSS and valid credentials; it is
@@ -352,6 +353,9 @@ device resolution.
 - Clients must stop local playback when they receive `barge_in` and begin
   playback for each `tts_chunk`. The HTTP/SSE path remains available as a
   fallback for clients that cannot hold a WebSocket.
-- Native audio models (no transcript in the middle) are a future engine
-  swap behind the same live state machine. LIVE does not require them to
-  improve turn-taking, barge-in, backchannels, or perceived latency.
+- Muse Voice failures never leave a client latched in a thinking state: the
+  client returns to listening for deterministic ASR errors, and closes the
+  current live socket once when a native ASR stream is unusable so the normal
+  lifecycle creates a fresh session. Existing playback is allowed to finish
+  before recovery. The public websocket event order and Mac/iPhone controls
+  do not change.

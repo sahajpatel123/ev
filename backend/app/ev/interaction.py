@@ -206,6 +206,20 @@ LIFE_ACTION_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(
+            r"\btell\s+(?!me\b|us\b|you\b)(?:my\s+)?[\w.'-]+",
+            re.IGNORECASE,
+        ),
+        "send_message",
+    ),
+    (
+        re.compile(
+            r"\blet\s+(?:my\s+)?[\w.'-]+\s+know\b",
+            re.IGNORECASE,
+        ),
+        "send_message",
+    ),
+    (
+        re.compile(
             r"\b(?:email|mail)\b[\s\S]{0,80}?\b(?:to\s+)?[\w.@-]+",
             re.IGNORECASE,
         ),
@@ -646,8 +660,7 @@ def strategy_block(strategy: InteractionStrategy, *, who: str | None = None) -> 
         f"Intent: {strategy.intent}",
         f"Length: {strategy.length_target}.",
         f"Directness: {strategy.directness}.",
-        "Tone & Cadence: Casual, relaxed, and concise. Do not speak too much. Say each point once: never repeat phrases, restate the question, or echo what was already said.",
-        SPEECH_STYLE_INSTRUCTIONS,
+        "Tone & Cadence: natural human speech, brief (see EV SPEECH CONTRACT below).",
         (
             "Assertiveness level: "
             f"{strategy.assertiveness} (0=neutral, 1=recommend, 2=strong recommend, "
@@ -696,4 +709,8 @@ def strategy_block(strategy: InteractionStrategy, *, who: str | None = None) -> 
     )
     if strategy.surface_hint:
         lines.append(f"Surface plan: {strategy.surface_hint}")
+    # Strategy, emotion, and surface hints are dynamic turn context. Keep the
+    # owner-frozen contract last so a feature-specific hint cannot retune EV's
+    # voice.
+    lines.append(SPEECH_STYLE_INSTRUCTIONS)
     return "\n".join(lines)

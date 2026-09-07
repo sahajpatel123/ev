@@ -530,6 +530,29 @@ def test_parse_owner_when_uses_owner_timezone(monkeypatch):
     assert out.astimezone(UTC) == expected_utc
 
 
+def test_spoken_clock_uses_owner_timezone(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.config import settings
+    from app.ev.resolve import clock_line, spoken_clock
+    from app.ev.tool_select import TIME_RE, resolve_live_action, select_tool
+
+    monkeypatch.setattr(settings, "timezone", "Asia/Kolkata")
+    now = datetime(2026, 9, 5, 11, 9, tzinfo=ZoneInfo("Asia/Kolkata"))
+    assert spoken_clock("what day is it", now=now) == "It's Saturday, September 5, 2026."
+    assert spoken_clock("what time is it", now=now) == "It's 11:09 AM."
+    assert "Saturday" in clock_line(now=now)
+    assert "11:09" in clock_line(now=now)
+    for q in ("what day is it", "what time is it?", "check the time"):
+        assert TIME_RE.search(q), q
+        resolved = resolve_live_action(q)
+        assert resolved is None or resolved[0] != "computer", (q, resolved)
+        assert select_tool(q).selected != "get_upcoming_alerts"
+    assert not TIME_RE.search("what time is the meeting")
+    assert not TIME_RE.search("what's the time for dinner")
+
+
 def test_parse_owner_when_date_only_gets_documented_default(monkeypatch):
     """Date-only 'tomorrow' = end of that owner-local day. Never None, never server-tz."""
     from datetime import datetime
@@ -543,3 +566,43 @@ def test_parse_owner_when_date_only_gets_documented_default(monkeypatch):
     assert out is not None
     # End of Aug 18 owner-local = 2026-08-18 23:59:59 IST = 18:29:59 UTC.
     assert (out.astimezone(UTC).hour, out.astimezone(UTC).minute) == (18, 29)
+
+
+@pytest.mark.asyncio
+async def test_live_clock_questions_speak_owner_time(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from app.config import settings
+    from app.voice.live.session import LiveSession
+
+    monkeypatch.setattr(settings, "timezone", "Asia/Kolkata")
+    frozen = datetime(2026, 9, 5, 11, 9, tzinfo=ZoneInfo("Asia/Kolkata"))
+    monkeypatch.setattr("app.ev.resolve.owner_now", lambda: frozen)
+
+    spoken: list[str] = []
+    cancelled = {"n": 0}
+
+    class _OpenAI:
+        _provider = "openai"
+        supports_function_calls = True
+
+        async def cancel(self) -> None:
+            cancelled["n"] += 1
+
+        async def speak_ack(self, text: str) -> bool:
+            spoken.append(text)
+            return True
+
+    live = LiveSession(session_id="owner-clock", backchannel_enabled=False)
+    live.grok_voice = _OpenAI()
+    try:
+        assert await live._maybe_local_intent("what day is it", from_grok=True) is True
+        assert any("Saturday" in item and "September 5" in item for item in spoken)
+        spoken.clear()
+        live._last_honesty = ""
+        assert await live._maybe_local_intent("what time is it", from_grok=True) is True
+        assert any("11:09" in item for item in spoken)
+        assert cancelled["n"] >= 2
+    finally:
+        live.close()

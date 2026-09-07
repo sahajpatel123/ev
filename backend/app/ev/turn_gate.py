@@ -87,6 +87,8 @@ def _canonical_db_failure(error: Exception) -> TurnResult:
 async def handle_owner_turn(
     session: AsyncSession,
     owner_turn: OwnerTurn,
+    *,
+    release_db_before_classify: bool = False,
 ) -> TurnResult:
     """Gate entry: final canonical OwnerTurn → TurnController → TurnResult.
 
@@ -122,7 +124,11 @@ async def handle_owner_turn(
     # DOWNGRADE a read-only historical question from STATE_QUERY to
     # CONVERSATION. It never mutates canonical state.)
     try:
-        result = await controller.handle_turn(owner_turn.transcript, turn_id=owner_turn.turn_id)
+        result = await controller.handle_turn(
+            owner_turn.transcript,
+            turn_id=owner_turn.turn_id,
+            release_db_before_classify=release_db_before_classify,
+        )
     except Exception as exc:  # noqa: BLE001 - canonical conversion point
         # (asyncio.CancelledError derives from BaseException and is NOT
         # swallowed here — cancellation always propagates.)

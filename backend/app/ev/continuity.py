@@ -85,7 +85,7 @@ EXPLICIT_RECALL = re.compile(
     r"what (name|model|feature|experiment|project) did i|"
     r"why did i (decide|prefer|choose)|"
     r"which (one )?(do|did) i prefer|"
-    r"what did i prefer before|"
+    r"what (?:do|did) i prefer(?: before)?|"
     r"when did i (first )?(mention|say|tell)|"
     r"what (decisions|preference) did we|"
     r"what(?:'s| is) (?:it|that|this) called|"
@@ -112,6 +112,9 @@ EXPLICIT_RECALL = re.compile(
     r"what was i showing|"
     r"did you (?:already |ever )?(?:memorise|memorize|remember)|"
     r"have you (?:already |ever )?(?:memorised|memorized|remembered))\b"
+    r"|"
+    r"\b(?:from my memory|in my memory|search (?:my )?memory|"
+    r"something from (?:my )?memory)\b"
     r"|"
     r"\bover the last (few )?(days|weeks)\b"
     r")",

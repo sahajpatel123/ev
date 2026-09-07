@@ -147,6 +147,12 @@ public final class LiveVoiceConnection: @unchecked Sendable {
     /// is normal on an older server, so dead-link requires both directions.
     private var keepaliveAckSeen = false
     private let lock = NSLock()
+    /// Optional low-latency sink for PCM chunks. The receive task invokes
+    /// this before yielding the same event to the UI stream, so a macOS menu
+    /// render cannot delay the audio queue. Access is protected by ``lock``
+    /// because the callback is installed/removed by the MainActor while the
+    /// receive task is detached.
+    private var realtimeAudioChunkHandler: (@Sendable (LiveVoiceEvent) -> Void)?
 
     public init(
         baseURL: URL,
@@ -156,6 +162,21 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         self.baseURL = baseURL
         self.token = token
         self.session = session
+    }
+
+    public func setRealtimeAudioChunkHandler(
+        _ handler: (@Sendable (LiveVoiceEvent) -> Void)?
+    ) {
+        lock.lock()
+        realtimeAudioChunkHandler = handler
+        lock.unlock()
+    }
+
+    private func realtimeAudioChunkHandlerSnapshot() -> (@Sendable (LiveVoiceEvent) -> Void)? {
+        lock.lock()
+        let handler = realtimeAudioChunkHandler
+        lock.unlock()
+        return handler
     }
 
     public func connect(
@@ -262,8 +283,8 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         task.cancel(with: .goingAway, reason: nil)
     }
 
-    /// Keep only the newest unsent PCM frame. A microphone callback must never
-    /// create a stale FIFO backlog that makes the next user turn arrive late.
+    /// FIFO PCM toward Talk. Dropping all but the newest frame made Muse see
+    /// gappy below-real-time audio. Bound the backlog to two seconds.
     public func enqueuePCM(_ data: Data) {
         guard !data.isEmpty else { return }
         queue(.audio(data))
@@ -521,7 +542,15 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         }
         switch message {
         case .audio(let data):
-            pendingAudio = data
+            var pending = pendingAudio ?? Data()
+            pending.append(data)
+            let maxBytes = 16_000 * 2 * 2
+            if pending.count > maxBytes {
+                var drop = pending.count - maxBytes
+                if drop % 2 != 0 { drop += 1 }
+                pending.removeFirst(min(drop, pending.count))
+            }
+            pendingAudio = pending.isEmpty ? nil : pending
         case .text(let text):
             if coalescePlayback {
                 pendingPlaybackMessage = text
@@ -601,6 +630,9 @@ public final class LiveVoiceConnection: @unchecked Sendable {
                 }
                 if let event = decode(data) {
                     guard isCurrent(task, generation: generation) else { return }
+                    if event.type == "tts_chunk", event.audioB64 != nil {
+                        realtimeAudioChunkHandlerSnapshot()?(event)
+                    }
                     streamContinuation?.yield(event)
                     if event.fatal { break }
                 }
@@ -1102,6 +1134,19 @@ public final class LivePCMPlayer: NSObject, AVAudioPlayerDelegate, @unchecked Se
             || !fileQueue.isEmpty
             || Date() < captureMuteUntil
             || Date() < toolGapMuteUntil
+        lock.unlock()
+        return active
+    }
+
+    /// Physical playback state, excluding the short acoustic echo tail and
+    /// tool-gap mute. Recovery code uses this distinction to avoid closing a
+    /// live channel in the middle of a sentence while still reconnecting
+    /// promptly when no audio is audible.
+    public var isPlaying: Bool {
+        lock.lock()
+        let active = pendingBuffers > 0
+            || node.isPlaying
+            || filePlayer?.isPlaying == true
         lock.unlock()
         return active
     }

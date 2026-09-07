@@ -8,9 +8,10 @@ camera.observation + Memory — not Apple Photos, and not question scaffolding.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -20,12 +21,16 @@ from app.contracts import EntityRef, MemoryCandidate
 from app.models import Event
 from app.schemas import EventCreate
 from app.services.event_service import EventService
-from app.utils.text import simple_tokens, utcnow
+from app.utils.text import normalize_text, simple_tokens, utcnow
 
 logger = logging.getLogger("ev.memory.visual")
 
 VISUAL_EVENT_TYPE = "camera.observation"
 SPOKEN_SCENE_WINDOW = timedelta(minutes=3)
+# Mini's follow-up look must reload this JPEG, not capture a second keep.
+KEEP_MINI_RELOAD_SECONDS = 15.0
+# Reopen recall must finish before the live websocket ping timeout (~40s).
+KEEP_RECALL_ENRICH_SECONDS = 28.0
 
 # Past / named visual memory — not a live look, not Apple Photos.
 VISUAL_RECALL_RE = re.compile(
@@ -107,11 +112,37 @@ CURRENT_VISUAL_RE = re.compile(
     r"\bwhich (?:t-?shirt|shirt|top|hoodie|jacket) am i\b|"
     r"\bwhat (?:t-?shirt|shirt|top|hoodie) am i\b|"
     r"\bwhat am i holding\b|"
+    r"\bwhat(?:'s| is) in my hand\b|"
+    r"\bin my hand\b|"
+    r"\bi(?:'m| am) holding(?! (?:a |the )?(?:meeting|call|interview|session))\b|"
+    r"\bthe (?:thing|item|object) i(?:'m| am) holding\b|"
+    r"\bthis item i(?:'m| am) holding\b|"
+    r"\bwhat i(?:'m| am) (?:holding|showing)\b|"
+    r"\blook at (?:this|that|me|the (?:thing|item|object)|what i(?:'m| am))\b|"
+    r"\bi want you to look at\b|"
+    r"\btell me (?:more )?(?:info )?about (?:this|that) (?:item|thing|object)\b|"
+    r"\bmore info about (?:this|that) (?:item|thing|object)\b|"
     r"\bwhat do you see\b|"
     r"\bwhat(?:'s| is) (?:this|that)\b|"
     r"\bwhat color is this\b|"
-    r"\blook at (?:this|that|me)\b|"
-    r"\bcan you see (?:this|that|me)\b"
+    r"\bcan you see (?:this|that|me)\b|"
+    r"\b(?:use|open|point) (?:the |your )?camera\b"
+    r")",
+    re.IGNORECASE,
+)
+
+HELD_OBJECT_RE = re.compile(
+    r"("
+    r"\bwhat am i holding\b|"
+    r"\bwhat(?:'s| is) in my hand\b|"
+    r"\bin my hand\b|"
+    r"\bi(?:'m| am) holding(?! (?:a |the )?(?:meeting|call|interview|session))\b|"
+    r"\bthe (?:thing|item|object) i(?:'m| am) holding\b|"
+    r"\bthis item i(?:'m| am) holding\b|"
+    r"\bwhat i(?:'m| am) (?:holding|showing)\b|"
+    r"\blook at (?:the (?:thing|item|object)|what i(?:'m| am))\b|"
+    r"\btell me (?:more )?(?:info )?about (?:this|that) (?:item|thing|object)\b|"
+    r"\bmore info about (?:this|that) (?:item|thing|object)\b"
     r")",
     re.IGNORECASE,
 )
@@ -144,7 +175,7 @@ KEEP_RECALL_RE = re.compile(
     r"\bdo you remember (?:the|this|that) (?!i\b|i['’]m\b|we\b)|"
     r"\bdo you remember what i (?:asked|showed|told you to remember|held|was holding)\b|"
     r"\bdid you remember\b|"
-    r"\bwhat did i (?:just )?ask you to (?:remember|memorise|memorize|keep)\b|"
+    r"\bwhat (?:did )?i (?:just )?(?:ask|asked|tell|told) you to (?:remember|memorise|memorize|keep)\b|"
     r"\bwhat i (?:just )?asked you to remember\b|"
     r"\b(?:just )?ask(?:ed)? you to remember\b|"
     r"\b(?:were you able to|did you get to) (?:memorise|memorize|remember)\b"
@@ -174,9 +205,16 @@ _GROUNDING_RE = re.compile(
 _EMPTY_SCENE_RE = re.compile(
     r"("
     r"nothing was detected|"
-    r"i (?:do not|don't|didn'?t|could not|couldn't) see(?: any| that| this| it| the)?|"
+    r"i (?:do not|don't|didn'?t|did not|could not|couldn't) see(?: any| that| this| it| the| anything)?|"
+    r"did not see anything|"
+    r"camera did not return a frame|"
+    r"no camera source is currently connected|"
+    r"can't see a camera frame|"
     r"no (?:text|objects|people).{0,24}detected|"
-    r"i (?:can't|cannot) see (?:anything|the (?:image|object|thing)|(?:this|that|it) clearly)"
+    r"i (?:can't|cannot) see (?:anything|the (?:image|object|thing)|(?:this|that|it) clearly)|"
+    r"perception completed|"
+    r"no summary returned by the perception provider|"
+    r"intelligence provider is unavailable"
     r")",
     re.IGNORECASE,
 )
@@ -219,9 +257,40 @@ def is_camera_prompt_echo(text: str | None) -> bool:
     blob = " ".join(str(text or "").split()).strip().lower()
     if not blob:
         return False
-    return blob.startswith("this is a current photo from the owner") or blob.startswith(
+    if blob.startswith("this is a current photo from the owner") or blob.startswith(
         "a current camera image is attached"
-    )
+    ):
+        return True
+    if blob.startswith("start with a, an, or the"):
+        return True
+    if "do not read these instructions" in blob:
+        return True
+    if "concrete noun" in blob and "not container" in blob:
+        return True
+    return False
+
+
+_KEEP_ACK_ONLY_RE = re.compile(
+    r"^(?:"
+    r"ok(?:ay)?|got it|sure|alright|all right|will do|done|"
+    r"i(?:'ve| have) got it"
+    r")"
+    r"(?:[,.]?\s+(?:i(?:'ll| will) remember(?: that)?))?[\s.!?]*$",
+    re.IGNORECASE,
+)
+_KEEP_ACK_REMEMBER_ONLY_RE = re.compile(
+    r"^i(?:'ll| will) remember(?: that)?[\s.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def is_keep_ack_only(text: str | None) -> bool:
+    """True when speech is only an acknowledgement, not a visual identity."""
+
+    blob = " ".join(str(text or "").split()).strip()
+    if not blob:
+        return True
+    return bool(_KEEP_ACK_ONLY_RE.match(blob) or _KEEP_ACK_REMEMBER_ONLY_RE.match(blob))
 
 
 _HEDGE_OPENING = re.compile(
@@ -386,6 +455,13 @@ _ALIASES: dict[str, frozenset[str]] = {
     "gray": frozenset({"grey", "gray"}),
     "iphone": frozenset({"iphone", "phone"}),
     "phone": frozenset({"iphone", "phone"}),
+    "keys": frozenset({"key", "keys", "keychain"}),
+    "key": frozenset({"key", "keys", "keychain"}),
+    "charger": frozenset({"charger", "cable", "cord", "brick"}),
+    "cable": frozenset({"charger", "cable", "cord"}),
+    "wallet": frozenset({"wallet", "billfold"}),
+    "airpods": frozenset({"airpods", "earbuds", "earphones", "headphones"}),
+    "remote": frozenset({"remote", "clicker"}),
 }
 
 _SCENE_CUES = (
@@ -408,23 +484,103 @@ _SCENE_CUES = (
     "book",
     "paperback",
     "cover",
-    "device",
     "buttons",
     "in your hand",
     "you're holding",
+    "that's a",
+    "that's the",
+    "it's a",
+    "it is a",
+    "with a",
+    "made of",
+)
+
+# Life-archive / tool speech is not a look. "I can see Mummy as a contact"
+# must not become the keep identity for whatever they were holding.
+_NONVISUAL_KEEP_CUES = (
+    "as a contact",
+    "contacts app",
+    "check your contacts",
+    "last you talked",
+    "i found a reference",
+    "run failed",
+    "pull request",
+    "whatsapp thread",
+    "don't have the phone",
+    "do not have the phone",
+    "don't have the number",
+    "do not have the number",
+    "hey there",
+    "hi again",
+    "nice to hear",
+    "what's up",
+    "whats up",
+    "what's going on",
+    "what would you like",
+    "anything you need",
+    "hanging out",
+    "chat loop",
+    "hope you're good",
+    "hope you are good",
+    "what's on your mind",
+    "whats on your mind",
+    "grocery list",
+    "add items directly",
+    "open the finder",
+    "list all the files",
+    "files appearing",
+    "are you trying to add",
+)
+_NONVISUAL_KEEP_RE = re.compile(
+    r"("
+    r"\b(?:github|gitlab)\.com\b|"
+    r"\[[\w.-]+/[\w.-]+\]|"
+    r"\bci (?:run|failed|passing)\b|"
+    r"\bactions run\b|"
+    r"\b(?:can'?t|cannot)\b.{0,48}\bfrom here\b|"
+    r"\bgrocery list tool\b"
+    r")",
+    re.IGNORECASE,
 )
 
 
 def wants_past_visual(message: str | None) -> bool:
     """True when the owner is asking about a prior look, not the live frame."""
 
-    return bool(PAST_VISUAL_RE.search((message or "").strip()))
+    from app.memory.room import looks_like_object_locate
+
+    text = (message or "").strip()
+    if looks_like_object_locate(text):
+        return True
+    return bool(PAST_VISUAL_RE.search(text))
 
 
 def is_keep_recall_query(message: str | None) -> bool:
     """True when they ask whether a prior keep-from-sight request was stored."""
 
     return bool(KEEP_RECALL_RE.search((message or "").strip()))
+
+
+_KEEP_RECALL_ECHO_RE = re.compile(
+    r"^(?:"
+    r"(?:what )?(?:did )?i (?:just )?(?:ask|asked|tell|told) you to "
+    r"(?:remember|memorise|memorize|keep)"
+    r"(?: (?:or|and) (?:to )?(?:remember|memorise|memorize|keep))?"
+    r"|(?:just )?ask(?:ed)? you to remember"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def is_keep_recall_echo(text: str | None) -> bool:
+    """True when the line is the recall question itself, not the shown thing."""
+
+    blob = " ".join(str(text or "").split()).strip()
+    if not blob:
+        return False
+    if blob.endswith("?"):
+        return True
+    return bool(_KEEP_RECALL_ECHO_RE.match(blob.rstrip("?.!")))
 
 
 def wants_keep_visible(message: str | None) -> bool:
@@ -438,6 +594,24 @@ def wants_keep_visible(message: str | None) -> bool:
     if re.search(r"\bdo you remember\b", text, re.IGNORECASE):
         return False
     return bool(KEEP_VISIBLE_RE.search(text))
+
+
+def keep_perception_allow_raw(keep_request: str | None) -> bool:
+    """Keep-from-sight must read the JPEG. Classifier labels are not an identity."""
+
+    return wants_keep_visible(keep_request)
+
+
+def is_nonvisual_keep_speech(spoken: str | None) -> bool:
+    """True when speech is archive/tool talk, not a description of the shown thing."""
+
+    blob = " ".join(str(spoken or "").split()).strip().lower()
+    blob = blob.replace("’", "'").replace("‘", "'")
+    if not blob:
+        return False
+    if any(cue in blob for cue in _NONVISUAL_KEEP_CUES):
+        return True
+    return bool(_NONVISUAL_KEEP_RE.search(blob))
 
 
 _KEEP_TOPIC_STOP = _VISUAL_SCAFFOLD | {
@@ -489,29 +663,80 @@ def keep_topic(message: str | None) -> str:
 
 _JUNK_OBJECT = frozenset(
     {
+        "accessory",
         "adult",
+        "artifact",
         "background",
         "camera",
+        "circle",
+        "container",
+        "cloth",
+        "curtain",
+        "cylinder",
+        "device",
+        "electronics",
         "equipment",
+        "fabric",
         "finger",
+        "furniture",
+        "gadget",
+        "goods",
         "hand",
         "hands",
+        "household",
         "human",
         "image",
         "indoor",
+        "item",
+        "material",
         "object",
+        "objects",
         "optical",
         "outdoor",
+        "oval",
+        "package",
+        "packaging",
         "people",
         "person",
         "photo",
+        "product",
+        "rectangle",
         "room",
+        "scene",
         "setting",
+        "shape",
+        "shaped",
         "sign",
         "something",
+        "square",
+        "still",
         "structure",
         "stuff",
         "thing",
+        "vehicle",
+    }
+)
+# Named but not reusable on their own — need a detail, color+mark, or printed text.
+_VAGUE_CLASS = frozenset(
+    {
+        "bag",
+        "bags",
+        "book",
+        "books",
+        "bottle",
+        "bottles",
+        "box",
+        "boxes",
+        "cup",
+        "cups",
+        "mug",
+        "mugs",
+        "phone",
+        "phones",
+        "remote",
+        "remotes",
+        "smartphone",
+        "smartphones",
     }
 )
 
@@ -563,6 +788,88 @@ _SEE_OBJECT_RE = re.compile(
     r"(?:a|an|the|this|that)?\s*(?P<object>[a-z][a-z0-9' ,;-]{1,60})",
     re.IGNORECASE,
 )
+_NOUN_LEAD_RE = re.compile(
+    r"^(?:oh[,.]?\s+|so[,.]?\s+)?"
+    r"(?:a|an|the)\s+(?P<object>[a-z0-9][a-z0-9' -]{1,50})",
+    re.IGNORECASE,
+)
+_KEEP_HEADER_RE = re.compile(
+    r"^(?:you asked me to remember|owner asked evie to remember) [^.!?\n]+[.!?]?\s*",
+    re.IGNORECASE,
+)
+_KEEP_SHOWN_RE = re.compile(
+    r"^(?:what you showed|what they showed|what you were showing)\.?\s*",
+    re.IGNORECASE,
+)
+_SHAPE_HEDGE_RE = re.compile(
+    r"\b(?:container|object|item|device|product|electronics|shape|package|thing)"
+    r"[- ]shaped(?:\s+(?:thing|object|item|device))?\b"
+    r"|\bshaped\s+(?:thing|object|item|container)\b",
+    re.IGNORECASE,
+)
+_GENERIC_SCENE_LEAD_RE = re.compile(
+    r"^(?:oh[,.]?\s+|so[,.]?\s+)?"
+    r"(?:i can see|visible:|that(?:'s| is)|it(?:'s| is)|"
+    r"you(?:'re| are) holding|holding)\s+",
+    re.IGNORECASE,
+)
+_LOCATION_NOISE = frozenset(
+    {
+        "background",
+        "camera",
+        "counter",
+        "desk",
+        "floor",
+        "hand",
+        "hands",
+        "indoor",
+        "outdoor",
+        "room",
+        "shelf",
+        "table",
+        "wall",
+    }
+)
+_IDENTITY_SKIP = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "can",
+        "held",
+        "holding",
+        "i",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "see",
+        "the",
+        "this",
+        "that",
+        "was",
+        "with",
+        "you",
+        "your",
+        "im",
+        "ill",
+        "its",
+        "thats",
+        "theyre",
+        "youre",
+        "youve",
+        "asked",
+        "ask",
+        "remember",
+        "memorize",
+        "memorise",
+        "showed",
+        "shown",
+        "showing",
+        "what",
+    }
+)
 _PRINTED_RE = re.compile(
     r"(?:printed text|it reads|text reads|titled|title is|the title[,:]?|text:)\s*"
     r"[\"'“”]?(?P<text>[^.\"]{2,80})",
@@ -577,6 +884,8 @@ def _trim_object_phrase(raw: str) -> str:
             break
         if token in _OBJECT_STOP or token in _JUNK_OBJECT:
             continue
+        if token in _COLORS and not words:
+            continue
         if len(token) < 2:
             continue
         words.append(token)
@@ -585,15 +894,94 @@ def _trim_object_phrase(raw: str) -> str:
     return " ".join(words[:4])
 
 
+def _useful_object(phrase: str | None) -> str:
+    trimmed = _trim_object_phrase(phrase or "")
+    if not trimmed:
+        return ""
+    first = trimmed.split()[0]
+    if first in _JUNK_OBJECT or first in {"this", "that", "it", "you"}:
+        return ""
+    if _SHAPE_HEDGE_RE.search(phrase or "") or _SHAPE_HEDGE_RE.search(trimmed):
+        return ""
+    return trimmed
+
+
+def _remainder_has_identity(text: str | None) -> bool:
+    """True when leftover wording still names a concrete thing."""
+
+    for token in re.findall(r"[a-z0-9']+", str(text or "").lower()):
+        token = token.replace("'", "")
+        if (
+            token in _JUNK_OBJECT
+            or token in _VAGUE_CLASS
+            or token in _LOCATION_NOISE
+            or token in _COLORS
+            or token in _IDENTITY_SKIP
+        ):
+            continue
+        if len(token) < 3:
+            continue
+        return True
+    return False
+
+
+def is_generic_label_scene(text: str | None) -> bool:
+    """True when the 'scene' is only classifier labels, not what they showed."""
+
+    blob = " ".join(str(text or "").split()).strip().lower()
+    blob = re.sub(r"\bi(?:'ll| will) remember that[.!?]*$", "", blob).strip()
+    blob = _KEEP_HEADER_RE.sub("", blob, count=1).strip(" .")
+    blob = re.sub(
+        r"^owner asked evie to remember[^.!?\n]*[.!]?\s*",
+        "",
+        blob,
+    ).strip(" .")
+    blob = _KEEP_SHOWN_RE.sub("", blob).strip(" .")
+    if not blob:
+        return True
+    if _SHAPE_HEDGE_RE.search(blob) and not _remainder_has_identity(
+        _SHAPE_HEDGE_RE.sub(" ", blob)
+    ):
+        return True
+    class_lead = re.match(
+        r"^(?:oh[,.]?\s+|so[,.]?\s+)?"
+        r"(?:that(?:'s| is)|it(?:'s| is)|you(?:'re| are) holding|holding)\s+"
+        r"(?:a|an|the)\s+(?P<obj>[a-z]+)\b",
+        blob,
+        re.IGNORECASE,
+    )
+    if class_lead and class_lead.group("obj").lower() in (_JUNK_OBJECT | _VAGUE_CLASS):
+        rest = blob[class_lead.end() :].strip(" .,")
+        if not rest or re.match(
+            r"^(?:it reads|printed text:?|text:?)\s+\S",
+            rest,
+            re.IGNORECASE,
+        ):
+            return True
+    match = re.match(r"^(?:i can see|visible:)\s+(.+)$", blob)
+    if match:
+        parts = [part.strip() for part in re.split(r"[,;]", match.group(1)) if part.strip()]
+        if not parts or (
+            all(not _useful_object(part) for part in parts)
+            and not _remainder_has_identity(match.group(1))
+        ):
+            return True
+    stripped = _GENERIC_SCENE_LEAD_RE.sub("", blob).strip(" .")
+    if stripped != blob or re.match(r"^(?:a|an|the)\s+", stripped):
+        if not _remainder_has_identity(stripped):
+            return True
+    return not _remainder_has_identity(blob)
+
+
 def _object_from_see_list(text: str) -> str:
     match = re.search(r"\bi can see\s+(.+)$", text or "", re.IGNORECASE)
     if not match:
         return ""
     parts = [part.strip() for part in re.split(r"[,;]", match.group(1)) if part.strip()]
     for part in reversed(parts):
-        trimmed = _trim_object_phrase(part)
-        if trimmed:
-            return trimmed
+        useful = _useful_object(part)
+        if useful:
+            return useful
     return ""
 
 
@@ -603,15 +991,21 @@ def _object_from_utterance(text: str) -> str:
         return ""
     named = _THIS_IS_MY_RE.search(blob)
     if named:
-        trimmed = _trim_object_phrase(named.group("object"))
-        if trimmed and trimmed.split()[0] not in _JUNK_OBJECT:
-            return trimmed
+        useful = _useful_object(named.group("object"))
+        if useful:
+            return useful
     for pattern in (_HOLDING_OBJECT_RE, _SEE_OBJECT_RE):
         match = pattern.search(blob)
         if match:
-            trimmed = _trim_object_phrase(match.group("object"))
-            if trimmed and trimmed.split()[0] not in _JUNK_OBJECT:
-                return trimmed
+            useful = _useful_object(match.group("object"))
+            if useful:
+                return useful
+    for sentence in re.split(r"(?<=[.!?])\s+", blob):
+        lead = _NOUN_LEAD_RE.match(sentence.strip())
+        if lead:
+            useful = _useful_object(lead.group("object"))
+            if useful:
+                return useful
     listed = _object_from_see_list(blob)
     if listed:
         return listed
@@ -649,7 +1043,9 @@ def clean_visual_scene(
     text = " ".join(text.split()).strip(" -—")
     if is_empty_visual_scene(text) or is_memory_hedge_scene(text) or is_clarity_hedge(text):
         return ""
-    return text[:500]
+    if is_generic_label_scene(text):
+        return ""
+    return text[:700]
 
 
 def _preferred_scene_line(usable: str, obj: str) -> str:
@@ -691,8 +1087,11 @@ def extract_visual_identity(
     """Generic object identity from a keep request plus what the camera saw."""
 
     asked = " ".join(str(keep_request or "").split()).strip()
+    seed = _usable_spoken(scene) or _scene_from_prompt(scene)
+    if not seed and not is_nonvisual_keep_speech(scene):
+        seed = scene
     usable = clean_visual_scene(
-        _usable_spoken(scene) or _scene_from_prompt(scene) or scene,
+        seed,
         keep_request=asked,
     )
     printed = " ".join(str(ocr or "").split()).strip()
@@ -719,15 +1118,47 @@ def extract_visual_identity(
     topic = keep_topic(asked or scene or "")
     if topic in {"", "this", "that", "it", "you"}:
         topic = ""
+    if topic and not _useful_object(topic):
+        topic = ""
+    label_obj = ""
+    for name in names:
+        useful = _useful_object(name)
+        if useful:
+            label_obj = useful
+            break
     obj = (
         topic
         or _object_from_utterance(asked)
         or _object_from_utterance(usable)
-        or _trim_object_phrase(names[0] if names else "")
+        or (label_obj if usable else "")
     )
-    if obj in {"this", "that", "it", "you"}:
-        obj = ""
+    obj = _useful_object(obj)
     if not usable:
+        if printed:
+            spoken = f"It reads {printed[:160].rstrip('.')}."
+            if "remember" not in spoken.lower():
+                spoken = spoken.rstrip(".") + ". I'll remember that."
+            recall = (
+                f"You asked me to remember {_named_object_phrase(obj)}."
+                if obj
+                else "You asked me to remember what you showed."
+            )
+            if printed.lower() not in recall.lower():
+                recall = (
+                    recall.rstrip(".")
+                    + ". It reads "
+                    + printed[:160].rstrip(".")
+                    + "."
+                )
+            return {
+                "object": obj,
+                "colors": color_names[:4],
+                "printed": printed,
+                "scene": f"It reads {printed[:160].rstrip('.')}.",
+                "usable": True,
+                "recall": recall[:800],
+                "spoken": spoken[:800],
+            }
         spoken = "Hold it in the camera so I can see it."
         recall = (
             f"You asked me to remember {_named_object_phrase(obj)}."
@@ -742,7 +1173,7 @@ def extract_visual_identity(
             "printed": printed,
             "scene": "",
             "usable": False,
-            "recall": recall[:400],
+            "recall": recall[:800],
             "spoken": spoken,
         }
     parts: list[str] = []
@@ -753,16 +1184,15 @@ def extract_visual_identity(
     spoken = ". ".join(parts)
     if "remember" not in spoken.lower():
         spoken = spoken.rstrip(".") + ". I'll remember that."
-    recall = (
-        f"You asked me to remember {_named_object_phrase(obj)}."
-        if obj
-        else "You asked me to remember what you showed."
-    )
-    scene_line = _preferred_scene_line(usable, obj)
-    if scene_line and scene_line.lower() not in recall.lower():
-        recall = recall.rstrip(".") + ". " + scene_line[0].upper() + scene_line[1:]
-        if not recall.endswith((".", "!", "?")):
-            recall += "."
+    description = usable[:700]
+    if not description.endswith((".", "!", "?")):
+        description += "."
+    if obj:
+        recall = f"You asked me to remember {_named_object_phrase(obj)}."
+    else:
+        recall = "You asked me to remember what you showed."
+    if description.lower() not in recall.lower():
+        recall = recall.rstrip(".") + ". " + description[0].upper() + description[1:]
     if printed and printed.lower() not in recall.lower():
         recall = recall.rstrip(".") + ". It reads " + printed[:160].rstrip(".") + "."
     elif color_names and not any(name in recall.lower() for name in color_names):
@@ -773,9 +1203,70 @@ def extract_visual_identity(
         "printed": printed,
         "scene": usable,
         "usable": True,
-        "recall": recall[:400],
-        "spoken": spoken[:400],
+        "recall": recall[:800],
+        "spoken": spoken[:800],
     }
+
+
+def _owner_keep_description(payload: dict[str, Any], text: str | None = None) -> str:
+    """What to speak on later recall: the thing itself, not the keep header."""
+
+    description = " ".join(str(payload.get("description") or "").split()).strip()
+    if (
+        description
+        and "they said:" not in description.lower()
+        and "asked evie" not in description.lower()
+        and _keep_line_is_identity(description)
+    ):
+        if not description.endswith((".", "!", "?")):
+            description += "."
+        return description[:800]
+    stored = " ".join(str(payload.get("recall") or text or "").split()).strip()
+    rest = _KEEP_HEADER_RE.sub("", stored, count=1).strip()
+    if (
+        rest
+        and rest.lower() != stored.lower()
+        and "they said:" not in rest.lower()
+        and _keep_line_is_identity(rest)
+    ):
+        if not rest.endswith((".", "!", "?")):
+            rest += "."
+        return rest[:800]
+    return ""
+
+
+def _spoken_named_object(payload: dict[str, Any], text: str | None = None) -> str:
+    """Owner line from a named keep when the stored scene is only a class or color."""
+
+    obj = _useful_object(str(payload.get("object") or payload.get("topic") or ""))
+    color_names = [
+        str(item).strip().lower()
+        for item in (payload.get("colors") or [])
+        if str(item).strip()
+    ]
+    asked = str(payload.get("keep_request") or "") or None
+    if not obj:
+        identity = extract_visual_identity(
+            scene=text,
+            ocr=str(payload.get("ocr_text") or payload.get("printed") or "") or None,
+            labels=list(payload.get("labels") or []),
+            colors=color_names,
+            keep_request=asked,
+        )
+        obj = _useful_object(str(identity.get("object") or ""))
+        if not color_names:
+            color_names = [str(item) for item in (identity.get("colors") or []) if item]
+    if not obj:
+        return ""
+    if _SHAPE_HEDGE_RE.search(obj):
+        return ""
+    named = _named_object_phrase(obj)
+    if color_names and color_names[0] not in named.lower():
+        named = f"a {color_names[0]} {obj}"
+    line = f"That's {named}."[:800]
+    if not _keep_line_is_identity(line):
+        return ""
+    return line
 
 
 def recall_spoken_from_keep(
@@ -785,28 +1276,12 @@ def recall_spoken_from_keep(
     """Owner-facing recall line from a keep fact, including older request blobs."""
 
     data = payload or {}
-    stored = " ".join(str(data.get("recall") or "").split()).strip()
-    lowered_stored = stored.lower()
-    if (
-        stored
-        and "they said:" not in lowered_stored
-        and "asked evie" not in lowered_stored
-        and "it's that" not in lowered_stored
-        and "i can see the with" not in lowered_stored
-    ):
-        return stored[:400]
-    raw = " ".join(str(text or "").split()).strip()
-    if not raw:
+    spoken = _owner_keep_description(data, text)
+    if spoken:
+        return spoken
+    raw = " ".join(str(text or data.get("recall") or data.get("description") or "").split()).strip()
+    if is_nonvisual_keep_speech(raw) or is_nonvisual_keep_speech(data.get("description")):
         return ""
-    lowered_raw = raw.lower()
-    if (
-        lowered_raw.startswith("you asked me to remember")
-        and "they said:" not in lowered_raw
-        and "asked evie" not in lowered_raw
-        and "it's that" not in lowered_raw
-        and "episode:" not in lowered_raw
-    ):
-        return raw[:400]
     identity = extract_visual_identity(
         scene=raw,
         ocr=str(data.get("ocr_text") or data.get("printed") or "") or None,
@@ -814,9 +1289,57 @@ def recall_spoken_from_keep(
         colors=list(data.get("colors") or []),
         keep_request=str(data.get("keep_request") or "") or None,
     )
-    if identity.get("recall"):
-        return str(identity["recall"])[:400]
-    return raw[:400]
+    scene = str(identity.get("scene") or "").strip()
+    if _keep_line_is_identity(scene):
+        if not scene.endswith((".", "!", "?")):
+            scene += "."
+        return scene[:800]
+    named = _spoken_named_object(data, raw) or _spoken_named_object(
+        {
+            "object": identity.get("object"),
+            "colors": identity.get("colors") or data.get("colors"),
+            "keep_request": data.get("keep_request"),
+        },
+        raw,
+    )
+    if _keep_line_is_identity(named):
+        return named
+    stored = " ".join(str(data.get("recall") or "").split()).strip()
+    rest = _KEEP_HEADER_RE.sub("", stored or raw, count=1).strip()
+    rest = _KEEP_SHOWN_RE.sub("", rest).strip(" .")
+    if _keep_line_is_identity(rest):
+        if not rest.endswith((".", "!", "?")):
+            rest += "."
+        return rest[:800]
+    return ""
+
+
+def owner_memory_hit_text(text: str | None, payload: dict[str, Any] | None = None) -> str:
+    """Live Mini must see the shown thing, not the keep-request header."""
+
+    data = payload if isinstance(payload, dict) else {}
+    raw = " ".join(str(text or data.get("text") or "").split()).strip()
+    if not raw:
+        raw = " ".join(
+            str(data.get("description") or data.get("recall") or "").split()
+        ).strip()
+    if not raw:
+        return ""
+    blob = raw.lower()
+    keepish = (
+        "asked evie to remember" in blob
+        or "you asked me to remember" in blob
+        or str(data.get("kind") or "") == "visual_keep"
+        or str(data.get("reason") or "") == "visual_keep"
+        or bool(data.get("description"))
+        or bool(data.get("keep_request"))
+    )
+    if not keepish:
+        return raw[:800]
+    spoken = recall_spoken_from_keep(raw, data)
+    if spoken:
+        return spoken[:800]
+    return ""
 
 
 def keep_owner_spoken(
@@ -844,7 +1367,7 @@ def keep_owner_spoken(
     )
     spoken = str(identity.get("spoken") or "").strip()
     if spoken and not is_clarity_hedge(spoken) and "hold it in the camera" not in spoken.lower():
-        return spoken[:400]
+        return spoken[:800]
     if frame_ok:
         obj = str(identity.get("object") or "").strip()
         color_names = [str(item) for item in (identity.get("colors") or []) if item]
@@ -853,10 +1376,13 @@ def keep_owner_spoken(
             if color_names and color_names[0] not in named.lower():
                 named = f"a {color_names[0]} {obj}"
             line = f"That's {named}. I'll remember that."
-            return line[:400]
+            return line[:800]
+        scene = str(identity.get("scene") or "").strip()
+        if scene:
+            return scene[:800]
         if color_names:
-            return f"I can see it — {', '.join(color_names[:3])}. I'll remember that."[:400]
-    return spoken[:400] or "Hold it in the camera so I can see it."
+            return f"I can see it — {', '.join(color_names[:3])}. I'll remember that."[:800]
+    return spoken[:800] or "Hold it in the camera so I can see it."
 
 
 def keep_sight_text(
@@ -892,11 +1418,25 @@ def wants_current_visual(message: str | None) -> bool:
         return False
     if wants_past_visual(text):
         return False
+    lowered = text.lower()
+    if "look up" in lowered or "look this up" in lowered or "look it up" in lowered:
+        return False
     return bool(CURRENT_VISUAL_RE.search(text))
+
+
+def wants_held_object_look(message: str | None) -> bool:
+    """True when they asked the camera to see what they are holding or showing now."""
+
+    text = (message or "").strip()
+    if not text or not wants_current_visual(text):
+        return False
+    return bool(HELD_OBJECT_RE.search(text))
 
 
 def is_visual_recall_query(message: str | None) -> bool:
     """True when the owner is asking about something she already saw or saved."""
+
+    from app.memory.room import looks_like_object_locate
 
     text = (message or "").strip()
     if not text:
@@ -904,6 +1444,8 @@ def is_visual_recall_query(message: str | None) -> bool:
     if wants_keep_visible(text):
         return False
     if is_keep_recall_query(text):
+        return True
+    if looks_like_object_locate(text):
         return True
     if wants_current_visual(text) and not wants_past_visual(text):
         return False
@@ -980,9 +1522,20 @@ def _usable_spoken(spoken: str | None) -> str | None:
     lowered = text.lower()
     if any(lowered.startswith(prefix) for prefix in _BOILERPLATE_PREFIXES):
         return None
-    if is_memory_hedge_scene(text) or is_clarity_hedge(text) or is_empty_visual_scene(text):
+    if is_camera_prompt_echo(text):
         return None
-    return text[:500]
+    if is_nonvisual_keep_speech(text):
+        return None
+    if (
+        is_keep_ack_only(text)
+        or is_memory_hedge_scene(text)
+        or is_clarity_hedge(text)
+        or is_empty_visual_scene(text)
+        or is_generic_label_scene(text)
+        or "hold it in the camera" in lowered
+    ):
+        return None
+    return text[:700]
 
 
 def _scene_from_prompt(spoken: str | None) -> str | None:
@@ -995,6 +1548,8 @@ def _scene_from_prompt(spoken: str | None) -> str | None:
     if not match:
         return None
     facts = " ".join(match.group(1).split()).strip(" .;")
+    if not facts or is_generic_label_scene(facts):
+        return None
     return facts[:300] or None
 
 
@@ -1007,13 +1562,64 @@ def looks_like_visual_description(spoken: str | None) -> bool:
     lowered = text.lower()
     if any(lowered.startswith(prefix) for prefix in _BOILERPLATE_PREFIXES):
         return False
-    if _HEDGE_OPENING.search(text) or is_memory_hedge_scene(text):
+    if is_camera_prompt_echo(text) or "hold it in the camera" in lowered:
+        return False
+    if is_nonvisual_keep_speech(text):
+        return False
+    if _HEDGE_OPENING.search(text) or is_memory_hedge_scene(text) or is_clarity_hedge(text):
+        return False
+    if is_generic_label_scene(text) or is_empty_visual_scene(text):
+        return False
+    if is_keep_ack_only(text):
         return False
     if any(cue in lowered for cue in _SCENE_CUES):
+        return True
+    if _NOUN_LEAD_RE.match(text) or _HOLDING_OBJECT_RE.search(text):
         return True
     if simple_tokens(text) & (_COLORS | _CLOTHING):
         return True
     return False
+
+
+def is_keep_identity_speech(spoken: str | None) -> bool:
+    """True when Mini named the shown thing, not an ack or a camera prompt."""
+
+    text = " ".join(str(spoken or "").split()).strip()
+    if len(text) < 12:
+        return False
+    if is_camera_prompt_echo(text) or is_keep_ack_only(text):
+        return False
+    if is_keep_recall_echo(text):
+        return False
+    if is_nonvisual_keep_speech(text):
+        return False
+    if _keep_is_thin({"description": text, "usable_scene": True}, text):
+        return False
+    if _PRINTED_RE.search(text) and _remainder_has_identity(text):
+        return True
+    return looks_like_visual_description(text)
+
+
+def is_keep_injection_spoken(text: str | None) -> bool:
+    """True when look spoken is not yet a reusable visual identity.
+
+    Camera prompts, classifier labels, and vague class names must not be
+    stored or spoken as the keep. Mini (or a JPEG reread) has to name the
+    pixels first.
+    """
+
+    spoken = " ".join(str(text or "").split()).strip()
+    if not spoken:
+        return True
+    if (
+        is_camera_prompt_echo(spoken)
+        or is_generic_label_scene(spoken)
+        or is_clarity_hedge(spoken)
+        or is_keep_ack_only(spoken)
+        or is_empty_visual_scene(spoken)
+    ):
+        return True
+    return not is_keep_identity_speech(spoken)
 
 
 def _stems(tokens: set[str]) -> set[str]:
@@ -1038,10 +1644,15 @@ def _expand_aliases(tokens: set[str]) -> set[str]:
 def visual_content_tokens(query: str | None) -> set[str]:
     """Object / clothing / color tokens, with question scaffolding removed."""
 
+    from app.memory.room import LOCATE_SCAFFOLD, looks_like_object_locate
+
     tokens = simple_tokens(query or "")
     if "shirt" in tokens or "tshirt" in tokens:
         tokens.update({"shirt", "tshirt"})
-    tokens = {token for token in tokens if len(token) >= 3 and token not in _VISUAL_SCAFFOLD}
+    drop = set(_VISUAL_SCAFFOLD)
+    if looks_like_object_locate(query):
+        drop |= LOCATE_SCAFFOLD
+    tokens = {token for token in tokens if len(token) >= 3 and token not in drop}
     return _expand_aliases(tokens)
 
 
@@ -1123,7 +1734,7 @@ def visual_observation_text(
     seen: set[str] = {item.lower() for item in bits}
     for name in labels or []:
         raw = str(name or "").strip()
-        if not raw or raw.lower() in seen or raw.lower() in {"person", "people", "human"}:
+        if not raw or raw.lower() in seen or raw.lower() in _JUNK_OBJECT:
             continue
         bits.append(raw)
         seen.add(raw.lower())
@@ -1151,11 +1762,14 @@ def visual_observation_text(
     if saved_path:
         parts.append(f"Saved to {saved_path}")
     named = " ".join(str(keep_named or "").split()).strip()
-    if named and named.lower() not in {"this", "that", "it"}:
-        asked = f"They asked Evie to remember the {named}"
+    if (
+        named
+        and named.lower() not in {"this", "that", "it"}
+        and named.lower() not in _JUNK_OBJECT
+    ):
         blob = " ".join(parts).lower()
         if named.lower() not in blob:
-            parts.append(asked)
+            parts.append("They asked Evie to remember the " + named)
     text = ". ".join(part.rstrip(".") for part in parts if part).strip()
     if not text:
         text = lead
@@ -1180,6 +1794,7 @@ def _event_text(event: Event) -> str:
 def _observation_row(event: Event, *, score: float, reason: str) -> dict[str, Any]:
     text = _event_text(event)
     when = _iso_time(event.occurred_at)
+    content = dict(event.content or {})
     return {
         "id": str(event.id),
         "when": when,
@@ -1193,6 +1808,9 @@ def _observation_row(event: Event, *, score: float, reason: str) -> dict[str, An
         "event_source": event.source,
         "conversation_id": str(event.conversation_id) if event.conversation_id else None,
         "occurred_at": event.occurred_at,
+        "object": content.get("object") or "",
+        "surface": content.get("surface") or "",
+        "placement": content.get("placement") or "",
         "parts": {"lexical": 0.5, "speaker": 0.92, "recency": 1.0, "phrase": 1.0},
         "reason": reason,
     }
@@ -1204,6 +1822,7 @@ async def search_visual_observations(
     *,
     k: int = 6,
     until=None,
+    enrich: bool = True,
 ) -> list[dict[str, Any]]:
     """Find camera.observation rows by object/clothing/color, not question words."""
 
@@ -1232,7 +1851,7 @@ async def search_visual_observations(
                     Memory.is_current.is_(True),
                     Memory.memory_type.in_(("observation", "fact")),
                 )
-                .order_by(Memory.event_time.desc())
+                .order_by(Memory.event_time.desc(), Memory.id.desc())
                 .limit(80)
             )
         ).scalars().all()
@@ -1240,12 +1859,22 @@ async def search_visual_observations(
     keep_hits: list[dict[str, Any]] = []
     other_hits: list[dict[str, Any]] = []
     seen: set[str] = set()
+    recency_first = is_keep_recall_query(query) and keep_topic(query) in {
+        "",
+        "this",
+        "that",
+        "it",
+        "you",
+    }
     for row in keep_rows:
         payload = row.payload or {}
         kind = str(payload.get("kind") or "")
-        if kind not in {"visual", "visual_keep"} and row.memory_type != "observation":
+        if kind not in {"visual", "visual_keep", "object_placement"} and row.memory_type != "observation":
             continue
-        if kind not in {"visual", "visual_keep"} and str(row.text or "").lower().startswith("observed:"):
+        if (
+            kind not in {"visual", "visual_keep", "object_placement"}
+            and str(row.text or "").lower().startswith("observed:")
+        ):
             continue
         blob = " ".join(
             part
@@ -1255,39 +1884,141 @@ async def search_visual_observations(
                 str(payload.get("value") or ""),
                 str(payload.get("topic") or ""),
                 str(payload.get("object") or ""),
+                str(payload.get("placement") or ""),
+                str(payload.get("surface") or ""),
+                " ".join(str(item) for item in (payload.get("objects") or []) if item),
                 str(payload.get("recall") or ""),
+                str(payload.get("description") or ""),
                 str(payload.get("printed") or payload.get("ocr_text") or ""),
             )
             if part
         )
-        if is_memory_hedge_scene(row.text):
+        recency_keep = recency_first and kind == "visual_keep"
+        if is_memory_hedge_scene(row.text) and not recency_keep:
             continue
-        if not visual_observation_matches(query, blob):
+        if not recency_keep and not visual_observation_matches(query, blob):
             continue
         memory_id = str(row.id)
         if memory_id in seen:
             continue
         seen.add(memory_id)
         recall = recall_spoken_from_keep(row.text, payload)
+        keepish = kind == "visual_keep" or (
+            row.memory_type == "fact" and str(payload.get("kind") or "") == "visual_keep"
+        )
         item = {
             "id": memory_id,
             "source": "memory",
             "when": _iso_time(row.event_time),
-            "text": recall or row.text,
+            "text": (recall if keepish else (recall or row.text))[:800],
             "kind": "memory",
             "memory_type": row.memory_type,
             "object": payload.get("object") or payload.get("topic") or "",
+            "surface": payload.get("surface") or "",
+            "placement": payload.get("placement") or "",
             "recall": recall,
-            "score": 0.94 if kind == "visual_keep" or row.memory_type == "fact" else 0.9,
+            "description": payload.get("description") or None,
+            "attachment_id": payload.get("attachment_id"),
+            "ocr_text": payload.get("ocr_text") or payload.get("printed") or None,
+            "printed": payload.get("printed") or None,
+            "labels": list(payload.get("labels") or []),
+            "colors": list(payload.get("colors") or []),
+            "keep_request": payload.get("keep_request") or None,
+            "score": 0.94 if kind == "visual_keep" else 0.9,
             "occurred_at": row.event_time,
             "parts": {"lexical": 0.6, "speaker": 0.95, "recency": 1.0, "phrase": 1.0},
-            "reason": "visual_keep" if kind == "visual_keep" or row.memory_type == "fact" else "visual_observation",
+            "reason": "visual_keep" if kind == "visual_keep" else "visual_observation",
         }
-        if kind == "visual_keep" or row.memory_type == "fact":
+        item["_thin"] = _keep_is_thin(payload, row.text)
+        if kind == "visual_keep":
             keep_hits.append(item)
         else:
             other_hits.append(item)
+    if is_keep_recall_query(query):
+        topic = keep_topic(query)
+        recency_first = topic in {"", "this", "that", "it", "you"}
+        if recency_first and keep_hits:
+            # "What did I just ask you to remember?" is the newest look,
+            # not last week's thicker keep.
+            keep_hits = keep_hits[:1]
+            other_hits = []
+        else:
+            usable_keeps = [item for item in keep_hits if not item.get("_thin")]
+            if usable_keeps:
+                keep_hits = usable_keeps
+                other_hits = [
+                    item
+                    for item in other_hits
+                    if _keep_hit_has_identity(item)
+                ]
+    needs_identity = bool(
+        is_keep_recall_query(query)
+        and keep_hits
+        and not _keep_stored_identity_line(keep_hits[0])
+    )
+    needs_jpeg = bool(
+        needs_identity and _attachment_uuid(keep_hits[0].get("attachment_id"))
+    )
+    for item in keep_hits:
+        item.pop("_thin", None)
+    for item in other_hits:
+        item.pop("_thin", None)
     hits: list[dict[str, Any]] = keep_hits + other_hits
+    if enrich and needs_identity:
+        upgraded = None
+        needle = _attachment_uuid(keep_hits[0].get("attachment_id"))
+        if needs_jpeg and needle:
+            await _await_keep_reread(needle, timeout=KEEP_RECALL_ENRICH_SECONDS)
+            existing = await _current_keep_for_attachment(session, needle)
+            if existing and not _keep_needs_enrichment(
+                {
+                    "attachment_id": needle,
+                    "description": existing.get("description"),
+                    "recall": existing.get("recall"),
+                    "text": existing.get("_text"),
+                    "object": existing.get("object"),
+                    "printed": existing.get("printed") or existing.get("ocr_text"),
+                    "ocr_text": existing.get("ocr_text"),
+                }
+            ):
+                return await search_visual_observations(
+                    session, query, k=k, until=until, enrich=False
+                )
+            upgraded = await _enrich_keep_from_attachment(
+                session,
+                keep_hits[0],
+                timeout=KEEP_RECALL_ENRICH_SECONDS,
+            )
+        if not (upgraded and (upgraded.get("kept") or upgraded.get("skipped"))):
+            since = None
+            if recency_first:
+                since = _keep_speech_since(
+                    keep_hits[0].get("occurred_at") or keep_hits[0].get("when")
+                )
+            upgraded = await adopt_recent_spoken_keep(
+                session, actor="owner", since=since
+            )
+        if upgraded and (upgraded.get("kept") or upgraded.get("skipped")):
+            return await search_visual_observations(
+                session, query, k=k, until=until, enrich=False
+            )
+    if (
+        is_keep_recall_query(query)
+        and keep_hits
+        and not any(_keep_hit_has_identity(item) for item in keep_hits)
+    ):
+        topic = keep_topic(query)
+        recency_first = topic in {"", "this", "that", "it", "you"}
+        if recency_first:
+            hits = keep_hits
+        else:
+            identity_others = [
+                item for item in other_hits if _keep_hit_has_identity(item)
+            ]
+            if identity_others:
+                hits = identity_others
+    if recency_first:
+        return hits[:1]
     if len(hits) >= max(1, k):
         return hits[: max(1, k)]
     for event in rows:
@@ -1295,8 +2026,22 @@ async def search_visual_observations(
         if is_memory_hedge_scene(text):
             continue
         keep_asked = str((event.content or {}).get("keep_request") or "")
-        haystack = f"{text} {keep_asked}".strip()
+        extra = " ".join(
+            str(part)
+            for part in (
+                (event.content or {}).get("object"),
+                (event.content or {}).get("placement"),
+                (event.content or {}).get("surface"),
+                " ".join(str(item) for item in ((event.content or {}).get("objects") or []) if item),
+            )
+            if part
+        )
+        haystack = f"{text} {keep_asked} {extra}".strip()
         if not visual_observation_matches(query, haystack):
+            continue
+        if is_keep_recall_query(query) and keep_hits and not _keep_hit_has_identity(
+            {"text": text, "keep_request": keep_asked}
+        ):
             continue
         event_id = str(event.id)
         if event_id in seen:
@@ -1312,8 +2057,14 @@ async def _recent_keep_request(
     session: AsyncSession,
     *,
     device_id: str | None = None,
+    require_empty: bool = True,
 ) -> str:
-    """Keep utterance from a recent empty look, so a later clear frame can store it."""
+    """Keep utterance from a recent look.
+
+    ``require_empty`` is for a later clear frame filling a blank memorize.
+    Mini's first-look description must bind even when that look already stored
+    classifier labels.
+    """
 
     cutoff = utcnow() - SPOKEN_SCENE_WINDOW
     stmt = (
@@ -1334,16 +2085,22 @@ async def _recent_keep_request(
         asked = " ".join(str(content.get("keep_request") or "").split()).strip()
         if not wants_keep_visible(asked):
             continue
+        if not require_empty:
+            return asked[:400]
         labels = [str(item) for item in (content.get("labels") or []) if item]
         ocr = str(content.get("ocr_text") or "").strip()
         scene = str(content.get("spoken") or "")
-        if wants_keep_visible(asked) and not labels and not ocr:
+        if not labels and not ocr:
             if (
                 not scene
                 or is_empty_visual_scene(scene)
                 or is_memory_hedge_scene(scene)
             ):
                 return asked[:400]
+    if device_id:
+        return await _recent_keep_request(
+            session, device_id=None, require_empty=require_empty
+        )
     return ""
 
 
@@ -1362,6 +2119,654 @@ async def _latest_user_text(session: AsyncSession) -> str:
     if row is None:
         return ""
     return str((row.content or {}).get("text") or "").strip()
+
+
+def _keep_stored_identity_line(item: dict[str, Any] | None) -> str:
+    """Reusable first-look line already stored on a keep fact, if any."""
+
+    data = item or {}
+    for raw in (
+        data.get("description"),
+        data.get("recall"),
+        data.get("text"),
+    ):
+        blob = " ".join(str(raw or "").split()).strip()
+        blob = _KEEP_HEADER_RE.sub("", blob, count=1).strip()
+        blob = _KEEP_SHOWN_RE.sub("", blob).strip(" .")
+        if _keep_line_is_identity(blob):
+            return blob
+    return ""
+
+
+def _keep_needs_enrichment(item: dict[str, Any]) -> bool:
+    """True when a stored keep cannot describe the shown thing on its own."""
+
+    if not item.get("attachment_id"):
+        return False
+    if _keep_stored_identity_line(item):
+        return False
+    return True
+
+
+def _attachment_uuid(value: Any) -> str:
+    from uuid import UUID
+
+    try:
+        return str(UUID(str(value or "").strip()))
+    except (TypeError, ValueError):
+        return ""
+
+
+def _keep_has_pixels(keep: dict[str, Any] | None) -> bool:
+    """True when a keep row is tied to a stored frame, not later chat."""
+
+    if not keep:
+        return False
+    if str(keep.get("attachment_id") or "").strip():
+        return True
+    if keep.get("image_ready"):
+        return True
+    try:
+        return int(keep.get("encoded_bytes") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+_KEEP_REREAD_IN_FLIGHT: set[str] = set()
+
+
+def schedule_keep_identity_reread(
+    attachment_id: str,
+    keep_request: str,
+    *,
+    actor: str = "owner",
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> None:
+    """Reread the keep JPEG on a fresh session after the look commits.
+
+    The sidecar keeps running after EV.app quits, so identity can land
+    before reopen even if Mini never named the frame.
+    """
+
+    import sys
+
+    if "pytest" in sys.modules:
+        return
+    needle = _attachment_uuid(attachment_id)
+    asked = " ".join(str(keep_request or "").split()).strip()[:400]
+    if not asked:
+        asked = "memorize this"
+    if not needle:
+        return
+    if needle in _KEEP_REREAD_IN_FLIGHT:
+        return
+    running = loop
+    if running is None:
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+    _KEEP_REREAD_IN_FLIGHT.add(needle)
+    from app.ev.camera_runtime import log_camera
+
+    log_camera(
+        "keep.identity_reread_scheduled",
+        request_id=needle,
+    )
+
+    async def _run() -> None:
+        from uuid import UUID
+
+        from app.db import SessionLocal
+        from app.models import Attachment
+
+        upgraded = None
+        try:
+            attached = False
+            for delay in (0.0, 0.4, 1.2, 2.5, 5.0):
+                if delay:
+                    await asyncio.sleep(delay)
+                async with SessionLocal() as session:
+                    attached = await session.get(Attachment, UUID(needle)) is not None
+                if attached:
+                    break
+            if not attached:
+                logger.warning(
+                    "keep identity reread missing attachment=%s", needle[:8]
+                )
+                return
+            from app.ev.look import KEEP_LOOK_PROMPT, KEEP_REREAD_PROMPT
+
+            for attempt, prompt in enumerate((KEEP_LOOK_PROMPT, KEEP_REREAD_PROMPT), start=1):
+                async with SessionLocal() as session:
+                    upgraded = await reread_keep_identity_from_attachment(
+                        session,
+                        needle,
+                        asked,
+                        actor=actor,
+                        prompt=prompt,
+                    )
+                    await session.commit()
+                if upgraded and upgraded.get("kept"):
+                    break
+                if attempt == 1:
+                    await asyncio.sleep(2.0)
+            log_camera(
+                "keep.identity_reread_done",
+                request_id=needle,
+                extra={"kept": bool(upgraded and upgraded.get("kept"))},
+            )
+        except Exception:  # noqa: BLE001 - recall can still try later
+            logger.warning("keep identity reread skipped", extra={"attachment": needle[:8]}, exc_info=True)
+        finally:
+            _KEEP_REREAD_IN_FLIGHT.discard(needle)
+
+    running.create_task(_run())
+
+
+async def _await_keep_reread(attachment_id: str, *, timeout: float | None = None) -> None:
+    """Wait for a background JPEG reread so reopen recall can use identity."""
+
+    needle = _attachment_uuid(attachment_id)
+    if not needle or needle not in _KEEP_REREAD_IN_FLIGHT:
+        return
+    if timeout is None:
+        from app.ev.look import keep_reread_timeout_seconds
+
+        budget = keep_reread_timeout_seconds() + 20.0
+    else:
+        budget = timeout
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.05, budget)
+    while needle in _KEEP_REREAD_IN_FLIGHT and loop.time() < deadline:
+        await asyncio.sleep(0.25)
+
+
+def _schedule_keep_reread_after_commit(
+    session: AsyncSession,
+    *,
+    attachment_id: str,
+    keep_request: str,
+    actor: str,
+) -> None:
+    from sqlalchemy import event as sa_event
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    def _on_commit(_sync_session) -> None:
+        def _kick() -> None:
+            schedule_keep_identity_reread(
+                attachment_id, keep_request, actor=actor, loop=loop
+            )
+
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(_kick)
+        else:
+            _kick()
+
+    sa_event.listen(session.sync_session, "after_commit", _on_commit, once=True)
+
+
+def keep_reread_look_target(
+    body: dict[str, Any] | None,
+    *,
+    arguments: dict[str, Any] | None = None,
+    transcript: str | None = None,
+) -> tuple[str, str] | None:
+    """Attachment + memorize phrase from a committed look tool result."""
+
+    payload = body or {}
+    args = arguments or {}
+    prompt = str(args.get("prompt") or "").strip()
+    if is_camera_prompt_echo(prompt):
+        prompt = ""
+    asked = ""
+    for part in (
+        str(payload.get("keep_request") or "").strip(),
+        str(transcript or "").strip(),
+        prompt,
+    ):
+        if part and wants_keep_visible(part):
+            asked = part[:400]
+            break
+    needle = _attachment_uuid(payload.get("attachment_id"))
+    if not needle:
+        return None
+    if not (asked or bool(payload.get("kept"))):
+        return None
+    return needle, asked or "memorize this"
+
+
+def kick_keep_identity_reread_from_look(
+    body: dict[str, Any] | None,
+    *,
+    arguments: dict[str, Any] | None = None,
+    transcript: str | None = None,
+    actor: str = "owner",
+) -> None:
+    """Start JPEG reread after the look session has committed."""
+
+    target = keep_reread_look_target(
+        body, arguments=arguments, transcript=transcript
+    )
+    if target is None:
+        return
+    needle, asked = target
+    schedule_keep_identity_reread(needle, asked, actor=actor)
+
+
+async def reread_keep_identity_from_attachment(
+    session: AsyncSession,
+    attachment_id: str,
+    keep_request: str,
+    *,
+    actor: str = "owner",
+    prompt: str | None = None,
+) -> dict[str, Any] | None:
+    """Upgrade a thin keep by reading pixels from the stored frame."""
+
+    return await _enrich_keep_from_attachment(
+        session,
+        {"attachment_id": attachment_id, "keep_request": keep_request},
+        actor=actor,
+        prompt=prompt,
+    )
+
+
+async def _current_keep_for_attachment(
+    session: AsyncSession,
+    attachment_id: str,
+) -> dict[str, Any] | None:
+    """Latest current keep fact for this stored JPEG, if any."""
+
+    from app.models import Memory
+
+    needle = _attachment_uuid(attachment_id)
+    if not needle:
+        return None
+    rows = list(
+        (
+            await session.execute(
+                select(Memory)
+                .where(
+                    Memory.redacted.is_(False),
+                    Memory.is_current.is_(True),
+                    Memory.memory_type == "fact",
+                )
+                .order_by(Memory.event_time.desc())
+            )
+        ).scalars().all()
+    )
+    chosen: dict[str, Any] | None = None
+    chosen_thin = True
+    for memory in rows:
+        payload = dict(memory.payload or {})
+        if str(payload.get("kind") or "") != "visual_keep":
+            continue
+        if _attachment_uuid(payload.get("attachment_id")) != needle:
+            continue
+        payload["_text"] = memory.text
+        thin = _keep_is_thin(payload, memory.text)
+        if chosen is None or (chosen_thin and not thin):
+            chosen = payload
+            chosen_thin = thin
+            if not thin:
+                break
+    return chosen
+
+
+async def _newest_visual_keep(session: AsyncSession) -> dict[str, Any] | None:
+    """Newest current keep-from-sight fact, even when the JPEG id was never stored."""
+
+    from app.models import Memory
+
+    rows = list(
+        (
+            await session.execute(
+                select(Memory)
+                .where(
+                    Memory.redacted.is_(False),
+                    Memory.is_current.is_(True),
+                    Memory.memory_type == "fact",
+                )
+                .order_by(Memory.event_time.desc(), Memory.id.desc())
+            )
+        ).scalars().all()
+    )
+    for memory in rows:
+        payload = dict(memory.payload or {})
+        if str(payload.get("kind") or "") != "visual_keep":
+            continue
+        payload["_text"] = memory.text
+        return payload
+    return None
+
+
+async def _enrich_keep_from_attachment(
+    session: AsyncSession,
+    item: dict[str, Any],
+    *,
+    actor: str = "owner",
+    timeout: float | None = None,
+    prompt: str | None = None,
+) -> dict[str, Any] | None:
+    """Re-read the stored keep JPEG so later recall has a real identity."""
+
+    from uuid import UUID
+
+    from app.ev.look import KEEP_LOOK_PROMPT, keep_reread_timeout_seconds
+    from app.ev.vision import analyze_attachment
+
+    try:
+        attachment_id = UUID(str(item.get("attachment_id") or "").strip())
+    except (TypeError, ValueError):
+        return None
+    asked = str(item.get("keep_request") or "memorize this").strip()[:400]
+    if not wants_keep_visible(asked):
+        asked = "memorize this"
+    existing = await _current_keep_for_attachment(session, str(attachment_id))
+    if existing and not _keep_needs_enrichment(
+        {
+            "attachment_id": str(attachment_id),
+            "description": existing.get("description"),
+            "recall": existing.get("recall"),
+            "text": existing.get("_text"),
+        }
+    ):
+        logger.warning(
+            "keep identity reread skipped thick identity already stored attachment=%s",
+            str(attachment_id)[:8],
+        )
+        return {"kept": True, "skipped": True}
+    limit = keep_reread_timeout_seconds() if timeout is None else timeout
+    try:
+        perception = await asyncio.wait_for(
+            analyze_attachment(
+                session,
+                attachment_id,
+                actor=actor,
+                permission=True,
+                allow_raw=keep_perception_allow_raw(asked),
+                prompt=prompt or KEEP_LOOK_PROMPT,
+            ),
+            timeout=limit,
+        )
+    except Exception:  # noqa: BLE001 - recall must still speak whatever we have
+        logger.info("keep attachment reread skipped", exc_info=True)
+        return None
+    payload = dict(getattr(perception, "payload", None) or {})
+    labels = [
+        str(entry.get("label") or entry).strip()
+        for entry in (payload.get("labels") or [])
+        if str(entry.get("label") or entry).strip()
+    ]
+    colors = [
+        str(entry).strip()
+        for entry in (payload.get("colors") or [])
+        if str(entry).strip()
+    ]
+    summary = " ".join(str(payload.get("summary") or "").split()).strip()
+    ocr = str(payload.get("ocr_text") or "").strip() or None
+    spoken = summary[:800]
+    if not is_keep_identity_speech(spoken) and ocr:
+        printed = f"It reads {ocr[:160].rstrip('.')}."
+        if is_keep_identity_speech(printed) or (
+            _remainder_has_identity(ocr) and not is_generic_label_scene(ocr)
+        ):
+            spoken = printed
+    if spoken and "remember" not in spoken.lower() and is_keep_identity_speech(spoken):
+        spoken = spoken.rstrip(".") + ". I'll remember that."
+    logger.warning(
+        "keep identity reread summary_chars=%s spoken_chars=%s generic=%s",
+        len(summary),
+        len(spoken or ""),
+        is_generic_label_scene(spoken),
+    )
+    if (
+        is_generic_label_scene(spoken)
+        or is_clarity_hedge(spoken)
+        or is_empty_visual_scene(spoken)
+        or "hold it in the camera" in spoken.lower()
+        or not is_keep_identity_speech(spoken)
+    ):
+        return None
+    existing = await _current_keep_for_attachment(session, str(attachment_id))
+    if existing and not _keep_needs_enrichment(
+        {
+            "attachment_id": str(attachment_id),
+            "description": existing.get("description"),
+            "recall": existing.get("recall"),
+            "text": existing.get("_text"),
+            "object": existing.get("object"),
+            "printed": existing.get("printed") or existing.get("ocr_text"),
+            "ocr_text": existing.get("ocr_text"),
+        }
+    ):
+        logger.warning(
+            "keep identity reread skipped first look already stored attachment=%s",
+            str(attachment_id)[:8],
+        )
+        return {"kept": True, "skipped": True}
+    return await persist_visual_observation(
+        session,
+        {
+            "ok": True,
+            "spoken": spoken,
+            "summary": spoken,
+            "labels": labels,
+            "colors": colors,
+            "ocr_text": ocr,
+            "attachment_id": str(attachment_id),
+            "keep_request": asked,
+            "media_kind": "frame",
+            "image_ready": True,
+            "encoded_bytes": 1,
+            "identity_source": "reread",
+        },
+        actor=actor,
+        adopt_spoken=False,
+    )
+
+
+def visual_keep_semantic_key(payload: dict[str, Any] | None) -> tuple | None:
+    """Version key for a keep-from-sight fact.
+
+    Camera frames must not share the generic ``this / shown`` fact key, or a
+    later label stub overwrites the first-look identity.
+    """
+
+    data = payload or {}
+    if str(data.get("kind") or "") != "visual_keep":
+        return None
+    attachment = str(data.get("attachment_id") or "").strip()
+    if attachment:
+        return ("visual_keep", attachment)
+    subject = normalize_text(str(data.get("subject") or data.get("topic") or "")[:80]) or "this"
+    return ("visual_keep", subject, "shown")
+
+
+def _keep_identity_rank(payload: dict[str, Any], text: str | None = None) -> tuple[int, int, int]:
+    """Richer first-look descriptions outrank later shape or class stubs."""
+
+    if _keep_is_thin(payload, text):
+        return (0, 0, 0)
+    blob = " ".join(
+        str(part)
+        for part in (
+            payload.get("description"),
+            payload.get("recall"),
+            text,
+        )
+        if part
+    ).strip()
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9']+", blob.lower())
+        if (
+            token.replace("'", "") not in _JUNK_OBJECT
+            and token.replace("'", "") not in _LOCATION_NOISE
+            and token.replace("'", "") not in _IDENTITY_SKIP
+            and len(token) >= 3
+        )
+    ]
+    return (1, len(blob), len(tokens))
+
+
+def _keep_source_rank(payload: dict[str, Any], text: str | None = None) -> int:
+    """Live Mini first-look outranks a later JPEG reread of the same frame."""
+
+    if _keep_is_thin(payload, text):
+        return 0
+    src = str(payload.get("identity_source") or "").strip().lower()
+    if src == "reread":
+        return 2
+    return 3
+
+
+def retain_visual_keep_identity(
+    prev_payload: dict[str, Any] | None,
+    prev_text: str | None,
+    cand_payload: dict[str, Any] | None,
+    cand_text: str | None,
+) -> bool:
+    """Keep the richer reusable identity. First look wins ties."""
+
+    prev = prev_payload or {}
+    cand = cand_payload or {}
+    if str(prev.get("kind") or "") != "visual_keep":
+        return False
+    if str(cand.get("kind") or "") != "visual_keep":
+        return False
+    prev_src = _keep_source_rank(prev, prev_text)
+    cand_src = _keep_source_rank(cand, cand_text)
+    if prev_src != cand_src:
+        return prev_src > cand_src
+    return _keep_identity_rank(prev, prev_text) >= _keep_identity_rank(cand, cand_text)
+
+
+def _keep_hit_has_identity(item: dict[str, Any] | None) -> bool:
+    data = item or {}
+    blob = " ".join(
+        str(part)
+        for part in (
+            data.get("description"),
+            data.get("recall"),
+            data.get("text"),
+            data.get("object"),
+        )
+        if part
+    ).strip()
+    if not blob:
+        return False
+    if is_generic_label_scene(blob) or is_empty_visual_scene(blob) or is_clarity_hedge(blob):
+        return False
+    if is_nonvisual_keep_speech(blob):
+        return False
+    return _remainder_has_identity(blob)
+
+
+def _keep_has_distinctive_detail(text: str | None, printed: str | None = None) -> bool:
+    """True when wording names more than a vague class (phone, bottle, box)."""
+
+    ink = " ".join(str(printed or "").split()).strip()
+    if (
+        ink
+        and not is_generic_label_scene(ink)
+        and not is_empty_visual_scene(ink)
+        and _remainder_has_identity(ink)
+    ):
+        return True
+    blob = " ".join(str(text or "").split()).strip().lower()
+    if _PRINTED_RE.search(blob):
+        return True
+    tokens = {
+        token.replace("'", "")
+        for token in re.findall(r"[a-z0-9']+", blob)
+        if len(token) >= 3
+    }
+    tokens -= (
+        _VAGUE_CLASS
+        | _COLORS
+        | _IDENTITY_SKIP
+        | _JUNK_OBJECT
+        | _LOCATION_NOISE
+        | _OBJECT_STOP
+        | {
+            "screen",
+            "screens",
+            "display",
+            "displays",
+            "button",
+            "buttons",
+            "keypad",
+            "body",
+            "case",
+            "cover",
+        }
+    )
+    return bool(tokens)
+
+
+def _keep_is_thin(payload: dict[str, Any], text: str | None = None) -> bool:
+    """True when a keep fact is a label stub, not a reusable visual identity."""
+
+    return not bool(
+        _keep_stored_identity_line(
+            {
+                "description": payload.get("description"),
+                "recall": payload.get("recall"),
+                "text": text,
+            }
+        )
+    )
+
+
+def _keep_line_is_identity(text: str | None) -> bool:
+    """True when a line can be spoken later as the shown thing itself."""
+
+    blob = " ".join(str(text or "").split()).strip()
+    if not blob:
+        return False
+    rest = _KEEP_HEADER_RE.sub("", blob, count=1).strip()
+    rest = re.sub(
+        r"^owner asked evie to remember[^.!?\n]*[.!]?\s*",
+        "",
+        rest,
+        flags=re.IGNORECASE,
+    )
+    rest = _KEEP_SHOWN_RE.sub("", rest).strip(" .")
+    if rest:
+        blob = rest
+    elif blob.lower().startswith(("you asked me to remember", "owner asked evie")):
+        return False
+    lowered = blob.lower()
+    if "they said:" in lowered:
+        return False
+    if blob.endswith("?") or is_keep_recall_echo(blob):
+        return False
+    if is_nonvisual_keep_speech(blob):
+        return False
+    if (
+        is_generic_label_scene(blob)
+        or is_empty_visual_scene(blob)
+        or is_clarity_hedge(blob)
+        or is_camera_prompt_echo(blob)
+        or is_keep_ack_only(blob)
+    ):
+        return False
+    if re.match(r"^it reads\s+\S+(?:\s+\S+){0,3}\.?$", blob, re.IGNORECASE):
+        return False
+    if not _remainder_has_identity(blob):
+        return False
+    if not (
+        looks_like_visual_description(blob)
+        or (_PRINTED_RE.search(blob) and _remainder_has_identity(blob))
+    ):
+        return False
+    return _keep_has_distinctive_detail(blob)
 
 
 def _keep_request_from_result(result: dict[str, Any]) -> str:
@@ -1433,7 +2838,7 @@ async def _supersede_placeholder_visual_keeps(
         payload = dict(memory.payload or {})
         if payload.get("kind") != "visual_keep":
             continue
-        if payload.get("usable_scene"):
+        if not _keep_is_thin(payload, memory.text):
             continue
         memory.is_current = False
         memory.superseded_by_id = successor
@@ -1445,12 +2850,168 @@ async def _supersede_placeholder_visual_keeps(
         flag_modified(memory, "payload")
 
 
+async def _thick_keep_for_attachment(
+    session: AsyncSession,
+    attachment_id: str,
+) -> bool:
+    """True when this frame already has a reusable keep identity."""
+
+    needle = str(attachment_id or "").strip()
+    if not needle:
+        return False
+    return await _thick_keep_matching(
+        session,
+        {"kind": "visual_keep", "attachment_id": needle, "subject": "this"},
+    )
+
+
+async def _foreign_keep_attachment_exists(
+    session: AsyncSession,
+    payload: dict[str, Any],
+) -> bool:
+    """True when another keep JPEG is already current in the spoken-scene window."""
+
+    from app.models import Memory
+
+    this = _attachment_uuid(payload.get("attachment_id"))
+    if not this:
+        return False
+    cutoff = utcnow() - SPOKEN_SCENE_WINDOW
+    rows = list(
+        (
+            await session.execute(
+                select(Memory).where(
+                    Memory.redacted.is_(False),
+                    Memory.is_current.is_(True),
+                    Memory.memory_type == "fact",
+                    Memory.event_time >= cutoff,
+                )
+            )
+        ).scalars().all()
+    )
+    for memory in rows:
+        existing = dict(memory.payload or {})
+        if str(existing.get("kind") or "") != "visual_keep":
+            continue
+        other = _attachment_uuid(existing.get("attachment_id"))
+        if other and other != this:
+            return True
+    return False
+
+
+async def _thick_keep_matching(
+    session: AsyncSession,
+    payload: dict[str, Any],
+) -> bool:
+    """True when a current keep already stores identity for this version key."""
+
+    from app.models import Memory
+
+    key = visual_keep_semantic_key(payload)
+    if key is None:
+        return False
+    cutoff = utcnow() - SPOKEN_SCENE_WINDOW
+    rows = list(
+        (
+            await session.execute(
+                select(Memory).where(
+                    Memory.redacted.is_(False),
+                    Memory.is_current.is_(True),
+                    Memory.memory_type == "fact",
+                    Memory.event_time >= cutoff,
+                )
+            )
+        ).scalars().all()
+    )
+    for memory in rows:
+        existing = dict(memory.payload or {})
+        if visual_keep_semantic_key(existing) != key:
+            continue
+        if not _keep_is_thin(existing, memory.text):
+            return True
+    return False
+
+
+def _keep_speech_since(stamp: Any) -> datetime:
+    """Same-turn Mini speech after this keep, not last week's identity."""
+
+    if isinstance(stamp, datetime):
+        return _as_comparable_time(stamp)
+    raw = str(stamp or "").strip()
+    if raw:
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+        if parsed is not None:
+            return _as_comparable_time(parsed)
+    return _as_comparable_time(utcnow() - SPOKEN_SCENE_WINDOW)
+
+
+def _as_comparable_time(stamp: datetime) -> datetime:
+    if stamp.tzinfo is None:
+        from datetime import UTC
+
+        return stamp.replace(tzinfo=UTC)
+    return stamp
+
+
+async def adopt_recent_spoken_keep(
+    session: AsyncSession,
+    *,
+    actor: str = "owner",
+    device_id: str | None = None,
+    since: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Store the first-look description Mini already spoke onto this keep."""
+
+    cutoff = since if since is not None else utcnow() - SPOKEN_SCENE_WINDOW
+    stmt = (
+        select(Event)
+        .where(
+            Event.event_type == "message.assistant",
+            Event.tombstoned_at.is_(None),
+            Event.occurred_at >= cutoff,
+        )
+        .order_by(Event.occurred_at.desc())
+        .limit(8)
+    )
+    if device_id:
+        stmt = stmt.where((Event.device_id == device_id) | (Event.device_id.is_(None)))
+    rows = list((await session.execute(stmt)).scalars().all())
+    for event in rows:
+        spoken = " ".join(
+            str(
+                (event.content or {}).get("text")
+                or getattr(event, "text", None)
+                or ""
+            ).split()
+        ).strip()
+        if not spoken:
+            continue
+        if is_camera_prompt_echo(spoken) or is_clarity_hedge(spoken):
+            continue
+        if is_generic_label_scene(spoken) or is_empty_visual_scene(spoken):
+            continue
+        if is_nonvisual_keep_speech(spoken):
+            continue
+        if not looks_like_visual_description(spoken) and not is_keep_identity_speech(spoken):
+            continue
+        written = await remember_spoken_scene(
+            session, spoken, actor=actor, device_id=device_id
+        )
+        if written and written.get("kept"):
+            return written
+    return None
+
+
 async def persist_visual_observation(
     session: AsyncSession,
     result: dict[str, Any],
     *,
     actor: str = "owner",
     device_id: str | None = None,
+    adopt_spoken: bool = True,
 ) -> dict[str, Any] | None:
     """Write Event + Memory for a successful camera result. Never fails the look."""
 
@@ -1479,7 +3040,14 @@ async def persist_visual_observation(
         is_empty_visual_scene(scene_for_keep)
         or is_memory_hedge_scene(scene_for_keep)
         or is_clarity_hedge(scene_for_keep)
+        or is_generic_label_scene(scene_for_keep)
+        or is_nonvisual_keep_speech(scene_for_keep)
+        or is_nonvisual_keep_speech(raw_spoken)
     )
+    if is_nonvisual_keep_speech(raw_spoken) or is_nonvisual_keep_speech(spoken):
+        spoken = None
+        scene_for_keep = ""
+        empty_scene = True
     try:
         encoded_bytes = int(result.get("encoded_bytes") or 0)
     except (TypeError, ValueError):
@@ -1507,6 +3075,17 @@ async def persist_visual_observation(
         keep_named = keep_topic(keep_user) if wants_keep_visible(keep_user) else ""
     if keep_named in {"this", "that", "it", "you"}:
         keep_named = ""
+    if not identity.get("usable"):
+        first = (keep_named.split() or [""])[0].lower()
+        if first in _VAGUE_CLASS or first in _JUNK_OBJECT:
+            keep_named = ""
+    from app.memory.room import extract_placement, placement_fact_text
+
+    placement = extract_placement(
+        scene=scene_for_keep if usable_scene else spoken,
+        labels=labels,
+        named=keep_named or None,
+    )
     text = visual_observation_text(
         labels=labels,
         colors=colors,
@@ -1519,6 +3098,10 @@ async def persist_visual_observation(
         spoken=identity.get("scene") or raw_spoken,
         keep_named=keep_named or None,
     )
+    place_phrase = str(placement.get("phrase") or "").strip()
+    if place_phrase and place_phrase.lower() not in text.lower():
+        text = f"{text.rstrip('.')} Last seen: {place_phrase}."[:800]
+    seen_object = keep_named or (placement["objects"][0] if placement.get("objects") else None)
     payload = {
         "kind": "visual",
         "labels": labels,
@@ -1528,12 +3111,27 @@ async def persist_visual_observation(
         "media_kind": media_kind,
         "attachment_id": result.get("attachment_id"),
         "request_id": result.get("request_id"),
-        "object": keep_named or None,
+        "object": seen_object,
+        "objects": list(placement.get("objects") or []),
+        "surface": placement.get("surface"),
+        "placement": place_phrase or None,
         "topic": keep_named
         if keep_named
-        else ((labels[0] if labels else None) or ("scene" if colors else "camera")),
+        else (
+            seen_object
+            or next(
+                (
+                    name
+                    for name in labels
+                    if str(name).strip().lower() not in _JUNK_OBJECT
+                ),
+                None,
+            )
+            or ("scene" if colors else "camera")
+        ),
         "duration_s": result.get("duration_s"),
         "spoken": spoken,
+        "description": identity.get("scene") or spoken,
         "keep_request": keep_user or None,
         "recall": identity.get("recall") if wants_keep_visible(keep_user) else None,
     }
@@ -1556,6 +3154,10 @@ async def persist_visual_observation(
                     "people": people_n or None,
                     "ocr_text": ocr,
                     "keep_request": keep_user or None,
+                    "object": seen_object,
+                    "objects": list(placement.get("objects") or []),
+                    "surface": placement.get("surface"),
+                    "placement": place_phrase or None,
                     "provenance": "phone_camera" if device_id else "camera",
                 },
                 metadata={"visual": True, "visor": True},
@@ -1591,6 +3193,33 @@ async def persist_visual_observation(
                 entities=entities,
             )
         ]
+        place_text = placement_fact_text(placement)
+        if place_text and placement.get("objects"):
+            topic = str(placement["objects"][0])
+            candidates.append(
+                MemoryCandidate(
+                    memory_type="fact",
+                    text=place_text,
+                    payload={
+                        "subject": topic,
+                        "property": "last_seen",
+                        "value": place_text,
+                        "kind": "object_placement",
+                        "topic": topic,
+                        "object": topic,
+                        "surface": placement.get("surface"),
+                        "placement": place_phrase or None,
+                        "labels": labels,
+                        "recall": place_text,
+                    },
+                    importance=0.88,
+                    confidence=0.8 if placement.get("surface") else 0.7,
+                    source_type="derived",
+                    privacy_level="normal",
+                    event_time=utcnow(),
+                    entities=entities,
+                )
+            )
         if wants_keep_visible(keep_user):
             keep_text = keep_sight_text(
                 user_text=keep_user,
@@ -1600,33 +3229,84 @@ async def persist_visual_observation(
                 colors=colors if (usable_scene or frame_ok) else None,
             )
             topic = keep_named or keep_topic(keep_user) or "this"
-            candidates.append(
-                MemoryCandidate(
-                    memory_type="fact",
-                    text=keep_text,
-                    payload={
-                        "subject": topic,
-                        "property": "shown",
-                        "value": keep_text,
-                        "kind": "visual_keep",
-                        "topic": topic,
-                        "object": keep_named or None,
-                        "colors": list(identity.get("colors") or []) if usable_scene else [],
-                        "printed": identity.get("printed") if usable_scene else None,
-                        "recall": keep_text,
-                        "usable_scene": usable_scene,
-                        "labels": labels if usable_scene else [],
-                        "ocr_text": ocr if usable_scene else None,
-                        "keep_request": keep_user[:400],
-                    },
-                    importance=0.96,
-                    confidence=0.9 if usable_scene else 0.7,
-                    source_type="explicit",
-                    privacy_level="normal",
-                    event_time=utcnow(),
-                    entities=entities,
+            owner_scene = str(identity.get("scene") or "").strip()
+            if not _keep_line_is_identity(owner_scene):
+                for candidate in (spoken, raw_spoken, scene_for_keep):
+                    blob = " ".join(str(candidate or "").split()).strip()
+                    if _keep_line_is_identity(blob):
+                        owner_scene = blob
+                        break
+            if _keep_line_is_identity(owner_scene):
+                owner_recall = owner_scene
+                if not owner_recall.endswith((".", "!", "?")):
+                    owner_recall += "."
+                owner_description = owner_scene
+            else:
+                owner_recall = ""
+                owner_description = ""
+            keep_payload = {
+                "subject": topic,
+                "property": "shown",
+                "value": keep_text,
+                "kind": "visual_keep",
+                "topic": topic,
+                "object": keep_named or None,
+                "colors": list(identity.get("colors") or []) if (usable_scene or frame_ok) else [],
+                "printed": identity.get("printed") if usable_scene else None,
+                "description": owner_description or None,
+                "recall": owner_recall,
+                "usable_scene": bool(identity.get("usable"))
+                or bool(owner_description),
+                "labels": labels if (usable_scene or frame_ok) else [],
+                "ocr_text": ocr if (usable_scene or frame_ok) else None,
+                "keep_request": keep_user[:400],
+                "attachment_id": result.get("attachment_id"),
+            }
+            if result.get("image_ready"):
+                keep_payload["image_ready"] = True
+            try:
+                encoded = int(result.get("encoded_bytes") or 0)
+            except (TypeError, ValueError):
+                encoded = 0
+            if encoded > 0:
+                keep_payload["encoded_bytes"] = encoded
+            source = str(result.get("identity_source") or "").strip().lower()
+            if source in {"live", "reread"}:
+                keep_payload["identity_source"] = source
+            skip_stub = False
+            if _keep_is_thin(keep_payload, keep_text):
+                keep_aid = _attachment_uuid(result.get("attachment_id"))
+                if keep_aid:
+                    # Same JPEG already has a row. A brand-new frame uses a
+                    # unique attachment key and must still write.
+                    skip_stub = (
+                        await _current_keep_for_attachment(session, keep_aid)
+                    ) is not None
+                else:
+                    newest = await _newest_visual_keep(session)
+                    if (
+                        newest
+                        and _keep_has_pixels(newest)
+                        and not _keep_is_thin(newest, newest.get("_text"))
+                    ):
+                        # Do not recency-pin a no-camera stub over a named look.
+                        skip_stub = True
+                    else:
+                        skip_stub = await _thick_keep_matching(session, keep_payload)
+            if not skip_stub:
+                candidates.append(
+                    MemoryCandidate(
+                        memory_type="fact",
+                        text=keep_text,
+                        payload=keep_payload,
+                        importance=0.96,
+                        confidence=0.9 if usable_scene else 0.7,
+                        source_type="explicit",
+                        privacy_level="normal",
+                        event_time=utcnow(),
+                        entities=entities,
+                    )
                 )
-            )
         written = await writer.write_all(event, candidates)
         await session.flush()
         if written:
@@ -1636,15 +3316,39 @@ async def persist_visual_observation(
             if wants_keep_visible(keep_user):
                 await _pin_memory_ids(session, [row.memory_id for row in written])
                 result["kept"] = True
-                if usable_scene or (frame_ok and keep_named):
-                    keep_ids = [
-                        row.memory_id
-                        for row in written
-                        if row.memory_type == "fact"
-                    ]
+                keep_ids = [
+                    row.memory_id
+                    for row in written
+                    if row.memory_type == "fact"
+                ]
+                if keep_ids and (usable_scene or (frame_ok and keep_named)):
                     await _supersede_placeholder_visual_keeps(
                         session,
-                        keep_memory_id=keep_ids[-1] if keep_ids else written[-1].memory_id,
+                        keep_memory_id=keep_ids[-1],
+                    )
+                if adopt_spoken and (
+                    not keep_ids or _keep_is_thin(keep_payload, keep_text)
+                ):
+                    if await _foreign_keep_attachment_exists(session, keep_payload):
+                        adopted = None
+                    else:
+                        adopted = await adopt_recent_spoken_keep(
+                            session, actor=actor, device_id=device_id
+                        )
+                else:
+                    adopted = None
+                still_thin = (
+                    not skip_stub
+                    and _keep_is_thin(keep_payload, keep_text)
+                    and not adopted
+                )
+                attachment_uuid = _attachment_uuid(result.get("attachment_id"))
+                if still_thin and attachment_uuid:
+                    _schedule_keep_reread_after_commit(
+                        session,
+                        attachment_id=attachment_uuid,
+                        keep_request=keep_user,
+                        actor=actor,
                     )
         return {
             "event_id": str(event.id),
@@ -1654,6 +3358,112 @@ async def persist_visual_observation(
     except Exception:  # noqa: BLE001 - recall must never block seeing
         logger.warning("visual observation persist skipped", extra={"device_id": device_id}, exc_info=True)
         return None
+
+
+async def _latest_keep_attachment_id(session: AsyncSession) -> str | None:
+    """Newest keep JPEG id in the spoken-scene window, any device."""
+
+    from app.models import Memory
+
+    cutoff = utcnow() - SPOKEN_SCENE_WINDOW
+    rows = list(
+        (
+            await session.execute(
+                select(Memory)
+                .where(
+                    Memory.redacted.is_(False),
+                    Memory.is_current.is_(True),
+                    Memory.memory_type == "fact",
+                    Memory.event_time >= cutoff,
+                )
+                .order_by(Memory.event_time.desc(), Memory.id.desc())
+            )
+        ).scalars().all()
+    )
+    for memory in rows:
+        payload = dict(memory.payload or {})
+        if str(payload.get("kind") or "") != "visual_keep":
+            continue
+        needle = _attachment_uuid(payload.get("attachment_id"))
+        if needle:
+            return needle
+    return None
+
+
+async def recent_keep_attachment_id(
+    session: AsyncSession,
+    *,
+    max_age_s: float = KEEP_MINI_RELOAD_SECONDS,
+) -> str | None:
+    """Newest keep JPEG stored just now — Mini must name these pixels, not a new capture."""
+
+    from app.models import Memory
+
+    newest = None
+    cutoff = utcnow() - SPOKEN_SCENE_WINDOW
+    rows = list(
+        (
+            await session.execute(
+                select(Memory)
+                .where(
+                    Memory.redacted.is_(False),
+                    Memory.is_current.is_(True),
+                    Memory.memory_type == "fact",
+                    Memory.event_time >= cutoff,
+                )
+                .order_by(Memory.event_time.desc(), Memory.id.desc())
+            )
+        ).scalars().all()
+    )
+    for memory in rows:
+        payload = dict(memory.payload or {})
+        if str(payload.get("kind") or "") != "visual_keep":
+            continue
+        needle = _attachment_uuid(payload.get("attachment_id"))
+        if not needle:
+            continue
+        newest = memory
+        break
+    if newest is None:
+        return None
+    stamp = newest.event_time
+    if stamp is None:
+        return None
+    if stamp.tzinfo is None:
+        age = (utcnow().replace(tzinfo=None) - stamp).total_seconds()
+    else:
+        age = (utcnow() - stamp).total_seconds()
+    if age > max(1.0, float(max_age_s)):
+        return None
+    return _attachment_uuid((newest.payload or {}).get("attachment_id"))
+
+
+def _prefer_keep_event(rows: list[Any]) -> Any | None:
+    for row in rows:
+        asked = " ".join(str((row.content or {}).get("keep_request") or "").split()).strip()
+        if wants_keep_visible(asked):
+            return row
+    return rows[0] if rows else None
+
+
+async def _recent_visual_events(
+    session: AsyncSession,
+    *,
+    device_id: str | None = None,
+) -> list[Any]:
+    stmt = (
+        select(Event)
+        .where(
+            Event.event_type == VISUAL_EVENT_TYPE,
+            Event.tombstoned_at.is_(None),
+            Event.occurred_at >= utcnow() - SPOKEN_SCENE_WINDOW,
+        )
+        .order_by(Event.occurred_at.desc())
+        .limit(24)
+    )
+    if device_id:
+        stmt = stmt.where((Event.device_id == device_id) | (Event.device_id.is_(None)))
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def remember_spoken_scene(
@@ -1670,28 +3480,58 @@ async def remember_spoken_scene(
     """
 
     scene = _usable_spoken(spoken)
-    if not scene or not looks_like_visual_description(scene):
+    if not scene or is_clarity_hedge(scene) or is_generic_label_scene(scene):
         return None
-    cutoff = utcnow() - SPOKEN_SCENE_WINDOW
-    stmt = (
-        select(Event)
-        .where(
-            Event.event_type == VISUAL_EVENT_TYPE,
-            Event.tombstoned_at.is_(None),
-            Event.occurred_at >= cutoff,
+    if not is_keep_identity_speech(scene):
+        return None
+    newest_keep = await _newest_visual_keep(session)
+    if newest_keep is None or not _keep_has_pixels(newest_keep):
+        # Later Mini talk (grocery, files, weather) must not become identity
+        # for a memorize that never stored pixels.
+        return None
+    rows = await _recent_visual_events(session, device_id=device_id)
+    event = _prefer_keep_event(rows)
+    if event is None or not wants_keep_visible(
+        str((event.content or {}).get("keep_request") or "")
+    ):
+        # Keep-from-sight is owner memory. A Mac look row must bind even
+        # when Mini persist uses a different device id.
+        rows = await _recent_visual_events(session, device_id=None)
+        event = _prefer_keep_event(rows)
+    keep_user = ""
+    content: dict[str, Any] = dict(event.content or {}) if event is not None else {}
+    if event is not None:
+        existing = _event_text(event)
+        if scene.lower() in existing.lower() and (
+            newest_keep is None
+            or _keep_stored_identity_line(
+                {
+                    "description": newest_keep.get("description"),
+                    "recall": newest_keep.get("recall"),
+                    "text": newest_keep.get("_text"),
+                }
+            )
+        ):
+            return None
+        keep_user = str(content.get("keep_request") or "").strip()
+    if not wants_keep_visible(keep_user):
+        keep_user = await _recent_keep_request(
+            session, device_id=device_id, require_empty=False
         )
-        .order_by(Event.occurred_at.desc())
-        .limit(1)
-    )
-    if device_id:
-        stmt = stmt.where((Event.device_id == device_id) | (Event.device_id.is_(None)))
-    event = (await session.execute(stmt)).scalars().first()
-    if event is None:
+    if (
+        not wants_keep_visible(keep_user)
+        and newest_keep is not None
+        and not _keep_stored_identity_line(
+            {
+                "description": newest_keep.get("description"),
+                "recall": newest_keep.get("recall"),
+                "text": newest_keep.get("_text"),
+            }
+        )
+    ):
+        keep_user = str(newest_keep.get("keep_request") or "").strip() or "memorize this"
+    if not wants_keep_visible(keep_user) and event is None:
         return None
-    existing = _event_text(event)
-    if scene.lower() in existing.lower():
-        return None
-    content = dict(event.content or {})
     labels = [str(item) for item in (content.get("labels") or []) if item]
     colors = [str(item) for item in (content.get("colors") or []) if item]
     people = content.get("people")
@@ -1699,6 +3539,25 @@ async def remember_spoken_scene(
         people_n = int(people) if people is not None else 0
     except (TypeError, ValueError):
         people_n = 0
+    newest = await _latest_keep_attachment_id(session)
+    if newest:
+        matched = None
+        for row in rows:
+            if _attachment_uuid((row.content or {}).get("attachment_id")) == newest:
+                matched = row
+                break
+        if matched is None:
+            wider = await _recent_visual_events(session, device_id=None)
+            for row in wider:
+                if _attachment_uuid((row.content or {}).get("attachment_id")) == newest:
+                    matched = row
+                    break
+        if matched is not None:
+            event = matched
+            content = dict(event.content or {})
+            if not keep_user:
+                keep_user = str(content.get("keep_request") or "").strip()
+    attachment_id = newest or content.get("attachment_id")
     result = {
         "ok": True,
         "labels": labels,
@@ -1710,11 +3569,18 @@ async def remember_spoken_scene(
         "spoken": scene,
         "ocr_text": content.get("ocr_text"),
         "request_id": content.get("request_id"),
-        "attachment_id": content.get("attachment_id"),
-        "keep_request": content.get("keep_request"),
+        "attachment_id": attachment_id,
+        "keep_request": (keep_user or content.get("keep_request") or "")[:400] or None,
+        "image_ready": bool(attachment_id),
+        "encoded_bytes": 1 if attachment_id else 0,
+        "identity_source": "live",
     }
     return await persist_visual_observation(
-        session, result, actor=actor, device_id=device_id or event.device_id
+        session,
+        result,
+        actor=actor,
+        device_id=device_id or (event.device_id if event is not None else None),
+        adopt_spoken=False,
     )
 
 

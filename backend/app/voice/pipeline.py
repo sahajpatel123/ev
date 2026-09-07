@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import shutil
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -39,6 +40,83 @@ from app.voice.tts import speech_style_from_strategy
 #: Cached listen-acks ("Yes?" / "Hmm." / "Mhm." / "Yes.") keyed by
 #: (kind, phrase, voice) so Talk/wake never wait on a TTS round trip twice.
 _ACK_CACHE: dict[tuple[str, str, str], SynthesisResult] = {}
+
+#: Transcoded device WAVs, content-addressed so repeated listen-acks and
+#: short sentences never pay a second ffmpeg round trip.
+_DEVICE_WAV_CACHE: dict[str, bytes] = {}
+_DEVICE_WAV_CACHE_MAX = 64
+
+
+async def _decode_wav_ffmpeg(audio: bytes, sample_rate: int) -> bytes | None:
+    """One in-memory MP3 → mono PCM16 WAV round trip via ffmpeg."""
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            "pipe:0",
+            "-ac",
+            "1",
+            "-ar",
+            str(sample_rate),
+            "-c:a",
+            "pcm_s16le",
+            "-f",
+            "wav",
+            "pipe:1",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except OSError:
+        return None
+    try:
+        out, _err = await proc.communicate(audio)
+    except Exception:  # noqa: BLE001 - a stuck decoder must not stall speech
+        with contextlib.suppress(Exception):
+            proc.kill()
+        return None
+    if proc.returncode == 0 and out:
+        return out
+    return None
+
+
+async def device_playable_audio(audio: bytes, *, sample_rate: int = 24000) -> bytes:
+    """Live device players (EV.app / iOS TTSPlayer) accept PCM16 WAV only.
+
+    Edge TTS delivers MP3, and both native players reject ``audio/mpeg``
+    silently (``isUnsupportedContainer``), which muted the whole live Muse
+    pipeline. Transcode once in memory so the live WS audio lane is always
+    WAV. Already-WAV bytes pass through unchanged, a failed decode returns
+    the original bytes (speech metadata must never be blocked), and results
+    are content-address cached.
+    """
+
+    if not audio:
+        return audio
+    if audio[:4] == b"RIFF":
+        return audio
+    key = hashlib.sha256(audio).hexdigest()
+    cached = _DEVICE_WAV_CACHE.get(key)
+    if cached is not None:
+        return cached
+    wav: bytes | None = None
+    try:
+        wav = await asyncio.wait_for(_decode_wav_ffmpeg(audio, sample_rate), timeout=20)
+    except Exception:  # noqa: BLE001 - degrade to the original bytes
+        wav = None
+    if not wav:
+        return audio
+    if len(_DEVICE_WAV_CACHE) >= _DEVICE_WAV_CACHE_MAX:
+        _DEVICE_WAV_CACHE.clear()
+    _DEVICE_WAV_CACHE[key] = wav
+    return wav
 
 
 @dataclass
@@ -220,6 +298,16 @@ async def stream_chat_tts_pipeline(
 
     async def run_llm() -> None:
         try:
+            from app.gateway.muse import muse_intelligence_active, muse_spark_model
+
+            if muse_intelligence_active():
+                model = muse_spark_model()
+            elif settings.chat_provider == "xai":
+                model = settings.xai_model
+            elif settings.chat_provider == "deepseek":
+                model = settings.deepseek_model
+            else:
+                model = None
             pipeline = await asyncio.wait_for(
                 run_chat_pipeline(
                     ChatRequest(
@@ -227,13 +315,7 @@ async def stream_chat_tts_pipeline(
                         conversation_id=thread.id,
                         device_id=device_id,
                         allow_sensitive_tools=True,
-                        model=(
-                            settings.xai_model
-                            if settings.chat_provider == "xai"
-                            else settings.deepseek_model
-                            if settings.chat_provider == "deepseek"
-                            else None
-                        ),
+                        model=model,
                     ),
                     session,
                     actor,

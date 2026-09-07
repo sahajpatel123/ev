@@ -11,6 +11,7 @@ from app.db import SessionLocal
 from app.models import Device
 from app.voice.contracts import SpeechStyle
 from app.voice.live.events import LiveEvent, ReplyEvent, TtsChunkEvent
+from app.voice.pipeline import device_playable_audio
 
 from .pipeline import handle_user_text
 from .sandbox import is_sandbox_device
@@ -111,9 +112,16 @@ def make_sandbox_pipeline_responder(
         try:
             tts = await synthesizer.synthesize(reply, style=SpeechStyle())
             audio = getattr(tts, "audio", None)
+            content_type = getattr(tts, "content_type", None)
+            if audio:
+                # Native live players reject MP3 containers; the live WS
+                # audio lane must always carry PCM WAV.
+                converted = await device_playable_audio(audio)
+                if converted is not audio:
+                    content_type = "audio/wav"
+                audio = converted
             if audio and len(audio) <= 1_500_000:
                 audio_b64 = base64.b64encode(audio).decode("ascii")
-            content_type = getattr(tts, "content_type", None)
             duration_ms = getattr(tts, "duration_ms", None)
         except Exception:  # noqa: BLE001 - spoken text still returns
             audio_b64 = None

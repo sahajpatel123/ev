@@ -593,9 +593,9 @@ async def user_text(
     # legacy sandbox satellite pipeline. Durable trace events carry device
     # provenance so phone turns are observable like Mac turns.
     if not is_sandbox_device(device):
-        from app.device_gateway.pipeline import run_trusted_device_turn
+        from app.device_gateway.pipeline import run_trusted_device_text
 
-        result = await run_trusted_device_turn(
+        result = await run_trusted_device_text(
             session,
             device=device,
             text=data.text or "",
@@ -682,6 +682,7 @@ async def live_open(
         "mobile_voice_status": "OWNER FAILURE / CONNECTION CONVERGENCE",
         "lease": lease_public(lease),
         "lease_id": lease.lease_id,
+        "client_generation": int(data.client_generation or 0),
         "auth_revision": int(getattr(device, "auth_revision", 1) or 1),
     }
     new_live = None

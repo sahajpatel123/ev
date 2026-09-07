@@ -582,6 +582,9 @@ class OpenCodeProvider:
         model: str | None,
         tools: Sequence[ToolSpec] | None = None,
     ) -> ChatResult:
+        from app.gateway.muse import refuse_legacy_cloud_brain
+
+        refuse_legacy_cloud_brain(self.name)
         breaker = CIRCUIT_BREAKERS.get(self.name)
         if not breaker.allow_request():
             raise CircuitOpenError(self.name, breaker.retry_after_seconds())

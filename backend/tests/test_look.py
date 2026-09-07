@@ -108,6 +108,25 @@ def test_look_intent_does_not_steal_search_or_health() -> None:
     assert action[0] == "look"
 
 
+def test_first_try_hold_look_is_camera_not_a_refusal() -> None:
+    holding = (
+        "Look at the thing I'm holding in my hand. I want you to look at it "
+        "and tell me more info about this item I'm holding"
+    )
+    assert select_tool(holding).selected == "look"
+    assert select_tool("look this up on the web").selected != "look"
+    action = resolve_live_action(holding)
+    assert action is not None
+    assert action[0] == "look"
+    ramble = holding + ". " + ("please describe every detail you can see. " * 8)
+    assert len(ramble) > 240
+    long_action = resolve_live_action(ramble)
+    assert long_action is not None
+    assert long_action[0] == "look"
+    meeting = resolve_live_action("I'm holding a meeting at three")
+    assert meeting is None or meeting[0] != "look"
+
+
 async def test_look_describes_attachment_ocr_and_enrolled_object(
     client: AsyncClient, db_session: AsyncSession
 ) -> None:

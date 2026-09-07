@@ -646,6 +646,7 @@ def _whatsapp_messages(text: str) -> list[dict[str, Any]]:
                 "body": body,
                 "owner": _is_owner_sender(sender),
                 "when": _whatsapp_when(match.group(1), match.group(2), match.group(3)),
+                "wall": True,
             }
             continue
         if current and line:
@@ -653,6 +654,25 @@ def _whatsapp_messages(text: str) -> list[dict[str, Any]]:
     if current and current["body"]:
         rows.append(current)
     return [row for row in rows if _whatsapp_keep(row["body"])]
+
+
+def read_whatsapp_messages(path: Path) -> list[dict[str, Any]]:
+    """Load WhatsApp messages from a takeout zip or _chat.txt. No blobs."""
+
+    from zipfile import ZipFile
+
+    if not path.is_file():
+        return []
+    try:
+        if path.suffix.lower() == ".zip":
+            with ZipFile(path) as archive:
+                raw = archive.read("_chat.txt")
+            text = raw.decode("utf-8", errors="replace")
+        else:
+            text = path.read_text(encoding="utf-8", errors="replace")
+    except (KeyError, OSError, UnicodeError):  # noqa: BLE001
+        return []
+    return _whatsapp_messages(text)
 
 
 def _whatsapp_keep(body: str) -> bool:

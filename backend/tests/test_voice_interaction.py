@@ -53,6 +53,8 @@ def test_honesty_and_intent_classifier_are_whole_turn() -> None:
     assert classify_live_intent("pause") == "pause"
     assert classify_live_intent("resume") == "resume"
     assert classify_live_intent("cancel that") == "cancel"
+    assert classify_live_intent("stop it") == "cancel"
+    assert classify_live_intent("never mind") == "cancel"
     assert classify_live_intent("what can you do") == "capability"
     assert classify_live_intent("please wait for Ned") == "none"
     assert classify_live_intent("don't pause the print") == "none"

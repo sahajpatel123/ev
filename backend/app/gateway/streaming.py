@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from app.contracts import ChatMessage, ToolCall
+from app.contracts import ChatMessage, ToolCall, ToolSpec
 
 
 @dataclass
@@ -49,4 +49,5 @@ class StreamingChatProvider(Protocol):
         *,
         model: str | None = None,
         temperature: float = 0.7,
+        tools: Sequence[ToolSpec] | None = None,
     ) -> AsyncIterator[ChatStreamChunk]: ...

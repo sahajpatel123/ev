@@ -374,10 +374,28 @@ class ModelGateway:
 
         try:
             if isinstance(self.provider, StreamingChatProvider):
+                # ``tools`` was added after the original streaming contract.
+                # Pass it only to providers that advertise the additive
+                # parameter so third-party/test providers remain compatible;
+                # Muse Spark receives the complete native Responses tool
+                # surface instead of silently streaming a no-tool turn.
+                stream_kwargs: dict[str, object] = {
+                    "model": model,
+                    "temperature": temperature,
+                }
+                try:
+                    stream_signature = inspect.signature(self.provider.stream_chat)
+                    accepts_tools = "tools" in stream_signature.parameters or any(
+                        parameter.kind == inspect.Parameter.VAR_KEYWORD
+                        for parameter in stream_signature.parameters.values()
+                    )
+                except (TypeError, ValueError):
+                    accepts_tools = False
+                if tool_specs and accepts_tools:
+                    stream_kwargs["tools"] = tool_specs
                 async for chunk in self.provider.stream_chat(
                     safe_messages,
-                    model=model,
-                    temperature=temperature,
+                    **stream_kwargs,
                 ):
                     if chunk.error:
                         raise RuntimeError(chunk.error)

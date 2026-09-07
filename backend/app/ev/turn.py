@@ -107,19 +107,19 @@ def operator_instructions(*, who: str, source: str) -> str:
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
     spoken = (
-        f" SPOKEN TURN — you are {who}. One to two short, natural sentences. Keep it casual and brief."
+        f" SPOKEN TURN — you are {who}. Answer aloud after the requested action/result is known."
         if source == "voice"
         else ""
     )
     return (
-        f"You are {who}, the owner's operator. Keep replies casual, concise, and direct. "
-        "Do not speak too much. State the answer plainly without repeating the question, "
-        "rephrasing the same thought, or summarizing what was already said. "
+        f"You are {who}, the owner's operator. "
         "This turn is request → actions (already run by EV when asked) → your reply. "
-        "Stay on WORKING ON. If ACTIONS THIS TURN lists executed work, confirm "
+        "Use WORKING ON only to resolve the owner's explicit follow-up; do not "
+        "mention or offer that task in an unrelated answer. If ACTIONS THIS TURN "
+        "lists executed work, confirm "
         "the real result — never say you will do it later, never invent a "
         "success. If no actions ran, answer the current request directly. "
-        "Lead with the answer. Prior memory is optional background."
+        "Prior memory is optional background."
         f"{spoken}"
         f"\n{SPEECH_STYLE_INSTRUCTIONS}"
     )
@@ -200,6 +200,11 @@ def build_system_prompt(
     briefing: str | None,
     receipts: list[ActionReceipt],
 ) -> str:
+    # Dynamic capability, memory, and receipt blocks are intentionally
+    # appended before the owner-frozen speech contract.  Feature agents may
+    # add real tools and context, but they cannot change how EV speaks.
+    from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
+
     parts = [
         identity.strip(),
         operator_instructions(who=who, source=source),
@@ -210,6 +215,7 @@ def build_system_prompt(
         parts.append(context.strip())
     if briefing and briefing.strip():
         parts.append(briefing.strip())
+    parts.append(SPEECH_STYLE_INSTRUCTIONS)
     return "\n\n".join(part for part in parts if part)
 
 
@@ -225,15 +231,67 @@ async def execute_requested_actions(
 ) -> list[ActionReceipt]:
     """Dispatch write/life tools the owner asked for, before the LLM speaks."""
 
+    from app.ev.code_studio import maybe_handle_code_ops, spoken_studio_busy
     from app.ev.luna_code import (
+        intern_in_flight,
         last_code_job,
         looks_like_code_continue,
         looks_like_code_followup,
+        looks_like_code_request,
+        maybe_enqueue_code_intern,
+        shared_code_job,
         spoken_code_followup,
+        spoken_intern_followup,
     )
 
-    job = last_code_job(str(live_session_id or "")) or last_code_job()
+    ops_ack = maybe_handle_code_ops(message, session_key=str(live_session_id or "owner"))
+    if ops_ack:
+        return [
+            ActionReceipt(
+                name="code",
+                ok=True,
+                result={"ok": True, "spoken": ops_ack, "deferred": True},
+            )
+        ]
+    intern_ack = maybe_enqueue_code_intern(
+        message, session_key=str(live_session_id or "owner")
+    )
+    if intern_ack:
+        return [
+            ActionReceipt(
+                name="code",
+                ok=True,
+                result={"ok": True, "spoken": intern_ack, "deferred": True},
+            )
+        ]
+    if intern_in_flight() and (
+        looks_like_code_request(message) or looks_like_code_continue(message)
+    ):
+        from app.ev.code_studio import apply_code_control, looks_like_code_control
+
+        spoken = (
+            apply_code_control(message)
+            if looks_like_code_control(message)
+            else spoken_studio_busy()
+        )
+        return [
+            ActionReceipt(
+                name="code",
+                ok=True,
+                result={"ok": True, "spoken": spoken, "deferred": True},
+            )
+        ]
+    job = shared_code_job(str(live_session_id or "")) or last_code_job()
     if looks_like_code_followup(message):
+        intern_spoken = spoken_intern_followup()
+        if intern_spoken:
+            return [
+                ActionReceipt(
+                    name="code",
+                    ok=True,
+                    result={"ok": True, "spoken": intern_spoken},
+                )
+            ]
         if job:
             spoken = spoken_code_followup(message, job)
             if spoken:

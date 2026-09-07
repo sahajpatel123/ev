@@ -9,13 +9,13 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.09.02.06">
+  <meta name="evie-build" content="2026.09.05.03">
   <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.09.02.06">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.09.05.03">
   <title>Evie</title>
 </head>
 <body>
@@ -76,13 +76,38 @@
       </form>
     </section>
 
-    <nav id="more-rail" class="rail" hidden>
-      <button type="button" data-surface="conversation">Chat</button>
-      <button type="button" data-surface="devices">Devices</button>
-      <button type="button" data-surface="activity">Activity</button>
-      <button type="button" data-surface="inbox">Inbox</button>
-      <button type="button" data-surface="privacy">Settings</button>
-    </nav>
+    <section id="more-sheet" class="sheet folio" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="more-sheet" aria-label="Close">✕</button>
+      <h2>Around you</h2>
+      <p class="quiet">One Evie. This phone, Home Station, the thread.</p>
+      <div class="folio-grid">
+        <button type="button" class="folio-card folio-wide" data-surface="conversation">
+          <span class="folio-kicker">Thread</span>
+          <strong>Chat</strong>
+          <span>The conversation on this phone</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="devices">
+          <span class="folio-kicker">Places</span>
+          <strong>Devices</strong>
+          <span>This iPhone and Home Station</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="activity">
+          <span class="folio-kicker">Pulse</span>
+          <strong>Now</strong>
+          <span>What just happened</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="inbox">
+          <span class="folio-kicker">Quiet</span>
+          <strong>Inbox</strong>
+          <span>Notices waiting here</span>
+        </button>
+        <button type="button" class="folio-card folio-wide" data-surface="privacy">
+          <span class="folio-kicker">This iPhone</span>
+          <strong>Settings</strong>
+          <span>Camera, trust, appearance</span>
+        </button>
+      </div>
+    </section>
 
     <section id="conversation-sheet" class="sheet" hidden>
       <button type="button" class="sheet-close sheet-x" data-close="conversation-sheet" aria-label="Close">✕</button>
@@ -188,12 +213,120 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.09.02.06"></script>
-  <script src="/evie/presence.js?v=2026.09.02.06"></script>
-  <script src="/evie/orb.js?v=2026.09.02.06"></script>
-  <script src="/evie/feedback.js?v=2026.09.02.06"></script>
-  <script src="/evie/webrtc.js?v=2026.09.02.06"></script>
-  <script src="/evie/mobile-actions.js?v=2026.09.02.06"></script>
-  <script src="/evie/app.js?v=2026.09.02.06"></script>
+  <script src="/evie/audio.js?v=2026.09.05.03"></script>
+  <script src="/evie/presence.js?v=2026.09.05.03"></script>
+  <script src="/evie/orb.js?v=2026.09.05.03"></script>
+  <script src="/evie/feedback.js?v=2026.09.05.03"></script>
+  <script src="/evie/webrtc.js?v=2026.09.05.03"></script>
+  <script src="/evie/mobile-actions.js?v=2026.09.05.03"></script>
+  <script src="/evie/app.js?v=2026.09.05.03"></script>
+  <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
+       additive window.EvieTrust namespace; no existing markup changed. -->
+  <script>
+  window.EvieTrust = (function () {
+    var STATES = {
+      PAIRED_SANDBOX: { tone: "neutral", label: "Paired · Sandbox", cta: "Review pairing" },
+      TRUSTED_OWNER_DEVICE: { tone: "good", label: "Trusted owner device", cta: "Manage devices" },
+      REVOKED: { tone: "bad", label: "Trust revoked", cta: "Re-pair this iPhone" }
+    };
+    function banner(state) {
+      var key = String(state == null ? "" : state);
+      if (STATES[key]) return { tone: STATES[key].tone, label: STATES[key].label, cta: STATES[key].cta };
+      return { tone: STATES.PAIRED_SANDBOX.tone, label: STATES.PAIRED_SANDBOX.label, cta: STATES.PAIRED_SANDBOX.cta };
+    }
+    return { banner: banner };
+  })();
+  </script>
+  <!-- Cycle 22 — iPhone-only lease-status pill model. Backward compatible:
+       additive window.EvieLease namespace; no existing markup changed. -->
+  <script>
+  window.EvieLease = (function () {
+    function pill(lease) {
+      var status = String((lease && lease.status) || "unknown").toLowerCase();
+      if (status === "active") return { tone: "good", label: "Lease active" };
+      if (status === "expiring") return { tone: "warn", label: "Lease expiring" };
+      if (status === "expired" || status === "revoked") return { tone: "bad", label: "Lease " + status };
+      return { tone: "neutral", label: "Lease " + status };
+    }
+    return { pill: pill };
+  })();
+  </script>
+  <!-- Cycle 23 — iPhone-only update-available toast model. Backward
+       compatible: additive window.EvieUpdate namespace; compares hello
+       latest_web_build against the running build, no markup changed. -->
+  <script>
+  window.EvieUpdate = (function () {
+    function toast(hello, currentBuild) {
+      var latest = hello && hello.latest_web_build != null ? String(hello.latest_web_build) : "";
+      var current = currentBuild != null ? String(currentBuild) : "";
+      if (!latest || !current || latest === current) return null;
+      return { title: "Update available", body: "Evie " + latest + " is ready.", cta: "Reload" };
+    }
+    return { toast: toast };
+  })();
+  </script>
+  <!-- Cycle 26 — iPhone-only install helper model. Backward compatible:
+       additive window.EvieInstall namespace; Add-to-Home-Screen steps for
+       Safari on 16 Pro / SE, no markup changed. -->
+  <script>
+  window.EvieInstall = (function () {
+    function steps() {
+      return [
+        "Open Safari and load your Home Station /evie/ URL",
+        "Tap Share, then Add to Home Screen",
+        "Open Evie from the Home Screen and pair with a Mac-issued code",
+      ];
+    }
+    return { steps: steps };
+  })();
+  </script>
+  <!-- Cycle 27 — iPhone-only pairing helper model. Backward compatible:
+       additive window.EviePairing namespace; no markup changed. -->
+  <script>
+  window.EviePairing = (function () {
+    function hint(state) {
+      if (state === "PAIRED_SANDBOX") return "Ask the Mac to promote this iPhone to owner device.";
+      if (state === "TRUSTED_OWNER_DEVICE") return "This iPhone is paired and trusted.";
+      return "Enter the pairing code shown on the Mac.";
+    }
+    return { hint: hint };
+  })();
+  </script>
+  <!-- Cycle 28 — iPhone-only revoke warning model. Backward compatible:
+       additive window.EvieRevoke namespace; no markup changed. -->
+  <script>
+  window.EvieRevoke = (function () {
+    function warning(state) {
+      if (state === "REVOKED") return { tone: "bad", label: "This iPhone was revoked", cta: "Re-pair" };
+      return null;
+    }
+    return { warning: warning };
+  })();
+  </script>
+  <!-- Cycle 29 — iPhone-only auth-revision display model. Backward
+       compatible: additive window.EvieAuthRev namespace; no markup changed. -->
+  <script>
+  window.EvieAuthRev = (function () {
+    function label(rev) {
+      var n = Number(rev);
+      if (!isFinite(n)) return "auth rev unknown";
+      return "auth rev " + n;
+    }
+    return { label: label };
+  })();
+  </script>
+  <!-- Cycle 30 — iPhone-only environment pill model. Backward compatible:
+       additive window.EvieEnv namespace; SANDBOX vs owner use at a glance. -->
+  <script>
+  window.EvieEnv = (function () {
+    function pill(env) {
+      var e = String(env || "").toUpperCase();
+      if (e === "SANDBOX") return { tone: "neutral", label: "Sandbox" };
+      if (e === "OWNER" || e === "PRODUCTION") return { tone: "good", label: "Owner" };
+      return { tone: "neutral", label: e || "Unknown" };
+    }
+    return { pill: pill };
+  })();
+  </script>
 </body>
 </html>

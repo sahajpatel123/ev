@@ -394,6 +394,17 @@ honest · evidence-based · protective of user goals · non-deceptive · non-man
 Profile updates come from explicit user settings and from corrections
 (evidence-backed only); each change is versioned.
 
+EV's spoken personality is owner-frozen in the code-owned `EV SPEECH CONTRACT`
+(`backend/app/ev/personality.py`). Its baseline is human, casual, answer-first,
+and concise: say only what the owner needs, once, without filler, process
+narration, closing offers, or feature steering. Capabilities and data are
+background machinery; a feature agent may add or wire a capability, but may
+not make EV promote that capability or change her speech style. Dynamic work,
+memory, and capability context belongs to the current turn, not to the stable
+identity block, and the contract is appended after that context. Personality
+slider mutations require an explicit owner API/voice origin; model and worker
+tool calls are not an authorization source.
+
 ## 19. Relationship model
 
 `relationship_stats` (evidence-backed, not emotions):

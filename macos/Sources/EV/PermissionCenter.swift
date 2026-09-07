@@ -12,6 +12,9 @@ import Security
 import Speech
 import UserNotifications
 
+/// Every TCC permission the LIFE access hub can need. Detection is live —
+/// the panel never claims a permission is granted when TCC reports denied.
+enum PermissionKind: String, CaseIterable, Identifiable, Sendable {
 enum PermissionKind: String, CaseIterable, Identifiable {
     case microphone
     case speechRecognition
@@ -117,14 +120,14 @@ enum PermissionKind: String, CaseIterable, Identifiable {
     }
 }
 
-enum PermissionState: String {
+enum PermissionState: String, Sendable {
     case granted
     case denied
     case notDetermined
     case restricted
 }
 
-struct PermissionStatus {
+struct PermissionStatus: Equatable, Sendable {
     let kind: PermissionKind
     let state: PermissionState
     let whatBreaks: String
@@ -164,6 +167,76 @@ struct PermissionFact: Identifiable {
 /// therefore runs inside ``AppForeground.withActivation``.
 @MainActor
 enum PermissionCenter {
+    static func statuses() async -> [PermissionStatus] {
+        // Accessibility stale-grant detection launches sqlite3 and waits for
+        // it. Permission panels used to run that blocking probe on the main
+        // actor every two seconds; opening the menu could therefore starve
+        // live voice event delivery. Keep the exact detection logic, but run
+        // its process/file work at utility priority.
+        async let accessibility = detachedAccessibilityStatus()
+        return [
+            microphoneStatus(),
+            speechStatus(),
+            cameraStatus(),
+            screenRecordingStatus(),
+            await accessibility,
+            automationStatus(),
+            fullDiskAccessStatus(),
+            contactsStatus(),
+            calendarsStatus(),
+            remindersStatus(),
+            await notificationStatus(),
+            bluetoothStatus(),
+            inputMonitoringStatus(),
+            locationStatus(),
+        ]
+    }
+
+    private static func detachedAccessibilityStatus() async -> PermissionStatus {
+        await Task.detached(priority: .utility) {
+            accessibilityStatus()
+        }.value
+    }
+
+    static func openSettings(for kind: PermissionKind) {
+        guard let url = settingsURL(for: kind) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    static func settingsURL(for kind: PermissionKind) -> URL? {
+        let string: String
+        switch kind {
+        case .microphone:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+        case .speechRecognition:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
+        case .camera:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera"
+        case .screenRecording:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        case .accessibility:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        case .automation:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        case .fullDiskAccess:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+        case .contacts:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Contacts"
+        case .calendars:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars"
+        case .reminders:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Reminders"
+        case .notifications:
+            // macOS 13+ System Settings exposes the Notifications pane as an
+            // ExtensionKit pane; the legacy `com.apple.preference.Notifications`
+            // identifier no longer opens anything.
+            string = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        case .bluetooth:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth"
+        case .inputMonitoring:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        case .location:
+            string = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocationServices"
     static var bundleIdentifier: String {
         Bundle.main.bundleIdentifier ?? "com.ev.suit"
     }
@@ -220,6 +293,66 @@ enum PermissionCenter {
         }
     }
 
+    /// Requests every permission macOS exposes a programmatic prompt for, in
+    /// a safe order, so EV registers in each System Settings pane. After this
+    /// returns, the panes list EV and the user toggles any that are still off.
+    /// Accessibility and Full Disk Access have no prompt — their panes are the
+    /// ones with a "+" button — so they are intentionally left to the user.
+    ///
+    /// TCC registers an app in a pane only after the app has actually asked
+    /// for that permission, so every programmatic request is fired here (and
+    /// automation asks each target app separately so Messages, Mail, and
+    /// System Events each appear in the Automation list).
+    ///
+    /// The app is activated first: consent dialogs from a menu-bar accessory
+    /// present reliably only when the process is active. Most requests then
+    /// block on the user's answer (AVFoundation, Contacts, EventKit, speech),
+    /// which paces the prompts naturally; the explicit gaps cover the ones
+    /// that return immediately (screen recording, input monitoring, Bluetooth).
+    static func requestAll() async -> [PermissionStatus] {
+        await MainActor.run { NSApp.activate() }
+        let order: [PermissionKind] = [
+            .microphone,
+            .speechRecognition,
+            .camera,
+            .screenRecording,
+            .contacts,
+            .calendars,
+            .reminders,
+            .notifications,
+            .inputMonitoring,
+            .bluetooth,
+            .location,
+        ]
+        for kind in order {
+            _ = await request(kind)
+            // A short gap lets macOS settle each consent prompt before the
+            // next one fires; prompts that block on user input pace themselves.
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        // Automation is per-target: request(.automation) prompts System Events
+        // directly and launches Messages/Mail so every target gets its own
+        // consent prompt (and row) in the Automation pane.
+        _ = await request(.automation)
+        _ = await request(.accessibility)
+        // Let any final consent prompts settle before reporting statuses.
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        return await statuses()
+    }
+
+    /// Re-runs registration for everything macOS still reports as undecided.
+    /// Idempotent — decided permissions are never re-prompted — so re-running
+    /// the CLI probe fills in any pane EV has not appeared in yet instead of
+    /// re-asking about ones already answered.
+    static func requestPending() async -> [PermissionStatus] {
+        var current = await statuses()
+        // Automation is per-target: even when the aggregate row is partial
+        // (some targets granted, others still undecided) it must be re-requested
+        // so a just-launched Messages/Mail gets its own consent prompt. It is
+        // not part of `needsRequest`, so track it separately to avoid the early
+        // return below skipping it.
+        let needsAutomationRefresh = current.contains {
+            $0.kind == .automation && $0.state == .partial
     static func revealAppInFinder() {
         NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
     }
@@ -857,6 +990,50 @@ final class PermissionBrokers: NSObject, CBCentralManagerDelegate, CLLocationMan
         return CLLocationManager().authorizationStatus
     }
 
+struct PermissionsPanelView: View {
+    var onBack: (() -> Void)? = nil
+    @State private var statuses: [PermissionStatus] = []
+    @State private var isRequesting = false
+    @State private var isLoading = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                if let onBack {
+                    Button(action: onBack) {
+                        Label("Back", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .keyboardShortcut(.cancelAction)
+                }
+                Text("Grant EVIE my life")
+                    .font(.headline)
+                Spacer()
+                Text(summary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Refresh") {
+                    Task { await load() }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                Button("Quit") {
+                    AppLifecycle.quit()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            Button {
+                isRequesting = true
+                Task {
+                    statuses = await PermissionCenter.requestAll()
+                    isRequesting = false
+                }
+            } label: {
+                Label(
+                    isRequesting ? "Answer the prompts…" : "Grant All — request every permission",
+                    systemImage: "checkmark.shield"
     func ensureBluetoothManager() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             bluetoothWaiters.append(continuation)
@@ -880,6 +1057,22 @@ final class PermissionBrokers: NSObject, CBCentralManagerDelegate, CLLocationMan
             let manager = CLLocationManager()
             manager.delegate = self
             locationManager = manager
+        }
+        .task {
+            // Appearing is deliberately read-only. The old automatic
+            // requestPending sweep launched a chain of TCC prompts and app
+            // probes 1.5 seconds after the menu opened. Besides being
+            // surprising, that work could overlap streamed playback, and a
+            // user closing the panel mid-sweep caused it to retry next open.
+            // Grant All and each row's Ask button remain the explicit paths.
+            await load()
+        }
+        // Permission state does not need audio-rate freshness. A slower,
+        // non-common-mode refresh avoids panel tracking repeatedly scheduling
+        // work while the owner is listening to a response. Manual Refresh and
+        // microphone notifications remain immediate.
+        .onReceive(Timer.publish(every: 10, on: .main, in: .default).autoconnect()) { _ in
+            Task { await load() }
         }
         let status = locationManager?.authorizationStatus ?? .notDetermined
         guard status == .notDetermined else { return }
@@ -906,6 +1099,15 @@ final class PermissionBrokers: NSObject, CBCentralManagerDelegate, CLLocationMan
         waiters.forEach { $0.resume() }
     }
 
+    private func load() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        let latest = await PermissionCenter.statuses()
+        guard !Task.isCancelled else { return }
+        if latest != statuses {
+            statuses = latest
+        }
     private func finishLocationWait() {
         let waiters = locationWaiters
         locationWaiters.removeAll()

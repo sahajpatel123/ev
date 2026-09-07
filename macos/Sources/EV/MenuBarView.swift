@@ -21,7 +21,9 @@ struct MenuBarView: View {
         }
         .padding(12)
         .onAppear {
-            model.start()
+            // AppModel starts from its initializer. Panel visibility must not
+            // own or restart the voice lifecycle; opening this window is only
+            // a presentation event.
             if !hasSeenLifeGrant {
                 showPermissions = true
                 hasSeenLifeGrant = true
@@ -144,7 +146,11 @@ struct MenuBarView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             ScrollView {
-                VStack(alignment: .leading, spacing: 4) {
+                // Keep historical messages available without eagerly laying
+                // out the whole conversation whenever a live event updates
+                // the panel. Eager layout here made opening an old thread
+                // contend with main-actor delivery of streamed voice chunks.
+                LazyVStack(alignment: .leading, spacing: 4) {
                     ForEach(model.messages) { message in
                         Text("\(message.role): \(message.text)")
                             .font(.body)

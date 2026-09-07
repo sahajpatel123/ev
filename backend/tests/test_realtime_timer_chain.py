@@ -170,7 +170,9 @@ async def test_openai_realtime_one_minute_timer_completes_full_chain(db_session)
         )
         audio = next(event for event in events if isinstance(event, TtsChunkEvent))
         assert audio.provider == "openai-realtime"
-        assert audio.sample_rate == 16000
+        # OpenAI Realtime emits native 24 kHz PCM; the Mac player performs
+        # the single high-quality conversion to its hardware rate.
+        assert audio.sample_rate == 24000
         assert base64.b64decode(audio.audio_b64)
         assert any(
             isinstance(event, ReplyEvent) and event.text == "Timer set for one minute."

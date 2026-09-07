@@ -1,0 +1,234 @@
+"""Trusted iPhone → Home Station action plane.
+
+Safari Evie cannot run native Clock, Reminders, Mail, or Mac apps. Those
+jobs run on Home Station through the same `dispatch` path Mac Talk uses.
+Muse Spark 1.3 may choose the tool when the phrase book misses.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Device
+
+from .sandbox import is_sandbox_device
+
+_CAMERA = frozenset({"look", "observe_camera", "capture_photo", "record_video"})
+_BLOCKED = frozenset(
+    {
+        "execute_command",
+        "drone",
+        "ui_action",
+        "inspect_ui",
+        "screen_look",
+        "actuate",
+        "print_start",
+        "camera_replay",
+        "app_action",
+    }
+)
+_NEGATED_RE = re.compile(
+    r"\b(?:don'?t|do not|never|not)\s+(?:open|close|start|set|send|call|launch|remind)\b",
+    re.I,
+)
+_HEARING_RE = re.compile(
+    r"after i finish this sentence|my test phrase is|are you listening|"
+    r"say exactly:|what did i just ask|repeat after me",
+    re.I,
+)
+_WORD_MINUTES = {
+    "a": 1.0,
+    "one": 1.0,
+    "two": 2.0,
+    "three": 3.0,
+    "four": 4.0,
+    "five": 5.0,
+    "six": 6.0,
+    "seven": 7.0,
+    "eight": 8.0,
+    "nine": 9.0,
+    "ten": 10.0,
+    "eleven": 11.0,
+    "twelve": 12.0,
+    "fifteen": 15.0,
+    "twenty": 20.0,
+    "thirty": 30.0,
+    "forty": 40.0,
+    "forty-five": 45.0,
+    "sixty": 60.0,
+}
+_TIMER_WORD_RE = re.compile(
+    r"\b(?:start |set )?(?:a )?timer (?:for )?(?P<word>"
+    + "|".join(re.escape(w) for w in sorted(_WORD_MINUTES, key=len, reverse=True))
+    + r")\s*(?:min|mins|minute|minutes)\b",
+    re.I,
+)
+_CLOSE_CALC_RE = re.compile(r"\b(?:close|quit)\s+(?:the\s+)?(?:calculator|calc)\b", re.I)
+
+
+def _ok(reply: str, *, route: str, tool: str, executed: bool, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "reply": reply,
+        "ok": True,
+        "route": route,
+        "operation": tool,
+        "turn_id": None,
+        "executed": executed,
+        "verified": executed,
+        "conversational": False,
+        "provenance": "home_station.dispatch",
+        "tool": tool,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def _phrase_action(text: str) -> tuple[str, dict[str, Any]] | None:
+    word = _TIMER_WORD_RE.search(text)
+    if word:
+        minutes = _WORD_MINUTES.get(word.group("word").lower())
+        if minutes:
+            return "start_timer", {"minutes": minutes}
+    if _CLOSE_CALC_RE.search(text):
+        return "close_app", {"name": "Calculator"}
+    return None
+
+
+def _spoken_from_dispatch(response: Any, name: str, payload: dict[str, Any]) -> str:
+    spoken = str(payload.get("spoken") or payload.get("owner_message") or "").strip()
+    if spoken:
+        return spoken
+    if name == "calendar_read" and payload.get("error") == "not_connected":
+        return (
+            "I checked Home Station Calendar — it isn't connected yet. "
+            "Safari Evie also can't read Apple Calendar on this iPhone."
+        )
+    if name == "list_mail" and payload.get("error") == "not_connected":
+        return "Home Station Mail isn't connected yet, so I can't read the inbox from this iPhone."
+    if name == "list_messages" and payload.get("error") == "not_connected":
+        return "Home Station Messages isn't connected yet."
+    next_step = str(payload.get("next_step") or payload.get("error") or response.error or "").strip()
+    if not response.ok or payload.get("ok") is False or payload.get("degraded"):
+        if next_step:
+            return f"I couldn't complete that on Home Station. {next_step}"[:400]
+        return "I couldn't complete that on Home Station."
+    if name in {"set_reminder", "send_message", "place_call", "present", "code"}:
+        from app.ev.tools import life_success_reply
+
+        shaped = life_success_reply(payload, tool_name=name).strip()
+        if shaped and not shaped.startswith("Sent to the recipient"):
+            return shaped
+    return "Done on Home Station."
+
+
+def utterance_from_phone_action(arguments: dict[str, Any], transcript: str) -> str:
+    raw = (transcript or "").strip()
+    if raw:
+        return raw
+    args = arguments if isinstance(arguments, dict) else {}
+    op = str(args.get("operation") or "").strip()
+    if op in {"create_timer", "start_timer"}:
+        minutes = args.get("duration_minutes")
+        if minutes is None and args.get("duration_seconds"):
+            try:
+                minutes = float(args["duration_seconds"]) / 60.0
+            except (TypeError, ValueError):
+                minutes = None
+        if minutes:
+            return f"set a timer for {minutes} minutes"
+    if op in {"create_reminder", "set_reminder"}:
+        title = str(args.get("title") or args.get("text") or args.get("message") or "").strip()
+        if title:
+            return f"remind me to {title}"
+    if op == "open_app":
+        name = str(args.get("app_id") or args.get("title") or args.get("name") or "").strip()
+        if name:
+            return f"open {name}"
+    if op in {"call_contact", "place_call"}:
+        who = str(args.get("contact_query") or args.get("name") or "").strip()
+        if who:
+            return f"call {who}"
+    if op in {"message_contact", "send_message"}:
+        who = str(args.get("contact_query") or args.get("to") or "").strip()
+        body = str(args.get("message") or args.get("text") or "").strip()
+        if who and body:
+            return f"text {who} {body}"
+    return str(args.get("text") or "").strip()
+
+
+async def maybe_phone_mac_act(
+    session: AsyncSession,
+    *,
+    device: Device,
+    text: str,
+    idempotency_key: str | None = None,
+) -> dict[str, Any] | None:
+    if is_sandbox_device(device) or device.revoked_at is not None:
+        return None
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if _NEGATED_RE.search(raw) or _HEARING_RE.search(raw):
+        return None
+
+    from app.ev.spark_phone import looks_like_phone_chat, spark_phone_tool
+    from app.ev.tool_select import resolve_live_action
+
+    if looks_like_phone_chat(raw):
+        return None
+
+    resolved = resolve_live_action(raw)
+    if resolved is None:
+        resolved = _phrase_action(raw)
+    if resolved is None:
+        resolved = await spark_phone_tool(raw)
+    if resolved is None:
+        return None
+    name, args = resolved
+    if name in _CAMERA or name in _BLOCKED:
+        return None
+    args = dict(args or {})
+    if idempotency_key and name == "start_timer" and "idempotency_key" not in args:
+        args["idempotency_key"] = idempotency_key[:80]
+
+    from app.ev.tools import dispatch
+
+    # Computer tools must run on Home Station's Mac helper, not this iPhone.
+    computerish = name in {
+        "open_app",
+        "close_app",
+        "activate_app",
+        "list_apps",
+        "computer_status",
+        "open_url",
+        "computer",
+        "code",
+    }
+    response = await dispatch(
+        session,
+        name,
+        args,
+        actor="voice",
+        allow_sensitive=True,
+        request_id=idempotency_key,
+        device_id=None if computerish else device.id,
+        live_session_id=None,
+        channel="voice",
+        audit_endpoint="POST /v1/device-gateway/text",
+    )
+    payload = response.result if isinstance(response.result, dict) else {}
+    spoken = _spoken_from_dispatch(response, name, payload)
+    executed = bool(response.ok and payload.get("ok", True) is not False and not payload.get("degraded"))
+    if name == "calendar_read" and payload.get("error") == "not_connected":
+        executed = False
+    return _ok(
+        spoken,
+        route="HOME_STATION",
+        tool=name,
+        executed=executed,
+        extra={"tool_ok": bool(response.ok), "tool_error": response.error},
+    )

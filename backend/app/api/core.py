@@ -228,9 +228,19 @@ async def health() -> dict:
 
     from app.db import SessionLocal
     from app.ev.laptop_files import laptop_files_allowed
+    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active
 
     async with SessionLocal() as session:
         migrations = await migration_parity(session)
+
+    models = {
+        **model_health(),
+        "turn_control_metrics": luna_metrics_snapshot(),
+    }
+    # Muse Spark is the normal manager/brain. Do not overwrite that slot with
+    # the legacy DeepSeek manager stub while Muse is the configured intelligence.
+    if not muse_intelligence_active():
+        models["manager"] = DeepSeekManagerAdapter().health()
 
     return {
         # G1.1: schema/migration drift degrades health visibly. Observability
@@ -263,16 +273,12 @@ async def health() -> dict:
             "plugins",
         ],
         "providers": {
-            "chat": settings.chat_provider,
+            "chat": configured_intelligence_provider() or settings.chat_provider,
             "live": live_label,
             "embeddings": settings.embedding_provider,
             "storage": settings.object_store_backend,
         },
-        "models": {
-            **model_health(),
-            "turn_control_metrics": luna_metrics_snapshot(),
-            "manager": DeepSeekManagerAdapter().health(),
-        },
+        "models": models,
         "migrations": migrations,
         "git": {"sha": RUNTIME_GIT_SHA},
         "runtime": {
@@ -1189,6 +1195,95 @@ async def _stream_chat(
             await task
 
 
+async def _maybe_deterministic_core_reply(
+    session: AsyncSession,
+    message: str,
+    *,
+    actor: str,
+    device_id: UUID | None,
+) -> str | None:
+    """Speak TurnGate/Core truth for deterministic reads without Spark.
+
+    Mutations stay on the existing tool/Spark path so a shadow TurnGate
+    voice turn cannot double-apply a write. Conversation still uses Spark.
+    """
+
+    from app.ev.luna_adapter import is_deterministic_high_confidence
+    from app.ev.turn_controller import TurnController
+
+    if not is_deterministic_high_confidence(message):
+        return None
+    controller = TurnController(
+        session,
+        actor=actor,
+        device_id=str(device_id) if device_id else None,
+    )
+    core = await controller.handle_turn(message)
+    if core.route not in {"STATE_QUERY", "MISSION_CONTROL"}:
+        return None
+    spoken = (core.owner_message or "").strip()
+    return spoken or None
+
+
+async def _maybe_deterministic_action_reply(
+    session: AsyncSession,
+    message: str,
+    *,
+    actor: str,
+    device_id: UUID | None,
+    allow_sensitive: bool,
+    request_id: str | None,
+) -> str | None:
+    """Speak calculate/open_app receipts without Spark.
+
+    Combined turns such as "Open Calculator and calculate 19 times 47"
+    run every deterministic piece. Spark is not used to glue them.
+    """
+
+    from app.ev.briefing import extract_expression
+    from app.ev.computer import _calculator_expression
+    from app.ev.tool_select import OPEN_APP_RE
+    from app.ev.tools import dispatch, life_success_reply
+
+    open_match = OPEN_APP_RE.search(message or "")
+    expression = extract_expression(message) or _calculator_expression(message or "")
+    if not open_match and not expression:
+        return None
+
+    async def _run(name: str, arguments: dict) -> dict:
+        response = await dispatch(
+            session,
+            name,
+            arguments,
+            actor=actor,
+            allow_sensitive=allow_sensitive,
+            request_id=request_id,
+            device_id=device_id,
+            channel="voice" if actor == "voice" else "action",
+        )
+        return response.result if isinstance(response.result, dict) else {}
+
+    parts: list[str] = []
+    if open_match:
+        payload = await _run("open_app", {"name": open_match.group("name")})
+        spoken = (payload.get("spoken") or "").strip()
+        if not spoken:
+            spoken = life_success_reply({**payload, "_tool": "open_app"}, tool_name="open_app").strip()
+        if spoken:
+            parts.append(spoken)
+    if expression:
+        payload = await _run("calculate", {"expression": expression})
+        value = payload.get("result")
+        if value is not None:
+            try:
+                number = float(value)
+                shown: object = int(number) if number.is_integer() else number
+            except (TypeError, ValueError):
+                shown = value
+            parts.append(str(shown))
+    return " ".join(parts).strip() or None
+
+
 async def run_chat_pipeline(
     data: ChatRequest,
     session: AsyncSession,
@@ -1387,7 +1482,10 @@ async def run_chat_pipeline(
 
     open_conflicts = await open_conflict_lines(session, limit=8)
 
-    provider = get_chat_provider()
+    # Do not construct Spark (or any chat provider) until this turn actually
+    # needs intelligence. Deterministic Core / local companion intents must
+    # stay zero-LLM even when META_MODEL_API_KEY is missing.
+    provider = None
     perception_lines: list[str] = []
     perception_provenance: list[ProvenanceItem] = []
     chat_media_refs: list[dict] = []
@@ -1430,6 +1528,8 @@ async def run_chat_pipeline(
             ]
         else:
             try:
+                if provider is None:
+                    provider = get_chat_provider()
                 perception_event = await vision.analyze_attachment(
                     session,
                     data.attachment_id,
@@ -1568,6 +1668,24 @@ async def run_chat_pipeline(
         device_id=device_id,
     )
     receipts: list = []
+    core_reply = None
+    action_reply = None
+    if not decision.blocked and local is None:
+        core_reply = await _maybe_deterministic_core_reply(
+            session,
+            data.message,
+            actor=actor,
+            device_id=device_id,
+        )
+        if core_reply is None:
+            action_reply = await _maybe_deterministic_action_reply(
+                session,
+                data.message,
+                actor=actor,
+                device_id=device_id,
+                allow_sensitive=data.allow_sensitive_tools or source == "voice",
+                request_id=request_id,
+            )
 
     if decision.blocked:
         final_draft = (
@@ -1594,6 +1712,26 @@ async def run_chat_pipeline(
         # Voice Talk only plays tts_chunk audio. Local intents never
         # stream token deltas, so push the full reply into the same
         # callback the model path uses or the answer stays silent.
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
+    elif core_reply is not None:
+        result = ChatResult(text=core_reply)
+        report = OutputReport(
+            draft=result.text,
+            final_text=result.text,
+            flags=decision.flags,
+        )
+        envelope_hash = None
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
+    elif action_reply is not None:
+        result = ChatResult(text=action_reply)
+        report = OutputReport(
+            draft=result.text,
+            final_text=result.text,
+            flags=decision.flags,
+        )
+        envelope_hash = None
         if text_delta_callback is not None and result.text:
             await text_delta_callback(result.text)
     else:
@@ -1687,6 +1825,8 @@ async def run_chat_pipeline(
         )
         if on_turn_ready is not None:
             await on_turn_ready(strategy)
+        if provider is None:
+            provider = get_chat_provider()
         gateway = ModelGateway(provider)
         chat_messages = [
             ChatMessage(role="system", content=system_prompt),
@@ -1702,7 +1842,12 @@ async def run_chat_pipeline(
         )
         supports_native_tools = bool(getattr(provider, "supports_tools", True))
         dispatched_names = {item.name for item in receipts}
-        stream_tokens = text_delta_callback is not None and not write_needed
+        # A streamed no-tool turn cannot execute a read-only tool returned by
+        # the model. Keep streaming for genuinely tool-free replies only;
+        # when any tool is offered, route through the supervised loop so
+        # Responses function calls remain validated, dispatched, and replayed
+        # with their receipts before the answer is spoken.
+        stream_tokens = text_delta_callback is not None and not write_needed and not tool_specs
         if stream_tokens and text_delta_callback is not None:
             await _progress("model", {"streaming": True})
             call = None
@@ -1757,10 +1902,33 @@ async def run_chat_pipeline(
                 status_code=403,
                 detail=f"Model boundary blocked this request: {call.error}",
             )
-        if call.status == "error":
+        if call.status in {"error", "degraded"}:
+            from app.gateway.muse import MUSE_SPARK_PROVIDERS
+
             raise HTTPException(
                 status_code=503,
                 detail=f"Model provider unavailable: {call.error}",
+                headers={
+                    "X-Error-Code": (
+                        "muse_unavailable"
+                        if call.provider in MUSE_SPARK_PROVIDERS
+                        else "model_unavailable"
+                    )
+                },
+            )
+        if not (result.text or "").strip() and not result.tool_calls:
+            from app.gateway.muse import MUSE_SPARK_PROVIDERS
+
+            raise HTTPException(
+                status_code=503,
+                detail="Model provider returned no answer.",
+                headers={
+                    "X-Error-Code": (
+                        "muse_empty_response"
+                        if call.provider in MUSE_SPARK_PROVIDERS
+                        else "model_empty_response"
+                    )
+                },
             )
 
         await _progress("output_filter")
