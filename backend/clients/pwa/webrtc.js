@@ -16,6 +16,7 @@
      iPhone speakerphone needs a longer tail than 220ms — echo was becoming
      a new owner turn ("yes I got you") via server_vad create_response. */
   const PLAYBACK_MIC_TAIL_MS = 800;
+  const BARGE_IN_CONFIRM_MS = 250;
 
   const STATES = [
     "IDLE",
@@ -491,6 +492,9 @@
       audioElements: 0,
       packetsSent: 0,
       packetsReceived: 0,
+      bargeInsArmed: 0,
+      bargeInsConfirmed: 0,
+      bargeInsDismissed: 0,
     };
     this.lastStats = { outbound: null, inbound: null, codec: null };
     this.captureInspect = { present: false };
@@ -505,8 +509,9 @@
     this.signaling = "unified_calls";
     this._playbackHold = false;
     this._micTailTimer = 0;
-    this._spokenResponseId = "";
     this._allowNextResponse = false;
+    this._bargeInTimer = 0;
+    this._bargeInSpokenId = "";
     this._uiState = "";
   }
 
@@ -559,6 +564,64 @@
       self._emitState("listening");
       self.onHealth(self.snapshot());
     }, PLAYBACK_MIC_TAIL_MS);
+  };
+
+  /* Cycle 55 — owner-confirmed barge-in for the phone surface.
+     Provider interruption stays OFF (PWA speakers are echo-unsafe), but a
+     speech onset DURING playback is no longer silently swallowed: it arms a
+     short confirmation window. Speech that stops before the window closes
+     is dismissed as echo/noise; speech that persists is confirmed — the
+     spoken response is cancelled provider-side, local playback stops, and
+     the mic opens immediately. Exactly the interrupt_v1 OWNER_CONFIRMED
+     contract, implemented phone-side. */
+  EvieWebRTC.prototype._disarmBargeIn = function _disarmBargeIn(reason) {
+    if (!this._bargeInTimer) return false;
+    window.clearTimeout(this._bargeInTimer);
+    this._bargeInTimer = 0;
+    this._bargeInSpokenId = "";
+    if (reason !== "silent") {
+      this.metrics.bargeInsDismissed += 1;
+      this.onHealth(this.snapshot());
+    }
+    return true;
+  };
+
+  EvieWebRTC.prototype._armBargeIn = function _armBargeIn() {
+    const self = this;
+    if (this._bargeInTimer) return; // already pending
+    this.metrics.bargeInsArmed += 1;
+    this._bargeInSpokenId = this._spokenResponseId || "";
+    this._bargeInTimer = window.setTimeout(function () {
+      self._bargeInTimer = 0;
+      self._confirmBargeIn();
+    }, BARGE_IN_CONFIRM_MS);
+  };
+
+  EvieWebRTC.prototype._confirmBargeIn = function _confirmBargeIn() {
+    this.metrics.bargeInsConfirmed += 1;
+    const spoken = this._bargeInSpokenId || this._spokenResponseId;
+    this._bargeInSpokenId = "";
+    if (spoken) this._send({ type: "response.cancel", response_id: spoken });
+    this._send({ type: "input_audio_buffer.clear" });
+    // Stop Evie's voice NOW: pause the element the remote track renders to,
+    // drop the playback hold and the mic tail, re-enable capture.
+    if (this.audioEl) {
+      try { this.audioEl.pause(); } catch (_err) {}
+    }
+    this.playing = false;
+    this._playbackHold = false;
+    if (this._micTailTimer) {
+      window.clearTimeout(this._micTailTimer);
+      this._micTailTimer = 0;
+    }
+    this._spokenResponseId = "";
+    this._allowNextResponse = false;
+    this._setVadCreateResponse(true);
+    this._setMicCaptureEnabled(true);
+    this._setRuntime("OWNER_SPEAKING");
+    this._emitState("listening");
+    this.onHealth(this.snapshot());
+    if (window.EvieFeedback && window.EvieFeedback.haptic) window.EvieFeedback.haptic(10);
   };
 
   EvieWebRTC.prototype._setVadCreateResponse = function _setVadCreateResponse(on) {
@@ -976,7 +1039,12 @@
       type === "conversation.item.input_audio_transcription.completed"
     )) {
       if (type === "input_audio_buffer.speech_started") {
-        this._send({ type: "input_audio_buffer.clear" });
+        // Cycle 55 — arm a confirmed barge-in instead of swallowing the
+        // onset: echo/noise dismisses itself when speech_stopped arrives
+        // before the window closes.
+        this._armBargeIn();
+      } else if (type === "input_audio_buffer.speech_stopped") {
+        this._disarmBargeIn();
       }
       this.onHealth(this.snapshot());
       return;
@@ -1254,8 +1322,8 @@
     this.closed = true;
     this.playing = false;
     this._playbackHold = false;
+    this._disarmBargeIn("silent");
     if (this._micTailTimer) window.clearTimeout(this._micTailTimer);
-    this._micTailTimer = 0;
     this.generation += 1;
     this._setRuntime("ENDED");
     if (this.poll) window.clearTimeout(this.poll);
@@ -1335,6 +1403,7 @@
 
   const api = {
     PLAYBACK_MIC_TAIL_MS: PLAYBACK_MIC_TAIL_MS,
+    BARGE_IN_CONFIRM_MS: BARGE_IN_CONFIRM_MS,
     PRODUCTION_MIC_CONSTRAINTS: PRODUCTION_MIC_CONSTRAINTS,
     STATES: STATES,
     STAGES: STAGES,
