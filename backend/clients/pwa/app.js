@@ -764,6 +764,86 @@ async function submitCapture() {
   }
 }
 
+let voiceRecorderState = null; // { recorder, startedAt }
+let voiceNoteChunks = [];
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function toggleVoiceNote() {
+  const btn = $("voice-note-btn");
+  const stateEl = $("voice-note-state");
+  if (voiceRecorderState) {
+    const rec = voiceRecorderState.recorder;
+    voiceRecorderState = null;
+    textOf(stateEl, "Saving voice note…");
+    if (btn) btn.disabled = true;
+    rec.onstop = async () => {
+      try {
+        const mime = rec.mimeType || "audio/mp4";
+        const blob = new Blob(voiceNoteChunks || [], { type: mime });
+        const audioB64 = await blobToBase64(blob);
+        const body = await api("/v1/device-gateway/capture/audio", {
+          method: "POST",
+          body: JSON.stringify({
+            audio_b64: audioB64,
+            content_type: mime,
+            captured_at: new Date().toISOString(),
+            idempotency_key: "voicenote-" + crypto.randomUUID(),
+          }),
+        });
+        if (body && body.ok) textOf(stateEl, "Voice note saved (" + Math.round((body.size_bytes || 0) / 1024) + " KB).");
+        else textOf(stateEl, "Voice note could not be saved.");
+      } catch (err) {
+        const code = err && err.body && err.body.error_code;
+        textOf(stateEl, code === "capture_requires_owner" ? "Voice notes need Mac approval first." : "Save failed — is Home Station reachable?");
+      }
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Voice note";
+      }
+    };
+    try {
+      rec.stop();
+    } catch (_err) {}
+    return;
+  }
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) {
+    textOf(stateEl, "This browser cannot record audio.");
+    return;
+  }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mime = MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "";
+    const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    voiceNoteChunks = [];
+    recorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size) voiceNoteChunks.push(ev.data);
+    };
+    recorder.onerror = () => {
+      textOf(stateEl, "Recording failed — microphone error.");
+      voiceRecorderState = null;
+      if (btn) btn.textContent = "Voice note";
+      stream.getTracks().forEach((t) => t.stop());
+    };
+    recorder.start(250);
+    voiceRecorderState = { recorder: recorder, startedAt: Date.now() };
+    if (btn) btn.textContent = "Stop and save";
+    textOf(stateEl, "Recording… tap again to stop.");
+    window.setTimeout(() => {
+      if (voiceRecorderState) toggleVoiceNote();
+    }, 90000);
+  } catch (_err) {
+    textOf(stateEl, "Microphone permission denied.");
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -2669,6 +2749,10 @@ async function boot() {
       ev.preventDefault();
       submitCapture();
     });
+  }
+  const voiceNoteBtn = $("voice-note-btn");
+  if (voiceNoteBtn) {
+    voiceNoteBtn.addEventListener("click", () => toggleVoiceNote());
   }
   initSwipes(openSurface);
   initSheetGestures();

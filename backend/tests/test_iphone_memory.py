@@ -177,3 +177,34 @@ async def test_capture_note_owner_and_sandbox_gate(
     assert dup.status_code == 200
     assert dup.json()["duplicate"] is True
     assert dup.json()["event_id"] == body["event_id"]
+
+
+async def test_audio_capture_stores_attachment(owner_phone, gateway_phone) -> None:
+    import base64
+
+    _body, owner = owner_phone
+    _sbody, sandbox = gateway_phone
+    tone = base64.b64encode(b"\x00\x01\x02RIFF-test-audio-bytes").decode("ascii")
+
+    denied = await sandbox.post(
+        "/v1/device-gateway/capture/audio",
+        json={"audio_b64": tone, "content_type": "audio/mp4", "idempotency_key": "sandbox-audio-1"},
+    )
+    assert denied.status_code == 403
+
+    res = await owner.post(
+        "/v1/device-gateway/capture/audio",
+        json={"audio_b64": tone, "content_type": "audio/mp4", "idempotency_key": "eac70-audio-1"},
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is True
+    assert body["kind"] == "voice_note"
+    assert body["attachment_id"]
+    assert body["size_bytes"] == len(b"\x00\x01\x02RIFF-test-audio-bytes")
+
+    bad = await owner.post(
+        "/v1/device-gateway/capture/audio",
+        json={"audio_b64": "!!!not-base64!!!", "idempotency_key": "eac70-audio-bad"},
+    )
+    assert bad.status_code == 422

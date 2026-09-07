@@ -227,6 +227,14 @@ class CaptureNoteRequest(BaseModel):
     request_id: str = Field(default="", max_length=128)
 
 
+class CaptureAudioRequest(BaseModel):
+    audio_b64: str = Field(default="", max_length=10_000_000)
+    content_type: str = Field(default="audio/mp4", max_length=128)
+    captured_at: str = Field(default="", max_length=64)
+    idempotency_key: str = Field(default="", max_length=128)
+    request_id: str = Field(default="", max_length=128)
+
+
 class QueueReplayRequest(BaseModel):
     idempotency_key: str
 
@@ -1530,6 +1538,88 @@ async def gateway_capture(
         "event_id": str(event.id),
         "kind": event.event_type,
         "memory_delta": [{"id": d.get("id"), "memory_type": d.get("memory_type")} for d in deltas],
+    }
+
+
+@router.post("/capture/audio", response_model=None)
+async def gateway_audio_capture(
+    data: CaptureAudioRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Phone-scoped voice-note capture: base64 audio -> attachment event.
+
+    Trusted owner devices only (same honesty gate as /capture). The audio
+    is stored through the object store and linked to a voice_note event;
+    transcription is a later stage and is never fabricated here."""
+    _check_origin(request)
+    if is_sandbox_device(device):
+        raise HTTPException(
+            status_code=403,
+            detail="Capture requires Mac promotion (TRUSTED_OWNER_DEVICE).",
+            headers={"X-Error-Code": "capture_requires_owner"},
+        )
+    import base64 as _b64
+
+    try:
+        raw = _b64.b64decode((data.audio_b64 or "").encode("ascii"), validate=True)
+    except Exception:
+        raise HTTPException(status_code=422, detail="audio_b64 is not valid base64") from None
+    if not raw:
+        raise HTTPException(status_code=422, detail="Audio payload is empty")
+    if len(raw) > 6 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Audio payload exceeds 6 MB")
+
+    from uuid import uuid4 as _uuid4
+
+    from app.models import Attachment as AttachmentRow
+    from app.schemas import EventCreate
+    from app.services.event_service import EventService
+    from app.services.processor import ensure_processed
+    from app.storage.object_store import get_object_store, sha256_bytes
+
+    content_type = (data.content_type or "audio/mp4").strip()[:128] or "audio/mp4"
+    store = get_object_store()
+    storage_key = f"attachments/{_uuid4()}.bin"
+    await store.put(storage_key, raw, content_type)
+    key = (data.idempotency_key or "").strip()[:128]
+    service = EventService(session, actor="master")
+    event = await service.create(
+        EventCreate(
+            source="owner.phone",
+            event_type="voice_note",
+            content={
+                "filename": f"voice-note-{data.captured_at or 'now'}.m4a",
+                "content_type": content_type,
+                "size_bytes": len(raw),
+                "storage_key": storage_key,
+                "transcript": None,
+            },
+            metadata={"capture": "voice_note"},
+            device_id=str(device.id),
+            privacy_level="normal",
+        ),
+        request_id=data.request_id or str(_uuid4()),
+        idempotency_key=key or None,
+    )
+    row = AttachmentRow(
+        event_id=event.id,
+        filename=f"voice-note-{_uuid4().hex[:8]}.m4a",
+        content_type=content_type,
+        size_bytes=len(raw),
+        storage_key=storage_key,
+        sha256=sha256_bytes(raw),
+    )
+    session.add(row)
+    await session.commit()
+    await ensure_processed(event.id)
+    return {
+        "ok": True,
+        "event_id": str(event.id),
+        "attachment_id": str(row.id),
+        "kind": event.event_type,
+        "size_bytes": len(raw),
     }
 
 
