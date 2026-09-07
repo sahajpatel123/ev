@@ -369,3 +369,55 @@ def test_js_webrtc_ungates_mic_and_forwards_camera() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_js_webrtc_ptt_mode_gates_vad_and_commits() -> None:
+    """Cycle 56 — hold-to-talk: setPtt disables provider auto-response, hold
+    opens capture + clears the buffer, release commits + requests a response,
+    and post-playback tails honor the mode."""
+    result = subprocess.run(
+        [
+            "node",
+            "-e",
+            "global.window = global;"
+            "const mv=require(process.argv[1]);"
+            "const dummyAudio={play(){return Promise.resolve();},pause(){},srcObject:null};"
+            "function makeRtc(extra){"
+            "  return new mv.EvieWebRTC(Object.assign({"
+            "    api: async () => ({}),"
+            "    onState(){}, onHealth(){}, onHud(){}, audioEl: dummyAudio"
+            "  }, extra||{}));"
+            "}"
+            "(async()=>{"
+            "  const sent=[];"
+            "  const rtc=makeRtc({onHealth(){}});"
+            "  rtc.closed=false;"
+            "  rtc.dc={readyState:'open', send(s){ sent.push(JSON.parse(s)); }};"
+            "  rtc.micTrack={readyState:'live', enabled:true};"
+            "  rtc.setPtt(true);"
+            "  if(!sent.some((m)=>m.type==='session.update' && m.session.audio.input.turn_detection && m.session.audio.input.turn_detection.create_response===false)) process.exit(30);"
+            "  if(!rtc.pttMode) process.exit(31);"
+            "  if(!rtc.holdToTalk()) process.exit(32);"
+            "  if(!rtc.micTrack.enabled) process.exit(33);"
+            "  if(!sent.some((m)=>m.type==='input_audio_buffer.clear')) process.exit(34);"
+            "  if(!rtc.releaseToTalk()) process.exit(35);"
+            "  if(!sent.some((m)=>m.type==='input_audio_buffer.commit')) process.exit(36);"
+            "  if(!sent.some((m)=>m.type==='response.create')) process.exit(37);"
+            "  /* Playback tail must NOT re-enable auto-response in PTT mode. */"
+            "  rtc._onProvider({type:'response.output_audio.delta'});"
+            "  rtc._onProvider({type:'response.output_audio.done'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, mv.PLAYBACK_MIC_TAIL_MS+50));"
+            "  const lastVad=[...sent].reverse().find((m)=>m.type==='session.update');"
+            "  if(lastVad && lastVad.session && lastVad.session.audio && lastVad.session.audio.input && lastVad.session.audio.input.turn_detection && lastVad.session.audio.input.turn_detection.create_response!==false) process.exit(38);"
+            "  /* Continuous mode restores auto-response. */"
+            "  rtc.setPtt(false);"
+            "  if(!sent.some((m)=>m.type==='session.update' && m.session.audio.input.turn_detection && m.session.audio.input.turn_detection.create_response===true)) process.exit(39);"
+            "  console.log('ok');"
+            "})().catch((err)=>{ console.error(err); process.exit(1); });",
+            str(PWA / "webrtc.js"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -685,3 +685,6 @@ html, body {
 /* Cycle 51 — one-tap quick action chips. */
 .qa-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 14px; }
 .qa-chip { padding: 8px 14px; font-size: 13px; border-radius: 999px; }
+
+/* Cycle 56 — hold-to-talk visual state. */
+#talk.holding { transform: scale(0.96); filter: brightness(1.12); }

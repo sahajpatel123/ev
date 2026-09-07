@@ -559,7 +559,7 @@
       self._micTailTimer = 0;
       self._spokenResponseId = "";
       if (self.closed || self.runtime === "EVIE_SPEAKING") return;
-      self._setVadCreateResponse(true);
+      self._setVadCreateResponse(!self.pttMode);
       self._setMicCaptureEnabled(true);
       self._emitState("listening");
       self.onHealth(self.snapshot());
@@ -616,7 +616,7 @@
     }
     this._spokenResponseId = "";
     this._allowNextResponse = false;
-    this._setVadCreateResponse(true);
+    this._setVadCreateResponse(!this.pttMode);
     this._setMicCaptureEnabled(true);
     this._setRuntime("OWNER_SPEAKING");
     this._emitState("listening");
@@ -1195,6 +1195,27 @@
       this._send({ type: "response.create" });
       this.onHud({ kind: "result", name: msg.name, ok: false });
     }
+  };
+
+  /* Cycle 56 — push-to-talk: in PTT mode the provider's server VAD never
+     auto-creates a response; the owner holds the Talk control, and release
+     commits the buffered audio + requests the response explicitly. */
+  EvieWebRTC.prototype.setPtt = function setPtt(on) {
+    this.pttMode = !!on;
+    this._setVadCreateResponse(!this.pttMode);
+  };
+
+  EvieWebRTC.prototype.holdToTalk = function holdToTalk() {
+    if (this.closed || !this.pttMode) return false;
+    this._setMicCaptureEnabled(true);
+    this._send({ type: "input_audio_buffer.clear" });
+    return true;
+  };
+
+  EvieWebRTC.prototype.releaseToTalk = function releaseToTalk() {
+    if (this.closed || !this.pttMode) return false;
+    this.commitTurn();
+    return true;
   };
 
   EvieWebRTC.prototype._send = function _send(obj) {

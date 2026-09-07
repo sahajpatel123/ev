@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.09";
+const CLIENT_BUILD = "2026.09.08.11";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -1939,7 +1939,7 @@ async function talk() {
     claimAudioLeader();
     setConn("ACTIVE");
     setMood("Connecting microphone…");
-    $("talk").textContent = "Stop";
+    $("talk").textContent = voiceMode() === "ptt" ? "Hold" : "Stop";
     const opened = await api("/v1/device-gateway/live/open", {
       method: "POST",
       body: JSON.stringify({
@@ -2097,6 +2097,7 @@ async function startWebRTC(opened) {
     },
   });
   state.webrtc = rtc;
+  if (voiceMode() === "ptt") rtc.setPtt(true);
   state.talking = true;
   if (window.EvieMobileActions) window.EvieMobileActions.setSession(opened.session_id);
   const signaling = /voice_signaling=ephemeral/.test(location.search) ? "ephemeral_direct" : "unified_calls";
@@ -2535,13 +2536,36 @@ async function boot() {
         state.caption = String(err.message || err);
         paintLive();
       });
+  });
+  });
+function voiceMode() {
+  return localStorage.getItem("evie-voice-mode") || "continuous";
+}
+
+  $("talk").addEventListener("click", () => {
+    if (window.EvieFeedback) window.EvieFeedback.visualPress($("talk"));
+    if (voiceMode() === "ptt" && state.talking) return; // hold-to-talk owns the control
+    talk().catch((err) => {
+      state.caption = String(err.message || err);
+      render();
+      stopTalk();
     });
   });
-  document.querySelectorAll("[data-surface]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      openSurface(btn.getAttribute("data-surface"));
-    });
+  const talkBtn = $("talk");
+  talkBtn.addEventListener("pointerdown", () => {
+    if (voiceMode() !== "ptt" || !state.talking || !state.webrtc || !state.webrtc.pttMode) return;
+    if (window.EvieFeedback) window.EvieFeedback.haptic(10);
+    talkBtn.classList.add("holding");
+    state.webrtc.holdToTalk();
   });
+  const releaseTalk = () => {
+    talkBtn.classList.remove("holding");
+    if (voiceMode() !== "ptt" || !state.talking || !state.webrtc || !state.webrtc.pttMode) return;
+    state.webrtc.releaseToTalk();
+  };
+  talkBtn.addEventListener("pointerup", releaseTalk);
+  talkBtn.addEventListener("pointercancel", releaseTalk);
+  talkBtn.addEventListener("pointerleave", releaseTalk);
   initSwipes(openSurface);
   initSheetGestures();
   document.querySelectorAll(".sheet-close").forEach((btn) => {
@@ -2557,6 +2581,26 @@ async function boot() {
     appearance.addEventListener("click", (ev) => {
       const btn = ev.target.closest("button");
       if (btn) applyAppearance(btn.getAttribute("data-appearance"));
+    });
+  }
+  /* Cycle 56 — voice mode: continuous (server VAD auto-responds) vs
+     hold-to-talk (provider auto-response off; owner holds Talk, release
+     commits + requests the response). */
+  const voiceModeSeg = $("voice-mode");
+  if (voiceModeSeg) {
+    const savedMode = localStorage.getItem("evie-voice-mode") || "continuous";
+    Array.prototype.forEach.call(voiceModeSeg.querySelectorAll("button"), (btn) => {
+      btn.classList.toggle("on", btn.getAttribute("data-voice-mode") === savedMode);
+    });
+    voiceModeSeg.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      const next = btn.getAttribute("data-voice-mode") || "continuous";
+      localStorage.setItem("evie-voice-mode", next);
+      Array.prototype.forEach.call(voiceModeSeg.querySelectorAll("button"), (b) => {
+        b.classList.toggle("on", b === btn);
+      });
+      if (state.webrtc) state.webrtc.setPtt(next === "ptt");
     });
   }
   $("self-test-btn").addEventListener("click", () => runSelfTest());
