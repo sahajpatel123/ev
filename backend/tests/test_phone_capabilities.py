@@ -1006,3 +1006,23 @@ async def test_people_enroll_and_keep_recognition(client, db_session):
         look_mod.is_sandbox_device = orig
     assert result["recognized_person"] == "Priya"
     assert result["spoken"].startswith("Kept — Priya")
+
+
+async def test_voice_enrollment_consent_gated(client, db_session):
+    """Cycle 69 — C29: phone voice enrollment is explicit-consent gated,
+    requires 5 samples, and never stores raw audio. Uses the same runtime
+    as the owner-trust API."""
+    phone = await _pair_sandbox(client, "Voice-SE")
+    no_consent = await phone.post(
+        "/v1/device-gateway/voice/enroll",
+        json={"samples": ["x"] * 5},
+    )
+    assert no_consent.status_code == 403
+    # Sandbox gate fires first: voice is an OWNER surface, never a guest's.
+    with_consent = await phone.post(
+        "/v1/device-gateway/voice/enroll",
+        json={"samples": ["x"] * 4, "consent": True},
+    )
+    assert with_consent.status_code == 403
+    sense = (await phone.get("/v1/device-gateway/sense")).json()
+    assert sense["voice_enrolled"] is False

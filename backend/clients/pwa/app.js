@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.20";
+const CLIENT_BUILD = "2026.09.08.21";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -741,9 +741,15 @@ async function fillSense() {
     ["Nudges", (nudges.enabled === false ? "off" : "on") + (nudges.quiet_now ? " · quiet hours now" : " · quiet " + (nudges.quiet_start || "") + "–" + (nudges.quiet_end || ""))],
     ["Heading out", headingLabel(body)],
     ["People", body.people_count ? body.people_count + " enrolled" : "roster — tap to add"],
+    ["Voice", body.voice_enrolled ? "enrolled" : "not enrolled — tap to enroll"],
   ]);
+  if ($("voice-enroll")) {
+    $("voice-enroll").hidden = false;
+  }
   const peopleRow = document.querySelector("#sense-meta dt:last-of-type");
   if (peopleRow) peopleRow.onclick = () => enrollPerson().catch(() => {});
+  const voiceRow = document.querySelector("#sense-meta dt:last-of-type");
+  if (voiceRow && body.voice_enrolled === false) voiceRow.onclick = () => enrollVoice().catch(() => {});
 }
 
 /* Cycle 68 — enrolled people: the owner names who matters; no biometrics.
@@ -761,6 +767,48 @@ async function enrollPerson() {
     return;
   }
   pushActivity(name + " enrolled");
+  fillSense().catch(() => {});
+}
+
+/* Cycle 69 — voice enrollment from the phone: 5 short spoken clips,
+   consent explicit, raw audio never stored (encrypted voiceprint only).
+   Same runtime as the owner-trust API. */
+async function enrollVoice() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("No microphone on this phone");
+  }
+  if (!confirm("Record 5 short clips of your voice? A voiceprint is stored encrypted; the recordings are not kept.")) return;
+  const samples = [];
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, sampleRate: 16000 } });
+  try {
+    for (let i = 0; i < 5; i += 1) {
+      textOf($("sense-hint") || {}, `Sample ${i + 1} of 5 — speak now…`);
+      const chunks = [];
+      const rec = new MediaRecorder(stream);
+      rec.ondataavailable = (e) => chunks.push(e.data);
+      const done = new Promise((resolve) => { rec.onstop = resolve; });
+      rec.start();
+      await new Promise((r) => setTimeout(r, 1500));
+      rec.stop();
+      await done;
+      const blob = new Blob(chunks);
+      const buf = await blob.arrayBuffer();
+      // Re-encode to 16k mono PCM16 WAV via the existing audio path if present.
+      const wavB64 = (window.EvieAudio && window.EvieAudio.toWavB64) ? await window.EvieAudio.toWavB64(buf) : btoa(String.fromCharCode(...new Uint8Array(buf)));
+      samples.push(wavB64);
+    }
+  } finally {
+    stream.getTracks().forEach((t) => t.stop());
+  }
+  const res = await api("/v1/device-gateway/voice/enroll", {
+    method: "POST",
+    body: JSON.stringify({ samples, consent: true }),
+  });
+  if (res.ok === false) {
+    pushActivity("Voice enrollment failed: " + String(res.detail || res.error || "unknown"));
+    return;
+  }
+  pushActivity("Voice enrolled · v" + res.version);
   fillSense().catch(() => {});
 }
 

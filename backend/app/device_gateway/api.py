@@ -1398,6 +1398,14 @@ async def ev_sense(
     from app.everywhere.nudge import in_quiet_hours, nudge_prefs
     from app.life.people import list_relationships
     prefs = nudge_prefs(device)
+    from app.models import VoiceEnrollment as _VoiceEnrollment
+    from sqlalchemy import select as _select
+
+    current_enrollment = (
+        await session.execute(
+            _select(_VoiceEnrollment).where(_VoiceEnrollment.is_current.is_(True)).limit(1)
+        )
+    ).scalar_one_or_none()
     return {
         "ok": True,
         "healthkit": {
@@ -1408,6 +1416,7 @@ async def ev_sense(
         },
         "battery_percent": device.battery_percent,
         "storage_free_bytes": device.storage_free_bytes,
+        "voice_enrolled": bool(current_enrollment),
         "camera_capability": "camera" in (device.capabilities or []),
         "push_delivery": str((profile.get("notifications") or {}).get("delivery") or "poll"),
         "nudges": {**prefs, "quiet_now": in_quiet_hours(prefs)},
@@ -1415,6 +1424,64 @@ async def ev_sense(
         "heading_out": heading_out_consent(device),
         "never_to_model": ["health_numbers", "location_history"],
     }
+
+
+class PhoneVoiceEnrollRequest(BaseModel):
+    samples: list[str]
+    consent: bool = False
+    reason: str | None = None
+
+
+@router.post("/voice/enroll")
+async def phone_voice_enroll(
+    data: PhoneVoiceEnrollRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 69 — voice enrollment from the phone. Same runtime, same
+    consent law, same encrypted voiceprint as the owner-trust API; the
+    phone PWA just provides the recording surface. Explicit consent is
+    required IN THIS REQUEST; raw audio is never stored."""
+
+    _check_origin(request)
+    if is_sandbox_device(device):
+        raise HTTPException(status_code=403, detail="Voice enrollment is an owner surface")
+    if not data.consent:
+        raise HTTPException(status_code=403, detail="Voice enrollment needs explicit consent in this request")
+    if len(data.samples) < 5:
+        raise HTTPException(status_code=422, detail="Enrollment needs at least 5 voice samples")
+    from app.api.voice import _runtime
+
+    runtime = _runtime(session)
+    try:
+        row = await runtime.enroll(
+            [{"audio_b64": sample, "liveness_proof": "live"} for sample in data.samples[:20]],
+            reason=data.reason or f"phone-enroll:{device.name}",
+        )
+    except Exception as exc:
+        from app.voice.contracts import VoiceError as _VoiceError
+
+        if isinstance(exc, _VoiceError):
+            await session.commit()
+            raise HTTPException(status_code=exc.status, detail=exc.message, headers={"X-Error-Code": exc.code}) from exc
+        raise
+    from app.identity.service import identity_service as _identity
+
+    owner = await _identity.get_owner(session)
+    if owner is not None:
+        row.owner_id = owner.id
+    await session.commit()
+    return {
+        "ok": True,
+        "enrollment_id": str(row.id),
+        "version": row.version,
+        "sample_count": row.sample_count,
+        "algorithm": row.algorithm,
+        "raw_samples_stored": False,
+    }
+
+
 
 
 @router.post("/queue/replay")
