@@ -46,6 +46,7 @@ struct EvieBrokerCheck {
         check("broker-version", BrokerVersion.version == "1.0.0")
         check("cycle48-orb-states", evieCycle48SelfTestCase())
         check("cycle78-planner", evieCycle78PlannerSelfTestCase())
+        check("cycle79-outcome", evieCycle79OutcomeSelfTestCase())
 
         if failed > 0 {
             fputs("EvieBrokerCheck failed \(failed) assertion(s)\n", stderr)
@@ -85,5 +86,26 @@ func evieCycle78PlannerSelfTestCase() -> Bool {
     expect("case-normalized", EvieActionPlanner.plan(for: "Haptic", grantedPermissions: []).kind == .local)
     expect("missing-multi", EvieActionPlanner.missingPermissions(for: "send_message", granted: []).count == 1)
     expect("missing-none", EvieActionPlanner.missingPermissions(for: "start_timer", granted: []).isEmpty)
+    return ok
+}
+
+// Cycle 79 — iPhone-only, backward compat: outcome-contract self-test.
+func evieCycle79OutcomeSelfTestCase() -> Bool {
+    var ok = true
+    func expect(_ name: String, _ cond: Bool) {
+        if !cond { ok = false; print("  FAIL cycle79: \(name)") }
+    }
+    expect("failed-vocab", EvieOutcomeState(accepted: false, executed: false, verified: false).status == .failed)
+    expect("queued-vocab", EvieOutcomeState(accepted: true, executed: false, verified: false, queued: true).status == .queued)
+    expect("accepted-vocab", EvieOutcomeState(accepted: true, executed: false, verified: false).status == .accepted)
+    expect("completed-vocab", EvieOutcomeState(accepted: true, executed: true, verified: true).status == .completed)
+    expect("completed-unverified", EvieOutcomeState(accepted: true, executed: true, verified: false).status == .completed)
+    expect("executed-needs-accepted", !EvieOutcomeState(accepted: false, executed: true, verified: true).isHonest)
+    expect("verified-needs-executed", !EvieOutcomeState(accepted: true, executed: false, verified: true).isHonest)
+    expect("honest-accepted", EvieOutcomeState(accepted: true, executed: false, verified: false).isHonest)
+    expect("honest-completed", EvieOutcomeState(accepted: true, executed: true, verified: true).isHonest)
+    expect("ambiguous-copy", EvieOutcomeContract.describe(status: .failed, errorCode: "AMBIGUOUS").contains("which one"))
+    expect("queued-copy", EvieOutcomeContract.describe(status: .queued, errorCode: nil).contains("Queued"))
+    expect("all-cases", EvieOutcomeStatus.allCases.count == 4)
     return ok
 }
