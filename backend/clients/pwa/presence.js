@@ -234,3 +234,14 @@
     return "evie-timeline is-" + s;
   };
 })(typeof window !== "undefined" ? window : globalThis);
+// Cycle 12 (iPhone-only): memory-browser state hook. Additive-only: new
+// EviePresence.prototype.cycle12StateClass; draw/membrane untouched. Pure
+// state -> CSS-class mapper (no DOM), so Mac behavior is unchanged.
+(function (root) {
+  var P = root.EviePresence && root.EviePresence.prototype;
+  if (!P || P.cycle12StateClass) return;
+  P.cycle12StateClass = function cycle12StateClass(state) {
+    var s = String(state || (this && this.state) || "idle").toLowerCase().replace(/[^a-z]/g, "") || "idle";
+    return "evie-memory-mat is-" + s;
+  };
+})(typeof window !== "undefined" ? window : globalThis);

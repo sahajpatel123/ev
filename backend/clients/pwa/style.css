@@ -663,3 +663,10 @@ html, body {
 .evie-timeline-row.is-warn .evie-timeline-dot { background: var(--warn); }
 .evie-timeline-row .evie-timeline-body { min-width: 0; flex: 1; font-size: 14px; line-height: 1.5; }
 .evie-timeline-row .evie-timeline-time { flex: none; font-size: 12px; color: var(--muted); }
+/* Cycle 12 (iPhone-only): memory-browser mat. Additive-only: new .evie-memory-mat
+   namespace; every existing selector untouched. Dark/light via existing vars,
+   so Mac browsers without this markup render exactly as before. */
+.evie-memory-mat { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+.evie-memory-mat .evie-memory-card { padding: 12px 14px; border: 1px solid var(--stroke); border-radius: 16px; background: var(--elevated); box-shadow: var(--shadow); font-size: 13px; line-height: 1.5; }
+.evie-memory-mat .evie-memory-card strong { display: block; font-size: 13px; margin-bottom: 4px; }
+.evie-memory-mat .evie-memory-card span { color: var(--muted); }
