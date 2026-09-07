@@ -292,5 +292,16 @@
     return { hint: hint };
   })();
   </script>
+  <!-- Cycle 28 — iPhone-only revoke warning model. Backward compatible:
+       additive window.EvieRevoke namespace; no markup changed. -->
+  <script>
+  window.EvieRevoke = (function () {
+    function warning(state) {
+      if (state === "REVOKED") return { tone: "bad", label: "This iPhone was revoked", cta: "Re-pair" };
+      return null;
+    }
+    return { warning: warning };
+  })();
+  </script>
 </body>
 </html>
