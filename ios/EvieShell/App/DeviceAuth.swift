@@ -50,3 +50,21 @@ enum GatewayClient {
         }
     }
 }
+
+// Cycle 33 — iPhone-only, backward compat: device-auth trust-state display model.
+// Display-only; DeviceAuth token storage unchanged.
+enum EvieDeviceTrustState: String, Sendable, CaseIterable {
+    case pairedSandbox = "PAIRED_SANDBOX"
+    case trustedOwnerDevice = "TRUSTED_OWNER_DEVICE"
+    case revoked = "REVOKED"
+
+    var displayName: String {
+        switch self {
+        case .pairedSandbox: return "Paired Sandbox"
+        case .trustedOwnerDevice: return "Trusted Owner Device"
+        case .revoked: return "Revoked"
+        }
+    }
+
+    var isUsable: Bool { self != .revoked }
+}
