@@ -392,3 +392,20 @@
   root.EvieTodayWidgetLines = EvieTodayWidgetLines;
 })(typeof window !== "undefined" ? window : globalThis);
 
+/* Cycle 20 — iPhone-only additive camera-sheet upgrade model; backward compat: pure role-aware hints. */
+(function (root) {
+  "use strict";
+  var HINTS = {
+    default: ["Center the subject", "Hold steady"],
+    receipt: ["Fit the full receipt in frame", "Avoid glare on paper"],
+    document: ["Align edges with the guides", "Use good lighting"],
+    face: ["Face the light", "Keep your face in the oval"],
+  };
+  function EvieCameraSheetHints(role) {
+    var key = String(role == null ? "default" : role).toLowerCase();
+    return (HINTS[key] || HINTS.default).slice();
+  }
+  EvieCameraSheetHints.hintsFor = EvieCameraSheetHints;
+  root.EvieCameraSheetHints = EvieCameraSheetHints;
+})(typeof window !== "undefined" ? window : globalThis);
+
