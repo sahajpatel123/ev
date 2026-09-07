@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.23";
+const CLIENT_BUILD = "2026.09.08.24";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -720,6 +720,7 @@ function showSheet(id, on) {
     window.EvieCapabilities.refresh({ api: (path) => api(path, { _useDeviceToken: true }) });
   }
   if (on && id === "settings-sheet") fillSense().catch(() => {});
+  if (on && id === "conversation-sheet") loadTurnHistory().catch(() => {});
   if (on && id === "more-sheet") loadQuickActions().catch(() => {});
 }
 
@@ -887,6 +888,41 @@ function startHeadingOutWatcher() {
     () => {},
     { enableHighAccuracy: false, maximumAge: 120000, timeout: 20000 }
   );
+}
+
+/* Cycle 72 — recent turns on this phone, from the durable turn receipts.
+   Each turn carries provenance chips (tool · route · executed). */
+async function loadTurnHistory() {
+  const body = await api("/v1/device-gateway/history?limit=20", { _useDeviceToken: true }).catch(() => null);
+  const host = $("turn-history");
+  if (!host) return;
+  host.innerHTML = "";
+  const turns = (body && body.turns) || [];
+  if (!turns.length) {
+    const p = document.createElement("p");
+    p.className = "quiet";
+    p.textContent = "No turns recorded yet on this phone.";
+    host.appendChild(p);
+    return;
+  }
+  turns.forEach((turn) => {
+    const wrap = document.createElement("div");
+    wrap.className = "turn";
+    const text = document.createElement("div");
+    text.className = "turn-text";
+    text.textContent = turn.text || turn.kind || "";
+    const chips = document.createElement("div");
+    chips.className = "turn-chips";
+    (turn.chips || []).forEach((chip) => {
+      const c = document.createElement("span");
+      c.className = "chip" + (chip.executed ? "" : " off");
+      c.textContent = [chip.tool, chip.route, chip.executed ? "done" : "not done"].filter(Boolean).join(" · ");
+      chips.appendChild(c);
+    });
+    wrap.appendChild(text);
+    wrap.appendChild(chips);
+    host.appendChild(wrap);
+  });
 }
 
 /* Cycle 51 — one-tap quick actions: server-computed, capability-gated;

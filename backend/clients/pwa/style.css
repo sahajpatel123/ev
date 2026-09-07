@@ -713,3 +713,21 @@ html, body {
   50% { opacity: 1; }
   100% { opacity: 0.2; }
 }
+
+/* Cycle 72 — recent turns with provenance chips. */
+.turn-history { margin-top: 6px; }
+.turn {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--stroke);
+}
+.turn-text { color: var(--ink); font-size: 15px; }
+.turn-chips { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  padding: 2px 10px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: var(--elevated);
+  color: var(--muted);
+  font-size: 12px;
+}
+.chip.off { opacity: 0.55; }

@@ -1093,3 +1093,34 @@ def test_partial_transcript_wire_frame_shape():
     js = open("clients/pwa/app.js").read()
     assert 'line.classList.add("partial")' in js
     assert 'line.classList.add("final")' in js
+
+
+async def test_phone_history_returns_receipts_with_chips(client, db_session):
+    """Cycle 72 — C32: the phone's history reads its own durable turn
+    receipts; each turn carries provenance chips (tool · route · executed)."""
+    phone = await _pair_sandbox(client, "Hist-SE")
+    from app.device_gateway.turn_receipts import record_turn_receipt
+
+    hist_device = None
+    from sqlalchemy import select as _select
+    from app.models import Device as _Device
+
+    hist_device = (
+        await db_session.execute(_select(_Device).where(_Device.name == "Hist-SE"))
+    ).scalar_one()
+    await record_turn_receipt(
+        db_session,
+        device=hist_device,
+        idempotency_key="hist-key-0001",
+        transcript="text Priya hello",
+        session_id="hist-sess",
+        action_calls=[{"name": "send_message", "route": "HOME_STATION", "executed": True}],
+    )
+    await db_session.commit()
+    hist = await phone.get("/v1/device-gateway/history")
+    assert hist.status_code == 200
+    turns = hist.json()["turns"]
+    matching = [t for t in turns if "Priya" in (t.get("text") or "")]
+    assert matching, turns
+    assert matching[0]["chips"][0]["tool"] == "send_message"
+    assert matching[0]["chips"][0]["executed"] is True

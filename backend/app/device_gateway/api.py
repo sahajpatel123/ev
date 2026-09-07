@@ -1546,6 +1546,54 @@ async def offline_replay(
     return result
 
 
+
+@router.get("/history")
+async def phone_history(
+    request: Request,
+    limit: int = 20,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 72 — the phone's own recent turns with provenance chips.
+    Read from PhoneTurnReceipt (the durable record the text/voice paths
+    already write); nothing is re-derived, nothing invented."""
+
+    _check_origin(request)
+    from sqlalchemy import select as _select
+    from app.models import PhoneTurnReceipt as _Receipt
+
+    rows = (
+        await session.execute(
+            _select(_Receipt)
+            .where(_Receipt.device_id == device.id)
+            .order_by(_Receipt.created_at.desc())
+            .limit(max(1, min(int(limit or 20), 50)))
+        )
+    ).scalars().all()
+    turns = []
+    for row in rows:
+        actions = row.action_calls if isinstance(row.action_calls, list) else []
+        turns.append(
+            {
+                "at": row.created_at.isoformat() if row.created_at else None,
+                "kind": row.kind,
+                "text": (row.transcript or "")[:240],
+                "life_mutation": bool(row.life_mutation),
+                "trusted_owner": bool(row.trusted_owner),
+                "chips": [
+                    {
+                        "tool": str(action.get("name") or action.get("tool") or ""),
+                        "route": str(action.get("route") or action.get("provenance") or ""),
+                        "executed": bool(action.get("executed", action.get("ok"))),
+                    }
+                    for action in actions[:6]
+                    if isinstance(action, dict)
+                ],
+            }
+        )
+    return {"ok": True, "turns": turns}
+
+
 class VoiceVerifyRequest(BaseModel):
     audio_b64: str
 
