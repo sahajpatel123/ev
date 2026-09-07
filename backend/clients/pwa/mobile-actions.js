@@ -341,3 +341,19 @@
 
   window.EvieMobileActions = MobileActions;
 })();
+/* Cycle 13 — iPhone-only additive HUD-card render-text helper; backward compat: pure, mirrors ev.hud.card.v1 minimal. */
+(function (root) {
+  "use strict";
+  function EvieHudCardText(card) {
+    var c = card || {};
+    var lines = [];
+    if (c.title != null && String(c.title) !== "") lines.push(String(c.title));
+    if (c.body != null && String(c.body) !== "") lines.push(String(c.body));
+    var action = c.actionLabel != null ? c.actionLabel : c.action;
+    if (action != null && String(action) !== "") lines.push("› " + String(action));
+    return lines.join("\n");
+  }
+  EvieHudCardText.textFor = EvieHudCardText;
+  root.EvieHudCardText = EvieHudCardText;
+})(typeof window !== "undefined" ? window : globalThis);
+
