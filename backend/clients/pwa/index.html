@@ -93,6 +93,11 @@
           <strong>Chat</strong>
           <span>The conversation on this phone</span>
         </button>
+        <button type="button" class="folio-card" data-surface="looks">
+          <span class="folio-kicker">Vision</span>
+          <strong>Looks</strong>
+          <span>What Evie has seen</span>
+        </button>
         <button type="button" class="folio-card" data-surface="people">
           <span class="folio-kicker">People</span>
           <strong>People</strong>
@@ -149,6 +154,14 @@
           <span>Camera, trust, appearance</span>
         </button>
       </div>
+    </section>
+
+    <section id="looks-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="looks-sheet" aria-label="Close">✕</button>
+      <h2>Look history</h2>
+      <p class="quiet">What Evie saw through this phone's camera.</p>
+      <ol id="looks-list" class="timeline"></ol>
+      <p class="quiet" id="looks-meta"></p>
     </section>
 
     <section id="people-sheet" class="sheet" hidden>

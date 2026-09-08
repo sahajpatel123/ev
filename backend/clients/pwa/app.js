@@ -1028,6 +1028,38 @@ async function refreshPeople(filterText) {
   }
 }
 
+async function refreshLooks() {
+  const list = $("looks-list");
+  const meta = $("looks-meta");
+  if (list) {
+    while (list.firstChild) list.removeChild(list.firstChild);
+  }
+  try {
+    const body = await api("/v1/device-gateway/looks");
+    const looks = body.looks || [];
+    if (body.memory_enabled === false) {
+      textOf(meta, "Look history needs Mac approval first.");
+      return;
+    }
+    if (!looks.length) {
+      const li = document.createElement("li");
+      li.className = "evie-today-empty";
+      li.textContent = "No looks yet — tap Look and share what the camera sees.";
+      if (list) list.appendChild(li);
+    }
+    looks.forEach((look) => {
+      const li = document.createElement("li");
+      const when = todayTime(look.occurred_at);
+      const text = look.summary || (look.scene ? "Saw " + look.scene : "A look");
+      li.textContent = (when ? when + " · " : "") + text;
+      if (list) list.appendChild(li);
+    });
+    textOf(meta, looks.length + " look" + (looks.length === 1 ? "" : "s") + " recorded");
+  } catch (err) {
+    textOf(meta, "Look history unavailable: " + String(err.message || err));
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -1214,7 +1246,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -2928,6 +2960,7 @@ async function boot() {
     const map = {
       more: "more-sheet",
       today: "today-sheet",
+      looks: "looks-sheet",
       people: "people-sheet",
       routines: "routines-sheet",
       queue: "queue-sheet",
@@ -2940,7 +2973,7 @@ async function boot() {
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "today-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "today-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -2954,6 +2987,7 @@ async function boot() {
     if (surface === "queue") refreshQueue();
     if (surface === "routines") loadRoutines();
     if (surface === "people") refreshPeople();
+    if (surface === "looks") refreshLooks();
   }
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {
