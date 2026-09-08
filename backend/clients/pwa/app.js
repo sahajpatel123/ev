@@ -3392,6 +3392,19 @@ async function boot() {
       refreshWeather(place ? place.value : "");
     });
   }
+  const todayNote = $("today-note-btn");
+  if (todayNote) {
+    todayNote.addEventListener("click", () => openSurface("capture"));
+  }
+  const todayLook = $("today-look-btn");
+  if (todayLook) {
+    todayLook.addEventListener("click", () => {
+      sendText("Look at this.").catch((err) => {
+        state.caption = String(err.message || err);
+        render();
+      });
+    });
+  }
   const inboxAckAll = $("inbox-ack-all-btn");
   if (inboxAckAll) {
     inboxAckAll.addEventListener("click", () => markAllInboxRead());
