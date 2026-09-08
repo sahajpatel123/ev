@@ -210,7 +210,7 @@ class CameraResult(BaseModel):
     request_id: str
     jpeg_b64: str
     action: str | None = None
-    note: str | None = None
+    note: str | None = Field(default=None, max_length=512)
 
 
 class TurnReceiptRequest(BaseModel):
@@ -695,7 +695,7 @@ async def user_text(
 
 
 class WakeRequest(BaseModel):
-    body: str | None = None
+    body: str | None = Field(default=None, max_length=280)
 
 
 @router.post("/conversation/wake")
@@ -1344,9 +1344,9 @@ async def morning_brief(
 
 
 class PersonEnrollRequest(BaseModel):
-    name: str
-    relation: str = "other"
-    note: str | None = None
+    name: str = Field(min_length=1, max_length=256)
+    relation: str = Field(default="other", max_length=64)
+    note: str | None = Field(default=None, max_length=512)
 
 
 @router.get("/people")
@@ -1390,9 +1390,9 @@ async def people_enroll(
 
 class HeadingOutRequest(BaseModel):
     consent: bool | None = None
-    radius_meters: float | None = None
-    lat: float | None = None
-    lng: float | None = None
+    radius_meters: float | None = Field(default=None, ge=50, le=5000)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
 
 
 @router.get("/heading-out")
@@ -1497,9 +1497,12 @@ async def ev_sense(
 
 
 class PhoneVoiceEnrollRequest(BaseModel):
-    samples: list[str]
+    # Cycle 84 — hardening: at most 20 clips, each ≤ 2 MB of base64, and a
+    # bounded reason. Enrollment audio is never stored, but a giant payload
+    # still costs decode memory before that refusal.
+    samples: list[str] = Field(max_length=20)
     consent: bool = False
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=512)
 
 
 @router.post("/voice/enroll")
@@ -1746,7 +1749,7 @@ async def tactical_brief(
 
 
 class VoiceVerifyRequest(BaseModel):
-    audio_b64: str
+    audio_b64: str = Field(max_length=2_800_000)  # ≈2 MB of audio
 
 
 @router.post("/voice/verify")

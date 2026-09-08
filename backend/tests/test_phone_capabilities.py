@@ -1252,3 +1252,39 @@ async def test_push_to_wake_endpoint(client, db_session):
     app_js = open("clients/pwa/app.js").read()
     assert "wake_live" in app_js
     assert "wake=1" in app_js or '_wakeTakeover' in app_js
+
+
+async def test_new_surface_payload_clamps(client, db_session):
+    """Cycle 84 — C44: the Advanced-cycle endpoints refuse oversized or
+    out-of-range payloads with 422 before any work happens."""
+    phone = await _pair_sandbox(client, "Clamp-SE")
+
+    bad_geo = await phone.post(
+        "/v1/device-gateway/heading-out", json={"lat": 999, "lng": -9999}
+    )
+    assert bad_geo.status_code == 422
+    bad_radius = await phone.post(
+        "/v1/device-gateway/heading-out", json={"consent": True, "radius_meters": 999999}
+    )
+    assert bad_radius.status_code == 422
+
+    too_many = await phone.post(
+        "/v1/device-gateway/voice/enroll", json={"samples": ["x"] * 21, "consent": True}
+    )
+    assert too_many.status_code == 422
+
+    bad_note = await phone.post(
+        "/v1/device-gateway/people/enroll",
+        json={"name": "x" * 300, "relation": "friend"},
+    )
+    assert bad_note.status_code == 422
+
+    big_verify = await phone.post(
+        "/v1/device-gateway/voice/verify", json={"audio_b64": "A" * 2_900_000}
+    )
+    assert big_verify.status_code == 422
+
+    long_wake = await phone.post(
+        "/v1/device-gateway/conversation/wake", json={"body": "b" * 400}
+    )
+    assert long_wake.status_code == 422
