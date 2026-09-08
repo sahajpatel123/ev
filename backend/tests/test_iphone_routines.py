@@ -152,8 +152,9 @@ async def test_digest_tick_delivers_once_and_honors_state(
     )
     assert len(items) == 1
     assert items[0].kind == "digest"
+    assert items[0].title == "Evening digest"  # 21:00 IST local
     assert "Health: unavailable." in (items[0].body or "")
-    assert items[0].title == "Evie digest"
+    assert items[0].title == "Evening digest"  # 21:00 IST local
 
     # Repeat tick a minute later must not double-deliver.
     later = now + timedelta(minutes=2)

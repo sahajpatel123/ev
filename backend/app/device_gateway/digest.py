@@ -76,11 +76,20 @@ async def deliver_digest(
         return None
     lines = await _digest_lines(session, device)
     body = "\n".join(lines)[:DIGEST_MAX_BODY] or "Everything is quiet."
+    hour = local_now.hour
+    if 5 <= hour < 12:
+        digest_title = "Morning digest"
+    elif 12 <= hour < 17:
+        digest_title = "Afternoon digest"
+    elif 17 <= hour < 22:
+        digest_title = "Evening digest"
+    else:
+        digest_title = "Night digest"
     item = await push_inbox(
         session,
         device_id=device.id,
         kind="digest",
-        title="Evie digest",
+        title=digest_title,
         body=body,
         payload={"digest_time": local_now.strftime("%H:%M"), "timezone": cfg["timezone"]},
     )
