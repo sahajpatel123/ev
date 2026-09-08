@@ -59,6 +59,11 @@ phone-voice-e2e:
 # Cycle 86 — one-command release bump (pins + manifest together).
 release-bump:
 	scripts/bump_build.sh
+
+# Cycle 87 — reconnect/resume drill: drop, resume, replay — nothing lost,
+# nothing doubled.
+phone-reconnect-drill:
+	cd backend && uv run pytest -q tests/test_reconnect_resume_drill.py
 	bash -n scripts/ios/physical-acceptance.sh
 	bash -n scripts/ios/archive-if-possible.sh
 	cd ios/EvieShell && swift run EvieBrokerCheck
