@@ -323,3 +323,30 @@ async def test_health_series_owner_and_phone_snapshot(owner_phone, db_session) -
     assert len(body["series"]) == 1
     assert body["series"][0]["band"] == "steady"
     assert body["series"][0]["metrics"]["steps"] == 8123
+
+
+async def test_weather_endpoint_structured(owner_phone, monkeypatch) -> None:
+    _body, phone = owner_phone
+
+    class FakeResult:
+        title = "Surat"
+        snippet = "27.5C overcast"
+
+    async def fake_weather(_text, limit=2):
+        return [FakeResult()]
+
+    import app.device_gateway.api as api_mod
+
+    monkeypatch.setattr("app.search.live.weather_results", fake_weather)
+    # The endpoint imports weather_results inside the handler from
+    # app.search.live, so patch the real module attribute.
+    import app.search.live as live_mod
+
+    monkeypatch.setattr(live_mod, "weather_results", fake_weather)
+    res = await phone.get("/v1/device-gateway/weather", params={"place": "Surat"})
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["status"] == "ok"
+    assert body["forecast"]["title"] == "Surat"
+    assert body["forecast"]["snippet"] == "27.5C overcast"
+    assert body["error_code"] is None

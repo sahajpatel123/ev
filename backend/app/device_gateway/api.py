@@ -1846,6 +1846,40 @@ async def device_health_series(
     }
 
 
+@router.get("/weather")
+async def device_weather(
+    request: Request,
+    place: str | None = Query(default=None, max_length=120),
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Structured weather for the phone surface. Uses Home Station's live
+    providers; honest error codes on timeout/unavailability."""
+    _check_origin(request)
+    import asyncio as _asyncio
+
+    from app.search.live import default_place, extract_place, home_coords, weather_results
+
+    requested = (place or "").strip() or None
+    if requested is None and home_coords() is None and not default_place():
+        return {"ok": True, "status": "no_place", "forecast": None, "error_code": "NO_PLACE"}
+    try:
+        results = await _asyncio.wait_for(weather_results(requested or "home", limit=2), timeout=8)
+    except _asyncio.TimeoutError:
+        return {"ok": True, "status": "unavailable", "forecast": None, "error_code": "WEATHER_TIMEOUT", "retryable": True}
+    except Exception:
+        return {"ok": True, "status": "unavailable", "forecast": None, "error_code": "WEATHER_UNAVAILABLE", "retryable": True}
+    if not results:
+        return {"ok": True, "status": "unavailable", "forecast": None, "error_code": "WEATHER_UNAVAILABLE", "retryable": True}
+    first = results[0]
+    forecast = {
+        "title": str(getattr(first, "title", None) or "")[:160],
+        "snippet": str(getattr(first, "snippet", None) or "")[:800],
+        "place": requested or default_place() or "home",
+    }
+    return {"ok": True, "status": "ok", "forecast": forecast, "error_code": None}
+
+
 @router.get("/sync/bootstrap")
 async def phone_sync_bootstrap(
     request: Request,
