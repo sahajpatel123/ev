@@ -93,6 +93,11 @@
           <strong>Chat</strong>
           <span>The conversation on this phone</span>
         </button>
+        <button type="button" class="folio-card" data-surface="health">
+          <span class="folio-kicker">Vitals</span>
+          <strong>Health</strong>
+          <span>Steps, sleep, readiness</span>
+        </button>
         <button type="button" class="folio-card" data-surface="looks">
           <span class="folio-kicker">Vision</span>
           <strong>Looks</strong>
@@ -154,6 +159,16 @@
           <span>Camera, trust, appearance</span>
         </button>
       </div>
+    </section>
+
+    <section id="health-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="health-sheet" aria-label="Close">✕</button>
+      <h2>Health</h2>
+      <p class="quiet">This phone's snapshot plus the owner vitals series — never sent to a model.</p>
+      <div class="evie-health" id="health-chips"></div>
+      <h3>Recent series</h3>
+      <ol id="health-series" class="timeline"></ol>
+      <p class="quiet" id="health-meta"></p>
     </section>
 
     <section id="looks-sheet" class="sheet" hidden>

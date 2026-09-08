@@ -1118,6 +1118,66 @@ async function shareConversation() {
   }
 }
 
+function healthChip(label, value) {
+  const chip = document.createElement("div");
+  chip.className = "evie-health-chip";
+  const strong = document.createElement("strong");
+  strong.textContent = String(value == null ? "—" : value);
+  const span = document.createElement("span");
+  span.textContent = label;
+  chip.appendChild(strong);
+  chip.appendChild(span);
+  return chip;
+}
+
+async function refreshHealth() {
+  const chips = $("health-chips");
+  const series = $("health-series");
+  const meta = $("health-meta");
+  if (chips) {
+    while (chips.firstChild) chips.removeChild(chips.firstChild);
+  }
+  if (series) {
+    while (series.firstChild) series.removeChild(series.firstChild);
+  }
+  try {
+    const body = await api("/v1/device-gateway/vitals");
+    const snap = body.phone_snapshot || {};
+    if (!chips) return;
+    if (snap.available) {
+      const m = snap.metrics || {};
+      chips.appendChild(healthChip("Steps", m.steps != null ? String(m.steps) : "—"));
+      chips.appendChild(healthChip("Sleep (h)", m.sleep_hours != null ? String(m.sleep_hours) : "—"));
+      chips.appendChild(healthChip("Freshness", snap.freshness || "—"));
+    } else {
+      const chip = healthChip("Health", "off");
+      chips.appendChild(chip);
+      const note = document.createElement("p");
+      note.className = "quiet";
+      note.textContent = "No HealthKit data yet — the native shell reports it when granted.";
+      chips.appendChild(note);
+    }
+    const rows = body.series || [];
+    if (!rows.length && series) {
+      const li = document.createElement("li");
+      li.className = "evie-today-empty";
+      li.textContent = "No vitals series yet.";
+      series.appendChild(li);
+    }
+    rows.slice(0, 14).forEach((row) => {
+      const li = document.createElement("li");
+      const when = row.occurred_at ? new Date(row.occurred_at).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+      const readiness = typeof row.readiness === "number" ? " · readiness " + Math.round(row.readiness) : "";
+      const band = row.band ? " · " + row.band : "";
+      li.textContent = (when ? when + " · " : "") + (row.source || "vitals") + readiness + band;
+      if (series) series.appendChild(li);
+    });
+    textOf(meta, "Series entries: " + rows.length + " · phone snapshot " + (snap.freshness || "unavailable"));
+  } catch (err) {
+    textOf(meta, "Health unavailable: " + String(err.message || err));
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -1304,7 +1364,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -3049,6 +3109,7 @@ async function boot() {
     const map = {
       more: "more-sheet",
       today: "today-sheet",
+      health: "health-sheet",
       looks: "looks-sheet",
       people: "people-sheet",
       routines: "routines-sheet",
@@ -3062,7 +3123,7 @@ async function boot() {
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "today-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "today-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -3078,6 +3139,7 @@ async function boot() {
     if (surface === "routines") loadRoutines();
     if (surface === "people") refreshPeople();
     if (surface === "looks") refreshLooks();
+    if (surface === "health") refreshHealth();
   }
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {
