@@ -333,6 +333,9 @@ function render() {
     forensic: state.forensic,
     protocol_version: PROTOCOL_VERSION,
     server_build: hello.pwa_build || hello.server_build,
+    server_release: hello.server_release || hello.pwa_build || "",
+    backend_sha_fingerprint: abbrev(hello.backend_sha),
+    asset_manifest_hash: hello.asset_manifest_hash || "",
     device_id: abbrev(device.device_id),
     role: device.role,
     memory_scope: hello.memory_scope || "sandbox",
@@ -462,10 +465,21 @@ function fillMobileActions(hello) {
 async function refreshStatus() {
   if (!state.deviceToken) return;
   try {
-    const body = await api("/v1/device-gateway/status");
-    if (body && body.ok === false) return;
-    state.status = body || {};
-    fillSettings(Object.assign({}, state.hello || {}, { status: body || {} }), state.device || {});
+    const [status, caps] = await Promise.all([
+      api("/v1/device-gateway/status"),
+      api("/v1/device-gateway/capabilities").catch(() => null),
+    ]);
+    if (status && status.ok === false) return;
+    state.status = status || {};
+    fillSettings(Object.assign({}, state.hello || {}, { status: status || {} }), state.device || {});
+    if (caps && caps.capabilities) {
+      const rows = Object.keys(caps.capabilities).map((name) => {
+        const c = caps.capabilities[name];
+        const label = name.replace(/_/g, " ");
+        return [label, c.available ? "available" : (c.reason ? c.reason.replace(/_/g, " ") : "unavailable")];
+      });
+      fillDl("capability-meta", rows);
+    }
     paintLive();
   } catch (_err) {}
 }
@@ -480,6 +494,9 @@ function fillSettings(hello, device) {
     ["Auth revision", String(status.auth_revision || device.auth_revision || "—")],
     ["Next action", status.next_action || "—"],
     ["Backend", status.backend_build || hello.backend_sha || "—"],
+    ["Backend fingerprint", abbrev(hello.backend_sha)],
+    ["Server release", hello.server_release || hello.pwa_build || "—"],
+    ["Asset manifest", abbrev(hello.asset_manifest_hash)],
     ["Product", status.product || "Tailscale PWA"],
     ["Connection", state.conn],
     ["Home Station", homeLine(hello)],
