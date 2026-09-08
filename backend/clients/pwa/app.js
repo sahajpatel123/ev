@@ -853,10 +853,12 @@ async function submitCapture() {
     return;
   }
   const key = "note-" + crypto.randomUUID();
+  const privacy = $("capture-privacy");
+  const chosen = privacy && privacy.querySelector("button.on") ? privacy.querySelector("button.on").getAttribute("data-privacy") : "normal";
   try {
     const body = await api("/v1/device-gateway/capture", {
       method: "POST",
-      body: JSON.stringify({ text: text, idempotency_key: key }),
+      body: JSON.stringify({ text: text, privacy_level: chosen, idempotency_key: key }),
     });
     if (body && body.ok) {
       if (input) input.value = "";
@@ -3342,6 +3344,14 @@ async function boot() {
       ev.preventDefault();
       const q = $("search-q");
       runSearch(q ? q.value : "");
+    });
+  }
+  const capturePrivacy = $("capture-privacy");
+  if (capturePrivacy) {
+    capturePrivacy.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      capturePrivacy.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
     });
   }
   const captureForm = $("capture-form");

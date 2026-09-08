@@ -480,3 +480,31 @@ async def test_memory_provenance_version_chain(owner_phone, db_session) -> None:
     assert body["versions"][1]["is_current"] is True
     assert body["versions"][0]["reason_for_change"] is None
     assert body["versions"][1]["supersedes_id"] == str(old.id)
+
+
+async def test_capture_privacy_levels_validated(owner_phone, db_session) -> None:
+    from sqlalchemy import select
+
+    from app.models import Event
+
+    _body, phone = owner_phone
+    bad = await phone.post(
+        "/v1/device-gateway/capture",
+        json={"text": "note", "privacy_level": "public", "idempotency_key": "eac109-bad"},
+    )
+    assert bad.status_code == 422
+
+    res = await phone.post(
+        "/v1/device-gateway/capture",
+        json={
+            "text": "Private note: heart condition details",
+            "privacy_level": "sensitive",
+            "idempotency_key": "eac109-sensitive",
+        },
+    )
+    assert res.status_code == 200, res.text
+    event = (
+        await db_session.execute(select(Event).where(Event.idempotency_key_hash.isnot(None)))
+    ).scalars().all()
+    row = next(e for e in event if e.event_type == "note")
+    assert row.privacy_level == "sensitive"

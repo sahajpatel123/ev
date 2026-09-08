@@ -250,6 +250,11 @@
       <form id="capture-form">
         <label class="sr-only" for="capture-text">Note text</label>
         <textarea id="capture-text" rows="4" maxlength="2000" placeholder="What do you want to remember?"></textarea>
+        <div class="segment" id="capture-privacy">
+          <button type="button" data-privacy="normal" class="on">Normal</button>
+          <button type="button" data-privacy="private">Private</button>
+          <button type="button" data-privacy="sensitive">Sensitive</button>
+        </div>
         <button type="submit" class="dock-primary">Save to memory</button>
       </form>
       <p class="quiet" id="voice-note-state">Or speak it — Evie saves the audio as a voice note.</p>

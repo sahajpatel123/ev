@@ -223,6 +223,7 @@ class QueueEnqueueRequest(BaseModel):
 
 class CaptureNoteRequest(BaseModel):
     text: str = Field(default="", max_length=4000)
+    privacy_level: str = Field(default="normal", max_length=32)
     idempotency_key: str = Field(default="", max_length=128)
     request_id: str = Field(default="", max_length=128)
 
@@ -1683,6 +1684,9 @@ async def gateway_capture(
     text = (data.text or "").strip()
     if not text:
         raise HTTPException(status_code=422, detail="Capture text is empty")
+    privacy = data.privacy_level or "normal"
+    if privacy not in {"normal", "private", "sensitive", "never_send_to_model"}:
+        raise HTTPException(status_code=422, detail="Unknown privacy level")
     key = (data.idempotency_key or "").strip()[:128]
     from app.models import Event
     from app.schemas import EventCreate
@@ -1716,7 +1720,7 @@ async def gateway_capture(
             event_type="note",
             text=text[:2000],
             device_id=str(device.id),
-            privacy_level="normal",
+            privacy_level=privacy,
         ),
         request_id=data.request_id or str(uuid4()),
         idempotency_key=key or None,
