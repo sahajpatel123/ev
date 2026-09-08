@@ -64,6 +64,11 @@ release-bump:
 # nothing doubled.
 phone-reconnect-drill:
 	cd backend && uv run pytest -q tests/test_reconnect_resume_drill.py
+
+# Cycle 89 — parity matrix: what the manifest displays == what endpoints
+# enforce, per trust state. Drift fails here first.
+phone-parity-matrix:
+	cd backend && uv run pytest -q tests/test_parity_matrix.py
 	bash -n scripts/ios/physical-acceptance.sh
 	bash -n scripts/ios/archive-if-possible.sh
 	cd ios/EvieShell && swift run EvieBrokerCheck
