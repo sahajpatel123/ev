@@ -350,3 +350,27 @@ async def test_weather_endpoint_structured(owner_phone, monkeypatch) -> None:
     assert body["forecast"]["title"] == "Surat"
     assert body["forecast"]["snippet"] == "27.5C overcast"
     assert body["error_code"] is None
+
+
+async def test_inbox_ack_all_marks_read(owner_phone, db_session) -> None:
+    from uuid import uuid4
+
+    from app.everywhere.inbox import push_inbox
+
+    _body, phone = owner_phone
+    for i in range(2):
+        await push_inbox(
+            db_session,
+            device_id=_body["device"]["device_id"],
+            kind="digest",
+            title="Evie digest",
+            body="digest " + str(i),
+            payload={},
+        )
+    await db_session.commit()
+    res = await phone.post("/v1/device-gateway/inbox/ack-all")
+    assert res.status_code == 200, res.text
+    assert res.json()["acked"] == 2
+    listed = (await phone.get("/v1/device-gateway/inbox")).json()
+    assert listed["items"]
+    assert all(item["unread"] is False for item in listed["items"])

@@ -1001,6 +1001,37 @@ async def device_inbox_ack(
     return {"ok": True, "item": item}
 
 
+@router.post("/inbox/ack-all")
+async def device_inbox_ack_all(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Mark every inbox item on this device as read."""
+    _check_origin(request)
+    from app.models import DeviceInboxItem
+
+    rows = (
+        (
+            await session.execute(
+                select(DeviceInboxItem).where(
+                    DeviceInboxItem.device_id == device.id,
+                    DeviceInboxItem.read_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    from app.utils.text import utcnow as _utcnow
+
+    now = _utcnow()
+    for row in rows:
+        row.read_at = now
+    await session.commit()
+    return {"ok": True, "acked": len(rows)}
+
+
 @router.post("/queue", response_model=None)
 async def offline_enqueue(
     data: QueueEnqueueRequest,
