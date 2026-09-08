@@ -942,6 +942,41 @@ do {
     print("FAIL: notification inbox: \(error)")
 }
 
+
+do {
+    let decoder = JSONDecoder()
+    let fixture = """
+    {"ok": true, "routines": {"enabled": true, "digest_times": ["07:30", "21:00"], "quiet_hours_start": "22:00", "quiet_hours_end": "07:30", "timezone": "Asia/Kolkata"}}
+    """
+    struct Wrapper: Decodable { let routines: EvieRoutinesConfig }
+    let wrapped = try decoder.decode(Wrapper.self, from: Data(fixture.utf8))
+    let cfg = wrapped.routines
+    expect(cfg.enabled && cfg.digestTimes == ["07:30", "21:00"], "routines decode")
+    expect(cfg.quietHoursStart == "22:00" && cfg.timezone == "Asia/Kolkata", "routines quiet decode")
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+    let at8 = cal.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 8, minute: 0))!
+    let at21 = cal.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 21, minute: 0))!
+    let at23 = cal.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 23, minute: 0))!
+    expect(cfg.isInsideQuietHours(at23), "23:00 inside 22:00-07:30 window")
+    expect(!cfg.isInsideQuietHours(at21), "21:00 outside quiet window")
+    expect(!cfg.isInsideQuietHours(at8), "08:00 outside quiet window")
+    let next = cfg.nextDigest(after: at8)
+    let nextText = next.map { cal.dateComponents([.hour, .minute], from: $0) }.map { "\($0.hour!):\(String(format: "%02d", $0.minute!))" }
+    expect(nextText == "21:00", "next digest after 08:00 is 21:00, got \(nextText ?? "nil")")
+    let late = cal.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 23, minute: 0))!
+    let nextLate = cfg.nextDigest(after: late)
+    let lateText = nextLate.map { cal.dateComponents([.day, .hour, .minute], from: $0) }.map { String(format: "day %d %02d:%02d", $0.day!, $0.hour!, $0.minute!) }
+    expect(lateText?.hasPrefix("day 9 07:30") == true, "next digest after quiet start rolls to tomorrow 07:30, got \(lateText ?? "nil")")
+    var off = cfg
+    off.enabled = false
+    expect(off.nextDigest(after: at8) == nil, "disabled -> no digest")
+    print("ok: routines config decode + next-digest")
+} catch {
+    failures.append("routines config: \(error)")
+    print("FAIL: routines config: \(error)")
+}
+
 if failures.isEmpty {
     print("EVClientCheck: all checks passed")
     exit(0)
