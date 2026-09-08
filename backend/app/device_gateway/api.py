@@ -1790,6 +1790,62 @@ async def device_battery_report(
     return {"ok": True, "percent": percent, "charging": bool(data.charging)}
 
 
+@router.get("/vitals")
+async def device_health_series(
+    request: Request,
+    limit: int = Query(default=14, ge=1, le=90),
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Phone health dashboard data: the phone's own snapshot plus the
+    owner vitals series (readiness band + core metrics) written by the
+    native HealthKit path."""
+    _check_origin(request)
+    from app.models import HealthSnapshot
+
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    healthkit = profile.get("healthkit") or {}
+    series = []
+    if not is_sandbox_device(device):
+        rows = (
+            (
+                await session.execute(
+                    select(HealthSnapshot)
+                    .order_by(HealthSnapshot.occurred_at.desc())
+                    .limit(min(limit, 90))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            metrics = dict(row.metrics or {})
+            keep = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+            series.append(
+                {
+                    "id": str(row.id),
+                    "source": row.source,
+                    "occurred_at": row.occurred_at.isoformat() if row.occurred_at else None,
+                    "readiness": row.readiness,
+                    "band": row.band,
+                    "metrics": keep,
+                    "units": row.units or {},
+                }
+            )
+    return {
+        "ok": True,
+        "phone_snapshot": {
+            "available": bool(healthkit.get("available")),
+            "freshness": healthkit.get("freshness") or "unavailable",
+            "captured_at": healthkit.get("captured_at"),
+            "metrics": healthkit.get("snapshot") if isinstance(healthkit.get("snapshot"), dict) else {},
+            "sent_to_model": False,
+        },
+        "series": series,
+        "memory_enabled": not is_sandbox_device(device),
+    }
+
+
 @router.get("/sync/bootstrap")
 async def phone_sync_bootstrap(
     request: Request,

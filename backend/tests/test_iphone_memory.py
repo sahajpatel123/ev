@@ -293,3 +293,33 @@ async def test_battery_report_persists_and_validates(gateway_phone) -> None:
     status = await phone.get("/v1/device-gateway/status")
     assert status.status_code == 200
     assert status.json()["battery_percent"] == 73.0
+
+
+async def test_health_series_owner_and_phone_snapshot(owner_phone, db_session) -> None:
+    from app.models import HealthSnapshot
+    from app.utils.text import utcnow
+
+    _body, phone = owner_phone
+    db_session.add(
+        HealthSnapshot(
+            source="healthkit",
+            metrics={"steps": 8123, "sleep_hours": 7.2},
+            readiness=72.0,
+            band="steady",
+            occurred_at=utcnow(),
+        )
+    )
+    await db_session.commit()
+    snap = await phone.post(
+        "/v1/device-gateway/healthkit/snapshot",
+        json={"snapshot": {"steps": 400}, "captured_at": "2026-09-08T07:00:00Z", "available": True},
+    )
+    assert snap.status_code == 200
+
+    res = await phone.get("/v1/device-gateway/vitals")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["phone_snapshot"]["metrics"] == {"steps": 400}
+    assert len(body["series"]) == 1
+    assert body["series"][0]["band"] == "steady"
+    assert body["series"][0]["metrics"]["steps"] == 8123
