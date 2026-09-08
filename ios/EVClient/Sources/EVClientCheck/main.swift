@@ -977,6 +977,25 @@ do {
     print("FAIL: routines config: \(error)")
 }
 
+
+do {
+    let decoder = JSONDecoder()
+    let fixture = """
+    {"ok": true, "query": "basil", "memory_enabled": true, "memories": [{"id": "m1", "memory_type": "preference", "text": "Basil plant on the counter"}], "events": [{"id": "e1", "kind": "note", "text": "Watered the basil", "occurred_at": "2026-09-08T07:00:00Z"}], "reminders": [{"id": "r1", "text": "Water the basil plant"}], "contacts": []}
+    """
+    let result = try decoder.decode(EvieSearchResultGroup.self, from: Data(fixture.utf8))
+    expect(result.query == "basil" && result.memoryEnabled, "search decode")
+    expect(result.memories.count == 1 && result.events.count == 1 && result.reminders.count == 1, "search groups")
+    expect(result.memories.first?.memoryType == "preference", "search memory type")
+    expect(result.totalHits == 3, "search total")
+    let sandbox = try decoder.decode(EvieSearchResultGroup.self, from: Data("{\"ok\": true, \"query\": \"x\", \"memory_enabled\": false, \"memories\": [], \"events\": [], \"reminders\": [], \"contacts\": []}".utf8))
+    expect(!sandbox.memoryEnabled && sandbox.totalHits == 0, "search sandbox off")
+    print("ok: search payload decode")
+} catch {
+    failures.append("search payload: \(error)")
+    print("FAIL: search payload: \(error)")
+}
+
 if failures.isEmpty {
     print("EVClientCheck: all checks passed")
     exit(0)
