@@ -243,6 +243,11 @@ class RoutinesPutRequest(BaseModel):
     timezone: str = "UTC"
 
 
+class BatteryReportRequest(BaseModel):
+    percent: float = Field(default=0, ge=0, le=100)
+    charging: bool = False
+
+
 class QueueReplayRequest(BaseModel):
     idempotency_key: str
 
@@ -1758,6 +1763,31 @@ async def device_look_history(
             }
         )
     return {"ok": True, "memory_enabled": True, "looks": looks}
+
+
+@router.post("/battery")
+async def device_battery_report(
+    data: BatteryReportRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Phone power state, persisted for gear/power surfaces. Honest values
+    only: percent must be 0-100 and charging is a boolean, never guessed."""
+    _check_origin(request)
+    percent = round(float(data.percent), 1)
+    if not (0 <= percent <= 100):
+        raise HTTPException(status_code=422, detail="percent must be 0-100")
+    device.battery_percent = percent
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    hardware = dict(profile.get("hardware") or {})
+    hardware["battery_percent"] = percent
+    hardware["charging"] = bool(data.charging)
+    hardware["battery_reported_at"] = utcnow().isoformat()
+    profile["hardware"] = hardware
+    device.endpoint_profile = profile
+    await session.commit()
+    return {"ok": True, "percent": percent, "charging": bool(data.charging)}
 
 
 @router.get("/sync/bootstrap")

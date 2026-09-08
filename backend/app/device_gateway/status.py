@@ -81,6 +81,7 @@ def device_status_payload(device: Device, *, extra: dict[str, Any] | None = None
         "endpoint_profile": getattr(device, "endpoint_profile", None) or {},
         "healthkit": _healthkit_public(device),
         "notifications": _notifications_public(device),
+        "battery_percent": getattr(device, "battery_percent", None),
     }
     if extra:
         payload.update(extra)

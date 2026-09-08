@@ -278,3 +278,18 @@ async def test_look_history_owner_and_sandbox(
     sand = (await sandbox.get("/v1/device-gateway/looks")).json()
     assert sand["memory_enabled"] is False
     assert sand["looks"] == []
+
+
+async def test_battery_report_persists_and_validates(gateway_phone) -> None:
+    _body, phone = gateway_phone
+    bad = await phone.post("/v1/device-gateway/battery", json={"percent": 140})
+    assert bad.status_code == 422
+
+    ok = await phone.post("/v1/device-gateway/battery", json={"percent": 73, "charging": True})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["percent"] == 73.0
+    assert ok.json()["charging"] is True
+
+    status = await phone.get("/v1/device-gateway/status")
+    assert status.status_code == 200
+    assert status.json()["battery_percent"] == 73.0
