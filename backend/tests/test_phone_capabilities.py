@@ -1288,3 +1288,16 @@ async def test_new_surface_payload_clamps(client, db_session):
         "/v1/device-gateway/conversation/wake", json={"body": "b" * 400}
     )
     assert long_wake.status_code == 422
+
+
+async def test_privacy_stance_honest(client, db_session):
+    """Cycle 85 — C45: the privacy answer states the sandbox honestly and
+    lists what is kept vs never kept, with controls."""
+    phone = await _pair_sandbox(client, "Priv-SE")
+    r = await phone.get("/v1/device-gateway/privacy")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["environment"] == "SANDBOX"
+    assert any("memory off" in k for k in body["kept"])
+    assert body["never_kept"]
+    assert body["controls"]

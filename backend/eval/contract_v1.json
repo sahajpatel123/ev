@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-09-07T23:56:47.303412+00:00",
+  "locked_at": "2026-09-08T00:03:18.564161+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -313,6 +313,9 @@
     ],
     "/v1/device-gateway/people/enroll": [
       "post"
+    ],
+    "/v1/device-gateway/privacy": [
+      "get"
     ],
     "/v1/device-gateway/push/register": [
       "post"

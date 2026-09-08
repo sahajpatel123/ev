@@ -1,4 +1,4 @@
-const CLIENT_BUILD = "2026.09.08.37";
+const CLIENT_BUILD = "2026.09.08.38";
 const DESIGN_VERSION = "veil-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
@@ -756,6 +756,7 @@ function showSheet(id, on) {
     window.EvieCapabilities.refresh({ api: (path) => api(path, { _useDeviceToken: true }) });
   }
   if (on && id === "settings-sheet") fillSense().catch(() => {});
+  if (on && id === "settings-sheet") fillPrivacyStance().catch(() => {});
   if (on && id === "conversation-sheet") loadTurnHistory().catch(() => {});
   if (on && id === "conversation-sheet") loadMemoryBrowser().catch(() => {});
   if (on && id === "tactical-sheet") loadTactical().catch(() => {});
@@ -1033,6 +1034,34 @@ async function loadTactical() {
     wrap.appendChild(line);
     host.appendChild(wrap);
   });
+}
+
+/* Cycle 85 — "What Evie keeps": one honest privacy answer, server-composed. */
+async function fillPrivacyStance() {
+  const body = await api("/v1/device-gateway/privacy", { _useDeviceToken: true }).catch(() => null);
+  const host = $("privacy-stance");
+  if (!host) return;
+  host.replaceChildren();
+  if (!body || body.ok === false) return;
+  const add = (label, items, cls) => {
+    if (!items || !items.length) return;
+    const h = document.createElement("p");
+    h.className = "quiet";
+    h.textContent = label;
+    host.appendChild(h);
+    items.forEach((item) => {
+      const d = document.createElement("div");
+      d.className = cls;
+      d.textContent = (cls === "turn-text" ? "· " : "× ") + item;
+      host.appendChild(d);
+    });
+  };
+  add("Kept", body.kept, "turn-text");
+  add("Never kept", body.never_kept, "quiet");
+  const controls = document.createElement("p");
+  controls.className = "quiet";
+  controls.textContent = "Your controls: " + (body.controls || []).join(" · ");
+  host.appendChild(controls);
 }
 
 /* Cycle 51 — one-tap quick actions: server-computed, capability-gated;

@@ -694,6 +694,57 @@ async def user_text(
     return result
 
 
+@router.get("/privacy")
+async def privacy_stance(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """Cycle 85 — privacy transparency: ONE honest answer to "what does
+    Evie keep from this phone?". Server-composed from the same policy the
+    surfaces enforce; nothing is stated that is not true."""
+
+    _check_origin(request)
+    from app.everywhere.heading_out import heading_out_consent
+    from app.everywhere.web_push import vapid_configured, web_subscription
+
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+    kept: list[str] = []
+    never: list[str] = []
+    if not is_sandbox_device(device):
+        kept += [
+            "Conversation turns (this phone's history, with provenance)",
+            "Memories you explicitly kept ('remember this')",
+            "Timers, reminders, and their receipts",
+            "Your enrolled people roster (names, not biometrics)",
+            "An encrypted voiceprint IF you enrolled (raw recordings never stored)",
+        ]
+        never += [
+            "Health numbers (they never reach any model)",
+            "Location history (samples are evaluated and dropped)",
+            "Raw voice enrollment clips",
+            "Mail/Message bodies (read back as short gists for that turn only)",
+        ]
+    else:
+        kept += ["Nothing personal — sandbox devices keep memory off."]
+        never += ["Everything personal: history, keeps, roster, voiceprint, health."]
+    return {
+        "ok": True,
+        "environment": "SANDBOX" if is_sandbox_device(device) else "OWNER",
+        "health_snapshot_shared": bool(hk.get("available")),
+        "push_subscribed": bool(vapid_configured() and web_subscription(device) is not None),
+        "heading_out_consent": heading_out_consent(device).get("consent", False),
+        "kept": kept,
+        "never_kept": never,
+        "controls": [
+            "EV Sense turns sensors off",
+            "Heading out row revokes location consent",
+            "Voice row re-enrolls or re-checks; privacy center deletes voiceprints",
+            "Privacy center: correct, forget, restore any memory",
+        ],
+    }
+
+
 class WakeRequest(BaseModel):
     body: str | None = Field(default=None, max_length=280)
 
