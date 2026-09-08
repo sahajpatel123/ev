@@ -862,6 +862,42 @@ do {
     print("FAIL: life access: \(error)")
 }
 
+
+do {
+    let decoder = JSONDecoder()
+    let fixture = """
+    {
+      "device": {"display_name": "iPhone 16 Pro"},
+      "memory_enabled": true,
+      "memory_scope": "owner",
+      "hud": {"title": "EV status", "body": "No active signals."},
+      "health": {"available": true, "freshness": "reported", "metrics": {"steps": 8123}},
+      "calendar": {"events": [{"title": "Dentist", "start": "2026-09-08T10:00:00Z"}]},
+      "reminders": [{"id": "r1", "text": "Water basil"}],
+      "memories": [{"id": "m1", "memory_type": "preference", "text": "Espresso first"}],
+      "inbox_pending": 2
+    }
+    """
+    let payload = try decoder.decode(EvieTodayPayload.self, from: Data(fixture.utf8))
+    expect(payload.memoryEnabled && payload.memoryScope == "owner", "today payload memory scope")
+    expect(payload.hud?.body == "No active signals.", "today payload hud")
+    expect(payload.health?.metrics["steps"] == 8123, "today payload health metrics")
+    expect(payload.calendarEvents.first?.title == "Dentist", "today payload calendar")
+    expect(payload.reminders.count == 1 && payload.memories.count == 1, "today payload lists")
+    let summary = payload.renderSummary()
+    expect(summary.contains("No active signals."), "today summary hud body, got: \(summary)")
+    expect(summary.contains("1 reminder") && summary.contains("1 event") && summary.contains("2 unread"), "today summary counts: \(summary)")
+    let noHud = try decoder.decode(EvieTodayPayload.self, from: Data("{\"device\": {\"display_name\": \"16 Pro\"}, \"memory_enabled\": true, \"memory_scope\": \"owner\", \"health\": {\"available\": true, \"freshness\": \"reported\", \"metrics\": {\"steps\": 8123}}, \"reminders\": [], \"memories\": [], \"inbox_pending\": 0}".utf8))
+    expect(noHud.renderSummary().contains("8123 steps"), "today summary steps fallback: \(noHud.renderSummary())")
+    let sparse = try decoder.decode(EvieTodayPayload.self, from: Data("{\"device\": {\"display_name\": \"SE\"}, \"memory_enabled\": false, \"memory_scope\": \"sandbox\", \"inbox_pending\": 0}".utf8))
+    expect(!sparse.memoryEnabled && sparse.hud == nil && sparse.reminders.isEmpty, "today sparse decode tolerant")
+    expect(sparse.renderSummary() == "", "today sparse summary stays empty, got: \(sparse.renderSummary())")
+    print("ok: today payload decode/render")
+} catch {
+    failures.append("today payload: \(error)")
+    print("FAIL: today payload: \(error)")
+}
+
 if failures.isEmpty {
     print("EVClientCheck: all checks passed")
     exit(0)
