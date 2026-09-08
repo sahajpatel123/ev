@@ -361,6 +361,33 @@ async def create_pairing_token(
     }
 
 
+from time import time as _time
+
+_PAIR_ATTEMPTS: dict[str, list[float]] = {}
+_PAIR_LIMIT = 20
+_PAIR_WINDOW_SECONDS = 600
+
+
+def _pair_rate_limited(request: Request) -> bool:
+    """Sliding-window failed-pair limiter per client IP. Best-effort and
+    in-memory; returns True when the caller must be throttled."""
+    client = (request.client.host if request.client else "unknown") + "|" + str(
+        request.headers.get("x-forwarded-for", "")
+    )[:64]
+    now = _time()
+    bucket = _PAIR_ATTEMPTS.setdefault(client, [])
+    cutoff = now - _PAIR_WINDOW_SECONDS
+    bucket[:] = [t for t in bucket if t > cutoff]
+    if len(bucket) >= _PAIR_LIMIT:
+        return True
+    bucket.append(now)
+    if len(_PAIR_ATTEMPTS) > 512:
+        for key in list(_PAIR_ATTEMPTS.keys()):
+            if not any(t > cutoff for t in _PAIR_ATTEMPTS[key]):
+                del _PAIR_ATTEMPTS[key]
+    return False
+
+
 @router.post("/pair")
 async def pair(
     data: PairRequest,
@@ -370,6 +397,12 @@ async def pair(
     _check_origin(request)
     if not protocol_compatible(data.protocol_version):
         raise HTTPException(status_code=409, detail="Incompatible protocol_version")
+    if _pair_rate_limited(request):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many pairing attempts from this network — wait a few minutes.",
+            headers={"X-Error-Code": "pair_rate_limited"},
+        )
     device, token = await pair_device(
         session,
         pairing_token=data.pairing_token,

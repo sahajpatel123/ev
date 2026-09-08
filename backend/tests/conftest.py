@@ -278,3 +278,11 @@ async def owner_phone(client: AsyncClient) -> AsyncIterator[tuple[dict, AsyncCli
     assert promoted.status_code == 200, promoted.text
     yield body, phone
     await phone.aclose()
+
+
+@pytest.fixture(autouse=True)
+def reset_pair_rate_limiter() -> None:
+    """EAC101: clear the in-memory /pair attempt limiter between tests."""
+    from app.device_gateway import api as _gw_api
+
+    _gw_api._PAIR_ATTEMPTS.clear()

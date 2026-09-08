@@ -409,3 +409,30 @@ async def test_onboarding_roundtrip_filters_steps(gateway_phone) -> None:
     got = (await phone.get("/v1/device-gateway/onboarding")).json()["onboarding"]
     assert got["steps_completed"] == ["camera_role", "paired"]
     assert got["camera_role_set"] is True
+
+
+async def test_pair_rate_limiter_throttles(client: AsyncClient) -> None:
+    bad = {"pairing_token": "evie-pair.bogus-bogus-bogus", "display_name": "Spam"}
+    got_429 = False
+    for _ in range(24):
+        res = await client.post("/v1/device-gateway/pair", json=bad)
+        if res.status_code == 429:
+            got_429 = True
+            break
+    assert got_429, "expected a 429 after repeated failed pairs"
+    assert res.headers.get("X-Error-Code") == "pair_rate_limited"
+
+    # A fresh pairing token still works after the window resets.
+    from app.device_gateway import api as _gw_api
+
+    _gw_api._PAIR_ATTEMPTS.clear()
+    minted = await client.post(
+        "/v1/device-gateway/pairing-tokens",
+        json={"role": "primary_companion", "display_name": "After throttle"},
+    )
+    assert minted.status_code == 200
+    ok = await client.post(
+        "/v1/device-gateway/pair",
+        json={"pairing_token": minted.json()["pairing_token"], "display_name": "After throttle"},
+    )
+    assert ok.status_code == 200
