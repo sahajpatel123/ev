@@ -374,3 +374,22 @@ async def test_inbox_ack_all_marks_read(owner_phone, db_session) -> None:
     listed = (await phone.get("/v1/device-gateway/inbox")).json()
     assert listed["items"]
     assert all(item["unread"] is False for item in listed["items"])
+
+
+async def test_capabilities_registry_trust_gated(
+    owner_phone, gateway_phone
+) -> None:
+    _obody, owner = owner_phone
+    _sbody, sandbox = gateway_phone
+
+    sand = (await sandbox.get("/v1/device-gateway/capabilities")).json()
+    assert sand["trust_state"] == "PAIRED_SANDBOX"
+    assert sand["capabilities"]["memory"]["available"] is False
+    assert sand["capabilities"]["memory"]["reason"] == "promote_on_mac"
+    assert sand["capabilities"]["today"]["available"] is True
+    assert sand["capabilities"]["people"]["reason"] == "no_contacts_snapshot"
+
+    own = (await owner.get("/v1/device-gateway/capabilities")).json()
+    assert own["trust_state"] == "TRUSTED_OWNER_DEVICE"
+    assert own["capabilities"]["memory"]["available"] is True
+    assert own["capabilities"]["capture_note"]["available"] is True

@@ -1934,6 +1934,49 @@ async def device_weather(
     return {"ok": True, "status": "ok", "forecast": forecast, "error_code": None}
 
 
+@router.get("/capabilities")
+async def device_capabilities(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """What this phone can actually do right now, derived from trust state,
+    declared capabilities, and reported snapshots — the client never infers."""
+    _check_origin(request)
+    trusted = not is_sandbox_device(device)
+    declared = set(device.capabilities or [])
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    has_contacts = bool((profile.get("contacts") or {}).get("contacts"))
+    has_health = bool((profile.get("healthkit") or {}).get("available"))
+    has_calendar = bool((profile.get("calendar") or {}).get("events"))
+
+    def cap(available: bool, reason: str | None = None) -> dict:
+        return {"available": bool(available), "reason": reason}
+
+    return {
+        "ok": True,
+        "trust_state": "TRUSTED_OWNER_DEVICE" if trusted else "PAIRED_SANDBOX",
+        "capabilities": {
+            "voice": cap("foreground_voice" in declared or "voice" in declared),
+            "camera": cap("camera" in declared),
+            "text": cap("text" in declared or "foreground_voice" in declared),
+            "memory": cap(trusted, None if trusted else "promote_on_mac"),
+            "capture_note": cap(trusted, None if trusted else "promote_on_mac"),
+            "capture_voice": cap(trusted, None if trusted else "promote_on_mac"),
+            "search": cap(trusted, None if trusted else "promote_on_mac"),
+            "looks": cap(trusted, None if trusted else "promote_on_mac"),
+            "today": cap(True),
+            "inbox": cap(True),
+            "queue": cap(True),
+            "weather": cap(True),
+            "people": cap(has_contacts, None if has_contacts else "no_contacts_snapshot"),
+            "health": cap(has_health, None if has_health else "no_healthkit_snapshot"),
+            "calendar": cap(has_calendar, None if has_calendar else "no_calendar_snapshot"),
+            "routines": cap(True),
+        },
+    }
+
+
 @router.get("/sync/bootstrap")
 async def phone_sync_bootstrap(
     request: Request,
