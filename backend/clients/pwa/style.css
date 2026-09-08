@@ -734,3 +734,6 @@ html, body {
 .evie-composer-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .evie-composer-chips button { padding: 8px 12px; border: 1px solid var(--stroke); border-radius: 999px; background: var(--elevated); font-size: 13px; color: var(--ink); }
 .evie-composer-chips button:active { background: color-mix(in srgb, var(--ink) 10%, transparent); }
+/* Cycle EAC84 (iPhone-only): conversation export. Additive-only. */
+.evie-export-row { display: flex; gap: 8px; margin: 4px 0 10px; }
+.evie-export-row button { font-size: 13px; padding: 6px 14px; }

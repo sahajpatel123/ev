@@ -1060,6 +1060,48 @@ async function refreshLooks() {
   }
 }
 
+function conversationExportText() {
+  const speaker = (state.device && state.device.display_name) || "Me";
+  const lines = (state.history || []).map((entry) => {
+    const who = entry.role === "assistant" ? "Evie" : speaker;
+    return who + ": " + String(entry.text || "");
+  });
+  return lines.join("\n");
+}
+
+async function copyConversation() {
+  const meta = $("conv-export-meta");
+  const text = conversationExportText();
+  if (!text) {
+    textOf(meta, "Nothing to copy yet.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    textOf(meta, "Conversation copied.");
+  } catch (_err) {
+    textOf(meta, "Copy is blocked in this browser.");
+  }
+}
+
+async function shareConversation() {
+  const meta = $("conv-export-meta");
+  const text = conversationExportText();
+  if (!text) {
+    textOf(meta, "Nothing to share yet.");
+    return;
+  }
+  if (!(navigator.share && navigator.canShare && navigator.canShare({ text: text }))) {
+    textOf(meta, "Sharing is not available in this browser.");
+    return;
+  }
+  try {
+    await navigator.share({ title: "Conversation with Evie", text: text });
+  } catch (_err) {
+    // User dismissed the share sheet — not an error to display.
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -3073,6 +3115,14 @@ async function boot() {
   const routinesSave = $("routines-save-btn");
   if (routinesSave) {
     routinesSave.addEventListener("click", () => saveRoutines());
+  }
+  const convCopy = $("conv-copy-btn");
+  if (convCopy) {
+    convCopy.addEventListener("click", () => copyConversation());
+  }
+  const convShare = $("conv-share-btn");
+  if (convShare) {
+    convShare.addEventListener("click", () => shareConversation());
   }
   const queueRefresh = $("queue-refresh-btn");
   if (queueRefresh) {

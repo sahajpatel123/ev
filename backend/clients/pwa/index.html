@@ -285,7 +285,12 @@
     <section id="conversation-sheet" class="sheet" hidden>
       <button type="button" class="sheet-close sheet-x" data-close="conversation-sheet" aria-label="Close">✕</button>
       <h2>Conversation</h2>
+      <p class="evie-export-row">
+        <button type="button" id="conv-copy-btn" class="secondary">Copy</button>
+        <button type="button" id="conv-share-btn" class="secondary">Share…</button>
+      </p>
       <ol id="history" class="timeline"></ol>
+      <p class="quiet" id="conv-export-meta"></p>
     </section>
 
     <section id="devices-sheet" class="sheet" hidden>
