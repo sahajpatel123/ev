@@ -75,16 +75,21 @@ async def deliver_digest(
     if not due_times(local_now, cfg):
         return None
     lines = await _digest_lines(session, device)
-    body = "\n".join(lines)[:DIGEST_MAX_BODY] or "Everything is quiet."
     hour = local_now.hour
     if 5 <= hour < 12:
         digest_title = "Morning digest"
+        greeting = "Good morning."
     elif 12 <= hour < 17:
         digest_title = "Afternoon digest"
+        greeting = "Good afternoon."
     elif 17 <= hour < 22:
         digest_title = "Evening digest"
+        greeting = "Good evening."
     else:
         digest_title = "Night digest"
+        greeting = "Quick check before bed."
+    body_lines = [greeting, *lines]
+    body = "\n".join(body_lines)[:DIGEST_MAX_BODY] or "Everything is quiet."
     item = await push_inbox(
         session,
         device_id=device.id,
