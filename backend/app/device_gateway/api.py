@@ -1301,6 +1301,28 @@ async def device_today(
             for m in rows
         ]
     inbox_items = await list_inbox(session, device_id=device.id, limit=50)
+    from .phone_routines import normalize
+
+    quiet_state: dict = {"active": False, "window": None}
+    routines = normalize((profile.get("routines") or {}))
+    if routines.get("quiet_hours_start") and routines.get("quiet_hours_end"):
+        from .phone_routines import in_quiet_hours
+
+        try:
+            from zoneinfo import ZoneInfo
+
+            tz = ZoneInfo(routines.get("timezone") or "UTC")
+            local_now = _utcnow().astimezone(tz)
+            quiet_state = {
+                "active": bool(in_quiet_hours(local_now, routines)),
+                "window": {
+                    "start": routines.get("quiet_hours_start"),
+                    "end": routines.get("quiet_hours_end"),
+                    "timezone": routines.get("timezone") or "UTC",
+                },
+            }
+        except Exception:  # noqa: BLE001 - display-only state
+            quiet_state = {"active": False, "window": None}
     return {
         "ok": True,
         "generated_at": _utcnow().isoformat(),
@@ -1311,6 +1333,7 @@ async def device_today(
         },
         "memory_enabled": memory_enabled,
         "memory_scope": memory_scope_of(device),
+        "quiet_hours": quiet_state,
         "hud": card,
         "health": {
             "available": bool(healthkit.get("available")),
