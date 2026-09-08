@@ -676,7 +676,13 @@ async function refreshToday() {
     fillOl("today-memories", memories, 6, "No memories yet.");
     const scope = body.memory_enabled ? body.memory_scope || "owner" : "sandbox";
     const unread = body.inbox_pending || 0;
-    textOf(meta, "Memory: " + scope + (unread ? " · " + unread + " unread in Inbox" : ""));
+    let metaText = "Memory: " + scope + (unread ? " · " + unread + " unread in Inbox" : "");
+    const qh = body.quiet_hours || {};
+    if (qh.window && qh.window.start) {
+      const end = qh.window.end || "—";
+      metaText += qh.active ? " · Quiet hours until " + end : " · Digest quiet " + qh.window.start + "–" + end;
+    }
+    textOf(meta, metaText);
   } catch (err) {
     textOf(meta, "Today is unavailable: " + String(err.message || err));
   }
