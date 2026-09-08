@@ -248,6 +248,11 @@ class BatteryReportRequest(BaseModel):
     charging: bool = False
 
 
+class OnboardingPutRequest(BaseModel):
+    steps_completed: list[str] = Field(default_factory=list)
+    camera_role_set: bool = False
+
+
 class QueueReplayRequest(BaseModel):
     idempotency_key: str
 
@@ -1975,6 +1980,53 @@ async def device_capabilities(
             "routines": cap(True),
         },
     }
+
+
+@router.get("/onboarding")
+async def get_phone_onboarding(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    onboarding = profile.get("onboarding")
+    if not isinstance(onboarding, dict):
+        onboarding = {}
+    return {
+        "ok": True,
+        "onboarding": {
+            "steps_completed": list(onboarding.get("steps_completed") or []),
+            "camera_role_set": bool(onboarding.get("camera_role_set")),
+            "updated_at": onboarding.get("updated_at"),
+        },
+    }
+
+
+@router.put("/onboarding")
+async def put_phone_onboarding(
+    data: OnboardingPutRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    allowed = {
+        "paired",
+        "camera_role",
+        "promoted",
+        "first_turn",
+        "digest_configured",
+    }
+    steps = [s for s in (data.steps_completed or []) if s in allowed]
+    onboarding = {
+        "steps_completed": sorted(set(steps)),
+        "camera_role_set": bool(data.camera_role_set),
+        "updated_at": utcnow().isoformat(),
+    }
+    _stash_profile(device, "onboarding", onboarding)
+    await session.commit()
+    return {"ok": True, "onboarding": onboarding}
 
 
 @router.get("/sync/bootstrap")

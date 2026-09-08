@@ -393,3 +393,19 @@ async def test_capabilities_registry_trust_gated(
     assert own["trust_state"] == "TRUSTED_OWNER_DEVICE"
     assert own["capabilities"]["memory"]["available"] is True
     assert own["capabilities"]["capture_note"]["available"] is True
+
+
+async def test_onboarding_roundtrip_filters_steps(gateway_phone) -> None:
+    _body, phone = gateway_phone
+    put = await phone.put(
+        "/v1/device-gateway/onboarding",
+        json={"steps_completed": ["paired", "camera_role", "hacked_step"], "camera_role_set": True},
+    )
+    assert put.status_code == 200, put.text
+    body = put.json()["onboarding"]
+    assert body["steps_completed"] == ["camera_role", "paired"]
+    assert body["camera_role_set"] is True
+
+    got = (await phone.get("/v1/device-gateway/onboarding")).json()["onboarding"]
+    assert got["steps_completed"] == ["camera_role", "paired"]
+    assert got["camera_role_set"] is True
