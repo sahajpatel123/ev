@@ -1178,6 +1178,31 @@ async function refreshHealth() {
   }
 }
 
+async function refreshWeather(placeText) {
+  const card = $("weather-card");
+  const meta = $("weather-meta");
+  const place = (placeText || "").trim();
+  try {
+    const params = place ? "?place=" + encodeURIComponent(place) : "";
+    const body = await api("/v1/device-gateway/weather" + params);
+    if (body.status === "ok" && body.forecast) {
+      if (card) card.hidden = false;
+      textOf($("weather-title"), body.forecast.title || "Weather");
+      textOf($("weather-body"), body.forecast.snippet || "");
+      textOf(meta, "Live from Home Station.");
+    } else if (body.error_code === "NO_PLACE") {
+      if (card) card.hidden = true;
+      textOf(meta, "Tell Evie a place — no location is guessed.");
+    } else {
+      if (card) card.hidden = true;
+      textOf(meta, body.error_code === "WEATHER_TIMEOUT" ? "Weather lookup timed out." : "Weather is unavailable right now.");
+    }
+  } catch (err) {
+    if (card) card.hidden = true;
+    textOf(meta, "Weather unavailable: " + String(err.message || err));
+  }
+}
+
 async function enqueueOffline(kind, payload, key) {
   const idem = (key && String(key).length >= 8) ? String(key) : crypto.randomUUID();
   const item = { idempotency_key: idem, kind: kind, payload: payload, state: "pending", executed: false };
@@ -1364,7 +1389,7 @@ function showSheet(id, on) {
 }
 
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "today-sheet", "weather-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -3109,6 +3134,7 @@ async function boot() {
     const map = {
       more: "more-sheet",
       today: "today-sheet",
+      weather: "weather-sheet",
       health: "health-sheet",
       looks: "looks-sheet",
       people: "people-sheet",
@@ -3123,7 +3149,7 @@ async function boot() {
       inbox: "inbox-sheet",
       privacy: "settings-sheet",
     };
-    ["more-sheet", "today-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
+    ["more-sheet", "today-sheet", "weather-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet"].forEach((id) => {
       const on = map[surface] === id;
       const el = $(id);
       if (!el) return;
@@ -3140,6 +3166,7 @@ async function boot() {
     if (surface === "people") refreshPeople();
     if (surface === "looks") refreshLooks();
     if (surface === "health") refreshHealth();
+    if (surface === "weather") refreshWeather();
   }
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -3157,7 +3184,11 @@ async function boot() {
         openSurface("today");
         return;
       }
-      const prompt = kind === "weather" ? "what's the weather" : "";
+      if (kind === "weather") {
+        openSurface("weather");
+        return;
+      }
+      const prompt = "";
       if (!prompt) return;
       sendText(prompt).catch((err) => {
         state.caption = String(err.message || err);
@@ -3225,6 +3256,14 @@ async function boot() {
   const routinesSave = $("routines-save-btn");
   if (routinesSave) {
     routinesSave.addEventListener("click", () => saveRoutines());
+  }
+  const weatherForm = $("weather-form");
+  if (weatherForm) {
+    weatherForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const place = $("weather-place");
+      refreshWeather(place ? place.value : "");
+    });
   }
   const convCopy = $("conv-copy-btn");
   if (convCopy) {

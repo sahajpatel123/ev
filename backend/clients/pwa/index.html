@@ -161,6 +161,21 @@
       </div>
     </section>
 
+    <section id="weather-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="weather-sheet" aria-label="Close">✕</button>
+      <h2>Weather</h2>
+      <p class="quiet">Live forecast from Home Station — it never guesses.</p>
+      <form id="weather-form" class="composer">
+        <label class="sr-only" for="weather-place">Place</label>
+        <input id="weather-place" type="search" enterkeyhint="search" autocomplete="off" placeholder="Place (e.g. Surat)">
+      </form>
+      <article class="evie-today-hud" id="weather-card" hidden>
+        <p class="evie-today-hud-title" id="weather-title"></p>
+        <p class="evie-today-hud-body" id="weather-body"></p>
+      </article>
+      <p class="quiet" id="weather-meta"></p>
+    </section>
+
     <section id="health-sheet" class="sheet" hidden>
       <button type="button" class="sheet-close sheet-x" data-close="health-sheet" aria-label="Close">✕</button>
       <h2>Health</h2>
