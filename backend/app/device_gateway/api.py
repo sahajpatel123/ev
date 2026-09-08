@@ -1715,6 +1715,51 @@ async def device_contacts(
     }
 
 
+@router.get("/looks")
+async def device_look_history(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=60),
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Recent camera look events (this phone's vision history) with any
+    derived memory text. Sandbox phones see nothing — looks write owner
+    memory."""
+    _check_origin(request)
+    if is_sandbox_device(device):
+        return {"ok": True, "memory_enabled": False, "looks": []}
+    from app.models import Event
+
+    rows = (
+        (
+            await session.execute(
+                select(Event)
+                .where(
+                    Event.event_type == "camera.look",
+                    Event.tombstoned_at.is_(None),
+                )
+                .order_by(Event.occurred_at.desc())
+                .limit(min(limit, 60))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    looks = []
+    for ev in rows:
+        content = ev.content or {}
+        looks.append(
+            {
+                "id": str(ev.id),
+                "summary": str(content.get("summary") or content.get("text") or "")[:400],
+                "scene": str(content.get("scene") or "")[:200],
+                "device_id": ev.device_id,
+                "occurred_at": ev.occurred_at.isoformat() if ev.occurred_at else None,
+            }
+        )
+    return {"ok": True, "memory_enabled": True, "looks": looks}
+
+
 @router.get("/sync/bootstrap")
 async def phone_sync_bootstrap(
     request: Request,

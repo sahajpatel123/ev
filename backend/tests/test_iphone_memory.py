@@ -245,3 +245,36 @@ async def test_contacts_read_returns_snapshot(owner_phone) -> None:
     assert [c["name"] for c in body["contacts"]] == ["Aarav Mehta", "Priya Shah"]
     assert body["sent_to_model"] is False
     assert body["captured_at"] == "2026-09-08T07:00:00Z"
+
+
+async def test_look_history_owner_and_sandbox(
+    owner_phone, gateway_phone, db_session
+) -> None:
+    from app.models import Event
+    from app.utils.text import utcnow
+
+    _body, owner = owner_phone
+    _sbody, sandbox = gateway_phone
+    db_session.add(
+        Event(
+            event_type="camera.look",
+            source="owner.phone",
+            content={"summary": "The kitchen counter with the basil plant", "scene": "kitchen"},
+            occurred_at=utcnow(),
+            sha256="f" * 64,
+            device_id=str(owner_phone[0]["device"]["device_id"]),
+        )
+    )
+    await db_session.commit()
+
+    res = await owner.get("/v1/device-gateway/looks")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["memory_enabled"] is True
+    assert len(body["looks"]) == 1
+    assert "basil plant" in body["looks"][0]["summary"]
+    assert body["looks"][0]["scene"] == "kitchen"
+
+    sand = (await sandbox.get("/v1/device-gateway/looks")).json()
+    assert sand["memory_enabled"] is False
+    assert sand["looks"] == []
