@@ -737,3 +737,7 @@ html, body {
 /* Cycle EAC84 (iPhone-only): conversation export. Additive-only. */
 .evie-export-row { display: flex; gap: 8px; margin: 4px 0 10px; }
 .evie-export-row button { font-size: 13px; padding: 6px 14px; }
+/* Cycle EAC92 (iPhone-only): inbox actions. Additive-only. */
+.evie-inbox-unread > span { font-weight: 600; }
+#inbox-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+#inbox-list li > span { flex: 1; min-width: 0; }

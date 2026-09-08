@@ -561,12 +561,46 @@ function fillInbox() {
   const list = $("inbox-list");
   if (!list) return;
   while (list.firstChild) list.removeChild(list.firstChild);
-  (state.inbox || []).forEach((item) => {
+  const items = state.inbox || [];
+  if (!items.length) {
     const li = document.createElement("li");
+    li.className = "evie-today-empty";
+    li.textContent = "Inbox is clear.";
+    list.appendChild(li);
+  }
+  items.forEach((item) => {
+    const li = document.createElement("li");
+    if (item.unread) li.className = "evie-inbox-unread";
     const via = item.delivery || item.push_delivery || "in_app_poll";
-    li.textContent = (item.title || item.kind || "notice") + " — " + (item.body || "") + " · " + via;
+    const label = document.createElement("span");
+    label.textContent = (item.title || item.kind || "notice") + " — " + (item.body || "") + " · " + via;
+    li.appendChild(label);
+    if (item.unread) {
+      const ack = document.createElement("button");
+      ack.type = "button";
+      ack.className = "evie-queue-drop";
+      ack.textContent = "✕";
+      ack.setAttribute("aria-label", "Dismiss");
+      ack.addEventListener("click", async () => {
+        try {
+          await api("/v1/device-gateway/inbox/ack", {
+            method: "POST",
+            body: JSON.stringify({ item_id: item.id }),
+          });
+          refreshInbox();
+        } catch (_err) {}
+      });
+      li.appendChild(ack);
+    }
     list.appendChild(li);
   });
+}
+
+async function markAllInboxRead() {
+  try {
+    await api("/v1/device-gateway/inbox/ack-all", { method: "POST", body: "{}" });
+    refreshInbox();
+  } catch (_err) {}
 }
 
 async function refreshInbox() {
@@ -575,6 +609,9 @@ async function refreshInbox() {
     const body = await api("/v1/device-gateway/inbox");
     state.inbox = body.items || [];
     fillInbox();
+    const unread = (state.inbox || []).filter((item) => item.unread).length;
+    const btn = $("inbox-ack-all-btn");
+    if (btn) btn.hidden = unread === 0;
   } catch (_err) {}
 }
 
@@ -3264,6 +3301,10 @@ async function boot() {
       const place = $("weather-place");
       refreshWeather(place ? place.value : "");
     });
+  }
+  const inboxAckAll = $("inbox-ack-all-btn");
+  if (inboxAckAll) {
+    inboxAckAll.addEventListener("click", () => markAllInboxRead());
   }
   const convCopy = $("conv-copy-btn");
   if (convCopy) {
