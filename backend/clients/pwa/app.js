@@ -792,6 +792,27 @@ async function openMemoryDetail(memoryId) {
     if (existing) existing.remove();
     back.id = "memory-back-btn";
     detail.appendChild(back);
+    try {
+      const prov = await api("/v1/device-gateway/memories/" + memoryId + "/provenance");
+      const versions = $("memory-versions");
+      if (versions) {
+        while (versions.firstChild) versions.removeChild(versions.firstChild);
+        const rows = prov.versions || [];
+        if (!rows.length) {
+          const li = document.createElement("li");
+          li.className = "evie-today-empty";
+          li.textContent = "No version history.";
+          versions.appendChild(li);
+        }
+        rows.forEach((v) => {
+          const li = document.createElement("li");
+          const suffix = v.is_current ? " · current" : "";
+          const reason = v.reason_for_change ? " — " + v.reason_for_change : "";
+          li.textContent = "v" + v.version + suffix + ": " + (v.text || "").slice(0, 140) + reason;
+          versions.appendChild(li);
+        });
+      }
+    } catch (_err) {}
   } catch (err) {
     textOf($("memory-meta"), "Memory unavailable: " + String(err.message || err));
   }
@@ -1384,7 +1405,7 @@ async function replayOfflineQueue() {
       const mark = item.idempotency_key || text || "";
       if (text && trust === "TRUSTED_OWNER_DEVICE" && mark && !state.drainedCaptures[mark]) {
         try {
-          await sendText(text);
+          await sendText(text, mark);
           state.drainedCaptures[mark] = true;
         } catch (_err) {
           continue;
@@ -2209,8 +2230,8 @@ async function pair() {
   await hello();
 }
 
-async function sendText(text) {
-  const requestId = crypto.randomUUID();
+async function sendText(text, requestIdOverride) {
+  const requestId = requestIdOverride || crypto.randomUUID();
   state.userLine = text;
   state.caption = "…";
   pushHistory("user", text);
