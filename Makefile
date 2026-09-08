@@ -55,6 +55,10 @@ iphone-parity-check:
 # whole trusted phone voice surface. Run before any release.
 phone-voice-e2e:
 	cd backend && uv run pytest -q tests/test_phone_voice_e2e_probe.py tests/test_phone_capabilities.py
+
+# Cycle 86 — one-command release bump (pins + manifest together).
+release-bump:
+	scripts/bump_build.sh
 	bash -n scripts/ios/physical-acceptance.sh
 	bash -n scripts/ios/archive-if-possible.sh
 	cd ios/EvieShell && swift run EvieBrokerCheck
