@@ -157,3 +157,20 @@ def test_ttfa_metrics_and_dev_overlay():
     assert 'id="latency-overlay"' in app or 'latency-overlay' in app
     assert 'taps >= 3' in app
     assert 'id="mood"' in (PWA / "index.html").read_text()
+
+
+def test_pwa_icons_and_splash_complete():
+    """Cycle 88 — C48: the installed-app identity is complete for SE and
+    16 Pro: 192/512 + maskable icons, per-device launch screens, all
+    cached, and the manifest references every one."""
+    pwa = PWA
+    for name in ("icon-192.png", "icon-512.png", "icon-192-maskable.png", "icon-512-maskable.png", "splash-se.png", "splash-16pro.png"):
+        assert (pwa / name).exists(), name
+    manifest = (pwa / "manifest.webmanifest").read_text()
+    for ref in ("icon-192.png", "icon-512.png", "maskable"):
+        assert ref in manifest, ref
+    html = (pwa / "index.html").read_text()
+    assert "apple-touch-startup-image" in html
+    assert "splash-se.png" in html and "splash-16pro.png" in html
+    sw = (pwa / "sw.js").read_text()
+    assert "splash-se.png" in sw and "icon-512-maskable.png" in sw

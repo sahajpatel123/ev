@@ -5,7 +5,13 @@ const STATIC = [
   "/evie/style.css",
   "/evie/manifest.webmanifest",
   "/evie/icon.svg",
+  "/evie/icon-192.png",
+  "/evie/icon-512.png",
+  "/evie/icon-192-maskable.png",
+  "/evie/icon-512-maskable.png",
   "/evie/apple-touch-icon.png",
+  "/evie/splash-se.png",
+  "/evie/splash-16pro.png",
 ];
 const NETWORK_ONLY = [
   "/evie/app.js",
