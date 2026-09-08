@@ -459,9 +459,20 @@ function fillMobileActions(hello) {
   fillDl("mobile-actions-meta", rows);
 }
 
+async function refreshStatus() {
+  if (!state.deviceToken) return;
+  try {
+    const body = await api("/v1/device-gateway/status");
+    if (body && body.ok === false) return;
+    state.status = body || {};
+    fillSettings(Object.assign({}, state.hello || {}, { status: body || {} }), state.device || {});
+    paintLive();
+  } catch (_err) {}
+}
+
 function fillSettings(hello, device) {
   const status = hello.status || hello.session_context || state.status || {};
-  fillDl("settings-meta", [
+  const rows = [
     ["Device", device.display_name || prettyRole(device.role) || "—"],
     ["Role", prettyRole(device.role) || "—"],
     ["Trust", status.trust_state || hello.environment || "—"],
@@ -481,7 +492,12 @@ function fillSettings(hello, device) {
     ["Notifications", notificationLine(status)],
     ["Sync cursor", state.syncCursor ? "yes" : "none"],
     ["Install", isStandalonePwa() ? "Home Screen" : "Safari tab"],
-  ]);
+  ];
+  const battery = Number(status.battery_percent);
+  if (Number.isFinite(battery)) {
+    rows.splice(rows.findIndex((r) => r[0] === "Home Station"), 0, ["Battery", battery.toFixed(0) + "%"]);
+  }
+  fillDl("settings-meta", rows);
 }
 
 function healthkitLine(status) {
@@ -1757,11 +1773,36 @@ function showUpdateLine() {
   if (!el) return;
   if (state.updateAvailable && state.updateAvailable.latest) {
     el.hidden = false;
-    el.textContent = "Update available · tap to reload (" + state.updateAvailable.latest + ")";
+    const ready = state.updateAvailable.sw_ready ? "Update ready" : "Update available";
+    el.textContent = ready + " · tap to reload (" + state.updateAvailable.latest + ")";
   } else {
     el.hidden = true;
     el.textContent = "";
   }
+}
+
+function watchServiceWorkerUpdate(registration) {
+  if (!registration) return;
+  const markReady = () => {
+    if (state.updateAvailable && state.updateAvailable.sw_ready) return;
+    if (!state.updateAvailable) {
+      state.updateAvailable = { latest: "Home Station" };
+    }
+    state.updateAvailable.sw_ready = true;
+    pushActivity("Update ready · tap to reload");
+    showUpdateLine();
+  };
+  if (registration.waiting && navigator.serviceWorker.controller) markReady();
+  if (!registration.addEventListener) return;
+  registration.addEventListener("updatefound", () => {
+    const installing = registration.installing;
+    if (!installing || !installing.addEventListener) return;
+    installing.addEventListener("statechange", () => {
+      if (installing.state === "installed" && navigator.serviceWorker.controller) {
+        markReady();
+      }
+    });
+  });
 }
 
 async function nativeSnapshot() {
@@ -1854,7 +1895,10 @@ function backgroundUpdateServiceWorker() {
     if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
       navigator.serviceWorker
         .getRegistration("/evie/")
-        .then((reg) => reg && reg.update && reg.update())
+        .then((reg) => {
+          watchServiceWorkerUpdate(reg);
+          return reg && reg.update && reg.update();
+        })
         .catch(() => {});
     }
   } catch (_err) {}
@@ -2919,7 +2963,10 @@ async function boot() {
   state.orb.setReduced(reduce);
   state.orb.start();
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/evie/sw.js", { scope: "/evie/" }).catch(() => {});
+    navigator.serviceWorker
+      .register("/evie/sw.js", { scope: "/evie/" })
+      .then((reg) => watchServiceWorkerUpdate(reg))
+      .catch(() => {});
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       if (!state.updateAvailable) return;
       if (!oneShot("evie_sw_controller")) return;
@@ -3026,6 +3073,7 @@ async function boot() {
     if (surface === "inbox") refreshInbox();
     if (surface === "today") refreshToday();
     if (surface === "memory") refreshMemories();
+    if (surface === "privacy") refreshStatus();
     if (surface === "queue") refreshQueue();
     if (surface === "routines") loadRoutines();
     if (surface === "people") refreshPeople();
