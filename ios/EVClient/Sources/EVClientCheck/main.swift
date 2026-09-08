@@ -898,6 +898,31 @@ do {
     print("FAIL: today payload: \(error)")
 }
 
+
+do {
+    let decoder = JSONDecoder()
+    let listFixture = """
+    {"ok": true, "memory_enabled": true, "memories": [{"id": "m1", "memory_type": "preference", "text": "Espresso first", "confidence": 0.95, "source_type": "explicit"}], "total": 1}
+    """
+    let list = try decoder.decode(EvieMemoryList.self, from: Data(listFixture.utf8))
+    expect(list.memoryEnabled && list.total == 1 && list.memories.first?.text == "Espresso first", "memory list decode")
+    expect(list.memories.first?.confidence == 0.95, "memory row confidence")
+    let sandbox = try decoder.decode(EvieMemoryList.self, from: Data("{\"ok\": true, \"memory_enabled\": false, \"memories\": [], \"total\": 0}".utf8))
+    expect(!sandbox.memoryEnabled && sandbox.memories.isEmpty, "sandbox memory off decode")
+    let detailFixture = """
+    {"ok": true, "memory_enabled": true, "memory": {"id": "m1", "memory_type": "preference", "text": "Espresso first"}, "sources": [{"id": "e1", "kind": "note", "text": "Owner said it", "occurred_at": "2026-09-08T07:00:00Z"}, {"id": "e2", "kind": "note", "text": "Again"}]}
+    """
+    let detail = try decoder.decode(EvieMemoryDetail.self, from: Data(detailFixture.utf8))
+    expect(detail.memory?.id == "m1" && detail.sources.count == 2, "memory detail decode")
+    expect(detail.renderProvenance() == "From note", "memory provenance dedupe: \(detail.renderProvenance())")
+    let bare = try decoder.decode(EvieMemoryDetail.self, from: Data("{\"ok\": true, \"memory_enabled\": true, \"memory\": null, \"sources\": []}".utf8))
+    expect(bare.memory == nil && bare.renderProvenance() == "No source events recorded", "memory detail sparse")
+    print("ok: memory payload decode/render")
+} catch {
+    failures.append("memory payload: \(error)")
+    print("FAIL: memory payload: \(error)")
+}
+
 if failures.isEmpty {
     print("EVClientCheck: all checks passed")
     exit(0)
