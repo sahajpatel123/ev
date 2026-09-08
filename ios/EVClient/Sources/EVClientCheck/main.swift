@@ -923,6 +923,25 @@ do {
     print("FAIL: memory payload: \(error)")
 }
 
+
+do {
+    let decoder = JSONDecoder()
+    let fixture = """
+    {"ok": true, "items": [{"id": "a", "kind": "digest", "title": "Evie digest", "body": "Quiet day", "created_at": "2026-09-08T07:00:00Z", "unread": true}, {"id": "b", "kind": "notice", "title": "T", "body": "b", "created_at": "2026-09-08T06:00:00Z", "unread": false}], "inbox_channel": "in_app_poll", "push_delivery": "apns", "push_registered": true}
+    """
+    let inbox = try decoder.decode(EvieInboxPayload.self, from: Data(fixture.utf8))
+    expect(inbox.items.count == 2 && inbox.unreadCount == 1, "notification inbox decode")
+    expect(inbox.pushDelivery == "apns" && inbox.pushRegistered, "notification push state")
+    let summary = inbox.renderSummary()
+    expect(summary.contains("1 unread") && summary.contains("push on"), "notification summary: \(summary)")
+    let poll = try decoder.decode(EvieInboxPayload.self, from: Data("{\"ok\": true, \"items\": [], \"push_delivery\": \"poll\", \"push_registered\": false}".utf8))
+    expect(poll.renderSummary() == "poll", "poll summary: \(poll.renderSummary())")
+    print("ok: notification inbox decode/render")
+} catch {
+    failures.append("notification inbox: \(error)")
+    print("FAIL: notification inbox: \(error)")
+}
+
 if failures.isEmpty {
     print("EVClientCheck: all checks passed")
     exit(0)
