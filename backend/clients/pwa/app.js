@@ -1402,6 +1402,32 @@ async function replayOfflineQueue() {
   } catch (_err) {}
 }
 
+async function syncOnboarding() {
+  if (!state.deviceToken) return;
+  const status = state.status || {};
+  const trusted = status.trust_state === "TRUSTED_OWNER_DEVICE";
+  const steps = [];
+  if (state.cameraRole && state.cameraRole !== "unknown") steps.push("camera_role");
+  if (trusted) {
+    steps.push("promoted");
+    const prev = localStorage.getItem("evie_trust_seen");
+    if (prev && prev !== "trusted") {
+      state.caption = "Memory is now on for this phone.";
+      render();
+    }
+    localStorage.setItem("evie_trust_seen", "trusted");
+  }
+  try {
+    await api("/v1/device-gateway/onboarding", {
+      method: "PUT",
+      body: JSON.stringify({
+        steps_completed: steps,
+        camera_role_set: state.cameraRole === "pro" || state.cameraRole === "standard",
+      }),
+    });
+  } catch (_err) {}
+}
+
 async function syncPhoneLife() {
   await drainPendingCapture().catch(() => {});
   await postNativeSnapshots().catch(() => {});
@@ -1413,6 +1439,7 @@ async function syncPhoneLife() {
     if (snap) {
       state.status = snap;
       if (state.hello) state.hello.status = snap;
+      await syncOnboarding().catch(() => {});
     }
   } catch (_err) {}
 }
