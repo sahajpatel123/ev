@@ -3145,10 +3145,29 @@ async function boot() {
       location.reload();
     });
   }
-  $("pair-btn").addEventListener("click", () => pair().catch((err) => {
-    state.caption = String(err.message || err);
-    setConn("DISCONNECTED");
-  }));
+  function pairErrorCopy(err) {
+    const body = err && err.body;
+    const detail = body && body.detail;
+    if (typeof detail === "string") return detail;
+    const code = body && body.error_code;
+    if (code === "pair_rate_limited") return "Too many attempts from this network — wait a few minutes.";
+    if (err && err.status === 401) return "That code is invalid or expired. Ask the Mac for a fresh one.";
+    if (err && err.status === 403) return "Pairing is blocked from this origin — open Evie over Tailscale.";
+    return String(err.message || err);
+  }
+  $("pair-btn").addEventListener("click", () => {
+    const errorEl = $("pair-error");
+    if (errorEl) errorEl.hidden = true;
+    pair().catch((err) => {
+      const copy = pairErrorCopy(err);
+      if (errorEl) {
+        errorEl.textContent = copy;
+        errorEl.hidden = false;
+      }
+      state.caption = copy;
+      setConn("DISCONNECTED");
+    });
+  });
   $("text-form").addEventListener("submit", (ev) => {
     ev.preventDefault();
     const text = $("text").value.trim();
