@@ -1485,6 +1485,74 @@ async def device_memory_detail(
     }
 
 
+@router.get("/memories/{memory_id}/provenance")
+async def device_memory_provenance(
+    memory_id: UUID,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Memory provenance: the version chain of this memory plus its source
+    events — what Evie knew, when it changed, and why."""
+    _check_origin(request)
+    if is_sandbox_device(device):
+        return {"ok": True, "memory_enabled": False, "memory": None, "versions": [], "sources": []}
+    from app.models import Event, Memory, MemoryEvent
+
+    memory = await session.get(Memory, memory_id)
+    if memory is None or not memory.is_current:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    group_rows = (
+        (
+            await session.execute(
+                select(Memory)
+                .where(Memory.version_group == memory.version_group)
+                .order_by(Memory.version.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    source_rows = (
+        (
+            await session.execute(
+                select(Event)
+                .join(MemoryEvent, MemoryEvent.event_id == Event.id)
+                .where(MemoryEvent.memory_id == memory.id)
+                .order_by(Event.occurred_at.desc())
+                .limit(20)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "ok": True,
+        "memory_enabled": True,
+        "memory": _phone_memory(memory),
+        "versions": [
+            {
+                "version": m.version,
+                "text": str(m.text or "")[:400],
+                "reason_for_change": m.reason_for_change,
+                "updated_time": m.updated_time.isoformat() if m.updated_time else None,
+                "is_current": bool(m.is_current),
+                "supersedes_id": str(m.supersedes_id) if m.supersedes_id else None,
+            }
+            for m in group_rows
+        ],
+        "sources": [
+            {
+                "id": str(ev.id),
+                "kind": ev.event_type,
+                "text": str((ev.content or {}).get("text") or "")[:400],
+                "occurred_at": ev.occurred_at.isoformat() if ev.occurred_at else None,
+            }
+            for ev in source_rows
+        ],
+    }
+
+
 def _phone_memory(memory: Memory) -> dict:
     return {
         "id": str(memory.id),

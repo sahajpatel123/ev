@@ -436,3 +436,47 @@ async def test_pair_rate_limiter_throttles(client: AsyncClient) -> None:
         json={"pairing_token": minted.json()["pairing_token"], "display_name": "After throttle"},
     )
     assert ok.status_code == 200
+
+
+async def test_memory_provenance_version_chain(owner_phone, db_session) -> None:
+    from uuid import uuid4
+
+    _body, phone = owner_phone
+    group = uuid4()
+    old = Memory(
+        memory_type="fact",
+        text="Lives in Surat",
+        importance=0.6,
+        confidence=0.8,
+        source_type="inferred",
+        fingerprint="eac103-old",
+        is_current=False,
+        version=1,
+        version_group=group,
+    )
+    db_session.add(old)
+    await db_session.flush()
+    new = Memory(
+        memory_type="fact",
+        text="Lives in Ahmedabad",
+        importance=0.6,
+        confidence=0.9,
+        source_type="explicit",
+        fingerprint="eac103-new",
+        is_current=True,
+        version=2,
+        version_group=group,
+        supersedes_id=old.id,
+        reason_for_change="owner corrected it",
+    )
+    db_session.add(new)
+    await db_session.commit()
+
+    res = await phone.get(f"/v1/device-gateway/memories/{new.id}/provenance")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["memory"]["text"] == "Lives in Ahmedabad"
+    assert [v["version"] for v in body["versions"]] == [1, 2]
+    assert body["versions"][1]["is_current"] is True
+    assert body["versions"][0]["reason_for_change"] is None
+    assert body["versions"][1]["supersedes_id"] == str(old.id)
