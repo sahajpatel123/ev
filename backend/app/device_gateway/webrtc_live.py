@@ -24,6 +24,7 @@ from app.device_gateway.mobile_actions.tool import MOBILE_ACTION_CONTRACT
 from app.device_gateway.mobile_voice import (
     MOBILE_ASR_LEXICON,
     MOBILE_CONVERSATION_CONTRACT,
+    PHONE_SPEECH_COPROCESSOR_CONTRACT,
 )
 from app.device_gateway.sandbox import is_sandbox_device, memory_scope_of
 from app.device_gateway.sandbox_tools import sandbox_live_tool_specs
@@ -214,6 +215,28 @@ def _evie_home_action_spec() -> dict[str, Any]:
     }
 
 
+def phone_mini_is_coprocessor() -> bool:
+    """True when Muse Spark 1.3 is the mind and Realtime 2.1 Mini only speaks."""
+
+    from app.cognitive.mode import muse_kernel_active
+
+    return muse_kernel_active()
+
+
+def phone_cognitive_public() -> dict[str, Any]:
+    from app.cognitive.mode import cognitive_mode, muse_kernel_active
+    from app.gateway.muse import muse_spark_model
+
+    kernel = muse_kernel_active()
+    return {
+        "mode": cognitive_mode(),
+        "muse_kernel": kernel,
+        "brain": muse_spark_model() if kernel else "legacy",
+        "speech": (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip(),
+        "realtime_thinks": not kernel,
+    }
+
+
 def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None = None) -> dict[str, Any]:
     """GA Realtime session for the phone.
 
@@ -222,10 +245,13 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
     tool `evie_state_query`, which executes OwnerTurn -> TurnGate -> Core
     server-side. Life-state authority NEVER becomes a model-local tool; the
     model only verbalizes the canonical result (G1 law, PART 7).
+    Cognitive OS V2 (muse_kernel): Mini is a speech coprocessor — no tools,
+    create_response false. Muse Spark 1.3 decides via turn receipts.
     """
     from app.device_gateway.sandbox import is_sandbox_device
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
+    coprocessor = phone_mini_is_coprocessor()
     trusted_owner = (
         device is not None
         and not is_sandbox_device(device)
@@ -233,13 +259,13 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
     )
     identity_line = ""
     saved = (owner_name or "").strip()
-    if trusted_owner and saved:
+    if trusted_owner and saved and not coprocessor:
         identity_line = (
             f"\nOWNER IDENTITY: The person you are speaking with is {saved}. "
             "When they ask their name, say it. Still call evie_state_query for "
             "weather, calendar, inbox, memory, and anything you are unsure of.\n"
         )
-    if trusted_owner:
+    if trusted_owner and not coprocessor:
         from app.search.live import default_place
 
         place = default_place()
@@ -249,7 +275,12 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
                 "never invent a forecast.\n"
             )
 
-    if trusted_owner:
+    if coprocessor:
+        tools = []
+        instructions = (
+            PHONE_SPEECH_COPROCESSOR_CONTRACT + "\n" + SPEECH_STYLE_INSTRUCTIONS
+        )
+    elif trusted_owner:
         manifest: dict[str, Any] = {"memory_scope": "owner"}
         if device is not None:
             manifest["origin_device_id"] = str(device.id)
@@ -319,10 +350,10 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
             "threshold": 0.68,
             "prefix_padding_ms": 300,
             "silence_duration_ms": 700,
-            # Match Mac golden create_response. interrupt_response stays False
-            # until barge-in is isolated; overlapping cancel was a duplicate-voice suspect.
+            # Legacy Mini matches Mac golden create_response. Muse kernel: Mini
+            # is speech-only and must not auto-answer owner questions.
             "interrupt_response": False,
-            "create_response": True,
+            "create_response": not coprocessor,
         },
     }
     if noise in {"near_field", "far_field"}:

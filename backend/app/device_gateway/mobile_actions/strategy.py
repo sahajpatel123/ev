@@ -56,6 +56,13 @@ def route(
         }
 
     if cap.needs_native and not native:
+        if operation in {"create_timer", "create_reminder"} and "pwa_local" in cap.methods:
+            return {
+                "method": "pwa_local",
+                "reason": None,
+                "class_level": cap.class_level,
+                "capability": cap,
+            }
         if operation in {"call_contact", "facetime_contact", "message_contact"} and has_explicit_number:
             return {
                 "method": "web_handoff",

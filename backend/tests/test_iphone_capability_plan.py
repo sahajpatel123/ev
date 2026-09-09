@@ -286,6 +286,10 @@ async def test_turn_receipt_is_durable_and_not_self_authority(
     await db_session.commit()
     assert timer["core_takeover"] is True
     assert timer["core_route"] == "HOME_STATION"
+    assert timer["action_tool"] == "start_timer"
+    assert timer["action_status"] == "COMPLETED"
+    assert timer["action_executed"] is True
+    assert timer["action_verified"] is True
     assert "timer" in str(timer.get("core_reply") or "").lower() or "minute" in str(
         timer.get("core_reply") or ""
     ).lower()
@@ -436,6 +440,83 @@ async def test_camera_target_uses_hardware_evidence_not_phone_name(
 
 
 @pytest.mark.asyncio
+async def test_offline_preferred_camera_never_claims_live_look(
+    db_session: AsyncSession,
+) -> None:
+    from app.device_gateway.pipeline import run_trusted_device_turn
+
+    device = Device(
+        name="iPhone SE Fallback",
+        token_hash="offline-camera-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+        endpoint_profile={
+            "hardware": {
+                "model": "iPhone14,6",
+                "camera_quality": "standard",
+                "camera_preference_rank": 10,
+            },
+            "permissions": {"camera": "granted"},
+        },
+    )
+    db_session.add(device)
+    await db_session.commit()
+    result = await run_trusted_device_turn(
+        db_session,
+        device=device,
+        text="Look at this",
+        idempotency_key="offline-look-001",
+    )
+    assert result["route"] == "CAMERA"
+    assert result["needs_camera"] is False
+    assert result["executed"] is False
+    assert "offline" in result["reply"].lower()
+    assert "inventing" in result["reply"].lower()
+
+
+def test_camera_receipt_exposes_expiry_metadata_without_frame() -> None:
+    from app.device_gateway.camera import get_frame, new_request
+
+    request_id = new_request(
+        origin_device_id="origin-phone",
+        target_device_id="target-phone",
+    )
+    receipt = get_frame(request_id)
+    assert receipt is not None
+    assert receipt["request_id"] == request_id
+    assert receipt["jpeg_b64"] is None
+    assert receipt["expires_at"] > receipt["created_at"]
+
+
+@pytest.mark.asyncio
+async def test_visual_recall_without_durable_observation_stays_honest(
+    db_session: AsyncSession,
+) -> None:
+    from app.device_gateway.pipeline import run_trusted_device_turn
+
+    device = Device(
+        name="Visual Recall Phone",
+        token_hash="visual-recall-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+    result = await run_trusted_device_turn(
+        db_session,
+        device=device,
+        text="What did you see?",
+        idempotency_key="visual-recall-missing-001",
+    )
+    assert result["route"] == "VISUAL_RECALL"
+    assert result["executed"] is False
+    assert result["verified"] is False
+    assert "saved camera observation" in result["reply"]
+
+
+@pytest.mark.asyncio
 async def test_healthkit_snapshot_never_claims_model_send(client: AsyncClient) -> None:
     body, phone = await _pair(client, role="primary_companion", name="Health Phone")
     posted = await phone.post(
@@ -519,6 +600,118 @@ def test_trusted_webrtc_tools_are_server_validated() -> None:
     assert "Sahaj" not in cfg["instructions"]
 
 
+def test_phone_cognitive_public_reports_spark_or_legacy(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
+    from app.device_gateway.webrtc_live import phone_cognitive_public
+    from app.gateway.muse import MUSE_SPARK_MODEL
+
+    monkeypatch.setattr(settings, "cognitive_mode", "legacy_mini")
+    legacy = phone_cognitive_public()
+    assert legacy["muse_kernel"] is False
+    assert legacy["realtime_thinks"] is True
+    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    kernel = phone_cognitive_public()
+    assert kernel["muse_kernel"] is True
+    assert kernel["brain"] == MUSE_SPARK_MODEL
+    assert kernel["realtime_thinks"] is False
+    assert "realtime" in str(kernel.get("speech") or "").lower() or "gpt-" in str(kernel.get("speech") or "")
+
+
+def test_trusted_phone_webrtc_is_speech_coprocessor_when_muse_kernel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.config import settings
+    from app.device_gateway.webrtc_live import phone_webrtc_session
+
+    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    d = Device(
+        name="Owner Phone Spark",
+        token_hash="owner-phone-spark",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    cfg = phone_webrtc_session(device=d, owner_name="Sahaj")
+    assert cfg["tools"] == []
+    assert cfg["tool_choice"] == "none"
+    vad = cfg["audio"]["input"]["turn_detection"]
+    assert vad["create_response"] is False
+    assert vad["threshold"] == 0.68
+    assert vad["silence_duration_ms"] == 700
+    blob = cfg["instructions"]
+    assert "not Evie's mind" in blob
+    assert "voice coprocessor" in blob
+    assert "evie_state_query" not in blob
+    assert "Sahaj" not in blob
+
+
+@pytest.mark.asyncio
+async def test_muse_kernel_turn_receipt_lets_spark_decide(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from app.config import settings
+    from app.device_gateway.turn_receipts import record_turn_receipt
+
+    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+
+    async def fake_handle_turn(**kwargs: object) -> SimpleNamespace:
+        assert "Can you hear me?" in str(kwargs.get("transcript") or "")
+        return SimpleNamespace(spoken="Spark heard you.", kind="muse")
+
+    monkeypatch.setattr("app.cognitive.kernel.handle_turn", fake_handle_turn)
+    body, phone = await _pair(client, role="primary_companion", name="Spark Receipt Phone")
+    await client.post(
+        "/v1/device-gateway/admin/promote-owner",
+        json={"device_id": body["device"]["device_id"], "reason": "owner"},
+    )
+    db_session.expire_all()
+    device = await db_session.get(Device, UUID(body["device"]["device_id"]))
+    assert device is not None
+    heard = await record_turn_receipt(
+        db_session,
+        device=device,
+        idempotency_key="spark-heard-" + uuid4().hex[:12],
+        transcript="Can you hear me?",
+        session_id="sess-spark",
+    )
+    await db_session.commit()
+    assert heard["core_takeover"] is True
+    assert heard["core_reply"] == "Spark heard you."
+    assert heard["core_route"] == "muse"
+
+    kernel_calls = {"n": 0}
+
+    async def boom(**kwargs: object) -> SimpleNamespace:
+        kernel_calls["n"] += 1
+        raise RuntimeError("spark down")
+
+    monkeypatch.setattr("app.cognitive.kernel.handle_turn", boom)
+    timer = await record_turn_receipt(
+        db_session,
+        device=device,
+        idempotency_key="spark-timer-" + uuid4().hex[:12],
+        transcript="Set a timer for 5 minutes",
+        session_id="sess-spark",
+    )
+    await db_session.commit()
+    assert timer["core_takeover"] is True
+    assert timer["core_route"] == "HOME_STATION"
+    assert kernel_calls["n"] == 0
+    dead = await record_turn_receipt(
+        db_session,
+        device=device,
+        idempotency_key="spark-dead-" + uuid4().hex[:12],
+        transcript="Tell me a story about Saturn",
+        session_id="sess-spark",
+    )
+    await db_session.commit()
+    assert dead["core_takeover"] is True
+    assert "can't think" in str(dead.get("core_reply") or "").lower()
+    await phone.aclose()
+
+
 def test_pwa_and_native_source_gates() -> None:
     app_js = (PWA / "app.js").read_text()
     webrtc = (PWA / "webrtc.js").read_text()
@@ -541,6 +734,11 @@ def test_pwa_and_native_source_gates() -> None:
     assert "look-frame" in app_js
     assert "pending_capture" in app_js
     assert 'delivery: "poll"' in app_js
+    assert "web_notification" in app_js
+    assert "EviePhoneAlerts" in app_js
+    assert "enableLocalAlerts" in app_js
+    assert 'id="enable-alerts-btn"' in html
+    assert "local_timer" in (PWA / "mobile-actions.js").read_text()
     assert "/v1/device-gateway/sync/bootstrap" in app_js
     assert "isStandalonePwa" in app_js
     assert "cameraHardware" in app_js
@@ -550,6 +748,9 @@ def test_pwa_and_native_source_gates() -> None:
     assert "Add to Home Screen" in html
     assert "Which iPhone is this?" in html
     assert 'data-surface="privacy"' in html
+    assert 'data-surface="mission"' in html
+    assert 'id="follow-chips"' in html
+    assert "digitalFollowPrompts" in app_js
     assert 'id="more-sheet"' in html
     assert "folio-grid" in html
     assert "more-rail" not in html
@@ -559,6 +760,40 @@ def test_pwa_and_native_source_gates() -> None:
     assert "choice-list" in html
     assert "camera-ask" in html
     assert "record_clip" in app_js
+    assert "showCameraStatus" in app_js
+    assert "waitForCameraReceipt" in app_js
+    assert "_cameraReceiptGeneration" in app_js
+    assert "receipt.expired" in app_js
+    assert "/v1/device-gateway/camera/" in app_js
+    assert "watchServiceWorkerUpdate" in app_js
+    assert "Update ready" in app_js
+    assert "Backend fingerprint" in app_js
+    assert "asset_manifest_hash" in app_js
+    assert "server_release" in app_js
+    assert "copyPhoneDiagnostic" in app_js
+    assert "evie.phone-diagnostic.v1" in app_js
+    assert 'id="copy-phone-diag-btn"' in html
+    assert 'hapticEvent("turnDone")' in app_js
+    assert "confirmation required" in app_js
+    assert "confirmation_required" in app_js
+    assert 'aria-busy' in (PWA / "mobile-actions.js").read_text()
+    assert 'data-action-state' in (PWA / "mobile-actions.js").read_text()
+    css = (PWA / "style.css").read_text()
+    assert "@media (max-width: 375px)" in css
+    assert "@media (min-width: 391px) and (min-height: 800px)" in css
+    assert "overflow-wrap: anywhere" in css
+    assert "requestIdOverride" in app_js
+    assert "await sendText(text, mark)" in app_js
+    assert "preserveLease" in app_js
+    assert "preserve_lease" in app_js
+    assert "talkPhase" in app_js
+    assert "Working on Home Station" in app_js
+    assert "_captionStreaming" in app_js
+    assert "previous.role === role" in app_js
+    assert "home_station_capabilities" in app_js
+    assert "Home Station executor" in app_js
+    assert "never sent to a model" in app_js
+    assert "/v1/device-gateway/phone-capabilities" in app_js
     assert "parsed.needs_camera" in webrtc
     assert "await this.onCamera({" in webrtc
     assert "opened.client_generation" in webrtc
@@ -578,6 +813,16 @@ def test_pwa_and_native_source_gates() -> None:
     assert "https://*.ts.net" in verify or "ts.net" in verify
     assert "EvieShell" in product
     assert "innerHTML" not in app_js
+    assert "miniThinks" in webrtc
+    assert "cognitive.muse_kernel" in app_js
+    assert "cognitiveLine" in app_js
+    assert '["Mind", cognitiveLine(hello)]' in app_js
+    assert "phone_cognitive_public" in (
+        ROOT / "backend" / "app" / "device_gateway" / "api.py"
+    ).read_text()
+    assert "PHONE_SPEECH_COPROCESSOR_CONTRACT" in (
+        ROOT / "backend" / "app" / "device_gateway" / "mobile_voice.py"
+    ).read_text()
 
 
 def test_tailscale_pwa_is_the_release_path() -> None:
@@ -607,6 +852,21 @@ async def test_push_poll_register_and_inbox_channel(client: AsyncClient) -> None
     assert inbox.json()["inbox_channel"] == "in_app_poll"
     assert inbox.json()["push_delivery"] == "poll"
     status = await phone.get("/v1/device-gateway/status")
+    assert status.json()["notifications"]["inbox_channel"] == "in_app_poll"
+    await phone.aclose()
+
+
+@pytest.mark.asyncio
+async def test_web_notification_register_stays_honest(client: AsyncClient) -> None:
+    _body, phone = await _pair(client, role="primary_companion", name="Alert Phone")
+    posted = await phone.post(
+        "/v1/device-gateway/push/register",
+        json={"token": "", "delivery": "web_notification", "bundle_id": "com.ev.evie.shell"},
+    )
+    assert posted.status_code == 200, posted.text
+    assert posted.json()["delivery"] == "web_notification"
+    status = await phone.get("/v1/device-gateway/status")
+    assert status.json()["notifications"]["push_delivery"] == "web_notification"
     assert status.json()["notifications"]["inbox_channel"] == "in_app_poll"
     await phone.aclose()
 
@@ -842,8 +1102,11 @@ async def test_healthkit_value_never_enters_phone_receipt(
         transcript="How many steps did I take?",
         session_id="health-private",
     )
+    core_reply = str(receipt.get("core_reply") or "")
     assert "99999" not in str(receipt)
-    assert "211" not in str(receipt)
+    assert "99999" not in core_reply
+    assert "211" not in core_reply
+    assert "heart_rate" not in str(receipt)
     assert receipt.get("core_takeover") is True
     assert receipt.get("core_route") == "HEALTHKIT"
 
@@ -954,6 +1217,61 @@ def test_phone_action_surface_excludes_unsafe_computer_control() -> None:
     assert forbidden <= _BLOCKED | {"execute_command", "drone"}
 
 
+def test_phone_inputs_cannot_reach_urls_credentials_payments_or_unsafe_ui() -> None:
+    from app.device_gateway.phone_mac import PHONE_HOME_CAPABILITIES, _BLOCKED
+    from app.ev.spark_phone import _parse_tool
+
+    forbidden = {
+        "open_url",
+        "execute_command",
+        "computer",
+        "code",
+        "ui_action",
+        "inspect_ui",
+        "screen_look",
+        "payments",
+        "credentials",
+    }
+    assert forbidden.isdisjoint(PHONE_HOME_CAPABILITIES)
+    assert {"open_url", "execute_command", "computer", "code"} <= _BLOCKED
+    assert _parse_tool('{"tool":"execute_command","goal":"cat ~/.ssh/id_rsa"}') is None
+    assert _parse_tool('{"tool":"open_url","url":"https://evil.example"}') is None
+    assert _parse_tool('{"tool":"ui_action","action":"click"}') is None
+
+
+def test_phone_scope_guard_fences_frozen_mac_surfaces() -> None:
+    from app.device_gateway.phone_scope import (
+        FROZEN_MAC_LIVE_SURFACES,
+        fingerprint_mismatches,
+        phone_scope_violations,
+    )
+
+    assert phone_scope_violations(
+        ["backend/app/device_gateway/phone_mac.py", "backend/clients/pwa/app.js"]
+    ) == ()
+    violations = phone_scope_violations(
+        ["backend/app/device_gateway/phone_mac.py", "macos/Sources/EV/LiveConversation.swift"]
+    )
+    assert violations == ("macos/Sources/EV/LiveConversation.swift",)
+    assert "backend/app/voice/live/session.py" in FROZEN_MAC_LIVE_SURFACES
+    assert fingerprint_mismatches({"phone.py": "a"}, {"phone.py": "b"}) == {
+        "phone.py": ("b", "a")
+    }
+
+
+def test_phone_capability_catalog_matches_safe_dispatch_surface() -> None:
+    from app.device_gateway.phone_mac import (
+        PHONE_HOME_CAPABILITIES,
+        PHONE_HOME_CAPABILITY_MANIFEST,
+    )
+
+    assert set(PHONE_HOME_CAPABILITY_MANIFEST["safe_actions"]) == set(
+        PHONE_HOME_CAPABILITIES
+    )
+    assert PHONE_HOME_CAPABILITY_MANIFEST["executor"] == "home_station"
+    assert "shell" in PHONE_HOME_CAPABILITY_MANIFEST["blocked"]
+
+
 @pytest.mark.asyncio
 async def test_spark_phone_structured_contributor_decides_action_only(
     monkeypatch,
@@ -1031,6 +1349,8 @@ def test_phone_timer_list_and_cancel_phrases_resolve_to_home_tools() -> None:
         "cancel_reminder",
         {"text": "stretch"},
     )
+    assert resolve_live_action("Start a 10 minute timer") == ("start_timer", {"minutes": 10})
+    assert resolve_live_action("Set a timer for 5 minutes") == ("start_timer", {"minutes": 5})
 
 
 @pytest.mark.asyncio
@@ -1086,6 +1406,56 @@ async def test_phone_home_station_opens_calculator(
     )
     assert hearing is None
     await phone.aclose()
+
+
+@pytest.mark.asyncio
+async def test_phone_transcript_helper_receipt_spoken_vertical_slice(
+    db_session: AsyncSession, monkeypatch
+) -> None:
+    from app.device_gateway.turn_receipts import record_turn_receipt
+    from app.schemas import ToolCallResponse
+
+    calls: list[tuple[str, dict, object]] = []
+
+    async def _fake_home_helper(session, name, arguments, **kwargs):
+        calls.append((name, dict(arguments), kwargs.get("device_id")))
+        return ToolCallResponse(
+            name=name,
+            ok=True,
+            result={
+                "ok": True,
+                "opened": True,
+                "spoken": "Opened Calculator.",
+            },
+            latency_ms=1,
+            error=None,
+        )
+
+    monkeypatch.setattr("app.ev.tools.dispatch", _fake_home_helper)
+    device = Device(
+        name="Vertical Slice Phone",
+        token_hash="vertical-slice-phone",
+        trust_level="owner",
+        memory_scope=None,
+        device_type="phone",
+    )
+    db_session.add(device)
+    await db_session.commit()
+    receipt = await record_turn_receipt(
+        db_session,
+        device=device,
+        idempotency_key="vertical-slice-receipt-001",
+        transcript="Open Calculator",
+        session_id="vertical-slice-session",
+    )
+    await db_session.commit()
+    assert calls == [("open_app", {"name": "Calculator"}, None)]
+    assert receipt["core_takeover"] is True
+    assert receipt["core_reply"] == "Opened Calculator."
+    assert receipt["action_tool"] == "open_app"
+    assert receipt["action_status"] == "COMPLETED"
+    assert receipt["action_executed"] is True
+    assert receipt["action_verified"] is True
 
 
 def test_phone_calculator_phrases_are_deterministic() -> None:
@@ -1618,6 +1988,10 @@ async def test_phone_home_station_sets_timer(client: AsyncClient) -> None:
     assert timer_body["executed"] is True
     assert timer_body["queued"] is False
     assert timer_body.get("tool") == "start_timer" or timer_body.get("operation") == "start_timer"
+    local = timer_body.get("phone_action") or {}
+    card = local.get("card") or local
+    assert card.get("pwa_kind") == "local_timer"
+    assert "clock" in str(timer_body.get("reply") or "").lower()
     from app.device_gateway.mobile_actions.tool import dispatch_phone_action
 
     native_miss = await dispatch_phone_action(
@@ -1827,3 +2201,114 @@ async def test_phone_timer_and_reminder_retries_are_exactly_once(
         text="Show my reminders",
     )
     assert listed_again and listed_again["count"] == 0
+
+
+def test_people_display_name_never_uses_a_number() -> None:
+    from app.device_gateway.phone_people import display_name
+
+    assert display_name("Patel, Rahul") == "Rahul Patel"
+    assert display_name("Ada Lovelace <ada@example.com>") == "Ada Lovelace"
+    assert display_name("+14155552671") is None
+    assert display_name("14155552671") is None
+
+
+@pytest.mark.asyncio
+async def test_people_harvest_and_call_without_number(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    from app.models import Event, HealthSnapshot
+    from app.utils.text import utcnow
+
+    body, phone = await _pair(client, role="primary_companion", name="People Phone")
+    promoted = await client.post(
+        "/v1/device-gateway/admin/promote-owner",
+        json={"device_id": body["device"]["device_id"], "reason": "owner"},
+    )
+    assert promoted.status_code == 200
+    db_session.add(
+        Event(
+            event_type="message.whatsapp.received",
+            source="whatsapp",
+            content={"handle": "Mansi", "text": "hello"},
+            occurred_at=utcnow(),
+            sha256="a" * 64,
+        )
+    )
+    db_session.add(
+        Event(
+            event_type="contact.discovered",
+            source="contacts",
+            content={"name": "Rahul", "phone": "+14155552671"},
+            occurred_at=utcnow(),
+            sha256="b" * 64,
+        )
+    )
+    db_session.add(
+        HealthSnapshot(
+            source="healthkit",
+            metrics={"steps": 8123, "sleep_hours": 7.2},
+            readiness=72.0,
+            band="steady",
+            occurred_at=utcnow(),
+        )
+    )
+    await db_session.commit()
+
+    listed = await phone.get("/v1/device-gateway/contacts")
+    assert listed.status_code == 200, listed.text
+    payload = listed.json()
+    names = {row["name"] for row in (payload.get("home") or [])}
+    assert "Mansi" in names
+    assert "Rahul" in names
+    rahul = next(row for row in payload["home"] if row["name"] == "Rahul")
+    assert rahul["callable"] is True
+    assert "+14155552671" not in str(payload)
+
+    missed = await phone.post(
+        "/v1/device-gateway/text",
+        json={
+            "text": "Call Mansi",
+            "instance_id": "People Phone-tab",
+            "request_id": "call-" + uuid4().hex[:12],
+        },
+    )
+    assert missed.status_code == 200, missed.text
+    reply = str(missed.json().get("reply") or "").lower()
+    assert "number" in reply
+    assert "address book" in reply
+    assert missed.json().get("route") == "PHONE_CALL"
+
+    dial = await phone.post(
+        "/v1/device-gateway/text",
+        json={
+            "text": "Call Rahul",
+            "instance_id": "People Phone-tab",
+            "request_id": "callr-" + uuid4().hex[:12],
+        },
+    )
+    assert dial.status_code == 200, dial.text
+    action = dial.json().get("phone_action") or {}
+    open_url = str(action.get("open_url") or (action.get("card") or {}).get("open_url") or "")
+    assert open_url.startswith("tel:")
+    assert "14155552671" in open_url.replace(" ", "")
+    assert "14155552671" not in str(dial.json().get("reply") or "")
+
+    vitals = await phone.get("/v1/device-gateway/vitals")
+    assert vitals.status_code == 200, vitals.text
+    series = vitals.json().get("series") or []
+    assert series
+    assert series[0].get("metrics", {}).get("steps") == 8123
+
+    steps = await phone.post(
+        "/v1/device-gateway/text",
+        json={
+            "text": "How many steps did I take?",
+            "instance_id": "People Phone-tab",
+            "request_id": "st-" + uuid4().hex[:12],
+        },
+    )
+    assert steps.status_code == 200, steps.text
+    assert steps.json().get("sent_to_model") is False
+    assert "8123" not in str(steps.json().get("reply") or "")
+    await phone.aclose()
+

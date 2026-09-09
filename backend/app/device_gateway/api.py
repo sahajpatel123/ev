@@ -64,6 +64,7 @@ from .webrtc_live import (
     inject_look_frame,
     is_strict_webrtc,
     mint_ephemeral_secret,
+    phone_cognitive_public,
     proxy_phone_sdp,
     public_audio_status,
     resolve_phone_audio_backend,
@@ -117,11 +118,62 @@ class TextRequest(BaseModel):
 class ClaimRequest(BaseModel):
     instance_id: str
     method: str = "manual"
+    preserve_lease: bool = False
     media_backend: str | None = None
     output_sample_rate: int | None = None
     session_id: str | None = None
     lease_id: str | None = None
     client_generation: int | None = None
+
+
+class ActionCancelRequest(BaseModel):
+    action_id: str
+    reason: str | None = None
+
+
+class PresenceGoalCreate(BaseModel):
+    objective: str
+    normalized_objective: str | None = None
+    success_criteria: dict = Field(default_factory=dict)
+    constraints: dict = Field(default_factory=dict)
+    deadline_at: str | None = None
+    priority: str = "NORMAL"
+    interruption_policy: str = "NORMAL"
+    autonomy_policy: str = "SAFE_DIGITAL"
+    activate: bool = True
+
+
+class PresenceTransition(BaseModel):
+    to: str
+    reason: str | None = None
+    confidence: str | None = None
+    evidence: dict = Field(default_factory=dict)
+
+
+class PresenceWait(BaseModel):
+    wait_state: str
+    condition: dict = Field(default_factory=dict)
+    reason: str | None = None
+
+
+class PresenceConditionCreate(BaseModel):
+    cond_class: str
+    payload: dict = Field(default_factory=dict)
+    source: str = "event"
+    strategy: str = "event"
+    frequency_s: int = 60
+    ttl_s: int = 86400
+
+
+class PresenceNodeUpsert(BaseModel):
+    node_id: str
+    kind: str
+    target: str
+    status: str = "PENDING"
+    effect: str = ""
+    risk: str = "R1"
+    depends_on: list[str] = Field(default_factory=list)
+    verification: str = ""
 
 
 class SdpOffer(BaseModel):
@@ -343,6 +395,28 @@ async def gateway_health() -> dict:
     return snap
 
 
+@router.get("/phone-capabilities")
+async def phone_capabilities(
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    from .phone_mac import PHONE_HOME_CAPABILITY_MANIFEST
+
+    if is_sandbox_device(device) or device.revoked_at is not None:
+        return {
+            "ok": True,
+            "executor": "sandbox",
+            "availability": "owner_trust_required",
+            "safe_actions": [],
+            "blocked": list(PHONE_HOME_CAPABILITY_MANIFEST.get("blocked") or []),
+            "trust_state": "REVOKED" if device.revoked_at else "PAIRED_SANDBOX",
+        }
+    return {
+        "ok": True,
+        **dict(PHONE_HOME_CAPABILITY_MANIFEST),
+        "trust_state": "TRUSTED_OWNER_DEVICE",
+    }
+
+
 @router.post("/pairing-tokens")
 async def create_pairing_token(
     data: PairingCreate,
@@ -509,14 +583,41 @@ async def hello(
     await session.commit()
     snap = health_snapshot()
     trusted_owner_hello = not is_sandbox_device(device)
+    home_station_capabilities = None
+    if trusted_owner_hello:
+        from .phone_mac import PHONE_HOME_CAPABILITY_MANIFEST
+
+        home_station_capabilities = dict(PHONE_HOME_CAPABILITY_MANIFEST)
     from .status import device_status_payload
 
     status = device_status_payload(device)
+    companions: list[dict] = []
+    if trusted_owner_hello:
+        from app.everywhere.devices import presence_state as _presence_state
+
+        others = (
+            await session.execute(select(Device).where(Device.revoked_at.is_(None)))
+        ).scalars().all()
+        for row in others:
+            role = (row.role or "").strip().lower()
+            if role not in {"primary_companion", "secondary_companion", "companion"}:
+                continue
+            if row.id == device.id:
+                continue
+            companions.append(
+                {
+                    "role": role,
+                    "display_name": row.name,
+                    "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+                    "presence_state": _presence_state(row),
+                }
+            )
     return {
         "ok": True,
         "device": _device_public(device),
         "status": status,
         "ignored_capabilities": ignored_capabilities,
+        "home_station_capabilities": home_station_capabilities,
         "backend_sha": runtime_git_sha(),
         "session_context": {
             "device_id": str(device.id),
@@ -551,6 +652,7 @@ async def hello(
         "update_reason": compat["update_reason"],
         "update_recommended": compat["update_recommended"],
         "asset_manifest_hash": release.get("asset_manifest_hash"),
+        "release_generated_at": release.get("generated_at"),
         "design_version": getattr(settings, "pwa_design_version", None) or DESIGN_VERSION,
         "audio_contract": AUDIO_CONTRACT,
         "production_memory_enabled": False,
@@ -569,6 +671,8 @@ async def hello(
             "realtime": "idle",
             "home_station": snap.get("home_station"),
         },
+        "companions": companions,
+        "cognitive": phone_cognitive_public(),
     }
 
 
@@ -1151,6 +1255,399 @@ async def offline_drop(
     return {"ok": True, "dropped": True, "item_id": str(row.id)}
 
 
+@router.post("/actions/cancel")
+async def action_cancel(
+    data: ActionCancelRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Owner cancel for routed phone actions. Idempotent, never fakes."""
+    from sqlalchemy import select
+
+    from app.models import PhoneActionRecord
+
+    _check_origin(request)
+    action_id = (data.action_id or "").strip()[:80]
+    if not action_id:
+        raise HTTPException(status_code=422, detail="action_id required")
+    cancelled: list[str] = []
+    # Phone action trace (owned by this device only).
+    trace = (
+        await session.execute(
+            select(PhoneActionRecord).where(PhoneActionRecord.action_id == action_id)
+        )
+    ).scalars().first()
+    if trace is not None:
+        if str(trace.device_id) != str(device.id):
+            raise HTTPException(status_code=404, detail="Action not found")
+        if str(trace.state or "").lower() not in {"cancelled", "succeeded", "failed"}:
+            trace.state = "cancelled"
+            cancelled.append("phone_action_record")
+    # Cross-device broker (requesting device owns the cancel).
+    from app.everywhere.device_actions import TERMINAL_STATUSES, get_action
+
+    broker_row = await get_action(session, action_id, owner_scope="master")
+    broker_state: str | None = None
+    if broker_row is not None and str(broker_row.requesting_device_id) == str(device.id):
+        broker_state = str(broker_row.status or "")
+        if broker_state not in TERMINAL_STATUSES:
+            broker_row.status = "CANCELLED"
+            cancelled.append("broker")
+    if trace is None and broker_row is None:
+        raise HTTPException(status_code=404, detail="Action not found")
+    await session.commit()
+    try:
+        from .telemetry import emit as _cancel_emit
+
+        _cancel_emit(
+            "mobile.cancel",
+            device_id=str(device.id),
+            action_id=action_id,
+            cancelled=",".join(cancelled) if cancelled else "already_terminal",
+        )
+    except Exception:
+        pass
+    return {
+        "ok": True,
+        "action_id": action_id,
+        "cancelled": cancelled,
+        "already_terminal": not cancelled,
+        "action_result": "BLOCKED",
+    }
+
+
+@router.post("/presence/goals")
+async def presence_create_goal(
+    data: PresenceGoalCreate,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a durable GoalContract. Orchestration over Core, never a chat object."""
+    from datetime import datetime
+
+    from app.presence.contract import public_contract
+    from app.presence.service import create_contract
+
+    _check_origin(request)
+    if not (data.objective or "").strip():
+        raise HTTPException(status_code=422, detail="objective required")
+    deadline = None
+    if data.deadline_at:
+        try:
+            deadline = datetime.fromisoformat(data.deadline_at)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="deadline_at must be ISO-8601")
+    row = await create_contract(
+        session,
+        objective=data.objective,
+        origin_device_id=device.id,
+        normalized_objective=data.normalized_objective or "",
+        success_criteria=data.success_criteria,
+        constraints=data.constraints,
+        deadline_at=deadline,
+        priority=data.priority,
+        interruption_policy=data.interruption_policy,
+        autonomy_policy=data.autonomy_policy,
+        activate=data.activate,
+    )
+    await session.commit()
+    return {"ok": True, "goal": public_contract(row)}
+
+
+@router.get("/presence/goals")
+async def presence_list_goals(
+    request: Request,
+    states: str | None = None,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.contract import public_contract
+    from app.presence.service import list_contracts
+
+    _check_origin(request)
+    wanted = [s.strip().upper() for s in (states or "").split(",") if s.strip()] or None
+    rows = await list_contracts(session, states=wanted)
+    return {"ok": True, "goals": [public_contract(r) for r in rows]}
+
+
+@router.post("/presence/goals/{goal_id}/transition")
+async def presence_transition(
+    goal_id: UUID,
+    data: PresenceTransition,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.contract import public_contract
+    from app.presence.service import get_contract, transition
+
+    _check_origin(request)
+    row = await get_contract(session, goal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    try:
+        if str(data.to or "").upper() == "CANCELLED":
+            from app.presence.runner import cancel_contract
+
+            summary = await cancel_contract(session, row, data.reason or "")
+            await session.commit()
+            return {"ok": True, "goal": public_contract(row), "cancelled": summary}
+        row = await transition(
+            session, row, data.to, reason=data.reason or "",
+            confidence=data.confidence or "", evidence=data.evidence,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await session.commit()
+    return {"ok": True, "goal": public_contract(row)}
+
+
+@router.post("/presence/goals/{goal_id}/wait")
+async def presence_wait(
+    goal_id: UUID,
+    data: PresenceWait,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.contract import public_contract
+    from app.presence.service import get_contract, set_wait
+
+    _check_origin(request)
+    row = await get_contract(session, goal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    try:
+        row = await set_wait(
+            session, row, wait_state=data.wait_state,
+            condition=data.condition, reason=data.reason or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    await session.commit()
+    return {"ok": True, "goal": public_contract(row)}
+
+
+@router.post("/presence/goals/{goal_id}/conditions")
+async def presence_add_condition(
+    goal_id: UUID,
+    data: PresenceConditionCreate,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.service import add_condition, get_contract
+
+    _check_origin(request)
+    row = await get_contract(session, goal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    try:
+        cond = await add_condition(
+            session, row, cond_class=data.cond_class, payload=data.payload,
+            source=data.source, strategy=data.strategy,
+            frequency_s=data.frequency_s, ttl_s=data.ttl_s,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    await session.commit()
+    return {"ok": True, "condition_id": str(cond.id), "state": cond.state}
+
+
+@router.post("/presence/goals/{goal_id}/resume")
+async def presence_resume(
+    goal_id: UUID,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.contract import public_contract
+    from app.presence.service import get_contract, resume_if_ready
+
+    _check_origin(request)
+    row = await get_contract(session, goal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    resumed = await resume_if_ready(session, row)
+    await session.commit()
+    return {"ok": True, "resumed": resumed, "goal": public_contract(row)}
+
+
+@router.post("/presence/goals/{goal_id}/nodes")
+async def presence_upsert_node(
+    goal_id: UUID,
+    data: PresenceNodeUpsert,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.contract import NodeKind, NodeStatus, NodeTarget
+    from app.presence.service import get_contract, upsert_node
+
+    _check_origin(request)
+    for value, enum in (
+        (data.kind, NodeKind), (data.target, NodeTarget), (data.status, NodeStatus),
+    ):
+        try:
+            enum(value)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Unknown graph value: {value}")
+    row = await get_contract(session, goal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    node = await upsert_node(
+        session, row, node_id=data.node_id, kind=data.kind, target=data.target,
+        status=data.status, effect=data.effect, risk=data.risk,
+        depends_on=data.depends_on, verification=data.verification,
+    )
+    await session.commit()
+    return {"ok": True, "node": node}
+
+
+@router.get("/presence/situation")
+async def presence_situation(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.service import situation
+
+    _check_origin(request)
+    return {"ok": True, "situation": await situation(session, device_id=device.id)}
+
+
+@router.post("/presence/goals/{goal_id}/teleport")
+async def presence_teleport(
+    goal_id: UUID,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.everywhere.inbox import push_inbox
+    from app.presence.service import continuation_capsule, get_contract, task_capsule
+
+    _check_origin(request)
+    row = await get_contract(session, goal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    capsule = await task_capsule(session, row)
+    continued = await continuation_capsule(session, row)
+    try:
+        await push_inbox(
+            session,
+            device_id=device.id,
+            kind="handoff_ready",
+            title="Task moved",
+            body=f"“{row.objective[:120]}” is ready on the other device.",
+            payload={"goal_id": str(row.id), "capsule": "task"},
+        )
+    except Exception:
+        pass
+    await session.commit()
+    return {"ok": True, "task_capsule": capsule, "continuation": continued}
+
+
+@router.get("/presence/what-changed")
+async def presence_what_changed(
+    request: Request,
+    since_hours: int = 24,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.service import what_changed
+
+    _check_origin(request)
+    return {"ok": True, **await what_changed(session, since_hours=since_hours)}
+
+
+@router.post("/presence/simulate")
+async def presence_simulate(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.service import simulate
+
+    _check_origin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    scenario = str((body or {}).get("scenario") or "")
+    if not scenario:
+        raise HTTPException(status_code=422, detail="scenario required")
+    return {"ok": True, "simulation": await simulate(session, scenario=scenario)}
+
+
+@router.post("/presence/goals/{goal_id}/advance")
+async def presence_advance(
+    goal_id: UUID,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Advance one contract through its runnable nodes. Bounded, idempotent."""
+    from app.presence.service import get_contract
+
+    _check_origin(request)
+    row = await get_contract(session, goal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    try:
+        from app.presence.runner import advance
+
+        out = await advance(session, goal_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"advance failed: {type(exc).__name__}") from exc
+    await session.commit()
+    return {"ok": True, "advance": out}
+
+
+@router.post("/presence/goals/{goal_id}/compile")
+async def presence_compile(
+    goal_id: UUID,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Compile a contract into a validated graph via Muse Spark. Fail-closed."""
+    from app.presence.compiler import SparkUnavailable, compile_graph
+    from app.presence.service import get_contract
+
+    _check_origin(request)
+    row = await get_contract(session, goal_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    try:
+        out = await compile_graph(
+            session, row, context=dict((body or {}).get("context") or {}),
+            budget_s=max(5.0, min(float((body or {}).get("budget_s") or 20.0), 120.0)),
+        )
+    except SparkUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    await session.commit()
+    return {"ok": True, "graph": out}
+
+
+@router.get("/presence/mission")
+async def presence_mission(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from app.presence.service import mission_status, work_graph
+
+    _check_origin(request)
+    return {"ok": True, "mission": await mission_status(session),
+            "work_graph": await work_graph(session)}
+
+
 @router.post("/healthkit/snapshot")
 async def healthkit_snapshot(
     data: HealthkitSnapshotRequest,
@@ -1185,18 +1682,19 @@ async def push_register(
     _check_origin(request)
     delivery = (data.delivery or "").strip().lower() or "apns"
     token = (data.token or "").strip()
-    if delivery == "poll" or (not token and delivery != "apns"):
+    if delivery in {"poll", "web_notification"} or (not token and delivery != "apns"):
+        chosen = "web_notification" if delivery == "web_notification" else "poll"
         _stash_profile(
             device,
             "notifications",
             {
-                "delivery": "poll",
+                "delivery": chosen,
                 "authorization": (data.authorization or "granted")[:32],
                 "registered_at": utcnow().isoformat(),
             },
         )
         await session.commit()
-        return {"ok": True, "registered": False, "delivery": "poll"}
+        return {"ok": True, "registered": chosen == "web_notification", "delivery": chosen}
     if len(token) < 8:
         raise HTTPException(status_code=422, detail="Invalid push token")
     device.push_token = token[:4096]
@@ -1871,14 +2369,26 @@ async def device_contacts(
     device: Device = Depends(require_gateway_device),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """The phone's own contacts snapshot (names only, sent_to_model false
-    unless Evie later routes an explicit call/message request)."""
+    """Names only. Safari cannot read the iPhone address book; Home Station
+    names come from memory, mail, and message events. Numbers stay off this
+    JSON and are resolved only for an explicit Call.
+    """
     _check_origin(request)
     profile = dict(getattr(device, "endpoint_profile", None) or {})
     contacts = profile.get("contacts") or {}
+    from .phone_people import list_phone_people, public_contact_rows
+
+    snapshot = public_contact_rows(contacts.get("contacts") or [])
+    home: list[dict] = []
+    if not is_sandbox_device(device):
+        try:
+            home = await list_phone_people(session, limit=40)
+        except Exception:
+            home = []
     return {
         "ok": True,
-        "contacts": contacts.get("contacts") or [],
+        "contacts": snapshot,
+        "home": [{"name": row["name"], "channels": row.get("channels") or [], "callable": bool(row.get("callable"))} for row in home],
         "captured_at": contacts.get("captured_at"),
         "sent_to_model": False,
     }
@@ -2059,6 +2569,23 @@ async def device_capabilities(
     has_contacts = bool((profile.get("contacts") or {}).get("contacts"))
     has_health = bool((profile.get("healthkit") or {}).get("available"))
     has_calendar = bool((profile.get("calendar") or {}).get("events"))
+    home_people = False
+    series_health = False
+    if trusted:
+        try:
+            from .phone_people import list_phone_people
+
+            home_people = bool(await list_phone_people(session, limit=1))
+        except Exception:
+            home_people = False
+        try:
+            from app.models import HealthSnapshot
+
+            series_health = (
+                await session.execute(select(HealthSnapshot).limit(1))
+            ).scalars().first() is not None
+        except Exception:
+            series_health = False
 
     def cap(available: bool, reason: str | None = None) -> dict:
         return {"available": bool(available), "reason": reason}
@@ -2079,8 +2606,14 @@ async def device_capabilities(
             "inbox": cap(True),
             "queue": cap(True),
             "weather": cap(True),
-            "people": cap(has_contacts, None if has_contacts else "no_contacts_snapshot"),
-            "health": cap(has_health, None if has_health else "no_healthkit_snapshot"),
+            "people": cap(
+                has_contacts or home_people,
+                None if (has_contacts or home_people) else "no_contacts_snapshot",
+            ),
+            "health": cap(
+                has_health or series_health,
+                None if (has_health or series_health) else "no_healthkit_snapshot",
+            ),
             "calendar": cap(has_calendar, None if has_calendar else "no_calendar_snapshot"),
             "routines": cap(True),
         },
@@ -2176,7 +2709,8 @@ async def live_close(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
-    await release_lease(session, device_id=device.id, instance_id=data.instance_id)
+    if not data.preserve_lease:
+        await release_lease(session, device_id=device.id, instance_id=data.instance_id)
     if data.session_id:
         close_phone_control_live(data.session_id)
     await session.commit()

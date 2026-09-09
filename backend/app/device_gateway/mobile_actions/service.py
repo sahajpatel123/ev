@@ -240,6 +240,15 @@ def sanitize_complete(payload: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _spoken_who(args: dict[str, Any]) -> str:
+    who = str(args.get("contact_query") or "").strip()
+    if not who or who.lower() in {"them", "that number"}:
+        return "them"
+    if _PHONE_RE.match(who):
+        return "them"
+    return who
+
+
 def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
     operation = str(row.get("operation") or "")
     failure = str(row.get("failure") or "")
@@ -284,7 +293,12 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
             return "I found more than one match. Did you mean " + " or ".join(labels[:3]) + "?"
         return "I found more than one contact. Which one?"
     if failure == "CONTACT_NOT_FOUND":
-        return f"I couldn't find {args.get('contact_query') or 'that contact'} on this iPhone."
+        who = args.get("contact_query") or "that contact"
+        return (
+            f"I don't have a number for {who} on Home Station. "
+            "Safari Evie can't read the iPhone address book. "
+            "I can summarize their last messages instead."
+        )
     if failure == "EXPIRED":
         return "That action expired. Ask me again if you still want it."
     if failure == "CANCELLED":
@@ -301,8 +315,14 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
         if operation == "create_calendar_event":
             return f"Add {args.get('title') or 'that event'} to your calendar?"
         return "Do you want me to do that on this iPhone?"
+    native_open = row.get("method") == "native_broker" and row.get("state") in {
+        "authorized",
+        "resolved",
+        "executing",
+    }
     if result == "SYSTEM_UI_OPENED" or (
-        row.get("state") in {"authorized", "resolved", "executing"} and operation in {
+        native_open
+        and operation in {
             "call_contact",
             "facetime_contact",
             "start_directions",
@@ -310,10 +330,10 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
         }
     ):
         if operation == "call_contact":
-            who = args.get("contact_query") or "them"
+            who = _spoken_who(args)
             return f"I've opened the call for {who}."
         if operation == "facetime_contact":
-            who = args.get("contact_query") or "them"
+            who = _spoken_who(args)
             return f"I've opened FaceTime for {who}."
         if operation in {"start_directions", "open_maps"}:
             dest = args.get("destination") or "that place"
@@ -355,18 +375,37 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
             if operation == "message_contact":
                 return f"I've prepared the message for {args.get('contact_query') or 'them'}."
             if operation == "call_contact":
-                return f"I've opened the call for {args.get('contact_query') or 'them'}."
+                return f"I've opened the call for {_spoken_who(args)}."
             if operation == "open_app":
                 return f"Opening {args.get('display_name') or args.get('app_id') or 'that app'}."
             if operation == "current_location":
                 return "Checking where you are."
             return "Running that on this iPhone."
+        if row.get("method") == "pwa_local":
+            if operation == "create_timer":
+                mins = max(1, int((args.get("duration_seconds") or 60) / 60))
+                label = "minute" if mins == 1 else "minutes"
+                return (
+                    f"Your {mins}-{label} timer is set on Home Station. "
+                    "Tap Start timer on this iPhone for a local alert — this is Evie's timer, not Clock."
+                )
+            if operation == "create_reminder":
+                return (
+                    "Reminder is set on Home Station. "
+                    "Tap Save reminder on this iPhone for a local alert — not Reminders.app."
+                )
         if operation == "create_timer":
             return "Tap Start timer on this iPhone."
         if operation == "create_reminder":
             return "Tap Save reminder on this iPhone."
         if operation == "message_contact":
             return "Tap Send on this iPhone."
+        if operation == "call_contact":
+            who = _spoken_who(args)
+            return f"Tap Call now on this iPhone to open Phone for {who}. I can't confirm the call connected."
+        if operation == "facetime_contact":
+            who = _spoken_who(args)
+            return f"Tap FaceTime on this iPhone for {who}. I can't confirm it connected."
         return "Tap the card on this iPhone to finish that."
     if failure:
         return "I couldn't complete that on this iPhone."
@@ -400,6 +439,8 @@ def _card(row: dict[str, Any], *, launch_url: str | None, open_url: str | None) 
         or args.get("label")
         or ""
     )
+    if _PHONE_RE.match(str(target or "")):
+        target = "Phone"
     if operation == "create_timer" and args.get("duration_seconds"):
         seconds = int(args["duration_seconds"])
         if seconds % 3600 == 0:
@@ -445,6 +486,8 @@ def _card(row: dict[str, Any], *, launch_url: str | None, open_url: str | None) 
         "pwa_kind": args.get("pwa_kind"),
         "share_text": args.get("share_text") or args.get("message") or args.get("text"),
         "copy_text": args.get("copy_text") or args.get("text"),
+        "duration_seconds": args.get("duration_seconds"),
+        "when_iso": args.get("when_iso"),
     }
 
 
@@ -604,6 +647,7 @@ def _normalize(
             )
         out["duration_seconds"] = seconds
         out["title"] = str(args.get("title") or args.get("label") or "")[:80]
+        out["pwa_kind"] = "local_timer"
     elif operation == "create_reminder":
         title = str(args.get("title") or args.get("text") or "").strip()[:200]
         if not title:
@@ -622,6 +666,7 @@ def _normalize(
         out["title"] = title
         out["when_iso"] = when_iso
         out["list"] = str(args.get("list") or "")[:80] or None
+        out["pwa_kind"] = "local_reminder"
     elif operation == "create_alarm":
         when_iso = parse_when_iso(args, handshake=handshake, transcript=transcript)
         if not when_iso:
@@ -641,17 +686,19 @@ def _normalize(
             return None, _fail(operation, "EMERGENCY_BLOCKED")
         if number and not query:
             out["phone_number"] = number
-            out["contact_query"] = number
+            out["contact_query"] = "them"
         elif query and _PHONE_RE.match(query):
             if is_emergency(query):
                 return None, _fail(operation, "EMERGENCY_BLOCKED")
-            parsed = normalize_phone_number(query)
+            parsed = normalize_phone_number(query) or number
             if not parsed:
                 return None, _fail(operation, "EMERGENCY_BLOCKED")
             out["phone_number"] = parsed
-            out["contact_query"] = query
+            out["contact_query"] = "them"
         elif query:
             out["contact_query"] = query
+            if number:
+                out["phone_number"] = number
         else:
             return None, _fail(
                 operation,
@@ -1232,7 +1279,7 @@ def client_complete(
     row = store.get_action(action_id)
     if row is None or str(row.get("device_id")) != str(device_id):
         return {"ok": False, "error": "INVALID_TOKEN"}
-    if row.get("method") not in {"web_handoff", "app_url"}:
+    if row.get("method") not in {"web_handoff", "app_url", "pwa_local"}:
         return {"ok": False, "error": "USE_COMPLETION_TOKEN"}
     return complete_action(
         action_id=action_id,

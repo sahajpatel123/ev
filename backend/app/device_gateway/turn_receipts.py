@@ -12,6 +12,96 @@ from app.utils.text import utcnow
 
 from .sandbox import is_sandbox_device
 
+_PHONE_KERNEL_FALLBACK = (
+    "I can't think that through right now. Give me a moment and ask again — "
+    "I won't guess."
+)
+
+
+def _stamp_takeover(
+    row: PhoneTurnReceipt,
+    *,
+    spoken: str,
+    route: str,
+    core: dict[str, Any] | None = None,
+    phone_action: dict[str, Any] | None = None,
+) -> None:
+    ev = dict(row.evidence or {})
+    ev["core_takeover"] = True
+    ev["core_reply"] = spoken[:2000]
+    ev["core_route"] = (route or "")[:80]
+    action = phone_action if isinstance(phone_action, dict) else None
+    if action is None and isinstance(core, dict) and isinstance(core.get("phone_action"), dict):
+        action = core["phone_action"]
+    if action is not None:
+        ev["phone_action"] = action
+    if isinstance(core, dict) and not core.get("conversational"):
+        tool = str(core.get("tool") or core.get("operation") or "").strip()
+        if tool and tool.upper() != "UNKNOWN":
+            ev["action_tool"] = tool[:80]
+            ev["action_status"] = str(core.get("status") or "")[:32]
+            ev["action_accepted"] = bool(core.get("accepted"))
+            ev["action_executed"] = bool(core.get("executed"))
+            ev["action_verified"] = bool(core.get("verified"))
+    row.evidence = ev
+
+
+async def _apply_muse_kernel_phone_turn(
+    session: AsyncSession,
+    *,
+    device: Device,
+    row: PhoneTurnReceipt,
+    key: str,
+) -> None:
+    """Spark 1.3 decides; Mini never gets a leftover conversational turn."""
+
+    from app.cognitive.kernel import handle_turn
+
+    from .pipeline import run_trusted_device_turn
+
+    try:
+        turn = await run_trusted_device_turn(
+            session,
+            device=device,
+            text=row.transcript,
+            idempotency_key=key,
+        )
+    except Exception:
+        turn = {"conversational": True, "reply": None}
+    if not isinstance(turn, dict):
+        turn = {"conversational": True, "reply": None}
+
+    spoken = ""
+    route = str(turn.get("route") or "")
+    phone_action = turn.get("phone_action") if isinstance(turn.get("phone_action"), dict) else None
+    if not turn.get("conversational"):
+        spoken = str(turn.get("reply") or "").strip()
+    if not spoken:
+        try:
+            kernel = await handle_turn(
+                transcript=row.transcript,
+                live_session_id=row.session_id,
+                device_id=str(device.id),
+                modality="voice",
+                actor=f"device:{device.name}",
+            )
+            spoken = str(getattr(kernel, "spoken", "") or "").strip()
+            route = str(getattr(kernel, "kind", "") or route or "muse")[:80]
+        except Exception:
+            spoken = _PHONE_KERNEL_FALLBACK
+            route = "unavailable"
+    if not spoken:
+        spoken = _PHONE_KERNEL_FALLBACK
+        route = route or "unavailable"
+    _stamp_takeover(
+        row,
+        spoken=spoken,
+        route=route,
+        core=turn,
+        phone_action=phone_action,
+    )
+    await session.flush()
+
 
 async def record_turn_receipt(
     session: AsyncSession,
@@ -56,25 +146,26 @@ async def record_turn_receipt(
     await session.flush()
 
     if trusted and (row.kind or "") == "final_transcript" and (row.transcript or "").strip():
-        from .phone_core import maybe_phone_core_read
-        from .phone_mac import maybe_phone_mac_act
+        from app.cognitive.mode import muse_kernel_active
 
-        core = await maybe_phone_core_read(session, device=device, text=row.transcript)
-        if core is None:
-            core = await maybe_phone_mac_act(
-                session,
-                device=device,
-                text=row.transcript,
-                idempotency_key=key,
-            )
-        spoken = str((core or {}).get("reply") or "").strip()
-        if spoken:
-            ev = dict(row.evidence or {})
-            ev["core_takeover"] = True
-            ev["core_reply"] = spoken[:800]
-            ev["core_route"] = str(core.get("route") or "")
-            row.evidence = ev
-            await session.flush()
+        if muse_kernel_active():
+            await _apply_muse_kernel_phone_turn(session, device=device, row=row, key=key)
+        else:
+            from .phone_core import maybe_phone_core_read
+            from .phone_mac import maybe_phone_mac_act
+
+            core = await maybe_phone_core_read(session, device=device, text=row.transcript)
+            if core is None:
+                core = await maybe_phone_mac_act(
+                    session,
+                    device=device,
+                    text=row.transcript,
+                    idempotency_key=key,
+                )
+            spoken = str((core or {}).get("reply") or "").strip()
+            if spoken:
+                _stamp_takeover(row, spoken=spoken, route=str((core or {}).get("route") or ""), core=core)
+                await session.flush()
 
     from app.everywhere.sync import emit_everywhere_event
 
@@ -117,4 +208,12 @@ def public_receipt(row: PhoneTurnReceipt, *, replayed: bool = False) -> dict[str
         payload["core_takeover"] = True
         payload["core_reply"] = str(evidence["core_reply"])
         payload["core_route"] = str(evidence.get("core_route") or "")
+    if isinstance(evidence.get("phone_action"), dict):
+        payload["phone_action"] = evidence["phone_action"]
+    if evidence.get("action_tool"):
+        payload["action_tool"] = str(evidence["action_tool"])
+        payload["action_status"] = str(evidence.get("action_status") or "")
+        payload["action_accepted"] = bool(evidence.get("action_accepted"))
+        payload["action_executed"] = bool(evidence.get("action_executed"))
+        payload["action_verified"] = bool(evidence.get("action_verified"))
     return payload

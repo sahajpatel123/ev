@@ -559,5 +559,8 @@ async def maybe_phone_mac_act(
             "answered": payload.get("answered"),
             "kind": payload.get("kind") or args.get("kind"),
             "simulated": payload.get("simulated"),
+            "confirmation_required": payload.get("confirmation_required"),
+            "confirmation_id": payload.get("confirmation_id"),
+            "action_id": payload.get("action_id"),
         },
     )

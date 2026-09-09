@@ -54,9 +54,16 @@ def _notifications_public(device: Device) -> dict[str, Any]:
     note = _profile(device).get("notifications")
     note = note if isinstance(note, dict) else {}
     has_token = bool(getattr(device, "push_token", None))
+    delivery = str(note.get("delivery") or "").lower()
+    if has_token and delivery != "web_notification":
+        push_delivery = "apns"
+    elif delivery == "web_notification":
+        push_delivery = "web_notification"
+    else:
+        push_delivery = "poll"
     return {
-        "push_registered": has_token,
-        "push_delivery": "apns" if has_token else "poll",
+        "push_registered": has_token or delivery == "web_notification",
+        "push_delivery": push_delivery,
         "inbox_channel": "in_app_poll",
         "authorization": note.get("authorization") or "undetermined",
     }

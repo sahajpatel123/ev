@@ -225,6 +225,7 @@ def test_status_and_pwa_connection_contract() -> None:
     assert "_speakCore" in webrtc
     assert "core_takeover" in webrtc
     assert "_setVadCreateResponse" in webrtc
+    assert "miniThinks" in webrtc
     assert "response.cancel" in webrtc
     assert "home_station_result" in webrtc
     assert "showHomeStationResult" in app_js
@@ -338,6 +339,45 @@ def test_js_webrtc_ungates_mic_and_forwards_camera() -> None:
             "  await new Promise((resolve)=>setTimeout(resolve, 0));"
             "  if(!ordinarySent.some((m)=>m.type==='response.cancel')) process.exit(14);"
             "  if(!ordinarySent.some((m)=>m.type==='response.create')) process.exit(15);"
+            "  ordinary._onProvider({type:'conversation.item.input_audio_transcription.completed', transcript:'tell me a fact about Saturn', item_id:'i2'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, 0));"
+            "  if(ordinarySent.filter((m)=>m.type==='response.create').length!==1) process.exit(16);"
+            "  const actionSent=[];"
+            "  const action=makeRtc({api: async () => ({output: JSON.stringify({route:'HOME_STATION',spoken:'Timer set.',executed:true})})});"
+            "  action.closed=false;"
+            "  action.dc={readyState:'open', send(s){ actionSent.push(JSON.parse(s)); }};"
+            "  await action._tool({name:'evie_home_action', call_id:'home1', arguments:'{}'});"
+            "  const controlled=actionSent.filter((m)=>m.type==='response.create');"
+            "  if(controlled.length!==1) process.exit(17);"
+            "  if(String((controlled[0].response&&controlled[0].response.instructions)||'').indexOf('Timer set.')<0) process.exit(18);"
+            "  if(!actionSent.some((m)=>m.type==='response.cancel')) process.exit(19);"
+            "  const phantomSent=[]; let receiptCalls=0;"
+            "  const phantom=makeRtc({api: async () => { receiptCalls++; return {}; }});"
+            "  phantom.closed=false;"
+            "  phantom.dc={readyState:'open', send(s){ phantomSent.push(JSON.parse(s)); }};"
+            "  phantom._onProvider({type:'conversation.item.input_audio_transcription.completed', transcript:'hello Evie', item_id:'i3'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, 0));"
+            "  if(!phantomSent.some((m)=>m.type==='response.cancel')) process.exit(20);"
+            "  if(!phantomSent.some((m)=>m.type==='response.create')) process.exit(21);"
+            "  phantom._onProvider({type:'conversation.item.input_audio_transcription.completed', transcript:'', item_id:'i4'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, 0));"
+            "  if(receiptCalls!==1) process.exit(22);"
+            "  const sparkSent=[];"
+            "  const spark=makeRtc({miniThinks:false, api: async () => ({core_takeover:true,core_reply:'Spark said hi.'})});"
+            "  spark.closed=false;"
+            "  spark.dc={readyState:'open', send(s){ sparkSent.push(JSON.parse(s)); }};"
+            "  spark._onProvider({type:'conversation.item.input_audio_transcription.completed', transcript:'hello', item_id:'i5'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, 0));"
+            "  if(!sparkSent.some((m)=>m.type==='response.create' && String((m.response&&m.response.instructions)||'').indexOf('Spark said hi')>=0)) process.exit(23);"
+            "  const leftoverSent=[];"
+            "  const leftoverMind=makeRtc({miniThinks:false, api: async () => ({})});"
+            "  leftoverMind.closed=false;"
+            "  leftoverMind.dc={readyState:'open', send(s){ leftoverSent.push(JSON.parse(s)); }};"
+            "  leftoverMind._onProvider({type:'conversation.item.input_audio_transcription.completed', transcript:'tell me a fact about Saturn', item_id:'i6'});"
+            "  await new Promise((resolve)=>setTimeout(resolve, 0));"
+            "  if(leftoverSent.some((m)=>m.type==='response.create')) process.exit(24);"
+            "  leftoverMind._onProvider({type:'response.created', response:{id:'freelance'}});"
+            "  if(!leftoverSent.some((m)=>m.type==='response.cancel' && m.response_id==='freelance')) process.exit(25);"
             "  console.log('ok');"
             "})().catch((err)=>{ console.error(err); process.exit(1); });",
             str(PWA / "webrtc.js"),

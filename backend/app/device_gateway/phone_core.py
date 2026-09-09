@@ -12,6 +12,7 @@ import asyncio
 import re
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Device
@@ -90,6 +91,50 @@ async def _owner_spoken_name(session: AsyncSession) -> str | None:
     return name
 
 
+def _metric_bits(metrics: dict[str, Any]) -> list[str]:
+    bits: list[str] = []
+    blob = metrics if isinstance(metrics, dict) else {}
+    steps = blob.get("steps")
+    if isinstance(steps, (int, float)):
+        bits.append(f"{int(steps)} steps")
+    sleep = blob.get("sleep_hours")
+    if isinstance(sleep, (int, float)):
+        hours = f"{sleep:g}"
+        bits.append(f"{hours} hours of sleep")
+    hr = blob.get("heart_rate") or blob.get("resting_hr")
+    if isinstance(hr, (int, float)):
+        bits.append(f"heart rate {int(hr)}")
+    return bits
+
+
+def _speak_health(metrics: dict[str, Any], *, source: str) -> str:
+    bits = _metric_bits(metrics)
+    if not bits:
+        return (
+            "I have a local Health snapshot on Home Station, but it is not sent to a model. "
+            "Review it on this iPhone if you want the numbers."
+        )
+    return (
+        f"On {source}: {', '.join(bits)}. "
+        "Those numbers stay on Home Station and are not sent to a model."
+    )
+
+
+async def _latest_series_metrics(session: AsyncSession) -> dict[str, Any] | None:
+    from app.models import HealthSnapshot
+
+    row = (
+        await session.execute(select(HealthSnapshot).order_by(HealthSnapshot.occurred_at.desc()).limit(1))
+    ).scalars().first()
+    if row is None:
+        return None
+    metrics = dict(row.metrics or {})
+    keep = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+    if row.readiness is not None:
+        keep["readiness"] = row.readiness
+    return keep or None
+
+
 async def maybe_phone_core_read(
     session: AsyncSession,
     *,
@@ -103,13 +148,19 @@ async def maybe_phone_core_read(
 
     if _HEALTH.search(raw):
         hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
-        if hk.get("available"):
+        from .sandbox import is_sandbox_device as _sandbox_device
+
+        series = None
+        if not _sandbox_device(device):
+            series = await _latest_series_metrics(session)
+        has_numbers = bool(_metric_bits(hk.get("snapshot") if isinstance(hk.get("snapshot"), dict) else {}) or _metric_bits(series or {}))
+        if hk.get("available") or has_numbers:
             return _ok(
-                "I have a local Health snapshot on Home Station, but it is not sent to a model. "
-                "Review it on this iPhone if you want the numbers.",
+                "I have Health numbers on this iPhone's Health sheet. "
+                "They stay on Home Station and are not sent to a model.",
                 route="HEALTHKIT",
                 executed=False,
-                extra={"sent_to_model": False, "freshness": hk.get("freshness") or "reported"},
+                extra={"sent_to_model": False, "freshness": hk.get("freshness") or ("home_station_series" if series else "reported")},
             )
         return _ok(
             "Health data isn't connected in this Evie build. HealthKit isn't entitled, "
@@ -140,10 +191,10 @@ async def maybe_phone_core_read(
         return _ok(
             "On this iPhone I can talk with you, look through the camera, "
             "tell you the date and time, your name if it's saved, weather, "
-            "inbox, and what I remember. Timers, reminders, opening Mac apps, "
-            "mail, and calendar run on Home Station — the same Mac Evie uses. "
-            "I can ping or notify the Mac. Health numbers stay off the model "
-            "unless this phone has granted those snapshots.",
+            "inbox, and what I remember. Timers and reminders run on Home Station "
+            "and can ping this iPhone with an Evie alert — not Clock or Reminders.app. "
+            "Call opens Phone when Home Station has a number. "
+            "Health numbers stay on Home Station and are never sent to a model.",
             route="CAPABILITIES",
         )
 
@@ -248,15 +299,25 @@ async def maybe_phone_core_read(
             elif isinstance(item, str) and item.strip():
                 names.append(item.strip())
         if not names:
+            try:
+                from .phone_people import list_phone_people
+                from .sandbox import is_sandbox_device
+
+                if not is_sandbox_device(device):
+                    harvested = await list_phone_people(session, limit=12)
+                    names = [row["name"] for row in harvested if row.get("name")]
+            except Exception:
+                names = []
+        if not names:
             return _ok(
-                "I don't have a contacts snapshot from this iPhone yet. "
-                "Safari Evie can't read the address book.",
+                "I don't have people on Home Station yet, and Safari Evie can't read "
+                "the iPhone address book.",
                 route="CONTACTS",
                 executed=False,
                 extra={"sent_to_model": False},
             )
         return _ok(
-            "People on this iPhone: " + ", ".join(names) + ".",
+            "People I know: " + ", ".join(names) + ".",
             route="CONTACTS",
             extra={"sent_to_model": False},
         )

@@ -58,3 +58,50 @@ async def attempt_push(
         "backend_ref": getattr(receipt, "backend_ref", None),
         "reason": getattr(receipt, "reason", None),
     }
+
+
+async def notify_trusted_companions(
+    session,
+    *,
+    kind: str,
+    title: str,
+    body: str,
+    payload: dict | None = None,
+) -> int:
+    """Inbox-notify every trusted iPhone companion. No network, no commit.
+
+    Delivery itself stays honest: APNs when registered+credentialed (digest
+    path calls attempt_push), poll otherwise. The caller commits.
+    """
+    from sqlalchemy import select
+
+    from app.everywhere.inbox import push_inbox
+    from app.models import Device
+
+    try:
+        rows = (
+            await session.execute(select(Device).where(Device.revoked_at.is_(None)))
+        ).scalars().all()
+    except Exception:
+        return 0
+    notified = 0
+    for dev in rows:
+        try:
+            scope = str(getattr(dev, "memory_scope", "") or "").lower()
+            if scope == "sandbox":
+                continue
+            role = str(getattr(dev, "role", "") or "").lower()
+            if role not in {"primary_companion", "secondary_companion", "companion"}:
+                continue
+            await push_inbox(
+                session,
+                device_id=dev.id,
+                kind=kind,
+                title=title[:160],
+                body=body[:1900],
+                payload=dict(payload or {}),
+            )
+            notified += 1
+        except Exception:
+            continue
+    return notified

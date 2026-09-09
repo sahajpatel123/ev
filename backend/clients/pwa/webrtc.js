@@ -373,10 +373,38 @@
     };
   }
 
-  function waitEvent(obj, ok, fail, timeoutMs, label) {
+  function cancelledStart() {
+    const err = new Error("Voice startup cancelled");
+    err.name = "AbortError";
+    err.cancelled = true;
+    return err;
+  }
+
+  // Some browser operations (notably getUserMedia) cannot themselves be
+  // aborted. Settle our caller anyway and consume their eventual rejection.
+  function abortable(promise, signal) {
+    return new Promise(function (resolve, reject) {
+      const cancel = function () { reject(cancelledStart()); };
+      signal.addEventListener("abort", cancel, { once: true });
+      Promise.resolve(promise).then(function (value) {
+        signal.removeEventListener("abort", cancel);
+        if (signal.aborted) reject(cancelledStart());
+        else resolve(value);
+      }, function (err) {
+        signal.removeEventListener("abort", cancel);
+        reject(signal.aborted ? cancelledStart() : err);
+      });
+      if (signal.aborted) cancel();
+    });
+  }
+
+  function waitEvent(obj, ok, fail, timeoutMs, label, signal) {
+    if (signal && signal.aborted) return Promise.reject(cancelledStart());
     if (ok()) return Promise.resolve();
     return new Promise(function (resolve, reject) {
       let done = false;
+      let off = function () {};
+      const cancel = function () { finish(cancelledStart()); };
       const timer = window.setTimeout(function () {
         finish(new Error(label + " timeout"));
       }, timeoutMs);
@@ -384,18 +412,22 @@
         if (done) return;
         done = true;
         window.clearTimeout(timer);
-        off();
+        if (signal) signal.removeEventListener("abort", cancel);
+        try { off(); } catch (cleanupError) { err = err || cleanupError; }
         if (err) reject(err);
         else resolve();
       }
       function onChange() {
+        if (done) return;
         if (fail && fail()) {
           finish(new Error(label + " failed"));
           return;
         }
         if (ok()) finish();
       }
-      const off = obj(onChange);
+      if (signal) signal.addEventListener("abort", cancel, { once: true });
+      off = obj(onChange);
+      if (done) off();
       onChange();
     });
   }
@@ -499,6 +531,9 @@
     this.attemptId = "";
     this.diag = new ConnectionDiag("");
     this.playBlocked = null;
+    this.playbackReady = false;
+    this._attempt = null;
+    this._playRequest = null;
     this.sessionCreated = false;
     this.sessionUpdated = false;
     this.sessionModel = "";
@@ -507,7 +542,9 @@
     this._micTailTimer = 0;
     this._spokenResponseId = "";
     this._allowNextResponse = false;
+    this._receiptItems = Object.create(null);
     this._uiState = "";
+    this.miniThinks = opts.miniThinks !== false;
   }
 
   EvieWebRTC.prototype._setRuntime = function _setRuntime(next) {
@@ -554,7 +591,7 @@
       self._micTailTimer = 0;
       self._spokenResponseId = "";
       if (self.closed || self.runtime === "EVIE_SPEAKING") return;
-      self._setVadCreateResponse(true);
+      self._setVadCreateResponse(self.miniThinks);
       self._setMicCaptureEnabled(true);
       self._emitState("listening");
       self.onHealth(self.snapshot());
@@ -574,7 +611,7 @@
               prefix_padding_ms: 300,
               silence_duration_ms: 700,
               interrupt_response: false,
-              create_response: !!on,
+              create_response: this.miniThinks ? !!on : false,
             },
           },
         },
@@ -583,7 +620,7 @@
   };
 
   EvieWebRTC.prototype._speakCore = function _speakCore(text) {
-    const spoken = String(text || "").replace(/\s+/g, " ").trim().slice(0, 500);
+    const spoken = String(text || "").replace(/\s+/g, " ").trim().slice(0, 2000);
     if (!spoken || this.closed) return;
     this._allowNextResponse = true;
     this._send({ type: "response.cancel" });
@@ -619,6 +656,7 @@
         method: "POST",
         body: JSON.stringify(self._liveBody()),
       }).then(function (body) {
+        if (!stillThis()) return;
         if (body && body.conversation_moved) self.onState("moved");
       }).catch(function () {});
     }, 12000);
@@ -631,6 +669,9 @@
       ? boundGeneration
       : this.generation + 1;
     this.stop();
+    const attempt = new AbortController();
+    this._attempt = attempt;
+    const signal = attempt.signal;
     this.generation = generation;
     this.closed = false;
     this.sessionId = opened.session_id;
@@ -640,6 +681,7 @@
     this.sessionUpdated = false;
     this.sessionModel = "";
     this.playBlocked = null;
+    this.playbackReady = false;
     this.attemptId = nextAttemptId();
     this.signaling = opts.signaling || opened.signaling || "unified_calls";
     this._playbackHold = false;
@@ -652,9 +694,13 @@
     this.diag.signaling = this.signaling;
     this.diag.token_mode = this.signaling === "ephemeral_direct" ? "ephemeral" : "server";
     const self = this;
-    const stillThis = function () { return !self.closed && self.generation === generation; };
+    const stillThis = function () {
+      return !self.closed && self._attempt === attempt && self.generation === generation;
+    };
+    const guard = function () { if (!stillThis()) throw cancelledStart(); };
     this._startLeaseHeartbeat(stillThis);
     const fail = function (stage, err, extra) {
+      guard();
       const wrapped = err instanceof Error ? err : new Error(String(err || "failed"));
       self.diag.fail(stage, wrapped, extra);
       self.diag.pc = pcStates(self.pc);
@@ -664,7 +710,12 @@
       throw wrapped;
     };
 
-    this.diag.pass("M00", { gesture: true });
+    const activation = navigator.userActivation;
+    Object.assign(this.diag.stages.M00, {
+      status: activation && activation.isActive ? "pass" : "not_observed",
+      gesture: activation ? !!activation.isActive : null,
+      at: Date.now(),
+    });
     if (!window.isSecureContext) fail("M01", new Error("Not a secure context"));
     this.diag.pass("M01");
 
@@ -672,11 +723,25 @@
     this.audioEl.setAttribute("playsinline", "true");
     this.audioEl.setAttribute("webkit-playsinline", "true");
     this.audioEl.volume = 1;
-    this.audioEl.play().catch(function () { /* user-gesture unlock; real play is ontrack */ });
+    this.audioEl.play().catch(function () { /* best effort; remote playback is verified ontrack */ });
 
     this._setRuntime("ACQUIRING_MIC");
     try {
-      this.mic = await acquireProductionMic();
+      const pendingMic = acquireProductionMic().then(function (stream) {
+        if (!stillThis()) {
+          stream.getTracks().forEach(function (track) { track.stop(); });
+          throw cancelledStart();
+        }
+        // Register ownership before another microtask can call stop().
+        self.mic = stream;
+        return stream;
+      });
+      const mic = await abortable(pendingMic, signal);
+      if (!stillThis()) {
+        mic.getTracks().forEach(function (track) { track.stop(); });
+        guard();
+      }
+      this.mic = mic;
     } catch (err) {
       const denied = err && (err.name === "NotAllowedError" || err.name === "PermissionDeniedError");
       fail(denied ? "M02" : "M03", err);
@@ -690,7 +755,7 @@
     }
     this.diag.pass("M03", { readyState: this.micTrack.readyState, enabled: this.micTrack.enabled });
 
-    this.pc = new RTCPeerConnection();
+    const pc = this.pc = new RTCPeerConnection();
     this.metrics.peerConnections = 1;
     this.diag.pass("M04");
     this._iceRestarted = false;
@@ -731,20 +796,31 @@
       self.diag.pass("M19", { kind: ev.track.kind, readyState: ev.track.readyState, streams: (ev.streams || []).length });
       const stream = new MediaStream([ev.track]);
       self.audioEl.srcObject = stream;
+      self.playbackReady = false;
+      const playback = self._playRequest = {};
       self.audioEl.play().then(function () {
+        if (!stillThis() || self._playRequest !== playback || self.remoteTrack !== ev.track) return;
         self.playBlocked = null;
+        self.playbackReady = true;
         self.diag.pass("M20");
+        if (self.diag.failed_stage === "M20") {
+          self.diag.failed_stage = null;
+          self.diag.error_name = "";
+          self.diag.error_message = "";
+        }
         self.playing = true;
         self._maybeVoiceReady();
       }).catch(function (err) {
+        if (!stillThis() || self._playRequest !== playback || self.remoteTrack !== ev.track) return;
         self.playBlocked = err;
+        self.playbackReady = false;
         self.playing = false;
         self.onState("audio_blocked");
         self._maybeVoiceReady();
       });
     };
 
-    this.dc = this.pc.createDataChannel("oai-events");
+    const dc = this.dc = pc.createDataChannel("oai-events");
     this.diag.dc = this.dc.readyState;
     this.diag.pass("M05", { label: this.dc.label, readyState: this.dc.readyState });
     this.dc.onopen = function () {
@@ -756,10 +832,10 @@
     };
     this.dc.onclosing = function () { if (stillThis()) self.diag.dc = "closing"; };
     this.dc.onclose = function () { if (stillThis()) { self.metrics.dc = "closed"; self.diag.dc = "closed"; } };
-    this.dc.onmessage = function (ev) { self._onProvider(parseEvent(ev.data)); };
+    this.dc.onmessage = function (ev) { if (stillThis()) self._onProvider(parseEvent(ev.data)); };
 
-    this.micTrack.onmute = function () { self.onHealth(self.snapshot()); };
-    this.micTrack.onunmute = function () { self.onHealth(self.snapshot()); };
+    this.micTrack.onmute = function () { if (stillThis()) self.onHealth(self.snapshot()); };
+    this.micTrack.onunmute = function () { if (stillThis()) self.onHealth(self.snapshot()); };
     this.micTrack.onended = function () {
       if (!stillThis()) return;
       self._setRuntime("FAILED");
@@ -774,7 +850,8 @@
     this.metrics.audioElements = 1;
     this._setRuntime("SIGNALING");
 
-    const offer = await this.pc.createOffer();
+    const offer = await abortable(pc.createOffer(), signal);
+    guard();
     if (!offer || !offer.sdp) fail("M07", new Error("createOffer returned empty SDP"));
     this.diag.offer = summarizeSdp(offer.sdp);
     if (!this.diag.offer.audio_mline || this.diag.offer.direction === "recvonly") {
@@ -782,11 +859,14 @@
     }
     if (!this.diag.offer.application_mline) fail("M07", new Error("Offer is missing the data channel"));
     this.diag.pass("M07", this.diag.offer);
-    await this.pc.setLocalDescription(offer);
+    await abortable(pc.setLocalDescription(offer), signal);
+    guard();
     this.diag.pass("M08");
     const localSdp = (this.pc.localDescription && this.pc.localDescription.sdp) || offer.sdp;
     this.diag.offer = summarizeSdp(localSdp);
-    this.diag.offer.sha256 = await sha256Hex(localSdp);
+    const offerHash = await abortable(sha256Hex(localSdp), signal);
+    guard();
+    this.diag.offer.sha256 = offerHash;
     this._setRuntime("CONNECTING_MEDIA");
 
     let answerSdp = "";
@@ -794,22 +874,27 @@
     try {
       this.diag.pass("M09");
       if (this.signaling === "ephemeral_direct") {
-        const minted = await this.api("/v1/device-gateway/live/webrtc/client-secret", {
+        const minted = await abortable(this.api("/v1/device-gateway/live/webrtc/client-secret", {
           method: "POST",
+          signal: signal,
           body: JSON.stringify(this._liveBody({ attempt_id: this.attemptId })),
-        });
+        }), signal);
+        guard();
         const callsUrl = minted.calls_url;
         if (!callsUrl || !minted.value) fail("M09", new Error("Ephemeral credential missing"));
-        const sdpRes = await fetch(callsUrl, {
+        const sdpRes = await abortable(fetch(callsUrl, {
           method: "POST",
+          signal: signal,
           headers: {
             Authorization: "Bearer " + minted.value,
             "Content-Type": "application/sdp",
             Accept: "application/sdp",
           },
           body: localSdp,
-        });
-        const raw = await sdpRes.text();
+        }), signal);
+        guard();
+        const raw = await abortable(sdpRes.text(), signal);
+        guard();
         this.diag.http_status = sdpRes.status;
         this.diag.call_id = (sdpRes.headers.get("location") || "").split("/").pop() || "";
         if (!sdpRes.ok) {
@@ -821,13 +906,15 @@
         this.diag.pass("M10", { http_status: sdpRes.status });
         answerSdp = raw;
       } else {
-        const answer = await this.api("/v1/device-gateway/live/webrtc/sdp", {
+        const answer = await abortable(this.api("/v1/device-gateway/live/webrtc/sdp", {
           method: "POST",
+          signal: signal,
           body: JSON.stringify(this._liveBody({
             sdp: localSdp,
             attempt_id: this.attemptId,
           })),
-        });
+        }), signal);
+        guard();
         answerSdp = answer.sdp;
         this.diag.http_status = answer.provider_status || 201;
         this.diag.call_id = answer.call_id || "";
@@ -845,13 +932,16 @@
       fail("M11", new Error("SDP answer missing"));
     }
     this.diag.answer = summarizeSdp(answerSdp);
-    this.diag.answer.sha256 = await sha256Hex(answerSdp);
+    const answerHash = await abortable(sha256Hex(answerSdp), signal);
+    guard();
+    this.diag.answer.sha256 = answerHash;
     if (answerMeta.offer_sha256 && this.diag.offer.sha256 && answerMeta.offer_sha256 !== this.diag.offer.sha256) {
       this.diag.answer.proxy_mutated_offer = true;
     }
     this.diag.pass("M11", this.diag.answer);
     try {
-      await this.pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      await abortable(pc.setRemoteDescription({ type: "answer", sdp: answerSdp }), signal);
+      guard();
     } catch (err) {
       fail("M12", err);
     }
@@ -863,22 +953,23 @@
     try {
       await waitEvent(
         function (cb) {
-          self.pc.addEventListener("iceconnectionstatechange", cb);
-          self.pc.addEventListener("connectionstatechange", cb);
+          pc.addEventListener("iceconnectionstatechange", cb);
+          pc.addEventListener("connectionstatechange", cb);
           return function () {
-            self.pc.removeEventListener("iceconnectionstatechange", cb);
-            self.pc.removeEventListener("connectionstatechange", cb);
+            pc.removeEventListener("iceconnectionstatechange", cb);
+            pc.removeEventListener("connectionstatechange", cb);
           };
         },
         function () {
-          const ice = self.pc && (self.pc.iceConnectionState === "connected" || self.pc.iceConnectionState === "completed");
-          const conn = self.pc && self.pc.connectionState === "connected";
+          const ice = pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed";
+          const conn = pc.connectionState === "connected";
           return !!(ice || conn);
         },
-        function () { return self.pc && (self.pc.iceConnectionState === "failed" || self.pc.connectionState === "failed"); },
+        function () { return pc.iceConnectionState === "failed" || pc.connectionState === "failed" || pc.connectionState === "closed"; },
         20000,
-        "ICE"
+        "ICE", signal
       );
+      guard();
     } catch (err) {
       const iceFail = self.pc && (self.pc.iceConnectionState === "failed" || self.pc.connectionState === "failed");
       fail(iceFail ? "M14" : "M15", err, { pc: pcStates(self.pc) });
@@ -889,14 +980,19 @@
     try {
       await waitEvent(
         function (cb) {
-          self.dc.addEventListener("open", cb);
-          return function () { self.dc.removeEventListener("open", cb); };
+          dc.addEventListener("open", cb);
+          dc.addEventListener("close", cb);
+          return function () {
+            dc.removeEventListener("open", cb);
+            dc.removeEventListener("close", cb);
+          };
         },
-        function () { return self.dc && self.dc.readyState === "open"; },
-        function () { return self.dc && self.dc.readyState === "closed"; },
+        function () { return dc.readyState === "open"; },
+        function () { return dc.readyState === "closed"; },
         12000,
-        "DataChannel"
+        "DataChannel", signal
       );
+      guard();
     } catch (err) {
       fail("M16", err);
     }
@@ -911,8 +1007,9 @@
         function () { return self.sessionCreated; },
         null,
         12000,
-        "session.created"
+        "session.created", signal
       );
+      guard();
     } catch (err) {
       fail("M17", err);
     }
@@ -929,18 +1026,33 @@
         function () { return !!(self.remoteTrack && self.remoteTrack.readyState !== "ended"); },
         null,
         12000,
-        "remote audio"
+        "remote audio", signal
       );
+      guard();
     } catch (err) {
       fail("M19", err);
     }
     this.diag.pass("M19");
-    if (!this.playBlocked) this.diag.pass("M20");
+    try {
+      await waitEvent(
+        function (cb) {
+          const t = window.setInterval(cb, 80);
+          return function () { window.clearInterval(t); };
+        },
+        function () { return self.playbackReady || !!self.playBlocked; },
+        null, 12000, "audio playback", signal
+      );
+      guard();
+    } catch (err) {
+      guard();
+      this.playBlocked = err;
+    }
     this._maybeVoiceReady();
     if (this.playBlocked) {
       const blocked = new Error("Voice connected — tap to enable audio");
       blocked.failed_stage = "M20";
       blocked.audio_blocked = true;
+      this.diag.fail("M20", this.playBlocked);
       blocked.diag = this.diag.snapshot();
       this.onState("audio_blocked");
       throw blocked;
@@ -954,12 +1066,11 @@
     const pcOk = this.pc && (this.pc.connectionState === "connected" || this.pc.iceConnectionState === "connected" || this.pc.iceConnectionState === "completed");
     const dcOk = this.dc && this.dc.readyState === "open";
     const remote = !!(this.remoteTrack && this.remoteTrack.readyState !== "ended");
-    if (micLive && pcOk && dcOk && remote && this.sessionCreated) {
+    if (micLive && pcOk && dcOk && remote && this.sessionCreated && this.playbackReady && !this.playBlocked) {
       this.diag.pass("M21");
       if (this.runtime !== "EVIE_SPEAKING" && this.runtime !== "OWNER_SPEAKING" && this.runtime !== "PROCESSING" && this.runtime !== "TOOL_RUNNING") {
         this._setRuntime("VOICE_READY");
-        if (this.playBlocked) this.onState("audio_blocked");
-        else this._emitState("listening");
+        this._emitState("listening");
       }
     }
     this.onHealth(this.snapshot());
@@ -987,6 +1098,11 @@
       if (this._allowNextResponse) {
         this._allowNextResponse = false;
         if (rid) this._spokenResponseId = rid;
+      } else if (!this.miniThinks) {
+        this._send({ type: "response.cancel", response_id: rid });
+        this._send({ type: "input_audio_buffer.clear" });
+        this.onHealth(this.snapshot());
+        return;
       } else if (this._echoHold() && this._spokenResponseId && rid && rid !== this._spokenResponseId) {
         this._send({ type: "response.cancel", response_id: rid });
         this._send({ type: "input_audio_buffer.clear" });
@@ -1016,6 +1132,13 @@
       this._emitState("thinking");
     }
     if (type === "conversation.item.input_audio_transcription.completed" && msg.transcript) {
+      const receiptItem = String(msg.item_id || "").trim();
+      if (receiptItem && this._receiptItems[receiptItem]) return;
+      if (receiptItem) {
+        this._receiptItems[receiptItem] = true;
+        const receiptKeys = Object.keys(this._receiptItems);
+        if (receiptKeys.length > 32) delete this._receiptItems[receiptKeys[0]];
+      }
       this.onTranscript(msg.transcript, {
         itemId: msg.item_id || "",
         confidence: this.responses.lastAsrConfidence,
@@ -1039,14 +1162,17 @@
           kind: "final_transcript",
         })),
       }).then(function (body) {
+        if (body && body.phone_action && window.EvieMobileActions) {
+          window.EvieMobileActions.present(body.phone_action);
+        }
         if (body && body.core_takeover && body.core_reply) {
           rtc.onHud(Object.assign({ kind: "home_station_result" }, body));
           rtc._speakCore(body.core_reply);
           return;
         }
-        // No canonical read/action claimed the turn. Let Realtime answer
-        // ordinary conversation, camera requests, and visual follow-ups.
-        if (!rtc.closed) {
+        // Legacy Mini still answers leftover conversation. Muse kernel: Spark
+        // already decided (or failed closed); Mini stays a speaker only.
+        if (!rtc.closed && rtc.miniThinks) {
           rtc._allowNextResponse = true;
           rtc._send({ type: "response.create" });
         }
@@ -1098,10 +1224,23 @@
         type: "conversation.item.create",
         item: { type: "function_call_output", call_id: msg.call_id, output: result.output || "{}" },
       });
-      this._allowNextResponse = true;
-      this._send({ type: "response.create" });
       let parsed = {};
       try { parsed = JSON.parse(result.output || "{}"); } catch (_err) { parsed = {}; }
+      const authoritative =
+        !!parsed &&
+        !!parsed.spoken &&
+        parsed.conversational !== true &&
+        (
+          parsed.route === "HOME_STATION" ||
+          parsed.provenance === "home_station.dispatch" ||
+          msg.name === "evie_state_query"
+        );
+      if (authoritative) {
+        this._speakCore(parsed.spoken);
+      } else if (this.miniThinks) {
+        this._allowNextResponse = true;
+        this._send({ type: "response.create" });
+      }
       if (parsed.needs_camera) {
         await this.onCamera({
           type: "camera_request",
@@ -1126,8 +1265,10 @@
           output: JSON.stringify({ ok: false, spoken: String(err.message || "tool failed") }),
         },
       });
-      this._allowNextResponse = true;
-      this._send({ type: "response.create" });
+      if (this.miniThinks) {
+        this._allowNextResponse = true;
+        this._send({ type: "response.create" });
+      }
       this.onHud({ kind: "result", name: msg.name, ok: false });
     }
   };
@@ -1137,12 +1278,14 @@
   };
 
   EvieWebRTC.prototype.commitTurn = function commitTurn() {
-    this._allowNextResponse = true;
     this._send({ type: "input_audio_buffer.commit" });
+    if (!this.miniThinks) return;
+    this._allowNextResponse = true;
     this._send({ type: "response.create" });
   };
 
   EvieWebRTC.prototype.perceptionProbe = function perceptionProbe() {
+    if (!this.miniThinks) return;
     this._send({
       type: "response.create",
       response: {
@@ -1155,32 +1298,41 @@
 
   EvieWebRTC.prototype._pollEvents = function _pollEvents() {
     const self = this;
+    const attempt = this._attempt;
+    const current = function () { return !self.closed && self._attempt === attempt; };
     const tick = async function () {
-      if (self.closed || !self.sessionId) return;
+      if (!current() || !self.sessionId) return;
       try {
         const body = await self.api("/v1/device-gateway/live/events?session_id=" + encodeURIComponent(self.sessionId)
           + "&instance_id=" + encodeURIComponent(self.instanceId || "")
           + "&lease_id=" + encodeURIComponent(self.leaseId || "")
           + "&client_generation=" + encodeURIComponent(String(self.generation || 0)));
+        if (!current()) return;
         const events = (body && body.events) || [];
         for (let i = 0; i < events.length; i += 1) {
+          if (!current()) return;
           const ev = events[i];
           if (ev.type === "camera_request") await self.onCamera(ev);
+          if (!current()) return;
           if (ev.type === "hud") self.onHud(ev);
           if (ev.type === "conversation_moved") self.onState("moved");
         }
       } catch (_err) { /* poll is best-effort */ }
-      if (!self.closed) self.poll = window.setTimeout(tick, 280);
+      if (current()) self.poll = window.setTimeout(tick, 280);
     };
     this.poll = window.setTimeout(tick, 200);
   };
 
   EvieWebRTC.prototype._pollStats = function _pollStats() {
     const self = this;
+    const attempt = this._attempt;
+    const pc = this.pc;
+    const current = function () { return !self.closed && self._attempt === attempt && self.pc === pc; };
     const tick = async function () {
-      if (self.closed || !self.pc) return;
+      if (!current() || !pc) return;
       try {
-        const report = await self.pc.getStats();
+        const report = await pc.getStats();
+        if (!current()) return;
         self.lastStats = sanitizeStats(report);
         if (self.lastStats.outbound) self.metrics.packetsSent = self.lastStats.outbound.packetsSent;
         if (self.lastStats.inbound) self.metrics.packetsReceived = self.lastStats.inbound.packetsReceived;
@@ -1188,7 +1340,7 @@
         if (typeof amp === "number") self.onEnvelope(Math.min(1, amp * 4));
         self.onHealth(self.snapshot());
       } catch (_err) { /* Safari may omit fields */ }
-      if (!self.closed) self.statsTimer = window.setTimeout(tick, 1000);
+      if (current()) self.statsTimer = window.setTimeout(tick, 1000);
     };
     this.statsTimer = window.setTimeout(tick, 400);
   };
@@ -1215,6 +1367,7 @@
       asr: this.responses.lastAsr ? "GOOD" : "UNCERTAIN",
       playbackOwner: this.closed ? "NONE" : "THIS_PHONE",
     });
+    health.ready = health.ready && this.playbackReady && !this.playBlocked;
     return {
       runtime: this.runtime,
       health: health,
@@ -1241,9 +1394,19 @@
 
   EvieWebRTC.prototype.enableAudio = function enableAudio() {
     const self = this;
-    return this.audioEl.play().then(function () {
+    const attempt = this._attempt;
+    if (this.closed || !attempt) return Promise.reject(cancelledStart());
+    const playback = this._playRequest = {};
+    return abortable(this.audioEl.play(), attempt.signal).then(function () {
+      if (self.closed || self._attempt !== attempt || self._playRequest !== playback) throw cancelledStart();
       self.playBlocked = null;
+      self.playbackReady = true;
       self.diag.pass("M20");
+      if (self.diag.failed_stage === "M20") {
+        self.diag.failed_stage = null;
+        self.diag.error_name = "";
+        self.diag.error_message = "";
+      }
       self.playing = true;
       self._maybeVoiceReady();
     });
@@ -1256,6 +1419,10 @@
   EvieWebRTC.prototype.stop = function stop() {
     this.closed = true;
     this.playing = false;
+    this.playbackReady = false;
+    this._playRequest = null;
+    if (this._attempt) this._attempt.abort();
+    this._attempt = null;
     this._playbackHold = false;
     if (this._micTailTimer) window.clearTimeout(this._micTailTimer);
     this._micTailTimer = 0;

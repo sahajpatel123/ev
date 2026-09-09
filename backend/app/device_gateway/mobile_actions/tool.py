@@ -183,13 +183,30 @@ async def dispatch_phone_action(
             device_label=device_label,
             confirm=bool(args.get("confirm_action_id")),
         )
-        if str(result.get("failure") or "") == "NATIVE_SHELL_REQUIRED":
+        if (
+            str(result.get("failure") or "") == "NATIVE_SHELL_REQUIRED"
+            or str(result.get("method") or "") == "pwa_local"
+        ):
             home = await _home_station_phone_action(
                 device_id=device_id,
                 arguments=args,
                 transcript=transcript,
             )
             if home is not None:
+                if result.get("ok") and result.get("card"):
+                    spoken = str(home.get("spoken") or "").rstrip()
+                    extra = (
+                        " Tap Start timer on this iPhone for a local alert — Evie's timer, not Clock."
+                        if str(args.get("operation") or "") == "create_timer"
+                        else " Tap Save reminder on this iPhone for a local alert — not Reminders.app."
+                        if str(args.get("operation") or "") == "create_reminder"
+                        else ""
+                    )
+                    if extra and "local alert" not in spoken.lower():
+                        home["spoken"] = (spoken + extra).strip()
+                    home["phone_action"] = result
+                    home["card"] = result.get("card")
+                    home["method"] = result.get("method") or home.get("method")
                 result = home
         action_id = str(result.get("action_id") or "")
         if action_id:

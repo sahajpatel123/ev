@@ -41,7 +41,13 @@ def put_frame(request_id: str, *, device_id: str, jpeg_b64: str) -> dict[str, An
 
 def get_frame(request_id: str) -> dict[str, Any] | None:
     _gc()
-    return _STORE.get(request_id)
+    row = _STORE.get(request_id)
+    if row is None:
+        return None
+    return {
+        **row,
+        "expires_at": float(row.get("created_at") or 0) + _TTL_S,
+    }
 
 
 def _gc() -> None:

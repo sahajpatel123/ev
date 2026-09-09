@@ -134,6 +134,8 @@ html, body {
   border-radius: 18px;
   box-shadow: var(--shadow);
   font-size: 14px;
+  width: 100%;
+  overflow-wrap: anywhere;
 }
 .mobile-action-card {
   margin-top: 16px;
@@ -144,6 +146,12 @@ html, body {
   border-radius: 22px;
   box-shadow: var(--shadow);
   text-align: left;
+}
+.mobile-action-card[data-action-state="success"] {
+  border-color: color-mix(in srgb, var(--good, #5d9b76) 60%, var(--stroke));
+}
+.mobile-action-card[data-action-state="failure"] {
+  border-color: color-mix(in srgb, var(--danger, #c56b63) 65%, var(--stroke));
 }
 .ma-kicker {
   margin: 0;
@@ -173,6 +181,7 @@ html, body {
   margin: 10px 0 0;
   color: var(--muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 .ma-actions {
   display: flex;
@@ -626,6 +635,17 @@ html, body {
   .field-bg { opacity: 0.7; }
   .sheet { padding-left: 20px; padding-right: 20px; }
 }
+@media (max-width: 375px) {
+  .stage { padding-left: 16px; padding-right: 16px; }
+  .mood { font-size: 21px; }
+  .user-line, .reply { font-size: 15px; }
+  .mobile-action-card { padding: 13px 14px 12px; border-radius: 18px; }
+  .ma-target { font-size: 22px; }
+}
+@media (min-width: 391px) and (min-height: 800px) {
+  .presence { width: min(76vw, 340px); height: min(76vw, 340px); }
+  .dock { max-width: 430px; }
+}
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
@@ -741,3 +761,129 @@ html, body {
 .evie-inbox-unread > span { font-weight: 600; }
 #inbox-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 #inbox-list li > span { flex: 1; min-width: 0; }
+
+/* Atelier: photographic material, restrained typography, one primary action. */
+[hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+:root, html[data-theme="light"] {
+  --paper: #f6f5f1; --ink: #2e302c; --muted: #666b62;
+  --veil-pearl: #d7d0c3; --veil-filament: #858a76;
+  --elevated: #fdfcf8; --stroke: #ddded6; --talk: #333a31; --talk-ink: #fffefa;
+  --shadow: 0 14px 70px #30372f12;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --paper: #191c19; --ink: #eceee6; --muted: #a6ada1; --elevated: #242923; --stroke: #3a4136; --talk: #e4e8d9; --talk-ink: #272e22; --veil-pearl: #c8c1b2; --veil-filament: #b8c4a7; }
+}
+html[data-theme="dark"] { --paper: #191c19; --ink: #eceee6; --muted: #a6ada1; --elevated: #242923; --stroke: #3a4136; --talk: #e4e8d9; --talk-ink: #272e22; --veil-pearl: #c8c1b2; --veil-filament: #b8c4a7; }
+.field-bg { background: none; }
+.quiet-room .stage { max-width: 480px; padding: calc(14px + env(safe-area-inset-top)) 26px calc(18px + env(safe-area-inset-bottom)); }
+.quiet-room .presence-surface { min-height: calc(100dvh - 32px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); align-items: stretch; text-align: left; min-width: 0; }
+.room-header, .room-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-shrink: 0; }
+.room-wordmark { font-size: 25px; font-weight: 550; letter-spacing: -.9px; }
+.room-wordmark > span { color: var(--veil-filament); }
+.room-link { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 44px; border: 0; background: transparent; color: var(--muted); font-size: 13px; font-weight: 450; padding: 8px 0; border-radius: 10px; }
+.room-link svg, .room-send svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+.room-center { display: flex; flex: 1; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 12px 0 38px; min-height: 360px; }
+.room-presence { width: min(84vw, 340px); height: clamp(200px, 31dvh, 270px); position: relative; transition: height 380ms cubic-bezier(.2,.7,.2,1), width 380ms cubic-bezier(.2,.7,.2,1); }
+.room-presence .presence { width: 100%; height: 100%; margin: 0; display: block; aspect-ratio: auto; }
+.room-invitation { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-weight: 400; font-size: clamp(32px, 8.3vw, 38px); letter-spacing: -.025em; line-height: 1.13; margin: 4px 0 17px; }
+.room-invitation em { font-weight: 400; }
+.quiet-room .mood { margin: 0 0 26px; max-width: 32ch; color: var(--muted); font-size: 12px; font-weight: 400; letter-spacing: .02em; line-height: 1.5; }
+.room-talk { min-width: 122px; min-height: 50px; border: 1px solid color-mix(in srgb, var(--talk) 90%, white); background: var(--talk); border-radius: 28px; color: var(--talk-ink); font-size: 14px; font-weight: 500; padding: 13px 24px; box-shadow: inset 0 1px 0 #ffffff16, 0 5px 14px #242a2014; transition: background 220ms ease, transform 160ms ease, box-shadow 160ms ease; }
+.room-talk::before { content: ""; display: inline-block; vertical-align: -2px; width: 12px; height: 14px; background: currentColor; margin-right: 10px; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 20'%3E%3Cg fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Crect x='5' y='1' width='6' height='11' rx='3'/%3E%3Cpath d='M2 9a6 6 0 0 0 12 0M8 15v4M5 19h6'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 20'%3E%3Cg fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round'%3E%3Crect x='5' y='1' width='6' height='11' rx='3'/%3E%3Cpath d='M2 9a6 6 0 0 0 12 0M8 15v4M5 19h6'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat; }
+[data-session="active"] .room-talk { background: var(--talk); color: var(--talk-ink); border-color: var(--talk); }
+[data-session="active"] .room-talk::before { width: 8px; height: 8px; vertical-align: 0; -webkit-mask: none; mask: none; border-radius: 2px; background: currentColor; }
+.room-session { font-size: 10px; color: var(--muted); margin: 12px 0 0; }
+.room-footer { margin-top: auto; padding: 8px 0 0; }
+.room-exchange { border-top: 1px solid var(--stroke); border-bottom: 1px solid var(--stroke); margin: 0 0 22px; padding: 5px 0; }
+.room-exchange summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 48px; font-size: 12px; color: var(--ink); cursor: pointer; list-style: none; }
+.room-exchange summary::-webkit-details-marker { display: none; }
+.room-fold-hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+.room-disclosure { width: 18px; height: 18px; fill: none; stroke: var(--muted); stroke-width: 1.4; stroke-linecap: round; transition: transform 200ms ease; }
+.room-exchange[open] .room-disclosure { transform: rotate(180deg); }
+.room-exchange .reply, .room-exchange .user-line { max-width: none; width: 100%; margin: 10px 0 18px; text-align: left; overflow-wrap: anywhere; line-height: 1.65; }
+.room-exchange .reply { font-size: 17px; }
+.room-exchange .user-line { font-size: 14px; color: var(--muted); }
+.room-exchange[open] > p { animation: room-reveal 240ms ease both; }
+.user-line:empty, .reply:empty { display: none; }
+[data-exchange="open"] .room-center { flex: 0; min-height: 0; padding: 0 0 16px; }
+[data-exchange="open"] .room-presence { height: 76px; width: 130px; }
+[data-exchange="open"] .room-invitation { display: none; }
+[data-exchange="open"] .mood { margin-bottom: 12px; }
+.quiet-room #text-form { width: 100%; margin: 8px 0 0; padding: 0; position: relative; }
+.room-input-row { display: flex; align-items: center; border-bottom: 1px solid var(--ink); gap: 8px; }
+.room-input-row #text { border: 0; border-radius: 0; background: transparent; box-shadow: none; min-width: 0; min-height: 54px; font-size: 16px; padding: 12px 0; flex: 1; }
+.room-send { width: 44px; height: 44px; border: 0; border-radius: 50%; flex-shrink: 0; background: var(--talk); color: var(--talk-ink); display: grid; place-items: center; }
+#room-write-close { margin-left: auto; display: flex; }
+[data-writing="true"] .room-center { flex: 0; min-height: 0; padding: 0 0 12px; }
+[data-writing="true"] .room-presence { height: 100px; width: 170px; }
+[data-writing="true"] .room-invitation { font-size: 26px; }
+[data-writing="true"] .room-footer { margin-top: 0; }
+.quiet-room #composer-chips { display: flex; }
+.quiet-room #follow-chips { display: flex; margin: 0 0 12px; }
+.quiet-room #follow-chips[hidden], .quiet-room #composer-chips[hidden] { display: none !important; }
+.evie-trust-good { color: var(--ink); }
+.evie-trust-bad { color: #8b3a32; }
+.evie-trust-warn { color: #7a5a20; }
+.quiet-room .sheet { z-index: 30; max-width: 480px; margin-inline: auto; top: max(5%, env(safe-area-inset-top)); border: 1px solid var(--stroke); border-bottom: 0; border-radius: 30px 30px 0 0; background: var(--elevated); padding: 30px 26px calc(28px + env(safe-area-inset-bottom)); backdrop-filter: none; box-shadow: 0 0 0 100vmax #11191035, 0 -8px 44px #10181012; animation: room-reveal 240ms cubic-bezier(.2,.7,.2,1) both; }
+.quiet-room .sheet h2 { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: 30px; font-weight: 400; letter-spacing: -.025em; padding-right: 48px; min-height: 44px; display: flex; align-items: center; }
+.quiet-room .sheet-x { float: right; margin: 0 -4px -44px 0; min-width: 44px; min-height: 44px; top: 12px; right: 18px; border: 1px solid var(--stroke); border-radius: 50%; background: var(--elevated); font-size: 15px; }
+.quiet-room .folio-grid { display: flex; flex-direction: column; gap: 0; margin-top: 14px; }
+.quiet-room .folio-card { display: flex; align-items: flex-start; flex-direction: column; justify-content: center; width: 100%; min-height: 70px; border: 0; border-radius: 10px; padding: 12px 24px 12px 0; background: transparent; box-shadow: none; color: var(--ink); position: relative; }
+.quiet-room .folio-card::after { content: ""; position: absolute; right: 4px; top: 30px; width: 5px; height: 5px; border-top: 1.4px solid var(--muted); border-right: 1.4px solid var(--muted); transform: rotate(45deg); }
+.quiet-room #look-btn::after { width: 12px; height: 9px; border: 1.4px solid var(--muted); border-radius: 3px; transform: none; }
+.room-tool-group { padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--stroke); }
+.room-tool-group:first-child { border-top: 0; margin-top: 0; }
+.quiet-room .room-tool-group h3 { margin: 0 0 6px; padding: 0; border: 0; font-size: 10px; font-weight: 550; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); }
+.quiet-room .folio-kicker { display: none; }
+.quiet-room .folio-card strong { font-size: 16px; font-weight: 500; letter-spacing: -.02em; }
+.quiet-room .folio-card > span:last-child { font-size: 13px; line-height: 1.5; color: var(--muted); margin-top: 4px; }
+.room-tool-search { width: 100%; font-size: 16px; min-height: 48px; border: 1px solid var(--stroke); background: var(--paper); color: var(--ink); border-radius: 14px; padding: 12px 15px; margin-top: 20px; }
+.quiet-room input, .quiet-room textarea, .quiet-room select { font-size: 16px; }
+.quiet-room .sheet.welcome, .quiet-room .sheet.lens { top: 0; border-radius: 0; box-shadow: none; padding-top: calc(40px + env(safe-area-inset-top)); }
+.evie-eyebrow { font-size: 10px; color: var(--muted); letter-spacing: .14em; }
+.evie-welcome-title { font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif; font-size: clamp(40px, 12vw, 54px); font-weight: 400; letter-spacing: -.025em; line-height: 1.12; margin: 48px 0 28px; }
+.evie-welcome-title em { font-weight: 400; }
+.room-connection-details { border-top: 1px solid var(--stroke); padding-top: 12px; margin-top: 28px; color: var(--muted); font-size: 12px; }
+.room-connection-details summary { min-height: 44px; padding-block: 12px; }
+.welcome .field { display: grid; gap: 10px; margin-top: 28px; font-size: 12px; line-height: 1.5; font-weight: 500; }
+.welcome .field input { min-height: 54px; background: var(--paper); border-radius: 14px; }
+.welcome .lead { font-size: 18px; line-height: 1.6; }
+.welcome #pair-btn { width: 100%; min-height: 52px; margin-top: 18px; }
+.quiet-room #camera-role-line, .quiet-room #update-line { border: 0; background: transparent; color: var(--muted); min-height: 44px; font-size: 11px; text-align: center; padding: 10px; }
+.room-call-bar { position: fixed; z-index: 40; bottom: calc(12px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 32px); display: flex; gap: 12px; align-items: center; padding: 8px 10px 8px 16px; border: 1px solid var(--stroke); border-radius: 32px; background: var(--elevated); box-shadow: var(--shadow); font-size: 12px; }
+.room-call-bar button { border: 0; min-height: 44px; border-radius: 23px; background: var(--talk); color: var(--talk-ink); padding: 10px 16px; }
+body[data-call-overlay="true"] .sheet { bottom: calc(var(--room-call-height, 64px) + 24px + env(safe-area-inset-bottom)); padding-bottom: 24px; border-bottom: 1px solid var(--stroke); border-radius: 30px; }
+.room-enable { min-height: 44px; border: 1px solid var(--stroke); border-radius: 24px; background: var(--elevated); color: var(--ink); padding: 10px 20px; margin-top: 12px; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 4px; }
+button:active:not(:disabled) { transform: scale(.97); }
+button:disabled { opacity: .5; }
+.segment button, .evie-queue-drop, .evie-routine-chip button, .evie-export-row button { min-width: 44px; min-height: 44px; }
+@keyframes room-reveal { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@media (max-height: 700px) { .room-presence { height: 180px; } .room-center { padding-bottom: 22px; min-height: 320px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } button:active:not(:disabled) { transform: none; } }
+@media (prefers-contrast: more) { :root { --muted: var(--ink); } .room-talk, .room-input-row, .room-tool-search { border-color: var(--ink); } }
+
+/* One borderless button family across legacy sheets and the quiet room.
+   Keyboard focus remains an outline, not a decorative border. */
+.quiet-room button { border: 0 !important; min-height: 44px; font-family: inherit; cursor: pointer; transition: background-color 160ms ease, color 160ms ease, transform 160ms ease, opacity 160ms ease; }
+.quiet-room button:disabled { cursor: default; opacity: .48; }
+.quiet-room .room-talk { width: 56px; min-width: 56px; height: 56px; min-height: 56px; padding: 0; display: inline-grid; place-items: center; border-radius: 50%; box-shadow: 0 5px 16px #242a2012; }
+.quiet-room .room-talk::before { width: 18px; height: 23px; margin: 0; }
+.quiet-room [data-session="active"] .room-talk::before { width: 12px; height: 12px; }
+.quiet-room .room-icon { width: 44px; min-width: 44px; height: 44px; padding: 0; flex-shrink: 0; }
+.quiet-room .room-icon svg { width: 23px; height: 23px; }
+.quiet-room .room-link { padding-inline: 10px; margin-inline: -10px; }
+.quiet-room .room-footer { gap: 24px; }
+.quiet-room .sheet-x { background: color-mix(in srgb, var(--ink) 5%, var(--elevated)); box-shadow: none; }
+.quiet-room .ghost, .quiet-room .secondary, .quiet-room .segment button, .quiet-room .evie-export-row button, .quiet-room .evie-routine-chip button { border-radius: 14px; padding: 12px 16px; background: color-mix(in srgb, var(--ink) 5%, var(--elevated)); color: var(--ink); }
+.quiet-room .segment { gap: 6px; }
+.quiet-room .segment button.on, .quiet-room .choice-list button.on { background: var(--talk); color: var(--talk-ink); }
+.quiet-room .folio-card { padding: 14px 28px 14px 10px; margin-inline: -10px; width: calc(100% + 20px); }
+.quiet-room button:active:not(:disabled) { transform: scale(.98); }
+.quiet-room button[aria-busy="true"] { opacity: .65; cursor: progress; }
+@media (hover: hover) {
+  .quiet-room .room-link:hover, .quiet-room .folio-card:hover { background: color-mix(in srgb, var(--ink) 4%, transparent); }
+  .quiet-room .room-talk:hover { filter: brightness(1.06); }
+}
+@media (prefers-reduced-motion: reduce) { .quiet-room button { transition: none; } .quiet-room button:active:not(:disabled) { transform: none; } }

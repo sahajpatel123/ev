@@ -93,10 +93,14 @@ def test_blocked_operations_never_prepare() -> None:
         assert "won't" in result["spoken"].lower() or "won't" in result["spoken"]
 
 
-def test_timer_canary_requires_native_then_prepares() -> None:
-    missing = _create("create_timer", duration_minutes=2)
-    assert missing["ok"] is False
-    assert missing["failure"] == "NATIVE_SHELL_REQUIRED"
+def test_timer_on_pwa_is_evie_local_not_clock() -> None:
+    local = _create("create_timer", duration_minutes=2)
+    assert local["ok"] is True
+    assert local["method"] == "pwa_local"
+    assert (local.get("card") or {}).get("pwa_kind") == "local_timer"
+    spoken = (local.get("spoken") or "").lower()
+    assert "clock" in spoken
+    assert "not clock" in spoken or "evie" in spoken
     _handshake()
     ready = _create("create_timer", duration_minutes=2)
     assert ready["ok"] is True
@@ -106,6 +110,19 @@ def test_timer_canary_requires_native_then_prepares() -> None:
     assert ready.get("native_execute") is True
     assert not ready.get("launch_url")
     assert "timer" in ready["spoken"].lower() or "setting" in ready["spoken"].lower()
+
+
+def test_call_with_name_and_number_is_tel_handoff() -> None:
+    result = _create("call_contact", contact_query="Rahul", phone_number="+14155552671")
+    assert result["ok"] is True, result
+    assert result["method"] == "web_handoff"
+    url = str(result.get("open_url") or (result.get("card") or {}).get("open_url") or "")
+    assert url.startswith("tel:")
+    assert "14155552671" in url.replace(" ", "")
+    spoken = str(result.get("spoken") or "")
+    assert "14155552671" not in spoken
+    assert "Rahul" in spoken or "Phone" in spoken or "call" in spoken.lower()
+    assert "14155552671" not in str((result.get("card") or {}).get("target") or "")
 
 
 def test_maps_layer_a_does_not_need_bridge() -> None:
@@ -280,6 +297,7 @@ def test_sanitize_complete_keeps_minimal_choices_only() -> None:
 
 def test_infer_canaries_from_text() -> None:
     assert infer_from_text("Set a timer for two minutes")["operation"] == "create_timer"
+    assert infer_from_text("Start a 10 minute timer")["operation"] == "create_timer"
     assert infer_from_text("Remind me in ten minutes to drink water")["operation"] == "create_reminder"
     assert infer_from_text("Call Sahil")["contact_query"] == "Sahil"
     msg = infer_from_text("Message Alex that Evie mobile test")
