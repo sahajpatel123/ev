@@ -17,6 +17,28 @@ from app.memory.life_archive.parse import parse_record
 from app.models import Event, Memory
 
 
+def test_archive_root_prefers_env_then_repo_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.memory.life_archive import classify as classify_mod
+
+    monkeypatch.setenv("EV_LIFE_ARCHIVE_ROOT", str(tmp_path))
+    assert classify_mod.archive_root() == tmp_path
+
+    monkeypatch.delenv("EV_LIFE_ARCHIVE_ROOT", raising=False)
+    repo = tmp_path / "repo-archive"
+    (repo / "whatsapp-chat").mkdir(parents=True)
+    monkeypatch.setattr(classify_mod, "_REPO_ARCHIVE_ROOT", repo)
+    assert classify_mod.archive_root() == repo
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    legacy = tmp_path / "legacy-home"
+    monkeypatch.setattr(classify_mod, "_REPO_ARCHIVE_ROOT", empty)
+    monkeypatch.setattr(classify_mod, "_LEGACY_ARCHIVE_ROOT", legacy)
+    assert classify_mod.archive_root() == legacy
+
+
 def _archive(tmp_path: Path) -> Path:
     apple = tmp_path / "apple"
     google = tmp_path / "google"
@@ -340,7 +362,8 @@ def test_classify_shelf_is_a_short_path() -> None:
     assert classify_shelf("any new notifications") == "inbox"
     assert classify_shelf("any new mail") == "mail"
     assert classify_shelf("any new email") == "mail"
-    assert classify_shelf("any new messages") == "chats"
+    assert classify_shelf("any new messages") == "inbox"
+    assert classify_shelf("recent messages") == "inbox"
     assert classify_shelf("What's Rahul's email?") == "contacts"
     assert classify_shelf("Is there any new notification for me in WhatsApp?") == "chats"
     assert classify_shelf("do you know me") == "familiarity"
@@ -493,7 +516,6 @@ def test_life_channel_word_logic() -> None:
     from app.memory.life_archive.locate import classify_shelf, life_channel
 
     imessage = [
-        "any new messages",
         "who texted me",
         "check my texts",
         "what's on iMessage",
@@ -532,10 +554,12 @@ def test_life_channel_word_logic() -> None:
         assert life_channel(phrase) == "contacts", phrase
     assert life_channel("who is Maya?") is None
     assert life_channel("any new notifications") is None
+    assert life_channel("recent messages") is None
+    assert life_channel("any new messages") is None
     assert life_channel("tell me about my conversations with different people") is None
     assert classify_shelf("What's Rahul's email?") == "contacts"
     assert select_tool("What's Rahul's email?").selected == "resolve_contact"
-    assert select_tool("any new WhatsApp messages").selected == "recall_history"
+    assert select_tool("any new WhatsApp messages").selected == "list_messages"
     assert select_tool("Who texted me?").selected == "list_messages"
     assert select_tool("check my inbox").selected == "list_mail"
 
@@ -1458,4 +1482,76 @@ async def test_correspondence_desk_waiting_stitch_pickup_climate_starts(
     )
     assert "leaving hanging" not in spoken_this.lower()
     assert is_chat_desk_query("what did we talk about?") is False
+
+
+def test_recency_idioms_read_live_copies_not_archive_tours() -> None:
+    from app.memory.life_archive.locate import (
+        _chat_person_query_token,
+        classify_shelf,
+        is_live_now_ask,
+    )
+
+    for phrase in (
+        "what are my recent whatsapp messages",
+        "latest whatsapp messages",
+        "last whatsapp messages",
+        "catch me up on whatsapp",
+        "up to speed on whatsapp",
+        "did I miss anything on whatsapp",
+        "any word on whatsapp",
+        "what is new on whatsapp",
+        "catch me up on mail",
+        "did I miss any mail",
+    ):
+        assert is_live_now_ask(phrase) is True, phrase
+    # Aisle tours and named history stay off the live-now path.
+    assert is_live_now_ask("tell me about my conversations with different people") is False
+    assert is_live_now_ask("What did Alex say on WhatsApp?") is False
+    # Channel words are never a person; real names still resolve.
+    assert _chat_person_query_token("catch me up on whatsapp") == ""
+    assert _chat_person_query_token("catch me up on mail") == ""
+    assert _chat_person_query_token("catch me up on everything") == ""
+    assert _chat_person_query_token("catch me up on Ada") == "ada"
+    # Shelf routing: person forms stay chats, channel-less catch-up is inbox.
+    assert classify_shelf("catch me up on Ada") == "chats"
+    assert classify_shelf("any word from Ada") == "chats"
+    assert classify_shelf("catch me up on everything") == "inbox"
+    assert classify_shelf("what did I miss") == "inbox"
+    assert classify_shelf("any new notifications") == "inbox"
+    assert classify_shelf("catch me up on whatsapp") == "chats"
+    assert classify_shelf("up to speed on whatsapp") == "chats"
+    assert classify_shelf("catch me up on mail") == "mail"
+    # Bare channel-less recency reads land in the mixed inbox, never send.
+    assert classify_shelf("latest message from mansi") == "inbox"
+    assert classify_shelf("last message from mom") == "inbox"
+    # "did X call" is call history; "did you call X" asks about Evie, not mom.
+    assert classify_shelf("did mom call") == "calls"
+    assert is_live_now_ask("did mom call") is True
+    assert classify_shelf("did i call mom") == "calls"
+    assert classify_shelf("will you call mom") is None
+    assert is_live_now_ask("check whatsapp") is True
+
+
+def test_chat_search_tokens_digest_empty_person_filtered() -> None:
+    from app.memory.life_archive.locate import chat_search_tokens
+
+    # Digest asks carry no filter — every word is recency/channel filler.
+    for phrase in (
+        "any new messages",
+        "who texted me",
+        "read my texts",
+        "see my messages",
+        "get my messages",
+        "open my messages",
+        "check whatsapp",
+        "latest whatsapp messages",
+        "what are my recent whatsapp messages",
+        "tell me about my chats",
+    ):
+        assert chat_search_tokens(phrase) == [], phrase
+    # Person and topic asks filter; a named person wins outright.
+    assert chat_search_tokens("messages from Mansi") == ["mansi"]
+    assert chat_search_tokens("texts from mom") == ["mom"]
+    assert chat_search_tokens("messages about the invoice") == ["invoice"]
+    assert chat_search_tokens("what did Mansi say") == ["mansi"]
 

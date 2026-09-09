@@ -163,7 +163,7 @@ CALL_HISTORY_RE = re.compile(
     r"miss(?:ed)? (?:a |any )?calls?|"
     r"call history|recent calls?|last call|"
     r"calls? i (?:got|missed|received)|"
-    r"did .{1,40} call me|anyone call|"
+    r"did (?!(?:you|evie)\b).{1,40} call(?!\s+(?:that|this|it)\b)(?: me)?|anyone call|"
     r"incoming calls?|outgoing calls?|"
     r"new calls?|live calls?|call updates"
     r")\b",
@@ -174,7 +174,11 @@ _NOTIFICATION_ASK = re.compile(
     r"notifications?|unread|"
     r"did i miss anything|"
     r"anything new|"
-    r"any updates?|new updates?"
+    r"any updates?|new updates?|"
+    r"catch(?:ing|ed)? (?:me |us )?up|"
+    r"up to speed|"
+    r"(?:what |anything |something )?did i miss(?:ed)?|"
+    r"miss(?:ed|ing)? anything"
     r")\b",
     re.IGNORECASE,
 )
@@ -185,9 +189,10 @@ _MAIL_WORD = re.compile(
 )
 _IMESSAGE_WORD = re.compile(
     r"\b(?:imessage|i-message|sms|rcs)\b|"
-    r"\b(?:who texted|new messages|my messages|the messages|any messages)\b|"
-    r"\b(?:messages|texts|texted|messaged|message me)\b|"
-    r"\btext (?:me|from|from me)\b",
+    r"\b(?:who texted|new texts|my texts|the texts|any texts)\b|"
+    r"\b(?:texts|texted|texting)\b|"
+    r"\btext (?:me|from|from me)\b|"
+    r"\bmessage me\b",
     re.IGNORECASE,
 )
 _CONTACTS_WORD = re.compile(
@@ -232,12 +237,24 @@ def is_live_now_ask(query: str) -> bool:
     if _NOTIFICATION_ASK.search(blob):
         return True
     channel = life_channel(query)
-    if channel == "whatsapp" and re.search(r"\b(new|live|update|updates|unread|any)\b", blob):
+    if channel == "whatsapp" and re.search(
+        r"\b(new|live|update|updates|unread|any|recent|latest|last|catch|speed|miss|check)\b",
+        blob,
+    ):
         return True
-    if channel == "mail" and re.search(r"\b(new|live|unread|recent|any|check|read)\b", blob):
+    if channel == "mail" and re.search(
+        r"\b(new|live|unread|recent|latest|last|catch|speed|miss|any|check|read)\b",
+        blob,
+    ):
         return True
     if channel == "imessage" and re.search(
-        r"\b(new|live|unread|recent|any|who texted|texts?|messages?)\b", blob
+        r"\b(new|live|unread|recent|latest|last|catch|speed|miss|check|any|who texted|texts?|messages?)\b",
+        blob,
+    ):
+        return True
+    if channel is None and re.search(
+        r"\b(new|live|unread|recent|latest|last|any|check)\b.{0,32}\b(messages?|chats?|texts?)\b",
+        blob,
     ):
         return True
     if re.search(
@@ -253,16 +270,37 @@ _CHAT_ASK_WEAK = frozenset(
         "alert",
         "alerts",
         "any",
+        "anything",
         "anyone",
         "anybody",
         "been",
+        "brief",
+        "briefing",
+        "bring",
+        "brings",
+        "bringing",
+        "brought",
+        "catch",
+        "caught",
         "check",
         "chat",
         "chats",
+        "chatted",
+        "chatting",
         "conversation",
         "conversations",
         "different",
+        "display",
+        "earlier",
+        "earliest",
         "everybody",
+        "everything",
+        "fetch",
+        "fetched",
+        "fetching",
+        "get",
+        "gets",
+        "getting",
         "had",
         "everyone",
         "family",
@@ -270,29 +308,80 @@ _CHAT_ASK_WEAK = frozenset(
         "inbox",
         "latest",
         "live",
+        "load",
+        "loaded",
+        "loading",
+        "look",
+        "looked",
+        "looking",
+        "looks",
         "message",
         "messages",
+        "messaged",
+        "messaging",
+        "miss",
+        "missed",
+        "missing",
         "new",
+        "newer",
+        "newest",
         "notification",
         "notifications",
+        "older",
+        "oldest",
+        "open",
+        "opened",
+        "opening",
+        "opens",
         "others",
         "people",
         "person",
+        "pull",
+        "pulled",
+        "pulling",
+        "read",
+        "reads",
+        "reading",
+        "receive",
+        "receives",
+        "receiving",
         "recent",
+        "see",
+        "seen",
+        "seeing",
+        "send",
+        "sends",
+        "sending",
+        "sent",
         "someone",
         "somebody",
+        "something",
+        "speed",
+        "arrive",
+        "arrived",
+        "arriving",
+        "arrival",
         "text",
         "texts",
+        "texted",
+        "texting",
         "there",
         "time",
         "times",
         "unread",
+        "up",
         "update",
         "updates",
         "various",
+        "view",
+        "views",
+        "viewing",
+        "viewed",
         "whatsapp",
         "imessage",
         "sms",
+        "word",
+        "words",
     }
 )
 _SEND_NOW = re.compile(
@@ -350,11 +439,11 @@ _YEAR = re.compile(r"\b(20\d{2})\b")
 _LIVE_PREFIX = re.compile(
     r"^\s*(?:(?:hey|hi|hello|ok|okay|so)[,!\s]+)*"
     r"(?:eve|evie|e\s*v)[,!\s]+"
-    r"(?:(?:can|could|would)\s+you\s+|please\s+)?",
+    r"(?:(?:can|could|would|will)\s+you\s+|please\s+)?",
     re.IGNORECASE,
 )
 _POLITE_ASK = re.compile(
-    r"^\s*(?:(?:can|could|would)\s+you\s+|please\s+)",
+    r"^\s*(?:(?:can|could|would|will)\s+you\s+|please\s+)",
     re.IGNORECASE,
 )
 _CHAT_WITH_PERSON = re.compile(
@@ -516,6 +605,17 @@ def classify_shelf(query: str, *, people: list[str] | tuple[str, ...] | None = N
     # Her own captures are camera.observation, not the Photos takeout drawer.
     if is_visual_recall_query(query):
         return None
+    # Send acts are jobs for send_message, never archive reads. The _SEND_NOW
+    # / _ACT_NOW verb lists below miss shapes like "send an email to X" or
+    # "whatsapp Mansi hi" — the send grammar is the complete guard.
+    # Incomplete sends ("email mom", no body) also open nothing: Mini asks
+    # for the body instead of Evie reading the wrong drawer.
+    from app.ev.send_intent import incomplete_send_recipient, parse_send_intent
+
+    if parse_send_intent(query or "") is not None:
+        return None
+    if incomplete_send_recipient(query or ""):
+        return None
     if CALL_HISTORY_RE.search(blob):
         return "calls"
     channel = life_channel(query)
@@ -533,7 +633,13 @@ def classify_shelf(query: str, *, people: list[str] | tuple[str, ...] | None = N
         blob,
     ):
         return "photos"
-    if _NOTIFICATION_ASK.search(blob):
+    if _NOTIFICATION_ASK.search(blob) and not is_chat_with_other_person(query or ""):
+        return "inbox"
+    if channel is None and re.search(
+        r"\b(latest|last|recent|new|unread)\b.{0,24}\bmessages?\b", blob
+    ):
+        # Bare "latest message from Mansi" names no channel — the mixed
+        # inbox (live peek + name filter) beats archive-None/chat fallback.
         return "inbox"
     if _SEND_NOW.search(query or ""):
         return None
@@ -639,6 +745,37 @@ _GENERIC_CHAT_NAMES = frozenset(
         "often",
         "usually",
         "today",
+        # Catch-up pronouns are never a person ("catch me up on everything").
+        "everything",
+        "anything",
+        "something",
+        # Channel/app words are never a person ("catch me up on whatsapp").
+        "whatsapp",
+        "imessage",
+        "sms",
+        "smses",
+        "message",
+        "messages",
+        "text",
+        "texts",
+        "chat",
+        "chats",
+        "conversation",
+        "conversations",
+        "mail",
+        "mails",
+        "email",
+        "emails",
+        "gmail",
+        "inbox",
+        "inboxes",
+        "messenger",
+        "notification",
+        "notifications",
+        "alert",
+        "alerts",
+        "phone",
+        "mobile",
     }
 )
 
@@ -1047,6 +1184,22 @@ def locate_tokens(query: str) -> list[str]:
     return [token for token in tokens if token not in shelf_words][:8]
 
 
+def chat_search_tokens(query: str) -> list[str]:
+    """Content tokens for a chats-aisle live search. [] means unfiltered digest.
+
+    Single source of truth for recall (locate_archive) and the list_messages
+    tool: weak filler first, then a named person wins outright (cards and
+    live lines do not say "time"/"last", so AND-ing them kills matches).
+    """
+    toks = [
+        token
+        for token in locate_tokens(query)
+        if token not in _WEAK_TOKENS and token not in _CHAT_ASK_WEAK
+    ]
+    person = _chat_person_query_token(query)
+    return [person] if person else toks
+
+
 async def locate_archive(
     session: AsyncSession,
     query: str,
@@ -1076,12 +1229,11 @@ async def locate_archive(
         distinctive = selector_tokens(query)
     elif chosen in {"inbox", "contacts"}:
         distinctive = [token for token in distinctive if token not in _CHAT_ASK_WEAK]
-    elif chosen in {"chats", "people"}:
+    elif chosen == "chats":
+        distinctive = chat_search_tokens(query)
+    elif chosen == "people":
         distinctive = [token for token in distinctive if token not in _CHAT_ASK_WEAK]
     person_token = _chat_person_query_token(query)
-    if chosen == "chats" and person_token:
-        # "last time" must not AND with the name — cards do not say "time".
-        distinctive = [person_token]
     if chosen == "chats" and not distinctive:
         types = ("life.chat.thread",)
     limit = max(1, min(k, MAX_HITS))

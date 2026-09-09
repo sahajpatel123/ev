@@ -559,6 +559,58 @@ def _speak_channel(query: str, items: list[dict] | None = None) -> str:
     return "WhatsApp"
 
 
+def _freshness_diag(kind: str) -> str:
+    """Explain empty WhatsApp/mail/Messages with sync state. Empty when truly just empty."""
+    try:
+        from app.services.life_stream_daemon import (
+            ensure_background_sync,
+            life_freshness,
+        )
+
+        fresh = life_freshness()
+        if not fresh.get("ok"):
+            return ""
+        info = fresh.get(kind) or {}
+        if not info.get("readable"):
+            if kind == "whatsapp":
+                return (
+                    "I can't read WhatsApp on this Mac right now — "
+                    "WhatsApp Desktop has to be logged in here with Full Disk Access for Evie."
+                )
+            if kind == "imessage":
+                return (
+                    "I can't read Messages on this Mac right now — "
+                    "grant Evie Full Disk Access so it can see your texts."
+                )
+            return (
+                "I can't read mail on this Mac right now — "
+                "grant Evie Full Disk Access so it can see the Mail index."
+            )
+        if kind == "imessage":
+            # chat.db syncs via continuity — no app to nudge. Readable means
+            # an empty result is genuinely empty.
+            return ""
+        age = info.get("mtime_age_s")
+        if isinstance(age, (int, float)) and age > 7200:
+            try:
+                ensure_background_sync()
+            except Exception:
+                pass
+            hours = int(age // 3600)
+            if kind == "whatsapp":
+                return (
+                    f"WhatsApp on this Mac hasn't synced in about {hours} hours. "
+                    "I nudged it to sync in the background — ask again in a minute."
+                )
+            return (
+                f"Mail on this Mac hasn't synced in about {hours} hours. "
+                "I nudged it to sync in the background — ask again in a minute."
+            )
+        return ""
+    except Exception:
+        return ""
+
+
 def _spoken_empty_connected(query: str) -> str:
     from app.memory.life_archive.locate import (
         CALL_HISTORY_RE,
@@ -570,6 +622,29 @@ def _spoken_empty_connected(query: str) -> str:
     blob = (query or "").lower()
     channel = life_channel(query)
     if channel == "whatsapp" or "whatsapp" in blob:
+        from app.memory.life_archive.locate import _CHAT_WITH_OTHER, _QUOTE_FROM_PERSON
+
+        name = ""
+        match = _CHAT_WITH_OTHER.search(query or "")
+        if match:
+            name = next((group for group in match.groups() if group), "")
+        if not name:
+            quoted = _QUOTE_FROM_PERSON.search(query or "")
+            name = quoted.group(1) if quoted else ""
+        name = (name or "").strip(" .")
+        if name:
+            return f"I don't see WhatsApp with {name} on this Mac right now."
+        diag = _freshness_diag("whatsapp")
+        if diag:
+            return diag
+        from app.memory.life_archive.locate import chat_search_tokens as _wa_tokens
+
+        _wa_structural = _wa_tokens(query or "")
+        if len(_wa_structural) == 1 and re.search(r"\bfrom\b", blob):
+            _wa_word = _wa_structural[0]
+            _wa_hit = re.search(r"\b" + re.escape(_wa_word) + r"\b", query or "", re.IGNORECASE)
+            _wa_display = _wa_hit.group(0) if _wa_hit else _wa_word.title()
+            return f"I don't see WhatsApp from {_wa_display} on this Mac right now."
         return (
             "I don't see new WhatsApp on this Mac right now. "
             "WhatsApp Desktop has to be logged in here."
@@ -579,10 +654,51 @@ def _spoken_empty_connected(query: str) -> str:
     if re.search(r"\bphotos?\b", blob) and is_live_now_ask(query):
         return "I don't see new photos on this Mac right now."
     if channel == "mail" or re.search(r"\b(e-?mails?|gmail|mails?)\b", blob):
+        from app.memory.mail_speak import mail_selector
+
+        who = mail_selector(query).who
+        if who:
+            return f"I don't see mail from {who} on this Mac right now."
+        diag = _freshness_diag("mail")
+        if diag:
+            return diag
         return "I don't see new mail on this Mac right now."
     if channel == "contacts" or re.search(r"\bcontacts?\b", blob):
         return "I don't see that contact on this Mac right now."
     if channel == "imessage":
+        diag = _freshness_diag("imessage")
+        if diag:
+            return diag
+        from app.memory.life_archive.locate import (
+            _chat_person_query_token as _im_person,
+            chat_search_tokens as _im_tokens,
+        )
+
+        _im_name = _im_person(query or "")
+        if _im_name:
+            return f"I don't see messages from {_im_name[:1].upper() + _im_name[1:]} on this Mac right now."
+        _im_structural = _im_tokens(query or "")
+        if len(_im_structural) == 1 and re.search(r"\bfrom\b", blob):
+            _im_word = _im_structural[0]
+            _im_hit = re.search(r"\b" + re.escape(_im_word) + r"\b", query or "", re.IGNORECASE)
+            _im_display = _im_hit.group(0) if _im_hit else _im_word.title()
+            return f"I don't see messages from {_im_display} on this Mac right now."
+        return "I don't see new messages on this Mac right now."
+    if re.search(r"\b(messages?|texts?|chats?)\b", blob):
+        from app.memory.life_archive.locate import (
+            _chat_person_query_token as _mix_person,
+            chat_search_tokens as _mix_tokens,
+        )
+
+        _mix_name = _mix_person(query or "")
+        _mix_structural = _mix_tokens(query or "")
+        if _mix_name or (len(_mix_structural) == 1 and re.search(r"\bfrom\b", blob)):
+            _mix_word = _mix_name or _mix_structural[0]
+            _mix_hit = re.search(
+                r"\b" + re.escape(_mix_word) + r"\b", query or "", re.IGNORECASE
+            )
+            _mix_display = _mix_hit.group(0) if _mix_hit else _mix_word.title()
+            return f"I don't see messages from {_mix_display} on this Mac right now."
         return "I don't see new messages on this Mac right now."
     if _NOTIFICATION_ASK.search(blob):
         return "I don't see new messages or calls on this Mac right now."
@@ -877,11 +993,26 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
         chat_row = (
             kind == "life.chat.excerpt"
             or str(kind).startswith("message.")
-            or (live_row and bool(_LIVE_CHAT_LINE.match(text)))
+            or (
+                live_row
+                and kind not in {
+                    "mail.envelope.received",
+                    "call.history.recorded",
+                    "photo.library.indexed",
+                    "contact.discovered",
+                    "contact.updated",
+                }
+                and bool(_LIVE_CHAT_LINE.match(text))
+            )
         )
         if chat_row or now_row:
             if text not in excerpts:
                 excerpts.append(text[:400])
+            # Mail/call/photo/contact envelopes are never chat beats, even when
+            # the subject contains a colon ("Run failed: ...").
+            if isinstance(item, dict) and now_row:
+                other_live.append(item)
+                continue
             beat = _parse_chat_beat(item if isinstance(item, dict) else {"text": text})
             if beat:
                 chat_items.append(beat)
@@ -1078,6 +1209,13 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
                 if isinstance(item, dict) and is_chat_hit(item)
             ]
             spoken = speak_messages(query, chat_rows)
+            if spoken and extra:
+                from app.memory.life_archive.locate import life_channel
+
+                if life_channel(query) is None:
+                    # Mixed inbox ("any new notifications", "what did I miss"):
+                    # chats alone drop the mail/calls half of the digest.
+                    return f"{spoken} {extra}".strip()[:520]
             if spoken:
                 return spoken[:520]
             if extra:

@@ -2,6 +2,9 @@
 
 Mini is the mouth and may still call tools. Spark pokes first on work-shaped
 turns so gpt-realtime-2.1-mini does not improvise the job. Evie executes.
+
+MAC LIVE COMPANION: mail/iMessage/WhatsApp-on-Mac reads are life/recall
+tools, never chat. Do not retune this for iPhone PWA / device-gateway.
 """
 
 from __future__ import annotations
@@ -80,10 +83,12 @@ act:
 - files: open/move/rename/find a file on the laptop (not write a program).
 - home: lights, locks, garage, house devices.
 - computer: open/quit an app, click the Mac, drive the desktop.
-- life: send a message, place a call, live inbox/mail/calendar right now.
+- life: send a message, place a call, live inbox/mail/iMessage/calendar right now — including "did I get any email from X", "any new mail", latest messages. NOT chat.
 - desk: pin, HUD, notes, a physical thing on the Mac desk. Not a WhatsApp recap.
 
+If Evie just handled a mail/message/calendar item, a follow-up about that same item (when it arrived, who sent it, what it was about, read it out) is still life, not chat. Do not wait for the word mail or inbox to appear again.
 WhatsApp hanging / leave-it / colliding plans / thread climate is recall, not chat, not desk.
+A question about whether mail or texts arrived is life, not chat. Mini must not repeat the question.
 If they asked Evie to DO something in the world or in a project, it is not chat.
 Return JSON only.
 """
@@ -102,9 +107,15 @@ def maybe_spark_act_utterance(text: str | None) -> bool:
     """True when Spark should poke. Greetings stay Mini."""
 
     raw = (text or "").strip()
-    if not raw or len(raw) < 8:
+    if not raw:
         return False
     if _CHAT_RE.match(raw):
+        return False
+    from app.ev.spark_task import last_life_job
+
+    if last_life_job() is not None:
+        return True
+    if len(raw) < 8:
         return False
     from app.ev.code_studio import looks_like_background_task_ops, looks_like_long_code_goal
     from app.ev.luna_code import looks_like_code_continue, looks_like_code_request
@@ -161,20 +172,37 @@ def fallback_act(utterance: str) -> ActDecision | None:
 
     if parse_home_act(raw):
         return ActDecision(act="home", source="fallback")
+    from app.ev.send_intent import incomplete_send_recipient
+    from app.ev.tool_select import _live_list_action, resolve_live_action
+
+    if incomplete_send_recipient(raw):
+        # Recipient but no body: Mini asks for the body. Never a blind
+        # memory search, never a mailbox read, never a computer goal.
+        # Must precede the file/computer checks: bare "mail" matches the
+        # computer app-name list and would hijack "mail mom".
+        return ActDecision(act="life", source="fallback")
+    # A genuine messaging live-read ("messages mom") is never a file or
+    # computer job, even though "messages"/"mail" match the computer
+    # app-name list. Channel mentions without read triggers ("the whatsapp
+    # backup file") still fall through to the checks below.
+    messaging_read = _live_list_action(raw) is not None
     from app.ev.laptop_files import looks_like_file_task
 
-    if looks_like_file_task(raw):
+    if not messaging_read and looks_like_file_task(raw):
         return ActDecision(act="files", source="fallback")
     from app.ev.computer_strategy import looks_like_computer_task
 
-    if looks_like_computer_task(raw):
+    if not messaging_read and looks_like_computer_task(raw):
         return ActDecision(act="computer", source="fallback")
-    from app.ev.tool_select import resolve_live_action
-
     resolved = resolve_live_action(raw)
     if resolved is None:
         return None
     name = resolved[0]
+    from app.ev.spark_task import last_life_job
+
+    prior = last_life_job()
+    if prior is not None and name in {"search_memory", "recall", "recall_history"}:
+        return ActDecision(act="life", source="fallback")
     if name in {"list_mail", "list_messages", "calendar_read", "place_call", "send_message", "resolve_contact"}:
         return ActDecision(act="life", source="fallback")
     if name in {"search_memory", "recall", "recall_history"}:
@@ -193,7 +221,12 @@ def fallback_act(utterance: str) -> ActDecision | None:
 
 
 async def decide_owner_act(utterance: str) -> ActDecision | None:
-    """Spark pokes work turns. Look/recall go through Spark; obvious code/search/home do not wait."""
+    """Spark 1.3 Contributor decides work turns. Mini only speaks.
+
+    Obvious code/search/home still skip the wait. Mail, messages, and
+    recall go through Spark so digest vs particular vs chat is not a
+    regex. Fallback remains if Spark is dark or returns chat.
+    """
 
     fallback = fallback_act(utterance)
     if fallback is not None and fallback.act in _OBVIOUS_NO_WAIT:
@@ -226,8 +259,21 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
         from app.ev.tool_select import resolve_live_action
 
         resolved = resolve_live_action(raw)
-        if resolved is not None and resolved[0] in {"recall", "recall_history", "search_memory"}:
+        if resolved is not None and resolved[0] in {
+            "list_mail",
+            "list_messages",
+            "calendar_read",
+            "recall",
+            "recall_history",
+            "search_memory",
+        }:
             return _safe_live_tool(*resolved)
+        from app.ev.send_intent import incomplete_send_recipient
+
+        if incomplete_send_recipient(raw):
+            # An incomplete send is not a memory question. Let Mini ask
+            # for the missing body instead of searching history.
+            return None
         return _safe_live_tool("recall", {"query": raw[:1000]})
     if act == "search":
         from app.search.live import is_weather_query
@@ -262,11 +308,31 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
             return _safe_live_tool("home_act", parsed)
         return _safe_live_tool("home_status", {})
     if act == "life":
+        from app.ev.spark_task import last_life_job
         from app.ev.tool_select import resolve_live_action
 
         resolved = resolve_live_action(raw)
+        prior = last_life_job()
+        live_names = {
+            "list_mail",
+            "list_messages",
+            "calendar_read",
+            "place_call",
+            "send_message",
+            "resolve_contact",
+        }
+        if resolved is not None and resolved[0] in live_names:
+            return _safe_live_tool(*resolved)
+        if prior is not None and prior.tool:
+            return _safe_live_tool(prior.tool, {"query": raw[:400]})
         if resolved is not None:
             return _safe_live_tool(*resolved)
+        from app.ev.send_intent import incomplete_send_recipient
+
+        if incomplete_send_recipient(raw):
+            # No parse, no prior, no body: Mini asks for it. A blind
+            # memory search here answers a question nobody asked.
+            return None
         return _safe_live_tool("search_memory", {"query": raw[:400]})
     if act == "desk":
         from app.ev.desk_acts import parse_desk_act
@@ -313,13 +379,32 @@ async def _spark_decide(utterance: str) -> str | None:
         from app.contracts import ChatMessage
         from app.gateway.muse_spark import muse_spark_provider
 
+        prior = None
+        try:
+            from app.ev.spark_task import last_life_job
+
+            prior = last_life_job()
+        except Exception:
+            prior = None
+        prior_line = ""
+        if prior is not None:
+            prior_line = (
+                f"Evie just handled a {prior.family} item via {prior.tool}: "
+                f"who={prior.who or '(unknown)'}, when={prior.when or 'unknown'}, "
+                f"subject={prior.subject or '(none)'}. "
+                "Follow-ups about that item are still life, not chat."
+            )
         result = await asyncio.wait_for(
             muse_spark_provider().chat_structured(
                 [
                     ChatMessage(role="system", content=_SPARK_SYSTEM),
                     ChatMessage(
                         role="user",
-                        content=f"Owner said: {(utterance or '')[:1500]}",
+                        content="\n".join(
+                            part
+                            for part in (prior_line, f"Owner said: {(utterance or '')[:1500]}")
+                            if part
+                        ),
                     ),
                 ],
                 schema=_ACT_SCHEMA,

@@ -24,4 +24,6 @@ backend/eval/previous-run.json
 # Owner memory mirrors are private/local and rebuildable. Never commit them.
 /memory/
 backend/memory/
+# Owner WhatsApp takeout copies for named-chat recaps. Never commit.
+/data/life-archive/
 WORKSPACE_GUIDE.md

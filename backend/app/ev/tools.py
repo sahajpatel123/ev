@@ -131,13 +131,17 @@ TOOL_SPECS: list[dict[str, Any]] = [
         # stack. Same substrate as search_memory; different model surface.
         "name": "recall",
         "description": (
-            "Recall the owner's history: people, chats, photos, notes, mail, "
-            "contacts, past conversations, decisions, and what was left "
-            "unfinished. You already know this owner; that life is not new. "
-            "Use when they ask about the past, someone they know, or whether "
-            "you know them. Returns a small evidence pack; answer from it. If "
-            "empty for the specific question, say you cannot find that "
-            "particular record — never that you have no history with them."
+            "Recall the owner's history AND current inbox: people, chats, "
+            "photos, notes, mail, contacts, past conversations, decisions, "
+            "what was left unfinished, plus the latest WhatsApp, iMessage, "
+            "calls, mail, and mixed notifications from this Mac's live "
+            "copies. You already know this owner; that life is not new. "
+            "Use when they ask about the past, someone they know, whether "
+            "you know them, or what is recent/new/unread — recent messages, "
+            "recent mail, latest chats, or catching up. Returns a small "
+            "evidence pack; answer from it. If empty for the specific "
+            "question, say you cannot find that particular record — never "
+            "that you have no history with them."
         ),
         "parameters": {
             "type": "object",
@@ -602,9 +606,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "list_messages",
         "description": (
-            "List recent iMessage and SMS from this Mac's Messages database. "
-            "Does not open Messages.app. WhatsApp is a different aisle — use "
-            "recall when they said WhatsApp."
+            "List recent chats from this Mac's live copies without opening "
+            "any app: iMessage/SMS from the Messages database, WhatsApp from "
+            "WhatsApp Desktop. Pass the owner's words as query so the "
+            "WhatsApp/iMessage aisle is picked; the result channel says which "
+            "was read."
         ),
         "parameters": {
             "type": "object",
@@ -2485,6 +2491,31 @@ def _resolved_sensitive(spec: dict) -> bool:
     return bool(spec.get("sensitive", False))
 
 
+def _friendly_policy_block(name: str, args: dict, reason: str) -> dict | None:
+    """Speakable next step for unknown-recipient policy blocks. None otherwise.
+
+    Voice has no confirm loop, so "pass confirm=true" is not an actionable
+    next step — name the missing contact instead. The raw policy reason is
+    kept in `error` for API consumers.
+    """
+    if "pre-authorized" not in reason and "confirm=true" not in reason:
+        return None
+    who = (
+        str(args.get("to") or "").strip()
+        or str(args.get("destination") or "").strip()
+        or str(args.get("name") or "").strip()
+    ) or "them"
+    verb = "ring" if name == "place_call" else "send it"
+    return _life_unavailable(
+        "contact allowlist block",
+        next_step=(
+            f"I don't have {who} in your contacts, so I held that. "
+            f"Add them to Contacts and I'll {verb} right away."
+        ),
+        error=reason,
+    )
+
+
 def _life_unavailable(reason: str, *, next_step: str, error: str | None = None) -> dict:
     """Capability-theater contract: degraded=true + exact next_step."""
 
@@ -2608,7 +2639,7 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
         if payload.get("sent"):
             return f"Sent WhatsApp to {target}."
         if payload.get("opened"):
-            return f"Opened WhatsApp to {target}."
+            return f"WhatsApp to {target} is open with your message ready — tap send to finish it."
     if name == "present" or "opened" in payload:
         if payload.get("opened"):
             return "Opened that on your screen."
@@ -3324,17 +3355,28 @@ async def _run_computer_goal(
             last_path = str(found)
             if state is not None:
                 state.last_file_path = last_path
+    from app.ev.file_coalesce import is_rephrase_create, is_verify_only
+
     file_goal = resolve_file_computer_goal(
         goal_text, args.get("target_app"), last_path=last_path
     )
     if file_goal is not None:
         route_text = goal_text
     elif orig and not looks_like_file_followup(goal_text, last_path=last_path):
-        file_goal = resolve_file_computer_goal(
-            orig, args.get("target_app"), last_path=last_path
-        )
-        if file_goal is not None:
-            route_text = orig
+        # A verify/rephrase of the file already written this job must not
+        # replay the owner's original create (that minted unique_name siblings).
+        if last_path and (is_verify_only(goal_text) or is_rephrase_create(goal_text, last_path)):
+            file_goal = resolve_file_computer_goal(
+                goal_text, args.get("target_app"), last_path=last_path
+            )
+            if file_goal is not None:
+                route_text = goal_text
+        else:
+            file_goal = resolve_file_computer_goal(
+                orig, args.get("target_app"), last_path=last_path
+            )
+            if file_goal is not None:
+                route_text = orig
     if file_goal is not None:
         from app.ev.computer import handle_computer_tool
 
@@ -4564,11 +4606,30 @@ async def _dispatch_life_action(
     """Call the CONDUIT adapter for one life action; never fake success."""
 
     slug, action, scope = _LIFE_BRIDGES[name]
+    hub_read: dict | None = None
+    if name in {"list_mail", "resolve_contact", "list_messages"}:
+        try:
+            want_limit = int(args.get("limit") or 8)
+        except (TypeError, ValueError):
+            want_limit = 8
+        if want_limit <= 8:
+            # Shaped hub reads (person filter, demotion, grouping, spoken)
+            # beat raw adapter rows. Bulk limits keep today's adapter path.
+            hub_read = await _mac_hub_life_read(name, args)
+            if hub_read is not None and _life_read_rows(name, hub_read):
+                return hub_read
+            if hub_read is not None and name in {"list_mail", "list_messages"}:
+                # Shaped hub digest — including honest empty — is the answer.
+                # Adapter/Chrome fallback hangs when tabs are closed and
+                # answers a recents ask from the wrong copy.
+                return hub_read
     integration = await _active_life_integration(session, slug)
     if integration is None:
         write = await _mac_hub_life_write(name, args)
         if write is not None:
             return write
+        if hub_read is not None:
+            return hub_read
         fallback = await _mac_hub_life_read(name, args)
         if fallback is not None:
             return fallback
@@ -4603,6 +4664,9 @@ async def _dispatch_life_action(
             error=str(exc),
         )
     except PermissionError as exc:
+        friendly = _friendly_policy_block(name, args, str(exc))
+        if friendly is not None:
+            return friendly
         return _life_unavailable(
             f"{slug} bridge permission denied",
             next_step=str(exc),
@@ -4622,10 +4686,14 @@ async def _dispatch_life_action(
         )
     payload = getattr(outcome, "result", None) or {}
     result = {"ok": True, **payload}
-    if name in {"list_mail", "resolve_contact", "list_messages"} and not _life_read_rows(name, result):
-        hub = await _mac_hub_life_read(name, args)
-        if hub is not None and _life_read_rows(name, hub):
-            return hub
+    # Hub was already tried first; reuse it instead of re-peeking.
+    if (
+        name in {"list_mail", "resolve_contact", "list_messages"}
+        and not _life_read_rows(name, result)
+        and hub_read is not None
+        and _life_read_rows(name, hub_read)
+    ):
+        return hub_read
     if name == "list_mail":
         from app.ev.spark_task import bind_decision, decide_task, reset_decision
         from app.memory.mail_speak import shape_mail_payload
@@ -4698,11 +4766,41 @@ async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
         destination = str(args.get("name") or args.get("to") or args.get("destination") or "").strip()
         if not destination:
             return _life_unavailable("missing_call_target", next_step="Who should I call?")
+        kind = str(args.get("kind") or "tel")
         dest = await _resolve_send_destination(destination, "messages", helper_path=helper)
-        phone = dest.get("phone") or destination
+        # tel:// needs digits; facetime:// also accepts an email. A bare
+        # name builds a dead URL — fail friendly instead of helper-failing.
+        phone = dest.get("phone") or ""
+        email = dest.get("email") or ""
+        target = ""
+
+        def _tel(value: str) -> str:
+            text = (value or "").strip()
+            if not text or "@" in text:
+                return ""
+            digits = re.sub(r"\D+", "", text)
+            if not digits:
+                return ""
+            return ("+" if text.startswith("+") else "") + digits
+
+        for candidate in (phone, destination):
+            tel = _tel(candidate)
+            if tel and len(re.sub(r"\D+", "", tel)) >= 7:
+                target = tel
+                break
+        if not target and kind == "facetime":
+            for candidate in (email, destination):
+                if candidate and "@" in candidate:
+                    target = candidate.strip()
+                    break
+        if not target:
+            return _life_unavailable(
+                "no_call_number",
+                next_step=f"I don't have a phone number for {destination}, so I couldn't place that call.",
+            )
         result = await run_life_helper(
             "call.place",
-            {"destination": phone, "kind": str(args.get("kind") or "tel")},
+            {"destination": target, "kind": kind},
             helper_path=helper,
         )
         return {
@@ -4782,12 +4880,23 @@ async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
                 "sent": False,
                 "to": to,
                 "channel": "whatsapp",
-                "spoken": f"Opened WhatsApp to {to}." if opened else f"I couldn't open WhatsApp for {to}.",
+                "spoken": (
+                    f"WhatsApp to {to} is open with your message ready — tap send to finish it."
+                    if opened
+                    else f"I couldn't open WhatsApp for {to}."
+                ),
                 **(result.data or {}),
                 "delivery": result.delivery,
             }
+        if wanted in {"wa", "whatsapp"}:
+            # Explicit WhatsApp ask with no phone number: say so. Silently
+            # texting via iMessage instead would mis-send the channel.
+            return _life_unavailable(
+                "no_whatsapp_number",
+                next_step=f"I don't have a phone number for {to}, so I couldn't send that WhatsApp.",
+            )
         channel = "messages"
-    handle = dest.get("phone") or dest.get("handle") or to
+    handle = dest.get("phone") or dest.get("email") or dest.get("handle") or to
     result = await run_life_helper(
         "messages.send",
         {"to": handle, "text": body},
@@ -4854,7 +4963,10 @@ async def _resolve_send_destination(
 
 
 async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
-    """Closed-app Mac copies. iMessage is chat.db, mail is Envelope Index, contacts are CNContactStore."""
+    """Closed-app Mac copies. iMessage is chat.db, mail is Envelope Index, contacts are CNContactStore.
+
+    MAC HUB ONLY. Do not edit this function for iPhone / PWA / device-gateway work.
+    """
     if name not in {"list_mail", "resolve_contact", "list_messages"}:
         return None
     from app.memory.live_life import peek_account_life, peek_mac_life
@@ -4869,19 +4981,67 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
         daemon = get_life_stream_daemon()
     except Exception:
         return None
+    import asyncio
+
     if name == "list_messages":
-        from app.ev.spark_task import bind_decision, decide_task, reset_decision
+        from app.ev.spark_task import (
+            bind_decision,
+            decide_task,
+            remember_life_from_hits,
+            reset_decision,
+        )
 
         ask = query or "any new messages"
-        decision = await decide_task(ask, family_hint="messages")
+        from app.memory.life_archive.locate import chat_search_tokens
+        from app.memory.life_archive.locate import life_channel as _life_channel
+
+        _ask_channel = _life_channel(ask)
+        structural = chat_search_tokens(ask)
+        decision_task = asyncio.create_task(decide_task(ask, family_hint="messages"))
+        hits = peek_mac_life(ask, shelf="chats", tokens=structural, k=limit, daemon=daemon)
+        if not hits and structural and _ask_channel in {"whatsapp", "imessage"}:
+            # Person named but wrong aisle word ("messages from Mansi" where
+            # Mansi is WhatsApp-only): search the other aisle before giving up.
+            other_hits = (
+                daemon.peek_imessage(tokens=structural, limit=limit)
+                if _ask_channel == "whatsapp"
+                else daemon.peek_whatsapp(tokens=structural, limit=limit)
+            )
+            if other_hits:
+                hits = other_hits
+        decision = await decision_task
+        if (
+            decision.tokens()
+            and decision.manner in {"particular", "readout"}
+            and [t.lower() for t in decision.tokens()] != [t.lower() for t in structural]
+        ):
+            # Spark/prior narrowing. Digest decisions never re-filter (a
+            # misfired who must not wipe a fresh digest), and an empty
+            # narrowing never replaces live hits.
+            narrowed = peek_mac_life(
+                ask, shelf="chats", tokens=decision.tokens(), k=limit, daemon=daemon
+            )
+            if narrowed:
+                hits = narrowed
         token = bind_decision(decision)
         try:
-            hits = peek_mac_life(ask, shelf="chats", tokens=decision.tokens(), k=limit, daemon=daemon)
             spoken = (
                 _spoken_from_evidence(hits, ask) if hits else _spoken_empty_connected(ask)
             )
             from app.memory.message_speak import shape_message_payload
 
+            _hit_channels = {str(h.get("channel") or "") for h in hits if isinstance(h, dict)}
+            _hit_channels.discard("")
+            if _hit_channels == {"whatsapp"}:
+                _channel = "whatsapp"
+            elif _hit_channels == {"imessage"}:
+                _channel = "imessage"
+            elif _ask_channel in {"whatsapp", "imessage"}:
+                _channel = _ask_channel
+            else:
+                _channel = "messages"
+
+            remember_life_from_hits(hits, family="messages", tool="list_messages", query=ask)
             return shape_message_payload(
                 {
                     "ok": True,
@@ -4889,7 +5049,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
                     "messages": hits,
                     "spoken": spoken,
                     "source": "live_mac",
-                    "channel": "imessage",
+                    "channel": _channel,
                     "task_decision": decision.as_dict(),
                 },
                 ask,
@@ -4897,15 +5057,30 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
         finally:
             reset_decision(token)
     if name == "list_mail":
-        from app.ev.spark_task import bind_decision, decide_task, reset_decision
+        from app.ev.spark_task import (
+            bind_decision,
+            decide_task,
+            remember_life_from_hits,
+            reset_decision,
+        )
         from app.memory.mail_speak import fill_readout, selector_tokens, shape_mail_payload
 
         ask = query or "any new email"
-        decision = await decide_task(ask, family_hint="mail")
+        wanted_guess = selector_tokens(ask)
+        decision_task = asyncio.create_task(decide_task(ask, family_hint="mail"))
+        hits = peek_mac_life(ask, shelf="mail", tokens=wanted_guess, k=limit, daemon=daemon)
+        decision = await decision_task
+        wanted = wanted_guess
+        if decision.manner in {"particular", "readout"}:
+            wanted = decision.tokens() or wanted_guess
+        if wanted != wanted_guess:
+            # Digest decisions never re-filter, and an empty narrowing never
+            # replaces live hits (Spark/prior misfires must not wipe).
+            narrowed = peek_mac_life(ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon)
+            if narrowed:
+                hits = narrowed
         token = bind_decision(decision)
         try:
-            wanted = decision.tokens() or selector_tokens(ask)
-            hits = peek_mac_life(ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon)
             if not hits:
                 hits = await peek_account_life(
                     ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon
@@ -4919,6 +5094,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             spoken = (
                 _spoken_from_evidence(hits, ask) if hits else _spoken_empty_connected(ask)
             )
+            remember_life_from_hits(hits, family="mail", tool="list_mail", query=ask)
             shaped = shape_mail_payload(
                 {
                     "ok": True,

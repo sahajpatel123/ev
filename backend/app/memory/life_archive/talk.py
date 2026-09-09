@@ -1,5 +1,8 @@
 """Talk-pattern meaning: who the owner messages, ranked from evidence.
 
+MAC HUB ONLY. WhatsApp Desktop + iMessage on this Mac. Do not edit this
+file for iPhone / PWA / device-gateway work.
+
 Everyday 'who do I talk to most' is who they actually message these days
 (recent density and last activity), not lifetime archive volume. All-time
 volume is only spoken when they asked for history. Names are never invented.
