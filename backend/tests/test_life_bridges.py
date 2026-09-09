@@ -69,10 +69,24 @@ if command == "messages.list":
     sys.exit(0)
 
 if command == "contacts.resolve":
-    print(json.dumps({"ok": True, "data": {"query": args.get("--query"),
-        "matches": [
-            {"id": "c1", "full_name": "Mom", "phone_numbers": ["+15551234567"],
-             "email_addresses": []}]}}))
+    if args.get("--query") == "Stranger":
+        print(json.dumps({"ok": True, "data": {"query": args.get("--query"),
+            "matches": []}}))
+    elif args.get("--query") == "Rahul":
+        print(json.dumps({"ok": True, "data": {"query": args.get("--query"),
+            "matches": [
+                {"id": "c2", "full_name": "Rahul", "phone_numbers": [],
+                 "email_addresses": ["rahul@example.com"]}]}}))
+    elif args.get("--query") == "Nophone":
+        print(json.dumps({"ok": True, "data": {"query": args.get("--query"),
+            "matches": [
+                {"id": "c3", "full_name": "Nophone", "phone_numbers": [],
+                 "email_addresses": []}]}}))
+    else:
+        print(json.dumps({"ok": True, "data": {"query": args.get("--query"),
+            "matches": [
+                {"id": "c1", "full_name": "Mom", "phone_numbers": ["+15551234567"],
+                 "email_addresses": []}]}}))
     sys.exit(0)
 
 if command == "contacts.list":
@@ -88,6 +102,17 @@ if command in ("messages.send", "mail.send"):
     else:
         data["sent"] = True
     print(json.dumps({"ok": True, "data": data}))
+    sys.exit(0)
+
+if command == "whatsapp.send":
+    digits = "".join(ch for ch in (args.get("--to") or "") if ch.isdigit())
+    if len(digits) < 8:
+        print(json.dumps({"ok": False, "error": {
+            "code": "bad_arguments",
+            "message": "whatsapp.send --to must be a phone number"}}))
+        sys.exit(5)
+    print(json.dumps({"ok": True, "data": {
+        "to": digits, "channel": "whatsapp", "opened": True, "sent": False}}))
     sys.exit(0)
 
 if command == "call.place":
@@ -238,7 +263,7 @@ async def test_macos_life_send_returns_real_delivery_evidence(
     result = resp.json()["result"]
     assert result["delivery"]["confirmed"] is True
     assert result["delivery"]["evidence"]["confirmed_by"] == "sent"
-    assert result["delivery"]["evidence"]["to"] == "Mom"
+    assert result["delivery"]["evidence"]["to"] == "+15551234567"
     assert result["policy"]["allowed"] is True
 
 
@@ -378,7 +403,7 @@ async def test_contacts_and_phone_adapters_use_helper(
     resp = await run_action(client, phone["id"], "phone.call", {"to": "Mom"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["result"]["delivery"]["evidence"]["confirmed_by"] == "opened"
-    assert resp.json()["result"]["delivery"]["evidence"]["destination"] == "Mom"
+    assert resp.json()["result"]["delivery"]["evidence"]["destination"] == "+15551234567"
     resp = await run_action(client, phone["id"], "facetime.call", {"to": "Mom"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["result"]["delivery"]["evidence"]["kind"] == "facetime"
@@ -744,3 +769,349 @@ async def test_real_helper_path_when_configured() -> None:
     """Manual darwin integration: run the real helper when it exists."""
     result = await run_life_helper("apps.frontmost", {})
     assert result.command == "apps.frontmost"
+
+
+async def test_messaging_send_rewrites_name_to_phone(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    integration = await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    resp = await run_action(
+        client,
+        integration["id"],
+        "messaging.send",
+        {"to": "Mom", "text": "I'm late"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["result"]["to"] == "+15551234567"
+
+
+async def test_messaging_send_whatsapp_resolves_name_to_phone_digits(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    # The helper rejects non-numeric whatsapp.send --to (exit 5). A raw
+    # contact name must resolve to digits before dispatch — never fail
+    # at the helper.
+    integration = await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    resp = await run_action(
+        client,
+        integration["id"],
+        "messaging.send",
+        {"to": "Mom", "text": "hi", "channel": "whatsapp"},
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()["result"]
+    assert result["to"] == "15551234567"
+    assert result["opened"] is True
+
+
+async def test_messaging_send_whatsapp_without_phone_fails_friendly(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    integration = await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    resp = await run_action(
+        client,
+        integration["id"],
+        "messaging.send",
+        {"to": "Nophone", "text": "hi", "channel": "whatsapp"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "phone number for Nophone" in resp.json()["detail"]
+
+
+async def test_mail_send_resolves_name_to_email(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    integration = await install(
+        client,
+        "mail",
+        scopes=["mail:read", "mail:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    resp = await run_action(
+        client,
+        integration["id"],
+        "mail.send",
+        {"to": "Rahul", "subject": "Hi", "body": "hello"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["result"]["to"] == "rahul@example.com"
+
+
+async def test_mail_send_without_email_fails_friendly(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    integration = await install(
+        client,
+        "mail",
+        scopes=["mail:read", "mail:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    resp = await run_action(
+        client,
+        integration["id"],
+        "mail.send",
+        {"to": "Mom", "subject": "Hi", "body": "hello"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "an email for Mom" in resp.json()["detail"]
+
+
+async def test_phone_call_resolves_name_to_digits(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    integration = await install(
+        client,
+        "phone",
+        scopes=["phone:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    resp = await run_action(
+        client,
+        integration["id"],
+        "phone.call",
+        {"to": "Mom"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["result"]["destination"] == "+15551234567"
+
+
+async def test_phone_call_without_phone_fails_friendly(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    integration = await install(
+        client,
+        "phone",
+        scopes=["phone:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    resp = await run_action(
+        client,
+        integration["id"],
+        "phone.call",
+        {"to": "Nophone"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "phone number for Nophone" in resp.json()["detail"]
+
+
+def test_life_tel_sanitizes_dial_strings() -> None:
+    from app.integrations.adapters import _life_digits, _life_tel
+
+    assert _life_digits("+1 (555) 123-4567") == "15551234567"
+    assert _life_tel("+1 (555) 123-4567") == "+15551234567"
+    assert _life_tel("5551234567") == "5551234567"
+    assert _life_tel("ada@example.com") == "ada@example.com"
+    assert _life_tel("Mom") == ""
+    assert _life_tel("") == ""
+
+
+async def test_messaging_send_unknown_recipient_stays_blocked(
+    client: AsyncClient,
+    mock_life_helper: Path,
+) -> None:
+    integration = await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    resp = await run_action(
+        client,
+        integration["id"],
+        "messaging.send",
+        {"to": "Stranger", "text": "hi"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert "pre-authorized" in resp.json()["detail"]
+
+
+def test_policy_block_speaks_contact_next_step_not_jargon() -> None:
+    from app.ev.tools import _friendly_policy_block
+
+    blocked = _friendly_policy_block(
+        "send_message",
+        {"to": "Stranger", "text": "hi"},
+        "recipient is not pre-authorized by allowlist all; pass confirm=true or add to allowlist",
+    )
+    assert blocked is not None
+    assert blocked["ok"] is False
+    assert "Stranger" in blocked["spoken"]
+    assert "confirm=true" not in blocked["spoken"]
+    assert "Contacts" in blocked["spoken"]
+    assert "pre-authorized" in str(blocked["error"])
+    assert _friendly_policy_block("send_message", {}, "scope 'x' is not granted") is None
+
+
+async def test_dispatch_list_reads_prefer_hub_over_adapter(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    mock_life_helper,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.tools import _dispatch_life_action
+
+    await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    hub = {
+        "ok": True,
+        "count": 1,
+        "messages": [{"text": "Mansi: hi", "channel": "whatsapp"}],
+        "spoken": "Latest WhatsApp: Mansi.",
+        "source": "live_mac",
+        "channel": "whatsapp",
+    }
+
+    async def fake_hub(name, args):
+        assert name == "list_messages"
+        return dict(hub)
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("adapter must not run when hub has rows")
+
+    monkeypatch.setattr("app.ev.tools._mac_hub_life_read", fake_hub)
+    monkeypatch.setattr("app.integrations.service.execute_action", boom)
+    out = await _dispatch_life_action(
+        db_session, "list_messages", {"query": "any new messages"}, actor="master"
+    )
+    assert out["source"] == "live_mac"
+    assert out["messages"][0]["text"] == "Mansi: hi"
+
+
+async def test_dispatch_person_ask_honest_empty_skips_adapter(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    mock_life_helper,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.tools import _dispatch_life_action
+
+    await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    hub_empty = {
+        "ok": True,
+        "count": 0,
+        "messages": [],
+        "spoken": "I don't see messages from XyzzyQqq on this Mac right now.",
+        "source": "live_mac",
+        "channel": "imessage",
+    }
+
+    async def fake_hub(name, args):
+        return dict(hub_empty)
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("adapter must not run for empty person-ask")
+
+    monkeypatch.setattr("app.ev.tools._mac_hub_life_read", fake_hub)
+    monkeypatch.setattr("app.integrations.service.execute_action", boom)
+    out = await _dispatch_life_action(
+        db_session, "list_messages", {"query": "messages from XyzzyQqq"}, actor="master"
+    )
+    assert out["count"] == 0
+    assert "XyzzyQqq" in out["spoken"]
+
+
+async def test_dispatch_digest_empty_hub_skips_adapter(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    mock_life_helper,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.tools import _dispatch_life_action
+
+    await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    hub_empty = {
+        "ok": True,
+        "count": 0,
+        "messages": [],
+        "spoken": "I don't see new messages on this Mac right now.",
+        "source": "live_mac",
+        "channel": "messages",
+    }
+
+    async def fake_hub(name, args):
+        return dict(hub_empty)
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("adapter must not run for empty hub digest")
+
+    monkeypatch.setattr("app.ev.tools._mac_hub_life_read", fake_hub)
+    monkeypatch.setattr("app.integrations.service.execute_action", boom)
+    out = await _dispatch_life_action(
+        db_session, "list_messages", {"query": "any new messages"}, actor="master"
+    )
+    assert out["count"] == 0
+    assert out["source"] == "live_mac"
+    assert "don't see new messages" in (out.get("spoken") or "").lower()
+
+
+async def test_dispatch_bulk_limit_keeps_adapter_path(
+    client: AsyncClient,
+    db_session: AsyncSession,
+    mock_life_helper,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.ev.tools import _dispatch_life_action
+
+    await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    seen: list[str] = []
+
+    async def fake_hub(name, args):
+        seen.append(name)
+        return {"ok": True, "count": 0, "messages": [], "spoken": ""}
+
+    async def fake_adapter(*args, **kwargs):
+        return SimpleNamespace(result={"messages": [{"text": "bulk row"}]})
+
+    monkeypatch.setattr("app.ev.tools._mac_hub_life_read", fake_hub)
+    monkeypatch.setattr("app.integrations.service.execute_action", fake_adapter)
+    out = await _dispatch_life_action(
+        db_session,
+        "list_messages",
+        {"query": "any new messages", "limit": 50},
+        actor="master",
+    )
+    assert seen == []
+    assert out["messages"] == [{"text": "bulk row"}]

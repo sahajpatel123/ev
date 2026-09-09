@@ -186,6 +186,66 @@ def preferred_channel(person: dict[str, Any], *, explicit: str | None = None, pr
     return None
 
 
+_PERSON_STOP = frozenset(
+    {
+        "a",
+        "about",
+        "an",
+        "any",
+        "chat",
+        "chats",
+        "conversation",
+        "do",
+        "email",
+        "emails",
+        "for",
+        "from",
+        "gmail",
+        "have",
+        "i",
+        "imessage",
+        "inbox",
+        "just",
+        "last",
+        "latest",
+        "mail",
+        "me",
+        "message",
+        "messages",
+        "more",
+        "my",
+        "new",
+        "newest",
+        "particular",
+        "please",
+        "recent",
+        "someone",
+        "some",
+        "text",
+        "texts",
+        "that",
+        "the",
+        "these",
+        "this",
+        "those",
+        "thread",
+        "threads",
+        "to",
+        "whatsapp",
+        "with",
+        "you",
+        "your",
+    }
+)
+
+
+def _person_token_ok(token: str) -> bool:
+    parts = [p for p in str(token or "").split() if p]
+    if not parts:
+        return False
+    return all(part.lower() not in _PERSON_STOP for part in parts)
+
+
 def extract_person_query(text: str) -> str:
     """Pull a person mention from owner language. Empty if none."""
     raw = (text or "").strip()
@@ -195,16 +255,22 @@ def extract_person_query(text: str) -> str:
     )
     if m:
         token = m.group(1).strip()
-        if token.lower() not in {"the", "my", "an", "me"}:
+        if _person_token_ok(token):
             return token
     m2 = re.search(
         r"(?i)\b(?:from|to|with)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)",
         raw,
     )
     if m2:
-        return m2.group(1).strip()
+        token = m2.group(1).strip()
+        if _person_token_ok(token):
+            return token
     m3 = re.search(r"(?i)\b([A-Z][a-z]{2,})\s+(?:sent|emailed|replied|said)", raw)
-    return m3.group(1) if m3 else ""
+    if m3:
+        token = m3.group(1).strip()
+        if _person_token_ok(token):
+            return token
+    return ""
 
 
 def remember_channel_use(prefs: dict[str, str], person_name: str, channel: str) -> dict[str, str]:

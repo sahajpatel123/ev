@@ -1,5 +1,8 @@
 """Spoken mail: particular gist or short digest, never the full body.
 
+MAC HUB ONLY. Apple Mail Envelope Index on this Mac. Do not edit this
+file for iPhone / PWA / device-gateway work.
+
 Selection is from query structure (who / about / that-or-latest), not a
 phrase list. Gists are extractive and capped so Evie can say what a
 message was about without reciting it.
@@ -12,6 +15,7 @@ import html as html_lib
 import plistlib
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.message import Message
 from pathlib import Path
 from typing import Any, Iterable
@@ -65,32 +69,72 @@ _CHANNEL_WORDS = frozenset(
 _ASK_WEAK = frozenset(
     {
         "about",
+        "an",
         "any",
         "anything",
+        "a",
+        "am",
+        "are",
+        "as",
+        "at",
+        "be",
         "been",
+        "being",
+        "by",
+        "can",
         "check",
+        "could",
         "did",
+        "do",
         "does",
+        "doing",
         "explain",
         "fetch",
         "fetched",
         "find",
         "found",
+        "for",
+        "from",
         "get",
         "gist",
         "give",
         "got",
+        "had",
+        "has",
+        "have",
+        "having",
+        "he",
+        "her",
         "here",
+        "hers",
+        "his",
         "into",
+        "is",
+        "it",
+        "its",
         "just",
+        "last",
+        "latest",
         "let",
         "list",
         "look",
         "looking",
+        "may",
+        "me",
+        "might",
+        "most",
+        "must",
+        "my",
         "need",
         "new",
+        "newest",
+        "of",
+        "on",
         "one",
         "open",
+        "or",
+        "our",
+        "ours",
         "out",
         "please",
         "read",
@@ -100,10 +144,17 @@ _ASK_WEAK = frozenset(
         "receive",
         "received",
         "recent",
+        "recently",
         "search",
         "searched",
         "see",
+        "shall",
+        "she",
+        "should",
         "show",
+        "showed",
+        "appeared",
+        "arrived",
         "still",
         "summarise",
         "summarize",
@@ -111,20 +162,44 @@ _ASK_WEAK = frozenset(
         "tell",
         "than",
         "that",
+        "the",
+        "their",
+        "theirs",
         "them",
         "then",
         "there",
         "these",
         "this",
         "those",
+        "to",
         "unread",
         "was",
+        "we",
         "were",
         "what",
         "which",
         "whom",
         "whole",
-        "aloud",
+        "will",
+        "with",
+        "would",
+        "you",
+        "your",
+        "yours",
+        "they",
+        "brief",
+        "briefing",
+        "catch",
+        "caught",
+        "everything",
+        "miss",
+        "missed",
+        "missing",
+        "something",
+        "speed",
+        "update",
+        "updates",
+        "up",
         "loud",
         "through",
         "word",
@@ -139,6 +214,7 @@ _TIMEISH = frozenset(
         "evening",
         "morning",
         "night",
+        "overnight",
         "today",
         "tonight",
         "tomorrow",
@@ -435,7 +511,40 @@ def mail_fields(item: dict[str, Any]) -> dict[str, str]:
         "sender": sender,
         "gist": gist,
         "text": text,
+        "when": str(item.get("when") or item.get("received") or item.get("date") or "").strip(),
     }
+
+
+def speak_received(item: dict[str, Any], *, clock: datetime | None = None) -> str:
+    """Wall-clock received time from the envelope. Empty when the stamp is missing."""
+
+    raw = item.get("when") or item.get("received") or item.get("date") or ""
+    if hasattr(raw, "isoformat"):
+        moment = raw
+    else:
+        text = str(raw or "").strip()
+        if not text:
+            return ""
+        try:
+            moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+    if not isinstance(moment, datetime):
+        return ""
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    now = clock or datetime.now().astimezone()
+    local = moment.astimezone(now.tzinfo)
+    hour = local.strftime("%I").lstrip("0") or "12"
+    clock_bit = f"{hour}:{local.strftime('%M')} {local.strftime('%p').lower()}"
+    days = (now.date() - local.date()).days
+    if days <= 0:
+        return f"today at {clock_bit}"
+    if days == 1:
+        return f"yesterday at {clock_bit}"
+    if days < 7:
+        return f"{local.strftime('%A')} at {clock_bit}"
+    return f"{local.strftime('%B')} {local.day} at {clock_bit}"
 
 
 def fill_readout(item: dict[str, Any], *, mail_index_path: str = "") -> None:
@@ -536,7 +645,7 @@ def speak_mail(query: str, items: list[dict[str, Any]], decision: Any | None = N
         picked = _pick_particular(rows, selector)
         if picked is None:
             return ""
-        return _speak_particular(picked, selector)
+        return _speak_particular(picked, selector, decision)
     return _speak_digest(rows)
 
 
@@ -628,7 +737,7 @@ def _pick_particular(rows: list[dict[str, Any]], selector: MailSelector) -> dict
     return scored[0][2]
 
 
-def _speak_particular(item: dict[str, Any], selector: MailSelector) -> str:
+def _speak_particular(item: dict[str, Any], selector: MailSelector, decision: Any = None) -> str:
     fields = mail_fields(item)
     sender = display_sender(fields["sender"]) if fields["sender"] else "someone"
     gist = gist_from_preview(
@@ -636,13 +745,34 @@ def _speak_particular(item: dict[str, Any], selector: MailSelector) -> str:
         subject=fields["subject"],
         want=selector.tokens(),
     ) or fields["subject"]
+    when_bit = speak_received(item)
+    focus = str(getattr(decision, "focus", "") or "gist")
+    if focus == "when":
+        if when_bit:
+            line = f"That mail from {sender} arrived {when_bit}."
+        else:
+            line = f"I have that mail from {sender}, but I don't see when it arrived."
+        return line[:SPOKEN_MAIL_CAP]
+    if focus == "who":
+        return f"That last mail was from {sender}."[:SPOKEN_MAIL_CAP]
+    if focus == "subject":
+        subject = fields["subject"] or gist
+        if not subject:
+            return f"Mail from {sender}."[:SPOKEN_MAIL_CAP]
+        line = f"That mail from {sender} was {subject}."
+        return line[:SPOKEN_MAIL_CAP]
     if not gist:
+        if when_bit:
+            return f"Mail from {sender}, {when_bit}."[:SPOKEN_MAIL_CAP]
         return ""
     subject = fields["subject"]
     if subject and gist.lower() != subject.lower() and subject.lower() not in gist.lower():
-        line = f"Mail from {sender} — {subject}. {gist}"
+        line = f"Mail from {sender} — {subject}"
     else:
-        line = f"Mail from {sender}: {gist}"
+        line = f"Mail from {sender}"
+    if when_bit:
+        line += f", {when_bit}"
+    line += f": {gist}"
     if not line.endswith((".", "!", "?")):
         line = line.rstrip(".") + "."
     return line[:SPOKEN_MAIL_CAP]

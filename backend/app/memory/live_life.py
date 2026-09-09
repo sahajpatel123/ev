@@ -211,6 +211,30 @@ def merge_life_hits(
     return merged
 
 
+def _interleave_life_hits(
+    buckets: list[list[dict[str, Any]]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Round-robin aisles so one noisy channel cannot bury the others."""
+    mixed: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    width = max((len(bucket) for bucket in buckets), default=0)
+    for index in range(width):
+        for bucket in buckets:
+            if index >= len(bucket):
+                continue
+            item = bucket[index]
+            key = str(item.get("id") or "") or str(item.get("text") or "")[:80]
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            mixed.append(item)
+            if len(mixed) >= limit:
+                return mixed
+    return mixed
+
+
 def peek_mac_life(
     query: str,
     *,
@@ -246,10 +270,15 @@ def peek_mac_life(
                 return daemon.peek_whatsapp(tokens=distinctive, limit=limit)
             if channel == "imessage":
                 return daemon.peek_imessage(tokens=distinctive, limit=limit)
-            hits = daemon.peek_whatsapp(tokens=distinctive, limit=limit)
-            hits.extend(daemon.peek_imessage(tokens=distinctive, limit=limit))
-            hits.sort(key=lambda item: str(item.get("when") or ""), reverse=True)
-            return hits[:limit]
+            # Unscoped "recent messages": both aisles, interleaved so SMS
+            # spam cannot hide WhatsApp (and the reverse).
+            return _interleave_life_hits(
+                [
+                    daemon.peek_whatsapp(tokens=distinctive, limit=limit),
+                    daemon.peek_imessage(tokens=distinctive, limit=limit),
+                ],
+                limit=limit,
+            )
         if shelf == "calls":
             return daemon.peek_calls(tokens=distinctive, limit=limit)
         if shelf == "photos":
@@ -262,28 +291,15 @@ def peek_mac_life(
         if shelf == "inbox":
             # Keep one noisy WhatsApp thread from hiding calls, iMessage, or mail.
             per = max(2, (limit + 3) // 4)
-            buckets = [
-                daemon.peek_whatsapp(tokens=distinctive, limit=per),
-                daemon.peek_imessage(tokens=distinctive, limit=per),
-                daemon.peek_calls(tokens=distinctive, limit=per),
-                daemon.peek_mail(tokens=distinctive, limit=per, query=query),
-            ]
-            mixed: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            for index in range(per):
-                for bucket in buckets:
-                    if index >= len(bucket):
-                        continue
-                    item = bucket[index]
-                    key = str(item.get("id") or "") or str(item.get("text") or "")[:80]
-                    if not key or key in seen:
-                        continue
-                    seen.add(key)
-                    mixed.append(item)
-                    if len(mixed) >= limit:
-                        return mixed
-            mixed.sort(key=lambda item: str(item.get("when") or ""), reverse=True)
-            return mixed[:limit]
+            return _interleave_life_hits(
+                [
+                    daemon.peek_whatsapp(tokens=distinctive, limit=per),
+                    daemon.peek_imessage(tokens=distinctive, limit=per),
+                    daemon.peek_calls(tokens=distinctive, limit=per),
+                    daemon.peek_mail(tokens=distinctive, limit=per, query=query),
+                ],
+                limit=limit,
+            )
         return []
     except Exception:
         return []

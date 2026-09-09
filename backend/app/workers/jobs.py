@@ -146,6 +146,14 @@ def run_life_stream_tick() -> dict:
     if not life_stream_should_run():
         return {"ok": True, "skipped": True, "reason": "life_stream_disabled"}
 
+    # Keep WhatsApp/Mail syncing without the owner keeping windows open.
+    try:
+        from app.services.life_stream_daemon import ensure_background_sync
+
+        ensure_background_sync()
+    except Exception:
+        pass
+
     async def _run() -> dict:
         from app.config import settings
         from app.db import SessionLocal

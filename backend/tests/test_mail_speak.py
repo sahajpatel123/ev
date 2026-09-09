@@ -12,6 +12,7 @@ from app.memory.mail_speak import (
     preview_from_emlx,
     shape_mail_payload,
     speak_mail,
+    speak_received,
 )
 from app.memory.recall import _spoken_from_evidence
 from app.services.life_stream_daemon import LifeStreamDaemon
@@ -108,10 +109,15 @@ def test_digest_speak_is_headlines_not_concatenated_bodies() -> None:
     assert spoken.lower().startswith("recent mail:")
     assert "lunch tomorrow" in spoken.lower()
     assert "alex" in spoken.lower()
+    assert "design review" in spoken.lower()
     assert LONG_BODY not in spoken
     assert spoken.count("lorem ipsum") == 0
-    assert "spam blast" not in spoken.lower()
     assert len(spoken) < 400
+    # noreply firehose sits behind people, not in the first headlines.
+    personal_at = spoken.lower().find("lunch")
+    bulk_at = spoken.lower().find("receipt")
+    if bulk_at >= 0:
+        assert personal_at < bulk_at
 
 
 def test_particular_mail_speaks_a_short_about_gist() -> None:
@@ -158,6 +164,9 @@ def test_that_email_picks_the_latest_and_gists_it() -> None:
     assert "flight" in spoken.lower() or "delhi" in spoken.lower() or "9pm" in spoken.lower()
     assert LONG_BODY not in spoken
     assert "lorem ipsum" not in spoken.lower()
+    stamp = speak_received(hits[0] if hits else items[0])
+    assert stamp
+    assert stamp.lower() in spoken.lower()
 
 
 def test_about_token_prefers_the_matching_mail() -> None:
@@ -254,6 +263,28 @@ def test_imessage_and_contacts_routing_untouched() -> None:
     assert select_tool("Call Ned").selected == "place_call"
     assert select_tool("Who texted me?").selected == "list_messages"
     assert resolve_live_action("check my inbox")[0] == "list_mail"
+    for phrase in (
+        "Did I get any email from Alex?",
+        "Do I get any email from Alex?",
+        "any email from Alex",
+        "what was the email from Alex about",
+    ):
+        resolved = resolve_live_action(phrase)
+        assert resolved is not None, phrase
+        assert resolved[0] == "list_mail", phrase
+        assert "Alex" in str(resolved[1].get("query") or phrase)
+        assert select_tool(phrase).selected == "list_mail", phrase
+    from app.ev.send_intent import parse_send_intent
+    from app.ev.spark_act import fallback_act, live_tool_for_act
+
+    assert parse_send_intent("Did I get any email from Alex?") is None
+    assert parse_send_intent("Do I get any email from Alex?") is None
+    send = parse_send_intent("email Ada the deck is ready")
+    assert send is not None and send["to"].lower() == "ada"
+    decision = fallback_act("Do I get any email from Alex?")
+    assert decision is not None and decision.act == "life"
+    tool = live_tool_for_act("Do I get any email from Alex?", decision)
+    assert tool is not None and tool[0] == "list_mail"
     chats = _spoken_from_evidence(
         [
             {
@@ -265,3 +296,31 @@ def test_imessage_and_contacts_routing_untouched() -> None:
     )
     assert "Ada" in chats
     assert "recent mail" not in chats.lower()
+
+
+def test_recent_mail_digest_ignores_recency_filler_words() -> None:
+    # "what are my recent mails" is a true inbox digest — filler words like
+    # "are"/"recent"/"latest"/"catch"/"miss" must not become content filters.
+    for phrase in (
+        "what are my recent mails",
+        "any new email",
+        "latest mails",
+        "catch me up on mail",
+        "any updates in my inbox",
+        "did I miss any mail",
+        "brief me on mail",
+    ):
+        assert mail_selector(phrase).tokens() == [], phrase
+    for phrase in (
+        "what are my recent mails",
+        "any new email",
+        "catch me up on mail",
+        "any updates in my inbox",
+        "did I miss any mail",
+        "brief me on mail",
+    ):
+        assert mail_selector(phrase).particular is False, phrase
+    # Real person asks still stay particular.
+    who = mail_selector("mail from Rahul")
+    assert who.particular is True
+    assert who.tokens() == ["rahul"]

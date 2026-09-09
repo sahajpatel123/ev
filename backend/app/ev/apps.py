@@ -73,6 +73,7 @@ ALLOWED_APPS: dict[str, str] = {
     "cursor": "com.todesktop.230313mzl4w4u92",
     "vscode": "com.microsoft.VSCode",
     "code": "com.microsoft.VSCode",
+    "whatsapp": "net.whatsapp.WhatsApp",
 }
 
 APP_ALIASES: dict[str, str] = {
@@ -92,6 +93,8 @@ APP_ALIASES: dict[str, str] = {
     "vs code": "vscode",
     "visual studio code": "vscode",
     "browser": "safari",
+    "whats app": "whatsapp",
+    "whats-app": "whatsapp",
 }
 
 _NOT_CONNECTED_STEP = (
@@ -109,6 +112,7 @@ def display_app_name(name: str) -> str:
         "facetime": "FaceTime",
         "imessage": "Messages",
         "messages": "Messages",
+        "whatsapp": "WhatsApp",
     }
     return special.get(name, name[:1].upper() + name[1:])
 

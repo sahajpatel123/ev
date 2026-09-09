@@ -23,6 +23,7 @@ from app.integrations.calendar_signals import derive_calendar_signals, parse_eve
 from app.integrations.life_helper import (
     LifeHelperError,
     LifeHelperUnavailableError,
+    LifePermissionDeniedError,
     run_life_helper,
 )
 from app.integrations.life_policy import evaluate_life_policy
@@ -949,6 +950,65 @@ def _life_action_common(
     return helper_args, decision.to_dict()
 
 
+async def _resolve_life_contact(
+    recipient: str | None, helper_path: str | None
+) -> dict[str, Any] | None:
+    """Resolve a send/call recipient to a contacts row for life policy.
+
+    The policy pre-authorizes known contacts; without this every send looks
+    unknown and is blocked. Returns None when no contact matches (policy
+    then reports not-pre-authorized honestly). Helper-missing and
+    permission failures propagate so the caller speaks the real next step
+    instead of masking them as an unknown contact.
+    """
+    who = (recipient or "").strip()
+    if not who:
+        return None
+    try:
+        result = await run_life_helper(
+            "contacts.resolve", {"query": who}, helper_path=helper_path
+        )
+    except (LifeHelperUnavailableError, LifePermissionDeniedError):
+        raise
+    except Exception:
+        return None
+    matches = list((result.data or {}).get("matches") or [])
+    row = next((m for m in matches if isinstance(m, dict)), None)
+    if row is None:
+        return None
+    phones = row.get("phone_numbers") or []
+    emails = row.get("email_addresses") or []
+    contact: dict[str, Any] = {
+        "phone": str(phones[0]) if phones else "",
+        "email": str(emails[0]) if emails else "",
+        "id": str(row.get("id") or ""),
+        "starred": row.get("starred") is True,
+    }
+    if not (contact["phone"] or contact["email"] or contact["id"]):
+        return None
+    return contact
+
+
+def _life_digits(value: str | None) -> str:
+    return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def _life_tel(value: str | None) -> str:
+    """Dialable tel: form. Spaces/dashes break URL(string:) — strip to digits.
+
+    Emails pass through untouched (facetime:// accepts them); names yield "".
+    """
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if "@" in text:
+        return text
+    digits = _life_digits(text)
+    if not digits:
+        return ""
+    return ("+" if text.startswith("+") else "") + digits
+
+
 def _life_read_only_action(*, provider: object) -> None:
     if provider != "macos_life":
         raise LifeHelperUnavailableError(
@@ -1007,12 +1067,34 @@ class MessagingAdapter(Adapter):
             channel = str(args.get("channel") or "").strip().lower()
             if channel in {"whatsapp", "wa"}:
                 command = "whatsapp.send"
+            raw_to = str(args.get("to") or "").strip()
+            send_args = dict(args)
+            contact = await _resolve_life_contact(raw_to, config.get("helper_path"))
+            send_args["contact"] = contact
             helper_args, policy = _life_action_common(
                 action=action,
-                args=args,
+                args=send_args,
                 scopes=scopes,
                 config=config,
             )
+            if channel in {"whatsapp", "wa"}:
+                # The helper rejects non-numeric --to (exit 5). A raw name
+                # must resolve to a phone first — never fail at the helper.
+                digits = _life_digits((contact or {}).get("phone") or raw_to)
+                if len(digits) < 8:
+                    raise ValueError(
+                        f"I don't have a phone number for {raw_to or 'that contact'}, "
+                        "so I couldn't send that WhatsApp."
+                    )
+                helper_args["to"] = digits
+            else:
+                phone = (contact or {}).get("phone") or ""
+                email = (contact or {}).get("email") or ""
+                if phone:
+                    helper_args["to"] = phone
+                elif email:
+                    helper_args["to"] = email
+                # else: keep raw — Messages buddy lookup may still resolve it.
         else:
             helper_args = {key: value for key, value in args.items() if key != "confirm"}
             policy = {"allowed": True, "confirmation_required": False, "reason": "read"}
@@ -1236,16 +1318,49 @@ class PhoneAdapter(Adapter):
                 },
             }
         if provider == "macos_life":
+            recipient = (
+                str(args.get("to") or "").strip()
+                or str(args.get("destination") or "").strip()
+                or str(args.get("name") or "").strip()
+            )
+            call_args = dict(args)
+            if recipient and not str(call_args.get("to") or "").strip():
+                call_args["to"] = recipient
+            contact = await _resolve_life_contact(recipient, config.get("helper_path"))
+            call_args["contact"] = contact
             helper_args, policy = _life_action_common(
                 action=action,
-                args=args,
+                args=call_args,
                 scopes=scopes,
                 config=config,
             )
             command = "call.place"
-            destination = helper_args.pop("to", None)
+            raw_dest = (
+                helper_args.pop("to", None)
+                or helper_args.pop("destination", None)
+                or helper_args.pop("name", None)
+                or recipient
+            )
+            # tel:// needs digits; facetime:// also accepts an email. A bare
+            # contact name builds a dead URL — fail friendly instead.
+            phone = (contact or {}).get("phone") or ""
+            email = (contact or {}).get("email") or ""
+            destination = ""
+            for candidate in (phone, raw_dest):
+                tel = _life_tel(candidate)
+                if tel and len(_life_digits(tel)) >= 7:
+                    destination = tel
+                    break
+            if not destination and action == "facetime.call":
+                for candidate in (email, raw_dest):
+                    if candidate and "@" in str(candidate):
+                        destination = str(candidate).strip()
+                        break
             if not destination:
-                raise ValueError("phone call requires a destination")
+                raise ValueError(
+                    f"I don't have a phone number for {recipient or 'that contact'}, "
+                    "so I couldn't place that call."
+                )
             helper_args["destination"] = destination
             helper_args["kind"] = "facetime" if action == "facetime.call" else "tel"
             helper_args.pop("video", None)
@@ -1347,12 +1462,27 @@ class MailAdapter(Adapter):
             "mail.send": "mail.send",
         }[action]
         if action == "mail.send":
+            raw_to = str(args.get("to") or "").strip()
+            mail_args = dict(args)
+            contact = await _resolve_life_contact(raw_to, config.get("helper_path"))
+            mail_args["contact"] = contact
             helper_args, policy = _life_action_common(
                 action=action,
-                args=args,
+                args=mail_args,
                 scopes=scopes,
                 config=config,
             )
+            if "@" not in raw_to:
+                # The helper addresses Mail.app recipients — a bare name is
+                # not an address. Resolve first, fail friendly if none.
+                email = (contact or {}).get("email") or ""
+                if "@" in email:
+                    helper_args["to"] = email
+                else:
+                    raise ValueError(
+                        f"I don't have an email for {raw_to or 'that contact'}, "
+                        "so I couldn't send that email."
+                    )
         else:
             helper_args = args
             policy = {"allowed": True, "confirmation_required": False, "reason": "read"}

@@ -1,5 +1,8 @@
 """Spoken iMessage/WhatsApp: headers and a short gist, never the full thread.
 
+MAC HUB ONLY. chat.db / WhatsApp Desktop on this Mac. Do not edit this
+file for iPhone / PWA / device-gateway work.
+
 Mail already had this split. Chats now follow the same job: digest is who/what
 showed up, particular is what the last talk was about, readout is only when
 they asked to hear the words themselves.
@@ -39,6 +42,16 @@ def is_chat_hit(item: dict[str, Any]) -> bool:
     kind = str(item.get("memory_type") or item.get("kind") or "")
     if kind in {"life.chat.thread", "life.person", "life.chat.talk", "life.chat.session", "life.chat.desk"}:
         return False
+    if kind in {
+        "mail.envelope.received",
+        "call.history.recorded",
+        "photo.library.indexed",
+        "contact.discovered",
+        "contact.updated",
+    }:
+        # Mail/call/photo/contact envelopes are never chat, even when a mail
+        # subject contains a colon ("Run failed: ...").
+        return False
     channel = str(item.get("channel") or item.get("source") or "").lower()
     text = str(item.get("text") or "")
     if text.lower().startswith("whatsapp thread:") or text.lower().startswith("person:"):
@@ -47,6 +60,8 @@ def is_chat_hit(item: dict[str, Any]) -> bool:
         return True
     if channel in {"imessage", "whatsapp", "messages"}:
         return True
+    if channel in {"mail", "calls", "photos", "contacts"}:
+        return False
     return bool(_LIVE_LINE.match(text) or _EXCERPT.match(text))
 
 
@@ -105,12 +120,20 @@ def speak_messages(query: str, items: list[dict[str, Any]], decision: Any | None
     manner = str(getattr(decision, "manner", "") or "")
     who = str(getattr(decision, "who", "") or "").strip()
     latest = bool(getattr(decision, "latest", False))
+    focus = str(getattr(decision, "focus", "") or "")
     if manner == "readout":
         picked = _pick(rows, who=who, latest=True)
         return _speak_readout(picked) if picked else ""
-    if manner == "particular" or latest or who:
+    # Manner wins. `latest` on a digest means "the recent set", not "one
+    # particular last thread". Hundreds of recents wordings share digest.
+    if manner == "digest":
+        return _speak_digest(rows)
+    if manner == "particular" or who or focus in {"when", "who", "subject"}:
         picked = _pick(rows, who=who, latest=True)
-        return _speak_particular(query, picked) if picked else ""
+        return _speak_particular(query, picked, decision) if picked else ""
+    if latest:
+        picked = _pick(rows, who=who, latest=True)
+        return _speak_particular(query, picked, decision) if picked else ""
     return _speak_digest(rows)
 
 
@@ -231,19 +254,38 @@ def _speak_digest(rows: list[dict[str, Any]]) -> str:
             break
     if not bits:
         return ""
+    channels = {_channel_label(item) for item in rows if isinstance(item, dict)}
+    if len(channels) > 1:
+        # Mixed inbox (WhatsApp + Messages + mail): no single channel owns it.
+        return ("Latest across your inbox: " + " ".join(bits))[:SPOKEN_MSG_CAP]
     channel = _channel_label(rows[0])
     return (f"Latest {channel}: " + " ".join(bits))[:SPOKEN_MSG_CAP]
 
 
-def _speak_particular(query: str, item: dict[str, Any]) -> str:
+def _speak_particular(query: str, item: dict[str, Any], decision: Any = None) -> str:
     del query
     fields = message_fields(item)
     who = fields["handle"] or fields["speaker"]
     gist = fields["gist"] or _about_from_bodies([fields["preview"]])
     channel = fields["channel"]
+    from app.memory.mail_speak import speak_received
+
+    when_bit = speak_received(item)
+    focus = str(getattr(decision, "focus", "") or "gist")
+    if focus == "when":
+        if when_bit:
+            return f"Last with {who} on {channel} arrived {when_bit}."[:SPOKEN_MSG_CAP]
+        return f"Last with {who} on {channel}."[:SPOKEN_MSG_CAP]
+    if focus == "who":
+        return f"That last {channel} was with {who}."[:SPOKEN_MSG_CAP]
     if not gist:
+        if when_bit:
+            return f"Last on {channel} with {who}, {when_bit}."[:SPOKEN_MSG_CAP]
         return f"Last on {channel} with {who}."[:SPOKEN_MSG_CAP]
-    line = f"Last with {who} on {channel}. {gist}"
+    line = f"Last with {who} on {channel}"
+    if when_bit:
+        line += f", {when_bit}"
+    line += f". {gist}"
     if not line.endswith((".", "!", "?")):
         line += "."
     return line[:SPOKEN_MSG_CAP]

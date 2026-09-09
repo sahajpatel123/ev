@@ -566,3 +566,326 @@ async def test_gmail_live_acceptance() -> None:
     )
     found = await client.search("in:inbox", limit=1)
     assert isinstance(found.get("ids"), list)
+
+
+@pytest.mark.asyncio
+async def test_briefing_speaks_from_person_context_or_honest_empty() -> None:
+    from app.digital.orchestrate import handle_outcome
+
+    fake = FakeWhatsAppBacking(
+        chats={
+            "c1": {
+                "name": "Mansi",
+                "messages": [
+                    {"id": "1", "from_me": False, "text": "see you at 3", "timestamp": "1"}
+                ],
+            }
+        }
+    )
+    ctx = OpContext(whatsapp_backing=fake, autonomy=AutonomyLevel.READ)
+    result = await handle_outcome("prepare me for my conversation with Mansi", ctx=ctx)
+    assert result["kind"] == "briefing"
+    assert result["sent"] is False
+    assert result.get("spoken")
+    assert "Mansi" in result["spoken"]
+    # Unknown person: honest empty, never a "Digital operations: briefing" fallback.
+    unknown = await handle_outcome(
+        "prepare me for my conversation with Xyzzy", ctx=ctx
+    )
+    assert unknown["kind"] == "briefing"
+    assert unknown["sent"] is False
+    assert unknown.get("spoken")
+    assert "Xyzzy" in unknown["spoken"]
+    unnamed = await handle_outcome("prepare me", ctx=ctx)
+    assert unnamed.get("spoken")
+
+
+def test_person_name_extraction_quote_shapes() -> None:
+    from app.digital.orchestrate import _extract_person_name
+
+    assert _extract_person_name("what did Mansi say") == "Mansi"
+    assert _extract_person_name("What did Rahul tell me") == "Rahul"
+    assert _extract_person_name("what did Alex say on WhatsApp") == "Alex"
+    assert _extract_person_name("Mansi says hi") == "Mansi"
+    assert _extract_person_name("mail from Rahul") == "Rahul"
+    assert _extract_person_name("prepare me for my conversation with Mansi") == "Mansi"
+    # Pronouns and bare verbs name no one; hardcoded test names are gone.
+    assert _extract_person_name("what did you say") == ""
+    assert _extract_person_name("tell me about my conversations") == ""
+    assert _extract_person_name("ask rahul tomorrow") == ""
+    assert _extract_person_name("what is new") == ""
+
+
+def test_draft_body_prefers_saying_over_reply() -> None:
+    from app.digital.orchestrate import _draft_body
+
+    assert _draft_body("draft a reply to Mansi saying thanks") == "thanks"
+    assert _draft_body("send an email to Rahul saying the deck is ready") == "the deck is ready"
+    assert _draft_body("reply thanks") == "thanks"
+    assert _draft_body("please draft something").startswith("Thanks —")
+
+
+@pytest.mark.asyncio
+async def test_gmail_draft_fallback_composes_without_oauth() -> None:
+    from app.digital.orchestrate import handle_outcome
+
+    # No lease, no hub: fabric draft fails auth, but the composed reply is
+    # kept as the prepared draft so approve-to-send still has content.
+    result = await handle_outcome(
+        "draft a reply to Mansi saying thanks", ctx=OpContext()
+    )
+    assert result["kind"] == "gmail"
+    assert result["status"] == OpStatus.PREPARED.value
+    assert result["sent"] is False
+    draft = result["draft"]
+    assert draft["body"] == "thanks"
+    assert draft["source"] == "composed"
+    assert draft["prepared"] is True and draft["sent"] is False
+    assert result["spoken"] == "Prepared — not sent. Approve to send."
+
+
+@pytest.mark.asyncio
+async def test_mac_mail_send_never_sends_unresolvable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.ev.apps as apps
+    import app.ev.tools as tools
+    import app.integrations.life_helper as helper
+    import app.services.life_stream_daemon as daemon
+    from app.digital.orchestrate import _mac_mail_send
+
+    monkeypatch.setattr(daemon, "life_stream_should_run", lambda: True)
+    monkeypatch.setattr(apps, "discover_life_helper_path", lambda: "/fake/helper")
+
+    async def _no_contact(to: str, channel: str, *, helper_path=None):
+        del channel, helper_path
+        assert to == "Stranger"
+        return {}
+
+    async def _must_not_send(*args, **kwargs):
+        raise AssertionError(f"helper must not run: {args} {kwargs}")
+
+    monkeypatch.setattr(tools, "_resolve_send_destination", _no_contact)
+    monkeypatch.setattr(helper, "run_life_helper", _must_not_send)
+    assert await _mac_mail_send("send hi", "Stranger", "Re: x") is None
+    assert await _mac_mail_send("send hi", None, "Re: x") is None
+    assert await _mac_mail_send("send hi", "", "Re: x") is None
+
+
+@pytest.mark.asyncio
+async def test_mac_mail_send_delivers_with_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import app.ev.apps as apps
+    import app.integrations.life_helper as helper
+    import app.services.life_stream_daemon as daemon
+    from app.digital.orchestrate import _mac_mail_send
+
+    monkeypatch.setattr(daemon, "life_stream_should_run", lambda: True)
+    monkeypatch.setattr(apps, "discover_life_helper_path", lambda: "/fake/helper")
+
+    seen: dict = {}
+
+    async def _fake_send(command, args, helper_path=None):
+        seen["command"] = command
+        seen["args"] = dict(args)
+        return SimpleNamespace(
+            data={"to": args["to"], "sent": True},
+            delivery={"confirmed": True, "evidence": {"sent": True}},
+        )
+
+    monkeypatch.setattr(helper, "run_life_helper", _fake_send)
+    result = await _mac_mail_send(
+        "send an email saying the deck is ready", "ada@example.com", "Re: deck"
+    )
+    assert result is not None
+    assert result["sent"] is True
+    assert result["status"] == OpStatus.COMPLETED_VERIFIED.value
+    assert seen["command"] == "mail.send"
+    assert seen["args"]["to"] == "ada@example.com"
+    assert seen["args"]["body"] == "the deck is ready"
+
+
+@pytest.mark.asyncio
+async def test_federated_search_merges_fabric_chats_without_tabs() -> None:
+    from app.digital.orchestrate import handle_outcome
+
+    fake = FakeWhatsAppBacking(
+        chats={
+            "c1": {
+                "name": "Mansi",
+                "messages": [
+                    {"id": "1", "from_me": False, "text": "see you at 3", "timestamp": "1"}
+                ],
+            }
+        }
+    )
+    ctx = OpContext(whatsapp_backing=fake, autonomy=AutonomyLevel.READ)
+    result = await handle_outcome("what did Mansi say", ctx=ctx)
+    assert result["kind"] == "federated_search"
+    assert result["results"]
+    assert "see you at 3" in str(result["latest"].get("answer") or "") or result["results"]
+
+
+@pytest.mark.asyncio
+async def test_mac_hub_empty_mail_is_the_answer(monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.digital.orchestrate as orch
+    from app.digital.orchestrate import _mac_mail_read
+
+    class EmptyDaemon:
+        def peek_mail(self, **kwargs):
+            del kwargs
+            return []
+
+    monkeypatch.setattr(
+        "app.services.life_stream_daemon.life_stream_should_run", lambda: True
+    )
+    monkeypatch.setattr(
+        "app.services.life_stream_daemon.get_life_stream_daemon", lambda: EmptyDaemon()
+    )
+
+    async def boom(*args, **kwargs):
+        raise AssertionError(f"gmail fabric must not run: {args} {kwargs}")
+
+    monkeypatch.setattr(orch, "execute", boom)
+    result = await _mac_mail_read("any new mail")
+    assert result is not None
+    assert result["source"] == "live_mac"
+    assert result["sent"] is False
+    assert "mail" in result["spoken"].lower()
+
+
+@pytest.mark.asyncio
+async def test_federated_search_skips_chrome_when_hub_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.digital.orchestrate as orch
+    from app.digital.orchestrate import handle_outcome
+
+    async def boom(*args, **kwargs):
+        raise AssertionError(f"fabric must not run: {args} {kwargs}")
+
+    async def no_refs(*args, **kwargs):
+        del args, kwargs
+        return []
+
+    monkeypatch.setattr(orch, "_mac_hub_on", lambda: True)
+    monkeypatch.setattr(orch, "execute", boom)
+    monkeypatch.setattr(orch, "_mac_federated_refs", no_refs)
+    result = await handle_outcome("what did Mansi say", ctx=OpContext())
+    assert result["kind"] == "federated_search"
+    assert result["gmail_status"] == "skipped"
+    assert result["whatsapp_status"] == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_send_skips_chrome_when_hub_cannot_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.digital.orchestrate as orch
+    from app.digital.orchestrate import handle_outcome
+
+    async def no_send(*args, **kwargs):
+        del args, kwargs
+        return None
+
+    async def boom(*args, **kwargs):
+        raise AssertionError(f"WhatsApp Web must not run: {args} {kwargs}")
+
+    monkeypatch.setattr(orch, "_mac_hub_on", lambda: True)
+    monkeypatch.setattr(orch, "_mac_whatsapp_send", no_send)
+    monkeypatch.setattr(orch, "execute", boom)
+    result = await handle_outcome(
+        "send a whatsapp to Mansi saying the deck is ready", ctx=OpContext()
+    )
+    assert result["kind"] == "whatsapp"
+    assert result["sent"] is False
+    assert result["source"] == "live_mac"
+    assert "chrome" in result["spoken"].lower()
+
+
+@pytest.mark.asyncio
+async def test_digital_act_gmail_search_uses_mac_hub(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: AsyncSession,
+) -> None:
+    from app.digital.tools import handle_digital_tool
+
+    class Hits:
+        def peek_mail(self, **kwargs):
+            del kwargs
+            return [
+                {
+                    "sender": "Job",
+                    "subject": "Deck",
+                    "gist": "Chale",
+                    "when": "2026-09-09T10:00:00+00:00",
+                }
+            ]
+
+    async def boom(*args, **kwargs):
+        raise AssertionError(f"gmail fabric must not run: {args} {kwargs}")
+
+    monkeypatch.setattr(
+        "app.services.life_stream_daemon.life_stream_should_run", lambda: True
+    )
+    monkeypatch.setattr(
+        "app.services.life_stream_daemon.get_life_stream_daemon", lambda: Hits()
+    )
+    monkeypatch.setattr("app.digital.tools.execute", boom)
+    result = await handle_digital_tool(
+        db_session,
+        "digital_act",
+        {"service": "gmail", "operation": "search", "args": {"q": "recent mail"}},
+        actor="owner",
+    )
+    assert result is not None
+    assert result["source"] == "live_mac"
+    assert result["spoken"]
+
+
+@pytest.mark.asyncio
+async def test_digital_act_whatsapp_read_uses_mac_hub(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: AsyncSession,
+) -> None:
+    from app.digital.tools import handle_digital_tool
+
+    class Hits:
+        def peek_whatsapp(self, **kwargs):
+            del kwargs
+            return [
+                {
+                    "text": "Mansi: Hello",
+                    "handle": "Mansi",
+                    "preview": "Hello",
+                    "channel": "whatsapp",
+                    "when": "2026-09-09T10:00:00+00:00",
+                }
+            ]
+
+    async def boom(*args, **kwargs):
+        raise AssertionError(f"WhatsApp Web must not run: {args} {kwargs}")
+
+    monkeypatch.setattr(
+        "app.services.life_stream_daemon.life_stream_should_run", lambda: True
+    )
+    monkeypatch.setattr(
+        "app.services.life_stream_daemon.get_life_stream_daemon", lambda: Hits()
+    )
+    monkeypatch.setattr("app.digital.tools.execute", boom)
+    result = await handle_digital_tool(
+        db_session,
+        "digital_act",
+        {
+            "service": "whatsapp",
+            "operation": "thread_summary",
+            "args": {"query": "Mansi"},
+        },
+        actor="owner",
+    )
+    assert result is not None
+    assert result["source"] == "live_mac"
+    assert result["spoken"]
