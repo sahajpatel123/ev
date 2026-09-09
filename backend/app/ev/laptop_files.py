@@ -732,7 +732,15 @@ def resolve_file_computer_goal(
     target_app: str | None = None,
     last_path: str | None = None,
 ) -> tuple[str, dict[str, Any]] | None:
+    from app.ev.file_coalesce import coalesce_file_goal, is_verify_only
+
+    raw = (text or "").strip()
+    if last_path and is_verify_only(raw):
+        parsed = coalesce_file_goal(None, last_path=last_path, text=raw)
+        if parsed is not None:
+            return "file_op", parsed
     parsed = parse_file_goal(text, target_app=target_app, last_path=last_path)
+    parsed = coalesce_file_goal(parsed, last_path=last_path, text=raw)
     if parsed is None:
         return None
     return "file_op", parsed
@@ -1175,7 +1183,14 @@ def _content_and_instruction(text: str, name: str) -> tuple[str, str]:
     )
     if put and " " in put.group(1).strip():
         body = _spoken_file_body(put.group(1))
-        if body and not re.search(r"\b(?:file|note|text)\b", body, re.I):
+        from app.ev.desk_meaning import is_request_payload, wants_generated_contents
+
+        if (
+            body
+            and not re.search(r"\b(?:file|note|text)\b", body, re.I)
+            and not is_request_payload(body)
+            and not wants_generated_contents(text, [], label="")
+        ):
             return body[:MAX_FILE_BYTES], body[:MAX_FILE_BYTES]
     stripped = text
     if name:
@@ -2297,6 +2312,8 @@ async def plan_file_content(
         )
         if source in {"inventory", "spark"}:
             return body, source
+        if source == "spark_empty":
+            return "", "empty"
         if source == "empty":
             from app.ev.desk_meaning import leftover_needs_model
 
@@ -2356,57 +2373,35 @@ async def _intelligent_rewrite(current: str, instruction: str, *, create: bool) 
         )
     from app.gateway.muse import (
         MuseProviderUnavailable,
-        muse_intelligence_active,
+        muse_key_loaded,
         muse_spark_key_loaded,
     )
 
-    spark_lane = muse_intelligence_active() or muse_spark_key_loaded()
-    if spark_lane:
-        if not muse_spark_key_loaded():
-            raise RuntimeError("file_intelligence_unavailable")
-        try:
-            from app.contracts import ChatMessage
-            from app.gateway.muse import muse_spark_model
-            from app.gateway.muse_spark import muse_spark_provider
+    # Mini speaks. Muse Spark 1.3 Contributor decides file contents.
+    # Spark and Voice share the Meta Model API key.
+    if not (muse_spark_key_loaded() or muse_key_loaded()):
+        raise RuntimeError("file_intelligence_unavailable")
+    try:
+        from app.contracts import ChatMessage
+        from app.gateway.muse import muse_spark_model
+        from app.gateway.muse_spark import muse_spark_provider
 
-            result = await muse_spark_provider().chat(
-                [
-                    ChatMessage(
-                        role="system",
-                        content='You edit local files for Evie. Reply with JSON {"content": "..."} only.',
-                    ),
-                    ChatMessage(role="user", content=prompt),
-                ],
-                model=muse_spark_model(),
-            )
-        except MuseProviderUnavailable as exc:
-            raise RuntimeError("file_intelligence_unavailable") from exc
-        parsed = _parse_content_json(result.text or "")
-        if parsed is None:
-            raise RuntimeError("file_intelligence_unavailable")
-        return parsed, "spark"
-
-    luna = await _call_chat_model(
-        provider="openai",
-        model=(getattr(settings, "turn_control_model", None) or "gpt-5.6-luna").strip() or "gpt-5.6-luna",
-        fallback=(getattr(settings, "turn_control_fallback_model", None) or "gpt-4o-mini").strip(),
-        prompt=prompt,
-        api_key=(getattr(settings, "openai_api_key", None) or "").strip(),
-        base_url=(getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/"),
-    )
-    if luna is not None:
-        return luna, "luna"
-    deepseek = await _call_chat_model(
-        provider="deepseek",
-        model=(getattr(settings, "deepseek_model", None) or "deepseek-v4-flash").strip(),
-        fallback="",
-        prompt=prompt,
-        api_key=(getattr(settings, "deepseek_api_key", None) or "").strip(),
-        base_url=(getattr(settings, "deepseek_base_url", None) or "https://api.deepseek.com").rstrip("/"),
-    )
-    if deepseek is not None:
-        return deepseek, "deepseek"
-    raise RuntimeError("file_intelligence_unavailable")
+        result = await muse_spark_provider().chat(
+            [
+                ChatMessage(
+                    role="system",
+                    content='You edit local files for Evie. Reply with JSON {"content": "..."} only.',
+                ),
+                ChatMessage(role="user", content=prompt),
+            ],
+            model=muse_spark_model(),
+        )
+    except MuseProviderUnavailable as exc:
+        raise RuntimeError("file_intelligence_unavailable") from exc
+    parsed = _parse_content_json(result.text or "")
+    if parsed is None:
+        raise RuntimeError("file_intelligence_unavailable")
+    return parsed, "spark"
 
 
 async def _call_chat_model(
@@ -2845,6 +2840,11 @@ async def execute_file_op(
     action = str(arguments.get("action") or "").strip().lower()
     path_raw = str(arguments.get("path") or "").strip()
     path_obj = Path(path_raw).expanduser() if path_raw else None
+    if path_obj is not None and not path_obj.is_absolute():
+        # File ops must never write into the API process cwd.
+        path_obj = Path.home() / "Desktop" / path_obj.name
+        arguments["path"] = str(path_obj)
+        path_raw = str(path_obj)
     concrete_file = bool(path_obj is not None and path_obj.is_file())
     query = str(arguments.get("query") or "").strip().lower()
     mismatched = bool(

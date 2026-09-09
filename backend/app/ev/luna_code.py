@@ -1055,7 +1055,7 @@ async def run_code_job(
                 return _finish_code_job(
                     _fail(
                         "spark_unavailable",
-                        "Coding intelligence is unavailable: OPENCODE_API_KEY is missing.",
+                        "Coding intelligence is unavailable: META_MODEL_API_KEY is missing.",
                     ),
                     request=request,
                     workspace=workspace,

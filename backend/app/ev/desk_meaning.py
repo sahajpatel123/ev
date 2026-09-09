@@ -157,20 +157,129 @@ _FOREIGN_LIFE = re.compile(
 )
 _DESK_NOUN = re.compile(r"\b(?:lists?|check-?lists?|notes?|files?|documents?)\b", re.I)
 _DELEGATE = re.compile(
-    r"\byou\s+(?:think|decide|consider|suggest|recommend|pick|choose)\b|"
-    r"\bwhat(?:ever)?\s+you\s+(?:think|want)\b|"
-    r"\bitems?\s+you\s+think\b",
+    r"\byou\s+(?:think|decide|consider|suggest|recommend|pick|choose|figure)\b|"
+    r"\bwhat(?:ever)?\s+you\s+(?:think|want|decide)\b|"
+    r"\bitems?\s+you\s+think\b|"
+    r"\bwhat\s+i(?:['’]ll|\s+will)?\s+(?:need|should\s+(?:bring|pack|take|get|buy|have))\b|"
+    r"\bwhatever\s+i\s+need\b|"
+    r"\bthe\s+usual\b|"
+    r"\bcome\s+up\s+with\b|"
+    r"\bfigure\s+(?:it\s+|this\s+)?out\b|"
+    r"\bput\s+together\b|"
+    r"\baccording to (?:you|yourself|evie)\b|"
+    r"\bup to you\b|"
+    r"\b(?:you|evie)\s+(?:can |should )?(?:decide|choose|pick|make (?:one|it) up)\b",
     re.I,
 )
 _HAVE_OCCASION = re.compile(
     r"\b(?:i(?:['’]m|\s+am)?\s+)?(?:have|got)\s+(?:a|an|the)\s+([A-Za-z][\w+\-]{2,32})",
     re.I,
 )
-_ACT_CHUNK = re.compile(
-    r"\b(?:want you|you think)\b",
+_GERUND_OCCASION = re.compile(
+    r"\b(?:i(?:['’]m|\s+am)\s+|going\s+)"
+    r"(flying|traveling|travelling|camping|moving|interviewing|driving|packing|hiking)\b",
     re.I,
 )
-_WHEN_WORD = frozenset({"tomorrow", "today", "tonight", "soon"})
+_GERUND_STEM = {
+    "flying": "flight",
+    "traveling": "trip",
+    "travelling": "trip",
+    "camping": "camping",
+    "moving": "move",
+    "interviewing": "interview",
+    "driving": "drive",
+    "packing": "packing",
+    "hiking": "hike",
+}
+_MOTION_OCCASION = re.compile(
+    r"\b(?:going|heading|leaving|off)\s+(?:to\s+)?"
+    r"(?:the\s+|a\s+|an\s+|my\s+)?"
+    r"(?!make|create|start|write|build|save|put|get|do\b)"
+    r"([A-Za-z][\w+\-]{2,32})",
+    re.I,
+)
+_NEED_OCCASION = re.compile(
+    r"\bi\s+need\s+(?!you\b|to\b)(?:a|an|the\s+)?([A-Za-z][\w+\-]{2,32})",
+    re.I,
+)
+_FOR_OCCASION = re.compile(
+    r"\b(?:for|before)\s+(?:the\s+|my\s+|our\s+|this\s+|a\s+|an\s+)?"
+    r"(?:new\s+|old\s+)?"
+    r"([A-Za-z][\w+\-]{2,32})\b",
+    re.I,
+)
+_REQUEST_PAYLOAD = re.compile(
+    r"^(?:what(?:ever)?\s+(?:i|you|we)\s+(?:need|should|think|want)|"
+    r"what\s+i(?:['’]ll|\s+will)?\s+(?:need|should\s+\w+)|"
+    r"items?\s+you\s+think|"
+    r"the\s+usual(?:\s+\w+)?|"
+    r"talking\s+points|"
+    r"together\s+what)\b",
+    re.I,
+)
+_ACT_CHUNK = re.compile(
+    r"\b(?:want you|you think|what i(?:['’]ll| will)? (?:need|should)|"
+    r"whatever i need|figure out|come up with|put together)\b",
+    re.I,
+)
+_WHEN_WORD = frozenset(
+    {
+        "tomorrow",
+        "today",
+        "tonight",
+        "soon",
+        "morning",
+        "afternoon",
+        "evening",
+        "weekend",
+        "week",
+        "saturday",
+        "sunday",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+    }
+)
+_KIND_SKIP = frozenset(
+    {
+        "you",
+        "i",
+        "we",
+        "of",
+        "on",
+        "about",
+        "to",
+        "for",
+        "with",
+        "from",
+        "decide",
+        "think",
+        "want",
+        "need",
+        "figure",
+        "come",
+        "put",
+        "get",
+        "leave",
+        "save",
+        "write",
+        "draft",
+        "drop",
+        "whatever",
+        "verify",
+        "verified",
+        "verification",
+        "according",
+        "yourself",
+        "desktop",
+        "documents",
+        "downloads",
+        "icloud",
+        "text",
+    }
+)
 _PAYLOAD_SCHEMA = {
     "type": "object",
     "properties": {
@@ -283,6 +392,20 @@ _GENERIC_KIND = frozenset(
         "read",
         "show",
         "pull",
+        "you",
+        "of",
+        "on",
+        "about",
+        "to",
+        "for",
+        "with",
+        "from",
+        "decide",
+        "think",
+        "whatever",
+        "come",
+        "figure",
+        "get",
     }
 )
 _CHAT_BANTER = frozenset(
@@ -309,7 +432,9 @@ def reject_terms(text: str, label: str = "") -> set[str]:
     deny.update(_COMPLETENESS)
     deny.update(_WHEN_WORD)
     deny.update({"have", "got", "save", "document", "documents", "inside", "think", "necessary"})
+    deny.update({"according", "yourself", "verify", "verified", "verification", "txt"})
     deny.update({"i", "i'm", "im", "i've", "ive", "we", "you", "is", "are", "was", "be"})
+    deny.update({"it", "them", "whatever", "figure", "come", "together", "out"})
     for token in re.findall(r"[A-Za-z0-9][\w+\-]*", label or ""):
         deny.add(token.lower())
     span = _KIND_SPAN.search(text or "")
@@ -346,10 +471,15 @@ def is_kind_echo(body: str, label: str = "") -> bool:
             return True
         if re.fullmatch(r"note from evie", token):
             return True
+        if is_request_payload(token):
+            return True
         occ = occasion_label(label) or occasion_label(" ".join(words))
         if occ and words and words[0] == occ:
             return True
-        if label_l and re.fullmatch(rf"{re.escape(label_l)}(?:\s+(?:tomorrow|today|tonight))?", token):
+        if label_l and re.fullmatch(
+            rf"{re.escape(label_l)}(?:\s+(?:tomorrow|today|tonight|morning))?",
+            token,
+        ):
             return True
     return all(
         re.sub(r"[^a-z0-9]+", "", line.lower()) in deny
@@ -368,6 +498,8 @@ def kind_label(text: str) -> str | None:
         token
         for token in re.sub(r"\s+", " ", span.group(1).strip().lower()).split()
         if token not in _GENERIC_KIND
+        and token not in _KIND_SKIP
+        and token not in _SCAFFOLD
     ]
     if not tokens:
         return None
@@ -380,17 +512,51 @@ def kind_label(text: str) -> str | None:
 
 
 def occasion_label(text: str) -> str | None:
-    """Content noun of a have/got occasion: 'I have a flight tomorrow' → flight."""
+    """Situation noun: have/got, I'm flying, heading to X, I need X, for the trip."""
 
-    hit = _HAVE_OCCASION.search(text or "")
-    if not hit:
-        return None
-    token = hit.group(1).strip().lower()
-    if not token or token in _GENERIC_KIND or token in _SCAFFOLD:
-        return None
-    if token in {"document", "documents", "folder", "computer", "laptop"}:
-        return None
-    return token
+    raw = text or ""
+
+    def _ok(token: str | None) -> str | None:
+        word = (token or "").strip().lower()
+        if not word or word in _GENERIC_KIND or word in _SCAFFOLD or word in _KIND_SKIP:
+            return None
+        if word in {"document", "documents", "folder", "computer", "laptop"}:
+            return None
+        if word in _WHEN_WORD:
+            return None
+        return word
+
+    hit = _HAVE_OCCASION.search(raw)
+    found = _ok(hit.group(1) if hit else None)
+    if found:
+        return found
+    gerund = _GERUND_OCCASION.search(raw)
+    if gerund:
+        stem = _GERUND_STEM.get(gerund.group(1).strip().lower())
+        return _ok(stem) or stem
+    motion = _MOTION_OCCASION.search(raw)
+    found = _ok(motion.group(1) if motion else None)
+    if found:
+        return found
+    need = _NEED_OCCASION.search(raw)
+    found = _ok(need.group(1) if need else None)
+    if found:
+        return found
+    if _DEST_PP.search(raw) or _DESK_NOUN.search(raw):
+        for_hit = _FOR_OCCASION.search(raw)
+        found = _ok(for_hit.group(1) if for_hit else None)
+        if found:
+            return found
+    return None
+
+
+def is_request_payload(body: str) -> bool:
+    """True when a would-be file body is still the request, not the contents."""
+
+    raw = (body or "").strip().strip(" .")
+    if not raw:
+        return False
+    return bool(_REQUEST_PAYLOAD.search(raw.lower()))
 
 
 def strip_reason_clause(text: str) -> str:
@@ -486,22 +652,33 @@ def wants_generated_contents(text: str, items: list[str], *, label: str = "") ->
     raw = text or ""
     if _enumerated_contents(raw, items):
         return False
+    if re.search(r"(?:that\s+says|saying|that\s+reads|containing)\s+\S", raw, re.I):
+        return False
     named = (label or kind_label(raw) or occasion_label(raw) or "").strip()
     if not named:
         hit = _KIND_FILE.search(raw)
         token = (hit.group(1).strip().lower() if hit else "")
-        if token and token not in _GENERIC_KIND:
+        if token and token not in _GENERIC_KIND and token not in _KIND_SKIP:
             named = token
         elif re.search(r"\bcheck-?lists?\b", raw, re.I):
             named = "checklist"
-        elif _DESK_NOUN.search(raw) and (_DELEGATE.search(raw) or bool({w.lower() for w in re.findall(r"[A-Za-z0-9][\w+\-]*", raw)} & _COMPLETENESS)):
+        elif _DESK_NOUN.search(raw) and (
+            _DELEGATE.search(raw)
+            or bool({w.lower() for w in re.findall(r"[A-Za-z0-9][\w+\-]*", raw)} & _COMPLETENESS)
+        ):
+            named = "list"
+        elif _DEST_PP.search(raw) and _DELEGATE.search(raw):
             named = "list"
     if not named:
         return False
     if _DELEGATE.search(raw):
         return True
     tokens = {word.lower() for word in re.findall(r"[A-Za-z0-9][\w+\-]*", raw)}
-    return bool(tokens & _COMPLETENESS)
+    if tokens & _COMPLETENESS:
+        return True
+    if not _ILLOCUTION.search(raw):
+        return False
+    return leftover_needs_model(raw, items, label=named) and bool(_DEST_PP.search(raw))
 
 
 def _enumerated_contents(raw: str, items: list[str]) -> bool:
@@ -532,20 +709,25 @@ def list_create_parts(text: str) -> dict[str, Any] | None:
         return None
     if _NOT_CREATE.search(raw):
         return None
+    if re.search(r"\bnotes?\b", raw, re.I) and not kind_label(raw):
+        return None
     label = kind_label(raw) or occasion_label(raw)
     deny = reject_terms(raw, label or "")
     items = extract_inventory(raw, reject=deny)
     asked = bool(_ILLOCUTION.search(raw))
     generate = wants_generated_contents(raw, items, label=label or "")
+    dest = bool(_DEST_PP.search(raw))
     if not label and (asked or generate):
         hit = _KIND_FILE.search(raw)
         token = (hit.group(1).strip().lower() if hit else "")
-        if token and token not in _GENERIC_KIND:
+        if token and token not in _GENERIC_KIND and token not in _KIND_SKIP:
             label = token
             deny = reject_terms(raw, label)
             items = extract_inventory(raw, reject=deny)
             generate = wants_generated_contents(raw, items, label=label)
-        elif asked and _DESK_NOUN.search(raw) and (_DEST_PP.search(raw) or generate):
+        elif generate and (dest or _DESK_NOUN.search(raw)):
+            label = occasion_label(raw) or "list"
+        elif asked and _DESK_NOUN.search(raw) and (dest or generate):
             label = "list"
     if label:
         if generate:
@@ -560,7 +742,7 @@ def list_create_parts(text: str) -> dict[str, Any] | None:
                 items = []
         if items:
             return {"label": label, "items": items}
-        if asked or generate:
+        if generate or (asked and (dest or _DESK_NOUN.search(raw))):
             return {"label": label, "items": []}
         return None
     if len(items) >= 2 and asked and re.search(r"\blists?\b", raw, re.I) and not generate:
@@ -586,22 +768,32 @@ def note_create_parts(text: str) -> dict[str, Any] | None:
     has_dest = bool(_DEST_PP.search(raw))
     asked = bool(_ILLOCUTION.search(raw))
     deny = reject_terms(raw, "note")
-    items = extract_inventory(raw, reject=deny)
     says = re.search(
         r"(?:that\s+says|saying|that\s+reads|containing|:)\s+(.+)$",
         raw,
         re.I,
     )
-    body = (says.group(1).strip() if says else "") or "\n".join(items)
+    spoken = (says.group(1).strip() if says else "")
+    items = extract_inventory(raw, reject=deny)
+    generate = wants_generated_contents(raw, items, label=named or "note")
+    body = spoken or "\n".join(items)
+    if is_request_payload(body):
+        body = ""
+    if spoken:
+        generate = False
+    elif generate and not items:
+        body = ""
     if body and (asked or has_dest):
         return {"label": "note", "items": items, "body": body}
     if asked and has_dest:
         return {"label": "note", "items": items, "body": body}
+    if generate and (asked or has_dest):
+        return {"label": "note", "items": [], "body": ""}
     return None
 
 
 def spark_desk_candidate(text: str) -> bool:
-    """When cheap frames miss but a named kind or dest still marks desk work."""
+    """When cheap frames miss but dest/kind plus a request still marks desk work."""
 
     raw = (text or "").strip()
     if not raw:
@@ -615,11 +807,15 @@ def spark_desk_candidate(text: str) -> bool:
         return False
     if looks_like_desk_job(raw):
         return False
-    if kind_label(raw):
+    asked = bool(_ILLOCUTION.search(raw))
+    dest = bool(_DEST_PP.search(raw))
+    named = bool(kind_label(raw) or occasion_label(raw) or _DESK_NOUN.search(raw))
+    generate = wants_generated_contents(raw, [])
+    if generate and (dest or named):
         return True
-    if _DEST_PP.search(raw) and _DESK_NOUN.search(raw):
+    if named and asked and dest:
         return True
-    if _ILLOCUTION.search(raw) and _DESK_NOUN.search(raw) and wants_generated_contents(raw, []):
+    if dest and _DESK_NOUN.search(raw) and asked:
         return True
     return False
 
@@ -668,6 +864,7 @@ async def interpret_owner_act(
             schema=_ACT_SCHEMA,
             schema_name="desk_act",
             model=muse_spark_model(),
+            reasoning_effort="low",
         )
     except MuseProviderUnavailable:
         return None
@@ -744,16 +941,15 @@ async def resolve_write_body(
     items = extract_inventory(utterance, reject=deny)
     generate = wants_generated_contents(utterance, items, label=label)
     if generate:
-        spark_items = await spark_inventory(utterance, label=label or occasion_label(utterance) or "", generate=True)
+        spark_items = await spark_inventory(
+            utterance, label=label or occasion_label(utterance) or "", generate=True
+        )
         if spark_items:
             return "\n".join(spark_items), "spark", spark_items
-        echo = is_kind_echo(proposed, label)
-        if receipt in {"named_list", "dated_note"} or echo or is_kind_echo("\n".join(items), label):
-            return "", "empty", []
-        return "", "empty", []
+        return "", "spark_empty", []
     if items:
         return "\n".join(items), "inventory", items
-    echo = is_kind_echo(proposed, label)
+    echo = is_kind_echo(proposed, label) or is_request_payload(proposed)
     if proposed.strip() and not echo:
         proposed_items = [
             re.sub(r"^[\-\*\d\.\)\s]+", "", line).strip()
@@ -797,9 +993,10 @@ async def spark_inventory(
             "The owner described a situation or a kind of list and asked you to "
             "propose the contents. The situation (a flight, interview, trip, etc.) "
             "is the reason for the list, not a line in it. Propose 6-12 concrete "
-            "real-world items one would actually need. Never put the occasion phrase "
-            "itself, the kind, filename, folder (desktop/documents), or words like "
-            "list/note/file into items."
+            "real-world items one would actually need, in one list. Never put the "
+            "occasion phrase itself, the kind, filename, folder "
+            "(desktop/documents), file extensions (.txt/.md), or words like "
+            "list/note/file/verify into items."
         )
     else:
         extract_rule = (
@@ -828,6 +1025,7 @@ async def spark_inventory(
             schema=_PAYLOAD_SCHEMA,
             schema_name="desk_payload",
             model=muse_spark_model(),
+            reasoning_effort="low",
         )
     except MuseProviderUnavailable:
         logger.info("desk_meaning spark unavailable")
@@ -869,6 +1067,12 @@ def _clean_item(raw: str, deny: set[str]) -> str | None:
     if lowered in deny:
         return None
     if re.fullmatch(r"(?:list|note|file|desktop|documents)s?", lowered):
+        return None
+    if re.fullmatch(r"\.\w{1,8}", token):
+        return None
+    if re.search(r"\.\w{1,8}$", token) and len(token) <= 24:
+        return None
+    if "/" in token or "\\" in token:
         return None
     words = lowered.split()
     if words and all(word in deny or word in _WHEN_WORD for word in words):

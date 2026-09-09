@@ -8,15 +8,18 @@ import pytest
 
 from app.config import settings
 from app.ev.desk_meaning import (
+    _clean_item,
     extract_inventory,
     interpret_owner_act,
     is_kind_echo,
+    kind_label,
     leftover_needs_model,
     list_create_parts,
     looks_like_desk_job,
     note_create_parts,
     reject_terms,
     spark_desk_candidate,
+    wants_generated_contents,
 )
 from app.ev.desk_names import reset_desk_names
 from app.ev.laptop_files import parse_file_goal
@@ -455,6 +458,185 @@ async def test_generate_without_spark_does_not_write_the_occasion(
         label="flight",
         receipt="named_list",
     )
-    assert source == "empty"
+    assert source == "spark_empty"
     assert not body.strip()
     assert not items
+
+
+def test_situation_and_propose_is_structure_not_a_phrase_book(files_root: Path) -> None:
+    from app.ev.desk_meaning import occasion_label, wants_generated_contents
+
+    phrases = (
+        "I'm flying tomorrow, put what I should bring on my desktop",
+        "heading to the airport in the morning, save a list of what I need on my desktop",
+        "going camping this weekend, make a list of the usual gear on my desktop",
+        "I'm moving next week, drop a list of the necessary stuff on my desktop",
+        "put what I should buy for groceries on my desktop",
+        "write down what I need for the move on the computer",
+        "come up with a packing list for the trip and put it on my desktop",
+        "figure out a grocery list and save it on my desktop",
+        "I need groceries, you decide the list, save it on my desktop",
+        "put together what I should pack for the hike on my desktop",
+        "whatever I need for the beach, put it in a list on my desktop",
+        "save a checklist of what I'll need for the new apartment on my desktop",
+    )
+    for phrase in phrases:
+        parts = list_create_parts(phrase)
+        assert parts is not None, phrase
+        assert not parts.get("items"), (phrase, parts)
+        label = str(parts.get("label") or "")
+        assert label not in {"", "you decide", "decide", "whatever"}, (phrase, parts)
+        assert wants_generated_contents(phrase, [], label=label), phrase
+        goal = parse_file_goal(phrase)
+        assert goal is not None and goal["action"] == "write", phrase
+        body = (goal.get("content") or "").lower()
+        assert not body.strip() or not any(
+            needle in body
+            for needle in (
+                "what i should",
+                "what i need",
+                "figure out",
+                "together what",
+                "flight tomorrow",
+            )
+        ), (phrase, body)
+        assert looks_like_desk_job("I have a headache") is False
+        assert looks_like_desk_job("I'm tired of this packing list on the computer") is False
+        assert spark_desk_candidate("I'm tired of this packing list on the computer") is False
+    assert occasion_label("I'm flying tomorrow") == "flight"
+    assert occasion_label("heading to the airport") == "airport"
+    assert occasion_label("I need groceries, you decide the list") == "groceries"
+
+
+@pytest.mark.asyncio
+async def test_generate_miss_does_not_run_a_second_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.contracts import ChatResult
+    from app.ev.laptop_files import plan_file_content
+
+    calls = {"structured": 0, "chat": 0}
+
+    class _Prov:
+        async def chat_structured(self, messages, **kwargs):
+            del messages, kwargs
+            calls["structured"] += 1
+            return ChatResult(
+                text='{"items":[],"empty":true}',
+                usage={},
+                model="muse-spark-1.3-contributor",
+            )
+
+        async def chat(self, messages, **kwargs):
+            del messages, kwargs
+            calls["chat"] += 1
+            raise AssertionError("generate miss must not rewrite")
+
+    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    phrase = "I'm flying tomorrow, put what I should bring on my desktop"
+    goal = parse_file_goal(phrase)
+    assert goal is not None
+    body, source = await plan_file_content(
+        action="write",
+        current="",
+        instruction=phrase,
+        content=str(goal.get("content") or "what I should bring"),
+        label=str(goal.get("label") or ""),
+        receipt="named_list",
+    )
+    assert source == "empty"
+    assert not body.strip()
+    assert calls["structured"] == 1
+    assert calls["chat"] == 0
+
+
+def test_desk_brain_is_muse_spark_contributor_not_the_mouth() -> None:
+    from app.gateway.muse import muse_spark_base_url, muse_spark_model
+
+    assert muse_spark_model() == "muse-spark-1.3-contributor"
+    assert "api.meta.ai" in muse_spark_base_url()
+
+
+@pytest.mark.asyncio
+async def test_desk_spark_calls_contributor_with_the_meta_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.contracts import ChatResult
+    from app.ev.desk_meaning import spark_inventory
+
+    seen: dict[str, object] = {}
+
+    class _Prov:
+        async def chat_structured(self, messages, **kwargs):
+            seen.update(kwargs)
+            del messages
+            return ChatResult(
+                text='{"items":["passport"],"empty":false}',
+                usage={},
+                model="muse-spark-1.3-contributor",
+            )
+
+        async def chat(self, messages, **kwargs):
+            raise AssertionError("payload must use chat_structured")
+
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Prov())
+    items = await spark_inventory(
+        "I'm flying tomorrow, put what I should bring on my desktop",
+        label="flight",
+        generate=True,
+    )
+    assert items == ["passport"]
+    assert seen.get("model") == "muse-spark-1.3-contributor"
+    assert seen.get("schema_name") == "desk_payload"
+
+
+@pytest.mark.asyncio
+async def test_file_rewrite_does_not_use_the_speaking_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.ev.laptop_files import _intelligent_rewrite
+
+    monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_key_loaded", lambda: False)
+
+    async def boom(*args, **kwargs):
+        raise AssertionError("Mini/Luna must not decide file contents")
+
+    monkeypatch.setattr("app.ev.laptop_files._call_chat_model", boom)
+    with pytest.raises(RuntimeError, match="file_intelligence_unavailable"):
+        await _intelligent_rewrite("", "write hello", create=True)
+
+
+def test_kind_label_drops_destination_and_process_words() -> None:
+    assert kind_label("create a grocery list according to yourself") == "grocery"
+    assert kind_label("create a desktop grocery list") == "grocery"
+    assert kind_label("verify grocery list") == "grocery"
+    assert kind_label("create a text list") in {None, "list"}
+    assert kind_label("make a packing list on my desktop") == "packing"
+
+
+def test_evie_decides_contents_is_generated_not_echoed() -> None:
+    phrase = "create a grocery list according to yourself and save it inside my desktop"
+    parts = list_create_parts(phrase)
+    assert parts is not None
+    assert parts.get("label") == "grocery"
+    assert not parts.get("items")
+    assert wants_generated_contents(phrase, [], label="grocery") is True
+    goal = parse_file_goal(phrase)
+    assert goal is not None and goal["action"] == "write"
+    assert "grocery" in str(goal.get("query") or goal.get("path") or "").lower()
+    assert "desktop" not in Path(str(goal.get("query") or "")).name.lower()
+    assert "text" not in Path(str(goal.get("query") or "")).name.lower()
+
+
+def test_generated_items_drop_filename_fragments() -> None:
+    deny = reject_terms("create a list on my desktop", "grocery")
+    assert _clean_item(".txt", deny) is None
+    assert _clean_item("grocery-list.txt", deny) is None
+    assert _clean_item("desktop", deny) is None
+    assert _clean_item("milk", deny) == "milk"
