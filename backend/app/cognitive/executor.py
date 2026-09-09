@@ -402,6 +402,10 @@ async def _run_existing(
     else:
         body = await execute_on_mac(name, arguments, live_session_id=live_session_id)
         body = _strip_secrets(body)
+    top: dict[str, Any] = {}
+    msgs = body.get("messages") if isinstance(body, dict) else None
+    if isinstance(msgs, list) and msgs and isinstance(msgs[0], dict):
+        top = msgs[0]
     remember_effect(
         cognition,
         {
@@ -411,6 +415,10 @@ async def _run_existing(
             "error": body.get("error"),
             "path": body.get("path"),
             "action": body.get("action"),
+            "spoken": str(body.get("spoken") or "")[:240] or None,
+            "who": top.get("sender") or top.get("handle"),
+            "when": top.get("when"),
+            "subject": top.get("subject"),
         },
     )
     if kind in {"files.act", "computer.perform_effect"}:

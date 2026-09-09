@@ -60,7 +60,7 @@ def compile_context(
         blocks.append("PEOPLE: " + "; ".join(str(p)[:120] for p in people[:4]))
     caps = public_descriptors()
     names = [str(c.get("name")) for c in caps[:40] if c.get("name")]
-    for required in ("look.capture", "memory.search"):
+    for required in ("look.capture", "memory.search", "life.mail", "life.messages"):
         if required not in names:
             names.append(required)
     blocks.append("CAPABILITIES (subset): " + ", ".join(names))
