@@ -161,6 +161,24 @@
     "/v1/diagnostics/last": [
       "get"
     ],
+    "/v1/digital/act": [
+      "post"
+    ],
+    "/v1/digital/can-you": [
+      "get"
+    ],
+    "/v1/digital/capabilities": [
+      "get"
+    ],
+    "/v1/digital/connection-pack": [
+      "get"
+    ],
+    "/v1/digital/outcome": [
+      "post"
+    ],
+    "/v1/digital/waiting": [
+      "get"
+    ],
     "/v1/ears/wake": [
       "post"
     ],

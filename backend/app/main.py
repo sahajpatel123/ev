@@ -45,6 +45,7 @@ from app.device_gateway import api as device_gateway_api
 from app.device_gateway import pwa as device_gateway_pwa
 from app.device_gateway import release_portal
 from app.device_gateway.security import origin_allowed
+from app.digital.api import router as digital_ops_router
 
 LOGGER = logging.getLogger("ev.main")
 
@@ -221,6 +222,7 @@ async def _gateway_correlation_and_cache_policy(request, call_next):
     return await call_next(request)
 app.include_router(device_gateway_pwa.router)
 app.include_router(release_portal.router)  # private tailnet-only install portal
+app.include_router(digital_ops_router)
 
 
 @app.get("/")

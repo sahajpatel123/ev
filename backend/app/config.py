@@ -796,6 +796,16 @@ class Settings(BaseSettings):
     voice_shadow_wait_ms: int = 350  # bound on shadow recall before bare response.create (shadow mode)
     # --- END EV VOICE CONTROL PLAN --------------------------------------------
 
+    # --- DIGITAL OPERATIONS V1 (append-only) --------------------------------
+    digital_ops_enabled: bool = True
+    digital_gmail_page_size: int = 25
+    digital_mass_action_max: int = 25
+    digital_whatsapp_poll_seconds: int = 45
+    digital_artifact_dir: str = "./storage/digital-artifacts"
+    digital_live_gmail: bool = False
+    digital_live_whatsapp: bool = False
+    # --- END DIGITAL OPERATIONS V1 ------------------------------------------
+
 
 @lru_cache
 def get_settings() -> Settings:

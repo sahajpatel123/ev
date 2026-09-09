@@ -420,6 +420,40 @@ async def run_trusted_device_turn(
         }
 
     effective_text = text or ""
+    # Presence OS: contextual short commands resolve against durable intent
+    # (continue/park/resume/teleport/what-changed). No model needed.
+    try:
+        from app.presence.service import resolve_short_command as _presence_resolve
+    except Exception:
+        _presence_resolve = None  # type: ignore[assignment]
+    if _presence_resolve is not None:
+        try:
+            _pres = await _presence_resolve(session, effective_text, device_id=device.id)
+        except Exception:
+            _pres = {"command": "UNKNOWN", "resolved": False}
+        if isinstance(_pres, dict) and _pres.get("resolved"):
+            try:
+                from app.presence.service import presence_turn as _presence_turn
+
+                _pres_reply = await _presence_turn(
+                    session, device=device, resolution=_pres, text=effective_text
+                )
+                await session.commit()
+            except Exception:
+                _pres_reply = None
+            if isinstance(_pres_reply, dict):
+                return _pres_reply
+    try:
+        from app.digital.phone_turn import maybe_digital_turn as _digital_turn
+    except Exception:
+        _digital_turn = None  # type: ignore[assignment]
+    if _digital_turn is not None:
+        try:
+            _dig = await _digital_turn(session, effective_text, device=device)
+        except Exception:
+            _dig = None
+        if isinstance(_dig, dict):
+            return _dig
     if (
         focus_title
         and focus_title not in effective_text

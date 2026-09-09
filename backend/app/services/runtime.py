@@ -1850,6 +1850,22 @@ async def daemon_tick(session: AsyncSession) -> dict:
         },
     )
 
+    # Presence OS + Digital Operations: bounded sweeps. Best-effort; never
+    # break the daemon tick. Keep timers/empties in the payload.
+    try:
+        from app.presence.runner import presence_tick as _presence_tick
+
+        presence = await _presence_tick(session, utcnow())
+    except Exception:
+        presence = {"error": "presence_tick_unavailable"}
+
+    try:
+        from app.digital.watch import digital_tick as _digital_tick
+
+        digital = await _digital_tick(session)
+    except Exception:
+        digital = {"error": "digital_tick_unavailable"}
+
     return {
         "expired_session_id": str(expired_session_id) if expired_session_id else None,
         "re_enqueued": re_enqueued,
@@ -1865,6 +1881,8 @@ async def daemon_tick(session: AsyncSession) -> dict:
         "life_reconciled": life_reconciled,
         "timers": timers,
         "empties": empties,
+        "presence": presence,
+        "digital": digital,
         "health": health,
         "code_intern": intern,
     }

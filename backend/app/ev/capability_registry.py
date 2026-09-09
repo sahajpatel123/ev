@@ -226,4 +226,27 @@ def capability_diagnostics() -> dict[str, Any]:
             "realtime_direct_tool": False,
             "execution_owner": "TurnGate/Core",
         },
+        "digital_operations": _digital_ops_projection(),
     }
+
+
+def _digital_ops_projection() -> dict[str, Any]:
+    try:
+        from app.digital.graph import semantic_digital_families, static_matrix
+
+        return {
+            "authority": "digital.capability_graph",
+            "matrix": static_matrix(),
+            "families": {
+                k: {
+                    "registered": v.get("registered"),
+                    "runtime_available": v.get("runtime_available"),
+                    "availability": v.get("availability"),
+                    "execution_owner": v.get("execution_owner"),
+                    "realtime_direct_tool": False,
+                }
+                for k, v in semantic_digital_families().items()
+            },
+        }
+    except Exception:
+        return {"authority": "digital.capability_graph", "matrix": {}, "families": {}}

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.ev import health_radar, maker, people
 from app.ev.actions import LIFE_ACTION_NAMES, autonomy_mode
 from app.ev.fleet_tools import FLEET_TOOL_SPECS, actuate_permission, handle_fleet_tool
+from app.digital.tools import DIGITAL_TOOL_SPECS, handle_digital_tool
 from app.ev.research import list_sessions
 from app.gateway.validation import validate_arguments, validate_output
 from app.integrations import service as integrations
@@ -2458,6 +2459,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "provider": "computer",
     },
     *FLEET_TOOL_SPECS,
+    *DIGITAL_TOOL_SPECS,
 ]
 
 
@@ -3694,6 +3696,9 @@ async def _handle(
     fleet = await handle_fleet_tool(session, name, args, actor=actor)
     if fleet is not None:
         return fleet
+    digital = await handle_digital_tool(session, name, args, actor=actor)
+    if digital is not None:
+        return digital
     if name == "execute_command":
         return await _run_execute_command(session, args, actor=actor)
     if name == "recall":
