@@ -15,6 +15,7 @@ from app import __version__
 from app.api import (
     assistant,
     backup,
+    cognitive,
     companion,
     compliance,
     core,
@@ -40,12 +41,12 @@ from app.api import (
 )
 from app.config import settings
 from app.db import init_db
-from app.gateway.muse import MuseProviderUnavailable
 from app.device_gateway import api as device_gateway_api
 from app.device_gateway import pwa as device_gateway_pwa
 from app.device_gateway import release_portal
 from app.device_gateway.security import origin_allowed
 from app.digital.api import router as digital_ops_router
+from app.gateway.muse import MuseProviderUnavailable
 
 LOGGER = logging.getLogger("ev.main")
 
@@ -223,6 +224,7 @@ async def _gateway_correlation_and_cache_policy(request, call_next):
 app.include_router(device_gateway_pwa.router)
 app.include_router(release_portal.router)  # private tailnet-only install portal
 app.include_router(digital_ops_router)
+app.include_router(cognitive.router)
 
 
 @app.get("/")

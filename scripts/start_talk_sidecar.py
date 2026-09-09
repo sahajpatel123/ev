@@ -282,9 +282,9 @@ def refuse_muse_without_key() -> None:
             "while Muse Voice is selected.\n"
         )
         raise SystemExit(2)
-    if muse_spark_selected() and not opencode_key_loaded():
+    if muse_spark_selected() and not meta_key_loaded():
         sys.stderr.write(
-            "Talk sidecar refused to start: OPENCODE_API_KEY is missing "
+            "Talk sidecar refused to start: META_MODEL_API_KEY is missing "
             "while Muse Spark is selected.\n"
         )
         raise SystemExit(2)
@@ -359,8 +359,8 @@ def main() -> None:
         # Desk/file meaning uses Muse Spark 1.3 when the owner selected a
         # Muse slot. When the owner selects OpenAI voice (GPT Realtime S2S),
         # leave intelligence alone so the realtime mouth can open. Proposed
-        # list contents still use Spark via OPENCODE_API_KEY in spark_inventory,
-        # even if this provider flag stays unset.
+        # list contents still use Spark via the official Meta Model API
+        # credential in spark_inventory, even if this provider flag stays unset.
         os.environ["EV_INTELLIGENCE_PROVIDER"] = "meta_muse_spark"
     refuse_muse_without_key()
     stop_existing_talk_sidecar()
@@ -375,7 +375,13 @@ def main() -> None:
     os.environ["EV_HOME_STATION_MODE"] = "false"
     os.environ["EV_PROCESSING_MODE"] = "sync"
     os.environ["EV_MAINTENANCE_MODE"] = "0"
+    os.environ["EV_COGNITIVE_MODE"] = "muse_kernel"
+    os.environ["EV_COGNITIVE_ROLE"] = "voice_edge"
+    os.environ.setdefault("EV_COGNITIVE_KERNEL_URL", "http://127.0.0.1:8000")
+    os.environ.setdefault("EV_COGNITIVE_MAC_EXECUTE_URL", "http://127.0.0.1:18000")
     os.environ.setdefault("EV_MUSE_SPARK_MODEL", "muse-spark-1.3-contributor")
+    # Leftover .env Zen URLs must not reach Cognitive OS.
+    os.environ["EV_MUSE_SPARK_BASE_URL"] = "https://api.meta.ai/v1"
     ensure_talk_mouth_remote_allowed()
     os.environ.setdefault("EV_VOICEPRINT_PROVIDER", "campp")
     os.environ.setdefault("EV_SEARCH_PROVIDER", "live")

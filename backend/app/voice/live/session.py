@@ -666,8 +666,10 @@ class LiveSession:
                     transcript_source=event.transcript_source,
                 )
             # G1.6 TurnGate: authoritative control plane (shadow until cutover, then direct)
+            from app.cognitive.mode import muse_kernel_active as _muse_kernel
             from app.config import settings as _gate_settings
-            if getattr(_gate_settings, "turn_gate_enabled", False):
+
+            if getattr(_gate_settings, "turn_gate_enabled", False) and not _muse_kernel():
                 # Schedule gate handling without blocking emit
                 self._schedule_turn_gate(event)
         self._prepare_outbound(event)
@@ -1014,6 +1016,10 @@ class LiveSession:
                 return
             grok = self.grok_voice
             if grok is None:
+                return
+            from app.cognitive.mode import muse_kernel_active
+
+            if muse_kernel_active():
                 return
             if looks_like_computer_task(text):
                 note_goal(ensure_state(self.session_id), text)
@@ -2078,12 +2084,67 @@ class LiveSession:
             provider=result.provider,
         )
 
+    async def _run_cognitive_kernel(self, text: str, *, from_grok: bool) -> bool:
+        """Voice Edge: final owner transcript → Cognitive Kernel. Mini does not think."""
+
+        from app.ev.laptop_files import is_system_confirmation
+        from app.memory.visual import is_camera_prompt_echo
+
+        if is_system_confirmation(text) or is_camera_prompt_echo(text):
+            return True
+        clock_spoken = _owner_clock_spoken(text)
+        grok = self.grok_voice
+        if from_grok and grok is not None:
+            await grok.cancel()
+            turn_id = getattr(grok, "_open_turn_id", None)
+            if turn_id:
+                grok._shadow_response_for_turn = turn_id
+        if clock_spoken:
+            self._last_honesty = ""
+            await self.speak_honesty(clock_spoken)
+            return True
+        from app.cognitive.reflex import match_reflex
+        from app.cognitive.session_store import current, has_active_work, status_line
+
+        cognition = current()
+        reflex = match_reflex(
+            text,
+            has_active_goal=has_active_work(cognition),
+            status_line=status_line(cognition),
+        )
+        if reflex is not None and (reflex.cancel_speech or reflex.cancel_work):
+            await self._handle_control("cancel")
+            await self.cancel_computer_requests(reason="owner_stop")
+            cancel_computer_task(self.session_id, reason="owner_stop")
+        started = time.perf_counter()
+        from app.cognitive.kernel import handle_turn_maybe_remote
+        from app.cognitive.telemetry import note, timed_ms
+
+        result = await handle_turn_maybe_remote(
+            transcript=text,
+            live_session_id=str(self.session_id or ""),
+            device_id=str(self.device_id) if self.device_id else None,
+            modality="voice",
+        )
+        spoken = (result.spoken or "").strip()
+        if spoken:
+            if grok is not None and hasattr(grok, "speak_supplied_text"):
+                await grok.speak_supplied_text(spoken)
+            else:
+                await self.speak_honesty(spoken)
+            note(last_muse_to_speech_ms=timed_ms(started))
+        return True
+
     async def _maybe_local_intent(self, text: str, *, from_grok: bool) -> bool:
         """Handle pause/resume/cancel/protocol locally. Never waits for approval."""
 
         if self._is_sleep(text):
             await self._end_sleep(text)
             return True
+        from app.cognitive.mode import muse_kernel_active
+
+        if muse_kernel_active():
+            return await self._run_cognitive_kernel(text, from_grok=from_grok)
         from app.ev.code_studio import maybe_handle_code_ops
 
         ops_ack = maybe_handle_code_ops(text, session_key=str(self.session_id or "owner"))

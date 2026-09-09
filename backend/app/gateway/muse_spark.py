@@ -1,14 +1,15 @@
 """Muse Spark 1.3 Contributor provider.
 
-Spark Contributor is served by OpenCode Go's OpenAI Responses endpoint. EV
-keeps the provider behind the normal :class:`ChatProvider` contract so the
-rest of the application never has to know whether a turn came from a
-Responses, Chat Completions, or local test provider.
+Spark Contributor is served by the official Meta Model API OpenAI-compatible
+Responses endpoint (``https://api.meta.ai/v1``). EV keeps the provider behind
+the normal :class:`ChatProvider` contract so the rest of the application never
+has to know whether a turn came from Responses, Chat Completions, or a local
+test provider.
 
 The Responses adapter is deliberately state-free: EV owns conversation
-history, turn identity, policy, and execution. A short ``x-opencode-session``
-header is sent for provider-side caching, but no provider session is treated as
-canonical state.
+history, turn identity, policy, and execution. Constructor ``base_url=`` is
+honored for hermetic tests; the factory always uses ``muse_spark_base_url()``,
+which remaps leftover OpenCode Zen URLs to Meta.
 """
 
 from __future__ import annotations
@@ -296,14 +297,60 @@ class MuseSparkProvider(StreamingChatProvider):
     def _headers(self) -> dict[str, str]:
         key = self._credential()
         if not key:
-            raise MuseProviderUnavailable("Muse Spark is unavailable: OPENCODE_API_KEY is missing")
+            raise MuseProviderUnavailable(
+                "Muse Spark is unavailable: META_MODEL_API_KEY is missing"
+            )
         return {
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
             "User-Agent": "evie-muse-spark/1",
-            "x-opencode-session": self.session_id,
         }
+
+    def _destination_is_zen(self) -> bool:
+        low = (self.base_url or "").lower()
+        return "opencode.ai" in low or "/zen/" in low
+
+    def _note_call(self, *, usage: dict | None = None, model: str | None = None) -> None:
+        note_spark_call(usage=usage, model=model, destination=self.base_url)
+
+    def _unavailable_from_http(self, status: int, body: str = "") -> MuseProviderUnavailable:
+        low = (body or "").lower()
+        if self._destination_is_zen():
+            if "creditserror" in low or "insufficient balance" in low:
+                return MuseProviderUnavailable(
+                    "Muse Spark is unavailable: OpenCode Zen has insufficient balance"
+                )
+            if "1010" in body:
+                return MuseProviderUnavailable(
+                    "Muse Spark is unavailable: OpenCode Zen blocked the client"
+                )
+            return MuseProviderUnavailable(
+                "Muse Spark credential was rejected by OpenCode Zen"
+            )
+        if status == 402 or "billing" in low:
+            return MuseProviderUnavailable(
+                "Muse Spark is unavailable: official Meta Model API billing/"
+                "account permission denied"
+            )
+        if status == 404 or "model_not_found" in low:
+            return MuseProviderUnavailable(
+                "Muse Spark is unavailable: official Meta Model API does not "
+                "expose muse-spark-1.3-contributor for this credential "
+                "(model_not_found)"
+            )
+        if status == 403:
+            return MuseProviderUnavailable(
+                "Muse Spark is unavailable: official Meta Model API key lacks "
+                "permission for muse-spark-1.3-contributor"
+            )
+        if status == 401 or "invalid_api_key" in low or "authentication_error" in low:
+            return MuseProviderUnavailable(
+                "Muse Spark credential was rejected by the official Meta Model API"
+            )
+        return MuseProviderUnavailable(
+            f"Muse Spark is unavailable: official Meta Model API HTTP {status}"
+        )
 
     def _stream_headers(self) -> dict[str, str]:
         headers = self._headers()
@@ -538,8 +585,13 @@ class MuseSparkProvider(StreamingChatProvider):
                 # defensive default keeps small deterministic adapter
                 # fixtures useful without weakening the real HTTP checks.
                 status = getattr(response, "status_code", 200)
-                if status in {401, 403}:
-                    raise MuseProviderUnavailable("Muse Spark credential was rejected by OpenCode Go")
+                if status in {401, 402, 403, 404}:
+                    body = ""
+                    try:
+                        body = response.text or ""
+                    except Exception:
+                        body = ""
+                    raise self._unavailable_from_http(status, body)
                 response.raise_for_status()
                 data = response.json()
                 if not isinstance(data, dict):
@@ -578,12 +630,12 @@ class MuseSparkProvider(StreamingChatProvider):
                 )
             )
         )
-        note_spark_call(usage=result.usage, model=result.model)
+        self._note_call(usage=result.usage, model=result.model)
         return result
 
     async def chat_with_tools(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec], *, model: str | None = None, temperature: float = 0.7) -> ChatResult:
         result = self._result_from_response(await self._post_json(self._payload(messages, model=model, tools=tools, stream=False)))
-        note_spark_call(usage=result.usage, model=result.model)
+        self._note_call(usage=result.usage, model=result.model)
         return result
 
     async def complete_raw(
@@ -599,7 +651,7 @@ class MuseSparkProvider(StreamingChatProvider):
 
         data = await self._post_json(self._payload(messages, model=model, tools=tools, stream=False, response_format=response_format, tool_choice=tool_choice))
         result = self._result_from_response(data)
-        note_spark_call(usage=result.usage, model=result.model)
+        self._note_call(usage=result.usage, model=result.model)
         projected = dict(data)
         projected["model"] = muse_spark_model()
         projected.setdefault("usage", result.usage)
@@ -630,13 +682,13 @@ class MuseSparkProvider(StreamingChatProvider):
             )
         )
         result = self._result_from_response(data)
-        note_spark_call(usage=result.usage, model=result.model)
+        self._note_call(usage=result.usage, model=result.model)
         return result
 
     async def list_models(self) -> list[str]:
         """Satisfy the shared provider contract without a discovery call.
 
-        OpenCode Go exposes a fixed project-selected Contributor slot. A
+        Meta Model API exposes a fixed project-selected Contributor slot. A
         discovery request would add latency and could accidentally surface a
         different model to EV's health/API surfaces.
         """
@@ -672,8 +724,14 @@ class MuseSparkProvider(StreamingChatProvider):
                         json=payload,
                     ) as response:
                             status = getattr(response, "status_code", 200)
-                            if status in {401, 403}:
-                                raise MuseProviderUnavailable("Muse Spark credential was rejected by OpenCode Go")
+                            if status in {401, 402, 403, 404}:
+                                body = ""
+                                try:
+                                    body = await response.aread()
+                                    body = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else str(body or "")
+                                except Exception:
+                                    body = ""
+                                raise self._unavailable_from_http(status, body)
                             response.raise_for_status()
                             event_name = ""
                             async for line in response.aiter_lines():
@@ -697,7 +755,7 @@ class MuseSparkProvider(StreamingChatProvider):
                                 started_stream = True
                                 # A few existing local/test transports still
                                 # emit Chat Completions SSE rows. Accept those
-                                # rows at the edge while OpenCode Go traffic
+                                # rows at the edge while Meta Model API traffic
                                 # remains Responses-native. This makes a
                                 # provider migration safe for typed/live
                                 # continuation fixtures and older proxies.
@@ -791,7 +849,9 @@ class MuseSparkProvider(StreamingChatProvider):
                     status = getattr(exc.response, "status_code", None)
                     if status in {401, 403}:
                         breaker.record_failure()
-                        raise MuseProviderUnavailable("Muse Spark credential was rejected by OpenCode Go") from exc
+                        raise MuseProviderUnavailable(
+                            "Muse Spark credential was rejected by the official Meta Model API"
+                        ) from exc
                     if is_transient(exc, status) and attempt + 1 < attempts and not started_stream:
                         breaker.record_failure()
                         attempt += 1
@@ -813,7 +873,7 @@ class MuseSparkProvider(StreamingChatProvider):
                     raise
         finally:
             if completed:
-                note_spark_call(usage=usage, model=resolved_model)
+                self._note_call(usage=usage, model=resolved_model)
         yield ChatStreamChunk(text="", usage=usage, model=resolved_model, tool_calls=self._stream_calls(buffers), finish_reason="tool_calls" if buffers else "stop", done=True)
 
 

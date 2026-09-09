@@ -1,8 +1,7 @@
 """Muse identity, credentials, model selection, and call counters.
 
-Muse Voice Transcribe is the Meta Model API ear. Muse Spark Contributor is the
-OpenCode Go Responses brain. They use separate credentials and endpoints; this
-module never logs or prints secret values.
+Muse Voice Transcribe and Muse Spark Contributor both use the official Meta
+Model API. This module never logs or prints secret values.
 """
 
 from __future__ import annotations
@@ -16,9 +15,11 @@ from app.config import settings
 
 META_API_BASE = "https://api.meta.ai/v1"
 META_ASR_REALTIME_URL = "wss://api.meta.ai/v1/asr/realtime"
+# Legacy OpenCode Zen Spark URL. Cognitive OS must never use this as the
+# inference destination; muse_spark_base_url() remaps it to META_API_BASE.
 MUSE_SPARK_GO_BASE = "https://opencode.ai/zen/go/v1"
 
-# Official public model ids from https://dev.meta.ai/docs/models.md
+# Official public model ids from https://ai.developer.meta.com/docs/models.md
 MUSE_VOICE_MODEL = "muse-voice-transcribe-1.0"
 # Evie is intentionally pinned to the exact Contributor model selected by the
 # owner. Do not silently drift to a different Spark slot when a stale .env
@@ -35,6 +36,9 @@ _COUNTERS: dict[str, Any] = {
     "spark_output_tokens": 0,
     "spark_cached_tokens": 0,
     "spark_reasoning_tokens": 0,
+    "spark_zen_calls": 0,
+    "spark_meta_calls": 0,
+    "spark_destination": "",
     "voice_calls": 0,
     "voice_audio_ms": 0,
     "asr_sessions_opened": 0,
@@ -78,34 +82,13 @@ def muse_key_loaded() -> bool:
 
 
 def muse_spark_api_key() -> str:
-    """Return the OpenCode Go credential used by Spark Contributor.
+    """Spark Contributor uses the official Meta Model API credential.
 
-    Muse Voice Transcribe and Muse Spark Contributor are different API
-    surfaces. Voice keeps using the Meta Model API credential above, while
-    Spark Contributor is served by OpenCode Go and therefore requires the
-    dedicated ``OPENCODE_API_KEY`` credential. Keeping the credentials
-    separate prevents a configured Meta ASR key from making Spark look
-    healthy when the OpenCode integration has not been provisioned.
+    OpenCode Zen is not a cognitive inference route. Voice Transcribe and Spark
+    share ``META_MODEL_API_KEY`` / ``EV_META_MODEL_API_KEY`` / ``MODEL_API_KEY``.
     """
 
-    direct = (getattr(settings, "opencode_api_key", None) or "").strip()
-    if direct:
-        return direct
-    for name in ("EV_OPENCODE_API_KEY", "OPENCODE_API_KEY"):
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value
-    env_file = Path(
-        str(getattr(settings, "opencode_env_file", "~/.config/ev/opencode.env"))
-    ).expanduser()
-    try:
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            key, sep, value = line.partition("=")
-            if sep and key.strip() == "OPENCODE_API_KEY" and value.strip():
-                return value.strip().strip("'\"")
-    except OSError:
-        pass
-    return ""
+    return muse_api_key()
 
 
 def muse_spark_key_loaded() -> bool:
@@ -122,15 +105,31 @@ def muse_spark_model() -> str:
     return MUSE_SPARK_MODEL
 
 
+def _is_zen_spark_url(raw: str) -> bool:
+    low = (raw or "").strip().lower()
+    return "opencode.ai" in low or "/zen/" in low
+
+
 def muse_spark_base_url() -> str:
-    """OpenCode Go Responses endpoint for Spark Contributor."""
+    """Official Meta Model API Responses base for Spark Contributor."""
 
     raw = (
         getattr(settings, "muse_spark_base_url", None)
         or os.environ.get("EV_MUSE_SPARK_BASE_URL")
         or ""
-    ).strip()
-    return raw.rstrip("/") or MUSE_SPARK_GO_BASE
+    ).strip().rstrip("/")
+    if not raw or _is_zen_spark_url(raw):
+        return META_API_BASE.rstrip("/")
+    return raw
+
+
+def muse_spark_inference_route() -> str:
+    url = muse_spark_base_url().lower()
+    if "api.meta.ai" in url:
+        return "meta_model_api"
+    if _is_zen_spark_url(url):
+        return "opencode_zen"
+    return "other"
 
 
 def muse_voice_model() -> str:
@@ -197,12 +196,17 @@ def require_muse_spark_key(*, role: str = "Muse Spark") -> str:
     key = muse_spark_api_key()
     if not key:
         raise MuseProviderUnavailable(
-            f"{role} is unavailable: OPENCODE_API_KEY is missing"
+            f"{role} is unavailable: META_MODEL_API_KEY is missing"
         )
     return key
 
 
-def note_spark_call(*, usage: dict | None = None, model: str | None = None) -> None:
+def note_spark_call(
+    *,
+    usage: dict | None = None,
+    model: str | None = None,
+    destination: str | None = None,
+) -> None:
     del model  # identity is config; never put secrets or prompts here
     usage = usage or {}
     prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
@@ -211,12 +215,18 @@ def note_spark_call(*, usage: dict | None = None, model: str | None = None) -> N
     cached = int(details.get("cached_tokens") or usage.get("cached_tokens") or 0)
     out_details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
     reasoning = int(out_details.get("reasoning_tokens") or usage.get("reasoning_tokens") or 0)
+    dest = (destination or muse_spark_base_url() or "").strip().lower()
     with _LOCK:
         _COUNTERS["spark_calls"] += 1
         _COUNTERS["spark_input_tokens"] += prompt
         _COUNTERS["spark_output_tokens"] += completion
         _COUNTERS["spark_cached_tokens"] += cached
         _COUNTERS["spark_reasoning_tokens"] += reasoning
+        _COUNTERS["spark_destination"] = dest[:160]
+        if _is_zen_spark_url(dest):
+            _COUNTERS["spark_zen_calls"] += 1
+        if "api.meta.ai" in dest:
+            _COUNTERS["spark_meta_calls"] += 1
 
 
 def note_voice_call(*, audio_ms: int = 0) -> None:
@@ -277,6 +287,10 @@ def muse_counters_snapshot() -> dict[str, Any]:
             "spark_output_tokens": int(_COUNTERS["spark_output_tokens"]),
             "spark_cached_tokens": int(_COUNTERS["spark_cached_tokens"]),
             "spark_reasoning_tokens": int(_COUNTERS["spark_reasoning_tokens"]),
+            "spark_zen_calls": int(_COUNTERS["spark_zen_calls"]),
+            "spark_meta_calls": int(_COUNTERS["spark_meta_calls"]),
+            "spark_destination": str(_COUNTERS["spark_destination"] or ""),
+            "spark_route": muse_spark_inference_route(),
             "voice_calls": int(_COUNTERS["voice_calls"]),
             "voice_audio_ms": audio_ms,
             "voice_audio_minutes": round(audio_ms / 60000.0, 4),
@@ -296,7 +310,10 @@ def muse_counters_snapshot() -> dict[str, Any]:
 def reset_muse_counters() -> None:
     with _LOCK:
         for key in list(_COUNTERS):
-            _COUNTERS[key] = "" if key == "asr_last_error_class" else 0
+            if key in {"asr_last_error_class", "spark_destination"}:
+                _COUNTERS[key] = ""
+            else:
+                _COUNTERS[key] = 0
 
 
 def refuse_legacy_cloud_brain(name: str | None = None) -> None:

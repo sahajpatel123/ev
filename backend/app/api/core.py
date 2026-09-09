@@ -216,7 +216,6 @@ async def health() -> dict:
         GROK_VOICE_TOOL_NAMES,
         REALTIME_BRIDGE_SOURCE_FINGERPRINT,
         REALTIME_BRIDGE_VERSION,
-        GrokVoiceBridge,
         live_realtime_provider,
     )
 
@@ -226,6 +225,7 @@ async def health() -> dict:
         "xai": "grok-voice",
     }.get(live or "", "pipeline")
 
+    from app.cognitive.mode import muse_kernel_active
     from app.db import SessionLocal
     from app.ev.laptop_files import laptop_files_allowed
     from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active
@@ -286,9 +286,7 @@ async def health() -> dict:
             "started_at": PROCESS_STARTED_AT,
             "realtime_bridge_version": REALTIME_BRIDGE_VERSION,
             "realtime_bridge_source_fingerprint": REALTIME_BRIDGE_SOURCE_FINGERPRINT,
-            "realtime_supports_function_calls": bool(
-                GrokVoiceBridge.supports_function_calls
-            ),
+            "realtime_supports_function_calls": not muse_kernel_active(),
             "realtime_model": (
                 settings.openai_realtime_model
                 if live == "openai"
@@ -296,13 +294,17 @@ async def health() -> dict:
                 if live == "xai"
                 else None
             ),
-            "realtime_allowlist": sorted(
-                (lambda lst: lst - {
-                    "life_project_create", "life_project_update", "life_project_query",
-                    "life_goal_create", "life_goal_update", "life_goal_add_step", "life_goal_query",
-                    "life_commitment_create", "life_commitment_update", "life_commitment_query",
-                    "life_relationship_set", "mission_control", "evie_turn",
-                } if getattr(settings, "turn_gate_enabled", False) else lst)(set(GROK_VOICE_TOOL_NAMES))
+            "realtime_allowlist": (
+                []
+                if muse_kernel_active()
+                else sorted(
+                    (lambda lst: lst - {
+                        "life_project_create", "life_project_update", "life_project_query",
+                        "life_goal_create", "life_goal_update", "life_goal_add_step", "life_goal_query",
+                        "life_commitment_create", "life_commitment_update", "life_commitment_query",
+                        "life_relationship_set", "mission_control", "evie_turn",
+                    } if getattr(settings, "turn_gate_enabled", False) else lst)(set(GROK_VOICE_TOOL_NAMES))
+                )
             ),
             "camera": _camera_health(),
             "memory": await _memory_health(),
@@ -312,6 +314,28 @@ async def health() -> dict:
         },
         "voice": _voice_health(),
         "capability_authority": capability_diagnostics(),
+        "cognitive": _cognitive_health(),
+    }
+
+
+def _cognitive_health() -> dict:
+    from app.cognitive.mode import cognitive_mode, cognitive_role, muse_kernel_active
+    from app.cognitive.telemetry import snapshot
+    from app.gateway.muse import muse_counters_snapshot, muse_spark_base_url, muse_spark_inference_route
+
+    tele = snapshot()
+    muse = muse_counters_snapshot()
+    return {
+        "mode": cognitive_mode(),
+        "role": cognitive_role(),
+        "muse_kernel": muse_kernel_active(),
+        "primary_model": "muse-spark-1.3-contributor" if muse_kernel_active() else "legacy",
+        "muse_provider": muse_spark_inference_route(),
+        "muse_base_url": muse_spark_base_url(),
+        "spark_calls": muse.get("spark_calls", 0),
+        "spark_meta_calls": muse.get("spark_meta_calls", 0),
+        "spark_zen_calls": muse.get("spark_zen_calls", 0),
+        "telemetry": tele,
     }
 
 
@@ -1661,16 +1685,21 @@ async def run_chat_pipeline(
         },
     )
 
-    local = await assistant_mod.handle_local_intent(
-        session,
-        data.message,
-        actor=actor,
-        device_id=device_id,
-    )
+    from app.cognitive.mode import muse_kernel_active
+
+    kernel_on = muse_kernel_active()
+    local = None
+    if not kernel_on:
+        local = await assistant_mod.handle_local_intent(
+            session,
+            data.message,
+            actor=actor,
+            device_id=device_id,
+        )
     receipts: list = []
     core_reply = None
     action_reply = None
-    if not decision.blocked and local is None:
+    if not decision.blocked and local is None and not kernel_on:
         core_reply = await _maybe_deterministic_core_reply(
             session,
             data.message,
@@ -1698,6 +1727,26 @@ async def run_chat_pipeline(
             flags=decision.flags,
         )
         result = ChatResult(text=final_draft)
+        envelope_hash = None
+        if text_delta_callback is not None and result.text:
+            await text_delta_callback(result.text)
+    elif kernel_on:
+        from app.cognitive.kernel import handle_turn
+
+        kernel_result = await handle_turn(
+            transcript=data.message,
+            live_session_id=None,
+            device_id=str(device_id) if device_id else None,
+            modality="voice" if source == "voice" else "typed",
+            session=session,
+            actor=actor,
+        )
+        result = ChatResult(text=kernel_result.spoken)
+        report = OutputReport(
+            draft=result.text,
+            final_text=result.text,
+            flags=decision.flags,
+        )
         envelope_hash = None
         if text_delta_callback is not None and result.text:
             await text_delta_callback(result.text)
