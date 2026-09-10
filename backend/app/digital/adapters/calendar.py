@@ -39,6 +39,8 @@ class CalendarOpsAdapter:
                 requires_confirmation=True, verification_method="event_id", **common),
             cap("calendar", "cancel", Verb.DELETE, Availability.NATIVE, read_write="write", risk="R2",
                 requires_confirmation=True, verification_method="cancelled", **common),
+            cap("calendar", "delete", Verb.DELETE, Availability.NATIVE, read_write="write", risk="R2",
+                requires_confirmation=True, verification_method="cancelled", **common),
             cap("calendar", "attendees", Verb.READ, Availability.NATIVE, read_write="read", risk="R0",
                 verification_method="emails", **common),
             cap("calendar", "availability", Verb.READ, Availability.NATIVE, read_write="read", risk="R0",
@@ -57,7 +59,7 @@ class CalendarOpsAdapter:
                 operation=operation,
                 availability=Availability.CONNECTION_REQUIRED,
                 error="calendar_oauth_required",
-                diagnosis="oauth_expired",
+                diagnosis="oauth_missing",
             )
         try:
             if operation in {"list", "search"}:
@@ -86,7 +88,7 @@ class CalendarOpsAdapter:
                 item = await _patch_event(args, lease, transport)
                 return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="calendar", operation=operation,
                                 availability=Availability.NATIVE, payload={"event": item})
-            if operation == "cancel":
+            if operation in {"cancel", "delete"}:
                 await _delete_event(str(args.get("calendar_id") or "primary"), str(args["event_id"]), lease, transport)
                 return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="calendar", operation=operation,
                                 availability=Availability.NATIVE, payload={"cancelled": True},
@@ -139,7 +141,7 @@ async def _call(method, path, *, lease, transport, params=None, json_body=None) 
         async with oauth.make_http_client(timeout=20.0) as client:
             response = await client.request(method, url, headers=headers, params=params, json=json_body)
     if response.status_code in (401, 403):
-        raise oauth.OAuthAuthError(f"calendar rejected credential (status {response.status_code})")
+        raise oauth.google_api_auth_error(response, "calendar")
     if response.status_code >= 400:
         raise oauth.OAuthProviderError(f"calendar failed (status {response.status_code})")
     if response.status_code == 204 or not getattr(response, "content", None):

@@ -15,6 +15,18 @@ from app.digital.taint import taint_external
 from app.digital.types import WHATSAPP_READ_BOUND, Availability, OpStatus, Verb
 
 
+def _sidebar_gist(text: str, cap: int = 80) -> str:
+    """One sidebar line — first sentence, never a pasted thread."""
+    blob = " ".join(str(text or "").split())
+    if not blob:
+        return ""
+    for sep in (". ", "? ", "! "):
+        at = blob.find(sep)
+        if 8 <= at + 1 <= cap:
+            return blob[: at + 1].strip()
+    return blob[:cap].rstrip()
+
+
 class WhatsAppBacking(Protocol):
     async def status(self) -> dict[str, Any]:
         ...
@@ -60,12 +72,21 @@ class FakeWhatsAppBacking:
         }
 
     async def search_chats(self, query: str) -> list[dict[str, Any]]:
-        q = query.lower()
+        q = query.lower().strip()
         hits = []
         for cid, chat in self.chats.items():
             name = str(chat.get("name") or "")
-            if q in name.lower() or q in cid.lower():
-                hits.append({"chat_ref": cid, "name": name, "unread": int(chat.get("unread") or 0)})
+            if not q or q in name.lower() or q in cid.lower():
+                last = (chat.get("messages") or [])[-1] if chat.get("messages") else {}
+                gist = _sidebar_gist(str(last.get("text") or chat.get("gist") or ""))
+                hits.append(
+                    {
+                        "chat_ref": cid,
+                        "name": name,
+                        "unread": int(chat.get("unread") or 0),
+                        "gist": gist,
+                    }
+                )
         return hits
 
     async def open_chat(self, chat_ref: str) -> dict[str, Any]:
@@ -141,62 +162,109 @@ class ComputerWhatsAppBacking:
 
     async def status(self) -> dict[str, Any]:
         observed = await self._observe()
-        text = str(observed.get("spoken") or observed.get("text") or "").lower()
-        if "qr" in text or "log in" in text or "keep me signed in" in text:
-            return {
-                "authenticated": False,
-                "backing": "computer",
-                "diagnosis": "session_logged_out",
-                "focus_theft": self.focus_events,
-            }
+        focus = int(observed.get("focus_theft") or self.focus_events or 0)
         if observed.get("ok") is False:
             return {
                 "authenticated": False,
                 "backing": "computer",
-                "diagnosis": observed.get("error") or "browser_offline",
-                "focus_theft": self.focus_events,
+                "diagnosis": observed.get("diagnosis") or observed.get("error") or "browser_offline",
+                "focus_theft": focus,
+            }
+        if observed.get("qr") or not bool(observed.get("authenticated")):
+            return {
+                "authenticated": False,
+                "backing": "computer",
+                "diagnosis": observed.get("diagnosis") or "session_logged_out",
+                "focus_theft": focus,
             }
         return {
             "authenticated": True,
             "backing": "computer",
-            "focus_theft": self.focus_events,
+            "focus_theft": focus,
             "foreground_required": bool(observed.get("activated")),
+            "diagnosis": observed.get("diagnosis") or "ok",
         }
 
     async def search_chats(self, query: str) -> list[dict[str, Any]]:
-        result = await self._act("whatsapp.search_chats", {"query": query})
+        import asyncio
+
+        q = str(query or "")
+        if q:
+            typed = await self._act("whatsapp.type_search", {"query": q})
+            if typed.get("ok"):
+                await asyncio.sleep(1.2)
+        result = await self._act("whatsapp.search_chats", {"query": q})
         chats = result.get("chats") if isinstance(result.get("chats"), list) else []
+        if not chats and self._looks_self(q):
+            await self._act("whatsapp.open_new_chat", {})
+            await asyncio.sleep(0.8)
+            result = await self._act("whatsapp.search_chats", {"query": q})
+            chats = result.get("chats") if isinstance(result.get("chats"), list) else []
         return [
-            {"chat_ref": c.get("chat_ref") or c.get("name"), "name": c.get("name")}
+            {
+                "chat_ref": c.get("chat_ref") or c.get("name"),
+                "name": c.get("name"),
+                "gist": str(c.get("gist") or "")[:80],
+            }
             for c in chats
             if isinstance(c, dict)
         ]
 
     async def open_chat(self, chat_ref: str) -> dict[str, Any]:
+        import asyncio
+
         result = await self._act("whatsapp.open_chat", {"chat_ref": chat_ref})
+        if not result.get("ok") and self._looks_self(chat_ref):
+            await self._act("whatsapp.open_new_chat", {})
+            await asyncio.sleep(0.8)
+            result = await self._act("whatsapp.open_chat", {"chat_ref": "__self__"})
+        if not result.get("ok"):
+            typed = await self._act("whatsapp.type_search", {"query": str(chat_ref or "")})
+            if typed.get("ok"):
+                await asyncio.sleep(1.2)
+            result = await self._act("whatsapp.open_chat", {"chat_ref": chat_ref})
         if not result.get("ok"):
             raise KeyError(result.get("error") or "chat_not_found")
         return {"chat_ref": result.get("chat_ref") or chat_ref, "name": result.get("name")}
 
     async def read_recent(self, chat_ref: str, *, limit: int) -> list[dict[str, Any]]:
+        await self.open_chat(chat_ref)
         result = await self._act("whatsapp.read_recent", {"chat_ref": chat_ref, "limit": limit})
         msgs = result.get("messages") if isinstance(result.get("messages"), list) else []
         return [m for m in msgs if isinstance(m, dict)][:limit]
 
     async def search_messages(self, chat_ref: str, query: str) -> list[dict[str, Any]]:
+        await self.open_chat(chat_ref)
         result = await self._act("whatsapp.search_messages", {"chat_ref": chat_ref, "query": query})
         msgs = result.get("messages") if isinstance(result.get("messages"), list) else []
         return [m for m in msgs if isinstance(m, dict)]
 
     async def compose(self, chat_ref: str, text: str) -> dict[str, Any]:
+        import asyncio
+
+        await self.open_chat(chat_ref)
         result = await self._act("whatsapp.compose", {"chat_ref": chat_ref, "text": text})
+        await asyncio.sleep(0.35)
         return {"chat_ref": chat_ref, "composed": text, "sent": False, **result}
 
     async def send(self, chat_ref: str, text: str, *, attachment: str | None = None) -> dict[str, Any]:
+        import asyncio
+
+        if attachment:
+            blocked = await self._act("whatsapp.attach", {"chat_ref": chat_ref, "attachment": attachment})
+            return {
+                "chat_ref": chat_ref,
+                "sent": False,
+                "verified_in_thread": False,
+                "error": blocked.get("error") or "attachment_file_picker_blocked",
+                "diagnosis": blocked.get("diagnosis") or "cannot_set_file_input_from_js",
+                "focus_theft": 0,
+            }
         # Observe first — never send twice into an already-matching last message.
         recent = await self.read_recent(chat_ref, limit=3)
         last = recent[-1] if recent else None
-        if last and last.get("from_me") and str(last.get("text") or "") == text:
+        last_text = str(last.get("text") or "") if last else ""
+        if last and last.get("from_me") and (last_text == text or text in last_text):
             return {
                 "chat_ref": chat_ref,
                 "sent": True,
@@ -204,20 +272,27 @@ class ComputerWhatsAppBacking:
                 "message": last,
                 "verified_in_thread": True,
             }
-        result = await self._act(
-            "whatsapp.send",
-            {"chat_ref": chat_ref, "text": text, "attachment": attachment},
-        )
-        if not result.get("ok") and not result.get("sent"):
-            raise RuntimeError(result.get("error") or "send_failed")
-        verify = await self.read_recent(chat_ref, limit=3)
-        appeared = any(str(m.get("text") or "") == text for m in verify)
+        composed = await self.compose(chat_ref, text)
+        if not composed.get("ok") and not composed.get("composed"):
+            raise RuntimeError(composed.get("error") or "compose_failed")
+        clicked = await self._act("whatsapp.click_send", {"chat_ref": chat_ref})
+        await asyncio.sleep(0.8)
+        verify = await self.read_recent(chat_ref, limit=5)
+        appeared = any(text in str(m.get("text") or "") for m in verify)
+        if not clicked.get("ok") and not clicked.get("sent") and not appeared:
+            raise RuntimeError(clicked.get("error") or "send_failed")
         return {
             "chat_ref": chat_ref,
             "sent": bool(appeared),
             "verified_in_thread": appeared,
             "message": verify[-1] if verify else None,
+            "prepared": bool(clicked.get("prepared")),
         }
+
+    @staticmethod
+    def _looks_self(ref: str) -> bool:
+        t = str(ref or "").strip().lower()
+        return t in {"__self__", "you", "me"} or "message yourself" in t or "yourself" in t
 
     async def download_attachment(self, chat_ref: str, attachment_ref: str) -> dict[str, Any]:
         result = await self._act(
@@ -242,8 +317,12 @@ class ComputerWhatsAppBacking:
         from app.digital.chrome_session import eval_in_tab, wrap_js
 
         js = ""
-        if op == "whatsapp.search_chats":
+        if op == "whatsapp.type_search":
+            js = wrap_js(wjs.type_search_js(str(args.get("query") or "")))
+        elif op == "whatsapp.search_chats":
             js = wrap_js(wjs.search_chats_js(str(args.get("query") or "")))
+        elif op == "whatsapp.open_new_chat":
+            js = wrap_js(wjs.open_new_chat_js())
         elif op == "whatsapp.open_chat":
             js = wrap_js(wjs.open_chat_js(str(args.get("chat_ref") or "")))
         elif op == "whatsapp.read_recent":
@@ -252,8 +331,12 @@ class ComputerWhatsAppBacking:
             js = wrap_js(wjs.search_messages_js(str(args.get("query") or "")))
         elif op == "whatsapp.compose":
             js = wrap_js(wjs.compose_js(str(args.get("text") or "")))
+        elif op == "whatsapp.click_send":
+            js = wrap_js(wjs.click_send_js())
         elif op == "whatsapp.send":
             js = wrap_js(wjs.send_js(str(args.get("text") or "")))
+        elif op == "whatsapp.attach":
+            js = wrap_js(wjs.attach_js())
         else:
             return {"ok": False, "error": "unknown_semantic_op", "diagnosis": "ui_changed"}
         result = await eval_in_tab(url_contains="web.whatsapp.com", javascript=js)
@@ -374,7 +457,35 @@ class WhatsAppWebAdapter:
             composed = await backing.compose(str(args.get("chat_ref")), str(args.get("text") or args.get("body") or ""))
             return OpResult(status=OpStatus.PREPARED, service="whatsapp", operation=operation,
                             availability=Availability.OPERATED, payload={**composed, "sent": False})
-        if operation in {"send", "reply", "attach"}:
+        if operation == "attach":
+            sent = await backing.send(
+                str(args.get("chat_ref")),
+                str(args.get("text") or args.get("body") or ""),
+                attachment=args.get("attachment") or "safe-test",
+            )
+            if sent.get("error") == "attachment_file_picker_blocked" or sent.get("diagnosis") == "cannot_set_file_input_from_js":
+                return OpResult(
+                    status=OpStatus.BLOCKED,
+                    service="whatsapp",
+                    operation=operation,
+                    availability=Availability.OPERATED,
+                    error="attachment_file_picker_blocked",
+                    diagnosis="cannot_set_file_input_from_js",
+                    payload={**sent, "sent": False, "focus_theft": 0},
+                )
+            ok = bool(sent.get("verified_in_thread") or sent.get("sent"))
+            return OpResult(
+                status=OpStatus.COMPLETED_VERIFIED if ok else OpStatus.UNKNOWN,
+                service="whatsapp",
+                operation=operation,
+                availability=Availability.OPERATED,
+                payload=sent,
+                verification={
+                    "chat_ref": sent.get("chat_ref"),
+                    "verified_in_thread": sent.get("verified_in_thread"),
+                },
+            )
+        if operation in {"send", "reply"}:
             sent = await backing.send(
                 str(args.get("chat_ref")),
                 str(args.get("text") or args.get("body") or ""),

@@ -21,7 +21,19 @@ router = APIRouter(prefix="/v1/digital", tags=["digital-operations"])
 
 @router.get("/capabilities")
 async def capabilities(session: AsyncSession = Depends(get_session), _actor: str = Depends(require_actor)) -> dict[str, Any]:
-    descs = await live_descriptors(session)
+    wa_status = {"authenticated": False}
+    try:
+        from app.digital.adapters.whatsapp import ComputerWhatsAppBacking
+
+        raw = await ComputerWhatsAppBacking().status()
+        wa_status = {
+            "authenticated": bool(raw.get("authenticated")),
+            "diagnosis": raw.get("diagnosis"),
+            "focus_theft": int(raw.get("focus_theft") or 0),
+        }
+    except Exception:
+        wa_status = {"authenticated": False, "diagnosis": "status_probe_failed"}
+    descs = await live_descriptors(session, whatsapp_status=wa_status)
     return {
         "matrix": matrix_from(descs),
         "static_matrix": capability_matrix(),

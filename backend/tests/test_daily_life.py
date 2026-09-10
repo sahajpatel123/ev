@@ -169,7 +169,8 @@ async def test_intern_spawn_does_not_block(tmp_path: Path, monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_intern_runs_queued_work(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
-    from app.ev.code_runtime import set_active_project, write_file as jail_write
+    from app.ev.code_runtime import set_active_project
+    from app.ev.code_runtime import write_file as jail_write
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")

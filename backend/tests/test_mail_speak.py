@@ -11,12 +11,10 @@ from app.memory.mail_speak import (
     mail_selector,
     preview_from_emlx,
     shape_mail_payload,
-    speak_mail,
     speak_received,
 )
 from app.memory.recall import _spoken_from_evidence
 from app.services.life_stream_daemon import LifeStreamDaemon
-
 
 LONG_BODY = (
     "Please review the attached invoice for March and confirm the wire by Friday. "

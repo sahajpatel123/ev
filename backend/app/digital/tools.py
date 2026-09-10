@@ -154,6 +154,50 @@ def _hub_result(*, service: str, operation: str, mac: dict[str, Any] | None) -> 
     }
 
 
+async def _park_digital_whatsapp(
+    session: AsyncSession, args: dict[str, Any], *, actor: str
+) -> dict[str, Any] | None:
+    """Model-invoked WhatsApp writes park for one spoken yes, never autosend."""
+
+    inner = _inner_args(args)
+    to = str(inner.get("chat_ref") or inner.get("to") or inner.get("name") or "").strip()
+    text = str(inner.get("text") or inner.get("body") or "").strip()
+    if not to or not text:
+        return None
+    from app.ev.messaging.approval import park_send, question_for
+    from app.ev.messaging.whatsapp_web import web_available
+
+    if not await web_available():
+        return None
+    display = to
+    try:
+        from app.ev.messaging import whatsapp_web
+
+        match = await whatsapp_web.resolve(to)
+        if match.get("status") == "unique" and match.get("display"):
+            display = str(match["display"])
+    except Exception:
+        pass
+    action = await park_send(
+        session, to=to, text=text, display=display, channel="whatsapp", actor=actor
+    )
+    return {
+        "ok": False,
+        "status": "WAITING_FOR_APPROVAL",
+        "service": "whatsapp",
+        "operation": str(args.get("operation") or "send"),
+        "availability": "OPERATED",
+        "error": "confirmation_required",
+        "diagnosis": None,
+        "verification": None,
+        "clarify": None,
+        "payload": {"prepared": True, "sent": False},
+        "spoken": question_for(action),
+        "action_id": str(action.id),
+        "pending_approval": True,
+    }
+
+
 async def handle_digital_tool(session: AsyncSession, name: str, args: dict[str, Any], *, actor: str) -> dict[str, Any] | None:
     if name not in {s["name"] for s in DIGITAL_TOOL_SPECS}:
         return None
@@ -163,6 +207,15 @@ async def handle_digital_tool(session: AsyncSession, name: str, args: dict[str, 
         return answer_can_you(str(args.get("q") or ""))
     ctx = OpContext(actor=actor, session=session, autonomy=AutonomyLevel.SEND_WITH_CONFIRMATION, confirmed=bool(args.get("confirmed")))
     if name == "digital_act":
+        service = str(args.get("service") or "").strip().lower()
+        operation = str(args.get("operation") or "").strip().lower()
+        if service == "whatsapp" and operation in _WHATSAPP_WRITE_OPS:
+            # A model-supplied confirmed flag is not human approval. Park the
+            # prepared send for one spoken yes instead of autosending.
+            pending = await _park_digital_whatsapp(session, args, actor=actor)
+            if pending is not None:
+                return pending
+            ctx.confirmed = False
         hub = await _mac_hub_digital_act(args)
         if hub is not None:
             return hub

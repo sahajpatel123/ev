@@ -622,7 +622,9 @@ def test_draft_body_prefers_saying_over_reply() -> None:
     assert _draft_body("draft a reply to Mansi saying thanks") == "thanks"
     assert _draft_body("send an email to Rahul saying the deck is ready") == "the deck is ready"
     assert _draft_body("reply thanks") == "thanks"
-    assert _draft_body("please draft something").startswith("Thanks —")
+    # No body words, no body: never fabricate message text.
+    assert _draft_body("please draft something") == ""
+    assert _draft_body("send a whatsapp message to Mansi") == ""
 
 
 @pytest.mark.asyncio
@@ -803,7 +805,8 @@ async def test_whatsapp_send_skips_chrome_when_hub_cannot_open(
     assert result["kind"] == "whatsapp"
     assert result["sent"] is False
     assert result["source"] == "live_mac"
-    assert "chrome" in result["spoken"].lower()
+    # Fabric (WhatsApp Web / chrome) must not run: execute=boom would raise.
+    assert "mansi" in result["spoken"].lower()
 
 
 @pytest.mark.asyncio

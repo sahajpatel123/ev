@@ -363,6 +363,21 @@ def _is_unnamed_phone_handle(handle: str) -> bool:
     return len(letters) < 2 and len(digits) >= 8
 
 
+def _phone_from_whatsapp_jid(jid: str) -> str:
+    """Digits from a user JID (`9198…@s.whatsapp.net`). Empty for groups/LIDs."""
+
+    raw = (jid or "").strip()
+    if not raw or "@g.us" in raw.lower() or "@lid" in raw.lower():
+        return ""
+    if "@newsletter" in raw.lower() or "@status" in raw.lower() or "@broadcast" in raw.lower():
+        return ""
+    head = raw.split("@", 1)[0]
+    digits = re.sub(r"\D+", "", head)
+    if len(digits) >= 8:
+        return digits
+    return ""
+
+
 _TXN_SENDER_RE = re.compile(
     # Indian DLT headers survive mixed-case in Messages (ViCARE-S, ECIsms-G).
     # Two shapes: operator-PE (JD-ANKIAB) and PE-type (INVCPP-T, ViCARE-S).
@@ -1114,6 +1129,102 @@ class LifeStreamDaemon:
             ]
             hits = _group_per_person(named) or _group_per_person(unnamed)
         return _filter_peek(hits, distinctive, limit)
+
+    def resolve_whatsapp_peer(self, query: str) -> dict[str, str] | None:
+        """One ChatStorage chat matching the spoken name. Phone from JID.
+
+        WhatsApp businesses and people live here even when they are not in
+        Apple Contacts. Groups and LID-only chats return a handle without
+        a phone — the send path must not invent digits.
+        """
+
+        from app.memory.life_archive.desk import _compact
+
+        needle = _compact(query)
+        if len(needle) < 2:
+            return None
+        spoken_tokens = [
+            tok
+            for tok in re.findall(r"[a-z]+", (query or "").lower())
+            if len(tok) >= 4 and tok not in {"whatsapp", "message", "chat", "phone"}
+        ]
+        path = self.whatsapp_db_path
+        if not _sqlite_readable(path):
+            return None
+        try:
+            rows = _sqlite_query(
+                path,
+                """
+                SELECT ZPARTNERNAME, ZCONTACTJID
+                FROM ZWACHATSESSION
+                WHERE IFNULL(ZSESSIONTYPE, 0) NOT IN (3, 5)
+                  AND IFNULL(ZCONTACTJID, '') NOT LIKE '%@status%'
+                  AND IFNULL(ZCONTACTJID, '') NOT LIKE '%@newsletter%'
+                  AND IFNULL(ZCONTACTJID, '') NOT LIKE '%@broadcast%'
+                """,
+            )
+        except sqlite3.OperationalError:
+            try:
+                rows = _sqlite_query(
+                    path,
+                    """
+                    SELECT ZPARTNERNAME, ZCONTACTJID
+                    FROM ZWACHATSESSION
+                    WHERE IFNULL(ZCONTACTJID, '') NOT LIKE '%@status%'
+                      AND IFNULL(ZCONTACTJID, '') NOT LIKE '%@newsletter%'
+                    """,
+                )
+            except Exception:
+                return None
+        except Exception:
+            return None
+        scored: list[tuple[int, str, str, str]] = []
+        for partner, jid in rows or []:
+            name = str(partner or "").strip()
+            compact = _compact(name)
+            if len(compact) < 2:
+                continue
+            if compact == needle:
+                score = 3
+            elif (len(needle) >= 4 and compact.startswith(needle)) or (
+                len(compact) >= 4 and needle.startswith(compact)
+            ):
+                score = 2
+            elif (len(needle) >= 4 and needle in compact) or (
+                spoken_tokens
+                and any(
+                    len(tok) >= 4 and (compact.startswith(tok) or tok in compact)
+                    for tok in spoken_tokens
+                )
+            ):
+                score = 1
+            else:
+                continue
+            phone = _phone_from_whatsapp_jid(str(jid or ""))
+            if not phone:
+                phone = re.sub(r"\D+", "", name)
+                if len(phone) < 8:
+                    phone = ""
+            scored.append((score, name, phone, str(jid or "")))
+        if not scored:
+            return None
+        best = max(item[0] for item in scored)
+        winners = [item for item in scored if item[0] == best]
+        if best < 2 and len(winners) != 1:
+            return None
+        if len(winners) > 1:
+            with_phone = [item for item in winners if item[2]]
+            if len(with_phone) == 1:
+                winners = with_phone
+            else:
+                return None
+        _, handle, phone, jid = winners[0]
+        out: dict[str, str] = {"handle": handle}
+        if phone:
+            out["phone"] = phone
+        if jid:
+            out["jid"] = jid
+        return out
 
     def read_whatsapp_person(self, token: str, *, limit: int = 800) -> list[dict[str, Any]]:
         """Ask-only: live WhatsApp lines whose partner name is that person."""

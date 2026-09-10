@@ -833,7 +833,10 @@ async def test_messaging_send_whatsapp_without_phone_fails_friendly(
         {"to": "Nophone", "text": "hi", "channel": "whatsapp"},
     )
     assert resp.status_code == 400, resp.text
-    assert "phone number for Nophone" in resp.json()["detail"]
+    detail = resp.json()["detail"].lower()
+    assert "nophone" in detail
+    assert "whatsapp" in detail
+    assert "contacts" not in detail
 
 
 async def test_mail_send_resolves_name_to_email(
@@ -1115,3 +1118,61 @@ async def test_dispatch_bulk_limit_keeps_adapter_path(
     )
     assert seen == []
     assert out["messages"] == [{"text": "bulk row"}]
+
+
+async def test_messaging_send_ambiguous_contact_asks_never_sends(
+    client: AsyncClient,
+    mock_life_helper: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adapter path: two distinct Johns -> 400 naming both, no messages.send."""
+
+    import app.integrations.adapters as adapters
+    from app.integrations.life_helper import LifeHelperResult
+
+    seen: list[str] = []
+    real_runner = adapters.run_life_helper
+
+    async def recording_runner(command, args, helper_path=None):
+        seen.append(command)
+        if command == "contacts.resolve":
+            return LifeHelperResult(
+                command,
+                {
+                    "matches": [
+                        {
+                            "id": "c1",
+                            "full_name": "John Smith",
+                            "phone_numbers": ["+15550100"],
+                            "email_addresses": [],
+                        },
+                        {
+                            "id": "c2",
+                            "full_name": "John Doe",
+                            "phone_numbers": ["+15550200"],
+                            "email_addresses": [],
+                        },
+                    ]
+                },
+                {},
+            )
+        return await real_runner(command, args, helper_path=helper_path)
+
+    monkeypatch.setattr(adapters, "run_life_helper", recording_runner)
+    integration = await install(
+        client,
+        "messaging",
+        scopes=["messaging:read", "messaging:act"],
+        config={"provider": "macos_life", "contact_allowlist": "all"},
+    )
+    resp = await run_action(
+        client,
+        integration["id"],
+        "messaging.send",
+        {"to": "John", "text": "running late"},
+    )
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert "messages.send" not in seen
+    assert "John Smith" in detail
+    assert "John Doe" in detail

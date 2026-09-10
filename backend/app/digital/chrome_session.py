@@ -56,12 +56,21 @@ on run argv
   tell application "Google Chrome"
     repeat with w in windows
       repeat with t in tabs of w
+        set tabUrl to ""
         try
-          if URL of t contains needle then
+          set tabUrl to URL of t
+        end try
+        if tabUrl contains needle then
+          try
             set raw to execute t javascript js
             return raw as string
-          end if
-        end try
+          on error errMsg number errNum
+            if errNum is 12 then
+              return "{\\"ok\\":false,\\"error\\":\\"javascript_apple_events_disabled\\",\\"authenticated\\":false,\\"activated\\":false,\\"focus_theft\\":0,\\"diagnosis\\":\\"javascript_apple_events_disabled\\"}"
+            end if
+            return "{\\"ok\\":false,\\"error\\":\\"js_execute_failed\\",\\"authenticated\\":false,\\"activated\\":false,\\"focus_theft\\":0,\\"diagnosis\\":\\"js_execute_failed\\"}"
+          end try
+        end if
       end repeat
     end repeat
   end tell

@@ -74,33 +74,53 @@ def strip_secrets(obj: Any) -> Any:
     return obj
 
 
+_ADAPTER_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "mail": ("mail", "gmail_ops"),
+    "gmail_ops": ("gmail_ops", "mail"),
+    "contacts": ("contacts", "mail", "gmail_ops"),
+    "calendar": ("calendar",),
+}
+
+
 async def lease_for(
     session: AsyncSession,
     adapter: str,
     *,
     actor: str = "digital-ops",
 ) -> TokenLease | None:
-    """Return a usable access-token lease, refreshing if it expires within 90s."""
-    row = (
-        await session.execute(
-            select(Integration)
-            .where(Integration.adapter == adapter, Integration.status == "active")
-            .order_by(Integration.created_at.asc())
-            .limit(1)
-        )
-    ).scalars().first()
-    if row is None:
-        return None
-    cred = (
-        await session.execute(
-            select(IntegrationCredential).where(
-                IntegrationCredential.integration_id == row.id,
-                IntegrationCredential.kind == "oauth",
-                IntegrationCredential.revoked_at.is_(None),
+    """Return a usable access-token lease, refreshing if it expires within 90s.
+
+    Skip active integrations that have no vaulted OAuth row (e.g. Mail.app
+    helper) so they cannot shadow a later Google grant on the same adapter.
+    """
+    slugs = _ADAPTER_FALLBACKS.get(adapter, (adapter,))
+    row = None
+    cred = None
+    for slug in slugs:
+        rows = (
+            await session.execute(
+                select(Integration)
+                .where(Integration.adapter == slug, Integration.status == "active")
+                .order_by(Integration.created_at.asc())
             )
-        )
-    ).scalars().first()
-    if cred is None or not cred.encrypted_access:
+        ).scalars().all()
+        for candidate in rows:
+            found = (
+                await session.execute(
+                    select(IntegrationCredential).where(
+                        IntegrationCredential.integration_id == candidate.id,
+                        IntegrationCredential.kind == "oauth",
+                        IntegrationCredential.revoked_at.is_(None),
+                    )
+                )
+            ).scalars().first()
+            if found is not None and found.encrypted_access:
+                row = candidate
+                cred = found
+                break
+        if row is not None:
+            break
+    if row is None or cred is None or not cred.encrypted_access:
         return None
     access = vault.decrypt(cred.encrypted_access)
     expires = cred.expires_at
@@ -142,6 +162,8 @@ def diagnose_oauth_error(exc: BaseException) -> str:
         msg = str(exc).lower()
         if "insufficient" in msg or "scope" in msg:
             return "scope_missing"
+        if "accessnotconfigured" in msg or "has not been used" in msg or "api_not_enabled" in msg:
+            return "api_not_enabled"
         return "oauth_rejected"
     text = str(exc).lower()
     if "429" in text or "rate" in text:

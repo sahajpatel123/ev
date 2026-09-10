@@ -60,7 +60,7 @@ class ContactsPeopleAdapter:
                 operation=operation,
                 availability=Availability.CONNECTION_REQUIRED,
                 error="contacts_oauth_required",
-                diagnosis="oauth_expired",
+                diagnosis="oauth_missing",
             )
         try:
             if operation == "resolve":
@@ -271,7 +271,7 @@ async def _request(method: str, path: str, *, lease, transport, params=None, jso
         async with oauth.make_http_client(timeout=20.0) as client:
             response = await client.request(method, url, headers=headers, params=params, json=json_body)
     if response.status_code in (401, 403):
-        raise oauth.OAuthAuthError(f"people api rejected credential (status {response.status_code})")
+        raise oauth.google_api_auth_error(response, "people api")
     if response.status_code >= 400:
         raise oauth.OAuthProviderError(f"people api failed (status {response.status_code})")
     if response.status_code == 204 or not response.content:

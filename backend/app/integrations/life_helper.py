@@ -5,7 +5,8 @@ contract implemented in ``macos/Sources/EVLifeHelper/main.swift``:
 
 - CLI: ``EVLifeHelper <command> [--flag value ...]``
 - commands: ``contacts.list | contacts.resolve --query | messages.list
-  [--limit N] | messages.send --to --text | whatsapp.send --to --text |
+  [--limit N] | messages.send --to --text [--service auto|imessage|sms] |
+  whatsapp.send --to --text |
   mail.list [--limit N] |
   mail.send --to --subject --body | call.place --destination [--kind
   tel|facetime] | call.check | apps.frontmost | apps.activate |
@@ -59,7 +60,7 @@ COMMAND_FLAGS: dict[str, tuple[tuple[str, str], ...]] = {
     "contacts.create": (("name", "--name"), ("phone", "--phone"), ("email", "--email"), ("company", "--company")),
     "contacts.update": (("id", "--id"), ("query", "--query"), ("name", "--name"), ("phone", "--phone"), ("email", "--email"), ("company", "--company")),
     "messages.list": (("limit", "--limit"),),
-    "messages.send": (("to", "--to"), ("text", "--text")),
+    "messages.send": (("to", "--to"), ("text", "--text"), ("service", "--service")),
     "whatsapp.send": (("to", "--to"), ("text", "--text")),
     "mail.list": (("limit", "--limit"),),
     "mail.send": (("to", "--to"), ("subject", "--subject"), ("body", "--body")),
@@ -104,6 +105,24 @@ class LifeHelperError(Exception):
 
 class LifeTimeoutError(LifeHelperError):
     pass
+
+
+class AmbiguousRecipientError(Exception):
+    """A name matched more than one distinct contact. Never guess.
+
+    ``candidates`` are short human labels ("John Smith · +1555…, John Doe")
+    the caller must read back so the owner can pick. Transports catch this
+    and speak a clarification instead of sending to the first match.
+    """
+
+    def __init__(self, recipient: str, candidates: list[str]) -> None:
+        self.recipient = recipient
+        self.candidates = list(candidates or [])
+        names = ", ".join(self.candidates[:4]) or "no details"
+        super().__init__(
+            f"I found more than one contact for {recipient}: {names}. "
+            "Which one?"
+        )
 
 
 @dataclass(frozen=True)

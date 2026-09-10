@@ -56,9 +56,17 @@ class OpResult:
     clarify: list[dict[str, Any]] | None = None
 
     def as_model(self) -> dict[str, Any]:
-        """Muse-visible view: no credentials, external content tagged."""
+        """Muse-visible view: no credentials, external content tagged.
+
+        ``ok`` is a machine-consistent success flag derived from the status,
+        not from the payload. It is True only when the status honestly
+        completes or prepares the operation (COMPLETED_VERIFIED, PREPARED);
+        every pending, blocked, or failed status yields False. ``ok`` never
+        fabricates success and is always present in the model.
+        """
         body = strip_secrets(dict(self.payload))
         out = {
+            "ok": self.status in _OK_STATUSES,
             "status": self.status.value,
             "service": self.service,
             "operation": self.operation,
@@ -77,6 +85,11 @@ class OpResult:
             )
         return out
 
+
+
+# Statuses that honestly completed or prepared the operation. Everything
+# else (waiting, blocked, failed, unknown, clarify) is not success.
+_OK_STATUSES = frozenset({OpStatus.COMPLETED_VERIFIED, OpStatus.PREPARED})
 
 _REGISTRY: dict[str, DigitalServiceAdapter] = {}
 

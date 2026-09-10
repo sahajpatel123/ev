@@ -86,7 +86,7 @@ class GmailClient:
             method, url, headers=self._headers(), params=params, json_body=json_body
         )
         if response.status_code in (401, 403):
-            raise oauth.OAuthAuthError(f"gmail rejected credential (status {response.status_code})")
+            raise oauth.google_api_auth_error(response, "gmail")
         if response.status_code == 429:
             raise oauth.OAuthProviderError("gmail rate limited (status 429)")
         if response.status_code == 404:

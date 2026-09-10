@@ -1369,10 +1369,10 @@ def _live_wa(handle: str, body: str, when: datetime, *, mine: bool, digest: str)
 async def test_correspondence_desk_waiting_stitch_pickup_climate_starts(
     db_session: AsyncSession,
 ) -> None:
-    from app.memory.life_archive.locate import SOURCE
     from app.memory.history import recall_history
     from app.memory.life_archive.desk import is_chat_desk_query
-    from app.memory.recall import build_explicit_recall_payload, _spoken_from_evidence
+    from app.memory.life_archive.locate import SOURCE
+    from app.memory.recall import _spoken_from_evidence, build_explicit_recall_payload
 
     d4 = datetime(2026, 9, 4, 21, 10, tzinfo=UTC)
     d3 = datetime(2026, 9, 3, 10, 5, tzinfo=UTC)
