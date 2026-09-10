@@ -439,6 +439,24 @@ async def test_desktop_only_chat_sends_by_phone_in_background(monkeypatch) -> No
     assert result.get("focus_theft", 0) == 0
 
 
+def test_whatsapp_send_does_not_prefetch_apple_contacts() -> None:
+    """No Contacts pre-resolution for WhatsApp — the chat list decides."""
+
+    from app.ev.briefing import _prefetch_names, plan_life_tool_calls
+
+    phrase = "send a WhatsApp message to John Smith saying hello"
+    calls = plan_life_tool_calls(phrase, {"send_message", "resolve_contact"})
+    assert any(call.name == "send_message" for call in calls)
+    assert all(call.name != "resolve_contact" for call in calls)
+    assert "resolve_contact" not in _prefetch_names(phrase)
+
+    # iMessage still resolves through the Mac address book.
+    imessage = plan_life_tool_calls(
+        "text John Smith saying hello", {"send_message", "resolve_contact"}
+    )
+    assert any(call.name == "resolve_contact" for call in imessage)
+
+
 @pytest.mark.asyncio
 async def test_expired_approval_is_not_resumed(db_session) -> None:
     from app.utils.text import utcnow

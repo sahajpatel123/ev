@@ -556,6 +556,68 @@ async def test_live_s2s_runs_code_from_owner_transcript(
 
 
 @pytest.mark.asyncio
+async def test_partial_code_transcript_cancels_mini_before_she_claims_a_write() -> None:
+    from app.voice.live.events import PartialTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    cancelled = {"n": 0}
+
+    class _OpenAI:
+        _provider = "openai"
+        supports_function_calls = True
+        _open_turn_id = "turn-code-partial"
+        _shadow_response_for_turn = None
+        _response_active = True
+        _assistant_open = True
+
+        async def cancel(self) -> None:
+            cancelled["n"] += 1
+
+    live = LiveSession(session_id="owner-code-partial", backchannel_enabled=False)
+    live.run_live_tool = lambda *_a, **_k: None
+    live.grok_voice = _OpenAI()
+    try:
+        await live.emit(
+            PartialTranscriptEvent(
+                at_ms=1,
+                text="write a python script that prints hello world",
+                sequence=1,
+            )
+        )
+        assert cancelled["n"] == 1
+        assert live.grok_voice._shadow_response_for_turn == "turn-code-partial"
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_background_code_job_stashes_a_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.luna_code import peek_code_intern_receipt, run_code_job_and_notify
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    notes: list[str] = []
+    monkeypatch.setattr(
+        "app.ev.luna_code.schedule_background_code_notify",
+        lambda spoken: notes.append(spoken),
+    )
+    await run_code_job_and_notify(
+        "write a python script that prints hello world", session_key="owner"
+    )
+    assert (tmp_path / "hello.py").is_file()
+    receipt = peek_code_intern_receipt()
+    assert receipt
+    assert "hello" in receipt.lower()
+    assert notes
+    assert "hello" in notes[0].lower()
+
+
+@pytest.mark.asyncio
 async def test_live_code_still_runs_when_muse_kernel_is_on(
     tmp_path: Path, monkeypatch
 ) -> None:
