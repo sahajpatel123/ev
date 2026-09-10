@@ -13,6 +13,28 @@ from app.utils.text import utcnow
 
 from .sandbox import is_sandbox_device
 
+# Truthful media kinds for phone camera requests. A browser that can only send
+# stills must never be recorded as a video.
+_PHONE_KIND_BY_ACTION = {
+    "look": "frame",
+    "look_once": "frame",
+    "once": "frame",
+    "capture": "frame",
+    "observe": "frame",
+    "capture_photo": "photo",
+    "capture_save": "photo",
+    "photo": "photo",
+    "record": "burst",
+    "record_clip": "burst",
+    "record_video": "burst",
+}
+
+
+def _phone_media_kind(action: str) -> str:
+    """Never claim a kind the phone did not produce (stills stay bursts)."""
+
+    return _PHONE_KIND_BY_ACTION.get((action or "").strip().lower(), "frame")
+
 
 async def ingest_phone_frame(
     session: AsyncSession,
@@ -67,6 +89,7 @@ async def ingest_phone_frame(
         spoken = f"I can read: {ocr_text}"
     elif labels:
         spoken = "I can see " + ", ".join(labels[:4]) + "."
+    media_kind = _phone_media_kind(action)
     if not is_sandbox_device(device) and device.revoked_at is None:
         from app.everywhere.sync import emit_everywhere_event
 
@@ -81,6 +104,7 @@ async def ingest_phone_frame(
                 "bytes": len(jpeg),
                 "ocr_text": ocr_text,
                 "labels": labels,
+                "media_kind": media_kind,
                 "provenance": "phone_camera",
                 "observed_at": utcnow().isoformat(),
             },
@@ -98,8 +122,13 @@ async def ingest_phone_frame(
                     "labels": labels,
                     "ocr_text": ocr_text,
                     "spoken": spoken,
-                    "media_kind": "frame" if action in {"look", "look_once", "observe"} else action,
+                    "media_kind": media_kind,
                     "visual_facts": "phone_camera",
+                    # The bytes were received here, so this is grounded even when
+                    # the on-device classifier found nothing.
+                    "encoded_bytes": len(jpeg),
+                    "image_ready": True,
+                    "frames": 1,
                 },
                 actor=f"device:{device.name}",
                 device_id=str(device.id),
@@ -114,6 +143,7 @@ async def ingest_phone_frame(
         "ocr_text": ocr_text,
         "labels": labels,
         "observation_id": request_id,
+        "media_kind": media_kind,
         "persisted_to_memory_os": persisted,
         "provenance": "phone_camera",
         "spoken": spoken,
