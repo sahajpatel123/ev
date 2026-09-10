@@ -297,6 +297,14 @@ def infer_write_args(name: str, message: str) -> dict[str, Any] | None:
     return None
 
 
+def _whatsapp_send(args: dict[str, Any]) -> bool:
+    """True when this send is destined for WhatsApp (native chat resolution)."""
+
+    from app.ev.messaging.channels import normalize_channel
+
+    return normalize_channel(str(args.get("channel") or "")) == "whatsapp"
+
+
 def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
     """Deterministic write-tool plan when the model only described the action.
 
@@ -322,7 +330,15 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
     if want is None or want not in offered:
         return []
     calls: list[ToolCall] = []
-    if want in {"send_message", "place_call"} and "resolve_contact" in offered:
+    args = infer_write_args(want, message)
+    if not args:
+        return []
+    whatsapp_native = want == "send_message" and _whatsapp_send(args)
+    if (
+        want in {"send_message", "place_call"}
+        and "resolve_contact" in offered
+        and not whatsapp_native
+    ):
         person = extract_person_name(message)
         if person:
             calls.append(
@@ -332,9 +348,6 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
                     arguments={"name": person, "limit": 5},
                 )
             )
-    args = infer_write_args(want, message)
-    if not args:
-        return []
     calls.append(ToolCall(id=f"plan-{want}", name=want, arguments=args))
     return calls
 
@@ -524,11 +537,17 @@ async def _dispatch_one(
 
 def _prefetch_names(message: str) -> list[str]:
     selection = select_tool(message)
+    # Contacts is not the address book of WhatsApp; a WhatsApp send is
+    # resolved from the WhatsApp chat list, not by an Apple Contacts
+    # prefetch that would say "not in your contacts".
+    whatsapp_send = _whatsapp_send(infer_write_args("send_message", message) or {})
     names: list[str] = []
     for name in (selection.selected, *selection.alternatives):
         if name in OWNER_PROFILE_TOOLS:
             continue
         if name in WRITE_TOOLS:
+            continue
+        if name == "resolve_contact" and whatsapp_send:
             continue
         if name == "search_memory":
             # run_chat_pipeline already performs the ranked memory retrieval.
@@ -556,7 +575,11 @@ def _prefetch_names(message: str) -> list[str]:
         names.insert(0, "heading_out")
     if is_weather_query(message) and "get_weather" not in names and "heading_out" not in names:
         names.insert(0, "get_weather")
-    if detect_life_action(message) and "resolve_contact" not in names:
+    if (
+        detect_life_action(message)
+        and "resolve_contact" not in names
+        and not whatsapp_send
+    ):
         names.append("resolve_contact")
     return names[:MAX_PREFETCH]
 
