@@ -5,12 +5,16 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-import pytest
 from httpx import AsyncClient
-
 from sqlalchemy import select
 
-from app.device_gateway.phone_routines import due_times, in_quiet_hours, normalize, valid_time, valid_timezone
+from app.device_gateway.phone_routines import (
+    due_times,
+    in_quiet_hours,
+    normalize,
+    valid_time,
+    valid_timezone,
+)
 
 
 def test_time_and_timezone_validators() -> None:
@@ -117,7 +121,6 @@ async def test_digest_tick_delivers_once_and_honors_state(
     from datetime import UTC, datetime, timedelta
 
     from app.device_gateway.digest import phone_digest_tick
-    from app.device_gateway.phone_routines import normalize
 
     _sbody, sandbox = gateway_phone
     body, owner = owner_phone

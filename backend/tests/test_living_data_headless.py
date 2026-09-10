@@ -391,7 +391,8 @@ def test_life_helper_source_never_steals_focus() -> None:
     mail_list = source.split('case "mail.list":', 1)[1].split('case "mail.send":', 1)[0]
     mail_send = source.split('case "mail.send":', 1)[1].split('case "call.place":', 1)[0]
     wa_block = source.split('case "whatsapp.send":', 1)[1].split('case "mail.list":', 1)[0]
-    assert "openURLHeadless" in wa_block
+    assert "openURLForeground" in wa_block
+    assert "hideProcess" not in wa_block
     assert "NSWorkspace.shared.open(url)" not in send_block
     assert "NSWorkspace.shared.open(url)" not in mail_send
     assert "NSWorkspace.shared.open(url)" not in wa_block
@@ -613,7 +614,6 @@ async def test_calendar_delta_skips_unchanged_and_recalls_when_asked(
 ) -> None:
     from app.memory.extraction import Extractor
     from app.memory.life_archive.locate import locate_archive
-    from app.memory.live_life import is_live_life_event
     from app.memory.retrieval import Retriever
 
     daemon = LifeStreamDaemon(chat_db_path="/nonexistent/chat.db")
@@ -646,13 +646,14 @@ async def test_calendar_delta_skips_unchanged_and_recalls_when_asked(
 async def test_health_snapshot_records_and_recalls_history_only(
     db_session: AsyncSession,
 ) -> None:
+    from sqlalchemy import select
+
     from app.ev.health_radar import create_snapshot
     from app.memory.extraction import Extractor
     from app.memory.life_archive.locate import classify_shelf, locate_archive
     from app.memory.live_life import is_live_life_event
     from app.memory.retrieval import Retriever
     from app.models import Event
-    from sqlalchemy import select
 
     assert classify_shelf("How did I sleep?") is None
     assert classify_shelf("What's in my health history?") == "health"
@@ -999,7 +1000,11 @@ async def test_ask_reads_live_whatsapp_not_only_ingest(db_session: AsyncSession)
 
 
 def test_whatsapp_notification_ask_does_not_require_the_word_notification() -> None:
-    from app.filter.output_filter import APP_CHECK_HEDGE_RE, HONEST_LIVE_APP, _apply_wave_life_policy
+    from app.filter.output_filter import (
+        APP_CHECK_HEDGE_RE,
+        HONEST_LIVE_APP,
+        _apply_wave_life_policy,
+    )
     from app.memory.life_archive.locate import _CHAT_ASK_WEAK, classify_shelf, locate_tokens
     from app.memory.recall import _spoken_from_evidence
 
@@ -1689,6 +1694,57 @@ def test_digest_groups_latest_line_per_person() -> None:
     ]
     grouped = _group_per_person(hits)
     assert [hit["text"] for hit in grouped] == ["Mansi: three", "Alex: hi"]
+
+
+def test_whatsapp_peer_resolves_named_chat_phone_not_contacts() -> None:
+    import os
+    import sqlite3
+    import tempfile
+
+    from app.services.life_stream_daemon import LifeStreamDaemon
+
+    with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as f:
+        wa_path = f.name
+    try:
+        wa = sqlite3.connect(wa_path)
+        wa.executescript(
+            """
+            CREATE TABLE ZWACHATSESSION (
+                Z_PK INTEGER PRIMARY KEY,
+                ZPARTNERNAME TEXT,
+                ZCONTACTJID TEXT,
+                ZSESSIONTYPE INTEGER
+            );
+            INSERT INTO ZWACHATSESSION VALUES (
+                1, 'Acme Optics', '919812345678@s.whatsapp.net', 0
+            );
+            INSERT INTO ZWACHATSESSION VALUES (
+                2, 'Mansi', 'mansi@s.whatsapp.net', 0
+            );
+            INSERT INTO ZWACHATSESSION VALUES (
+                3, 'Lenskart', '919800000001@s.whatsapp.net', 0
+            );
+            """
+        )
+        wa.commit()
+        wa.close()
+        daemon = LifeStreamDaemon(
+            chat_db_path="/nonexistent/chat.db",
+            whatsapp_db_path=wa_path,
+        )
+        peer = daemon.resolve_whatsapp_peer("acme optics")
+        assert peer is not None
+        assert peer.get("phone") == "919812345678"
+        assert "acme" in str(peer.get("handle") or "").lower()
+        named_only = daemon.resolve_whatsapp_peer("mansi")
+        assert named_only is not None
+        assert "phone" not in named_only
+        split = daemon.resolve_whatsapp_peer("lens cart")
+        assert split is not None
+        assert split.get("phone") == "919800000001"
+        assert daemon.resolve_whatsapp_peer("nobody-here") is None
+    finally:
+        os.unlink(wa_path)
 
 
 def test_mail_and_call_envelopes_are_never_chat_hits() -> None:

@@ -7,15 +7,12 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cognitive.kernel import _UNAVAILABLE as _PHONE_KERNEL_FALLBACK
 from app.models import Device, PhoneTurnReceipt
 from app.utils.text import utcnow
 
+from .cognitive_text import PhoneTextContext
 from .sandbox import is_sandbox_device
-
-_PHONE_KERNEL_FALLBACK = (
-    "I can't think that through right now. Give me a moment and ask again — "
-    "I won't guess."
-)
 
 
 def _stamp_takeover(
@@ -52,44 +49,42 @@ async def _apply_muse_kernel_phone_turn(
     device: Device,
     row: PhoneTurnReceipt,
     key: str,
+    text_context: PhoneTextContext | None = None,
 ) -> None:
     """Spark 1.3 decides; Mini never gets a leftover conversational turn."""
 
     from app.cognitive.kernel import handle_turn
 
-    from .pipeline import run_trusted_device_turn
-
+    phone_actions: list[dict[str, Any]] = []
+    phone_results: list[dict[str, Any]] = []
+    # The general pipeline can execute on the Mac before Muse sees the turn.
+    # Phone effects must instead pass the kernel's device-bound phone adapter.
     try:
-        turn = await run_trusted_device_turn(
-            session,
-            device=device,
-            text=row.transcript,
-            idempotency_key=key,
+        kernel = await handle_turn(
+            transcript=row.transcript,
+            live_session_id=row.session_id,
+            device_id=str(device.id),
+            modality="text" if text_context is not None else "voice",
+            actor=f"device:{device.name}",
+            session=session,
+            phone_text_context=text_context,
         )
+        spoken = str(getattr(kernel, "spoken", "") or "").strip()
+        route = str(getattr(kernel, "kind", "") or "muse")[:80]
+        phone_actions = [
+            action for action in kernel.evidence
+            if isinstance(action, dict) and isinstance(action.get("card"), dict)
+        ]
+        phone_results = [
+            {key: value for key, value in result.items() if key in {
+                "ok", "error", "error_code", "failure", "spoken", "reply",
+                "action_id", "operation", "executed", "verified",
+            }}
+            for result in kernel.evidence if isinstance(result, dict)
+        ]
     except Exception:
-        turn = {"conversational": True, "reply": None}
-    if not isinstance(turn, dict):
-        turn = {"conversational": True, "reply": None}
-
-    spoken = ""
-    route = str(turn.get("route") or "")
-    phone_action = turn.get("phone_action") if isinstance(turn.get("phone_action"), dict) else None
-    if not turn.get("conversational"):
-        spoken = str(turn.get("reply") or "").strip()
-    if not spoken:
-        try:
-            kernel = await handle_turn(
-                transcript=row.transcript,
-                live_session_id=row.session_id,
-                device_id=str(device.id),
-                modality="voice",
-                actor=f"device:{device.name}",
-            )
-            spoken = str(getattr(kernel, "spoken", "") or "").strip()
-            route = str(getattr(kernel, "kind", "") or route or "muse")[:80]
-        except Exception:
-            spoken = _PHONE_KERNEL_FALLBACK
-            route = "unavailable"
+        spoken = _PHONE_KERNEL_FALLBACK
+        route = "unavailable"
     if not spoken:
         spoken = _PHONE_KERNEL_FALLBACK
         route = route or "unavailable"
@@ -97,9 +92,12 @@ async def _apply_muse_kernel_phone_turn(
         row,
         spoken=spoken,
         route=route,
-        core=turn,
-        phone_action=phone_action,
+        phone_action=phone_actions[-1] if phone_actions else None,
     )
+    if phone_actions:
+        row.evidence = {**row.evidence, "phone_actions": phone_actions}
+    if phone_results:
+        row.evidence = {**row.evidence, "phone_results": phone_results}
     await session.flush()
 
 
@@ -116,6 +114,7 @@ async def record_turn_receipt(
     action_calls: list[dict[str, Any]] | None = None,
     evidence: dict[str, Any] | None = None,
     kind: str = "final_transcript",
+    text_context: PhoneTextContext | None = None,
 ) -> dict[str, Any]:
     key = (idempotency_key or "").strip()[:128]
     if len(key) < 8:
@@ -124,6 +123,10 @@ async def record_turn_receipt(
         await session.execute(select(PhoneTurnReceipt).where(PhoneTurnReceipt.idempotency_key == key))
     ).scalar_one_or_none()
     if existing is not None:
+        if existing.device_id != device.id:
+            return {"ok": False, "error_code": "IDEMPOTENCY_KEY_CONFLICT", "authority": False}
+        if device.revoked_at is not None or (existing.trusted_owner and is_sandbox_device(device)):
+            return {"ok": False, "error_code": "DEVICE_TRUST_CHANGED", "authority": False}
         return public_receipt(existing, replayed=True)
 
     trusted = not is_sandbox_device(device) and device.revoked_at is None
@@ -137,19 +140,22 @@ async def record_turn_receipt(
         provider_item_id=(provider_item_id or "")[:128] or None,
         provider_response_id=(provider_response_id or "")[:128] or None,
         action_calls=list(action_calls or []),
-        evidence=dict(evidence or {}),
+        # Client observations cannot populate the server's result namespace.
+        evidence={"client_evidence": dict(evidence or {})},
         durable=True,
         life_mutation=False,
         trusted_owner=trusted,
     )
+    if text_context is not None:
+        row.evidence = {**row.evidence, "text_binding": text_context.confirmation_binding}
     session.add(row)
     await session.flush()
 
-    if trusted and (row.kind or "") == "final_transcript" and (row.transcript or "").strip():
+    if trusted and ((row.kind or "") == "final_transcript" or (row.kind == "text" and text_context is not None)) and (row.transcript or "").strip():
         from app.cognitive.mode import muse_kernel_active
 
         if muse_kernel_active():
-            await _apply_muse_kernel_phone_turn(session, device=device, row=row, key=key)
+            await _apply_muse_kernel_phone_turn(session, device=device, row=row, key=key, text_context=text_context)
         else:
             from .phone_core import maybe_phone_core_read
             from .phone_mac import maybe_phone_mac_act
@@ -209,7 +215,14 @@ def public_receipt(row: PhoneTurnReceipt, *, replayed: bool = False) -> dict[str
         payload["core_reply"] = str(evidence["core_reply"])
         payload["core_route"] = str(evidence.get("core_route") or "")
     if isinstance(evidence.get("phone_action"), dict):
-        payload["phone_action"] = evidence["phone_action"]
+        payload["phone_action"] = {**evidence["phone_action"], **({"recovered": True} if replayed else {})}
+    if isinstance(evidence.get("phone_actions"), list):
+        payload["phone_actions"] = [
+            {**action, **({"recovered": True} if replayed else {})}
+            for action in evidence["phone_actions"] if isinstance(action, dict)
+        ]
+    if isinstance(evidence.get("phone_results"), list):
+        payload["phone_results"] = evidence["phone_results"]
     if evidence.get("action_tool"):
         payload["action_tool"] = str(evidence["action_tool"])
         payload["action_status"] = str(evidence.get("action_status") or "")

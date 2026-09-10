@@ -3433,6 +3433,28 @@ async function attachCapture(ws, stream) {
   state._audio = { stream, ctx, source, proc, mute, kind: "script" };
 }
 
+function handlePhoneHud(event) {
+  if (!event || typeof event !== "object") return;
+  const hud = event.hud && typeof event.hud === "object" ? event.hud : event;
+  const actions = window.EvieMobileActions;
+  // Both transports must deliver the same actionable card. A spoken reply
+  // alone cannot expose the required confirmation/OS handoff controls.
+  const action = hud.phone_action;
+  if (actions && action && typeof action === "object" && (action.card || action.action_id)) {
+    actions.present(action);
+    render();
+    return;
+  }
+  if (actions && actions.presentFromHud(event)) { render(); return; }
+  if (showHomeStationResult(hud)) { render(); return; }
+  if (hud.kind === "progress" || event.kind === "progress") {
+    setMood("Working");
+    textOf($("action-card"), hud.title || hud.name || "Working…");
+    $("action-card").hidden = false;
+    render();
+  }
+}
+
 async function handleLiveMessage(gen, ev) {
   if (gen !== state.sessionGen) return;
   if (typeof ev.data !== "string") return;
@@ -3441,6 +3463,7 @@ async function handleLiveMessage(gen, ev) {
   if (msg.type === "final_transcript" && msg.text) {
     state.userLine = msg.text;
     pushHistory("user", msg.text);
+    if (window.EvieMobileActions?.onTranscript) window.EvieMobileActions.onTranscript(msg.text);
     setMood("Thinking");
     render();
   }
@@ -3450,13 +3473,7 @@ async function handleLiveMessage(gen, ev) {
   }
   if (msg.type === "barge_in" && engine) engine.stop();
   if (msg.type === "hud") {
-    const kind = (msg.hud && msg.hud.kind) || msg.kind || "";
-    if (kind === "progress") {
-      setMood("Working on MacBook");
-      textOf($("action-card"), "MacBook · working");
-      $("action-card").hidden = false;
-      pushActivity("Working on MacBook");
-    }
+    handlePhoneHud(msg);
   }
   if (msg.type === "reply" && msg.text) {
     state.caption = msg.text;
@@ -3610,6 +3627,7 @@ async function talk() {
     });
     if (!current()) return;
     state.sessionId = opened.session_id;
+    if (window.EvieMobileActions) window.EvieMobileActions.setSession(opened.session_id);
     state.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id);
     const want = opened.media_backend || "webrtc_strict";
     const strict = opened.strict_webrtc === true || want === "webrtc_strict" || !opened.ws_ticket;
@@ -3762,26 +3780,7 @@ async function startWebRTC(opened, attempt) {
     },
     onCamera: (ev) => handleCameraRequest(ev),
     onHud: (hud) => {
-      if (
-        showHomeStationResult(
-          hud && hud.home_station_result
-            ? Object.assign({}, hud, hud.phone_action || {})
-            : hud
-        )
-      ) {
-        render();
-        return;
-      }
-      if (window.EvieMobileActions && window.EvieMobileActions.presentFromHud(hud)) {
-        render();
-        return;
-      }
-      if ((hud && hud.kind) === "progress" || hud.name) {
-        setMood("Working on Home Station");
-        $("action-card").hidden = false;
-        textOf($("action-card"), "Home Station · " + (hud.name || "working"));
-        pushActivity("Home Station · " + (hud.name || "working"));
-      }
+      if (state._voiceAttempt === attempt) handlePhoneHud(hud);
     },
     onHealth: (snap) => {
       state.voiceHealth = snap;
@@ -3792,7 +3791,6 @@ async function startWebRTC(opened, attempt) {
   });
   state.webrtc = rtc;
   state.talking = true;
-  if (window.EvieMobileActions) window.EvieMobileActions.setSession(opened.session_id);
   const signaling = /voice_signaling=ephemeral/.test(location.search) ? "ephemeral_direct" : "unified_calls";
   const mic = await rtc.start(opened, { signaling: signaling });
   if (state._voiceAttempt !== attempt || state.webrtc !== rtc) { rtc.stop(); return; }
@@ -3917,6 +3915,7 @@ async function stopTalk(options) {
   const instanceId = state.instanceId;
   state.sessionId = null;
   state.leaseId = null;
+  if (window.EvieMobileActions) window.EvieMobileActions.setSession(null);
   closeActiveBackend();
   if (state._pcmMic) { state._pcmMic.getTracks().forEach(track => track.stop()); state._pcmMic = null; }
   if (state._audio) {

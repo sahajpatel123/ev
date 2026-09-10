@@ -205,6 +205,21 @@ test("touch and spoken native confirmations each execute exactly once", async ()
   }
 });
 
+test("recovered native card waits for a deliberate tap, including a later duplicate HUD", async () => {
+  let executions = 0;
+  const f = fixture({ native: { post: async body => {
+    if (body.type === "execute") executions++;
+    return success;
+  } } });
+  const payload = action({}, { native_execute: true, recovered: true });
+  f.actions.present(payload);
+  f.actions.present(action({}, { native_execute: true }));
+  await Promise.resolve();
+  assert.equal(executions, 0);
+  await f.actions.run();
+  assert.equal(executions, 1);
+});
+
 test("duplicate presentations and taps share one native execution", async () => {
   const wait = deferred();
   let executions = 0;

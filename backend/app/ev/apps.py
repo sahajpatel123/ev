@@ -272,6 +272,70 @@ def _ok(*, spoken: str, source: str, **payload: object) -> dict:
     }
 
 
+async def list_installed_apps(
+    session: AsyncSession,
+    *,
+    query: str = "",
+    helper_path: str | None = None,
+) -> list[dict]:
+    """Installed apps on the Mac, via the granted helper. Empty on any failure."""
+
+    path = helper_path
+    if not path:
+        row = await find_macos_life_integration(session)
+        path = helper_path_for(row)
+    if not path:
+        return []
+    try:
+        result = await run_life_helper(
+            "apps.list",
+            {"query": query, "running": "false"},
+            helper_path=path,
+        )
+    except (LifeHelperUnavailableError, LifePermissionDeniedError, LifeHelperError):
+        return []
+    data = result.data if isinstance(result.data, dict) else {}
+    apps = data.get("apps")
+    if not isinstance(apps, list):
+        return []
+    return [item for item in apps if isinstance(item, dict)]
+
+
+async def resolve_installed_app(
+    session: AsyncSession,
+    raw_name: str,
+    *,
+    helper_path: str | None = None,
+) -> tuple[str, str] | None:
+    """Resolve any installed app by name (exact, then prefix), not a static list.
+
+    The helper's app catalog is the truth for what can be opened; an unknown
+    name is only refused after the catalog has actually been consulted.
+    """
+
+    query = re.sub(r"\s+", " ", (raw_name or "").strip().lower())
+    if not query:
+        return None
+    exact: list[tuple[str, str]] = []
+    prefix: list[tuple[str, str]] = []
+    for item in await list_installed_apps(
+        session, query=query, helper_path=helper_path
+    ):
+        name = str(item.get("name") or "").strip()
+        bundle = str(
+            item.get("bundle_id") or item.get("bundle_identifier") or ""
+        ).strip()
+        if not name or not bundle:
+            continue
+        lowered = name.lower()
+        if lowered == query:
+            exact.append((name, bundle))
+        elif lowered.startswith(query):
+            prefix.append((name, bundle))
+    found: tuple[str, str] | None = exact[0] if exact else (prefix[0] if prefix else None)
+    return found
+
+
 async def open_url(session: AsyncSession, args: dict, *, actor: str) -> dict:
     del actor
     url = parse_owner_url(str(args.get("url") or ""))
@@ -308,20 +372,24 @@ async def open_url(session: AsyncSession, args: dict, *, actor: str) -> dict:
 
 async def open_app(session: AsyncSession, args: dict, *, actor: str) -> dict:
     del actor
-    resolved = resolve_app(str(args.get("name") or args.get("app") or ""))
-    if resolved is None:
-        names = ", ".join(allowed_app_names())
-        return {
-            "ok": False,
-            "error": "not_allowlisted",
-            "spoken": f"I can only open {names}.",
-            "allowlist": allowed_app_names(),
-        }
-    name, bundle_id = resolved
+    raw_name = str(args.get("name") or args.get("app") or "")
     row = await find_macos_life_integration(session)
     path = helper_path_for(row)
     if row is None or not path:
         return _unavailable("no open-url bridge is installed")
+    resolved = resolve_app(raw_name)
+    if resolved is None:
+        discovered = await resolve_installed_app(session, raw_name, helper_path=path)
+        if discovered is None:
+            return {
+                "ok": False,
+                "error": "app_not_found",
+                "spoken": f"I couldn't find an app named {raw_name or 'that'} on this Mac.",
+                "query": raw_name,
+                "next_step": "list_apps shows what is installed",
+            }
+        resolved = discovered
+    name, bundle_id = resolved
     try:
         result = await run_life_helper(
             "apps.activate",
@@ -351,15 +419,23 @@ async def open_app(session: AsyncSession, args: dict, *, actor: str) -> dict:
 
 async def close_app(session: AsyncSession, args: dict, *, actor: str) -> dict:
     del actor
-    resolved = resolve_app(str(args.get("name") or args.get("app") or ""))
+    raw_name = str(args.get("name") or args.get("app") or "")
+    row = await find_macos_life_integration(session)
+    path = helper_path_for(row)
+    if row is None or not path:
+        return _unavailable("no open-url bridge is installed")
+    resolved = resolve_app(raw_name)
     if resolved is None:
-        names = ", ".join(allowed_app_names())
-        return {
-            "ok": False,
-            "error": "not_allowlisted",
-            "spoken": f"I can only close {names}.",
-            "allowlist": allowed_app_names(),
-        }
+        discovered = await resolve_installed_app(session, raw_name, helper_path=path)
+        if discovered is None:
+            return {
+                "ok": False,
+                "error": "app_not_found",
+                "spoken": f"I couldn't find an app named {raw_name or 'that'} on this Mac.",
+                "query": raw_name,
+                "next_step": "list_apps shows what is installed",
+            }
+        resolved = discovered
     name, bundle_id = resolved
     if bundle_id.lower() in PROTECTED_QUIT:
         return {
@@ -367,10 +443,6 @@ async def close_app(session: AsyncSession, args: dict, *, actor: str) -> dict:
             "error": "protected",
             "spoken": f"I won't quit {display_app_name(name)}.",
         }
-    row = await find_macos_life_integration(session)
-    path = helper_path_for(row)
-    if row is None or not path:
-        return _unavailable("no open-url bridge is installed")
     try:
         result = await run_life_helper(
             "apps.quit",

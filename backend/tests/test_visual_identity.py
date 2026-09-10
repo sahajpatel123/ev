@@ -2332,8 +2332,8 @@ async def test_live_keep_returns_jpeg_without_spark_and_binds_first_look(
 ) -> None:
     from types import SimpleNamespace
 
-    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev import look as look_mod
+    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev.look import look_now
     from app.memory.visual import remember_spoken_scene
 
@@ -2416,8 +2416,8 @@ async def test_classifier_phone_label_does_not_skip_first_look_identity(
 ) -> None:
     from types import SimpleNamespace
 
-    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev import look as look_mod
+    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev.look import look_now
     from app.memory.visual import remember_spoken_scene
 
@@ -2485,6 +2485,7 @@ async def test_mini_keep_look_reuses_broker_jpeg(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.ev import look as look_mod
     from app.ev.camera_runtime import (
         CameraObservation,
         peek_observations,
@@ -2492,7 +2493,6 @@ async def test_mini_keep_look_reuses_broker_jpeg(
         reset_pending_observations,
         stash_observation,
     )
-    from app.ev import look as look_mod
     from app.ev.look import KEEP_HOLD_CALL_ID, look_now
 
     reset_pending_observations()
@@ -2534,13 +2534,13 @@ async def test_mini_keep_look_reuses_hold_after_inject_pops_owner_keep(
     db_session: AsyncSession,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.ev import look as look_mod
     from app.ev.camera_runtime import (
         CameraObservation,
         pop_observations,
         reset_pending_observations,
         stash_observation,
     )
-    from app.ev import look as look_mod
     from app.ev.look import KEEP_HOLD_CALL_ID, look_now
 
     reset_pending_observations()
@@ -2592,12 +2592,12 @@ async def test_mini_keep_look_binds_existing_keep_attachment(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.ev import look as look_mod
     from app.ev.camera_runtime import (
         CameraObservation,
         reset_pending_observations,
         stash_observation,
     )
-    from app.ev import look as look_mod
     from app.ev.look import look_now
 
     jpeg = b"\xff\xd8" + b"\x00" * 120 + b"\xff\xd9"
@@ -2661,8 +2661,8 @@ async def test_mini_keep_look_reloads_stored_jpeg_when_hold_is_empty(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from app.ev.camera_runtime import reset_pending_observations
     from app.ev import look as look_mod
+    from app.ev.camera_runtime import reset_pending_observations
     from app.ev.look import look_now
 
     jpeg = b"\xff\xd8" + b"\x00" * 120 + b"\xff\xd9"
@@ -2719,8 +2719,8 @@ async def test_concurrent_keep_looks_share_one_jpeg(
     import asyncio
     from types import SimpleNamespace
 
-    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev import look as look_mod
+    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev.look import look_now
 
     reset_pending_observations()
@@ -2790,8 +2790,8 @@ async def test_owner_keep_look_reuses_mini_jpeg_instead_of_second_capture(
 ) -> None:
     from types import SimpleNamespace
 
-    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev import look as look_mod
+    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev.look import look_now
 
     reset_pending_observations()
@@ -2844,12 +2844,12 @@ async def test_reused_keep_bytes_do_not_bind_previous_object(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.ev import look as look_mod
     from app.ev.camera_runtime import (
         CameraObservation,
         reset_pending_observations,
         stash_observation,
     )
-    from app.ev import look as look_mod
     from app.ev.look import KEEP_HOLD_CALL_ID, look_now
 
     jpeg_old = b"\xff\xd8" + b"\x01" * 120 + b"\xff\xd9"
@@ -2919,13 +2919,13 @@ async def test_mini_keep_look_binds_hold_attachment_not_older(
     client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.ev import look as look_mod
     from app.ev.camera_runtime import (
         CameraObservation,
         peek_observations,
         reset_pending_observations,
         stash_observation,
     )
-    from app.ev import look as look_mod
     from app.ev.look import KEEP_HOLD_CALL_ID, look_now
 
     jpeg_a = b"\xff\xd8" + b"\x01" * 120 + b"\xff\xd9"
@@ -3189,7 +3189,7 @@ def test_keep_reread_is_skipped_inside_pytest() -> None:
         "memorize this",
         actor="owner",
     )
-    assert _KEEP_REREAD_IN_FLIGHT == before
+    assert before == _KEEP_REREAD_IN_FLIGHT
 
 
 def test_keep_reread_look_target_uses_committed_jpeg() -> None:
@@ -3590,8 +3590,8 @@ async def test_owner_keep_call_id_stores_jpeg_even_without_prompt(
 ) -> None:
     from types import SimpleNamespace
 
-    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev import look as look_mod
+    from app.ev.camera_runtime import LookFrame, reset_pending_observations
     from app.ev.look import look_now
 
     reset_pending_observations()

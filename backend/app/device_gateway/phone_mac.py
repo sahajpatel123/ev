@@ -326,10 +326,19 @@ def utterance_from_phone_action(arguments: dict[str, Any], transcript: str) -> s
         who = str(args.get("contact_query") or args.get("name") or "").strip()
         if who:
             return f"call {who}"
-    if op in {"message_contact", "send_message"}:
+    if op in {"message_contact", "send_message", "direct_message"}:
         who = str(args.get("contact_query") or args.get("to") or "").strip()
         body = str(args.get("message") or args.get("text") or "").strip()
         if who and body:
+            # Rebuilt utterances are re-parsed, so the channel must survive
+            # the rebuild or a WhatsApp ask silently becomes SMS.
+            from app.ev.messaging.channels import normalize_channel
+
+            utter_channel = normalize_channel(args.get("channel"))
+            if utter_channel == "whatsapp":
+                return f"text {who} {body} on whatsapp"
+            if utter_channel == "mail":
+                return f"email {who} {body}"
             return f"text {who} {body}"
     return str(args.get("text") or "").strip()
 
@@ -346,6 +355,21 @@ async def maybe_phone_mac_act(
     raw = (text or "").strip()
     if not raw:
         return None
+    from app.ev.messaging.approval import handle_send_approval
+
+    approval = await handle_send_approval(
+        session, raw, actor="voice", device_id=device.id
+    )
+    if approval is not None:
+        return _ok(
+            str(approval.get("spoken") or ""),
+            route="HOME_STATION",
+            tool="send_message",
+            executed=bool(approval.get("sent")),
+            ok=bool(approval.get("ok")),
+            verified=bool(approval.get("sent")),
+            error_code=None if approval.get("ok") else "CANCELLED_OR_FAILED",
+        )
     if _NEGATED_RE.search(raw) or _HEARING_RE.search(raw):
         return None
 

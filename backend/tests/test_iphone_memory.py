@@ -245,6 +245,23 @@ async def test_contacts_read_returns_snapshot(owner_phone) -> None:
     assert [c["name"] for c in body["contacts"]] == ["Aarav Mehta", "Priya Shah"]
     assert body["sent_to_model"] is False
     assert body["captured_at"] == "2026-09-08T07:00:00Z"
+    assert "home" in body
+    assert body["home"] == [] or isinstance(body["home"], list)
+
+
+async def test_contacts_include_home_people(owner_phone, db_session) -> None:
+    from app.models import Entity
+
+    _body, phone = owner_phone
+    db_session.add(
+        Entity(entity_type="person", name="Mansi", canonical_key="person:mansi-home")
+    )
+    await db_session.commit()
+    res = await phone.get("/v1/device-gateway/contacts")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["sent_to_model"] is False
+    assert any(row.get("name") == "Mansi" for row in (body.get("home") or []))
 
 
 async def test_look_history_owner_and_sandbox(
@@ -335,7 +352,6 @@ async def test_weather_endpoint_structured(owner_phone, monkeypatch) -> None:
     async def fake_weather(_text, limit=2):
         return [FakeResult()]
 
-    import app.device_gateway.api as api_mod
 
     monkeypatch.setattr("app.search.live.weather_results", fake_weather)
     # The endpoint imports weather_results inside the handler from
@@ -353,7 +369,6 @@ async def test_weather_endpoint_structured(owner_phone, monkeypatch) -> None:
 
 
 async def test_inbox_ack_all_marks_read(owner_phone, db_session) -> None:
-    from uuid import uuid4
 
     from app.everywhere.inbox import push_inbox
 

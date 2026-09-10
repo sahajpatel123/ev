@@ -310,7 +310,9 @@ async def mobile_actions_cancel(
     device: Device = Depends(require_gateway_device),
 ) -> dict:
     _require_origin(request)
-    return cancel_action(action_id=action_id, device_id=str(device.id))
+    result = cancel_action(action_id=action_id, device_id=str(device.id))
+    await _persist_client_result(action_id, str(device.id), result)
+    return result
 
 
 @router.post("/mobile-actions/{action_id}/client-complete")
@@ -323,7 +325,25 @@ async def mobile_actions_client_complete(
     _require_origin(request)
     payload = data.model_dump(exclude_none=True)
     payload.pop("completion_token", None)
-    return client_complete(action_id=action_id, device_id=str(device.id), payload=payload)
+    result = client_complete(action_id=action_id, device_id=str(device.id), payload=payload)
+    await _persist_client_result(action_id, str(device.id), result)
+    return result
+
+
+async def _persist_client_result(action_id: str, device_id: str, result: dict) -> None:
+    if not result.get("ok"):
+        return
+    from app.db import SessionLocal
+    from app.device_gateway.durable_actions import upsert_action
+
+    from .store import get_action
+
+    row = get_action(action_id)
+    if row is None or str(row.get("device_id")) != device_id:
+        return
+    async with SessionLocal() as db:
+        await upsert_action(db, row)
+        await db.commit()
 
 
 @router.post("/mobile-actions/prepare")

@@ -1248,7 +1248,6 @@
           action: parsed.camera_action || parsed.action || args.action || "look_once",
         });
       }
-      if (parsed.card && window.EvieMobileActions) window.EvieMobileActions.present(parsed);
       this.onHud({
         kind: "result",
         name: msg.name,

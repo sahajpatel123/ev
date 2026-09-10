@@ -327,3 +327,23 @@ async def test_listener_retries_transient_http_capture(tmp_path) -> None:
         assert attempts == 2
     finally:
         await client.aclose()
+
+
+def test_listener_api_key_prefers_production_master_overlay(monkeypatch, tmp_path) -> None:
+    from clients.device_listener import _api_key
+
+    overlay = tmp_path / "production.env"
+    overlay.write_text("EV_MASTER_KEY=prod-master-key\n")
+    monkeypatch.delenv("EV_MASTER_KEY", raising=False)
+    monkeypatch.setenv("EV_API_KEY", "dev-stale-key")
+    monkeypatch.setenv("EV_SECRETS_FILE", str(overlay))
+    assert _api_key() == "prod-master-key"
+
+
+def test_listener_api_key_falls_back_to_dev_key(monkeypatch, tmp_path) -> None:
+    from clients.device_listener import _api_key
+
+    monkeypatch.delenv("EV_MASTER_KEY", raising=False)
+    monkeypatch.setenv("EV_API_KEY", "dev-key")
+    monkeypatch.setenv("EV_SECRETS_FILE", str(tmp_path / "missing.env"))
+    assert _api_key() == "dev-key"
