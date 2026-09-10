@@ -555,6 +555,95 @@ async def test_live_s2s_runs_code_from_owner_transcript(
         live.close()
 
 
+def test_stale_intern_pending_does_not_mark_code_jail_busy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_studio import spoken_studio_busy
+    from app.ev.luna_code import (
+        code_jail_busy,
+        enqueue_code_intern,
+        intern_in_flight,
+        intern_worker_active,
+    )
+
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    enqueue_code_intern("leftover overnight job")
+    assert intern_in_flight() is True
+    assert intern_worker_active() is False
+    assert code_jail_busy() is False
+    busy = spoken_studio_busy()
+    assert "running" not in busy.lower()
+    assert "queued" in busy.lower() or "not running" in busy.lower()
+
+
+@pytest.mark.asyncio
+async def test_stale_intern_pending_does_not_block_live_hello(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    from app.config import settings
+    from app.ev.luna_code import enqueue_code_intern
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    enqueue_code_intern("leftover overnight job")
+
+    seen: list[tuple[str, dict, str]] = []
+    spoken: list[str] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        seen.append((name, dict(args), call_id))
+        result = await run_code_job(str(args.get("goal") or ""))
+        return json.dumps(
+            {
+                "ok": result.get("ok"),
+                "result": result,
+                "spoken": result.get("spoken"),
+            }
+        )
+
+    class _OpenAI:
+        _provider = "openai"
+        supports_function_calls = True
+        _open_turn_id = "turn-code-stale"
+        _shadow_response_for_turn = None
+
+        async def cancel(self) -> None:
+            return None
+
+        async def speak_ack(self, text: str) -> bool:
+            spoken.append(text)
+            return True
+
+        async def send_text(self, text: str) -> None:
+            raise AssertionError(f"Mini must not receive the coding command: {text}")
+
+    grok = _OpenAI()
+    live = LiveSession(session_id="owner-code-stale-intern", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = grok
+    goal = "write a python script that prints hello world"
+    try:
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+        )
+        await _finish_live_code(live)
+        assert seen == [("code", {"goal": goal}, "owner-code-exec")]
+        assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello world')\n"
+        assert spoken
+        assert "hello" in spoken[-1].lower()
+        assert all("i'm running" not in item.lower() for item in spoken)
+    finally:
+        live.close()
+
+
 @pytest.mark.asyncio
 async def test_partial_code_transcript_cancels_mini_before_she_claims_a_write() -> None:
     from app.voice.live.events import PartialTranscriptEvent

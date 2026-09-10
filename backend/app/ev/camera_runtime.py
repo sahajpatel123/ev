@@ -83,6 +83,11 @@ class LookFrame:
     saved_path: str | None = None
     media_kind: str | None = None
     duration_ms: int | None = None
+    # Client-declared evidence that a real clip exists on the device. ``True``
+    # only when the client wrote a playable file; ``False`` when the client can
+    # produce stills only (Safari PWA burst). ``None`` = older client, unknown.
+    has_clip: bool | None = None
+    clip_supported: bool | None = None
 
 
 @dataclass
@@ -289,6 +294,19 @@ def parse_look_frame_meta(message: dict[str, Any]) -> dict[str, Any]:
         except (TypeError, ValueError):
             return None
 
+    def _bool(key: str) -> bool | None:
+        value = message.get(key)
+        if value is None or isinstance(value, str) and not value.strip():
+            return None
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return None
+
     return {
         "labels": labels,
         "colors": colors,
@@ -300,6 +318,8 @@ def parse_look_frame_meta(message: dict[str, Any]) -> dict[str, Any]:
         "saved_path": saved,
         "media_kind": kind,
         "duration_ms": _int("duration_ms") or _int("clip_duration_ms"),
+        "has_clip": _bool("has_clip") if "has_clip" in message else _bool("clip_ready"),
+        "clip_supported": _bool("clip_supported"),
     }
 
 

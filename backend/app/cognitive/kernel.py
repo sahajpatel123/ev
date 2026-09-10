@@ -659,31 +659,25 @@ async def _muse_turn(
                     and not phone_turn
                     and not cognition.prepare_only
                 ):
-                    from app.ev.code_studio import looks_like_long_code_goal, maybe_handle_code_ops
-                    from app.ev.luna_code import owner_asked_to_code
+                    routed = await _dispatch_kernel_code(
+                        session,
+                        text,
+                        cognition=cognition,
+                        actor=actor,
+                        live_session_id=live_session_id,
+                        modality=modality,
+                        steering_seen=steering_seen,
+                        started=started,
+                    )
+                    if routed is not None:
+                        return routed
+                    from app.ev.luna_code import (
+                        _spoken_claims_code_write,
+                        owner_asked_to_code,
+                    )
 
-                    if owner_asked_to_code(text):
-                        if looks_like_long_code_goal(text):
-                            ack = maybe_handle_code_ops(
-                                text, session_key=str(live_session_id or "owner")
-                            )
-                            if ack:
-                                spoken = ack
-                        else:
-                            evidence = await execute_semantic(
-                                session,
-                                "code.act",
-                                {"effect": text[:4000]},
-                                cognition=cognition,
-                                actor=actor,
-                                live_session_id=live_session_id,
-                                steering_seen=steering_seen,
-                            )
-                            if isinstance(evidence, dict):
-                                forced = str(evidence.get("spoken") or "").strip()
-                                if forced:
-                                    spoken = forced
-                            tool_count += 1
+                    if owner_asked_to_code(text) and _spoken_claims_code_write(spoken):
+                        spoken = "I couldn't finish that coding job."
                 telemetry.note(
                     last_turn_kind="muse",
                     last_transcript_to_muse_ms=telemetry.timed_ms(started),

@@ -5201,18 +5201,11 @@ async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
             "ambiguous_recipient", next_step=str(exc), error=str(exc)
         )
     if routing.provider == "web":
-        from app.ev.messaging.native import resolve_native_contact
         from app.ev.messaging.whatsapp_web import send as send_whatsapp_web
 
-        native = await resolve_native_contact("whatsapp", to)
-        if native is not None and native.get("status") == "ambiguous":
-            names = ", ".join(str(name) for name in native.get("candidates") or [] if name)
-            return _life_unavailable(
-                "ambiguous_recipient",
-                next_step=f"I found more than one WhatsApp chat for {to}: {names}. Which one?",
-            )
-        target = str((native or {}).get("display") or dest.get("handle") or to)
-        web_result = await send_whatsapp_web(target, body)
+        # send() resolves the chat natively (Web tab, then Desktop) and
+        # returns the honest ambiguity/not-found wording itself.
+        web_result = await send_whatsapp_web(str(dest.get("handle") or to), body)
         payload = {
             "ok": bool(web_result.get("ok")),
             "sent": bool(web_result.get("sent")),
