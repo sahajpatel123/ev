@@ -36,6 +36,29 @@ enum PermissionKind: String, CaseIterable, Identifiable, Sendable {
     case location
 
     var id: String { rawValue }
+
+    /// Human name for the permissions panel. Added to complete the
+    /// PermissionsPanel contract introduced on this branch (the panel
+    /// referenced `kind.title` before any such member existed, breaking
+    /// the release build).
+    var title: String {
+        switch self {
+        case .microphone: return "Microphone"
+        case .speechRecognition: return "Speech Recognition"
+        case .camera: return "Camera"
+        case .screenRecording: return "Screen Recording"
+        case .accessibility: return "Accessibility"
+        case .automation: return "Automation"
+        case .fullDiskAccess: return "Full Disk Access"
+        case .contacts: return "Contacts"
+        case .calendars: return "Calendars"
+        case .reminders: return "Reminders"
+        case .notifications: return "Notifications"
+        case .bluetooth: return "Bluetooth"
+        case .inputMonitoring: return "Input Monitoring"
+        case .location: return "Location"
+        }
+    }
 }
 
 enum PermissionState: String, Sendable {
@@ -56,6 +79,30 @@ struct PermissionStatus: Equatable, Sendable {
     /// exists — typically because the recorded grant is tied to an older
     /// build's code signature. Explains how to repair it in System Settings.
     var repairHint: String?
+
+    /// Copy-pasteable `tccutil` re-arm command for the permissions panel.
+    /// Nil for panes with no request API (Notifications) or a + button flow
+    /// (Full Disk Access, handled via Reveal instead).
+    var resetCommand: String? {
+        let service: String? = switch kind {
+        case .microphone: "Microphone"
+        case .speechRecognition: "SpeechRecognition"
+        case .camera: "Camera"
+        case .screenRecording: "ScreenCapture"
+        case .accessibility: "Accessibility"
+        case .automation: "AppleEvents"
+        case .fullDiskAccess: nil
+        case .contacts: "AddressBook"
+        case .calendars: "Calendar"
+        case .reminders: "Reminders"
+        case .notifications: nil
+        case .bluetooth: "BluetoothAlways"
+        case .inputMonitoring: "ListenEvent"
+        case .location: "Location"
+        }
+        guard let service else { return nil }
+        return "tccutil reset \(service) com.ev.suit"
+    }
 }
 
 /// Instantiating a `CBCentralManager` is what triggers macOS's Bluetooth

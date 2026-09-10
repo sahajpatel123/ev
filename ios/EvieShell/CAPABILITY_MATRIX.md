@@ -23,5 +23,15 @@ AlarmKit: public on **iOS 26+**. Fallback on older OS: Evie local notification. 
 | App launch | curated universal links | 17 | none | open | no | medium | SCAFFOLDED | SCAFFOLDED |
 | Share | UIActivityViewController | 17 | none | no | sheet | medium | SCAFFOLDED | SCAFFOLDED |
 | Clipboard | UIPasteboard | 17 | none | yes | no | strong | SCAFFOLDED | SCAFFOLDED |
+| Geofence reminders | Core Location region monitoring | 17 | Location When In Use (Always for background entry) | no (region events only, never continuous tracking) | no | medium | IMPLEMENTED | IMPLEMENTED |
+| QR / barcode scan | AVFoundation metadata capture | 17 | Camera | no (foreground scanner reports only, never auto-opens) | yes (foreground scanner) | strong | IMPLEMENTED | IMPLEMENTED |
+| Document scan + OCR | VisionKit + Vision + PDFKit | 17 (`VNDocumentCameraViewController.isSupported` per device) | Camera | no (capture staged on device, send needs confirm) | yes (system scanner) | medium | IMPLEMENTED | IMPLEMENTED |
+>
+Source-complete vs needs-Xcode: **IMPLEMENTED** above means Swift source is complete and
+registered in `EvieShell.xcodeproj`, but **not compiled, not signed, not run on a physical
+iPhone**. Needs Xcode.app + owner Team signing + Primary iPhone to move any IMPLEMENTED row
+to VERIFIED: geofence entry notification (proves region monitoring + notification auth),
+foreground QR scan of a known URL (proves camera auth + no-auto-open), document scan with
+OCR/PDF staging (proves VisionKit support on device). Voice rows are unaffected.
 
 Kill switch: `EV_NATIVE_ACTIONS_ENABLED` (server). Disables actions without breaking voice.

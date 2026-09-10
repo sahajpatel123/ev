@@ -2406,25 +2406,17 @@ public final class MacControlService: @unchecked Sendable {
             lastSafariQuery = query
             let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
             let url = "https://www.google.com/search?q=\(encoded)"
-            let script = """
-            tell application id "com.apple.Safari"
-              if (count of windows) is 0 then
-                make new document
-              else
-                tell window 1
-                  set current tab to (make new tab at end of tabs)
-                end tell
-              end if
-              set URL of current tab of window 1 to \(asLiteral(url))
-            end tell
-            """
-            let ran = runAppleScript(script)
+            let ran = runAppleScript(safariReuseOrOpenScript(url))
             if !ran.ok {
                 return fail("safari_search_failed", ran.error ?? "Safari search failed.", command: "app_action", requestId: requestId)
             }
-            Thread.sleep(forTimeInterval: 1.8)
-            let status = safariNow()
-            let loaded = !status.url.isEmpty
+            Thread.sleep(forTimeInterval: 0.3)
+            var status = safariNow()
+            for _ in 0..<12 where status.url.isEmpty || status.url.lowercased().hasPrefix("favorites:") {
+                Thread.sleep(forTimeInterval: 0.3)
+                status = safariNow()
+            }
+            let loaded = !status.url.isEmpty && !status.url.lowercased().hasPrefix("favorites:")
             return ok(
                 [
                     "ok": true,
@@ -2460,21 +2452,52 @@ public final class MacControlService: @unchecked Sendable {
         }
     }
 
-    private func safariOpenLocation(_ url: String, requestId: String) -> [String: Any] {
-        let script = """
+    /// Navigate Safari without tab spam: reuse a tab already on the target
+    /// host, or the current blank tab; only then open one new tab.
+    private func safariReuseOrOpenScript(_ url: String) -> String {
+        let host = URL(string: url)?.host?.lowercased() ?? ""
+        return """
         tell application id "com.apple.Safari"
+          set targetURL to \(asLiteral(url))
+          set targetHost to \(asLiteral(host))
           if (count of windows) is 0 then
             make new document
-            set URL of current tab of window 1 to \(asLiteral(url))
+            set URL of current tab of window 1 to targetURL
           else
             tell window 1
-              set current tab to (make new tab at end of tabs)
-              set URL of current tab to \(asLiteral(url))
+              set matchedIndex to 0
+              if targetHost is not "" then
+                repeat with i from 1 to (count of tabs)
+                  try
+                    if (URL of tab i) contains targetHost then
+                      set matchedIndex to i
+                      exit repeat
+                    end if
+                  end try
+                end repeat
+              end if
+              if matchedIndex > 0 then
+                set current tab to tab matchedIndex
+              else
+                set currentURL to ""
+                try
+                  set currentURL to URL of current tab
+                end try
+                if currentURL is "" or currentURL starts with "favorites:" or currentURL starts with "about:" then
+                  set URL of current tab to targetURL
+                else
+                  set current tab to (make new tab at end of tabs)
+                  set URL of current tab to targetURL
+                end if
+              end if
             end tell
           end if
         end tell
         """
-        var ran = runAppleScript(script)
+    }
+
+    private func safariOpenLocation(_ url: String, requestId: String) -> [String: Any] {
+        var ran = runAppleScript(safariReuseOrOpenScript(url))
         if !ran.ok {
             ran = runAppleScript("tell application id \"com.apple.Safari\" to open location \(asLiteral(url))")
         }
@@ -4496,19 +4519,7 @@ public final class MacControlService: @unchecked Sendable {
             lastChromeQuery = query
             let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
             let target = "https://www.google.com/search?q=\(encoded)"
-            let script = """
-            tell application id "com.google.Chrome"
-              if (count of windows) is 0 then
-                make new window
-                set URL of active tab of front window to \(asLiteral(target))
-              else
-                tell front window
-                  make new tab with properties {URL:\(asLiteral(target))}
-                end tell
-              end if
-            end tell
-            """
-            let ran = runAppleScript(script)
+            let ran = runAppleScript(chromeReuseOrOpenScript(target))
             if !ran.ok {
                 return fail("chrome_failed", ran.error ?? "Chrome failed.", command: "app_action", requestId: requestId)
             }
@@ -4552,20 +4563,52 @@ public final class MacControlService: @unchecked Sendable {
         }
     }
 
-    private func chromeOpenLocation(_ url: String, requestId: String) -> [String: Any] {
-        let script = """
+    /// Navigate Chrome without tab spam: reuse a tab already on the target
+    /// host, or the current blank tab; only then open one new tab.
+    private func chromeReuseOrOpenScript(_ url: String) -> String {
+        let host = URL(string: url)?.host?.lowercased() ?? ""
+        return """
         tell application id "com.google.Chrome"
+          set targetURL to \(asLiteral(url))
+          set targetHost to \(asLiteral(host))
           if (count of windows) is 0 then
             make new window
-            set URL of active tab of front window to \(asLiteral(url))
+            set URL of active tab of front window to targetURL
           else
             tell front window
-              make new tab with properties {URL:\(asLiteral(url))}
+              set matchedIndex to 0
+              if targetHost is not "" then
+                repeat with i from 1 to (count of tabs)
+                  try
+                    if (URL of tab i) contains targetHost then
+                      set matchedIndex to i
+                      exit repeat
+                    end if
+                  end try
+                end repeat
+              end if
+              if matchedIndex > 0 then
+                set active tab index to matchedIndex
+              else
+                set activeTab to active tab
+                set currentURL to ""
+                try
+                  set currentURL to URL of activeTab
+                end try
+                if currentURL is "" or currentURL starts with "chrome://newtab" or currentURL starts with "about:" then
+                  set URL of activeTab to targetURL
+                else
+                  make new tab with properties {URL:targetURL}
+                end if
+              end if
             end tell
           end if
         end tell
         """
-        let ran = runAppleScript(script)
+    }
+
+    private func chromeOpenLocation(_ url: String, requestId: String) -> [String: Any] {
+        let ran = runAppleScript(chromeReuseOrOpenScript(url))
         Thread.sleep(forTimeInterval: 1.0)
         var now = chromeNow()
         for _ in 0..<6 where now.url.isEmpty {

@@ -121,6 +121,36 @@ func quitBundle(_ bundleID: String) {
     NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.terminate()
 }
 
+func openURLForeground(_ url: URL) -> Bool {
+    let config = NSWorkspace.OpenConfiguration()
+    config.activates = true
+    config.hides = false
+    config.addsToRecentItems = false
+    var opened = false
+    let sema = DispatchSemaphore(value: 0)
+    NSWorkspace.shared.open(url, configuration: config) { _, err in
+        opened = err == nil
+        sema.signal()
+    }
+    _ = sema.wait(timeout: .now() + 2.0)
+    return opened
+}
+
+func launchBundleForeground(_ bundleID: String) {
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+        return
+    }
+    let config = NSWorkspace.OpenConfiguration()
+    config.activates = true
+    config.hides = false
+    config.addsToRecentItems = false
+    let sema = DispatchSemaphore(value: 0)
+    NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+        sema.signal()
+    }
+    _ = sema.wait(timeout: .now() + 1.5)
+}
+
 func openURLHeadless(_ url: URL) -> Bool {
     let config = NSWorkspace.OpenConfiguration()
     config.activates = false
@@ -287,13 +317,49 @@ case "messages.send":
     guard let text = argumentValue("--text"), !text.isEmpty else {
         fail(.badArguments, "bad_arguments", "messages.send requires --text")
     }
+    let service = (argumentValue("--service") ?? "auto").lowercased()
+    guard ["auto", "imessage", "sms"].contains(service) else {
+        fail(
+            .badArguments,
+            "bad_arguments",
+            "messages.send --service must be auto, imessage, or sms"
+        )
+    }
     do {
+        let buddy = appleScriptEscape(recipient)
+        let body = appleScriptEscape(text)
+        let sendBlock: String
+        switch service {
+        case "imessage":
+            sendBlock = """
+                set targetService to 1st service whose service type = iMessage
+                set targetBuddy to buddy "\(buddy)" of targetService
+                send "\(body)" to targetBuddy
+            """
+        case "sms":
+            sendBlock = """
+                set targetService to 1st service whose service type = SMS
+                set targetBuddy to buddy "\(buddy)" of targetService
+                send "\(body)" to targetBuddy
+            """
+        default:
+            // Auto: iMessage when the handle has it, SMS when it doesn't.
+            sendBlock = """
+                try
+                    set targetService to 1st service whose service type = iMessage
+                    set targetBuddy to buddy "\(buddy)" of targetService
+                    send "\(body)" to targetBuddy
+                on error
+                    set targetService to 1st service whose service type = SMS
+                    set targetBuddy to buddy "\(buddy)" of targetService
+                    send "\(body)" to targetBuddy
+                end try
+            """
+        }
         let script = """
         tell application "Messages" to launch
         tell application "Messages"
-            set targetService to 1st service whose service type = iMessage
-            set targetBuddy to buddy "\(appleScriptEscape(recipient))" of targetService
-            send "\(appleScriptEscape(text))" to targetBuddy
+        \(sendBlock)
         end tell
         """
         if arguments.contains("--dry-run") {
@@ -305,12 +371,24 @@ case "messages.send":
                 )
             }
             _ = try compileAppleScript(script)
-            success(["to": recipient, "dry_run": true, "compiled": true, "headless": true])
+            success([
+                "to": recipient,
+                "dry_run": true,
+                "compiled": true,
+                "service": service,
+                "headless": true,
+            ])
         }
         launchBundleHeadless("com.apple.MobileSMS")
         _ = try runAppleScript(script)
         hideProcess("Messages")
-        success(["to": recipient, "sent": true, "headless": true, "focus_stolen": false])
+        success([
+            "to": recipient,
+            "sent": true,
+            "service": service,
+            "headless": true,
+            "focus_stolen": false,
+        ])
     } catch {
         fail(.failed, "failed", "messages.send failed: \(error)")
     }
@@ -332,30 +410,29 @@ case "whatsapp.send":
         "https://wa.me/\(phone)?text=\(encoded)",
     ]
     var opened = false
-    launchBundleHeadless("net.whatsapp.WhatsApp")
+    launchBundleForeground("net.whatsapp.WhatsApp")
     for raw in candidates {
         guard let url = URL(string: raw) else { continue }
-        if openURLHeadless(url) {
+        if openURLForeground(url) {
             opened = true
             break
         }
     }
-    hideProcess("WhatsApp")
     if opened {
         success([
             "to": phone,
             "channel": "whatsapp",
             "opened": true,
             "sent": false,
-            "headless": true,
-            "focus_stolen": false,
+            "headless": false,
+            "focus_stolen": true,
             "system_ui": true,
         ])
     } else {
         fail(
             .notAvailable,
             "not_available",
-            "whatsapp.send could not open WhatsApp without stealing focus"
+            "whatsapp.send could not open WhatsApp"
         )
     }
 

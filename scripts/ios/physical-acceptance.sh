@@ -58,6 +58,11 @@ Physical two-iPhone remaining (Safari / Home Screen, not Xcode):
   [ ] Offline capture + exactly-once replay (pending != executed)
   [ ] Reload after a PWA build bump (hello latest_web_build / tap update line)
   [ ] Revoke one phone; the other remains usable
+  [ ] People sheet shows WhatsApp/mail/Home Station names (not empty forever)
+  [ ] Call opens Phone only when a number is known; otherwise honest gap + latest-messages chip
+  [ ] "Start a 10 minute timer" sets Home Station timer + local Evie alert (not Clock)
+  [ ] Health sheet shows Core vitals if present; never invents numbers
+  [ ] Allow notifications on the Home Screen PWA; inbox poll still works without APNs
 
 Evidence class: automated here; physical only after the boxes above.
 EOF

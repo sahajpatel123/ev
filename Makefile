@@ -48,12 +48,13 @@ ios-ci-check:
 iphone-parity-check:
 	node --check backend/clients/pwa/app.js
 	node --check backend/clients/pwa/webrtc.js
+	node --test backend/clients/pwa/tests/phone_working_features_test.js
 	bash -n scripts/ios/build-evie-ipa.sh
 	bash -n scripts/ios/verify-release.sh
 	bash -n scripts/ios/physical-acceptance.sh
 	bash -n scripts/ios/archive-if-possible.sh
 	cd ios/EvieShell && swift run EvieBrokerCheck
-	cd backend && uv run pytest -q tests/test_iphone_capability_plan.py tests/test_g2_trust_lifecycle.py tests/test_release_contract.py tests/test_device_gateway.py tests/test_pwa_audio.py tests/test_webrtc_connection.py tests/test_everywhere_g2.py tests/test_regression_golden.py tests/test_mobile_actions.py tests/test_mobile_shell.py
+	cd backend && uv run pytest -q tests/test_iphone_capability_plan.py tests/test_g2_trust_lifecycle.py tests/test_release_contract.py tests/test_device_gateway.py tests/test_pwa_audio.py tests/test_webrtc_connection.py tests/test_everywhere_g2.py tests/test_regression_golden.py tests/test_mobile_actions.py tests/test_mobile_shell.py tests/test_pure_pwa_no_native_shell.py
 	@echo "iphone-parity-check OK (automated + broker; ship path is Tailscale PWA, not Xcode)"
 
 # Full native build — requires macOS with Xcode.app (CI runner or dev Mac).

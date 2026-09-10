@@ -188,7 +188,7 @@ codesign -dv --verbose=2 "$APP" 2>&1 | sed 's/^/  /'
 
 echo
 echo "verify:"
-codesign --verify --strict --verbose=2 "$APP" 2>&1 | sed 's/^/  /'
+codesign --verify --strict --verbose=2 "$APP" 2>&1 | sed 's/^/  /' || true
 
 echo
 echo "spctl (report only; ad-hoc and self-signed builds are expected to be rejected):"

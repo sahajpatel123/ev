@@ -10,6 +10,10 @@
 # that no longer exists. Installing into /Applications without quarantine is
 # what makes a grant stick.
 #
+# The signed bundle is named Evie.app so Spotlight (⌘Space) can find it.
+# EV.app is a symlink to the same bundle so existing scripts and "EV.app"
+# searches still resolve.
+#
 # Usage: ./scripts/install.sh
 
 set -euo pipefail
@@ -28,14 +32,16 @@ if [ ! -w "$DEST_DIR" ]; then
     mkdir -p "$DEST_DIR"
     echo "/Applications is not writable; installing into $DEST_DIR"
 fi
-DEST="$DEST_DIR/EV.app"
+DEST="$DEST_DIR/Evie.app"
+EV_LINK="$DEST_DIR/EV.app"
 
 # Quit any running copy by pid: replacing a bundle underneath a live process
 # leaves the old signature running and TCC attributing grants to it.
 # The pattern ends at a space or end-of-line so it does not also match
-# Contents/MacOS/EVNotificationHelper.
-if PIDS="$(pgrep -f 'EV\.app/Contents/MacOS/EV( |$)' 2>/dev/null)"; then
+# Contents/MacOS/EVNotificationHelper. Match both Spotlight names.
+if PIDS="$(pgrep -f '(Evie|EV)\.app/Contents/MacOS/EV( |$)' 2>/dev/null)"; then
     osascript -e 'quit app "EV"' >/dev/null 2>&1 || true
+    osascript -e 'quit app "Evie"' >/dev/null 2>&1 || true
     sleep 1
     for pid in ${(f)PIDS}; do
         if kill -0 "$pid" 2>/dev/null; then
@@ -45,11 +51,27 @@ if PIDS="$(pgrep -f 'EV\.app/Contents/MacOS/EV( |$)' 2>/dev/null)"; then
     done
 fi
 
-rm -rf "$DEST"
+rm -rf "$EV_LINK" "$DEST"
 cp -R "$APP" "$DEST"
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+ln -s "$DEST" "$EV_LINK"
+
+# Spotlight and Launchpad only list bundles Launch Services knows about.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+    "$LSREGISTER" -f -R "$DEST" >/dev/null 2>&1 || true
+    "$LSREGISTER" -f -R "$EV_LINK" >/dev/null 2>&1 || true
+fi
+mdimport "$DEST" >/dev/null 2>&1 || true
+osascript >/dev/null 2>&1 <<EOF || true
+tell application "Finder"
+    set comment of (POSIX file "$DEST" as alias) to "Evie EV.app Talk menu bar"
+end tell
+EOF
 
 echo "Installed $DEST"
+echo "Also listed as $EV_LINK"
+echo "Spotlight: type Evie  or  EV  or  EV.app"
 codesign --verify --strict --verbose=2 "$DEST" 2>&1 | sed 's/^/  /'
 
 echo

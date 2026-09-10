@@ -152,17 +152,17 @@ Measured on the working tree by `tools/baseline.py`; recorded in
 
 | Metric | Value |
 | --- | --- |
-| Python modules under `backend/app` | 416 (149,439 lines, 31 subpackages) |
-| Python modules under `backend/clients` | 28 (8,033 lines) |
-| Test modules / test functions | 206 / 2,338 |
-| API routers / route decorators | 23 / 425 |
-| Locked contract paths / operations | 341 / 372 |
-| `Settings` fields (`EV_*`) | 362 |
-| ORM tables | 102 |
-| Alembic migrations | 22 |
-| `docs/*.md` files | 73 |
-| `EV_*` keys in `.env.example` / `.env.api-first` | 276 / 35 |
-| Swift files / lines | 100 / 30,281 |
+| Python modules under `backend/app` | 526 (214,158 lines, 34 subpackages) |
+| Python modules under `backend/clients` | 33 (9,016 lines) |
+| Test modules / test functions | 256 / 3,366 |
+| API routers / route decorators | 25 / 430 |
+| Locked contract paths / operations | 474 / 515 |
+| `Settings` fields (`EV_*`) | 418 |
+| ORM tables | 116 |
+| Alembic migrations | 25 |
+| `docs/*.md` files | 75 |
+| `EV_*` keys in `.env.example` / `.env.api-first` | 291 / 39 |
+| Swift files / lines | 234 / 131,146 |
 | Fleet size | 20 |
 
 When a change legitimately moves these numbers, run `make baseline-write` and

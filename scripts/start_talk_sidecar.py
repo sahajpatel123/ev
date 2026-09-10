@@ -8,6 +8,19 @@ reliable record while the archive lived on :8000's database.
 Do not start a bare ``uv run uvicorn … --port 18000``. That process loads
 shared ``backend/.env`` with ``EV_LAPTOP_FILES=false`` and Talk then
 speaks "Local file access is not enabled on this API."
+
+AGENT LAW — DO NOT WEAKEN (live, proven 2026-09-10):
+EV.app authenticates with a Keychain *device token* whose sha256 lives in
+Postgres ``devices.token_hash`` on ev.api (:8000). Talk is the process EV.app
+actually calls. If Talk inherits a pytest/agent shell
+(``EV_DATABASE_URL=sqlite…/test.db``, ``EV_MASTER_KEY=test-key``,
+``EV_VAULT_KEY=test-vault-…``), ``_resolve_actor`` cannot find that hash and
+returns DEVICE_TOKEN_INVALID. The Mac then shows "This Mac's device token is
+invalid. Attempting local repair." The token is not bad — Talk is on the
+wrong database. Never ``setdefault`` owner DB/master/vault from a test
+leftover. Never boot Talk on sqlite. Never "fix" this by minting a second
+Mac device or rewriting Keychain. Pin Talk to the owner Postgres URL in
+repo ``.env`` and the master/vault in ``~/.ev/secrets/production.env``.
 """
 
 from __future__ import annotations
@@ -52,9 +65,33 @@ def daemonize() -> None:
             os.close(fd)
 
 
+_OWNER_PINNED_KEYS = frozenset({"EV_DATABASE_URL", "EV_MASTER_KEY", "EV_VAULT_KEY"})
+_TEST_MASTER_VALUES = frozenset({"test-key", "change-me", "ev-local-dev-key"})
 _META_SECRET_NAMES = frozenset(
     {"META_MODEL_API_KEY", "EV_META_MODEL_API_KEY", "MODEL_API_KEY"}
 )
+
+
+def leftover_owner_runtime(key: str, value: str) -> bool:
+    """True when an agent/pytest leftover must not win over owner files."""
+
+    raw = (value or "").strip()
+    if not raw:
+        return True
+    if key == "EV_DATABASE_URL":
+        low = raw.lower()
+        return (
+            "sqlite" in low
+            or "test.db" in low
+            or "ev_test" in low
+            or "/pytest" in low
+            or "/tmp/" in low
+        )
+    if key == "EV_MASTER_KEY":
+        return len(raw) < 16 or raw in _TEST_MASTER_VALUES
+    if key == "EV_VAULT_KEY":
+        return len(raw) < 16 or raw.startswith("test-vault")
+    return False
 # Owner .env Muse flags must beat leftover Grok/OpenAI/DeepSeek exports from an
 # older Talk launch. setdefault would silently keep the stale brain.
 _MUSE_BRAIN_KEYS = frozenset(
@@ -62,6 +99,7 @@ _MUSE_BRAIN_KEYS = frozenset(
         "EV_CHAT_PROVIDER",
         "EV_INTELLIGENCE_PROVIDER",
         "EV_VOICE_ASR_PROVIDER",
+        "EV_VOICE_TTS_PROVIDER",
         "EV_VOICE_LIVE_BRAIN",
         "EV_MUSE_SPARK_MODEL",
         "EV_INTELLIGENCE_LAYER",
@@ -171,6 +209,15 @@ def load(path: Path) -> None:
             if val and not (os.environ.get(key) or "").strip():
                 os.environ[key] = val
             continue
+        # AGENT LAW: pytest sqlite / test-key in the parent shell must not
+        # become Talk's runtime. EV.app device tokens live on owner Postgres.
+        if key in _OWNER_PINNED_KEYS:
+            current = os.environ.get(key) or ""
+            if val and leftover_owner_runtime(key, current):
+                os.environ[key] = val
+            elif val and not current.strip():
+                os.environ[key] = val
+            continue
         if key in _MUSE_BRAIN_KEYS:
             current = os.environ.get(key) or ""
             if _muse_file_value(key, val):
@@ -184,6 +231,11 @@ def load(path: Path) -> None:
             if _openai_live_file_value(key, val) and _leftover_muse_value(current):
                 os.environ[key] = val
                 continue
+        # Empty process env must not hide file values. Agent shells often
+        # export EV_VAULT_KEY="" which then crash Settings() after daemonize.
+        if val and not (os.environ.get(key) or "").strip():
+            os.environ[key] = val
+            continue
         os.environ.setdefault(key, val)
 
 
@@ -272,10 +324,49 @@ def ensure_talk_mouth_remote_allowed() -> None:
         os.environ["EV_ALLOW_REMOTE_TTS"] = "true"
 
 
+def refuse_talk_without_vault() -> None:
+    """Fail closed before daemonize so EV.app is not left retrying :18000."""
+
+    vault = (os.environ.get("EV_VAULT_KEY") or "").strip()
+    if len(vault) < 16:
+        sys.stderr.write(
+            "Talk sidecar refused to start: EV_VAULT_KEY is missing or too short.\n"
+        )
+        raise SystemExit(2)
+
+
+def refuse_talk_without_owner_runtime() -> None:
+    """Fail closed before daemonize if Talk would not see owner Postgres.
+
+    AGENT LAW: DEVICE_TOKEN_INVALID on EV.app after a Talk restart almost
+    always means this process booted on sqlite/test-key. Do not skip this
+    gate. Do not "repair" the Mac Keychain instead.
+    """
+
+    refuse_talk_without_vault()
+    if leftover_owner_runtime("EV_DATABASE_URL", os.environ.get("EV_DATABASE_URL") or ""):
+        sys.stderr.write(
+            "Talk sidecar refused to start: EV_DATABASE_URL is sqlite/test. "
+            "EV.app device tokens live on owner Postgres (same DB as :8000).\n"
+        )
+        raise SystemExit(2)
+    if leftover_owner_runtime("EV_MASTER_KEY", os.environ.get("EV_MASTER_KEY") or ""):
+        sys.stderr.write(
+            "Talk sidecar refused to start: EV_MASTER_KEY is a test leftover.\n"
+        )
+        raise SystemExit(2)
+    if leftover_owner_runtime("EV_VAULT_KEY", os.environ.get("EV_VAULT_KEY") or ""):
+        sys.stderr.write(
+            "Talk sidecar refused to start: EV_VAULT_KEY is a test leftover.\n"
+        )
+        raise SystemExit(2)
+
+
 def refuse_muse_without_key() -> None:
     """Fail closed before daemonize so a missing Muse credential is visible."""
 
     alias_meta_model_keys()
+    refuse_talk_without_vault()
     if muse_voice_selected() and not meta_key_loaded():
         sys.stderr.write(
             "Talk sidecar refused to start: META_MODEL_API_KEY is missing "
@@ -363,6 +454,7 @@ def main() -> None:
         # credential in spark_inventory, even if this provider flag stays unset.
         os.environ["EV_INTELLIGENCE_PROVIDER"] = "meta_muse_spark"
     refuse_muse_without_key()
+    refuse_talk_without_owner_runtime()
     stop_existing_talk_sidecar()
     daemonize()
     SUPPORT.mkdir(parents=True, exist_ok=True)

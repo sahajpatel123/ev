@@ -352,6 +352,14 @@ _LIVE_RESULT_KEEP = (
     "grounding",
     "life_shelf",
     "results",
+    # Live required-action contracts ride the nested result: evidence of
+    # what actually ran, and confirmation holds the loop must resolve.
+    "evidence",
+    "confirmation_required",
+    "needs_confirm",
+    "action_id",
+    "hold",
+    "expires_at",
 )
 
 
@@ -414,6 +422,9 @@ def compact_live_tool_json(payload: dict[str, Any], *, limit: int = _LIVE_TOOL_J
     preserve_evidence = str(slim.get("name") or "") in {
         "start_timer",
         "cancel_timer",
+        "get_weather",
+        "calibrate",
+        "calendar_read",
     }
     if not memory_tool and not preserve_evidence:
         slim.pop("evidence", None)

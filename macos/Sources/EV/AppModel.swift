@@ -386,6 +386,14 @@ final class AppModel: ObservableObject {
             // Repair will be handled via manual DB reissue or future token refresh.
             // Return existing ID and let bootstrap attempt device auth; if it
             // fails with DEVICE_TOKEN_INVALID, AppModel will surface repair.
+            //
+            // AGENT LAW — DO NOT mint a second Mac device here:
+            // DEVICE_TOKEN_INVALID after a Talk (:18000) restart is almost
+            // always Talk on pytest sqlite / test-key, not a dead Keychain
+            // token. The hash still lives in owner Postgres on :8000. Fix
+            // Talk's EV_DATABASE_URL (scripts/start_talk_sidecar.py owner
+            // pin). Creating another device row leaves two Macs and does
+            // not repair auth.
             return stored
         }
         let created = try await client.createDevice(
@@ -1337,6 +1345,9 @@ final class AppModel: ObservableObject {
             return "DEVICE_AUTH_REVISION_STALE: Credential revision stale — refreshing session."
         }
         if detail.contains("DEVICE_TOKEN_INVALID") {
+            // AGENT LAW: this string is a Talk/DB mismatch symptom more often
+            // than a bad Keychain token. Do not "repair" by copying EV_MASTER_KEY
+            // into the device credential store.
             return "DEVICE_TOKEN_INVALID: This Mac's device token is invalid. Attempting local repair."
         }
         if detail.contains("MASTER_KEY_INVALID") {
