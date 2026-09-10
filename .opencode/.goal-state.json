@@ -4,20 +4,20 @@
   "condition": "WhatsApp message send works automatically after human approval via existing Chrome WhatsApp Web tab, with approval prompt like should i send message to x person, yes triggers auto-send",
   "command": null,
   "verification": null,
-  "status": "active",
+  "status": "cleared",
   "createdAt": 1789045417453,
   "startedAt": 1789045417453,
-  "completedAt": null,
+  "completedAt": 1789049683375,
   "pausedAt": null,
   "resumedAt": null,
-  "turnsEvaluated": 1,
+  "turnsEvaluated": 2,
   "tokensUsed": 0,
   "lastEvaluation": {
     "met": false,
-    "reason": "No GOAL_COMPLETE signal in latest output yet",
-    "confidence": 0.5,
-    "timestamp": 1789046879688,
-    "evaluatorType": "heuristic"
+    "reason": "Time limit reached: 71/60 minutes",
+    "confidence": 1,
+    "timestamp": 1789049683375,
+    "evaluatorType": "deterministic"
   },
   "evaluationHistory": [
     {
@@ -26,6 +26,13 @@
       "confidence": 0.5,
       "timestamp": 1789046879688,
       "evaluatorType": "heuristic"
+    },
+    {
+      "met": false,
+      "reason": "Time limit reached: 71/60 minutes",
+      "confidence": 1,
+      "timestamp": 1789049683375,
+      "evaluatorType": "deterministic"
     }
   ],
   "constraints": {
