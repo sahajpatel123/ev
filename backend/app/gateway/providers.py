@@ -489,6 +489,10 @@ class LocalModelProvider(DeepSeekProvider):
     """
 
     name = "local"
+    def _thinking_payload(self) -> None:
+        """Local servers are plain OpenAI-compatible; never send DeepSeek's field."""
+
+        return None
 
     def __init__(
         self,

@@ -24,6 +24,10 @@ def compile_context(
     cognition: CognitiveSession,
     memories: list[dict[str, Any]] | None = None,
     people: list[dict[str, Any]] | None = None,
+    compact: bool = False,
+    capability_names: list[str] | None = None,
+    computer_state: dict[str, Any] | None = None,
+    computer_ready: bool = False,
 ) -> str:
     persona = (getattr(settings, "persona_name", None) or "EVIE").strip() or "EVIE"
     blocks = [
@@ -37,15 +41,68 @@ def compile_context(
         f"CURRENT INTENT: {(transcript or '').strip()[:2000]}",
         f"ACTIVE WORK: {status_line(cognition)} steering_version={cognition.steering_version} prepare_only={cognition.prepare_only} parked={cognition.parked} goal_id={cognition.focused_goal_id or 'none'}",
     ]
+    domain = str((cognition.constraints or {}).get("turn_domain") or "open")
+    blocks.append(
+        f"THIS TURN DOMAIN: {domain}. CURRENT INTENT is the only live job. "
+        "Do not continue a previous list, note, or file unless this utterance "
+        "is a follow-up to that same file."
+    )
+    if domain == "send":
+        from app.ev.send_intent import incomplete_send_recipient, parse_send_intent
+
+        if parse_send_intent(transcript):
+            blocks.append(
+                "THIS TURN is a send. Call life.send now with to and text, and set "
+                "channel when they named one (whatsapp, messages, or mail). "
+                "That utterance is confirmation — do not ask again. "
+                "Do not call files.act. Do not mention or edit a previous list or note."
+            )
+        elif incomplete_send_recipient(transcript or ""):
+            blocks.append(
+                "THIS TURN is a send missing its body. Ask what to say. "
+                "Do not invent a message. Do not require Apple Contacts. "
+                "WhatsApp chats are WhatsApp chats — a business or person "
+                "who exists there is enough. Do not call files.act."
+            )
+        else:
+            blocks.append(
+                "THIS TURN is a send. Call life.send with to and text, and set "
+                "channel when they named one. Do not call files.act."
+            )
+    if domain == "computer":
+        blocks.append(
+            "THIS TURN is a Mac act. Call computer.perform_effect once with the "
+            "owner's utterance as effect. If they named a site, navigate there in "
+            "that same effect — do not open empty browser tabs, and do not reopen "
+            "a previous file, list, or note. If a computer goal is already live, "
+            "continue it (or revise it) instead of starting a parallel one; "
+            "try again / keep going / that didn't work all mean continue."
+        )
+    if computer_state or domain == "computer":
+        from app.ev.computer_runtime import (
+            computer_doctrine,
+            computer_working_state_block,
+        )
+
+        state_block = computer_working_state_block(computer_state)
+        if state_block:
+            blocks.append(state_block)
+        blocks.append(computer_doctrine())
+    elif computer_ready:
+        blocks.append(
+            "COMPUTER: a Mac control client is connected. For any Mac/app goal, "
+            "call computer.perform_effect with the owner's words; the capability "
+            "description carries the operating doctrine."
+        )
     from app.cognitive.artifact import work_shape_policy
 
     blocks.append(work_shape_policy(cognition))
     blocks.append(
         "CAMERA: If they want you to see something in view now (holding, showing, look at this, what's this), call look.capture first, then speak from that capture. If they asked to memorize/keep that sight, put those words in the prompt. If they asked what they already asked you to remember from sight, call memory.search. Never refuse a look by guessing."
     )
-    if cognition.constraints:
+    if cognition.constraints and domain == "file":
         blocks.append(f"CONSTRAINTS: {str(cognition.constraints)[:800]}")
-    if cognition.completed_effects:
+    if cognition.completed_effects and domain == "file":
         last = cognition.completed_effects[-4:]
         blocks.append(f"RECENT EVIDENCE: {last!r}"[:1200])
     if memories:
@@ -58,14 +115,24 @@ def compile_context(
             blocks.append("MEMORY (retrieved, not guessed):\n" + "\n".join(lines))
     if people:
         blocks.append("PEOPLE: " + "; ".join(str(p)[:120] for p in people[:4]))
-    caps = public_descriptors()
-    names = [str(c.get("name")) for c in caps[:40] if c.get("name")]
-    for required in ("look.capture", "memory.search", "life.mail", "life.messages"):
+    if capability_names:
+        names = [str(name) for name in capability_names if name]
+    elif compact:
+        from app.cognitive.speed import CONVERSATION_TOOL_NAMES
+
+        names = list(CONVERSATION_TOOL_NAMES)
+    else:
+        caps = public_descriptors()
+        names = [str(c.get("name")) for c in caps[:40] if c.get("name")]
+    for required in ("look.capture", "memory.search", "life.mail", "life.messages", "life.send"):
         if required not in names:
             names.append(required)
     blocks.append("CAPABILITIES (subset): " + ", ".join(names))
     blocks.append(
-        "POLICY: R0-R4 still apply. Mutating digital send needs confirmation unless already confirmed. "
+        "POLICY: R0-R4 still apply. When this utterance already names who and what to send, "
+        "that is confirmation — call life.send immediately. If the body is missing, ask "
+        "what to say — never invent a message and never require Apple Contacts. "
+        "WhatsApp recipients are WhatsApp chats on this Mac. "
         "If Muse is the only way to understand the owner, do not wait for a regex."
     )
     return "\n\n".join(blocks)

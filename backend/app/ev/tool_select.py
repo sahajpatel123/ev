@@ -1048,6 +1048,12 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         ).strip()
         if found and found.lower() not in _CONTACT_LOOKUP_SKIP:
             return "resolve_contact", {"name": found}
+    # A complete send beats a call verb buried in its body ("text Sarah
+    # I'll call later" texts Sarah; it never calls "later"). Reads and
+    # contact lookups above keep priority; pure calls never parse as sends.
+    send_first = parse_send_intent(text)
+    if send_first:
+        return "send_message", send_first
     early_call = CALL_TARGET_RE.search(text)
     if (
         early_call

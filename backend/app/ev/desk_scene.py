@@ -43,12 +43,6 @@ GENERIC_ALIASES = frozenset(
     }
 )
 DEIXIS_DEST = frozenset({"it", "that", "this", "file", "note"})
-GROCERY_HINT = re.compile(
-    r"\b(?:grocery|groceries|shopping list)\b"
-    r"|\bbuy\b.{0,48}\b(?:milk|eggs|bread|bananas|apples|butter|coffee)\b"
-    r"|\b(?:milk|eggs)\b.{0,24}\b(?:milk|eggs)\b",
-    re.I,
-)
 BIND_RE = re.compile(
     r"(?:"
     r"(?:that(?:'s| is)|this is)\s+(?:my|the|called)\s+"
@@ -252,8 +246,6 @@ def inferred_aliases(path: Path, *, goal: str = "", content: str = "", query: st
     if "resume" in blob.lower() or "curriculum vitae" in blob.lower():
         if "flagship" not in path.name.lower():
             aliases.extend(["resume", "cv"])
-    if GROCERY_HINT.search(blob):
-        aliases.extend(["grocery list", "shopping list", "groceries"])
     if query:
         q = normalize_alias(query)
         if q and q not in GENERIC_ALIASES:

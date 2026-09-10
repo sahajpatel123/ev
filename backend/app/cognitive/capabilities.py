@@ -70,9 +70,11 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         "name": "life.send",
         "description": (
             "Send on this Mac: iMessage/SMS (channel messages), WhatsApp, or mail. "
-            "Requires recipient and body — never invent either. WhatsApp opens "
-            "compose; iMessage and mail can deliver. Speak the tool's spoken result; "
-            "never say Not Connected."
+            "Requires recipient and body — never invent either. If they said WhatsApp, "
+            "set channel=whatsapp. Recipients are chats on that channel; do not require "
+            "Apple Contacts. When this utterance already names who and the message, "
+            "send immediately — that is confirmation. If the body is missing, ask what "
+            "to say. Speak the tool's spoken result; never say Not Connected."
         ),
         "parameters": {
             "type": "object",
@@ -236,7 +238,14 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "computer.perform_effect",
-        "description": "Request a desired Mac effect (not a click script). Executor picks API/adapter/AX. Set background_preferred true. If only a visible UI can work, the executor returns FOREGROUND_REQUIRED instead of stealing focus.",
+        "description": (
+            "Request a desired Mac effect (not a click script). Executor picks "
+            "API/adapter/AX. Set background_preferred true. Pass the owner's "
+            "utterance as effect. Opening a browser and a named site is one "
+            "navigate, not empty tabs and not a previous file. If only a visible "
+            "UI can work, the executor returns FOREGROUND_REQUIRED instead of "
+            "stealing focus."
+        ),
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -270,6 +279,110 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         },
         "read_only": True,
         "risk_class": "R1",
+    },
+    {
+        "name": "timer.act",
+        "description": "Owner timer on the fleet: start, cancel, list pending, or snooze. Pass label as the timer text and give the duration with seconds or when.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["start", "cancel", "list", "snooze"]},
+                "label": {"type": "string", "maxLength": 500},
+                "seconds": {"type": "number", "minimum": 5},
+                "when": {"type": "string", "maxLength": 64},
+                "timer_id": {"type": "string", "maxLength": 64},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "assistant:profile",
+    },
+    {
+        "name": "weather.get",
+        "description": "Live weather and a 3-day forecast via Open-Meteo (no API key). Use for current conditions, rain, temperature, or forecast. Omit place to use the owner's coarse location.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "place": {"type": "string", "maxLength": 80},
+                "query": {"type": "string", "maxLength": 200},
+            },
+            "required": [],
+        },
+        "read_only": True,
+        "risk_class": "R0",
+        "permission": "web:search",
+    },
+    {
+        "name": "life.state",
+        "description": "Owner life state: projects, goals, commitments, relationships, and mission status. Pass op as the canonical life tool name and the tool's parameters under args.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": [
+                        "life_project_create",
+                        "life_project_update",
+                        "life_project_query",
+                        "life_goal_create",
+                        "life_goal_update",
+                        "life_goal_add_step",
+                        "life_goal_query",
+                        "life_commitment_create",
+                        "life_commitment_update",
+                        "life_commitment_query",
+                        "life_relationship_set",
+                        "mission_control",
+                    ],
+                },
+                "args": {"type": "object"},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "life:state",
+    },
+    {
+        "name": "notify.schedule",
+        "description": "Schedule a durable owner notification backed by a presence contract with a NOTIFY node. Ops: schedule, cancel (by contract_id), list.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["schedule", "cancel", "list"]},
+                "objective": {"type": "string", "maxLength": 2000},
+                "when": {"type": "string", "maxLength": 128},
+                "channel": {"type": "string", "maxLength": 64},
+                "contract_id": {"type": "string", "maxLength": 64},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "presence:schedule",
+    },
+    {
+        "name": "phone.call",
+        "description": "Paired-iPhone action: call or FaceTime a contact, or send a message from the phone. Pass op and contact; message is required for op=message. Fresh confirmation handled by the phone policy.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["call", "facetime", "message"]},
+                "contact": {"type": "string", "maxLength": 256},
+                "message": {"type": "string", "maxLength": 500},
+            },
+            "required": ["op", "contact"],
+        },
+        "read_only": False,
+        "risk_class": "R3",
+        "permission": "phone:act",
+        "sensitive": True,
     },
 ]
 

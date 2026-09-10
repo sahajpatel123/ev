@@ -158,8 +158,16 @@ def configured_intelligence_provider() -> str:
     Any Muse Spark slot wins over leftover xAI / DeepSeek / OpenAI values in
     the other slots. Explicit rollback requires clearing Muse from
     intelligence, chat, and turn-control — not leaving one Muse flag on.
-    """
 
+    Cognitive OS V2: when the kernel mode is on, Spark is the one mind even
+    when every slot still names a legacy brain — the leftovers are refused
+    (refuse_legacy_cloud_brain) instead of silently serving. Rollback to the
+    legacy split is EV_COGNITIVE_MODE=legacy_mini.
+    """
+    from app.cognitive.mode import muse_kernel_active
+
+    if muse_kernel_active():
+        return "meta_muse_spark"
     intel = (getattr(settings, "intelligence_provider", None) or "").strip()
     chat = (settings.chat_provider or "").strip()
     turn = (getattr(settings, "turn_control_provider", None) or "").strip()
@@ -170,12 +178,25 @@ def configured_intelligence_provider() -> str:
 
 
 def muse_intelligence_active() -> bool:
-    names = {
-        configured_intelligence_provider().lower(),
-        (settings.chat_provider or "").strip().lower(),
-        (getattr(settings, "turn_control_provider", None) or "").strip().lower(),
-    }
+    """Slot-driven Muse activation — voice data-plane semantics.
+
+    The S2S mouth gate (grok_voice.live_realtime_provider), the TTS mouth
+    lock (voice/tts.py), and the phone media gate (webrtc_live) key on this:
+    kernel mode alone must never rewire how Evie hears or speaks. Thinking
+    surfaces use muse_brain_active() instead.
+    """
+    intel = (getattr(settings, "intelligence_provider", None) or "").strip()
+    chat = (settings.chat_provider or "").strip()
+    turn = (getattr(settings, "turn_control_provider", None) or "").strip()
+    names = {intel.lower(), chat.lower(), turn.lower()}
     return bool(names & MUSE_SPARK_PROVIDERS)
+
+
+def muse_brain_active() -> bool:
+    """Spark is the one mind: explicit Muse slots OR Cognitive OS kernel mode."""
+    from app.cognitive.mode import muse_kernel_active
+
+    return muse_intelligence_active() or muse_kernel_active()
 
 
 def muse_hearing_active() -> bool:
@@ -323,7 +344,7 @@ def refuse_legacy_cloud_brain(name: str | None = None) -> None:
     (Luna Responses, raw chat completions) and is refused.
     """
 
-    if not muse_intelligence_active():
+    if not muse_brain_active():
         return
     label = (name or "").strip().lower()
     if label in MUSE_SPARK_PROVIDERS:

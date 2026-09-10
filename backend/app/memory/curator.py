@@ -74,9 +74,9 @@ SYSTEM_PROMPT = (
 def curator_available() -> bool:
     if not settings.memory_curator_enabled:
         return False
-    from app.gateway.muse import muse_intelligence_active, muse_spark_key_loaded
+    from app.gateway.muse import muse_brain_active, muse_spark_key_loaded
 
-    if muse_intelligence_active():
+    if muse_brain_active():
         return muse_spark_key_loaded()
     return bool((settings.deepseek_api_key or "").strip())
 
@@ -316,10 +316,10 @@ async def _call_deepseek(prompt: str) -> tuple[str, int]:
     """
 
     from app.contracts import ChatMessage
-    from app.gateway.muse import muse_intelligence_active, muse_spark_model
+    from app.gateway.muse import muse_brain_active, muse_spark_model
     from app.gateway.providers import DeepSeekProvider
 
-    if muse_intelligence_active():
+    if muse_brain_active():
         from app.gateway.muse_spark import muse_spark_provider
 
         provider = muse_spark_provider()

@@ -1,8 +1,9 @@
-"""Central model-role configuration (G1.3).
+"""Central model-role configuration (G1.3 + Cognitive OS V2).
 
-Voice / Turn-Control / Manager are one configuration decision, not scattered
-provider/model IDs.  This module is the single authority that the rest of
-Evie reads.
+Muse Spark 1.3 Contributor is the one mind: when Muse intelligence is active
+(any of EV_INTELLIGENCE_PROVIDER / EV_CHAT_PROVIDER / EV_TURN_CONTROL_PROVIDER
+naming a Muse Spark slot), VOICE / TURN / MANAGER all resolve to Spark and the
+legacy brains below are refused. Otherwise the legacy split applies:
 
     VOICE_MODEL  → gpt-realtime-2.1-mini  (live audio, provider: openai-realtime)
     TURN_MODEL   → gpt-5.6-luna           (text control plane, provider: openai)
@@ -78,13 +79,13 @@ def voice_model_info() -> ModelInfo:
 
 def turn_control_model_info() -> ModelInfo:
     from app.gateway.muse import (
-        muse_intelligence_active,
+        muse_brain_active,
         muse_spark_base_url,
         muse_spark_key_loaded,
         muse_spark_model,
     )
 
-    if muse_intelligence_active():
+    if muse_brain_active():
         return ModelInfo(
             role="turn_control",
             provider="meta_muse_spark",
@@ -107,13 +108,13 @@ def turn_control_model_info() -> ModelInfo:
 
 def manager_model_info() -> ModelInfo:
     from app.gateway.muse import (
-        muse_intelligence_active,
+        muse_brain_active,
         muse_spark_base_url,
         muse_spark_key_loaded,
         muse_spark_model,
     )
 
-    if muse_intelligence_active():
+    if muse_brain_active():
         return ModelInfo(
             role="manager",
             provider="meta_muse_spark",

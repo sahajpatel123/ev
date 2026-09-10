@@ -23,6 +23,9 @@ from app.voice.live.events import (
     TtsChunkEvent,
 )
 from app.voice.live.grok_voice import (
+    _MOUTH_SPEAK_INSTRUCTIONS,
+    _REALTIME_WS_PING_INTERVAL,
+    _REALTIME_WS_PING_TIMEOUT,
     GrokVoiceBridge,
     approved_live_tool_specs,
     grok_session_update,
@@ -1249,7 +1252,7 @@ async def test_realtime_receive_pump_keeps_reading_while_audio_playout_waits() -
     )
     try:
         await bridge.start()
-        pcm = b"\x00\x01" * 1920  # 120 ms at 16 kHz: one emitted chunk.
+        pcm = b"\x00\x01" * 2560  # 160 ms at 16 kHz: one emitted first chunk.
         await fake.incoming.put(
             json.dumps(
                 {
@@ -1260,12 +1263,9 @@ async def test_realtime_receive_pump_keeps_reading_while_audio_playout_waits() -
         )
         await asyncio.wait_for(audio_started.wait(), timeout=1)
         await fake.incoming.put(json.dumps({"type": "ping"}))
-        await _wait_until(
-            lambda: bridge._upstream_events is not None
-            and bridge._upstream_events.qsize() >= 1
-        )
-        release_audio.set()
         await _wait_until(lambda: any(item.get("type") == "pong" for item in fake.sent))
+        assert not release_audio.is_set()
+        release_audio.set()
     finally:
         release_audio.set()
         bridge.close()
@@ -1992,6 +1992,43 @@ async def test_slow_tool_does_not_block_pcm_event_pump() -> None:
     finally:
         release.set()
         bridge.close()
+
+
+def test_realtime_ws_keepalive_does_not_kill_long_speak() -> None:
+    """Client protocol pings + ping_timeout=40 closed OpenAI mid-speak."""
+
+    assert _REALTIME_WS_PING_INTERVAL is None
+    assert _REALTIME_WS_PING_TIMEOUT is None
+    assert "one or two short sentences" not in _MOUTH_SPEAK_INSTRUCTIONS
+    assert "verbatim" in _MOUTH_SPEAK_INSTRUCTIONS.lower()
+    assert "never switch languages" in _MOUTH_SPEAK_INSTRUCTIONS.lower()
+
+
+async def test_speak_supplied_text_is_verbatim_mouth_not_brevity_law() -> None:
+    fake = _FakeRealtime()
+
+    async def connect(url: str, additional_headers=None):
+        del url, additional_headers
+        return fake
+
+    bridge = GrokVoiceBridge(
+        on_event=_ignore_event,
+        connect=connect,
+        api_key="test",
+        provider="openai",
+        now_ms=lambda: 1,
+    )
+    await bridge.start()
+    fake.sent.clear()
+    spoken = " ".join(["detail"] * 200)
+    assert await bridge.speak_supplied_text(spoken)
+    creates = [item for item in fake.sent if item.get("type") == "response.create"]
+    assert creates
+    instructions = creates[0]["response"]["instructions"]
+    assert instructions == _MOUTH_SPEAK_INSTRUCTIONS
+    assert "EV SPEECH CONTRACT" not in instructions
+    assert "one or two short sentences" not in instructions
+    bridge.close()
 
 
 async def test_grok_voice_pong_answers_ping() -> None:

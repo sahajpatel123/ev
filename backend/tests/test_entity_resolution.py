@@ -242,11 +242,12 @@ async def test_duplicate_rate_before_and_after_merge(client: AsyncClient, db_ses
 
 async def test_merge_rejects_self_and_cross_type(client: AsyncClient) -> None:
     await _post_event(client, "Met my friend Maya for coffee.")
-    await _post_event(client, "Moved to New York.")
+    await _post_event(client, "Moved to New York last month for work.")
     ids: dict[str, list[str]] = {}
     rows = (await client.get("/v1/entities")).json()
     for row in rows:
         ids.setdefault(row["entity_type"], []).append(row["id"])
+    assert ids.get("place"), f"place entity missing from observation: {ids}"
     self_resp = await client.post(
         "/v1/entities/merge",
         json={

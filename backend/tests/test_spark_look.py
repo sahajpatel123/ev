@@ -11,7 +11,6 @@ from app.ev.spark_look import (
     should_spark_camera,
 )
 
-
 HOLDING = (
     "Look at the thing I'm holding in my hand. I want you to look at it "
     "and tell me more info about this item I'm holding"

@@ -78,16 +78,9 @@ def classify_owner_work(text: str) -> str:
 def begin_owner_turn(cognition: CognitiveSession, text: str) -> CognitiveSession:
     """Start an owner utterance. Clear a prior bind unless this is a follow-up."""
 
-    raw = (text or "").strip()
-    bound = dict(cognition.constraints.get(_BOUND_KEY) or {})
-    if bound and _is_followup(raw, bound):
-        cognition.constraints[_UTTER_KEY] = raw[:2000]
-        return save(cognition)
-    shape = classify_owner_work(raw)
-    cognition.constraints.pop(_BOUND_KEY, None)
-    cognition.constraints[_SHAPE_KEY] = shape
-    cognition.constraints[_UTTER_KEY] = raw[:2000]
-    return save(cognition)
+    from app.cognitive.intent import begin_owner_turn as _begin
+
+    return _begin(cognition, text)
 
 
 def bound_artifact(cognition: CognitiveSession) -> dict[str, Any]:
@@ -165,17 +158,24 @@ def mark_artifact_complete(body: dict[str, Any], cognition: CognitiveSession) ->
     written = str(out.get("action") or "").lower() in {"write", "append", "read"} and (
         out.get("ok") or out.get("verified") or out.get("artifact_complete")
     )
-    if shape == "one_artifact" and path and written and not looks_like_distinct_new_file(
-        str(cognition.constraints.get(_UTTER_KEY) or "")
+    owner = str(cognition.constraints.get(_UTTER_KEY) or "")
+    if (
+        shape == "one_artifact"
+        and path
+        and written
+        and not looks_like_distinct_new_file(owner)
+        and (out.get("ok") or out.get("verified") or out.get("artifact_complete"))
     ):
-        if out.get("ok") or out.get("verified") or out.get("artifact_complete"):
-            out["artifact_complete"] = True
-            out["must_continue"] = False
-            out["goal_complete"] = True
-            out["instruction"] = (
-                "ARTIFACT_COMPLETE: the requested file is written and verified. "
-                "Do not create another file. Speak to the owner about that one path."
-            )
+        out["artifact_complete"] = True
+        out["must_continue"] = False
+        out["goal_complete"] = True
+        out["instruction"] = (
+            "ARTIFACT_COMPLETE: the requested file is written and verified. "
+            "Do not create another file. Speak to the owner about that one path."
+        )
+        from app.cognitive.intent import close_finished_file_goal
+
+        close_finished_file_goal(cognition)
     return out
 
 
@@ -236,9 +236,7 @@ def _is_followup(text: str, bound: dict[str, Any]) -> bool:
             return True
     except Exception:
         pass
-    if _FOLLOW_HINT.search(raw) and not _CREATE_ONE.search(raw):
-        return True
-    return False
+    return bool(_FOLLOW_HINT.search(raw) and not _CREATE_ONE.search(raw))
 
 
 def _multiple_named_kinds(text: str) -> bool:

@@ -33,7 +33,11 @@ def _load_production_secret_overlay() -> None:
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip().strip("'\"")
-            if key and key not in _os.environ:
+            # Empty shell exports (EV_VAULT_KEY="") are not operator overrides.
+            # They must not hide ~/.ev/secrets/production.env — that crash-loops
+            # Talk (:18000) with Settings vault_key min_length and EV.app then
+            # sits on "Backend unavailable — retrying until it returns."
+            if key and not (_os.environ.get(key) or "").strip():
                 _os.environ[key] = value
         # Canonical Meta Model API credential. Settings use the EV_ prefix;
         # both Muse adapters consume the same secret. Never log the value.
@@ -114,6 +118,8 @@ class Settings(BaseSettings):
     code_http_timeout_seconds: float = 60.0
     code_max_file_bytes: int = 256_000
     memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
+    # WhatsApp takeout copies for named-chat recaps. Empty = repo data/life-archive.
+    life_archive_root: str | None = None
     memory_curator_enabled: bool = True
     memory_curator_version: str = "1.1"
     memory_curator_batch_events: int = 8
@@ -488,6 +494,11 @@ class Settings(BaseSettings):
     cognitive_max_tool_turns: int = 12
     cognitive_conversation_timeout_seconds: float = 25.0
     cognitive_work_timeout_seconds: float = 90.0
+    # Spoken-speed overrides for the kernel only. Do not change
+    # muse_spark_reasoning_effort (stays high for non-kernel Spark callers).
+    cognitive_conversation_reasoning_effort: str = "low"
+    cognitive_work_reasoning_effort: str = "medium"
+    cognitive_conversation_max_tool_turns: int = 4
     # --- END COGNITIVE OS V2 ---
     local_model_base_url: str | None = None  # OpenAI-compatible local server (Ollama/llama.cpp)
     local_model_name: str = "llama3"

@@ -118,8 +118,21 @@ def save(session: CognitiveSession) -> CognitiveSession:
 def bind_live(live_session_id: str | None) -> CognitiveSession:
     row = current()
     if live_session_id:
-        row.live_session_id = str(live_session_id)
-        save(row)
+        incoming = str(live_session_id)
+        previous = str(row.live_session_id or "")
+        if previous and previous != incoming:
+            # Closing Evie / a new live conversation is a new mind. Do not
+            # keep a leftover file GoalContract just because session.json survived.
+            row.live_session_id = incoming
+            from app.cognitive.intent import clear_pending_send, release_conversational_work
+
+            release_conversational_work(row, keep_bind=False)
+            clear_pending_send(row)
+        elif previous != incoming:
+            row.live_session_id = incoming
+            save(row)
+        # Same live id: do not save. save() would refresh updated_at and
+        # defeat conversational TTL on a leftover file job.
     return row
 
 
@@ -152,8 +165,24 @@ def remember_effect(session: CognitiveSession, effect: dict[str, Any]) -> Cognit
 
 def status_line(session: CognitiveSession | None = None) -> str:
     row = session or current()
+    try:
+        from app.cognitive.intent import is_stale
+
+        if is_stale(row):
+            return "Nothing is in progress."
+    except Exception:
+        pass
     if row.parked:
         return f"Parked: {(row.semantic_objective or 'the last task')[:160]}"
+    try:
+        from app.cognitive.intent import pending_send
+
+        waiting = pending_send(row)
+    except Exception:
+        waiting = None
+    if waiting:
+        who = str(waiting.get("to") or "them")
+        return f"Waiting for what to say to {who}."
     if row.focused_goal_id or row.semantic_objective:
         extra = " (prepare only)" if row.prepare_only else ""
         return f"Working on {(row.semantic_objective or 'the current goal')[:160]}{extra}."
@@ -162,6 +191,20 @@ def status_line(session: CognitiveSession | None = None) -> str:
 
 def has_active_work(session: CognitiveSession | None = None) -> bool:
     row = session or current()
+    try:
+        from app.cognitive.intent import is_stale
+
+        if is_stale(row):
+            return False
+    except Exception:
+        pass
     if row.parked:
         return True
+    try:
+        from app.cognitive.intent import pending_send
+
+        if pending_send(row):
+            return True
+    except Exception:
+        pass
     return bool(row.focused_goal_id or row.semantic_objective)

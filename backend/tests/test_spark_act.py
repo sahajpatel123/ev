@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+
 from app.ev.spark_act import (
     ActDecision,
     decide_owner_act,

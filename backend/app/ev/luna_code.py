@@ -12,10 +12,13 @@ clear script/test requests and otherwise reports degraded=true.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -57,18 +60,22 @@ Rules:
 SPARK_CODE_SYSTEM = """You are Evie's coding brain. The owner asked Evie to write, edit, or run software in a real project. Jail tools are the only actuators; existing TTS is the mouth.
 
 Rules:
+- Your first reply MUST be a tool call (list_dir, search, write_file, or replace_in_file). Never answer with only a description of code. Text without a tool call means the files were not written.
 - Work only through the provided tools. Stay inside the selected project.
 - Any language in this repo is in scope (Python, JS/TS, Swift, Go, Rust, Ruby, Java, PHP, …). Use the matching allowlisted runner (python3, node, swift, go, cargo, ruby, java, php). No npm, pip, or shell.
-- For an existing repo: list_dir / search, read the relevant slice, then patch with replace_in_file. Do not rewrite a whole file unless it is new or tiny.
-- New work may be several files. Create what you need. Prefer the project's existing layout and tests.
+- Map before you touch: list_dir at the root, search for the symbols you will change, then read the exact regions. Never guess a path or invent an API.
+- Production standard: match the project's existing style, imports, naming, and test framework. Prefer the smallest correct diff. No placeholders, TODOs, stubs, or dead code left behind. Do not rewrite a whole file when replace_in_file can do it.
+- For an existing repo: patch with replace_in_file. New work may be several files. Create what you need in the project's layout.
 - If the owner named a project, it should already be selected. Otherwise list_projects / use_project before editing.
 - If a previous job from this session is attached, continue those files. Do not start a new unrelated program unless they asked for one.
-- After a meaningful edit, run the cheapest relevant check (pytest, python3, node, cargo test, swift test, go test).
-- Take the time you need. Search before guessing. Never claim success the tools did not show.
-- Never ask for a raw shell. Never touch secrets, .env files, or paths outside the project.
+- After a change, run the project's own check (pytest, python3, node, cargo test, swift test, go test, ruff, mypy). Read the real output. If it fails, fix the cause and rerun. When you add behavior, add or update a test the same way the project does.
+- Before you stop, run git diff --stat (or list_dir) and confirm every file you intended is actually changed. Never claim success the tools did not show; never claim a test passed unless its exit code was 0.
+- Take the time you need. Search before guessing.
+- Never ask for a raw shell. Never touch secrets, .env files, or paths outside the project. Never install packages.
 - When done, answer with a short spoken summary Evie can say aloud: what you wrote, whether it ran, and the folder the file lives in (two or three sentences). Never just name the file.
 - Do not call yourself Luna, Mini, Grok, or DeepSeek.
 - If the owner request is a CODING GOAL SLICE, finish only that phase as real multi-file work. Do not ship a hello-world stub when they asked for a professional site, app UI, or calculator.
+- If the request is too large for one pass, finish a coherent working slice, leave the tree runnable, and say exactly what still remains.
 """
 
 LUNA_CODE_TOOLS = [
@@ -218,6 +225,13 @@ _RUNNERS_BY_SUFFIX = {
 _MAX_GOAL_CHARS = 8000
 _LIVE_JOB_SECONDS = 240.0
 _CHAT_JOB_SECONDS = 300.0
+_MAX_CODE_STEPS = 48
+_LOOP_CHAR_BUDGET = 140_000
+_LOOP_TAIL_MESSAGES = 14
+_TOOL_RESULT_CHARS = 16_000
+_turn_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "ev_code_turn_deadline", default=None
+)
 _LAST_CODE_JOBS: dict[str, dict[str, Any]] = {}
 _OWNER_JOB_KEY = "owner"
 _MAX_RAM_JOBS = 12
@@ -277,6 +291,17 @@ _CODE_CONTINUE_RE = re.compile(
     r"do that in|"
     r"in (?:python|javascript|js|ruby|go|swift)(?: instead)?"
     r")\b",
+    re.IGNORECASE,
+)
+# A fresh deliverable may still say "run the tests" or "add a test". Only
+# inherit the previous job's project when the request actually points back at
+# it (pronoun/repeat marker) or names no new artifact at all.
+_CODE_BACKREF_RE = re.compile(
+    r"\b(?:it|that|those|them|these|same|again|also|now)\b|\band then\b",
+    re.IGNORECASE,
+)
+_CODE_FRESH_VERB_RE = re.compile(
+    r"\b(?:write|create|make|build|implement|generate|scaffold|add)\b",
     re.IGNORECASE,
 )
 _SOFT_ASK_RE = re.compile(
@@ -343,6 +368,7 @@ def looks_like_code_request(text: str | None) -> bool:
             r"(?:python |py |javascript |js |typescript |ts |swift |html |css |"
             r"rust |go |golang |java |ruby |php |kotlin )?"
             r"(?:script|program|function|module|class|app|page|snippet)|"
+            r"write \S+\.(?:py|swift|js|mjs|cjs|ts|tsx|go|rs|rb|java|php|kt|html|css)|"
             r"write (?:me |us )?(?:a |an |some )?"
             r"(?:python |py |javascript |js |typescript |ts |swift |html |css |"
             r"rust |go |java |ruby |php )file|"
@@ -387,6 +413,21 @@ def _natural_code_ask(raw: str) -> bool:
     return bool(_SOFT_TASK_RE.search(raw) or _SOFT_THAT_RE.search(raw))
 
 
+def owner_asked_to_code(text: str | None) -> bool:
+    """True when the owner asked Evie to write, patch, or run software."""
+
+    from app.ev.code_studio import looks_like_long_code_goal
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    return bool(
+        looks_like_long_code_goal(raw)
+        or looks_like_code_request(raw)
+        or looks_like_code_continue(raw)
+    )
+
+
 def looks_like_code_continue(text: str | None) -> bool:
     """Short follow-on work against the last coding job: run it, add a test, change that."""
 
@@ -423,6 +464,22 @@ def looks_like_code_followup(text: str | None) -> bool:
     if looks_like_background_task_ops(raw):
         return False
     return bool(_CODE_FOLLOWUP_RE.search(raw))
+
+
+def _continues_prior_job(text: str | None) -> bool:
+    """True when a request should inherit the previous job's project root.
+
+    A brand-new deliverable often says "run the tests" or "add a test"; that
+    must not silently retarget the previous project. Pure follow-ups (no new
+    artifact verb) and explicit back-references continue the prior job.
+    """
+
+    raw = (text or "").strip()
+    if not raw or not looks_like_code_continue(raw):
+        return False
+    if not looks_like_code_request(raw):
+        return True
+    return bool(_CODE_BACKREF_RE.search(raw)) or not _CODE_FRESH_VERB_RE.search(raw)
 
 
 def remember_code_job(result: dict[str, Any], *, session_key: str = "owner") -> None:
@@ -525,11 +582,9 @@ def has_pending_code_intern() -> bool:
     return bool(pending and str(pending.get("kind") or "") in {"intern", "goal_slice"})
 
 
-def intern_in_flight() -> bool:
-    """Queued or actually running — pending is unlinked while Luna works."""
+def intern_worker_active() -> bool:
+    """True when a drain task or running marker currently owns the jail."""
 
-    if has_pending_code_intern():
-        return True
     if any(not task.done() for task in _INTERN_TASKS):
         return True
     from app.memory.paths import read_json
@@ -538,13 +593,24 @@ def intern_in_flight() -> bool:
     if running and str(running.get("kind") or "") in {"intern", "goal_slice"}:
         started = running.get("started_at")
         try:
-            age = time.time() - float(started)
+            started_at = float(started) if started is not None else 0.0
         except (TypeError, ValueError):
-            age = 0.0
+            started_at = 0.0
+        age = time.time() - started_at
         if started is not None and age > _INTERN_STALE_S:
             _running_code_path().unlink(missing_ok=True)
         else:
             return True
+    return False
+
+
+def intern_in_flight() -> bool:
+    """Queued or actually running — pending is unlinked while Luna works."""
+
+    if intern_worker_active():
+        return True
+    if has_pending_code_intern():
+        return True
     from app.ev.code_studio import load_studio
 
     studio = load_studio()
@@ -572,6 +638,46 @@ def schedule_background_code_notify(spoken: str) -> None:
     except RuntimeError:
         return
     loop.create_task(_push_background_code_notify(text), name="ev-code-notify")
+
+
+async def run_code_job_and_notify(
+    goal: str,
+    *,
+    actor: str = "voice",
+    session_key: str = "owner",
+) -> None:
+    """Run a coding job off the live/kernel turn, then speak the real receipt."""
+
+    try:
+        result = await run_code_job(
+            goal,
+            actor=actor,
+            channel="voice",
+            session_key=session_key,
+        )
+    except Exception:
+        logger.exception("background code job failed")
+        spoken = "I couldn't finish that coding job honestly."
+        from app.memory.paths import atomic_write_json
+
+        atomic_write_json(
+            _ready_code_path(),
+            {"ok": False, "spoken": spoken, "at": utcnow().isoformat()},
+        )
+        schedule_background_code_notify(spoken)
+        return
+    spoken = str(result.get("spoken") or "").strip() or "I couldn't finish that coding job."
+    from app.memory.paths import atomic_write_json
+
+    atomic_write_json(
+        _ready_code_path(),
+        {
+            "ok": bool(result.get("ok")),
+            "spoken": spoken,
+            "at": utcnow().isoformat(),
+        },
+    )
+    schedule_background_code_notify(spoken)
 
 
 def flush_background_code_notify() -> None:
@@ -619,6 +725,9 @@ def maybe_enqueue_code_intern(text: str, *, session_key: str = "owner") -> str |
         return None
     goal = expand_code_goal(text, last_job) if last_job else (text or "").strip()[:_MAX_GOAL_CHARS]
     enqueue_code_intern(goal, session_key=_OWNER_JOB_KEY)
+    from app.ev.code_studio import _spawn
+
+    _spawn()
     return intern_ack_spoken()
 
 
@@ -628,7 +737,7 @@ def spawn_pending_code_intern() -> bool:
     if any(not task.done() for task in _INTERN_TASKS):
         return False
     if not has_pending_code_intern():
-        from app.ev.code_studio import load_studio, _enqueue_slice
+        from app.ev.code_studio import _enqueue_slice, load_studio
 
         studio = load_studio()
         if studio and str(studio.get("status") or "") in {"queued", "running"}:
@@ -661,7 +770,7 @@ async def drain_pending_code_jobs() -> dict[str, Any] | None:
         pending = read_json(path)
         kind = str((pending or {}).get("kind") or "")
         if not pending or kind not in {"intern", "goal_slice"}:
-            from app.ev.code_studio import load_studio, _enqueue_slice
+            from app.ev.code_studio import _enqueue_slice, load_studio
 
             studio = load_studio()
             if studio and str(studio.get("status") or "") in {"queued", "running"}:
@@ -686,7 +795,12 @@ async def drain_pending_code_jobs() -> dict[str, Any] | None:
         path.unlink(missing_ok=True)
         try:
             if kind == "goal_slice":
-                from app.ev.code_studio import apply_slice_result, get_job, load_studio, slice_prompt
+                from app.ev.code_studio import (
+                    apply_slice_result,
+                    get_job,
+                    load_studio,
+                    slice_prompt,
+                )
 
                 studio = get_job(str(pending.get("goal_id") or "")) or load_studio()
                 if not studio or str(studio.get("status") or "") in {"paused", "cancelled"}:
@@ -945,12 +1059,102 @@ def _is_branching_script(goal: str) -> bool:
     return len(re.findall(r"\bprints?\b", lowered)) >= 2
 
 
+def _goal_needs_new_files(goal: str) -> bool:
+    raw = (goal or "").strip()
+    if not raw or "CODING GOAL SLICE" in raw:
+        return True
+    if looks_like_code_continue(raw) and not _CODE_FRESH_VERB_RE.search(raw):
+        return False
+    if _RUN_TESTS.search(raw) and not _CODE_FRESH_VERB_RE.search(raw):
+        return False
+    return True
+
+
+def _run_verifies_work(runs: list[dict[str, Any]] | None) -> bool:
+    """True for a real check (python3 file.py, pytest), not git status/diff."""
+
+    for item in runs or []:
+        if not (item.get("ok") or item.get("exit_code") == 0):
+            continue
+        argv = [str(part) for part in (item.get("argv") or [])]
+        if not argv:
+            continue
+        head = argv[0].rsplit("/", 1)[-1].lower()
+        rest = [part.lower() for part in argv[1:2]]
+        if head == "git" and (not rest or rest[0] in {"status", "diff", "log", "show"}):
+            continue
+        return True
+    return False
+
+
+def _code_job_ok(
+    *,
+    completed: bool,
+    files_changed: list[str],
+    runs: list[dict[str, Any]] | None,
+    goal: str,
+) -> bool:
+    if not completed:
+        return False
+    if files_changed:
+        return True
+    if _goal_needs_new_files(goal):
+        return False
+    return _run_verifies_work(runs)
+
+
+_CODE_SUCCESS_CLAIM_RE = re.compile(
+    r"\b(?:wrote|edited|created|saved|ran|finished|shipped|done)\b",
+    re.IGNORECASE,
+)
+_CODE_WRITE_CLAIM_RE = re.compile(
+    r"\b(?:wrote|edited|created|saved|shipped)\b",
+    re.IGNORECASE,
+)
+
+
+def _spoken_claims_code_success(text: str | None) -> bool:
+    return bool(_CODE_SUCCESS_CLAIM_RE.search(text or ""))
+
+
+def _spoken_claims_code_write(text: str | None) -> bool:
+    return bool(_CODE_WRITE_CLAIM_RE.search(text or ""))
+
+
 def shape_code_spoken(result: dict[str, Any]) -> str:
     """Owner-facing receipt: what, whether it ran, and where it lives."""
 
     existing = str(result.get("spoken") or "").strip()
+    if result.get("partial"):
+        folder = _speakable_dir(str(result.get("workspace") or ""))
+        files = [str(item) for item in (result.get("files_changed") or []) if item]
+        names = ", ".join(Path(item).name for item in files[:3])
+        plural = "are" if len(files) != 1 else "is"
+        if result.get("timed_out"):
+            if names:
+                return (
+                    f"I ran out of time before verifying — {names} {plural} saved in {folder}."
+                )[:700]
+            return "I ran out of time before I could finish that coding job."[:700]
+        if names:
+            return (
+                f"I hit a problem partway — {names} {plural} saved in {folder}, "
+                "but I did not verify the work."
+            )[:700]
+        if existing and not _spoken_claims_code_success(existing):
+            return existing[:700]
+        return "I hit a problem partway through that coding job."
     if result.get("ok") is False:
-        return existing or "I couldn't finish that coding job."
+        folder = _speakable_dir(str(result.get("workspace") or ""))
+        files = [str(item) for item in (result.get("files_changed") or []) if item]
+        names = ", ".join(Path(item).name for item in files[:3])
+        if names:
+            return (
+                f"I saved {names} in {folder}, but I couldn't verify a clean run."
+            )[:700]
+        if existing and not _spoken_claims_code_success(existing):
+            return existing[:700]
+        return "I couldn't finish that coding job."
     workspace = str(result.get("workspace") or "")
     folder = _speakable_dir(workspace)
     files = [str(item) for item in (result.get("files_changed") or []) if item]
@@ -962,10 +1166,10 @@ def shape_code_spoken(result: dict[str, Any]) -> str:
     parts: list[str] = []
     if names:
         parts.append(f"I saved {names} in {folder}")
-    elif existing:
-        parts.append(existing.rstrip("."))
+    elif ran_ok:
+        parts.append(f"I ran that in {folder}")
     else:
-        parts.append(f"I finished that in {folder}")
+        return "I couldn't finish that coding job."
     if did and names and did.lower() not in names.lower():
         parts.append(did)
     if ran_ok and out:
@@ -1009,15 +1213,15 @@ async def run_code_job(
         return _fail("code_disabled", "Coding is turned off in settings.")
     job_key = (session_key or "owner").strip() or "owner"
     prior = last_code_job(job_key)
-    continue_work = looks_like_code_continue(request)
-    continue_only = continue_work and not looks_like_code_request(request)
-    if continue_work and not prior:
+    continued = _continues_prior_job(request)
+    continue_only = continued and not looks_like_code_request(request)
+    if continued and not prior:
         prior = last_code_job(_OWNER_JOB_KEY)
     if continue_only and not prior:
         return _fail("no_last_job", "I don't have a script from this session to continue.")
-    luna_goal = expand_code_goal(request, prior if continue_work else None)
+    luna_goal = expand_code_goal(request, prior if continued else None)
     selected = select_project(request)
-    prior_root = _prior_root(prior) if continue_work and prior else None
+    prior_root = _prior_root(prior) if continued and prior else None
     if prior_root is not None:
         selected = prior_root
     token = set_active_project(selected)
@@ -1031,12 +1235,12 @@ async def run_code_job(
         budget = float(getattr(settings, "code_live_job_seconds", _LIVE_JOB_SECONDS) or _LIVE_JOB_SECONDS)
     else:
         budget = float(getattr(settings, "code_chat_job_seconds", _CHAT_JOB_SECONDS) or _CHAT_JOB_SECONDS)
-    budget = max(30.0, min(budget, 600.0))
+    budget = _effective_job_budget(budget)
     try:
         workspace = str(workspace_root())
         from app.gateway.muse import (
             MUSE_SPARK_PROVIDERS,
-            muse_intelligence_active,
+            muse_brain_active,
             muse_spark_key_loaded,
             muse_spark_model,
         )
@@ -1049,9 +1253,20 @@ async def run_code_job(
             bool(code_model_name) and code_model_name == muse_spark_model()
         )
 
-        spark_on = muse_intelligence_active() or code_wants_spark
+        spark_on = muse_brain_active() or code_wants_spark
         if spark_on:
             if not muse_spark_key_loaded():
+                rescued = _heuristic_if_spark_wrote_nothing(
+                    request,
+                    prior=prior,
+                    actor=actor,
+                    started=started,
+                    model=muse_spark_model(),
+                )
+                if rescued is not None:
+                    return _finish_code_job(
+                        rescued, request=request, workspace=workspace, session_key=job_key
+                    )
                 return _finish_code_job(
                     _fail(
                         "spark_unavailable",
@@ -1073,11 +1288,34 @@ async def run_code_job(
                 result.setdefault("brain", model)
                 result.setdefault("actor", actor)
                 result.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
+                if not result.get("ok") and not result.get("files_changed"):
+                    rescued = _heuristic_if_spark_wrote_nothing(
+                        request,
+                        prior=prior,
+                        actor=actor,
+                        started=started,
+                        model=model,
+                    )
+                    if rescued is not None:
+                        return _finish_code_job(
+                            rescued, request=request, workspace=workspace, session_key=job_key
+                        )
                 return _finish_code_job(
                     result, request=request, workspace=workspace, session_key=job_key
                 )
             except Exception as exc:  # noqa: BLE001 - coding must fail honest
                 logger.warning("luna_code.spark_failed error_type=%s", type(exc).__name__)
+                rescued = _heuristic_if_spark_wrote_nothing(
+                    request,
+                    prior=prior,
+                    actor=actor,
+                    started=started,
+                    model=model,
+                )
+                if rescued is not None:
+                    return _finish_code_job(
+                        rescued, request=request, workspace=workspace, session_key=job_key
+                    )
                 return _finish_code_job(
                     _fail(
                         "spark_unavailable",
@@ -1196,7 +1434,200 @@ def execute_code_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             return run_argv([str(item) for item in argv])
     except CodeJailError as exc:
         return {"ok": False, "error": "code_jail", "detail": str(exc)}
-    return {"ok": False, "error": "unknown_code_tool", "name": name    }
+    return {"ok": False, "error": "unknown_code_tool", "name": name}
+
+
+def set_kernel_turn_deadline(deadline: float | None):
+    """Cap nested code jobs to the kernel turn that asked for them."""
+
+    return _turn_deadline.set(deadline)
+
+
+def reset_kernel_turn_deadline(token) -> None:
+    _turn_deadline.reset(token)
+
+
+def kernel_turn_remaining_s() -> float | None:
+    deadline = _turn_deadline.get()
+    if deadline is None:
+        return None
+    return max(0.0, float(deadline) - time.monotonic())
+
+
+def _effective_job_budget(configured: float) -> float:
+    """Configured budget, squeezed under a kernel turn deadline when present."""
+
+    limit = max(5.0, min(float(configured or _CHAT_JOB_SECONDS), 600.0))
+    remaining = kernel_turn_remaining_s()
+    if remaining is None:
+        return max(30.0, limit)
+    return max(5.0, min(limit, remaining - 2.0))
+
+
+def _clip_tool_output(payload: Any) -> str:
+    """Serialize a tool result for the model, keeping the head and the tail.
+
+    Pytest and tracebacks put the failure at the end; a plain prefix slice
+    would hide it, so keep the first 10k and the last 5k.
+    """
+
+    try:
+        text = json.dumps(payload, default=str)
+    except (TypeError, ValueError):
+        text = str(payload)
+    if len(text) <= _TOOL_RESULT_CHARS:
+        return text
+    marker = f"\n...[{len(text) - 15_000} chars trimmed]...\n"
+    return text[:10_000] + marker + text[-5_000:]
+
+
+def _loop_chars(messages: list[dict[str, Any]]) -> int:
+    total = 0
+    for message in messages:
+        content = message.get("content")
+        total += len(content) if isinstance(content, str) else len(str(content or ""))
+        for call in message.get("tool_calls") or []:
+            total += len(json.dumps(call, default=str))
+    return total
+
+
+def _compact_loop(messages: list[dict[str, Any]]) -> None:
+    """Drop the middle of a long tool history so production jobs stay affordable.
+
+    The system row, the first user row, and the most recent steps are kept. A
+    tool row is never kept without the assistant call it answers.
+    """
+
+    if len(messages) <= _LOOP_TAIL_MESSAGES + 2 or _loop_chars(messages) <= _LOOP_CHAR_BUDGET:
+        return
+    tail_start = max(2, len(messages) - _LOOP_TAIL_MESSAGES)
+    while tail_start < len(messages) and str(messages[tail_start].get("role") or "") == "tool":
+        tail_start += 1
+    if tail_start >= len(messages):
+        tail_start = len(messages) - 1
+    dropped = max(0, tail_start - 2)
+    note = {
+        "role": "user",
+        "content": (
+            f"[{dropped} earlier tool steps were trimmed to keep the context small. "
+            "The files on disk hold the real state; re-read anything you need.]"
+        ),
+    }
+    messages[:] = messages[:2] + [note] + messages[tail_start:]
+
+
+def _orientation_block() -> str:
+    """Read-only repo orientation injected before the first model step.
+
+    Production work starts in an unfamiliar tree; a branch, a top-level
+    listing, and the project's own README/AGENTS note remove most of the
+    blind searching without giving the model any new power.
+    """
+
+    lines: list[str] = []
+    try:
+        listing = list_dir(".")
+        entries = ", ".join(str(item) for item in (listing.get("entries") or []))
+        if entries:
+            lines.append(f"Top level: {entries[:900]}")
+    except CodeJailError:
+        pass
+    for argv, label in (
+        (["git", "rev-parse", "--abbrev-ref", "HEAD"], "Git branch"),
+        (["git", "status", "--short"], "Uncommitted changes (git status --short)"),
+    ):
+        try:
+            ran = run_argv(argv)
+        except CodeJailError:
+            continue
+        text = str(ran.get("stdout") or "").strip()
+        if not text:
+            continue
+        lines.append(f"{label}: {text[:800]}")
+    for name in ("AGENTS.md", "README.md"):
+        try:
+            doc = read_file(name, limit=50)
+        except CodeJailError:
+            continue
+        content = str(doc.get("content") or "").strip()
+        if content:
+            lines.append(f"{name} (first lines):\n{content[:1200]}")
+            break
+    if not lines:
+        return ""
+    return "\nORIENTATION (read-only, from the workspace):\n" + "\n".join(lines) + "\n"
+
+
+@contextmanager
+def kernel_turn_budget(deadline: float | None) -> Iterator[None]:
+    """Context manager form for callers that prefer ``with``."""
+
+    token = set_kernel_turn_deadline(deadline)
+    try:
+        yield
+    finally:
+        reset_kernel_turn_deadline(token)
+
+
+def _assistant_turn_from_complete_raw(
+    data: dict[str, Any] | None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Text + tool_calls from a complete_raw payload (choices or Responses output)."""
+
+    payload = data if isinstance(data, dict) else {}
+    choice = ((payload.get("choices") or [{}])[0].get("message") or {})
+    if not isinstance(choice, dict):
+        choice = {}
+    calls = [item for item in (choice.get("tool_calls") or []) if isinstance(item, dict)]
+    text = str(choice.get("content") or "").strip()
+    output = payload.get("output")
+    if isinstance(output, list) and output:
+        out_calls: list[dict[str, Any]] = []
+        for index, item in enumerate(output):
+            if not isinstance(item, dict) or item.get("type") != "function_call":
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            args = item.get("arguments")
+            if not isinstance(args, str):
+                args = json.dumps(args or {}, default=str)
+            out_calls.append(
+                {
+                    "id": str(item.get("call_id") or item.get("id") or f"call_{index}"),
+                    "type": "function",
+                    "function": {"name": name, "arguments": args},
+                }
+            )
+        if out_calls:
+            out_text = str(payload.get("output_text") or "").strip() or text
+            return out_text, out_calls
+    return text, calls
+
+
+def _heuristic_if_spark_wrote_nothing(
+    request: str,
+    *,
+    prior: dict[str, Any] | None,
+    actor: str,
+    started: float,
+    model: str,
+) -> dict[str, Any] | None:
+    """If Spark talked and wrote nothing, still ship a real heuristic job when we can."""
+
+    heuristic = _heuristic_job(request, prior=prior)
+    if not heuristic.get("ok"):
+        return None
+    heuristic.setdefault("brain", f"{model}+heuristic")
+    heuristic.setdefault("actor", actor)
+    heuristic.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
+    return heuristic
+
+
+_SPARK_TOOL_NUDGE = (
+    "You described the work instead of doing it. "
+    "Call write_file or replace_in_file now. Do not claim the files exist."
+)
 
 
 async def _spark_code_loop(
@@ -1212,7 +1643,7 @@ async def _spark_code_loop(
     from app.gateway.muse_spark import muse_spark_provider, responses_tools_to_chat_tools
 
     configured = int(getattr(settings, "code_max_steps", 24) or 24)
-    max_steps = max(1, min(32, configured))
+    max_steps = max(1, min(_MAX_CODE_STEPS, configured))
     if live:
         max_steps = min(20, max_steps)
     projects = list_projects()
@@ -1225,6 +1656,7 @@ async def _spark_code_loop(
                 f"Owner request:\n{goal}\n\n"
                 f"Selected project: {workspace_root()}\n"
                 f"Allowed projects: {catalog}\n"
+                f"{_orientation_block()}"
                 f"{_prior_hint(prior)}"
                 "Relative paths only. Search, then patch. New work may be several files. "
                 "Use the language this repo already speaks. Run a check before you stop."
@@ -1234,20 +1666,54 @@ async def _spark_code_loop(
     files_changed: list[str] = []
     runs: list[dict[str, Any]] = []
     spoken = ""
-    deadline = time.monotonic() + max(20.0, budget_s)
+    error: str | None = None
+    timed_out = False
+    nudged = False
+    deadline = time.monotonic() + max(1.0, budget_s)
     tools = responses_tools_to_chat_tools(LUNA_CODE_TOOLS)
     provider = muse_spark_provider()
     for _step in range(max_steps):
-        if time.monotonic() >= deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0.5:
+            timed_out = True
             break
-        data = await provider.complete_raw(messages, tools=tools, model=model)
-        choice = ((data.get("choices") or [{}])[0].get("message") or {})
+        try:
+            data = await asyncio.wait_for(
+                provider.complete_raw(
+                    messages,
+                    tools=tools,
+                    model=model,
+                    tool_choice="required" if not files_changed else "auto",
+                ),
+                timeout=remaining,
+            )
+        except TimeoutError:
+            timed_out = True
+            break
+        except Exception as exc:  # noqa: BLE001 - coding must fail honest
+            error = type(exc).__name__
+            logger.warning("luna_code.spark_step_failed error_type=%s", error)
+            break
+        text, calls = _assistant_turn_from_complete_raw(data if isinstance(data, dict) else {})
+        choice: dict[str, Any] = {"role": "assistant", "content": text or None}
+        if calls:
+            choice["tool_calls"] = calls
         messages.append(choice)
-        calls = choice.get("tool_calls") or []
-        text = str(choice.get("content") or "").strip()
-        if text:
+        if text and files_changed:
             spoken = text
         if not calls:
+            if files_changed:
+                if text:
+                    spoken = text
+                break
+            if not _goal_needs_new_files(goal) and _run_verifies_work(runs):
+                if text:
+                    spoken = text
+                break
+            if not nudged:
+                nudged = True
+                messages.append({"role": "user", "content": _SPARK_TOOL_NUDGE})
+                continue
             break
         for call in calls:
             fn = call.get("function") or {}
@@ -1276,10 +1742,19 @@ async def _spark_code_loop(
                 {
                     "role": "tool",
                     "tool_call_id": str(call.get("id") or ""),
-                    "content": json.dumps(result, default=str)[:16_000],
+                    "content": _clip_tool_output(result),
                 }
             )
-    ok = bool(files_changed or (runs and any(item.get("ok") for item in runs)))
+        _compact_loop(messages)
+    completed = error is None and not timed_out
+    ok = _code_job_ok(
+        completed=completed,
+        files_changed=files_changed,
+        runs=runs,
+        goal=goal,
+    )
+    if not ok and _spoken_claims_code_success(spoken):
+        spoken = ""
     if not spoken:
         last_out = ""
         for item in reversed(runs):
@@ -1304,6 +1779,9 @@ async def _spark_code_loop(
         "brain": model,
         "workspace": str(workspace_root()),
         "degraded": not ok,
+        "partial": not completed,
+        "error": error,
+        "timed_out": timed_out,
     }
 
 
@@ -1322,7 +1800,7 @@ async def _luna_loop(
 
     key = (getattr(settings, "openai_api_key", None) or "").strip()
     configured = int(getattr(settings, "code_max_steps", 24) or 24)
-    max_steps = max(1, min(32, configured))
+    max_steps = max(1, min(_MAX_CODE_STEPS, configured))
     if live:
         max_steps = min(20, max_steps)
     projects = list_projects()
@@ -1335,6 +1813,7 @@ async def _luna_loop(
                 f"Owner request:\n{goal}\n\n"
                 f"Selected project: {workspace_root()}\n"
                 f"Allowed projects: {catalog}\n"
+                f"{_orientation_block()}"
                 f"{_prior_hint(prior)}"
                 "Relative paths only. Search, then patch. New work may be several files. "
                 "Use the language this repo already speaks. Run a check before you stop."
@@ -1344,13 +1823,17 @@ async def _luna_loop(
     files_changed: list[str] = []
     runs: list[dict[str, Any]] = []
     spoken = ""
-    deadline = time.monotonic() + max(20.0, budget_s)
+    error: str | None = None
+    timed_out = False
+    deadline = time.monotonic() + max(1.0, budget_s)
     http_timeout = float(getattr(settings, "code_http_timeout_seconds", 60.0) or 60.0)
     http_timeout = max(15.0, min(http_timeout, 90.0))
     base = str(getattr(settings, "openai_base_url", None) or "https://api.openai.com/v1").rstrip("/")
     async with httpx.AsyncClient(timeout=http_timeout) as client:
         for _step in range(max_steps):
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.5:
+                timed_out = True
                 break
             payload = {
                 "model": model,
@@ -1358,14 +1841,21 @@ async def _luna_loop(
                 "tools": LUNA_CODE_TOOLS,
                 "reasoning": {"effort": "medium" if live else "high"},
             }
-            resp = await client.post(
-                f"{base}/responses",
-                headers={
-                    "Authorization": f"Bearer {key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
+            try:
+                resp = await asyncio.wait_for(
+                    client.post(
+                        f"{base}/responses",
+                        headers={
+                            "Authorization": f"Bearer {key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    ),
+                    timeout=remaining,
+                )
+            except TimeoutError:
+                timed_out = True
+                break
             if resp.status_code != 200:
                 raise RuntimeError(f"luna_http_{resp.status_code}")
             data = resp.json()
@@ -1379,7 +1869,7 @@ async def _luna_loop(
                 if isinstance(item, dict) and item.get("type") == "function_call"
             ]
             text = str(data.get("output_text") or "").strip() or _output_text(output)
-            if text:
+            if text and files_changed:
                 spoken = text.strip()
             if not calls:
                 break
@@ -1409,10 +1899,19 @@ async def _luna_loop(
                     {
                         "type": "function_call_output",
                         "call_id": str(call.get("call_id") or ""),
-                        "output": json.dumps(result, default=str)[:16_000],
+                        "output": _clip_tool_output(result),
                     }
                 )
-    ok = bool(files_changed or (runs and any(item.get("ok") for item in runs)))
+            _compact_loop(conversation)
+    completed = error is None and not timed_out
+    ok = _code_job_ok(
+        completed=completed,
+        files_changed=files_changed,
+        runs=runs,
+        goal=goal,
+    )
+    if not ok and _spoken_claims_code_success(spoken):
+        spoken = ""
     if not spoken:
         last_out = ""
         for item in reversed(runs):
@@ -1437,6 +1936,9 @@ async def _luna_loop(
         "brain": model,
         "workspace": str(workspace_root()),
         "degraded": not ok,
+        "partial": not completed,
+        "error": error,
+        "timed_out": timed_out,
     }
 
 
@@ -1657,8 +2159,8 @@ def _heuristic_job(goal: str, prior: dict[str, Any] | None = None) -> dict[str, 
     except CodeJailError as exc:
         return _fail("code_jail", str(exc))
     return _fail(
-        "needs_luna",
-        "That's a real project job. Luna will take it when the OpenAI key is set.",
+        "needs_brain",
+        "That's a real project job. I couldn't finish a verified coding change.",
     )
 
 
@@ -1677,15 +2179,18 @@ def _run_tests() -> dict[str, Any]:
 
 def _ok_write(path: str, ran: dict[str, Any], spoken: str) -> dict[str, Any]:
     extra = (ran.get("stdout") or "").strip()[:120]
-    if extra:
+    ran_ok = bool(ran.get("ok"))
+    if ran_ok and extra:
         spoken = f"{spoken} Output: {extra}"
+    elif not ran_ok:
+        spoken = f"Wrote {path}, but the run did not exit cleanly."
     return {
-        "ok": bool(ran.get("ok")),
+        "ok": True,
         "spoken": spoken,
         "files_changed": [path],
         "runs": [{"argv": ran.get("argv"), "exit_code": ran.get("exit_code"), "ok": ran.get("ok"), "stdout": ran.get("stdout")}],
         "brain": "heuristic",
-        "degraded": not bool(ran.get("ok")),
+        "degraded": not ran_ok,
     }
 
 

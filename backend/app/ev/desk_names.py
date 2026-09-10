@@ -9,7 +9,6 @@ from __future__ import annotations
 from app.ev.desk_scene import ADD_TO_NAMED_RE as ADD_TO_NAMED_RE
 from app.ev.desk_scene import BIND_RE as BIND_RE
 from app.ev.desk_scene import GENERIC_ALIASES as GENERIC_ALIASES
-from app.ev.desk_scene import GROCERY_HINT as GROCERY_HINT
 from app.ev.desk_scene import inferred_aliases as inferred_aliases
 from app.ev.desk_scene import names_store_path as store_path
 from app.ev.desk_scene import normalize_alias as normalize_alias

@@ -405,3 +405,45 @@ async def test_packed_and_remove_mutate_the_live_list_without_undo(files_root: P
     assert "took" in str(ran.get("spoken") or "").lower()
     assert parse_file_goal("I packed my bags", last_path=last) is None
     assert parse_file_goal("I need soap", last_path=last) is None
+
+
+@pytest.mark.asyncio
+async def test_rephrased_creates_stay_on_one_file(files_root: Path) -> None:
+    from app.ev.laptop_files import resolve_file_computer_goal, run_file_goal
+
+    first = parse_file_goal(
+        "Make a packing list that says passport, charger, tape, soap"
+    )
+    written = await run_file_goal(first)
+    assert written["ok"] is True
+    path = Path(written["path"])
+    assert path.is_file()
+
+    text_list = resolve_file_computer_goal("create a text list", last_path=str(path))
+    assert text_list is not None
+    assert Path(str(text_list[1].get("path") or "")).resolve() == path.resolve()
+    assert text_list[1].get("action") in {"read", "write"}
+    if text_list[1].get("action") == "write":
+        assert text_list[1].get("unique_name") is False
+        assert text_list[1].get("overwrite") is True
+    await run_file_goal(text_list[1])
+
+    verify = resolve_file_computer_goal("verify the packing list", last_path=str(path))
+    assert verify is not None
+    assert verify[1].get("action") == "read"
+    assert Path(str(verify[1].get("path") or "")).resolve() == path.resolve()
+    await run_file_goal(verify[1])
+
+    desktop = resolve_file_computer_goal("create a desktop packing list", last_path=str(path))
+    assert desktop is not None
+    assert Path(str(desktop[1].get("path") or "")).resolve() == path.resolve()
+    await run_file_goal(desktop[1])
+
+    txts = [item for item in files_root.rglob("*.txt") if item.is_file()]
+    assert len(txts) == 1, [str(item) for item in txts]
+    assert txts[0].resolve() == path.resolve()
+
+    other = parse_file_goal("Make a grocery list that says milk, eggs, bread")
+    assert other is not None
+    other_path = Path(str(other.get("path") or ""))
+    assert other_path.name != path.name

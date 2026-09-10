@@ -27,16 +27,28 @@ def _tool() -> ToolSpec:
     )
 
 
-def test_spark_uses_dedicated_opencode_key_not_meta_voice_key(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spark_uses_official_meta_key_not_opencode(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.config import settings
 
     monkeypatch.setattr(settings, "meta_model_api_key", "meta-only-key")
-    monkeypatch.setattr(settings, "opencode_api_key", None)
-    monkeypatch.setattr(settings, "opencode_env_file", "")
-    monkeypatch.setenv("EV_OPENCODE_API_KEY", "")
-    monkeypatch.setenv("OPENCODE_API_KEY", "")
-    assert muse_spark_api_key() == ""
-    assert muse_spark_key_loaded() is False
+    monkeypatch.setattr(settings, "opencode_api_key", "opencode-must-not-win")
+    monkeypatch.setenv("EV_OPENCODE_API_KEY", "opencode-must-not-win")
+    monkeypatch.setenv("OPENCODE_API_KEY", "opencode-must-not-win")
+    monkeypatch.setenv("EV_META_MODEL_API_KEY", "")
+    monkeypatch.setenv("META_MODEL_API_KEY", "")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    assert muse_spark_api_key() == "meta-only-key"
+    assert muse_spark_key_loaded() is True
+
+
+def test_zen_spark_url_is_remapped_to_official_meta(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.config import settings
+    from app.gateway.muse import muse_spark_base_url, muse_spark_inference_route
+
+    monkeypatch.setattr(settings, "muse_spark_base_url", "https://opencode.ai/zen/go/v1")
+    monkeypatch.setenv("EV_MUSE_SPARK_BASE_URL", "https://opencode.ai/zen/go/v1")
+    assert muse_spark_base_url() == "https://api.meta.ai/v1"
+    assert muse_spark_inference_route() == "meta_model_api"
 
 
 def test_responses_history_and_tool_schema_are_provider_neutral() -> None:
@@ -84,6 +96,55 @@ def test_responses_history_and_tool_schema_are_provider_neutral() -> None:
         messages, model="grok-4.6", tools=[_tool()], stream=False, reasoning_effort="low"
     )
     assert low["reasoning"] == {"effort": "low"}
+
+
+@pytest.mark.asyncio
+async def test_chat_with_tools_keeps_http_client_and_effort_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    CIRCUIT_BREAKERS.reset("meta_muse_spark")
+    constructed: list[int] = []
+    efforts: list[str] = []
+
+    class _Response:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"output_text": "ok", "output": [], "usage": {}}
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            constructed.append(1)
+
+        async def post(self, url, headers=None, json=None):
+            efforts.append(str((json or {}).get("reasoning", {}).get("effort") or ""))
+            return _Response()
+
+        @property
+        def is_closed(self) -> bool:
+            return False
+
+    monkeypatch.setattr("app.gateway.muse_spark.httpx.AsyncClient", _Client)
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="test-key",
+        default_model="muse-spark-1.3-contributor",
+    )
+    await provider.chat_with_tools(
+        [ChatMessage(role="user", content="Hi.")],
+        [_tool()],
+        reasoning_effort="low",
+    )
+    await provider.chat_with_tools(
+        [ChatMessage(role="user", content="Hi again.")],
+        [_tool()],
+        reasoning_effort="low",
+    )
+    assert constructed == [1]
+    assert efforts == ["low", "low"]
 
 
 def test_chat_pipeline_does_not_stream_away_offered_tools() -> None:

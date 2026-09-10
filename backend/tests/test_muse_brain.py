@@ -398,6 +398,7 @@ async def test_ambiguous_turn_uses_spark_not_luna(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(settings, "turn_control_provider", "meta_muse_spark")
     monkeypatch.setattr(settings, "openai_api_key", "sk-should-not-be-used")
     monkeypatch.setattr(muse_mod, "muse_key_loaded", lambda: True)
+    monkeypatch.setattr(muse_mod, "muse_spark_key_loaded", lambda: True)
     monkeypatch.setattr(muse_mod, "muse_intelligence_active", lambda: True)
 
     calls = {"spark": 0, "luna_http": 0}
@@ -522,6 +523,7 @@ async def test_curator_uses_spark_when_muse_is_primary(monkeypatch: pytest.Monke
     monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
     monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
     monkeypatch.setattr("app.gateway.muse.muse_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
     assert curator.curator_available() is True
 
     class _Result:
@@ -682,7 +684,63 @@ def test_talk_sidecar_refuses_muse_without_meta_key(monkeypatch: pytest.MonkeyPa
     assert mod.meta_key_loaded() is True
 
 
-def test_talk_sidecar_refuses_spark_without_opencode_key(
+def test_talk_sidecar_load_replaces_empty_vault_key(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util
+    import os
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py")
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar_vault", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("EV_VAULT_KEY", "")
+    secrets = tmp_path / "production.env"
+    secrets.write_text("EV_VAULT_KEY=talk-vault-key-16chars\n")
+    mod.load(secrets)
+    assert os.environ.get("EV_VAULT_KEY") == "talk-vault-key-16chars"
+    monkeypatch.setenv("EV_VAULT_KEY", "")
+    with pytest.raises(SystemExit) as exited:
+        mod.refuse_talk_without_vault()
+    assert exited.value.code == 2
+    monkeypatch.setenv("EV_VAULT_KEY", "talk-vault-key-16chars")
+    mod.refuse_talk_without_vault()
+
+
+def test_talk_sidecar_replaces_pytest_sqlite_and_test_key(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util
+    import os
+    from pathlib import Path
+
+    path = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py")
+    spec = importlib.util.spec_from_file_location("start_talk_sidecar_owner_db", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(mod)
+    monkeypatch.setenv("EV_DATABASE_URL", "sqlite+aiosqlite:////tmp/pytest/test.db")
+    monkeypatch.setenv("EV_MASTER_KEY", "test-key")
+    monkeypatch.setenv("EV_VAULT_KEY", "test-vault-key-0123456789abcdef")
+    owner = tmp_path / "owner.env"
+    owner.write_text(
+        "EV_DATABASE_URL=postgresql+psycopg://ev:ev@localhost:5432/ev\n"
+        "EV_MASTER_KEY=owner-master-key-16\n"
+        "EV_VAULT_KEY=owner-vault-key-16ok\n"
+    )
+    mod.load(owner)
+    assert "sqlite" not in os.environ["EV_DATABASE_URL"]
+    assert os.environ["EV_MASTER_KEY"] == "owner-master-key-16"
+    assert os.environ["EV_VAULT_KEY"] == "owner-vault-key-16ok"
+    monkeypatch.setenv("EV_DATABASE_URL", "sqlite+aiosqlite:////tmp/pytest/test.db")
+    with pytest.raises(SystemExit) as exited:
+        mod.refuse_talk_without_owner_runtime()
+    assert exited.value.code == 2
+
+
+def test_talk_sidecar_allows_spark_with_meta_key_without_opencode(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import importlib.util
@@ -701,9 +759,7 @@ def test_talk_sidecar_refuses_spark_without_opencode_key(
     monkeypatch.setenv("EV_OPENCODE_ENV_FILE", str(tmp_path / "missing.env"))
     assert mod.muse_spark_selected() is True
     assert mod.opencode_key_loaded() is False
-    with pytest.raises(SystemExit) as exited:
-        mod.refuse_muse_without_key()
-    assert exited.value.code == 2
+    mod.refuse_muse_without_key()
 
 
 def test_talk_sidecar_overlay_fills_empty_meta_key(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -862,7 +918,8 @@ def test_talk_sidecar_replaces_port_only_after_meta_key_gate() -> None:
 
     source = Path("/Users/sahajpatel/Code/ev/scripts/start_talk_sidecar.py").read_text()
     main = source.split("def main() -> None:", 1)[1]
-    assert main.index("refuse_muse_without_key()") < main.index("stop_existing_talk_sidecar()")
+    assert main.index("refuse_muse_without_key()") < main.index("refuse_talk_without_owner_runtime()")
+    assert main.index("refuse_talk_without_owner_runtime()") < main.index("stop_existing_talk_sidecar()")
     assert main.index("stop_existing_talk_sidecar()") < main.index("daemonize()")
     assert "tiTCP:8000" not in source
     assert "kickstart" not in source

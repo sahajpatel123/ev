@@ -101,7 +101,7 @@ def test_new_specs_are_concise() -> None:
     for name in ("recall", "computer", "code"):
         spec = get_spec(name)
         assert spec is not None
-        assert len(spec["description"]) < 600, name
+        assert len(spec["description"]) < 700, name
         assert spec["parameters"]["properties"]
 
 

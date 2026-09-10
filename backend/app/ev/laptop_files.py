@@ -657,6 +657,12 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
     raw = normalize_file_utterance(text)
     if not raw or is_system_confirmation(raw):
         return False
+    from app.ev.tool_select import parse_heading_out
+
+    if parse_heading_out(raw):
+        # A leave beat ("heading out", "walking to the car") is a life beat,
+        # not a desk file job — the desk parser must never swallow it.
+        return False
     if looks_like_file_followup(raw, last_path=last_path):
         return True
     from app.ev.desk_acts import looks_like_desk_file_act

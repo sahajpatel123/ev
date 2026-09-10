@@ -1454,7 +1454,14 @@ async def _apply_life_spoken(session: AsyncSession, query: str, pack: dict) -> d
         try:
             pack["task_decision"] = decision.as_dict()
             evidence = [item for item in (pack.get("evidence") or []) if isinstance(item, dict)]
-            if decision.family == "mail" or shelf == "mail" or channel == "mail":
+            if shelf == "inbox":
+                # Mixed inbox ("any new notifications", "what did I miss")
+                # spans chats + mail + calls. Never let the mail family bias
+                # drop the chat/call half of the digest.
+                spoken = _spoken_from_evidence(evidence, query)
+                if spoken:
+                    pack["spoken"] = spoken
+            elif decision.family == "mail" or shelf == "mail" or channel == "mail":
                 from app.memory.mail_speak import fill_readout, is_mail_hit, speak_mail
 
                 rows = [item for item in evidence if is_mail_hit(item)] or evidence
