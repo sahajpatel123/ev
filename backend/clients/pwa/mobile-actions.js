@@ -126,6 +126,7 @@
         expires_at: payload.expires_at || card.expires_at || (payload.receipt && (payload.receipt.exp || payload.receipt.expires_at)),
         card: card,
         spoken: payload.spoken,
+        recovered: !!(payload.recovered || previous.recovered),
       });
       if (payload.ok === false || card.status === "expired") {
         this.current.blocked = true;
@@ -142,7 +143,7 @@
         (card.title || "Action") +
         (card.target ? " · " + card.target : "");
       this.onActivity(line);
-      if (!(options && options.manual) && this.current.native_execute && !this.current.confirmation_required &&
+      if (!(options && options.manual) && !this.current.recovered && this.current.native_execute && !this.current.confirmation_required &&
           !this.current.error && !this.current.done && !this._autoStarted.has(id) && !this._availability(this.current)) {
         this._autoStarted.add(id);
         void this.run();

@@ -421,6 +421,130 @@ async def run_trusted_device_turn(
         }
 
     effective_text = text or ""
+    # WhatsApp send approval loop (device realtime/Safari path).
+    #
+    # A spoken "yes"/"no" resumes the parked WhatsApp Web send from any
+    # surface; a complete send parks once and asks
+    # ("Should I send ... ?") instead of sending blind. The approved send
+    # drives the existing WhatsApp Web Chrome tab in the background
+    # (eval_in_tab, never activate) — no new tabs, no focus theft.
+    # Falls through to TurnGate when there is no pending approval and no
+    # send intent, so non-send turns behave exactly as before.
+    live_key = f"device-text:{device.id}"
+    try:
+        from app.ev.messaging.approval import handle_send_approval
+
+        _approval = await handle_send_approval(
+            session,
+            effective_text,
+            actor="master",
+            device_id=str(device.id),
+            live_session_id=live_key,
+        )
+    except Exception:  # noqa: BLE001 - approval must never fail a device turn
+        _approval = None
+    if _approval is not None:
+        await session.commit()
+        _sent = bool(_approval.get("sent"))
+        _ok = bool(_approval.get("ok", _sent))
+        return {
+            "reply": str(
+                _approval.get("spoken")
+                or ("Sent it." if _sent else "I couldn't send that.")
+            ),
+            "ok": _ok,
+            "error_code": None if _ok else "SEND_NOT_COMPLETED",
+            "route": "ACTION",
+            "operation": "send_message",
+            "needs_clarification": False,
+            "turn_id": None,
+        }
+    try:
+        from app.ev.send_intent import (
+            incomplete_send,
+            parse_send_intent,
+            prompt_for_send_body,
+        )
+
+        _send = parse_send_intent(effective_text)
+        _asked = None if _send is not None else incomplete_send(effective_text)
+    except Exception:  # noqa: BLE001 - send detection must never fail a turn
+        _send, _asked = None, None
+    if _send is not None:
+        try:
+            from app.ev.tools import dispatch as dispatch_tool
+
+            _tool_args: dict[str, Any] = {
+                "to": str(_send.get("to") or ""),
+                "text": str(_send.get("text") or ""),
+            }
+            if str(_send.get("channel") or "").strip():
+                _tool_args["channel"] = str(_send.get("channel"))
+            _tool_result = await dispatch_tool(
+                session,
+                "send_message",
+                _tool_args,
+                actor="master",
+                allow_sensitive=True,
+                device_id=device.id,
+                live_session_id=live_key,
+            )
+        except Exception:  # noqa: BLE001 - fall through to TurnGate on error
+            _tool_result = None
+        _body = (
+            _tool_result.result
+            if _tool_result is not None and isinstance(_tool_result.result, dict)
+            else {}
+        )
+        await session.commit()
+        if isinstance(_body, dict) and _body.get("pending_approval"):
+            return {
+                "reply": str(_body.get("spoken") or "Should I send that?"),
+                "ok": True,
+                "error_code": None,
+                "route": "ACTION",
+                "operation": "send_message",
+                "needs_clarification": False,
+                "pending_approval": True,
+                "action_id": _body.get("action_id"),
+                "turn_id": None,
+            }
+        _spoken = str((_body.get("spoken") if isinstance(_body, dict) else "") or "").strip()
+        _ok = bool(
+            _tool_result is not None
+            and _tool_result.ok
+            and isinstance(_body, dict)
+            and _body.get("sent")
+        )
+        return {
+            "reply": _spoken or ("Sent it." if _ok else "I couldn't send that."),
+            "ok": _ok,
+            "error_code": (
+                None
+                if _ok
+                else str(
+                    (_body.get("error") if isinstance(_body, dict) else None)
+                    or "SEND_NOT_COMPLETED"
+                )
+            ),
+            "route": "ACTION",
+            "operation": "send_message",
+            "needs_clarification": False,
+            "turn_id": None,
+        }
+    if _asked is not None:
+        return {
+            "reply": prompt_for_send_body(
+                to=str(_asked.get("to") or "them"),
+                channel=str(_asked.get("channel") or ""),
+            ),
+            "ok": True,
+            "error_code": None,
+            "route": "ACTION",
+            "operation": "send_message",
+            "needs_clarification": True,
+            "turn_id": None,
+        }
     # Mobile V2: obvious stop/cancel needs no model reasoning. Reach the
     # executor via the cancel endpoint for specific action_ids; this turn
     # itself stops immediately and honestly.

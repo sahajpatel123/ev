@@ -1162,7 +1162,7 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
     from app.gateway.muse import (
         MUSE_SPARK_PROVIDERS,
         MuseProviderUnavailable,
-        muse_intelligence_active,
+        muse_brain_active,
     )
     from app.memory.visual import is_clarity_hedge, is_generic_label_scene
 
@@ -1181,7 +1181,7 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
         return draft
     if getattr(provider, "name", "") in {"echo", "mock"} or not getattr(provider, "api_key", True):
         return draft
-    if muse_intelligence_active() and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS:
+    if muse_brain_active() and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS:
         return draft
     if provider.name == "deepseek" and not settings.deepseek_api_key:
         return draft

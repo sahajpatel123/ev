@@ -20,10 +20,9 @@ from app.device_gateway.mobile_v2 import (
     owner_reply_for,
     phone_brain_allowed,
     phone_brain_is_legacy,
-    should_notify,
     resolve_route_target,
+    should_notify,
 )
-
 
 # --- resolve_route_target: one example per directive lane ---
 

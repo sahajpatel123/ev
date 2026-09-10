@@ -483,6 +483,18 @@ async def due_scan(
             hud={"schema_version": "ev.hud.card.v1", "title": "Timer", "body": body},
             owner_scheduled=True,
         )
+        try:
+            from app.device_gateway.push import notify_trusted_companions
+
+            await notify_trusted_companions(
+                session,
+                kind="timer",
+                title="Timer",
+                body=body,
+                payload={"timer_id": str(row.id), "source": "owner_timer"},
+            )
+        except Exception:
+            pass
         fired += 1
     await session.flush()
     return {"fired": fired, "scanned": len(rows)}

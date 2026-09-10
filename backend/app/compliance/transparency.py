@@ -213,16 +213,15 @@ async def transparency_report(session: AsyncSession) -> dict:
     from app.gateway.muse import (
         MUSE_SPARK_PROVIDERS,
         configured_intelligence_provider,
-        muse_intelligence_active,
+        muse_brain_active,
         muse_spark_base_url,
     )
 
     chat_provider = (configured_intelligence_provider() or settings.chat_provider or "").strip()
-    if muse_intelligence_active() or chat_provider.lower() in MUSE_SPARK_PROVIDERS:
-        # Muse has two different egress surfaces: Meta hosts the hearing
-        # adapter, while Spark Contributor is served by OpenCode Go. Reporting
-        # the Meta ASR base here made the transparency card claim the wrong
-        # destination for every reasoning request.
+    if muse_brain_active() or chat_provider.lower() in MUSE_SPARK_PROVIDERS:
+        # Muse Voice Transcribe and Spark Contributor both egress to the
+        # official Meta Model API. muse_spark_base_url() remaps leftover Zen
+        # URLs so this card never names OpenCode as the cognitive destination.
         chat_destination = muse_spark_base_url()
         if chat_provider.lower() not in MUSE_SPARK_PROVIDERS:
             chat_provider = "meta_muse_spark"

@@ -134,16 +134,21 @@ def test_golden_voice_playback_buffer():
     # Continuity repair 033d808 replaced minStartSeconds/maxPrimeWait with
     # duration-based aggregationMs/targetLeadMs/hardCeilingMs — contract is
     # controlled lead, not a huge delay, and bounded buffering. The shipped
-    # owner-run values (b38725d) are 250/900; keep the frozen contract on
-    # those exact shipped constants.
+    # owner-run values are 400/900 after the Sep-2026 jitter-buffer repair
+    # (S2S 1x-realtime WAN drips + tool micro-pauses starved the 250 ms prime:
+    # 10-95 underruns/response; 400 ms prime + 300 ms restart + backend 200 ms
+    # chunks absorb ±300 ms jitter for ~150 ms extra first-word latency).
+    # Keep the frozen contract on those exact shipped constants.
     assert "aggregationMs = 160" in tts
-    assert "startupPrebufferMs = 250" in tts
+    assert "startupPrebufferMs = 400" in tts
     assert "targetLeadMs = 900" in tts
     # Owner-proven (one word then silence): S2S providers generate whole
-    # responses faster than realtime; the ceiling is a 60 s safety valve and
-    # accepted-response speech is NEVER dropped. The E-fastgen continuity
-    # simulation is the acceptance for this law.
-    assert "hardCeilingMs = 60000" in tts
+    # responses faster than realtime; the ceiling is a safety valve and
+    # accepted-response speech is NEVER dropped. Muse replies can burst more
+    # than 60 s of PCM (measured ~123 s / 1907 chars); 180 s covers a long
+    # verbatim mouth pass. The E-fastgen continuity simulation is the
+    # acceptance for this law.
+    assert "hardCeilingMs = 180000" in tts
     assert "underrunEvents" in tts
     assert "pendingBuffers" in tts
     # No per-chunk engine restart

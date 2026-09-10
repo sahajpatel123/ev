@@ -763,6 +763,18 @@ async def user_text(
     # legacy sandbox satellite pipeline. Durable trace events carry device
     # provenance so phone turns are observable like Mac turns.
     if not is_sandbox_device(device):
+        from app.cognitive.mode import muse_kernel_active
+
+        if muse_kernel_active():
+            from .cognitive_text import run_phone_text
+
+            result = await run_phone_text(
+                session, device=device, text=data.text or "", instance_id=instance,
+                origin=gateway_origin(request),
+                request_id=data.request_id or data.idempotency_key,
+            )
+            await session.commit()
+            return result
         from app.device_gateway.pipeline import run_trusted_device_text
 
         result = await run_trusted_device_text(

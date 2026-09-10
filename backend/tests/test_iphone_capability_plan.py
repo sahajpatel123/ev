@@ -1025,7 +1025,6 @@ async def test_phone_core_weather_uses_home_location(db_session: AsyncSession, m
 async def test_phone_core_weather_timeout_is_explicit(
     db_session: AsyncSession, monkeypatch
 ) -> None:
-    import asyncio
 
     from app.device_gateway.phone_core import maybe_phone_core_read
 
@@ -1033,7 +1032,7 @@ async def test_phone_core_weather_timeout_is_explicit(
     monkeypatch.setattr("app.device_gateway.phone_core.default_place", lambda: "San Francisco")
 
     async def _timeout(_query: str, limit: int = 2):
-        raise asyncio.TimeoutError
+        raise TimeoutError
 
     monkeypatch.setattr("app.device_gateway.phone_core.weather_results", _timeout)
     device = Device(
@@ -1218,7 +1217,7 @@ def test_phone_action_surface_excludes_unsafe_computer_control() -> None:
 
 
 def test_phone_inputs_cannot_reach_urls_credentials_payments_or_unsafe_ui() -> None:
-    from app.device_gateway.phone_mac import PHONE_HOME_CAPABILITIES, _BLOCKED
+    from app.device_gateway.phone_mac import _BLOCKED, PHONE_HOME_CAPABILITIES
     from app.ev.spark_phone import _parse_tool
 
     forbidden = {
@@ -1309,16 +1308,15 @@ async def test_spark_phone_structured_contributor_decides_action_only(
 async def test_spark_phone_failures_return_no_fake_action(
     monkeypatch, failure: str
 ) -> None:
-    import asyncio
 
     from app.contracts import ChatResult
-    from app.gateway.muse import MuseProviderUnavailable
     from app.ev.spark_phone import spark_phone_tool
+    from app.gateway.muse import MuseProviderUnavailable
 
     class _Provider:
         async def chat_structured(self, messages, *, schema, schema_name, model):
             if failure == "timeout":
-                raise asyncio.TimeoutError
+                raise TimeoutError
             if failure == "provider":
                 raise MuseProviderUnavailable("unavailable")
             return ChatResult(text='{"tool": "start_timer"')

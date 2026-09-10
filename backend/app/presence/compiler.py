@@ -233,7 +233,7 @@ async def compile_graph(
     from app.gateway.muse_spark import muse_spark_provider
 
     if not muse_spark_key_loaded():
-        raise SparkUnavailable("OPENCODE_API_KEY missing: cannot compile")
+        raise SparkUnavailable("META_MODEL_API_KEY missing: cannot compile")
 
     from app.contracts import ChatMessage
     from app.device_gateway.telemetry import emit

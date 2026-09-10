@@ -401,7 +401,7 @@ async def test_tool_selection_routes_intents(client: AsyncClient) -> None:
 async def test_chat_sse_stream(client: AsyncClient) -> None:
     resp = await client.post(
         "/v1/chat",
-        json={"message": "What did I decide about SQLite?", "stream": True},
+        json={"message": "I decided to use SQLite for local testing.", "stream": True},
     )
     assert resp.status_code == 200, resp.text
     assert "text/event-stream" in resp.headers["content-type"]

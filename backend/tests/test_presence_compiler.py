@@ -44,7 +44,7 @@ async def test_missing_key_raises_without_network(
 
     monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", _explode)
     row = await presence.create_contract(db_session, objective="Watch the build")
-    with pytest.raises(SparkUnavailable, match="OPENCODE_API_KEY"):
+    with pytest.raises(SparkUnavailable, match="META_MODEL_API_KEY"):
         await compile_graph(db_session, row)
 
 

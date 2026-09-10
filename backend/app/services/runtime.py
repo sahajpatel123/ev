@@ -1071,6 +1071,22 @@ async def route_action(
     )
     session.add(action)
     await session.flush()
+    # Mobile V2: pending approvals must reach the owner's trusted iPhone
+    # (inbox now, APNs via digest path when registered). Poll fallback keeps
+    # this honest without credentials. Never breaks action creation.
+    if action.status == "pending":
+        try:
+            from app.device_gateway.push import notify_trusted_companions
+
+            await notify_trusted_companions(
+                session,
+                kind="approval_required",
+                title=f"Approval needed: {action.title or action.action_type}",
+                body="An Evie action needs your approval. Open Approvals to review.",
+                payload={"action_id": str(action.id), "action_type": action.action_type},
+            )
+        except Exception:
+            pass
     await record_runtime_event(
         session,
         kind="action",
@@ -1688,14 +1704,14 @@ async def runtime_health(session: AsyncSession) -> dict:
     checks.append(
         {"name": "queue", "status": queue_status, "mode": settings.processing_mode}
     )
-    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active, muse_spark_key_loaded
+    from app.gateway.muse import configured_intelligence_provider, muse_brain_active, muse_spark_key_loaded
 
     intel = configured_intelligence_provider() or settings.chat_provider
     chat_status = "ok"
     chat_detail: dict = {"provider": intel}
-    if muse_intelligence_active() and not muse_spark_key_loaded():
+    if muse_brain_active() and not muse_spark_key_loaded():
         chat_status = "degraded"
-        chat_detail["reason"] = "OPENCODE_API_KEY missing"
+        chat_detail["reason"] = "META_MODEL_API_KEY missing"
     checks.append(
         {
             "name": "chat_provider",
@@ -1850,8 +1866,8 @@ async def daemon_tick(session: AsyncSession) -> dict:
         },
     )
 
-    # Presence OS + Digital Operations: bounded sweeps. Best-effort; never
-    # break the daemon tick. Keep timers/empties in the payload.
+    # Presence OS: bounded durable-continuation sweep (conditions → resume →
+    # advance → stall detect). Best-effort; never breaks the daemon tick.
     try:
         from app.presence.runner import presence_tick as _presence_tick
 
@@ -1879,8 +1895,6 @@ async def daemon_tick(session: AsyncSession) -> dict:
         "dlq_escalations": len(dlq_escalations),
         "life_routing": life_routing,
         "life_reconciled": life_reconciled,
-        "timers": timers,
-        "empties": empties,
         "presence": presence,
         "digital": digital,
         "health": health,

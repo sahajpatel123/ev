@@ -109,7 +109,10 @@ Otherwise pick one Home Station tool:
 - start_timer (minutes)
 - set_reminder (text)
 - get_weather, calendar_read, list_mail, list_messages, brief_me, home_status
-- send_message (to, text), place_call (name)
+- send_message (to, text, channel), place_call (name)
+- send_message channel must match what the owner said: "whatsapp" when they
+  say WhatsApp, "mail" when they say email, otherwise omit channel
+  (Home Station defaults to Messages). Never invent a channel.
 - home_act only for reversible lights on/off actions
 - computer for a Mac UI/file job (goal)
 - code for a coding job (goal)
@@ -142,14 +145,14 @@ def should_ask_spark(text: str) -> bool:
 async def spark_phone_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
     from app.gateway.muse import (
         MuseProviderUnavailable,
-        muse_intelligence_active,
+        muse_brain_active,
         muse_spark_key_loaded,
         muse_spark_model,
     )
 
     if not should_ask_spark(utterance):
         return None
-    if not muse_intelligence_active() or not muse_spark_key_loaded():
+    if not muse_brain_active() or not muse_spark_key_loaded():
         return None
     try:
         from app.contracts import ChatMessage
