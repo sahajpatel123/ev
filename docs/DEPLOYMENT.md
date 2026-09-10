@@ -54,18 +54,21 @@ first capture/answer/notification, backup + restore drill.
 
 ## 3a. API-first profile (the owner's blessed configuration)
 
-The M2/8 GB host does **not** run local LLM inference; reasoning is the local
-`opencode serve` session API (launchd `ev.opencode`), which reaches the
-owner's hosted models through `OPENCODE_API_KEY` — no separate DeepSeek key.
-Local models stay only where an API is impossible or clearly worse: wake
-word, OCR (Apple Vision, free), speaker verification (biometric privacy),
-embeddings (recurring cost), and face recognition. The blessed configuration
-lives in **`.env.api-first`** and is activated with
+The M2/8 GB host does **not** run local LLM inference; reasoning is Muse
+Spark 1.3 Contributor via the official Meta Model API (`META_MODEL_API_KEY`).
+Spark is the one mind for every channel — typed chat, voice pipeline, live
+Talk receipts, device text, turn control, coding jobs. Speech stays split by
+design: Mini/Realtime is the mouth (speech-only coprocessor), Spark decides
+every answer. Local models stay only where an API is impossible or clearly
+worse: wake word, OCR (Apple Vision, free), speaker verification (biometric
+privacy), embeddings (recurring cost), and face recognition. The blessed
+configuration lives in **`.env.api-first`** and is activated with
 `cp .env.api-first .env` (then fill the FILL-ME secrets):
 
 | Organ | Provider in profile | Why |
 | --- | --- | --- |
-| Chat | `EV_CHAT_PROVIDER=opencode` | Local server → owner's hosted models via `OPENCODE_API_KEY` |
+| Chat/mind | `EV_CHAT_PROVIDER=meta_muse_spark` + `EV_INTELLIGENCE_PROVIDER=meta_muse_spark` + `EV_TURN_CONTROL_PROVIDER=meta_muse_spark` + `EV_COGNITIVE_MODE=muse_kernel` | One mind: Spark decides, every channel |
+| Code | `EV_CODE_MODEL=muse-spark-1.3-contributor` | Coding jobs route to Spark without flipping the global lane |
 | ASR | `EV_VOICE_ASR_PROVIDER=faster_whisper` | What Agent 2 actually shipped (Parakeet weights not in registry yet) |
 | TTS | `EV_VOICE_TTS_PROVIDER=openai_compat` + `EV_ALLOW_REMOTE_TTS=true` | Hosted until Kokoro package + weights land |
 | Speaker | `EV_VOICEPRINT_PROVIDER=campp` | Biometric privacy stays local |
@@ -74,7 +77,7 @@ lives in **`.env.api-first`** and is activated with
 | Embeddings | `EV_EMBEDDING_PROVIDER=granite` | Agent 8 verified recommendation (granite R2) |
 | Face | `EV_FACE_PROVIDER=sface` | Verified SFace ONNX |
 | Storage | `EV_OBJECT_STORE_BACKEND=local` | Filesystem; MinIO out of the daily path |
-| Runtime | native Postgres 17 + Redis + `opencode serve` via launchd | Compose is CI-only |
+| Runtime | native Postgres 17 + Redis (compose is CI-only) | `opencode serve` via launchd stays provisioned as the alternate chat route (`EV_CHAT_PROVIDER=opencode`), not the mind |
 
 **Hard refusal note (read before booting):** `default_speaker_verifier()`
 (`backend/app/voice/speaker.py`) refuses the hash test double outside pytest.

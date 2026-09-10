@@ -6,7 +6,6 @@ from app.ev.spark_task import TaskDecision, fallback_task_decision
 from app.memory.message_speak import shape_message_payload, speak_messages, speak_person_gist
 from app.memory.recall import _spoken_from_evidence
 
-
 LONG = (
     "Can you send the notes from standup when you get a minute? "
     "Also here is a dump: " + ("lorem ipsum dolor sit amet. " * 40)

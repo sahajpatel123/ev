@@ -472,3 +472,30 @@ Live speech surface modes for the realtime brain (OpenAI Realtime
 | `EV_CODE_CHAT_JOB_SECONDS` | `300` | 30–600 | Wall clock for a typed/chat coding job. |
 | `EV_CODE_HTTP_TIMEOUT_SECONDS` | `60` | 15–90 | Per OpenAI Responses round while Luna is working. |
 | `EV_CODE_MAX_FILE_BYTES` | `256000` | bytes | Max size of one workspace write or patch. |
+
+# --- MUSE SPARK 1.3 BLESSED WIRING (append-only) -------------------------------
+
+Muse Spark 1.3 Contributor is the one mind. Set these in `.env` (see the
+blessed block in `.env.example` and the active values in `.env.api-first`) so
+every channel — typed chat, voice pipeline, live Talk receipts, device text,
+turn control, coding jobs, desk/files/look/spark_task, presence graphs —
+resolves to Spark. Code defaults stay offline (`echo` / `legacy_mini`) so
+`make test` is green with no keys; these env values are what wires the owner
+machine to Spark. Speech stays split by design: Mini/Realtime is the mouth
+(speech-only coprocessor), Spark decides every answer.
+
+| Key | Default | Values | Purpose |
+| --- | --- | --- | --- |
+| `EV_INTELLIGENCE_PROVIDER` | _(empty = follow `EV_CHAT_PROVIDER`)_ | `meta_muse_spark` \| `muse` \| `muse_spark` | Primary general-intelligence provider. Any Muse Spark slot wins over leftover xAI/DeepSeek/OpenAI values; explicit rollback requires clearing Muse from intelligence, chat, AND turn-control. |
+| `EV_TURN_CONTROL_PROVIDER` | `openai` | `meta_muse_spark` (blessed) \| `openai` (legacy) | Turn-classifier brain. Blessed: `meta_muse_spark`. |
+| `EV_TURN_CONTROL_MODEL` | `gpt-5.6-luna` | `muse-spark-1.3-contributor` (blessed) | Turn-classifier model. Blessed: the exact Contributor slot. |
+| `EV_CODE_MODEL` | `gpt-5.6-luna` | `muse-spark-1.3-contributor` (blessed) | Coding brain. Naming a Muse Spark model routes code jobs to Spark without flipping the global lane. |
+| `EV_COGNITIVE_MODE` | `legacy_mini` | `muse_kernel` (blessed) \| `legacy_mini` (rollback) | `muse_kernel` = Muse Spark is the mind; `legacy_mini` = frozen Mini-as-brain rollback. |
+| `EV_MUSE_SPARK_MODEL` | `muse-spark-1.3-contributor` | exact Contributor slot only | Pinned model id; any other value is ignored and the pinned slot is used, so a stale `.env` can never drift the project model. |
+| `EV_MUSE_SPARK_BASE_URL` | `https://api.meta.ai/v1` | URL | Official Meta Model API Responses base. Leftover OpenCode Zen URLs are remapped to Meta automatically. |
+| `EV_MUSE_SPARK_REASONING_EFFORT` | `high` | `low` \| `medium` \| `high` | Responses reasoning effort for Spark calls. Kernel conversation uses `EV_COGNITIVE_CONVERSATION_REASONING_EFFORT` instead so spoken replies do not wait on high-effort reasoning. |
+| `EV_COGNITIVE_CONVERSATION_REASONING_EFFORT` | `low` | `low` \| `medium` \| `high` | Kernel spoken-speed effort for compact/open turns. |
+| `EV_COGNITIVE_WORK_REASONING_EFFORT` | `medium` | `low` \| `medium` \| `high` | Kernel effort for file/send/look and in-progress work. |
+| `EV_COGNITIVE_CONVERSATION_MAX_TOOL_TURNS` | `4` | 1–6 | Max Muse tool rounds on compact conversation turns. |
+| `META_MODEL_API_KEY` | _(empty)_ | secret | Canonical Meta Model API credential (also accepts `EV_META_MODEL_API_KEY` / `MODEL_API_KEY`). Missing key = fail-closed `MuseProviderUnavailable`, never a silent double. |
+| `EV_VOICE_ASR_PROVIDER` | `faster_whisper` | `meta_muse_voice` (Muse hearing) \| `faster_whisper` \| `echo` (dev) | Set `meta_muse_voice` to hear through Muse Voice Transcribe; shares the Meta credential. |

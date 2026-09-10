@@ -12,7 +12,7 @@ from app.config import settings
 from app.ev.apps import parse_owner_url, resolve_app
 from app.ev.capabilities import build_runtime_projection
 from app.ev.protocols import protocol_sheet, spoken_ready_capability_line
-from app.ev.tool_select import resolve_live_action
+from app.ev.tool_select import resolve_live_action, select_tool
 from app.ev.tools import dispatch
 from app.models import Integration
 from tests.test_life_bridges import MOCK_HELPER
@@ -44,6 +44,8 @@ async def _install_macos_life(db_session: AsyncSession, helper: Path) -> Integra
 def test_app_and_url_allowlists_are_narrow() -> None:
     assert resolve_app("Safari") == ("safari", "com.apple.Safari")
     assert resolve_app("not-a-real-app") is None
+    assert resolve_app("whatsapp") == ("whatsapp", "net.whatsapp.WhatsApp")
+    assert resolve_app("whats app") == ("whatsapp", "net.whatsapp.WhatsApp")
     assert parse_owner_url("https://example.com/path") == "https://example.com/path"
     assert parse_owner_url("file:///etc/passwd") is None
     assert parse_owner_url("javascript:alert(1)") is None
@@ -56,6 +58,13 @@ def test_app_and_url_allowlists_are_narrow() -> None:
         {"name": "safari"},
     )
     assert resolve_live_action("close Messages") == ("close_app", {"name": "Messages"})
+    assert resolve_live_action("open whatsapp") == ("open_app", {"name": "whatsapp"})
+    assert resolve_live_action("close whatsapp") == ("close_app", {"name": "whatsapp"})
+    assert resolve_live_action("launch whatsapp") == ("open_app", {"name": "whatsapp"})
+    assert select_tool("open whatsapp").selected == "open_app"
+    assert select_tool("close whatsapp").selected == "close_app"
+    assert select_tool("open mail").selected == "open_app"
+    assert select_tool("close mail").selected == "close_app"
 
 
 async def test_open_close_unavailable_without_macos_life(db_session: AsyncSession) -> None:

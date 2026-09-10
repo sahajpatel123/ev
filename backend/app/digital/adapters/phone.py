@@ -52,10 +52,17 @@ class PhoneDigitalAdapter:
                 availability=Availability.OS_MEDIATED,
                 payload={"prepared": True, "connected": False, "note": "OS-mediated handoff only"},
             )
-        return OpResult(
-            status=OpStatus.COMPLETED_VERIFIED,
-            service="phone",
-            operation=operation,
-            availability=Availability.NATIVE,
-            payload={"ok": True, "operation": operation},
-        )
+        if operation in {"ask", "approve", "capture_share"}:
+            # Honest refusal: no device bridge is wired for these operations
+            # yet. Never fabricate success for an operation not performed.
+            return OpResult(
+                status=OpStatus.FAILED,
+                service="phone",
+                operation=operation,
+                availability=Availability.NATIVE,
+                error="phone_channel_unavailable",
+                diagnosis=f"no device bridge wired for phone.{operation}",
+                payload={"refused": True, "performed": False, "operation": operation},
+            )
+        return OpResult(status=OpStatus.FAILED, service="phone", operation=operation,
+                        availability=Availability.NATIVE, error="unknown_operation")

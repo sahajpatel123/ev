@@ -100,7 +100,7 @@ class GmailAdapter:
                 operation=operation,
                 availability=Availability.CONNECTION_REQUIRED,
                 error="gmail_oauth_required",
-                diagnosis="oauth_expired",
+                diagnosis="oauth_missing",
             )
         try:
             return await self._run(client, operation, args, ctx)

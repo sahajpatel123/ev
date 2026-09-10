@@ -342,7 +342,7 @@ ACTION_SPECS: list[dict[str, Any]] = [
             "required": ["to"],
         },
         "output": {"type": "object"},
-        "requires_approval": False,
+        "requires_approval": True,
         "undoable": False,
         "permission": "mail:act",
         "read_only": False,

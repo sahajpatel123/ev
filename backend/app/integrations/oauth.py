@@ -91,6 +91,30 @@ def _provider_error(response: httpx.Response, fallback: str) -> OAuthProviderErr
     return OAuthProviderError(f"{fallback} (provider status {response.status_code})")
 
 
+def google_api_auth_error(response: httpx.Response, service: str) -> OAuthAuthError:
+    """Sanitized Google API 401/403: reason only, never token or raw body."""
+    reason = ""
+    message = ""
+    try:
+        data = response.json()
+        err = data.get("error") if isinstance(data, dict) else None
+        if isinstance(err, dict):
+            raw = err.get("message") or ""
+            if isinstance(raw, str):
+                message = raw.split("Enable it by visiting")[0].strip()[:MAX_ERROR_DESCRIPTION]
+            errors = err.get("errors") if isinstance(err.get("errors"), list) else []
+            if errors and isinstance(errors[0], dict):
+                reason = str(errors[0].get("reason") or "")[:80]
+            if not reason:
+                reason = str(err.get("status") or "")[:80]
+        elif isinstance(err, str):
+            reason = err[:80]
+    except Exception:
+        pass
+    detail = " ".join(p for p in (f"status {response.status_code}", reason, message) if p)
+    return OAuthAuthError(f"{service} rejected credential ({detail})")
+
+
 @dataclass(frozen=True)
 class OAuthProvider:
     """One authorization-code provider with PKCE + refresh + optional revoke."""
@@ -212,12 +236,14 @@ class OAuthProvider:
         token_type = data.get("token_type") or "Bearer"
         if not isinstance(token_type, str):
             token_type = "Bearer"
+        granted_scope = data.get("scope")
         return {
             "access_token": access_token,
             "refresh_token": refresh_token,
             "token_type": token_type,
             "expires_at": _parse_expires_in(data.get("expires_in")),
             "id_token": data.get("id_token") if isinstance(data.get("id_token"), str) else None,
+            "scope": granted_scope if isinstance(granted_scope, str) else None,
         }
 
 

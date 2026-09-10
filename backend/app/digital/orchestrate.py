@@ -216,7 +216,10 @@ async def _mac_whatsapp_send(text: str, name: str) -> dict[str, Any] | None:
     try:
         from app.ev.apps import discover_life_helper_path
         from app.ev.tools import _resolve_send_destination
-        from app.integrations.life_helper import run_life_helper
+        from app.integrations.life_helper import (
+            AmbiguousRecipientError,
+            run_life_helper,
+        )
         from app.services.life_stream_daemon import life_stream_should_run
 
         if not life_stream_should_run():
@@ -225,13 +228,34 @@ async def _mac_whatsapp_send(text: str, name: str) -> dict[str, Any] | None:
         if not helper:
             return None
         who = (name or "").strip()
+        body_early = ""
+        try:
+            from app.ev.send_intent import parse_send_intent
+
+            send = parse_send_intent(text)
+            if send:
+                if str(send.get("to") or "").strip():
+                    who = str(send["to"]).strip()
+                if str(send.get("text") or "").strip():
+                    body_early = str(send["text"]).strip()
+        except Exception:
+            pass
         if not who:
             return None
-        dest = await _resolve_send_destination(who, "whatsapp", helper_path=helper)
+        try:
+            dest = await _resolve_send_destination(who, "whatsapp", helper_path=helper)
+        except AmbiguousRecipientError as exc:
+            return {
+                "kind": "whatsapp",
+                "status": OpStatus.CLARIFY.value,
+                "sent": False,
+                "source": "live_mac",
+                "spoken": str(exc)[:520],
+            }
         digits = re.sub(r"\D+", "", str(dest.get("phone") or who))
         if len(digits) < 8:
             return None
-        body = _draft_body(text)
+        body = body_early or _draft_body(text)
         if not body:
             return None
         result = await run_life_helper(
@@ -267,7 +291,10 @@ async def _mac_mail_send(text: str, email: str | None, subject: str) -> dict[str
     try:
         from app.ev.apps import discover_life_helper_path
         from app.ev.tools import _resolve_send_destination
-        from app.integrations.life_helper import run_life_helper
+        from app.integrations.life_helper import (
+            AmbiguousRecipientError,
+            run_life_helper,
+        )
         from app.services.life_stream_daemon import life_stream_should_run
 
         if not life_stream_should_run():
@@ -279,7 +306,16 @@ async def _mac_mail_send(text: str, email: str | None, subject: str) -> dict[str
         if not to:
             return None
         if "@" not in to:
-            dest = await _resolve_send_destination(to, "mail", helper_path=helper)
+            try:
+                dest = await _resolve_send_destination(to, "mail", helper_path=helper)
+            except AmbiguousRecipientError as exc:
+                return {
+                    "kind": "gmail",
+                    "status": OpStatus.CLARIFY.value,
+                    "sent": False,
+                    "source": "live_mac",
+                    "spoken": str(exc)[:520],
+                }
             to = str(dest.get("email") or "")
             if "@" not in to:
                 return None
@@ -341,6 +377,13 @@ async def _gmail_path(text: str, ask: str, resolved: dict[str, Any], ctx: OpCont
     if ask == "draft_reply" or ask == "reply":
         if ctx.autonomy.value == "READ":
             return {"kind": "gmail", "status": OpStatus.BLOCKED.value, "sent": False, "reason": "READ autonomy"}
+        if not _draft_body(text):
+            return {
+                "kind": "gmail",
+                "status": OpStatus.CLARIFY.value,
+                "sent": False,
+                "spoken": "What should the reply say?",
+            }
         _prev_subject = previews[0].get("subject") if previews else ""
         subject = f"Re: {_prev_subject}" if _prev_subject else "Re: your message"
         draft = await execute(
@@ -426,6 +469,14 @@ async def _gmail_path(text: str, ask: str, resolved: dict[str, Any], ctx: OpCont
 async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) -> dict[str, Any]:
     person = resolved.get("person") or {}
     name = person.get("name") or _extract_person_name(text)
+    try:
+        from app.ev.send_intent import parse_send_intent
+
+        _send = parse_send_intent(text)
+        if _send and str(_send.get("to") or "").strip():
+            name = str(_send["to"]).strip()
+    except Exception:
+        pass
     ask_early = compile_semantic_owner_ask(text)
     explicit_early = ask_early in {"send", "reply"} or bool(
         re.search(r"(?i)\b(send|reply|reroute|forward)\b", text)
@@ -444,8 +495,7 @@ async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) ->
                 "sent": False,
                 "source": "live_mac",
                 "spoken": (
-                    f"I couldn't open WhatsApp to {who} on this Mac. "
-                    "I need a phone number in Contacts — I won't use a Chrome tab."
+                    f"I couldn't open WhatsApp to {who} on this Mac."
                 ),
             }
     else:
@@ -462,6 +512,15 @@ async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) ->
         and not re.search(r"(?i)\bwhat (?:message|did|was|is)\b", text)
     )
     if explicit_send:
+        # Never compose or send a canned/fabricated body. Ask when the ask
+        # carries no message words.
+        if not _draft_body(text):
+            return {
+                "kind": "whatsapp",
+                "status": OpStatus.CLARIFY.value,
+                "sent": False,
+                "spoken": f"What should I say to {name or 'them'} on WhatsApp?",
+            }
         if not ctx.confirmed and ctx.autonomy.value in {"SEND_WITH_CONFIRMATION", "PREPARE_ONLY", "READ"}:
             composed = await execute("whatsapp", "compose", {"chat_ref": chat_ref, "text": _draft_body(text)}, ctx=ctx)
             if composed.status in {OpStatus.SERVICE_OFFLINE, OpStatus.SERVICE_AUTH_REQUIRED}:
@@ -880,15 +939,31 @@ def _consequential(text: str) -> bool:
 
 
 def _draft_body(text: str) -> str:
+    """Owner's message words, or "" when the ask carries no body.
+
+    Never fabricate message text: every send site must refuse (or ask)
+    when this is empty instead of shipping a canned line.
+    """
+
     # "reply to Mansi saying thanks" — the body is after saying/say, not
     # after reply (which would swallow "to Mansi saying thanks").
     m = re.search(r"(?i)(?:saying|say)\s+(.+)$", text)
     if m:
         return m.group(1).strip()
+    # Otherwise prefer the send grammar — it knows where a multi-word
+    # recipient ends and the body begins ("text John Smith I'll be late").
+    try:
+        from app.ev.send_intent import parse_send_intent
+
+        send = parse_send_intent(text)
+        if send and str(send.get("text") or "").strip():
+            return str(send["text"]).strip()
+    except Exception:
+        pass
     m = re.search(r"(?i)(?:tell them|reply)\s+(.+)$", text)
     if m:
         return m.group(1).strip()
-    return "Thanks — I received this and will follow up."
+    return ""
 
 
 def _topic(text: str) -> str | None:
