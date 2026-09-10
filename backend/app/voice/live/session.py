@@ -151,6 +151,21 @@ def _spoken_from_tool_json(raw: str) -> str | None:
         or payload.get("error")
     )
     text = str(spoken or "").strip()
+    name = str(payload.get("name") or body.get("_tool") or body.get("tool") or "")
+    files = [str(item) for item in (body.get("files_changed") or payload.get("files_changed") or []) if item]
+    if (
+        name == "code"
+        and text
+        and not files
+        and not body.get("pending")
+        and not body.get("deferred")
+        and not body.get("background")
+        and not payload.get("pending")
+    ):
+        from app.ev.luna_code import _spoken_claims_code_write
+
+        if _spoken_claims_code_write(text):
+            return "I couldn't finish that coding job."
     return text or None
 
 
@@ -620,6 +635,7 @@ class LiveSession:
         )
         if isinstance(event, PartialTranscriptEvent) and getattr(event, "role", "user") != "assistant":
             await self._preempt_memory_hedge(event.text)
+            await self._preempt_code_hedge(event.text)
         if isinstance(event, PartialTranscriptEvent) and getattr(event, "role", "user") == "assistant":
             self._persist_keep_identity_now(event.text)
         if persist_user:
@@ -2135,17 +2151,18 @@ class LiveSession:
             note(last_muse_to_speech_ms=timed_ms(started))
         return True
 
-    async def _maybe_local_intent(self, text: str, *, from_grok: bool) -> bool:
-        """Handle pause/resume/cancel/protocol locally. Never waits for approval."""
+    async def _maybe_owner_code_intent(self, text: str, *, from_grok: bool) -> bool:
+        """Studio, intern, and short code jobs. Muse kernel must not skip these."""
 
-        if self._is_sleep(text):
-            await self._end_sleep(text)
-            return True
-        from app.cognitive.mode import muse_kernel_active
-
-        if muse_kernel_active():
-            return await self._run_cognitive_kernel(text, from_grok=from_grok)
-        from app.ev.code_studio import maybe_handle_code_ops
+        from app.ev.code_studio import maybe_handle_code_ops, spoken_studio_busy
+        from app.ev.luna_code import (
+            intern_in_flight,
+            looks_like_code_continue,
+            looks_like_code_request,
+            maybe_enqueue_code_intern,
+            shared_code_job,
+        )
+        from app.ev.tool_select import resolve_live_action
 
         ops_ack = maybe_handle_code_ops(text, session_key=str(self.session_id or "owner"))
         if ops_ack:
@@ -2157,6 +2174,98 @@ class LiveSession:
             self._last_honesty = ""
             await self._speak_code_receipt(ops_ack)
             return True
+        intern_ack = maybe_enqueue_code_intern(
+            text, session_key=str(self.session_id or "owner")
+        )
+        if intern_ack:
+            if from_grok and self.grok_voice is not None:
+                await self.grok_voice.cancel()
+                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+                if turn_id:
+                    self.grok_voice._shadow_response_for_turn = turn_id
+            self._last_honesty = ""
+            await self._speak_code_receipt(intern_ack)
+            return True
+        if intern_in_flight() and (
+            looks_like_code_request(text) or looks_like_code_continue(text)
+        ):
+            from app.ev.code_studio import apply_code_control, looks_like_code_control
+
+            if looks_like_code_control(text):
+                spoken = apply_code_control(text)
+            else:
+                spoken = spoken_studio_busy()
+            if from_grok and self.grok_voice is not None:
+                await self.grok_voice.cancel()
+                turn_id = getattr(self.grok_voice, "_open_turn_id", None)
+                if turn_id:
+                    self.grok_voice._shadow_response_for_turn = turn_id
+            self._last_honesty = ""
+            await self._speak_code_receipt(spoken)
+            return True
+        resolved = resolve_live_action(text)
+        if resolved is not None and resolved[0] == "code" and self.run_live_tool is not None:
+            if from_grok and self._provider_tool_in_flight():
+                return False
+            return await self._run_owner_transcript_broker(
+                resolved, call_id="owner-code", from_grok=from_grok
+            )
+        if await self._speak_last_code_followup(text, from_grok=from_grok):
+            return True
+        last_job = shared_code_job(str(self.session_id or "")) or self._last_code_job
+        if (
+            last_job
+            and looks_like_code_continue(text)
+            and self.run_live_tool is not None
+        ):
+            if from_grok and self._provider_tool_in_flight():
+                return False
+            return await self._run_owner_transcript_broker(
+                ("code", {"goal": text[:4000]}),
+                call_id="owner-code",
+                from_grok=from_grok,
+            )
+        if looks_like_code_request(text) and self.run_live_tool is not None:
+            if from_grok and self._provider_tool_in_flight():
+                return False
+            return await self._run_owner_transcript_broker(
+                ("code", {"goal": text[:4000]}),
+                call_id="owner-code",
+                from_grok=from_grok,
+            )
+        return False
+
+    async def _maybe_local_intent(self, text: str, *, from_grok: bool) -> bool:
+        """Handle pause/resume/cancel/protocol locally. Never waits for approval."""
+
+        if self._is_sleep(text):
+            await self._end_sleep(text)
+            return True
+        from app.db import SessionLocal
+        from app.ev.messaging.approval import handle_send_approval
+
+        async with SessionLocal() as approval_db:
+            approval = await handle_send_approval(
+                approval_db,
+                text,
+                actor="voice",
+                device_id=self.device_id,
+                live_session_id=str(self.session_id or "") or None,
+            )
+            if approval is not None:
+                await approval_db.commit()
+        if approval is not None:
+            if from_grok and self.grok_voice is not None:
+                await self.grok_voice.cancel()
+            self._last_honesty = ""
+            await self.speak_honesty(str(approval.get("spoken") or ""))
+            return True
+        if await self._maybe_owner_code_intent(text, from_grok=from_grok):
+            return True
+        from app.cognitive.mode import muse_kernel_active
+
+        if muse_kernel_active():
+            return await self._run_cognitive_kernel(text, from_grok=from_grok)
         intent = classify_live_intent(text)
         if intent != "none":
             if from_grok and self.grok_voice is not None:
@@ -2586,6 +2695,30 @@ class LiveSession:
             # look-without-memorize is the opposite: she says she cannot.
             if wants_keep_visible(text):
                 return
+        turn_id = getattr(grok, "_open_turn_id", None)
+        if turn_id:
+            grok._shadow_response_for_turn = turn_id
+        with contextlib.suppress(Exception):
+            await grok.cancel()
+
+    async def _preempt_code_hedge(self, text: str) -> None:
+        """Stop Mini from claiming a write before the coding jail runs."""
+
+        grok = self.grok_voice
+        if grok is None or self.run_live_tool is None:
+            return
+        if self._provider_tool_in_flight():
+            return
+        from app.ev.laptop_files import is_system_confirmation
+        from app.ev.luna_code import owner_asked_to_code
+
+        if is_system_confirmation(text) or not owner_asked_to_code(text):
+            return
+        if not (
+            getattr(grok, "_response_active", False)
+            or getattr(grok, "_assistant_open", False)
+        ):
+            return
         turn_id = getattr(grok, "_open_turn_id", None)
         if turn_id:
             grok._shadow_response_for_turn = turn_id
@@ -3066,7 +3199,7 @@ class LiveSession:
         """Start Luna without blocking Realtime pings. Speak the receipt later."""
 
         pending = {
-            "ok": True,
+            "ok": False,
             "name": "code",
             "pending": True,
             "spoken": _CODE_BUSY_SPOKEN if self._code_job_busy() else _CODE_WORKING_SPOKEN,
@@ -3074,6 +3207,7 @@ class LiveSession:
             "verified": False,
             "must_continue": True,
             "completion_claim_allowed": False,
+            "files_changed": [],
         }
         if self._code_job_busy():
             if call_id.startswith("owner-code") and call_id != _CODE_EXEC_CALL_ID:
@@ -3112,10 +3246,9 @@ class LiveSession:
         if self._closed:
             return
         self._remember_code_tool_json(raw)
-        spoken = _spoken_from_tool_json(raw)
-        if spoken:
-            self._last_honesty = ""
-            await self._speak_code_receipt(spoken)
+        spoken = _spoken_from_tool_json(raw) or "I couldn't finish that coding job."
+        self._last_honesty = ""
+        await self._speak_code_receipt(spoken)
 
     async def _speak_code_progress_if_slow(self) -> None:
         await asyncio.sleep(1.2)

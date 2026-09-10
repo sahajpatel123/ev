@@ -597,11 +597,12 @@ enum EVMicTalkTests {
             // MAXIMUM buffer, never a minimum batch — every arrival above the
             // anti-sliver floor schedules immediately, or ~1x realtime drips
             // starve the node ~5x/second. Mid-response restarts resume on any
-            // scheduled audio; only cold starts take the 250 ms prime.
+            // scheduled audio; cold starts take the 400 ms prime (Sep-2026
+            // jitter-buffer repair: 250 ms starved on WAN + tool pauses).
             check("wired-TTSPlayer-prompt-scheduling", tts.contains("minBytes") && tts.contains("alignedMax"))
             check("wired-TTSPlayer-starved-resume", tts.contains("starvedResume"))
-            check("wired-TTSPlayer-jitter-prime", tts.contains("startupPrebufferMs = 250"))
-            check("wired-TTSPlayer-restart-prebuffer", tts.contains("restartPrebufferMs = 180"))
+            check("wired-TTSPlayer-jitter-prime", tts.contains("startupPrebufferMs = 400"))
+            check("wired-TTSPlayer-restart-prebuffer", tts.contains("restartPrebufferMs = 300"))
             check("wired-TTSPlayer-adopt-response", tts.contains("func adoptResponse"))
             // OWNER DECISION 2026-08-23: the ungated barge-in detector that
             // chopped long answers (92 mid-response stops) is REMOVED from

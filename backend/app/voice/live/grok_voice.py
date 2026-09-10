@@ -386,12 +386,43 @@ _OUTPUT_TRANSCRIPT_MIN_INTERVAL_S = 0.08
 _TOOL_GAP_GATE_S = 15.0
 _TOOL_GAP_CONTINUATION_GATE_S = 5.0
 # Keep provider reads independent from client/audio playout. A blocked recv
-# cannot answer websocket pings (ping_timeout=20s) and starves TTS after ~20s.
-# 96 gives headroom for a fast 30s burst. Under pressure we preserve provider
-# control/boundary events (response.created/done, VAD, transcripts, tools) and
-# discard only an audio delta or disposable transcript delta as a last resort;
-# losing a boundary is much worse than losing one already-buffered PCM slice.
+# cannot answer websocket pings and starves TTS. 96 gives headroom for a fast
+# 30s burst. Under pressure we preserve provider control/boundary events
+# (response.created/done, VAD, transcripts, tools) and discard only an audio
+# delta or disposable transcript delta as a last resort; losing a boundary is
+# much worse than losing one already-buffered PCM slice.
 _UPSTREAM_EVENT_QUEUE_MAX = 96
+# AGENT LAW (2026-09-10): OpenAI Realtime does not reliably pong *client*
+# protocol pings while Mini is generating a long spoken reply. websockets then
+# closes with 1011 "keepalive ping timeout" at ping_timeout=40s — heard as
+# Evie going off-script ~40s into a long answer because reconnect collides
+# with leftover playback. Disable client keepalive. Server protocol pings are
+# still auto-ponged by the library. JSON `ping` events are answered in recv,
+# never queued behind audio. Dead peers still surface as ConnectionClosed.
+_REALTIME_WS_PING_INTERVAL = None
+_REALTIME_WS_PING_TIMEOUT = None
+# Mini is a mouth. Muse already wrote the spoken text. Do not attach the
+# owner-frozen brevity law here — "one or two short sentences" fights a
+# long verbatim speak and Mini starts inventing a shorter answer mid-stream.
+_MOUTH_SPEAK_INSTRUCTIONS = (
+    "Your ONLY job is to speak the owner-facing text from the "
+    "latest user item, verbatim, in your normal voice. Never read "
+    "the parenthetical label. Speak only the text after the closing "
+    "parenthesis. Do not paraphrase, omit, summarize, or add facts. "
+    "Do not plan. Do not call tools. No JSON, no questions, no "
+    "independent answer. Speak the full text even if it is long; "
+    "do not stop, restart, or invent a shorter version. Speak in the "
+    "same language as that text; never switch languages."
+)
+_COPROCESSOR_INSTRUCTIONS = (
+    "You are a voice coprocessor, not Evie's mind. You do not answer owner "
+    "questions, plan, call tools, add facts, or paraphrase meaning. You "
+    "transcribe speech. When given a system-confirmation item, speak the "
+    "text after the closing parenthesis verbatim, in full, in your normal "
+    "voice, even if the text is long. Never shorten it. Never create an "
+    "independent spoken reply to the owner. Speak in the same language as "
+    "that text; never switch languages."
+)
 
 _AUDIO_DELTA_TYPES = frozenset(
     {
@@ -1211,14 +1242,7 @@ def grok_session_update(
         selected_tools = []
     mode = _live_surface_mode()
     realtime_tools = [] if coprocessor else grok_voice_tools(selected_tools, mode=mode)
-    coprocessor_instructions = (
-        "You are a voice coprocessor, not Evie's mind. You do not answer owner "
-        "questions, plan, call tools, add facts, or paraphrase meaning. You "
-        "transcribe speech. When given a system-confirmation item, speak the "
-        "text after the closing parenthesis verbatim, in full, in your normal "
-        "voice. Never create an independent spoken reply to the owner.\n"
-        + SPEECH_STYLE_INSTRUCTIONS
-    )
+    coprocessor_instructions = _COPROCESSOR_INSTRUCTIONS
     if kind == "openai":
         voice = (settings.openai_realtime_voice or "marin").strip() or "marin"
         # OWNER LAW (S2S latency): server VAD creates the response the moment
@@ -2664,8 +2688,6 @@ class GrokVoiceBridge:
         raw = (text or "").strip()
         if not raw or self._closed or self._ws is None:
             return False
-        from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
-
         self._honesty_speech = True
         self._pending_life_record = raw
         self._life_record_forced = False
@@ -2693,15 +2715,7 @@ class GrokVoiceBridge:
         ):
             return False
         response: dict[str, Any] = {
-            "instructions": (
-                "Your ONLY job is to speak the owner-facing text from the "
-                "latest user item, verbatim, in your normal voice. Never read "
-                "the parenthetical label. Speak only the text after the closing "
-                "parenthesis. Do not paraphrase, omit, summarize, or add facts. "
-                "Do not plan. Do not call tools. No JSON, no questions, no "
-                "independent answer.\n"
-                + SPEECH_STYLE_INSTRUCTIONS
-            )
+            "instructions": _MOUTH_SPEAK_INSTRUCTIONS
         }
         if self._response_tool_choice_supported or _mini_coprocessor():
             response["tool_choice"] = "none"
@@ -3406,6 +3420,12 @@ class GrokVoiceBridge:
                     return
                 event = _parse_event(message)
                 if event:
+                    kind = str(event.get("type") or "")
+                    if kind == "ping":
+                        # OpenAI JSON keepalive. Never park this behind audio
+                        # deltas — a late pong is a 1011 close mid-speak.
+                        await self._send({"type": "pong"})
+                        continue
                     queue = self._upstream_events
                     if queue is None:
                         return
@@ -3748,14 +3768,7 @@ class GrokVoiceBridge:
 
         coprocessor = muse_kernel_active()
         if coprocessor:
-            text = (
-                "You are a voice coprocessor, not Evie's mind. You do not answer owner "
-                "questions, plan, call tools, add facts, or paraphrase meaning. You "
-                "transcribe speech. When given a system-confirmation item, speak the "
-                "text after the closing parenthesis verbatim, in full, in your normal "
-                "voice. Never create an independent spoken reply to the owner.\n"
-                + SPEECH_STYLE_INSTRUCTIONS
-            )
+            text = _COPROCESSOR_INSTRUCTIONS
         elif self._provider == "openai":
             text = (
                 openai_realtime_instructions(capability_manifest=manifest)
@@ -5477,6 +5490,6 @@ async def _default_connect(url: str, additional_headers: dict | None = None):
         url,
         additional_headers=additional_headers or {},
         open_timeout=20,
-        ping_interval=20,
-        ping_timeout=40,
+        ping_interval=_REALTIME_WS_PING_INTERVAL,
+        ping_timeout=_REALTIME_WS_PING_TIMEOUT,
     )
