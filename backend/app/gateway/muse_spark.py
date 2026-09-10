@@ -361,6 +361,24 @@ class MuseSparkProvider(StreamingChatProvider):
         del model
         return muse_spark_model()
 
+    def _http_timeout_kwargs(self, payload: dict[str, Any]) -> dict[str, Any]:
+        client = getattr(self, "_keepalive_client", None)
+        if client is not None and type(client).__module__.startswith("httpx"):
+            return {"timeout": _spark_timeout(payload)}
+        return {}
+
+    def _http(self) -> httpx.AsyncClient:
+        """Reuse one client so tool-loop steps keep the TLS session warm."""
+
+        client = getattr(self, "_keepalive_client", None)
+        closed = True if client is None else bool(getattr(client, "is_closed", False))
+        if closed:
+            self._keepalive_client = httpx.AsyncClient(
+                timeout=http_timeout(),
+                limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
+            )
+        return self._keepalive_client
+
     def _identified(self, result: ChatResult, requested: str | None = None) -> ChatResult:
         del requested
         result.model = muse_spark_model()
@@ -579,8 +597,16 @@ class MuseSparkProvider(StreamingChatProvider):
         attempts = max_attempts()
         for attempt in range(attempts):
             try:
-                async with httpx.AsyncClient(timeout=_spark_timeout(payload)) as client:
-                    response = await client.post(f"{self.base_url}/responses", headers=self._headers(), json=payload)
+                client = self._http()
+                post_kwargs: dict[str, Any] = {
+                    "headers": self._headers(),
+                    "json": payload,
+                    **self._http_timeout_kwargs(payload),
+                }
+                response = await client.post(
+                    f"{self.base_url}/responses",
+                    **post_kwargs,
+                )
                 # A real httpx response always has ``status_code``. The
                 # defensive default keeps small deterministic adapter
                 # fixtures useful without weakening the real HTTP checks.
@@ -633,8 +659,26 @@ class MuseSparkProvider(StreamingChatProvider):
         self._note_call(usage=result.usage, model=result.model)
         return result
 
-    async def chat_with_tools(self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec], *, model: str | None = None, temperature: float = 0.7) -> ChatResult:
-        result = self._result_from_response(await self._post_json(self._payload(messages, model=model, tools=tools, stream=False)))
+    async def chat_with_tools(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec],
+        *,
+        model: str | None = None,
+        temperature: float = 0.7,
+        reasoning_effort: str | None = None,
+    ) -> ChatResult:
+        result = self._result_from_response(
+            await self._post_json(
+                self._payload(
+                    messages,
+                    model=model,
+                    tools=tools,
+                    stream=False,
+                    reasoning_effort=reasoning_effort,
+                )
+            )
+        )
         self._note_call(usage=result.usage, model=result.model)
         return result
 
@@ -655,8 +699,30 @@ class MuseSparkProvider(StreamingChatProvider):
         projected = dict(data)
         projected["model"] = muse_spark_model()
         projected.setdefault("usage", result.usage)
-        if "choices" not in projected:
-            projected["choices"] = [{"message": {"role": "assistant", "content": result.text or None, "tool_calls": [{"id": call.id, "type": "function", "function": {"name": call.name, "arguments": json.dumps(call.arguments, default=str)}} for call in result.tool_calls]}}]
+        # Always project from parsed tool_calls. Meta Responses often returns
+        # function_call items on `output` plus a prose `choices` message that
+        # claims the work is done. The coding loop reads `choices`; if we keep
+        # the provider's choices, Evie speaks success and never writes files.
+        projected["choices"] = [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": result.text or None,
+                    "tool_calls": [
+                        {
+                            "id": call.id,
+                            "type": "function",
+                            "function": {
+                                "name": call.name,
+                                "arguments": json.dumps(call.arguments or {}, default=str),
+                            },
+                        }
+                        for call in (result.tool_calls or [])
+                        if call.name
+                    ],
+                }
+            }
+        ]
         return projected
 
     async def chat_structured(
@@ -717,11 +783,16 @@ class MuseSparkProvider(StreamingChatProvider):
             while True:
                 started_stream = False
                 try:
-                    async with httpx.AsyncClient(timeout=_spark_timeout(payload)) as client, client.stream(
+                    client = self._http()
+                    stream_kwargs: dict[str, Any] = {
+                        "headers": self._stream_headers(),
+                        "json": payload,
+                        **self._http_timeout_kwargs(payload),
+                    }
+                    async with client.stream(
                         "POST",
                         f"{self.base_url}/responses",
-                        headers=self._stream_headers(),
-                        json=payload,
+                        **stream_kwargs,
                     ) as response:
                             status = getattr(response, "status_code", 200)
                             if status in {401, 402, 403, 404}:

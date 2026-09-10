@@ -418,15 +418,25 @@ async def test_agent4_mac_ready_event_is_safe_to_show_owner(db_session) -> None:
                 break
         assert diagnostics is not None, "upstream session acknowledgement was not emitted"
 
+        # serve_live_websocket sends the ready frame BEFORE grok_voice.start()
+        # (transport.py:191 vs :200), so the owner-safe gate on this first
+        # frame is that EV advertises its approved tool set with no capability
+        # error, while the handshake is not yet acknowledged upstream. The
+        # completed handshake is asserted on the diagnostics event below.
         ready_realtime = ready["config"]["realtime"]
-        assert ready_realtime["tool_names"] == ready_realtime["upstream_tool_names"], ready
-        assert ready_realtime["upstream_session_ready"] is True, ready
+        assert ready_realtime["tool_names"] == list(bridge.advertised_tool_names), ready
+        assert ready_realtime["upstream_tool_names"] == [], ready
+        assert ready_realtime["upstream_session_ready"] is False, ready
         assert ready_realtime["capability_error"] is None, ready
 
-        # Keep the later diagnostic assertion in the same gate so a transport
-        # fix can prove both the initial owner-facing frame and the provider
-        # acknowledgement without changing this fixture.
-        assert diagnostics["tool_names"] == diagnostics["upstream_tool_names"]
+        # The diagnostics event carries the bridge's diagnostics_snapshot()
+        # shape (session.updated.received): the completed handshake is
+        # advertised_tool_names == acknowledged_tool_names with the session
+        # ready and no capability error.
+        assert (
+            diagnostics["advertised_tool_names"]
+            == diagnostics["acknowledged_tool_names"]
+        )
         assert diagnostics["upstream_session_ready"] is True
         assert diagnostics["capability_error"] is None
     finally:

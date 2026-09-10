@@ -65,9 +65,7 @@ def is_verify_only(text: str) -> bool:
     raw = (text or "").strip()
     if not raw or not _VERIFY_ONLY.search(raw):
         return False
-    if _FILL.search(raw) or _CREATE.search(raw):
-        return False
-    return True
+    return not (_FILL.search(raw) or _CREATE.search(raw))
 
 
 def wants_more_content(text: str) -> bool:
@@ -82,9 +80,7 @@ def looks_like_distinct_new_file(text: str, last_path: str | None = None) -> boo
         return True
     new_label = _effect_label(raw)
     bound_label = label_from_path(last_path) if last_path else ""
-    if new_label and bound_label and not kinds_compatible(new_label, bound_label):
-        return True
-    return False
+    return bool(new_label and bound_label and not kinds_compatible(new_label, bound_label))
 
 
 def label_from_path(path: str | None) -> str:
@@ -107,9 +103,7 @@ def kinds_compatible(left: str, right: str) -> bool:
     b_tokens = set(b.split())
     if a_tokens and a_tokens <= b_tokens:
         return True
-    if b_tokens and b_tokens <= a_tokens:
-        return True
-    return False
+    return bool(b_tokens and b_tokens <= a_tokens)
 
 
 def is_rephrase_create(text: str, last_path: str | None = None) -> bool:
@@ -178,9 +172,16 @@ def coalesce_file_goal(
         parsed["query"] = Path(bound).name
         parsed["unique_name"] = False
         return parsed
-    if not parsed.get("unique_name") and dest and not _same_path(dest, bound):
-        if not kinds_compatible(_effect_label(raw) or str(parsed.get("label") or ""), label_from_path(bound)):
-            return parsed
+    if (
+        not parsed.get("unique_name")
+        and dest
+        and not _same_path(dest, bound)
+        and not kinds_compatible(
+            _effect_label(raw) or str(parsed.get("label") or ""),
+            label_from_path(bound),
+        )
+    ):
+        return parsed
     if wants_more_content(raw):
         return _retarget_write(parsed, bound)
     if _existing_has_body(bound) and not str(parsed.get("content") or "").strip():

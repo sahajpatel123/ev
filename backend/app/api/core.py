@@ -228,7 +228,7 @@ async def health() -> dict:
     from app.cognitive.mode import muse_kernel_active
     from app.db import SessionLocal
     from app.ev.laptop_files import laptop_files_allowed
-    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active
+    from app.gateway.muse import configured_intelligence_provider, muse_brain_active
 
     async with SessionLocal() as session:
         migrations = await migration_parity(session)
@@ -239,7 +239,7 @@ async def health() -> dict:
     }
     # Muse Spark is the normal manager/brain. Do not overwrite that slot with
     # the legacy DeepSeek manager stub while Muse is the configured intelligence.
-    if not muse_intelligence_active():
+    if not muse_brain_active():
         models["manager"] = DeepSeekManagerAdapter().health()
 
     return {
@@ -1684,6 +1684,17 @@ async def run_chat_pipeline(
             "sections": ",".join(section.name for section in context_plan.sections if section.items_included),
         },
     )
+
+    # Live Mac work state + general operating doctrine, whenever a computer
+    # control client is connected. This is what lets the provider know the
+    # current goal and how to recover instead of being re-steered every turn.
+    from app.ev.computer_runtime import computer_prompt_block
+
+    computer_block = computer_prompt_block(
+        device_id=str(device_id) if device_id else None
+    )
+    if computer_block:
+        context = (context + "\n\n" + computer_block).strip()
 
     from app.cognitive.mode import muse_kernel_active
 

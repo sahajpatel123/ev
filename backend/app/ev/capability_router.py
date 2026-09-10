@@ -259,13 +259,22 @@ def goal_from_transcript(
         # Common owner phrasing the generic resolver misses: "Text Rahul: <msg>".
         import re as _re
 
+        from app.ev.send_intent import channel_from_text
+
         colon = _re.match(
             r"^(?:text|message|imessage)\s+([A-Za-z][A-Za-z'-]{1,30})\s*[:，,]\s*(.+)$",
             text,
             _re.IGNORECASE,
         )
         if colon:
-            resolved = ("send_message", {"to": colon.group(1), "text": colon.group(2).strip()[:500]})
+            resolved_args: dict[str, object] = {
+                "to": colon.group(1),
+                "text": colon.group(2).strip()[:500],
+            }
+            colon_channel = channel_from_text(text)
+            if colon_channel:
+                resolved_args["channel"] = colon_channel
+            resolved = ("send_message", resolved_args)
     if resolved is not None:
         tool_name, arguments = resolved
         return ActionGoal(

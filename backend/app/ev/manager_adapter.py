@@ -1,8 +1,10 @@
-"""ManagerAdapter stub (G1.3) — DeepSeek complex-work manager boundary.
+"""ManagerAdapter stub (G1.3) — legacy complex-work manager boundary.
 
-G1.3 only needs the route to exist and be scaffolded, not active.
-Full specialist-agent runtime is G3.  TurnController routes DELEGATED_JOB
-here without changing voice/control architecture.
+Muse Spark 1.3 Contributor is the normal manager (see app/ev/model_router.py).
+This DeepSeek stub stays as the legacy fallback route only: G1.3 needs the
+route to exist scaffolded, not active. Full specialist-agent runtime is G3.
+TurnController routes DELEGATED_JOB here without changing voice/control
+architecture.
 """
 
 from __future__ import annotations
@@ -13,7 +15,7 @@ from app.config import settings
 
 
 class ManagerAdapter:
-    """Abstract manager — future DeepSeekManagerAdapter will inherit."""
+    """Abstract manager — DeepSeekManagerAdapter (legacy fallback) inherits."""
 
     async def submit(self, *, owner_turn: str, intent: Any, context: dict | None = None) -> dict:
         raise NotImplementedError

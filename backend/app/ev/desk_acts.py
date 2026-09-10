@@ -487,10 +487,19 @@ def parse_list_tool(text: str, last_path: str | None = None) -> dict[str, Any] |
         who = _text_recipient(raw)
         if not who:
             return None
+        from app.ev.send_intent import channel_from_text
+
+        send_args: dict[str, object] = {
+            "to": who,
+            "text": _message_body(held, body)[:4000],
+        }
+        desk_channel = channel_from_text(raw)
+        if desk_channel:
+            send_args["channel"] = desk_channel
         return {
             "channel": "tool",
             "name": "send_message",
-            "args": {"to": who, "text": _message_body(held, body)[:4000]},
+            "args": send_args,
         }
     return None
 

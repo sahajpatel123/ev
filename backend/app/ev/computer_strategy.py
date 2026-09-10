@@ -699,6 +699,134 @@ def navigation_url_in_utterance(text: str) -> str | None:
     return None
 
 
+# Spoken site names → homepage. Generic lexicon, not product examples.
+_WEB_DESTINATIONS: tuple[tuple[str, str], ...] = (
+    ("whatsapp web", "https://web.whatsapp.com/"),
+    ("google maps", "https://maps.google.com/"),
+    ("youtube", "https://www.youtube.com/"),
+    ("gmail", "https://mail.google.com/"),
+    ("outlook", "https://outlook.live.com/"),
+    ("twitter", "https://twitter.com/"),
+    ("facebook", "https://www.facebook.com/"),
+    ("instagram", "https://www.instagram.com/"),
+    ("linkedin", "https://www.linkedin.com/"),
+    ("wikipedia", "https://www.wikipedia.org/"),
+    ("netflix", "https://www.netflix.com/"),
+    ("reddit", "https://www.reddit.com/"),
+    ("github", "https://github.com/"),
+    ("amazon", "https://www.amazon.com/"),
+    ("google", "https://www.google.com/"),
+    ("maps", "https://maps.google.com/"),
+)
+_OPEN_SITE_RE = re.compile(
+    r"\b(?:open|launch|start|go\s+to|visit|navigate(?:\s+to)?|take me to|pull up)\b",
+    re.I,
+)
+_SEARCH_SITE_RE = re.compile(
+    r"\b(?:search(?:\s+for)?|look\s+up|google\s+(?!chrome\b))\b",
+    re.I,
+)
+_NOT_SIMPLE_OPEN_RE = re.compile(
+    r"\b(?:click|type|press|scroll|play|watch|pause|write|create|append)\b",
+    re.I,
+)
+
+
+def _site_haystack(text: str) -> str:
+    """Drop browser compound names so 'Google Chrome' is not the Google homepage."""
+
+    lowered = (text or "").lower()
+    return re.sub(r"\bgoogle\s+chrome\b", "chrome", lowered)
+
+
+def named_site_in_text(text: str) -> str | None:
+    """Homepage URL if a known site name appears. Does not require an open-verb."""
+
+    haystack = _site_haystack(text)
+    if not haystack.strip():
+        return None
+    best_url = None
+    best_len = 0
+    for name, url in _WEB_DESTINATIONS:
+        if re.search(rf"\b{re.escape(name)}\b", haystack) and len(name) > best_len:
+            best_url = url
+            best_len = len(name)
+    return best_url
+
+
+def named_web_destination(text: str) -> str | None:
+    """Navigate target when they asked to open/go to a named site, not search for it."""
+
+    raw = (text or "").strip()
+    if not raw or not _OPEN_SITE_RE.search(raw):
+        return None
+    if _SEARCH_SITE_RE.search(raw):
+        return None
+    return named_site_in_text(raw)
+
+
+def utterance_navigation_dest(text: str, query: str = "") -> str | None:
+    """URL to open: typed host, then a spoken site name on an open/go utterance."""
+
+    dest = navigation_url_from_text(query) if query else None
+    if dest is None:
+        dest = navigation_url_in_utterance(text)
+    if dest is None:
+        dest = named_web_destination(text)
+    return dest
+
+
+def looks_like_app_or_web_task(text: str) -> bool:
+    """True when this utterance is a browser/URL act, not a leftover file job."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if navigation_url_in_utterance(raw) or named_site_in_text(raw):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:open|launch|start|go\s+to|visit|navigate(?:\s+to)?)\b",
+            raw,
+            re.I,
+        )
+        and re.search(r"\b(?:safari|chrome|browser|firefox|google chrome)\b", raw, re.I)
+    )
+
+
+def parse_open_intent(text: str) -> tuple[str, dict[str, Any]] | None:
+    """Deterministic open-app / navigate. None when the ask is not a simple open."""
+
+    raw = (text or "").strip()
+    if not looks_like_app_or_web_task(raw):
+        return None
+    if _NOT_SIMPLE_OPEN_RE.search(raw):
+        return None
+    if re.search(r"\bsearch\s+for\b", raw, re.I) and not navigation_url_in_utterance(raw):
+        return None
+    if re.search(r"\b(?:and|then)\b", raw, re.I):
+        dest = named_web_destination(raw) or navigation_url_in_utterance(raw)
+        if not dest:
+            return None
+    resolved = resolve_in_app_computer_goal(raw) or resolve_generic_computer_goal(raw)
+    if resolved is None:
+        dest = named_web_destination(raw) or navigation_url_in_utterance(raw)
+        if dest:
+            browser = _browser_app_from_text(raw, None) or "Safari"
+            return "app_action", {
+                "app": browser,
+                "action": "navigate",
+                "query": dest,
+                "url": dest,
+            }
+        return None
+    capability, args = resolved
+    if capability == "app_action" and str(args.get("action") or "").lower() == "status":
+        app = str(args.get("app") or "Safari").strip() or "Safari"
+        return "open_app", {"name": app}
+    return resolved
+
+
 def wants_play_media(text: str) -> bool:
     """True when the owner asked to play/watch a video, not a song or playlist."""
     raw = text or ""
@@ -1045,7 +1173,7 @@ def _resolve_app_lifecycle_and_browser_chrome(
         if name and not re.search(
             r"\b(and|then|click|type|search|press|write|first result|tab)\b", name
         ):
-            dest_name = navigation_url_from_text(name)
+            dest_name = navigation_url_from_text(name) or named_web_destination(raw)
             if dest_name:
                 return "app_action", {
                     "app": browser or "Safari",
@@ -1055,7 +1183,7 @@ def _resolve_app_lifecycle_and_browser_chrome(
                 }
             return "open_app", {"name": name}
     query = _search_query_from_goal(raw)
-    dest = navigation_url_from_text(query)
+    dest = utterance_navigation_dest(raw, query)
     if dest is None and re.search(r"\b(go to|open|visit|navigate to)\b", lowered):
         after = re.search(
             r"\b(?:go to|open|visit|navigate to)\s+(?P<dest>\S+)",
@@ -1063,9 +1191,9 @@ def _resolve_app_lifecycle_and_browser_chrome(
             re.I,
         )
         if after:
-            dest = navigation_url_from_text(after.group("dest"))
-    if dest is None:
-        dest = navigation_url_in_utterance(raw)
+            dest = navigation_url_from_text(after.group("dest")) or named_site_in_text(
+                after.group("dest")
+            )
     if dest is not None and (
         browser
         or query
@@ -1131,7 +1259,7 @@ def resolve_in_app_computer_goal(
         if media is not None:
             return media
         query = _search_query_from_goal(raw)
-        dest = navigation_url_from_text(query) or navigation_url_in_utterance(raw)
+        dest = utterance_navigation_dest(raw, query)
         if dest:
             return "app_action", {
                 "app": "Chrome",
@@ -1147,7 +1275,7 @@ def resolve_in_app_computer_goal(
         if media is not None:
             return media
         query = _search_query_from_goal(raw)
-        dest = navigation_url_from_text(query) or navigation_url_in_utterance(raw)
+        dest = utterance_navigation_dest(raw, query)
         if dest:
             return "app_action", {
                 "app": "Safari",
@@ -1236,7 +1364,7 @@ def resolve_browser_computer_goal(
     if not raw or looks_like_web_research(raw):
         return None
     query = _search_query_from_goal(raw)
-    dest = navigation_url_from_text(query) if query else navigation_url_in_utterance(raw)
+    dest = utterance_navigation_dest(raw, query)
     first = wants_first_result_text(raw) or wants_first_on_page_item(raw)
     looking = bool(re.search(r"\b(?:search|google|look\s+up)\b", raw, re.I))
     if not dest and re.search(r"\b(?:music|spotify|playlist|track)\b", raw, re.I):
@@ -1347,7 +1475,7 @@ def resolve_generic_computer_goal(
             query,
             flags=re.I,
         ).strip()
-        dest = navigation_url_from_text(query)
+        dest = utterance_navigation_dest(raw, query)
         if dest and _browser_app_from_text(app, app):
             return "app_action", {
                 "app": app,

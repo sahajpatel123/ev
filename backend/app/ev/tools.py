@@ -28,7 +28,7 @@ from app.digital.tools import DIGITAL_TOOL_SPECS, handle_digital_tool
 from app.ev.research import list_sessions
 from app.gateway.validation import validate_arguments, validate_output
 from app.integrations import service as integrations
-from app.integrations.life_helper import LifeHelperError, LifeHelperUnavailableError
+from app.integrations.life_helper import AmbiguousRecipientError, LifeHelperError, LifeHelperUnavailableError
 from app.memory.retrieval import Retriever
 from app.models import GearSnapshot, Integration, Memory
 from app.schemas import ToolCallResponse
@@ -169,11 +169,17 @@ TOOL_SPECS: list[dict[str, Any]] = [
         # implementation details or assigns risk.
         "name": "computer",
         "description": (
-            "Mac goal: open or close apps, open a URL, operate UI, or handle "
-            "owner files in Desktop/Documents/Downloads. State the request in "
-            "plain words. After a verified new_tab or close_tab, stop. After "
-            "opening a site, finish the first requested click. Not for memory, "
-            "weather, messages, timers, or writing programs — call code."
+            "Mac goal: open or close any installed app, open a URL, operate an "
+            "app's UI (search, click, type, play, navigate), or handle owner "
+            "files in Desktop/Documents/Downloads. Pass the owner's whole "
+            "request in plain words; set target_app when they named one. The "
+            "executor learns an app's UI itself; never ask the owner to guide "
+            "you step by step. If a goal is already live, continue it — try "
+            "again / keep going / that didn't work revise the same goal. "
+            "Opening an app is not completion: finish the in-app outcome, "
+            "reuse existing windows/tabs, and never open duplicate tabs. After "
+            "a verified new_tab or close_tab, stop. Not for memory, weather, "
+            "messages, timers, or writing programs — call code."
         ),
         "parameters": {
             "type": "object",
@@ -570,8 +576,18 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "send_message",
         "description": (
             "Send a message to a contact or phone number through the granted "
-            "messaging bridge (e.g. Messages). Under EV_OWNER_AUTONOMY=full this "
-            "needs no approval inside granted scopes."
+            "messaging bridge. channel names the transport the owner asked "
+            "for: 'whatsapp', 'imessage', 'sms', 'telegram', 'signal', "
+            "'mail', or any registered channel. Omit it when the owner named "
+            "none; never substitute a channel they did not ask for. WhatsApp "
+            "over the owner's open WhatsApp Web tab autosends only after one "
+            "human approval: when the result says pending_approval, speak its "
+            "spoken question and stop — do not call the tool again until the "
+            "owner answers. Other compose-only channels open with the text "
+            "ready and the owner taps send; delivery is only claimed when the "
+            "bridge confirms it. Use resolve_contact first when the target is "
+            "a person's name. Under EV_OWNER_AUTONOMY=full this needs no "
+            "approval inside granted scopes."
         ),
         "parameters": {
             "type": "object",
@@ -583,7 +599,6 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 64,
-                    "default": "messages",
                 },
                 "confirm": {"type": "boolean", "default": False},
                 "idempotency_key": {"type": "string", "maxLength": 128, "default": None},
@@ -622,6 +637,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "maxLength": 64,
                     "default": "messages",
                 },
+                "query": {"type": "string", "minLength": 1, "maxLength": 1000},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
             },
         },
@@ -2534,6 +2550,39 @@ def _life_unavailable(reason: str, *, next_step: str, error: str | None = None) 
     }
 
 
+def _alerts_spoken(rows: list[dict]) -> str:
+    """Short human digest of pending alerts — never the raw list."""
+
+    if not rows:
+        return "Nothing pending — no alerts."
+    titles = [str(row.get("title") or "").strip() for row in rows]
+    titles = [title for title in titles if title]
+    urgent = sum(
+        1
+        for row in rows
+        if str(row.get("priority") or "").strip().lower()
+        in {"urgent", "critical", "high", "p0"}
+        or str(row.get("tier") or "").strip().lower() == "urgent"
+    )
+    head = "1 alert" if len(rows) == 1 else f"{len(rows)} alerts"
+    if urgent and urgent != len(rows):
+        head += f" ({urgent} urgent)"
+    elif urgent and urgent == len(rows) and len(rows) > 1:
+        head += " (all urgent)"
+    if not titles:
+        return f"{head}."
+    shown = titles[:3]
+    if len(shown) == 1:
+        listing = shown[0]
+    elif len(shown) == 2:
+        listing = f"{shown[0]} and {shown[1]}"
+    else:
+        listing = f"{shown[0]}, {shown[1]}, and {shown[2]}"
+    extra = len(titles) - len(shown)
+    tail = f", plus {extra} more" if extra > 0 else ""
+    return f"{head}: {listing}{tail}."
+
+
 def get_spec(name: str) -> dict | None:
     """Return the declared spec for a tool or action name.
 
@@ -2586,9 +2635,23 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
 
     payload = result.get("result") if isinstance(result, dict) and "result" in result else result
     payload = payload if isinstance(payload, dict) else {}
-    if payload.get("spoken"):
-        return str(payload["spoken"])
     name = (tool_name or payload.get("_tool") or payload.get("tool") or "").strip()
+    spoken_now = str(payload.get("spoken") or "").strip()
+    code_files = [str(item) for item in (payload.get("files_changed") or []) if item]
+    if (
+        name == "code"
+        and spoken_now
+        and not code_files
+        and not payload.get("deferred")
+        and not payload.get("pending")
+        and not payload.get("background")
+    ):
+        from app.ev.luna_code import _spoken_claims_code_write
+
+        if payload.get("ok") is False or payload.get("degraded") or _spoken_claims_code_write(spoken_now):
+            spoken_now = ""
+    if spoken_now:
+        return spoken_now
     degraded = bool(payload.get("degraded") or payload.get("ok") is False)
     next_step = str(
         payload.get("next_step") or payload.get("reason") or payload.get("error") or ""
@@ -2628,11 +2691,19 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
         text = str(payload.get("text") or payload.get("reminder") or "that").strip()
         return f"Reminder set: {text}."
     if name == "code":
+        if payload.get("deferred") or payload.get("pending") or payload.get("background"):
+            spoken = str(payload.get("spoken") or "").strip()
+            return spoken or "I'm writing that now. I'll tell you when it's saved."
         files = [str(item) for item in (payload.get("files_changed") or []) if item]
         folder = str(payload.get("workspace") or payload.get("project") or "the coding workspace")
         if files:
             return f"I wrote {', '.join(files[:4])} in {folder}."
-        return "I finished that coding job."
+        from app.ev.luna_code import _spoken_claims_code_write
+
+        spoken = str(payload.get("spoken") or "").strip()
+        if spoken and not _spoken_claims_code_write(spoken):
+            return spoken
+        return "I couldn't finish that coding job."
     channel_name = str(payload.get("channel") or "").strip().lower()
     if name == "send_message" and channel_name in {"whatsapp", "wa"}:
         target = str(payload.get("to") or "them")
@@ -2898,6 +2969,23 @@ async def dispatch(
             else:
                 status = "denied"
                 error = decision.reason
+        elif (
+            spec is not None
+            and confirmation is None
+            and await _web_send_needs_approval(name, dispatch_arguments)
+        ):
+            # WhatsApp Web autosend is physical-world consequential: park it
+            # and ask once. The spoken "yes" resumes the exact parked args.
+            status = "denied"
+            error = "confirmation_required"
+            result = await _park_web_send(
+                session,
+                dispatch_arguments,
+                actor=actor,
+                device_id=device_id,
+                live_session_id=live_session_id,
+                channel=auth_channel,
+            )
         elif spec is not None:
             effective, issues = validate_arguments(dispatch_arguments, spec["parameters"])
             if issues:
@@ -3310,6 +3398,7 @@ async def _run_computer_goal(
 
     from app.ev.computer_runtime import ensure_state
     from app.ev.computer_strategy import (
+        looks_like_app_or_web_task,
         resolve_generic_computer_goal,
         resolve_in_app_computer_goal,
         resolve_screen_observation_goal,
@@ -3327,6 +3416,15 @@ async def _run_computer_goal(
     if is_system_confirmation(orig):
         orig = ""
         route_text = goal_text
+
+    # A new app/URL act is the live job. Never replay a prior file create
+    # (or the desk-scene last path) as if the owner asked for that file again.
+    if looks_like_app_or_web_task(goal_text):
+        orig = ""
+        route_text = goal_text
+        if state is not None:
+            state.last_file_path = None
+            state.original_owner_request = goal_text[:400]
 
     from app.ev.luna_code import looks_like_code_request
 
@@ -3347,7 +3445,9 @@ async def _run_computer_goal(
         )
 
     last_path = str(args.get("last_path") or getattr(state, "last_file_path", None) or "").strip() or None
-    if not last_path:
+    if looks_like_app_or_web_task(goal_text):
+        last_path = None
+    elif not last_path:
         from app.ev.desk_scene import referent_file_path
 
         found = referent_file_path()
@@ -3371,7 +3471,7 @@ async def _run_computer_goal(
             )
             if file_goal is not None:
                 route_text = goal_text
-        else:
+        elif not looks_like_app_or_web_task(goal_text):
             file_goal = resolve_file_computer_goal(
                 orig, args.get("target_app"), last_path=last_path
             )
@@ -3961,19 +4061,21 @@ async def _handle(
         from app.ev import alert_radar
 
         alerts = await alert_radar.list_alerts(session, status="pending", limit=int(args.get("limit", 10)))
+        alert_rows = [
+            {
+                "id": str(a.id),
+                "kind": a.kind,
+                "title": a.title,
+                "body": a.body,
+                "priority": a.priority,
+                "tier": a.tier,
+            }
+            for a in alerts
+        ]
         return {
-            "count": len(alerts),
-            "alerts": [
-                {
-                    "id": str(a.id),
-                    "kind": a.kind,
-                    "title": a.title,
-                    "body": a.body,
-                    "priority": a.priority,
-                    "tier": a.tier,
-                }
-                for a in alerts
-            ],
+            "count": len(alert_rows),
+            "alerts": alert_rows,
+            "spoken": _alerts_spoken(alert_rows),
         }
     if name == "get_research":
         sessions = await list_sessions(session, status=args.get("status"), limit=int(args.get("limit", 10)))
@@ -4742,7 +4844,12 @@ async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
                     "missing_mail_fields",
                     next_step="I need who to email and what to say.",
                 )
-            dest = await _resolve_send_destination(to, "mail", helper_path=helper)
+            try:
+                dest = await _resolve_send_destination(to, "mail", helper_path=helper)
+            except AmbiguousRecipientError as exc:
+                return _life_unavailable(
+                    "ambiguous_recipient", next_step=str(exc), error=str(exc)
+                )
             email = dest.get("email") or (to if "@" in to else "")
             if not email:
                 return _life_unavailable(
@@ -4767,7 +4874,12 @@ async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
         if not destination:
             return _life_unavailable("missing_call_target", next_step="Who should I call?")
         kind = str(args.get("kind") or "tel")
-        dest = await _resolve_send_destination(destination, "messages", helper_path=helper)
+        try:
+            dest = await _resolve_send_destination(destination, "messages", helper_path=helper)
+        except AmbiguousRecipientError as exc:
+            return _life_unavailable(
+                "ambiguous_recipient", next_step=str(exc), error=str(exc)
+            )
         # tel:// needs digits; facetime:// also accepts an email. A bare
         # name builds a dead URL — fail friendly instead of helper-failing.
         phone = dest.get("phone") or ""
@@ -4823,8 +4935,226 @@ async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
         return _life_unavailable("helper_failed", next_step=str(exc), error=str(exc))
 
 
+def _owner_gui_actions_allowed() -> bool:
+    """Never launch WhatsApp from pytest."""
+
+    import os
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    from app.config import settings
+
+    env = str(getattr(settings, "env", None) or os.environ.get("EV_ENV") or "").lower()
+    return env not in {"test", "testing"}
+
+
+def _open_whatsapp_compose(phone: str, text: str) -> bool:
+    """Open WhatsApp's compose URL in the foreground. Visible on purpose."""
+
+    import subprocess
+    from urllib.parse import quote
+
+    digits = re.sub(r"\D+", "", phone or "")
+    if len(digits) < 8 or not _owner_gui_actions_allowed():
+        return False
+    url = f"whatsapp://send?phone={digits}&text={quote(text or '', safe='')}"
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/open", url],
+            check=False,
+            capture_output=True,
+            timeout=8,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _open_whatsapp_app() -> bool:
+    import subprocess
+
+    if not _owner_gui_actions_allowed():
+        return False
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/open", "-a", "WhatsApp"],
+            check=False,
+            capture_output=True,
+            timeout=8,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _bring_whatsapp_forward() -> None:
+    """If the helper opened compose hidden, raise WhatsApp so they can tap send."""
+
+    _open_whatsapp_app()
+
+
+def _copy_owner_text(text: str) -> bool:
+    import subprocess
+
+    raw = (text or "").encode("utf-8")
+    if not raw or not _owner_gui_actions_allowed():
+        return False
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/pbcopy"],
+            input=raw,
+            check=False,
+            capture_output=True,
+            timeout=3,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+async def _web_send_needs_approval(name: str, args: dict) -> bool:
+    """True when this send would autosend through WhatsApp Web.
+
+    Only an authenticated tab that can deliver without a tap needs the extra
+    spoken yes; compose-only sends already require the owner's tap.
+    """
+
+    if name != "send_message":
+        return False
+    from app.ev.messaging.channels import normalize_channel
+
+    raw = str(args.get("channel") or "").strip()
+    requested = normalize_channel(raw)
+    if raw and requested is None:
+        return False
+    if requested not in {None, "whatsapp"}:
+        return False
+    to = str(args.get("to") or "").strip()
+    body = str(args.get("text") or args.get("body") or "").strip()
+    if not to or not body:
+        return False
+    from app.ev.messaging.whatsapp_web import web_available
+
+    if not await web_available():
+        return False
+    if requested is None:
+        return await _whatsapp_peer(to) is not None
+    return requested == "whatsapp"
+
+
+async def _park_web_send(
+    session: AsyncSession,
+    args: dict,
+    *,
+    actor: str,
+    device_id,
+    live_session_id: str | None,
+    channel: str,
+) -> dict:
+    """Park a WhatsApp Web send for one spoken approval. Never sends.
+
+    Resolution is WhatsApp-native first: the chat list decides who exists,
+    not Apple Contacts. Contacts only contribute a phone fallback (a number
+    is addressable on WhatsApp even when the chat list did not render).
+    """
+
+    from app.ev.messaging.approval import park_send, question_for
+    from app.ev.messaging.native import resolve_native_contact
+
+    to = str(args.get("to") or "").strip()
+    body = str(args.get("text") or "").strip()
+    display = to
+    target = to
+    native = await resolve_native_contact("whatsapp", to)
+    if native is not None and native.get("status") == "ambiguous":
+        names = ", ".join(str(name) for name in native.get("candidates") or [] if name)
+        return _life_unavailable(
+            "ambiguous_recipient",
+            next_step=f"I found more than one WhatsApp chat for {to}: {names}. Which one?",
+        )
+    if native is not None and native.get("status") == "unique":
+        display = str(native.get("display") or to)
+    else:
+        # WhatsApp itself did not name-match. A phone number (spoken
+        # directly or from Contacts) is still a WhatsApp address.
+        phone = ""
+        try:
+            from app.ev.apps import discover_life_helper_path
+
+            dest = await _resolve_send_destination(
+                to, "whatsapp", helper_path=discover_life_helper_path()
+            )
+            phone = str(dest.get("phone") or "").strip()
+            display = str(dest.get("handle") or to)
+        except AmbiguousRecipientError:
+            # Apple Contacts ambiguity is not WhatsApp ambiguity: ignore it.
+            phone = ""
+        except Exception:
+            phone = ""
+        digits = re.sub(r"\D+", "", to)
+        if phone:
+            target = phone
+        elif digits and len(digits) >= 8 and not re.search(r"[A-Za-z]", to):
+            target = to
+        else:
+            return _life_unavailable(
+                "chat_not_found",
+                next_step=(
+                    f"I couldn't find {to} on WhatsApp on this Mac, "
+                    "so I didn't park anything."
+                ),
+            )
+    action = await park_send(
+        session,
+        to=target,
+        text=body,
+        display=display,
+        channel="whatsapp",
+        actor=actor,
+        device_id=device_id,
+        live_session_id=live_session_id,
+        source=channel,
+    )
+    return {
+        "ok": False,
+        "pending_approval": True,
+        "requires_approval": True,
+        "channel": "whatsapp",
+        "to": display,
+        "text": body,
+        "action_id": str(action.id),
+        "spoken": question_for(action),
+    }
+
+
+async def _whatsapp_peer(to: str) -> dict | None:
+    """Strong identity match from the WhatsApp chat list, or None.
+
+    The chat list is substring-scored upstream ("John" can hit "Johnson"),
+    so its loose result is only trusted on a whole-token name match.
+    """
+
+    from app.ev.messaging.recipients import verify_peer
+
+    try:
+        from app.services.life_stream_daemon import (
+            get_life_stream_daemon,
+            life_stream_should_run,
+        )
+
+        if not life_stream_should_run():
+            return None
+        peer = get_life_stream_daemon().resolve_whatsapp_peer(to)
+    except Exception:
+        return None
+    return peer if verify_peer(to, peer) else None
+
+
 async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
+    from app.ev.messaging.channels import normalize_channel
+    from app.ev.messaging.routing import route_channel
     from app.integrations.life_helper import run_life_helper
+    from app.services.life_stream_daemon import life_stream_should_run
 
     to = str(args.get("to") or "").strip()
     body = str(args.get("text") or args.get("body") or "").strip()
@@ -4833,20 +5163,71 @@ async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
             "missing_send_fields",
             next_step="I need who to message and what to say.",
         )
-    wanted = str(args.get("channel") or "").strip().lower()
-    if wanted in {"wa", "whatsapp"}:
+    # Explicit channels are authoritative and never remapped onto a
+    # different transport. An omitted channel defaults to Messages; history
+    # may pick WhatsApp, but only on a whole-name match and never over an
+    # explicit request. Named-but-unwired channels fail loudly — sending
+    # "telegram" as SMS would be a mis-send.
+    raw_requested = str(args.get("channel") or "").strip()
+    requested = normalize_channel(raw_requested)
+    if raw_requested and requested is None:
+        return _life_unavailable(
+            "unknown_channel",
+            next_step=(
+                f"I don't have {raw_requested} connected on this Mac, "
+                "so I didn't send anything."
+            ),
+        )
+    helper_available = bool(helper_path) or life_stream_should_run()
+    channel = requested or "messages"
+    if requested is None and await _whatsapp_peer(to) is not None:
         channel = "whatsapp"
-    elif wanted in {"mail", "email"}:
-        channel = "mail"
-    else:
-        channel = "messages"
-        preferred = _channel_from_talk(to)
-        if preferred == "whatsapp":
-            channel = "whatsapp"
-        elif preferred == "mail" and wanted:
-            channel = "mail"
-    dest = await _resolve_send_destination(to, channel, helper_path=helper_path)
-    if channel == "mail":
+    web = False
+    if channel == "whatsapp":
+        from app.ev.messaging.whatsapp_web import web_available
+
+        web = await web_available()
+    routing = route_channel(
+        channel, helper_available=helper_available, web_available=web
+    )
+    if routing.mode == "unavailable":
+        return _life_unavailable("channel_unavailable", next_step=routing.spoken)
+    try:
+        dest = await _resolve_send_destination(
+            to, routing.channel, helper_path=helper_path
+        )
+    except AmbiguousRecipientError as exc:
+        return _life_unavailable(
+            "ambiguous_recipient", next_step=str(exc), error=str(exc)
+        )
+    if routing.provider == "web":
+        from app.ev.messaging.native import resolve_native_contact
+        from app.ev.messaging.whatsapp_web import send as send_whatsapp_web
+
+        native = await resolve_native_contact("whatsapp", to)
+        if native is not None and native.get("status") == "ambiguous":
+            names = ", ".join(str(name) for name in native.get("candidates") or [] if name)
+            return _life_unavailable(
+                "ambiguous_recipient",
+                next_step=f"I found more than one WhatsApp chat for {to}: {names}. Which one?",
+            )
+        target = str((native or {}).get("display") or dest.get("handle") or to)
+        web_result = await send_whatsapp_web(target, body)
+        payload = {
+            "ok": bool(web_result.get("ok")),
+            "sent": bool(web_result.get("sent")),
+            "channel": "whatsapp",
+            "to": web_result.get("to") or dest.get("handle") or to,
+            "verified_in_thread": bool(web_result.get("verified_in_thread")),
+            "focus_theft": int(web_result.get("focus_theft") or 0),
+            "spoken": str(web_result.get("spoken") or ""),
+        }
+        if not payload["ok"]:
+            payload["error"] = str(web_result.get("error") or "whatsapp_web_send_failed")
+            if web_result.get("candidates"):
+                payload["candidates"] = list(web_result["candidates"])
+        return payload
+    if routing.channel == "mail":
         email = dest.get("email") or (to if "@" in to else "")
         if not email:
             return _life_unavailable("no_email", next_step=f"I don't have an email for {to}.")
@@ -4864,16 +5245,21 @@ async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
             **(result.data or {}),
             "delivery": result.delivery,
         }
-    if channel == "whatsapp":
+    if routing.channel == "whatsapp":
         phone = dest.get("phone") or ""
         digits = re.sub(r"\D+", "", phone or to)
         if len(digits) >= 8:
-            result = await run_life_helper(
-                "whatsapp.send",
-                {"to": digits, "text": body},
-                helper_path=helper_path,
-            )
-            opened = bool((result.data or {}).get("opened"))
+            opened = _open_whatsapp_compose(digits, body)
+            helper_delivery = {}
+            if not opened:
+                result = await run_life_helper(
+                    "whatsapp.send",
+                    {"to": digits, "text": body},
+                    helper_path=helper_path,
+                )
+                opened = bool((result.data or {}).get("opened"))
+                helper_delivery = result.delivery
+                _bring_whatsapp_forward()
             return {
                 "ok": True,
                 "opened": opened,
@@ -4885,21 +5271,38 @@ async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
                     if opened
                     else f"I couldn't open WhatsApp for {to}."
                 ),
-                **(result.data or {}),
-                "delivery": result.delivery,
+                "delivery": helper_delivery,
             }
-        if wanted in {"wa", "whatsapp"}:
-            # Explicit WhatsApp ask with no phone number: say so. Silently
-            # texting via iMessage instead would mis-send the channel.
+        if requested == "whatsapp":
+            shown = _open_whatsapp_app()
+            copied = _copy_owner_text(body) if shown else False
+            if shown:
+                return {
+                    "ok": True,
+                    "opened": True,
+                    "sent": False,
+                    "to": to,
+                    "channel": "whatsapp",
+                    "copied": copied,
+                    "spoken": (
+                        f"I opened WhatsApp. I don't see {to} in the chats on this Mac. "
+                        "Pick that chat, paste, and tap send — I copied your message."
+                    ),
+                }
             return _life_unavailable(
-                "no_whatsapp_number",
-                next_step=f"I don't have a phone number for {to}, so I couldn't send that WhatsApp.",
+                "no_whatsapp_chat",
+                next_step=f"I couldn't find {to} on WhatsApp on this Mac.",
             )
-        channel = "messages"
+        routing = route_channel("messages", helper_available=helper_available)
+    if dest.get("status") == "none" and " " in to:
+        return _life_unavailable(
+            "no_contact",
+            next_step=f"I don't have a contact for {to}, so I didn't send anything.",
+        )
     handle = dest.get("phone") or dest.get("email") or dest.get("handle") or to
     result = await run_life_helper(
         "messages.send",
-        {"to": handle, "text": body},
+        {"to": handle, "text": body, "service": routing.service or "auto"},
         helper_path=helper_path,
     )
     sent = bool((result.data or {}).get("sent"))
@@ -4907,58 +5310,61 @@ async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
         "ok": bool(sent),
         "sent": sent,
         "to": to,
-        "channel": "messages",
+        "channel": routing.channel,
+        "service": routing.service or "auto",
         "spoken": f"Sent a message to {to}." if sent else f"I couldn't text {to} from Messages.",
         **(result.data or {}),
         "delivery": result.delivery,
     }
 
 
-def _channel_from_talk(to: str) -> str | None:
-    from app.memory.life_archive.desk import _compact
-
-    key = _compact(to)
-    if not key:
-        return None
-    try:
-        from app.services.life_stream_daemon import get_life_stream_daemon, life_stream_should_run
-
-        if not life_stream_should_run():
-            return None
-        daemon = get_life_stream_daemon()
-        hits = list(daemon.peek_whatsapp(tokens=[key], limit=4) or [])
-        if hits:
-            return "whatsapp"
-    except Exception:
-        return None
-    return None
-
-
 async def _resolve_send_destination(
     to: str, channel: str, *, helper_path: str | None
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    from app.ev.messaging.recipients import match_recipient
     from app.integrations.life_helper import run_life_helper
 
-    out: dict[str, str] = {}
+    out: dict[str, Any] = {"status": "none", "candidates": []}
+    who = (to or "").strip()
+    if not who:
+        return out
+    if (channel or "").strip().lower() == "whatsapp":
+        peer = await _whatsapp_peer(who)
+        if peer:
+            out["status"] = "unique"
+            out["handle"] = str(peer.get("handle") or "")
+            if peer.get("phone"):
+                out["phone"] = str(peer["phone"])
+    digits = re.sub(r"\D+", "", who)
+    if "@" in who:
+        out["email"] = who
+        out["status"] = "unique" if out["status"] == "none" else out["status"]
+        return out
+    if digits and len(digits) >= 7 and not re.search(r"[A-Za-z]", who):
+        out["phone"] = ("+" + digits) if who.strip().startswith("+") else digits
+        out["status"] = "unique" if out["status"] == "none" else out["status"]
+        return out
     try:
         result = await run_life_helper(
-            "contacts.resolve", {"query": to}, helper_path=helper_path
+            "contacts.resolve", {"query": who}, helper_path=helper_path
         )
     except Exception:
         return out
-    matches = list((result.data or {}).get("matches") or [])
-    if not matches:
-        return out
-    row = matches[0] if isinstance(matches[0], dict) else {}
-    phones = row.get("phone_numbers") or []
-    emails = row.get("email_addresses") or []
-    if phones:
-        out["phone"] = str(phones[0])
-    if emails:
-        out["email"] = str(emails[0])
-    if row.get("full_name"):
-        out["handle"] = str(row["full_name"])
-    del channel
+    rows = [
+        row
+        for row in list((result.data or {}).get("matches") or [])
+        if isinstance(row, dict)
+    ]
+    match = match_recipient(who, rows)
+    if match.status == "ambiguous":
+        raise AmbiguousRecipientError(who, list(match.candidates))
+    if match.status == "unique":
+        out["status"] = "unique"
+        if match.phones and not out.get("phone"):
+            out["phone"] = match.primary_phone
+        if match.emails:
+            out["email"] = match.primary_email
+        out["handle"] = str(match.display or out.get("handle") or "")
     return out
 
 

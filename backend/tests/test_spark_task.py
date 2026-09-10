@@ -18,7 +18,6 @@ from app.ev.spark_task import (
 from app.memory.mail_speak import speak_mail, speak_received
 from app.memory.recall import _spoken_from_evidence
 from app.services.life_stream_daemon import LifeStreamDaemon
-
 from tests.test_mail_speak import LONG_BODY, _mail
 
 

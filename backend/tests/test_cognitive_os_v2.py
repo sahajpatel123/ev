@@ -26,10 +26,12 @@ class _ScriptedMuse:
         self.calls = 0
         self.messages: list[Any] = []
 
-    async def chat_with_tools(self, messages, specs, *, model=None, temperature=0.7):
-        del specs, model, temperature
+    async def chat_with_tools(self, messages, specs, *, model=None, temperature=0.7, **kwargs):
+        del model, temperature
         self.calls += 1
         self.messages = list(messages)
+        self.specs = list(specs or [])
+        self.kwargs = dict(kwargs)
         if not self.replies:
             return ChatResult(text="Okay.")
         return self.replies.pop(0)
@@ -98,6 +100,36 @@ async def test_conversation_skips_goal_contract(cognitive_isolation, monkeypatch
     assert result.kind == "muse"
     assert current().focused_goal_id is None
     assert muse.calls == 1
+    assert muse.kwargs.get("reasoning_effort") == "low"
+    names = {spec.name for spec in muse.specs}
+    assert "memory.search" in names
+    assert "code.act" not in names
+    from app.cognitive.telemetry import snapshot
+
+    assert snapshot()["last_reasoning_effort"] == "low"
+    assert snapshot()["compact_turns"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_file_work_uses_medium_effort_and_full_tools(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+
+    muse = _ScriptedMuse([ChatResult(text="Wrote the list.")])
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+
+    result = await kernel.handle_turn(
+        transcript="Make a packing list on my Desktop",
+        modality="voice",
+        session=db_session,
+    )
+    assert result.kind == "muse"
+    assert muse.kwargs.get("reasoning_effort") == "medium"
+    names = {spec.name for spec in muse.specs}
+    assert "files.act" in names
+    assert "code.act" in names
 
 
 @pytest.mark.asyncio
@@ -186,6 +218,7 @@ async def test_steering_blocks_stale_mutation(
     )
     assert blocked.get("error") == "STALE_PLAN"
     assert snapshot()["stale_mutations_blocked"] >= 1
+    assert captured == {}
     prepare = await execute_semantic(
         db_session,
         "code.act",
@@ -195,9 +228,73 @@ async def test_steering_blocks_stale_mutation(
         live_session_id=None,
         steering_seen=int(current().steering_version),
     )
-    assert prepare.get("prepare_only") is True or "PREPARE_ONLY" in str(
-        prepare.get("spoken") or prepare.get("effect") or prepare
+    assert prepare.get("prepare_only") is True
+    assert prepare.get("files_changed") == []
+    assert "without writing" in str(prepare.get("spoken") or "").lower()
+    assert captured == {}
+
+
+@pytest.mark.asyncio
+async def test_kernel_runs_code_instead_of_narrating_a_write(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+
+    captured: dict[str, Any] = {}
+
+    async def _exec(_session, name, args, **_k):
+        captured["name"] = name
+        captured["effect"] = str((args or {}).get("effect") or "")
+        return {
+            "ok": True,
+            "spoken": "I saved hello.py in the workspace.",
+            "files_changed": ["hello.py"],
+        }
+
+    monkeypatch.setattr("app.cognitive.kernel.execute_semantic", _exec)
+    muse = _ScriptedMuse([ChatResult(text="I wrote hello.py and ran it.")])
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+
+    result = await kernel.handle_turn(
+        transcript="write a python script that prints hello world",
+        modality="text",
+        session=db_session,
     )
+    assert captured.get("name") == "code.act"
+    assert "python" in captured.get("effect", "").lower()
+    spoken = result.spoken.lower()
+    assert "hello.py" in spoken
+    assert "i wrote hello.py and ran it" not in spoken
+    assert muse.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_kernel_voice_code_does_not_wait_on_muse_to_write(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+
+    started: dict[str, str] = {}
+
+    async def _notify(goal: str, **_k) -> None:
+        started["goal"] = goal
+
+    monkeypatch.setattr("app.ev.luna_code.run_code_job_and_notify", _notify)
+    muse = _ScriptedMuse([ChatResult(text="I wrote hello.py and ran it.")])
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+
+    result = await kernel.handle_turn(
+        transcript="write a python script that prints hello world",
+        modality="voice",
+        session=db_session,
+        live_session_id="live-code-1",
+    )
+    assert muse.calls == 0
+    assert "writing" in result.spoken.lower() or "saved" in result.spoken.lower()
+    await asyncio.sleep(0)
+    assert "python" in started.get("goal", "").lower()
 
 
 @pytest.mark.asyncio
@@ -233,7 +330,12 @@ def test_mini_tools_empty_on_muse_kernel(cognitive_isolation) -> None:
     assert update["session"]["tools"] == []
     assert update["session"]["tool_choice"] == "none"
     assert update["session"]["audio"]["input"]["turn_detection"]["create_response"] is False
-    assert "coprocessor" in update["session"]["instructions"].lower()
+    instructions = update["session"]["instructions"]
+    assert "coprocessor" in instructions.lower()
+    assert "verbatim" in instructions.lower()
+    assert "never switch languages" in instructions.lower()
+    assert "one or two short sentences" not in instructions
+    assert "EV SPEECH CONTRACT" not in instructions
 
 
 @pytest.mark.asyncio
@@ -750,4 +852,470 @@ async def test_rephrased_file_effects_do_not_spawn_sibling_writes(
     assert fourth.get("artifact_complete") is True
     assert bound_artifact(current()).get("path") == "/tmp/evie-artifact-list.txt"
     assert "ARTIFACT_COMPLETE" in str(second.get("instruction") or "")
+
+
+def _seed_leftover_file_job(*, hours_ago: float | None = None) -> None:
+    """A leftover one-file GoalContract like a grocery list on Desktop."""
+
+    from datetime import UTC, datetime, timedelta
+
+    from app.cognitive import session_store
+    from app.cognitive.session_store import current, forget_live_cache, save
+
+    row = current()
+    row.live_session_id = "live-file-job"
+    row.semantic_objective = "Create a grocery list and save it on Desktop - add remaining items as requested"
+    row.focused_goal_id = "a2d001f7-cd2a-4acf-a7ee-bfb355956983"
+    row.constraints = {
+        "use_files_act_only": True,
+        "work_shape": "one_artifact",
+        "bound_artifact": {
+            "path": "/tmp/evie-grocery-list.txt",
+            "kind": "list",
+            "label": "grocery list",
+        },
+        "owner_utterance": "create a grocery list and save it on Desktop",
+        "turn_domain": "file",
+    }
+    row.completed_effects = [
+        {"kind": "files.act", "path": "/tmp/evie-grocery-list.txt", "ok": True}
+    ]
+    save(row)
+    if hours_ago is None:
+        return
+    stamp = (datetime.now(UTC) - timedelta(hours=hours_ago)).isoformat()
+    path = session_store._path()
+    blob = json.loads(path.read_text(encoding="utf-8"))
+    blob["updated_at"] = stamp
+    path.write_text(json.dumps(blob, indent=2), encoding="utf-8")
+    forget_live_cache()
+
+
+@pytest.mark.asyncio
+async def test_send_turn_clears_leftover_file_job_and_dispatches_life_send(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+    from app.cognitive.session_store import current
+
+    _seed_leftover_file_job()
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def _mac(name, arguments, *, live_session_id=None):
+        del live_session_id
+        seen.append((str(name), dict(arguments or {})))
+        return {
+            "ok": True,
+            "verified": True,
+            "spoken": "Sent on WhatsApp.",
+            "channel": "whatsapp",
+        }
+
+    monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+
+    result = await kernel.handle_turn(
+        transcript="send whatsapp message to mummy saying Hello",
+        modality="voice",
+        session=db_session,
+        live_session_id="live-new-session",
+    )
+    assert result.kind == "send"
+    assert seen, "life.send must reach Mac execute"
+    name, args = seen[0]
+    assert name == "send_message"
+    assert args.get("to", "").lower() == "mummy"
+    assert "hello" in str(args.get("text") or "").lower()
+    assert args.get("channel") == "whatsapp"
+    row = current()
+    assert row.semantic_objective == ""
+    assert row.focused_goal_id is None
+    assert "use_files_act_only" not in (row.constraints or {})
+    assert not (row.constraints or {}).get("bound_artifact")
+    assert str((row.constraints or {}).get("turn_domain") or "") == "send"
+
+
+@pytest.mark.asyncio
+async def test_stale_file_job_does_not_hijack_status_or_send(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+    from app.cognitive.session_store import current
+
+    _seed_leftover_file_job(hours_ago=12)
+    status = await kernel.handle_turn(
+        transcript="What are you doing?",
+        live_session_id="live-file-job",
+    )
+    assert status.kind == "reflex:status"
+    assert "grocery" not in status.spoken.lower()
+    assert "list" not in status.spoken.lower()
+
+    seen: list[dict[str, Any]] = []
+
+    async def _mac(name, arguments, *, live_session_id=None):
+        del name, live_session_id
+        seen.append(dict(arguments or {}))
+        return {"ok": True, "verified": True, "spoken": "Sent."}
+
+    monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
+    result = await kernel.handle_turn(
+        transcript="Evie send whatsapp message to mummy saying Hello",
+        modality="voice",
+        session=db_session,
+        live_session_id="live-file-job",
+    )
+    assert result.kind == "send"
+    assert seen and seen[0].get("to", "").lower() == "mummy"
+    assert current().semantic_objective == ""
+    assert "use_files_act_only" not in (current().constraints or {})
+
+
+def test_send_context_hides_leftover_file_constraints(cognitive_isolation) -> None:
+    from app.cognitive.artifact import begin_owner_turn
+    from app.cognitive.context import compile_context
+    from app.cognitive.session_store import current
+
+    _seed_leftover_file_job()
+    utter = "send a whatsapp message to mummy saying Hello"
+    begin_owner_turn(current(), utter)
+    text = compile_context(
+        transcript=utter,
+        modality="voice",
+        device_id="mac",
+        cognition=current(),
+    )
+    assert "THIS TURN DOMAIN: send" in text
+    assert "THIS TURN is a send" in text
+    assert "life.send" in text
+    assert "grocery" not in text.lower()
+    assert "use_files_act_only" not in text
+    assert "CONSTRAINTS:" not in text
+    assert "ACTIVE WORK: Nothing is in progress." in text
+
+
+@pytest.mark.asyncio
+async def test_chat_after_leftover_file_job_does_not_feed_muse_the_list(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+
+    _seed_leftover_file_job()
+    muse = _ScriptedMuse([ChatResult(text="I'm well — glad you're here.")])
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+
+    result = await kernel.handle_turn(
+        transcript="How are you?",
+        modality="voice",
+        session=db_session,
+        live_session_id="live-file-job",
+    )
+    assert result.kind == "muse"
+    system = ""
+    if muse.messages:
+        system = str(getattr(muse.messages[0], "content", "") or "")
+    assert "grocery" not in system.lower()
+    assert "use_files_act_only" not in system
+    assert "I'm well" in result.spoken or "glad" in result.spoken.lower()
+
+
+@pytest.mark.asyncio
+async def test_open_safari_youtube_does_not_replay_leftover_file_job(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+    from app.cognitive.intent import classify_domain
+    from app.cognitive.session_store import current
+
+    _seed_leftover_file_job()
+    utter = "open safari and open youtube inside it"
+    assert classify_domain(utter) == "computer"
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def _mac(name, arguments, *, live_session_id=None):
+        del live_session_id
+        seen.append((str(name), dict(arguments or {})))
+        return {
+            "ok": True,
+            "verified": True,
+            "spoken": "Opening YouTube.",
+            "action": "navigate",
+            "url": "https://www.youtube.com/",
+        }
+
+    muse = _ScriptedMuse([ChatResult(text="I should not be asked.")])
+    monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: muse)
+
+    result = await kernel.handle_turn(
+        transcript=utter,
+        modality="voice",
+        session=db_session,
+        live_session_id="live-file-job",
+    )
+    assert result.kind == "computer"
+    assert muse.calls == 0
+    assert seen, "open/navigate must reach Mac execute"
+    name, args = seen[0]
+    assert name == "computer"
+    blob = str(args).lower()
+    assert "grocery" not in blob
+    assert "evie-grocery-list" not in blob
+    goal = str(args.get("goal") or args.get("effect") or "").lower()
+    assert "safari" in goal or "youtube" in goal
+    assert not args.get("last_path")
+    row = current()
+    assert row.semantic_objective == ""
+    assert row.focused_goal_id is None
+    assert "use_files_act_only" not in (row.constraints or {})
+    assert not (row.constraints or {}).get("bound_artifact")
+    assert str((row.constraints or {}).get("turn_domain") or "") == "computer"
+
+
+def test_computer_context_hides_leftover_file_constraints(cognitive_isolation) -> None:
+    from app.cognitive.artifact import begin_owner_turn
+    from app.cognitive.context import compile_context
+    from app.cognitive.session_store import current
+
+    _seed_leftover_file_job()
+    utter = "open safari and open youtube inside it"
+    begin_owner_turn(current(), utter)
+    text = compile_context(
+        transcript=utter,
+        modality="voice",
+        device_id="mac",
+        cognition=current(),
+    )
+    assert "THIS TURN DOMAIN: computer" in text
+    assert "THIS TURN is a Mac act" in text
+    assert "computer.perform_effect" in text
+    assert "grocery" not in text.lower()
+    assert "use_files_act_only" not in text
+    assert "CONSTRAINTS:" not in text
+    assert "ACTIVE WORK: Nothing is in progress." in text
+
+
+def test_same_session_file_followup_keeps_bind(cognitive_isolation) -> None:
+    from app.cognitive.artifact import begin_owner_turn, bound_artifact
+    from app.cognitive.session_store import current
+
+    _seed_leftover_file_job()
+    begin_owner_turn(current(), "add eggs to it")
+    assert bound_artifact(current()).get("path") == "/tmp/evie-grocery-list.txt"
+    assert current().constraints.get("turn_domain") == "file"
+
+
+@pytest.mark.asyncio
+async def test_voice_edge_runs_complete_send_locally_not_via_kernel(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+    from app.cognitive.mode import is_voice_edge
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "laptop_files", True)
+    monkeypatch.setattr(settings, "cognitive_role", "voice_edge")
+    assert is_voice_edge() is True
+    _seed_leftover_file_job()
+    posted: list[str] = []
+
+    async def _post(*_a, **_k):
+        posted.append("kernel")
+        raise AssertionError("complete send must not wait on the kernel")
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def _dispatch(session, name, arguments, **_k):
+        del session
+        seen.append((str(name), dict(arguments or {})))
+        return {
+            "ok": True,
+            "verified": True,
+            "spoken": "Sent on WhatsApp.",
+            "channel": "whatsapp",
+        }
+
+    monkeypatch.setattr("app.cognitive.edge.post_turn", _post)
+    monkeypatch.setattr("app.ev.tools.dispatch", _dispatch)
+    result = await kernel.handle_turn_maybe_remote(
+        transcript="send whatsapp message to mummy saying Hello",
+        modality="voice",
+        session=db_session,
+        live_session_id="live-new-session",
+    )
+    assert posted == []
+    assert result.kind == "send"
+    assert seen and seen[0][0] == "send_message"
+    assert seen[0][1].get("to", "").lower() == "mummy"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_send_asks_for_body_without_muse(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+    from app.cognitive.session_store import current
+
+    muse_calls = {"n": 0}
+
+    async def _boom(*args, **kwargs):
+        del args, kwargs
+        muse_calls["n"] += 1
+        raise AssertionError("incomplete send must not call Muse")
+
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: object())
+    monkeypatch.setattr(kernel, "_muse_turn", _boom)
+
+    result = await kernel.handle_turn(
+        transcript="send a WhatsApp message to Ada",
+        modality="voice",
+        session=db_session,
+        live_session_id="live-send-prompt",
+    )
+    assert muse_calls["n"] == 0
+    assert result.kind == "send_prompt"
+    spoken = result.spoken.lower()
+    assert "ada" in spoken
+    assert "whatsapp" in spoken
+    assert "contact" not in spoken
+    waiting = (current().constraints or {}).get("pending_send") or {}
+    assert str(waiting.get("to") or "").lower() == "ada"
+    assert waiting.get("channel") == "whatsapp"
+
+
+@pytest.mark.asyncio
+async def test_send_speaks_nested_dispatch_receipt_not_okay(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+
+    class _Envelope:
+        def model_dump(self):
+            return {
+                "name": "send_message",
+                "ok": True,
+                "result": {
+                    "ok": True,
+                    "opened": True,
+                    "sent": False,
+                    "to": "Ada",
+                    "channel": "whatsapp",
+                    "spoken": (
+                        "WhatsApp to Ada is open with your message ready — "
+                        "tap send to finish it."
+                    ),
+                },
+                "error": None,
+            }
+
+    async def _dispatch(*_a, **_k):
+        return _Envelope()
+
+    monkeypatch.setattr(settings, "laptop_files", True)
+    monkeypatch.setattr(settings, "cognitive_role", "voice_edge")
+    monkeypatch.setattr("app.ev.tools.dispatch", _dispatch)
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+
+    result = await kernel.handle_turn(
+        transcript="send a WhatsApp message to Ada saying hello",
+        modality="voice",
+        session=db_session,
+        live_session_id="live-send-receipt",
+    )
+    assert result.kind == "send"
+    spoken = result.spoken.lower()
+    assert "okay" not in spoken
+    assert "whatsapp" in spoken
+    assert "ada" in spoken
+
+
+def test_send_receipt_never_collapses_to_okay() -> None:
+    from app.cognitive.kernel import _spoken_send_receipt
+
+    assert "okay" not in _spoken_send_receipt({}).lower()
+    assert "couldn't" in _spoken_send_receipt({"ok": False, "to": "Ada"}).lower()
+    nested = _spoken_send_receipt(
+        {
+            "ok": True,
+            "opened": True,
+            "channel": "whatsapp",
+            "to": "Ada",
+        }
+    )
+    assert "whatsapp" in nested.lower()
+    assert "ada" in nested.lower()
+
+
+@pytest.mark.asyncio
+async def test_send_body_followup_dispatches_without_muse(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+    from app.cognitive.intent import set_pending_send
+    from app.cognitive.session_store import current
+
+    seen: list[dict[str, Any]] = []
+
+    async def _mac(name, arguments, *, live_session_id=None):
+        del name, live_session_id
+        seen.append(dict(arguments or {}))
+        return {"ok": True, "verified": True, "spoken": "WhatsApp is open."}
+
+    monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    set_pending_send(current(), to="Ada", channel="whatsapp")
+
+    result = await kernel.handle_turn(
+        transcript="Hello, is my order ready?",
+        modality="voice",
+        session=db_session,
+        live_session_id="live-send-body",
+    )
+    assert result.kind == "send"
+    assert seen
+    assert seen[0].get("to") == "Ada"
+    assert "order" in str(seen[0].get("text") or "").lower()
+    assert seen[0].get("channel") == "whatsapp"
+    assert not (current().constraints or {}).get("pending_send")
+
+
+@pytest.mark.asyncio
+async def test_new_question_drops_pending_send_and_does_not_send(
+    cognitive_isolation, monkeypatch, db_session: AsyncSession
+) -> None:
+    from app.cognitive import kernel
+    from app.cognitive.intent import set_pending_send
+    from app.cognitive.session_store import current
+    from app.contracts import ChatResult
+
+    seen: list[tuple[str, dict[str, Any]]] = []
+
+    async def _mac(name, arguments, *, live_session_id=None):
+        del live_session_id
+        seen.append((str(name), dict(arguments or {})))
+        return {"ok": True, "spoken": "nope"}
+
+    class _Muse:
+        async def chat_with_tools(self, messages, specs, *, model=None, temperature=0.7, **kwargs):
+            del messages, specs, model, temperature, kwargs
+            return ChatResult(text="It's sunny.")
+
+    monkeypatch.setattr("app.cognitive.edge.execute_on_mac", _mac)
+    monkeypatch.setattr(kernel, "muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _Muse())
+    set_pending_send(current(), to="Ada", channel="whatsapp")
+
+    result = await kernel.handle_turn(
+        transcript="what's the weather",
+        modality="voice",
+        session=db_session,
+        live_session_id="live-send-drop",
+    )
+    assert result.kind != "send"
+    assert not any(name == "send_message" for name, _ in seen)
+    assert not (current().constraints or {}).get("pending_send")
 

@@ -9,8 +9,8 @@ from app.cognitive.capabilities import tool_specs
 from app.cognitive.context import compile_context
 from app.cognitive.executor import execute_semantic
 from app.cognitive.session_store import current
-from app.memory.mail_speak import speak_mail, speak_received
 from app.ev.spark_task import TaskDecision
+from app.memory.mail_speak import speak_mail, speak_received
 
 
 def test_spark_kernel_lists_mac_life_mail_and_messages() -> None:

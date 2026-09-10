@@ -482,9 +482,9 @@ def maybe_handle_code_ops(text: str, *, session_key: str = "owner") -> str | Non
 
 
 def _intern_busy() -> bool:
-    from app.ev.luna_code import intern_in_flight
+    from app.ev.luna_code import intern_worker_active
 
-    return intern_in_flight()
+    return intern_worker_active()
 
 
 def _status_if_relevant(raw: str) -> str | None:
@@ -575,12 +575,17 @@ def spoken_completion_summary(studio: dict[str, Any], *, ok: bool = True) -> str
     shipped = [
         str(item.get("title") or "").split(":")[0].strip()
         for item in phases
-        if str(item.get("status") or "") in {"done", "skipped"}
+        if str(item.get("status") or "") == "done"
     ]
     work = ", ".join(part for part in shipped if part) or "the planned slices"
     if not ok:
         note = str(studio.get("last_spoken") or "the last slice didn't verify")
         return f"{title} hit a snag after {work}. {note}"[:700]
+    if not files:
+        return (
+            f"{title} was closed, but I don't have files under {folder}/ yet. "
+            "Say if you want me to actually build it."
+        )[:700]
     return (
         f"Quick brief: {title} is done. I shipped {work}. "
         f"It's all under {folder}/ — {names}. Say if you want a change."
@@ -1472,10 +1477,10 @@ def _is_draining(job: dict[str, Any] | None) -> bool:
 def _enqueue_slice(studio: dict[str, Any]) -> None:
     from app.memory.paths import atomic_write_json, read_json
 
-    from app.ev.luna_code import _pending_code_path
+    from app.ev.luna_code import intern_worker_active, _pending_code_path
 
     pending = read_json(_pending_code_path())
-    if pending and str(pending.get("kind") or "") == "intern":
+    if pending and str(pending.get("kind") or "") == "intern" and intern_worker_active():
         # Overnight intern already owns the jail; drain will pick the studio after.
         return
     atomic_write_json(

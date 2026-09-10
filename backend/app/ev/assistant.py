@@ -559,6 +559,21 @@ async def handle_local_intent(
     if romantic_replacement_refused(message):
         return {"reply": ROMANTIC_REFUSAL, "kind": "refuse", "surfaces": None}
 
+    from app.ev.messaging.approval import handle_send_approval
+
+    approval = await handle_send_approval(
+        session, message, actor=actor, device_id=device_id
+    )
+    if approval is not None:
+        return {
+            "reply": str(approval.get("spoken") or ""),
+            "kind": "send_approval",
+            "ok": bool(approval.get("ok")),
+            "sent": bool(approval.get("sent")),
+            "action_id": approval.get("action_id"),
+            "approval": approval,
+        }
+
     match = match_companion_intent(message)
     if match is None:
         return None

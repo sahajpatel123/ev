@@ -497,9 +497,7 @@ def kind_label(text: str) -> str | None:
     tokens = [
         token
         for token in re.sub(r"\s+", " ", span.group(1).strip().lower()).split()
-        if token not in _GENERIC_KIND
-        and token not in _KIND_SKIP
-        and token not in _SCAFFOLD
+        if token not in _GENERIC_KIND and token not in _KIND_SKIP
     ]
     if not tokens:
         return None
@@ -1211,9 +1209,18 @@ def _goal_from_spark_act(
             "args": {"text": text_body[:2000], "when": when or raw[:128]},
         }
     if act == "text" and who:
+        from app.ev.send_intent import channel_from_text
+
+        text_args: dict[str, object] = {
+            "to": who,
+            "text": (body or "\n".join(items) or raw)[:4000],
+        }
+        text_channel = channel_from_text(raw)
+        if text_channel:
+            text_args["channel"] = text_channel
         return {
             "channel": "tool",
             "name": "send_message",
-            "args": {"to": who, "text": (body or "\n".join(items) or raw)[:4000]},
+            "args": text_args,
         }
     return None
