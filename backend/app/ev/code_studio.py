@@ -511,13 +511,17 @@ def spoken_studio_busy(job: dict[str, Any] | None = None) -> str:
         return f"{studio.get('title') or 'That'} is queued in the background."
     if studio and str(studio.get("status") or "") in _LIVE_STATUSES:
         return f"I'm running {studio.get('title') or 'this'} in the background."
-    from app.ev.luna_code import intern_in_flight
+    from app.ev.luna_code import has_pending_code_intern, intern_worker_active
 
-    if intern_in_flight():
+    if intern_worker_active():
         intern = resolve_task("overnight intern", action="status")
         if intern and str(intern.get("kind") or "") == "intern":
             return f"I'm running {intern.get('title') or 'that'} in the background."
         return "I'm running that in the background."
+    if has_pending_code_intern():
+        intern = resolve_task("overnight intern", action="status")
+        title = str((intern or {}).get("title") or "That background coding job")
+        return f"{title} is queued in the background."
     return "I'm not running a background task."
 
 
