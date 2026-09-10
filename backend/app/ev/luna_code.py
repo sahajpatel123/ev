@@ -617,6 +617,20 @@ def intern_in_flight() -> bool:
     return bool(studio and str(studio.get("status") or "") in {"queued", "running"})
 
 
+def code_jail_busy() -> bool:
+    """True when a worker or live studio goal currently owns the coding jail.
+
+    A leftover intern pending file without a worker is not busy: that used to
+    stall live/studio writes behind overnight work that was not executing.
+    """
+
+    if intern_worker_active():
+        return True
+    from app.ev.code_studio import studio_is_active
+
+    return studio_is_active()
+
+
 def abort_background_code() -> None:
     """Kill the intern/studio task and drop queued/running markers. Studio JSON is the caller's."""
 

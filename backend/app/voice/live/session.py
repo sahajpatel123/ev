@@ -1665,6 +1665,8 @@ class LiveSession:
             saved_path=meta.get("saved_path"),
             media_kind=meta.get("media_kind"),
             duration_ms=meta.get("duration_ms"),
+            has_clip=meta.get("has_clip"),
+            clip_supported=meta.get("clip_supported"),
         )
         if permission:
             self._camera_state["permission_state"] = permission
@@ -2156,7 +2158,7 @@ class LiveSession:
 
         from app.ev.code_studio import maybe_handle_code_ops, spoken_studio_busy
         from app.ev.luna_code import (
-            intern_in_flight,
+            code_jail_busy,
             looks_like_code_continue,
             looks_like_code_request,
             maybe_enqueue_code_intern,
@@ -2186,7 +2188,7 @@ class LiveSession:
             self._last_honesty = ""
             await self._speak_code_receipt(intern_ack)
             return True
-        if intern_in_flight() and (
+        if code_jail_busy() and (
             looks_like_code_request(text) or looks_like_code_continue(text)
         ):
             from app.ev.code_studio import apply_code_control, looks_like_code_control
@@ -2347,7 +2349,7 @@ class LiveSession:
             return True
         from app.ev.code_studio import maybe_handle_code_ops, spoken_studio_busy
         from app.ev.luna_code import (
-            intern_in_flight,
+            code_jail_busy,
             looks_like_code_continue,
             looks_like_code_request,
             maybe_enqueue_code_intern,
@@ -2376,7 +2378,7 @@ class LiveSession:
             self._last_honesty = ""
             await self._speak_code_receipt(intern_ack)
             return True
-        if intern_in_flight() and (
+        if code_jail_busy() and (
             looks_like_code_request(text) or looks_like_code_continue(text)
         ):
             from app.ev.code_studio import apply_code_control, looks_like_code_control
