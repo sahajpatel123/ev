@@ -241,3 +241,97 @@ async def test_phone_turn_is_not_capped_at_the_conversation_tool_budget(
         assert semantic.await_count == 6
     finally:
         reset_for_tests()
+
+
+# --------------------------------------------------------------------------
+# 4. A reported action must be durable before the response is sent
+# --------------------------------------------------------------------------
+
+
+async def test_cognitive_turn_commits_the_session_it_owns(monkeypatch) -> None:
+    """`get_session` never commits, so the endpoint must.
+
+    Without this a tool write was flushed, rolled back when the request's
+    session closed, and the response still described the action as done.
+    """
+
+    from types import SimpleNamespace
+
+    from app.api import cognitive
+
+    committed: list[bool] = []
+
+    class FakeSession:
+        async def commit(self) -> None:
+            committed.append(True)
+
+    async def fake_handle(**kwargs):
+        return SimpleNamespace(as_dict=lambda: {"spoken": "ok", "kind": "muse"})
+
+    monkeypatch.setattr(cognitive, "handle_turn", fake_handle)
+    monkeypatch.setattr(cognitive, "muse_kernel_active", lambda: True)
+    monkeypatch.setattr(cognitive, "is_voice_edge", lambda: False)
+
+    out = await cognitive.cognitive_turn(
+        cognitive.TurnIn(transcript="Set a timer for 5 minutes"),
+        session=FakeSession(),
+        _="master",
+    )
+    assert committed == [True]
+    assert out["spoken"] == "ok"
+
+
+async def test_mac_execute_commits_the_session_it_owns(monkeypatch) -> None:
+    """The kernel forwards Mac-bound tools here and trusts the reply."""
+
+    import app.ev.tools as tools
+    import app.voice.live.layer as layer
+    from app.api import cognitive
+
+    committed: list[bool] = []
+
+    class FakeSession:
+        async def commit(self) -> None:
+            committed.append(True)
+
+    async def fake_dispatch(session, name, arguments, **kwargs):
+        return {"ok": True, "spoken": "Timer set for 5 minutes."}
+
+    monkeypatch.setattr(tools, "dispatch", fake_dispatch)
+    monkeypatch.setattr(layer, "active_lives", lambda: [])
+
+    out = await cognitive.mac_execute(
+        cognitive.MacExecuteIn(name="timer.act", arguments={"op": "start", "seconds": 300}),
+        session=FakeSession(),
+        _="master",
+    )
+    assert committed == [True]
+    assert out["spoken"] == "Timer set for 5 minutes."
+
+
+async def test_mac_execute_does_not_commit_a_failed_dispatch(monkeypatch) -> None:
+    """A failure must roll back, not half-commit."""
+
+    import app.ev.tools as tools
+    import app.voice.live.layer as layer
+    from app.api import cognitive
+
+    committed: list[bool] = []
+
+    class FakeSession:
+        async def commit(self) -> None:
+            committed.append(True)
+
+    async def boom(session, name, arguments, **kwargs):
+        raise RuntimeError("tool blew up")
+
+    monkeypatch.setattr(tools, "dispatch", boom)
+    monkeypatch.setattr(layer, "active_lives", lambda: [])
+
+    out = await cognitive.mac_execute(
+        cognitive.MacExecuteIn(name="timer.act", arguments={}),
+        session=FakeSession(),
+        _="master",
+    )
+    assert out["ok"] is False
+    assert committed == []
