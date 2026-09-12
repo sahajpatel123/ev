@@ -539,11 +539,12 @@ async def _muse_turn(
     has_work = has_active_work(cognition)
     compact = compact_turn(text=text, domain=domain, has_work=has_work)
     effort = reasoning_effort(domain=domain, compact=compact, has_work=has_work)
+    from app.cognitive.capabilities import PHONE_LOCAL_TOOL_NAMES
     from app.device_gateway.cognitive_phone import (
         capture_phone_binding,
         execute_phone_tool,
         is_phone_turn,
-        phone_tool_specs,
+        phone_turn_specs,
     )
 
     phone_turn = await is_phone_turn(session, device_id) if device_id else False
@@ -563,7 +564,11 @@ async def _muse_turn(
         )
         if routed is not None:
             return routed
-    specs = phone_tool_specs() if phone_turn else tool_specs_for_turn(compact=compact)
+    # A phone turn sees the same semantic bus as every other surface, plus its
+    # own local actuators. Restricting it to three tools made every Core or
+    # Home Station capability unreachable from the device the owner actually
+    # carries.
+    specs = phone_turn_specs(compact=compact) if phone_turn else tool_specs_for_turn(compact=compact)
     if compact:
         telemetry.inc("compact_turns")
     telemetry.note(last_reasoning_effort=effort, last_muse_tools_offered=len(specs))
@@ -708,7 +713,7 @@ async def _muse_turn(
                     return _in_flight()
                 tool_count += 1
                 telemetry.inc("muse_tool_calls")
-                if phone_turn:
+                if phone_turn and str(call.name or "") in PHONE_LOCAL_TOOL_NAMES:
                     if int(current().steering_version) != steering_seen:
                         evidence = {"ok": False, "error": "STEERING_CHANGED", "executed": False}
                     else:
@@ -744,25 +749,66 @@ async def _muse_turn(
                         set_kernel_turn_deadline,
                     )
 
-                    # A nested code job may take minutes; cap it to what is
-                    # left of this turn so it returns a partial result instead
-                    # of being cancelled after writing files.
-                    deadline_token = set_kernel_turn_deadline(deadline)
-                    try:
-                        evidence = await asyncio.wait_for(
-                            execute_semantic(
-                                session,
-                                call.name,
-                                dict(call.arguments or {}),
-                                cognition=cognition,
-                                actor=actor,
-                                live_session_id=live_session_id,
-                                steering_seen=steering_seen,
-                            ),
-                            timeout=remaining,
+                    # A semantic tool on a phone turn reaches Core and Home
+                    # Station, so it carries the same authority binding as a
+                    # device-local action: the turn that opened the work is the
+                    # turn that may finish it.
+                    changed: str | None = None
+                    if phone_turn:
+                        from app.device_gateway.cognitive_phone import (
+                            phone_turn_authority_changed,
                         )
-                    finally:
-                        reset_kernel_turn_deadline(deadline_token)
+
+                        changed = await phone_turn_authority_changed(
+                            session,
+                            device_id=str(device_id) if device_id else None,
+                            live_session_id=live_session_id,
+                            expected_binding=phone_binding,
+                            text_context=phone_text_context,
+                        )
+                    if changed is not None:
+                        evidence = {
+                            "ok": False,
+                            "error": changed,
+                            "diagnosis": changed,
+                            "executed": False,
+                            "verified": False,
+                            "spoken": (
+                                "The phone connection changed while I was thinking. "
+                                "Please ask again."
+                            ),
+                        }
+                    else:
+                        # A nested code job may take minutes; cap it to what is
+                        # left of this turn so it returns a partial result instead
+                        # of being cancelled after writing files.
+                        deadline_token = set_kernel_turn_deadline(deadline)
+                        try:
+                            evidence = await asyncio.wait_for(
+                                execute_semantic(
+                                    session,
+                                    call.name,
+                                    dict(call.arguments or {}),
+                                    cognition=cognition,
+                                    actor=actor,
+                                    live_session_id=live_session_id,
+                                    steering_seen=steering_seen,
+                                    device_id=str(device_id) if device_id else None,
+                                ),
+                                timeout=remaining,
+                            )
+                        finally:
+                            reset_kernel_turn_deadline(deadline_token)
+                    # A phone turn's failure has to reach the phone receipt too,
+                    # otherwise the device sees only prose and cannot tell a real
+                    # failure from a refusal.
+                    if (
+                        phone_turn
+                        and action_receipts is not None
+                        and isinstance(evidence, dict)
+                        and evidence.get("ok") is False
+                    ):
+                        action_receipts.append(evidence)
                 messages.append(
                     ChatMessage(
                         role="tool",

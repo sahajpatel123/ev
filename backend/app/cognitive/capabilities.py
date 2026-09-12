@@ -384,7 +384,81 @@ SEMANTIC_TOOLS: list[dict[str, Any]] = [
         "permission": "phone:act",
         "sensitive": True,
     },
+    {
+        # The universal route. A phone has no shell, no Mail API, no Clock, and
+        # no Contacts store; Home Station does. When no specific tool fits, the
+        # owner's own words still have somewhere to go instead of a dead end.
+        "name": "home.act",
+        "description": (
+            "Ask Home Station (the owner's Mac) and Evie Core to carry out one "
+            "request this device cannot run itself: Mail, iMessage/WhatsApp, the "
+            "calendar, contacts, opening or closing an app, timers, reminders, "
+            "sending, calling, or anything else with no local path. Pass the "
+            "owner's exact words in request. The spoken result is evidence from "
+            "that system — never claim this device performed it."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "request": {"type": "string", "maxLength": 1500},
+            },
+            "required": ["request"],
+        },
+        "read_only": False,
+        "risk_class": "R2",
+        "permission": "home:act",
+    },
+    {
+        "name": "owner.profile",
+        "description": (
+            "The owner's own name. op=get reads the stored preferred name; "
+            "op=set stores what the owner asked to be called. Set it only when "
+            "the owner states their own name in this turn. Never guess it from "
+            "contacts, a device name, or another person."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "op": {"type": "string", "enum": ["get", "set"]},
+                "name": {"type": "string", "maxLength": 80},
+            },
+            "required": ["op"],
+        },
+        "read_only": False,
+        "risk_class": "R1",
+        "permission": "assistant:profile",
+    },
 ]
+
+
+# Tools that exist only because the turn came from a phone. Kept out of
+# SEMANTIC_TOOLS so a Mac/web turn can never be offered a phone-local actuator.
+PHONE_LOCAL_TOOL_NAMES: frozenset[str] = frozenset({"phone_action", "phone.read"})
+
+
+# Tools whose effect lands on Home Station / Core rather than on the device
+# that asked. Used only to label a result honestly; never to block it.
+HOME_STATION_TOOL_NAMES: frozenset[str] = frozenset(
+    {
+        "home.act",
+        "life.mail",
+        "life.messages",
+        "life.send",
+        "life.state",
+        "timer.act",
+        "people.lookup",
+        "files.act",
+        "code.act",
+        "computer.observe",
+        "computer.perform_effect",
+        "digital.act",
+        "digital.discover",
+        "notify.schedule",
+        "phone.call",
+    }
+)
 
 
 def tool_specs() -> list[ToolSpec]:

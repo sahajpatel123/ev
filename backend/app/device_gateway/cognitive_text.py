@@ -151,9 +151,40 @@ async def execute_phone_text_tool(
     return await dispatch_phone_action(
         device_id=str(device.id), role=device.role or "companion", instance_id=context.instance_id,
         session_id=None, origin=context.origin, arguments=arguments, transcript=transcript,
-        device_label=device.name, db_session=session, allow_home_station_fallback=False,
+        device_label=device.name, db_session=session,
+        allow_home_station_fallback=True,
         require_confirmation_context=True, text_confirmation_binding=context.confirmation_binding,
     )
+
+
+async def text_context_still_current(
+    session: AsyncSession, *, context: PhoneTextContext,
+) -> str | None:
+    """``None`` when the typed turn still holds the conversation, else a code.
+
+    Mirrors the guard inside ``execute_phone_text_tool`` so that semantic tools
+    on a typed phone turn carry the same authority binding as device-local ones.
+    """
+
+    from .lease import _when, current_lease, lease_belongs
+
+    try:
+        device = await session.get(Device, UUID(context.device_id), populate_existing=True)
+    except (TypeError, ValueError):
+        return "DEVICE_TRUST_CHANGED"
+    if (device is None or device.revoked_at is not None or is_sandbox_device(device)
+            or device.auth_revision != context.auth_revision):
+        return "DEVICE_TRUST_CHANGED"
+    lease = await current_lease(session)
+    if lease is not None:
+        await session.refresh(lease)
+    if (lease is None
+            or not lease_belongs(lease, device_id=device.id, instance_id=context.instance_id)
+            or lease.lease_id != context.lease_id
+            or lease.client_generation != context.generation
+            or (_when(lease.expires_at) or utcnow()) <= utcnow()):
+        return "PHONE_CONTEXT_CHANGED"
+    return None
 
 
 async def maybe_cancel_phone_text(

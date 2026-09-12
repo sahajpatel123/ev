@@ -94,6 +94,7 @@ async def execute_semantic(
     actor: str,
     live_session_id: str | None,
     steering_seen: int,
+    device_id: str | None = None,
 ) -> dict[str, Any]:
     args = dict(arguments or {})
     if int(cognition.steering_version) != int(steering_seen) and name in MUTATING:
@@ -407,7 +408,152 @@ async def execute_semantic(
         return await _notify_schedule(session, args)
     if name == "phone.call":
         return await _phone_call(session, args, cognition=cognition)
+    if name == "owner.profile":
+        return await _owner_profile(session, args)
+    if name == "home.act":
+        return await _home_station_act(
+            session,
+            args,
+            actor=actor,
+            device_id=device_id,
+            cognition=cognition,
+        )
     return _failure("CAPABILITY_UNAVAILABLE", f"I don't have {name} on this kernel.")
+
+
+async def _owner_profile(session: AsyncSession, args: dict[str, Any]) -> dict[str, Any]:
+    """The owner's own name — read it, or store what they asked to be called.
+
+    A name is only ever written from the owner's own statement in this turn.
+    Contacts, device names, and other people's names are never used as a guess:
+    answering "what's my name?" with an inference would be a fabricated fact.
+    """
+
+    from app.ev.assistant import get_profile, set_owner_preferred_name
+
+    op = str(args.get("op") or "get").strip().lower()
+    if op == "set":
+        name = str(args.get("name") or "").strip()
+        if not name:
+            return _failure("CAPABILITY_UNAVAILABLE", "I didn't catch the name to use.")
+        if len(name) > 80 or "\n" in name:
+            return _failure("CAPABILITY_UNAVAILABLE", "That name is too long for me to keep.")
+        profile = await set_owner_preferred_name(session, name)
+        stored = str(getattr(profile, "owner_preferred_name", None) or name)
+        return {
+            "ok": True,
+            "spoken": f"I'll call you {stored}.",
+            "name": stored,
+            "executed": True,
+            "verified": True,
+            "operation": "owner.profile",
+        }
+    profile = await get_profile(session)
+    stored = str(getattr(profile, "owner_preferred_name", None) or "").strip()
+    if not stored:
+        return {
+            "ok": True,
+            "spoken": "I don't have your preferred name saved yet. Tell me what to call you and I'll keep it.",
+            "name": None,
+            "executed": False,
+            "verified": True,
+            "operation": "owner.profile",
+        }
+    return {
+        "ok": True,
+        "spoken": f"Your name is {stored}.",
+        "name": stored,
+        "executed": False,
+        "verified": True,
+        "operation": "owner.profile",
+    }
+
+
+async def _home_station_act(
+    session: AsyncSession,
+    args: dict[str, Any],
+    *,
+    actor: str,
+    device_id: str | None,
+    cognition: CognitiveSession,
+) -> dict[str, Any]:
+    """Universal Home Station route: the owner's words in, one honest result out.
+
+    This is the general fallback behind every capability the calling device has
+    no local path for. It reuses the existing Home Station broker (which already
+    owns recipient confirmation, send approval parking, and evidence), so it adds
+    a route rather than a second engine. The effect is labelled
+    ``executed_on: home_station`` so nothing is ever reported as having run on
+    the device that asked.
+    """
+
+    from uuid import UUID
+
+    from app.device_gateway.phone_mac import maybe_phone_mac_act
+    from app.models import Device
+
+    request = str(args.get("request") or args.get("text") or "").strip()
+    if not request:
+        return _failure(
+            "CAPABILITY_UNAVAILABLE",
+            "I need the request in your own words.",
+            executed=False,
+            verified=False,
+            executed_on="home_station",
+        )
+    if not device_id:
+        return _failure(
+            "CAPABILITY_UNAVAILABLE",
+            "That needs a bound device before I can route it to Home Station.",
+            executed=False,
+            verified=False,
+            executed_on="home_station",
+        )
+    try:
+        device = await session.get(Device, UUID(str(device_id)))
+    except (TypeError, ValueError):
+        device = None
+    if device is None or device.revoked_at is not None:
+        return _failure(
+            "CAPABILITY_UNAVAILABLE",
+            "That device is not available right now.",
+            executed=False,
+            verified=False,
+            executed_on="home_station",
+        )
+    if cognition.prepare_only:
+        telemetry.inc("stale_mutations_blocked")
+        return _failure(
+            "POLICY_BLOCKED",
+            "Prepare-only: I will not run that yet.",
+            executed=False,
+            verified=False,
+            executed_on="home_station",
+        )
+    acted = await maybe_phone_mac_act(session, device=device, text=request)
+    if acted is None:
+        return _failure(
+            "CAPABILITY_UNAVAILABLE",
+            "Home Station has no route for that request yet.",
+            diagnosis="HOME_STATION_NO_PATH",
+            executed=False,
+            verified=False,
+            executed_on="home_station",
+        )
+    ok = bool(acted.get("ok", True))
+    return {
+        "ok": ok,
+        "spoken": str(acted.get("reply") or ""),
+        "executed": bool(acted.get("executed")),
+        "verified": bool(acted.get("verified")),
+        "accepted": bool(acted.get("accepted")),
+        "queued": bool(acted.get("queued")),
+        "executed_on": "home_station",
+        "operation": str(acted.get("tool") or acted.get("operation") or "home.act"),
+        "route": acted.get("route"),
+        "error_code": acted.get("error_code"),
+        "diagnosis": None if ok else str(acted.get("error_code") or "HOME_STATION_FAILED"),
+    }
 
 
 def _mac_hub_send_payload(args: dict[str, Any]) -> dict[str, Any] | None:
@@ -802,7 +948,6 @@ async def _notify_schedule(session: AsyncSession, args: dict[str, Any]) -> dict[
     """Durable owner notification: presence contract with a NOTIFY node."""
 
     from app.ev.resolve import parse_owner_when
-    from app.utils.text import utcnow
     from app.presence.service import (
         add_condition,
         create_contract,
@@ -811,6 +956,7 @@ async def _notify_schedule(session: AsyncSession, args: dict[str, Any]) -> dict[
         set_wait,
         upsert_node,
     )
+    from app.utils.text import utcnow
 
     op = str(args.get("op") or "").strip().lower()
     if op == "schedule":
