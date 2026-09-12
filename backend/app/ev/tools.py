@@ -21,14 +21,18 @@ from typing import Any, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.digital.tools import DIGITAL_TOOL_SPECS, handle_digital_tool
 from app.ev import health_radar, maker, people
 from app.ev.actions import LIFE_ACTION_NAMES, autonomy_mode
 from app.ev.fleet_tools import FLEET_TOOL_SPECS, actuate_permission, handle_fleet_tool
-from app.digital.tools import DIGITAL_TOOL_SPECS, handle_digital_tool
 from app.ev.research import list_sessions
 from app.gateway.validation import validate_arguments, validate_output
 from app.integrations import service as integrations
-from app.integrations.life_helper import AmbiguousRecipientError, LifeHelperError, LifeHelperUnavailableError
+from app.integrations.life_helper import (
+    AmbiguousRecipientError,
+    LifeHelperError,
+    LifeHelperUnavailableError,
+)
 from app.memory.retrieval import Retriever
 from app.models import GearSnapshot, Integration, Memory
 from app.schemas import ToolCallResponse
@@ -717,6 +721,43 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "required_scopes": ["mail:read"],
     },
     {
+        "name": "open_in_app",
+        "description": (
+            "Open (or play) a specific thing inside an app on the owner's Mac: "
+            "a WhatsApp chat, a Messages thread, a Slack channel, a Music "
+            "playlist or track, a note, a folder, or a map place. Use this "
+            "instead of open_app whenever the owner names both an app and an "
+            "item inside it. It drives the app's existing Chrome tab or a safe "
+            "native driver in the background when asked; it never sends a "
+            "message or edits content."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "app": {"type": "string", "maxLength": 64, "default": None},
+                "item": {"type": "string", "minLength": 1, "maxLength": 200},
+                "kind": {"type": "string", "maxLength": 32, "default": None},
+                "verb": {"type": "string", "enum": ["open", "play", "close"], "default": "open"},
+                "background": {"type": "boolean", "default": False},
+            },
+            "required": ["item"],
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "macos_life",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
+    },
+    {
         "name": "open_url",
         "description": (
             "Open an http or https link in the owner's default browser via the "
@@ -1034,7 +1075,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "search only the words they asked to find, then navigate to open "
             "the first result when they asked for that. Verify URL. "
             "Safari/Chrome also: new_tab, close_tab, next_tab, previous_tab — "
-            "run each once; after verified is true, do not repeat. "
+            "run each once; after verified is true, do not repeat. Set new_tab "
+            "true on navigate/search when the owner asked for another tab, and "
+            "put the close target in query when they named a tab. "
             "Notes: create/append with the exact text in query or value, then verify. "
             "Calculator: put the expression in query (generic keyboard path). "
             "Unknown apps: inspect the UI and click, or capture the window and "
@@ -1073,6 +1116,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "playlist": {"type": "string", "maxLength": 120},
                 "index": {"type": "integer", "minimum": -1, "maximum": 500},
                 "query": {"type": "string", "maxLength": 2000},
+                "url": {"type": "string", "maxLength": 2048},
+                "new_tab": {"type": "boolean"},
                 "value": {"type": "string", "maxLength": 4000},
                 "text": {"type": "string", "maxLength": 4000},
                 "track": {"type": "string", "maxLength": 200},
@@ -2583,6 +2628,25 @@ def _alerts_spoken(rows: list[dict]) -> str:
     return f"{head}: {listing}{tail}."
 
 
+def declared_argument_names(name: str) -> set[str] | None:
+    """Property names a tool declares, or ``None`` when it accepts extras.
+
+    Used by the semantic bridge so an argument the mind inferred from the
+    owner's words (a ``query`` on a tool that only takes a ``limit``) is dropped
+    instead of failing the whole request with "invalid arguments". The gateway's
+    own strict validation is untouched: this only relaxes the bridge, where the
+    caller is Evie's mind rather than an untrusted client.
+    """
+
+    spec = get_spec(name)
+    if spec is None:
+        return None
+    parameters = spec.get("parameters") or {}
+    if parameters.get("additionalProperties", True) is not False:
+        return None
+    return set((parameters.get("properties") or {}).keys())
+
+
 def get_spec(name: str) -> dict | None:
     """Return the declared spec for a tool or action name.
 
@@ -3091,7 +3155,12 @@ async def dispatch(
                         if isinstance(result, dict) and (
                             result.get("degraded") or result.get("error") == "not_connected"
                         ):
-                            result = {**result, "error": "not_connected", "degraded": True}
+                            # Keep the real failure reason: a degraded result
+                            # without its own error is the only case that
+                            # becomes a generic not_connected.
+                            result = {**result, "degraded": True}
+                            if not result.get("error"):
+                                result["error"] = "not_connected"
                         else:
                             result = attach_evidence(result, decision)
                     if result is not None:
@@ -4164,6 +4233,21 @@ async def _handle(
         return await _dispatch_life_action(
             session, name, args, actor=actor, policy_checked=True
         )
+    if name == "open_in_app":
+        from app.ev.in_app import act_in_app
+
+        return await act_in_app(
+            session,
+            app=args.get("app"),
+            item=args.get("item"),
+            kind=args.get("kind"),
+            verb=str(args.get("verb") or "open"),
+            background=bool(args.get("background")),
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
     if name == "open_url":
         from app.ev.computer import open_url_via_live_or_helper
 
@@ -4229,8 +4313,8 @@ async def _handle(
     if name == "set_reminder":
         from uuid import uuid4
 
-        from app.ev.briefing import extract_reminder_when
         from app.ev.actuator import fingerprint, prior_result, record_actuator
+        from app.ev.briefing import extract_reminder_when
         from app.ev.resolve import parse_owner_when
         from app.ev.timers import start_timer
         from app.models import Alert
