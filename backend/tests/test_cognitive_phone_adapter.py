@@ -114,7 +114,12 @@ async def test_kernel_phone_send_uses_phone_tools_not_mac(monkeypatch, tmp_path,
         phone_tool.assert_awaited_once()
         assert phone_tool.await_args.kwargs["device_id"] == str(device.id)
         mac_tool.assert_not_awaited()
-        assert seen[0][1] == ["phone_action", "phone.read", "capability.discover"]
+        offered = set(seen[0][1])
+        # The phone sees the full bus now, but the model asked for a phone-local
+        # actuator — so it must still have gone to the phone adapter and never to
+        # the Mac executor.
+        assert {"phone_action", "phone.read", "capability.discover"} <= offered
+        assert "home.act" in offered
         tool_messages = [m.content for m in seen[-1][0] if m.role == "tool"]
         assert tool_messages and "secret" not in str(tool_messages)
     finally:
@@ -244,7 +249,12 @@ async def test_action_cannot_adopt_replacement_authority(monkeypatch, change):
     if change == "none":
         dispatch.assert_awaited_once()
         assert result["ok"] is True
-        assert dispatch.await_args.kwargs["allow_home_station_fallback"] is False
+        # Home Station fallback is ON: an iPhone with no native broker must be
+        # able to have the same request carried out by Home Station, labelled as
+        # such, instead of hitting a dead end. The "never SILENTLY become a Mac
+        # effect" law is enforced by the result evidence, not by blocking the
+        # hop.
+        assert dispatch.await_args.kwargs["allow_home_station_fallback"] is True
     else:
         dispatch.assert_not_awaited()
         assert result["error"] == "PHONE_CONTEXT_CHANGED"

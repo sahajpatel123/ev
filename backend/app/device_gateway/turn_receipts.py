@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -13,6 +14,8 @@ from app.utils.text import utcnow
 
 from .cognitive_text import PhoneTextContext
 from .sandbox import is_sandbox_device
+
+logger = logging.getLogger("ev.device_gateway.turn_receipts")
 
 
 def _stamp_takeover(
@@ -43,6 +46,28 @@ def _stamp_takeover(
     row.evidence = ev
 
 
+async def _phone_deterministic_lane(
+    session: AsyncSession, *, device: Device, text: str, idempotency_key: str | None,
+) -> dict[str, Any] | None:
+    """Core reads and Home Station actions that do not need the mind.
+
+    These are deterministic: they keep working when the model provider is down,
+    rate-limited, or mid-incident. Keeping them reachable is what stops a
+    provider outage from turning the owner's phone into a device that can only
+    apologise — the owner still gets a real read or a real Mac action.
+    """
+
+    from .phone_core import maybe_phone_core_read
+    from .phone_mac import maybe_phone_mac_act
+
+    core = await maybe_phone_core_read(session, device=device, text=text)
+    if core is None:
+        core = await maybe_phone_mac_act(
+            session, device=device, text=text, idempotency_key=idempotency_key,
+        )
+    return core
+
+
 async def _apply_muse_kernel_phone_turn(
     session: AsyncSession,
     *,
@@ -57,6 +82,11 @@ async def _apply_muse_kernel_phone_turn(
 
     phone_actions: list[dict[str, Any]] = []
     phone_results: list[dict[str, Any]] = []
+    kernel_error: str | None = None
+    kernel_unavailable = False
+    core: dict[str, Any] | None = None
+    spoken = ""
+    route = ""
     # The general pipeline can execute on the Mac before Muse sees the turn.
     # Phone effects must instead pass the kernel's device-bound phone adapter.
     try:
@@ -71,29 +101,66 @@ async def _apply_muse_kernel_phone_turn(
         )
         spoken = str(getattr(kernel, "spoken", "") or "").strip()
         route = str(getattr(kernel, "kind", "") or "muse")[:80]
+        kernel_unavailable = bool(getattr(kernel, "unavailable", False))
+        # A result object that predates or omits ``evidence`` must still produce
+        # the spoken answer. Reading the attribute directly turned a partial
+        # result into the generic unavailable line and hid the real cause.
+        evidence_items = getattr(kernel, "evidence", None) or []
         phone_actions = [
-            action for action in kernel.evidence
+            action for action in evidence_items
             if isinstance(action, dict) and isinstance(action.get("card"), dict)
         ]
         phone_results = [
-            {key: value for key, value in result.items() if key in {
-                "ok", "error", "error_code", "failure", "spoken", "reply",
-                "action_id", "operation", "executed", "verified",
-            }}
-            for result in kernel.evidence if isinstance(result, dict)
+            {
+                name: value
+                for name, value in result.items()
+                if name in {
+                    "ok", "error", "error_code", "failure", "spoken", "reply",
+                    "action_id", "operation", "executed", "verified",
+                }
+            }
+            for result in evidence_items
+            if isinstance(result, dict)
         ]
-    except Exception:
-        spoken = _PHONE_KERNEL_FALLBACK
-        route = "unavailable"
-    if not spoken:
-        spoken = _PHONE_KERNEL_FALLBACK
-        route = route or "unavailable"
+    except Exception as exc:  # noqa: BLE001 - the phone still needs an answer
+        # Never swallow this silently: a kernel failure used to become
+        # "I can't think that through right now" with nothing recorded anywhere,
+        # which made every phone-side outage undiagnosable.
+        kernel_error = type(exc).__name__
+        logger.exception(
+            "phone turn kernel failed: device=%s transcript=%r",
+            device.id,
+            (row.transcript or "")[:120],
+        )
+
+    if kernel_error is not None or kernel_unavailable or not spoken:
+        # The mind is unavailable. Fall back to the lane that does not need it,
+        # so the owner still gets a real answer or a real action instead of a
+        # dead end. This is the phone's safety net, not a second brain: it only
+        # reads Core state or asks Home Station to run an existing tool.
+        try:
+            core = await _phone_deterministic_lane(
+                session, device=device, text=row.transcript, idempotency_key=key,
+            )
+        except Exception:  # noqa: BLE001 - the fallback must not break the receipt
+            logger.exception("phone deterministic lane failed: device=%s", device.id)
+            core = None
+        if core is not None and str(core.get("reply") or "").strip():
+            spoken = str(core["reply"]).strip()
+            route = str(core.get("route") or "HOME_STATION")
+        elif not spoken:
+            spoken = _PHONE_KERNEL_FALLBACK
+            route = route or "unavailable"
+
     _stamp_takeover(
         row,
         spoken=spoken,
         route=route,
+        core=core,
         phone_action=phone_actions[-1] if phone_actions else None,
     )
+    if kernel_error is not None:
+        row.evidence = {**row.evidence, "kernel_failed": True, "kernel_error": kernel_error}
     if phone_actions:
         row.evidence = {**row.evidence, "phone_actions": phone_actions}
     if phone_results:
@@ -229,4 +296,9 @@ def public_receipt(row: PhoneTurnReceipt, *, replayed: bool = False) -> dict[str
         payload["action_accepted"] = bool(evidence.get("action_accepted"))
         payload["action_executed"] = bool(evidence.get("action_executed"))
         payload["action_verified"] = bool(evidence.get("action_verified"))
+    # Surface a mind failure so a degraded turn is visible to the client and to
+    # ops instead of looking like an ordinary refusal.
+    if evidence.get("kernel_failed"):
+        payload["kernel_failed"] = True
+        payload["kernel_error"] = str(evidence.get("kernel_error") or "")
     return payload

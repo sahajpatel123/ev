@@ -42,7 +42,20 @@ def scripted_phone_model(monkeypatch, operation, arguments, before_action=None):
         async def chat_with_tools(self, messages, specs, **kwargs):
             self.step += 1
             calls.append(list(messages))
-            assert {s.name for s in specs} == {"phone_action", "phone.read", "capability.discover"}
+            offered = {s.name for s in specs}
+            # A phone turn is offered the whole semantic bus plus its own local
+            # actuators. Offering only three tools is what made every Core and
+            # Home Station capability unreachable from the owner's phone.
+            assert {"phone_action", "phone.read", "capability.discover"} <= offered
+            assert {
+                "home.act",
+                "life.mail",
+                "life.messages",
+                "life.send",
+                "timer.act",
+                "weather.get",
+                "owner.profile",
+            } <= offered
             if self.step == 1:
                 if before_action is not None:
                     await before_action()
