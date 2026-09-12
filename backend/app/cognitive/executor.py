@@ -654,12 +654,24 @@ async def _run_existing(
     except Exception:
         lives = []
     if lives or not is_kernel_process():
-        from app.ev.tools import dispatch
+        from app.ev.tools import declared_argument_names, dispatch
+
+        forwarded = dict(arguments or {})
+        declared = declared_argument_names(name)
+        if declared is not None:
+            # The mind sometimes adds one key it inferred from the owner's words
+            # (a `query` on a tool that only declares `limit`). That is context,
+            # not a malformed call — dropping it keeps the request alive instead
+            # of answering "That request has invalid arguments".
+            dropped = {key for key in forwarded if key not in declared}
+            if dropped:
+                telemetry.inc("bridge_extra_arguments_dropped")
+                forwarded = {key: value for key, value in forwarded.items() if key in declared}
 
         result = await dispatch(
             session,
             name,
-            arguments,
+            forwarded,
             actor=actor,
             allow_sensitive=True,
             live_session_id=live_session_id or (str(lives[0].session_id) if lives else None),

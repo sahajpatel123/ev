@@ -608,12 +608,20 @@ async def _muse_turn(
         ChatMessage(role="system", content=system),
         ChatMessage(role="user", content=text[:4000]),
     ]
+    # A phone turn is offered the whole bus and has no local fallback, so it
+    # gets the WORK budget for steps and time: four rounds is not enough to
+    # reach Core or Home Station and still speak the result, and exhausting the
+    # budget used to surface the model's mid-work narration ("pulling your
+    # latest email now") instead of the answer. A purely conversational turn
+    # still returns on its first round, so this costs nothing when no tool is
+    # needed.
+    budget_compact = compact and not phone_turn
     timeout = float(
         getattr(settings, "cognitive_conversation_timeout_seconds", 25.0)
-        if compact
+        if budget_compact
         else getattr(settings, "cognitive_work_timeout_seconds", 90.0)
     )
-    max_steps = max_tool_turns(compact=compact)
+    max_steps = max_tool_turns(compact=budget_compact)
     tool_count = 0
     steering_seen = int(cognition.steering_version)
     last_spoken = ""
