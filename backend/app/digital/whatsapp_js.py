@@ -54,10 +54,10 @@ function composeBox() {
     || document.querySelector('#main [contenteditable="true"][role="textbox"]');
 }
 function sendControl() {
+  const labeled = document.querySelector('footer button[aria-label*="Send" i], #main button[aria-label*="Send" i]');
+  if (labeled) return labeled;
   const icon = document.querySelector('[data-icon="wds-ic-send-filled"], [data-icon="send"], [data-testid="send"]');
-  if (!icon) {
-    return document.querySelector('footer button[aria-label*="Send" i], #main button[aria-label*="Send" i]');
-  }
+  if (!icon) return null;
   return icon.closest('button') || icon.closest('[role="button"]') || icon.parentElement || icon;
 }
 """
@@ -119,9 +119,13 @@ chatNodes().forEach((n) => {{
   const sec = ((n.querySelector('[data-testid="cell-frame-secondary"]') || {{}}).innerText || '');
   const isSelf = n.getAttribute('data-testid') === 'message-yourself-row' || /message yourself/i.test(sec);
   const ref = isSelf ? '__self__' : name;
-  if (seen.has(ref)) return;
+  // Dedupe on name + secondary text, never on name alone: two chats that
+  // display the same name must both reach the resolver so it refuses to
+  // guess between them instead of silently picking the first row.
+  const key = ref + '\\n' + String(sec || '').split('\\n')[0].trim().slice(0, 40);
+  if (seen.has(key)) return;
   if (!q || isSelf || name.toLowerCase().includes(String(q).toLowerCase()) || /message yourself/i.test(String(q))) {{
-    seen.add(ref);
+    seen.add(key);
     items.push({{chat_ref: ref, name: name, unread: /\\d+/.test((n.innerText||'').split('\\n').slice(-1)[0] || '') ? 1 : 0, gist: String(sec || '').split('\\n')[0].trim().slice(0, 80)}});
   }}
 }});
@@ -149,39 +153,159 @@ def open_chat_js(chat_ref: str) -> str:
 {_CHAT_NAME}
 const want = {ref};
 const selfWant = want === '__self__' || /^you$/i.test(want) || /message yourself/i.test(want);
-const header = document.querySelector('[data-testid="conversation-info-header-chat-title"]');
-const headerName = header ? (header.innerText || '').split('\\n')[0].trim() : '';
-if (selfWant && document.querySelector('#main [data-testid="conversation-compose-box-input"]')) {{
-  return JSON.stringify({{ok: true, chat_ref: '__self__', name: headerName || 'Message yourself', already: true, activated: false, focus_theft: 0}});
+function headerTitle() {{
+  const header = document.querySelector('[data-testid="conversation-info-header-chat-title"]');
+  return header ? (header.innerText || '').split('\\n')[0].trim() : '';
 }}
-if (want && headerName && want.toLowerCase() === headerName.toLowerCase() && document.querySelector('#main')) {{
+function conversationOpen() {{
+  return !!document.querySelector('[data-testid="conversation-compose-box-input"]')
+    || !!document.querySelector('footer [contenteditable="true"]');
+}}
+function sameChat(a, b) {{
+  // Sidebar titles (title attr) and headers (innerText) can differ by emoji
+  // variation selectors, bidi marks, or spacing: compare normalized names.
+  const normName = (s) => String(s || '').normalize('NFC').replace(/[\\uFE00-\\uFE0F\\u200e\\u200f\\u2060]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+  const na = normName(a), nb = normName(b);
+  return !!na && !!nb && na === nb;
+}}
+function pressEnterOn(el) {{
+  for (const type of ['keydown','keypress','keyup']) {{
+    el.dispatchEvent(new KeyboardEvent(type, {{key:'Enter', code:'Enter', keyCode:13, which:13, bubbles:true, cancelable:true}}));
+  }}
+}}
+const headerName = headerTitle();
+if (want && sameChat(want, headerName) && conversationOpen()) {{
   return JSON.stringify({{ok: true, chat_ref: want, name: headerName, already: true, activated: false, focus_theft: 0}});
 }}
 if (selfWant) {{
+  // The self row's .click() may open with a delay, so this branch both
+  // clicks and verifies across round-trips. A same-named contact must never
+  // be mistaken for Message yourself: accept only a uniquely-named open
+  // thread, and never type "__self__" into search (it matches nothing).
   const row = document.querySelector('[data-testid="message-yourself-row"]');
-  if (row) {{
-    row.click();
-    return JSON.stringify({{ok: true, chat_ref: '__self__', name: chatName(row) || 'Message yourself', activated: false, focus_theft: 0}});
+  const rowName = row ? chatName(row) : '';
+  const selfHeader = headerTitle();
+  if (rowName && sameChat(rowName, selfHeader) && conversationOpen()) {{
+    let dups = 0;
+    chatNodes().forEach((n) => {{ if (sameChat(rowName, chatName(n))) dups++; }});
+    if (dups <= 1) {{
+      return JSON.stringify({{ok: true, chat_ref: '__self__', name: selfHeader, activated: false, focus_theft: 0}});
+    }}
+    return JSON.stringify({{ok: true, entered: false, opened: false, chat_ref: '__self__', error: 'self_name_ambiguous', diagnosis: 'self_name_ambiguous', activated: false, focus_theft: 0}});
   }}
+  if (row) row.click();
+  return JSON.stringify({{ok: true, entered: false, opened: false, chat_ref: '__self__', activated: false, focus_theft: 0}});
+}}
+const input = searchInput();
+if (!input) return JSON.stringify({{ok: false, error: 'search_input_missing', diagnosis: 'ui_changed', activated: false, focus_theft: 0}});
+// A bare .click() on a row no longer opens the thread; the search box plus
+// Enter is the gesture WhatsApp honors in a background tab.
+setInputValue(input, want);
+pressEnterOn(document.activeElement || input);
+// Verify the RIGHT chat opened: Enter picks the top search hit, which may be
+// a different chat. A send must never go to a wrongly-opened thread.
+const wantDigits = String(want).replace(/\\D+/g, '');
+const openedHeader = headerTitle();
+const headerDigits = String(openedHeader).replace(/\\D+/g, '');
+const nameMatch = sameChat(want, openedHeader);
+// For unsaved numbers the header IS the number in display format: require a
+// digit match, never "any open thread". A search+Enter that landed anywhere
+// else keeps reporting entered/opened:false so callers refuse.
+const digitsMatch = wantDigits.length >= 7 && headerDigits.length >= 7
+  && (headerDigits.endsWith(wantDigits) || wantDigits.endsWith(headerDigits));
+if (conversationOpen() && (nameMatch || digitsMatch)) {{
+  return JSON.stringify({{ok: true, chat_ref: nameMatch ? want : openedHeader, name: openedHeader, entered: true, opened: true, activated: false, focus_theft: 0}});
+}}
+return JSON.stringify({{ok: true, entered: true, opened: false, chat_ref: want, header: openedHeader, activated: false, focus_theft: 0}});
+"""
+
+
+def click_exact_chat_js(chat_ref: str) -> str:
+    """Open the row whose name is exactly ``chat_ref`` (not the top search hit).
+
+    A bare ``.click()`` does not navigate; a full mouse gesture does. Search
+    reorders variants ("Mansi Makani" can outrank "Mansi"), so the exact row
+    must be opened deliberately.
+    """
+
+    ref = json.dumps(chat_ref)
+    return f"""
+{_CHAT_NAME}
+const want = {ref};
+function normName(s) {{
+  return String(s || '').normalize('NFC')
+    .replace(/[\\uFE00-\\uFE0F\\u200e\\u200f\\u2060]/g, '')
+    .replace(/\\u00a0/g, ' ')
+    .replace(/\\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}}
+function mouseOpen(node) {{
+  const r = node.getBoundingClientRect();
+  const opts = {{bubbles: true, cancelable: true, view: window,
+    clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0}};
+  node.dispatchEvent(new MouseEvent('mouseover', opts));
+  node.dispatchEvent(new MouseEvent('mousedown', opts));
+  node.dispatchEvent(new MouseEvent('mouseup', opts));
+  node.dispatchEvent(new MouseEvent('click', opts));
 }}
 const nodes = chatNodes();
-const wantDigits = String(want).replace(/\\D+/g, '');
-let found = null;
+function rowFor(el) {{
+  return el && el.closest
+    ? el.closest('[data-testid^="list-item"], [role="listitem"], [data-testid="cell-frame-container"]')
+    : null;
+}}
+function shownName(node) {{
+  const r = node.getBoundingClientRect();
+  if (r.width < 4 || r.height < 4) return '';
+  const under = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  const row = rowFor(under) || rowFor(node);
+  return row ? chatName(row) : '';
+}}
+// The chat list is virtualized: a stored node can carry a stale name while a
+// different row is painted at its position. Only click a point whose painted
+// row really is the wanted name.
+let hit = null;
 for (const n of nodes) {{
-  const name = chatName(n);
-  const sec = ((n.querySelector('[data-testid="cell-frame-secondary"]') || {{}}).innerText || '');
-  if (name === want || name.toLowerCase() === String(want).toLowerCase()) {{ found = n; break; }}
-  if (selfWant && /message yourself/i.test(sec)) {{ found = n; break; }}
-  if (!found && wantDigits.length >= 7) {{
-    const hay = (String(n.getAttribute('data-id') || '') + ' ' + String(n.innerText || '') + ' ' + String(sec || '')).replace(/\\D+/g, '');
-    if (hay.includes(wantDigits)) {{ found = n; break; }}
+  if (normName(chatName(n)) === normName(want) && normName(shownName(n)) === normName(want)) {{
+    hit = n;
+    break;
   }}
 }}
-if (!found) return JSON.stringify({{ok: false, error: 'chat_not_found', sent: false, activated: false, focus_theft: 0}});
-found.click();
-const opened = chatName(found);
-const isSelf = found.getAttribute('data-testid') === 'message-yourself-row' || /message yourself/i.test(((found.querySelector('[data-testid="cell-frame-secondary"]') || {{}}).innerText || ''));
-return JSON.stringify({{ok: true, chat_ref: isSelf ? '__self__' : opened, name: opened, activated: false, focus_theft: 0}});
+if (!hit) {{
+  for (const n of nodes) {{
+    const r = n.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    const under = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const row = rowFor(under);
+    if (row && normName(chatName(row)) === normName(want)) {{
+      hit = row;
+      break;
+    }}
+  }}
+}}
+const wantDigits = String(want).replace(/\\D+/g, '');
+if (!hit && wantDigits.length >= 7) {{
+  for (const n of nodes) {{
+    const r = n.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    const under = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    const row = rowFor(under) || n;
+    const hay = (String(row.innerText || '') + ' ' + String(row.getAttribute('data-id') || '')).replace(/\\D+/g, '');
+    if (hay.includes(wantDigits)) {{ hit = row; break; }}
+  }}
+}}
+if (!hit) return JSON.stringify({{ok: false, error: 'exact_row_missing', activated: false, focus_theft: 0}});
+const rect = hit.getBoundingClientRect();
+const cx = rect.left + rect.width / 2;
+const cy = rect.top + rect.height / 2;
+const targetEl = document.elementFromPoint(cx, cy) || hit;
+const opts = {{bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0}};
+targetEl.dispatchEvent(new MouseEvent('mouseover', opts));
+targetEl.dispatchEvent(new MouseEvent('mousedown', opts));
+targetEl.dispatchEvent(new MouseEvent('mouseup', opts));
+targetEl.dispatchEvent(new MouseEvent('click', opts));
+return JSON.stringify({{ok: true, clicked: true, name: chatName(hit), activated: false, focus_theft: 0}});
 """
 
 
@@ -202,7 +326,8 @@ rows.forEach((row) => {{
   const text = ((copy.innerText || row.innerText || '')).trim();
   if (!text) return;
   const fromMe = !!row.querySelector('[data-icon="tail-out"]') || /\\]\\s*You:/i.test(pre);
-  msgs.push({{id: String(msgs.length+1), from_me: fromMe, text: text.slice(0, 500), timestamp: pre.slice(0, 80), sender: fromMe ? 'owner' : title}});
+  const body = text.replace(/\\n\\d{1,2}:\\d{2}(\\s?[AP]M)?\\s*$/, '').trim();
+  msgs.push({{id: String(msgs.length+1), from_me: fromMe, text: text.slice(0, 500), body: body.slice(0, 500), timestamp: pre.slice(0, 80), sender: fromMe ? 'owner' : title}});
 }});
 const bounded = msgs.slice(-cap);
 return JSON.stringify({{ok: true, chat_ref: title, name: title, messages: bounded, complete_history: false, activated: false, focus_theft: 0}});
@@ -230,13 +355,24 @@ def compose_js(text: str) -> str:
     return f"""
 {_CHAT_NAME}
 const text = {body};
+const norm = (s) => String(s || '').replace(/[\\u200b\\u200e\\u2060]/g, '').replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim();
 const box = composeBox();
 if (!box) return JSON.stringify({{ok: false, error: 'compose_box_missing', sent: false, diagnosis: 'ui_changed', activated: false, focus_theft: 0}});
+// Read before touching: a foreign draft is refused, never replaced. EV's own
+// exact text (a retried compose) is allowed through.
+const prior = norm(box.innerText || box.textContent || '');
+const want = norm(text);
+if (prior && prior !== want) {{
+  return JSON.stringify({{ok: false, foreign_draft: true, matched: false, sent: false, prior_len: prior.length, present_len: prior.length, activated: false, focus_theft: 0}});
+}}
 box.focus();
 document.execCommand('selectAll', false, null);
 const inserted = document.execCommand('insertText', false, text);
-const now = (box.innerText || box.textContent || '').replace(/\\u200b/g, '').trim();
-return JSON.stringify({{ok: inserted || now.length > 0, composed: text, present_len: now.length, sent: false, activated: false, focus_theft: 0}});
+const now = norm(box.innerText || box.textContent || '');
+// Only a normalized exact match counts: WhatsApp may re-render spaces,
+// links, or emoji around what was typed.
+const matched = now === want;
+return JSON.stringify({{ok: inserted || matched, matched: matched, composed: text, present_len: now.length, sent: false, activated: false, focus_theft: 0}});
 """
 
 

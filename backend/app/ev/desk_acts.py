@@ -397,7 +397,12 @@ def parse_named_list_create(text: str) -> dict[str, Any] | None:
         return None
     body_match = LIST_BODY_RE.search(raw[match.end() :] if match.end() <= len(raw) else raw)
     payload = (body_match.group(1) if body_match else "").strip()
-    from app.ev.desk_meaning import extract_inventory, occasion_label, reject_terms, wants_generated_contents
+    from app.ev.desk_meaning import (
+        extract_inventory,
+        occasion_label,
+        reject_terms,
+        wants_generated_contents,
+    )
 
     if not label:
         label = occasion_label(raw) or "list"

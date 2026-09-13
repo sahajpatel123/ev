@@ -11,8 +11,9 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 logger = logging.getLogger("ev.desk_meaning")
 
@@ -663,9 +664,7 @@ def wants_generated_contents(text: str, items: list[str], *, label: str = "") ->
         elif _DESK_NOUN.search(raw) and (
             _DELEGATE.search(raw)
             or bool({w.lower() for w in re.findall(r"[A-Za-z0-9][\w+\-]*", raw)} & _COMPLETENESS)
-        ):
-            named = "list"
-        elif _DEST_PP.search(raw) and _DELEGATE.search(raw):
+        ) or _DEST_PP.search(raw) and _DELEGATE.search(raw):
             named = "list"
     if not named:
         return False

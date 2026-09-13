@@ -10,10 +10,13 @@ from app.voice.speech import (
     choose_listen_ack,
     choose_voice_filler,
     concat_wav_bytes,
+    is_echo_of_last_reply,
+    is_listen_ack_text,
     is_presence_check,
     is_unreadable_transcript,
     listen_ack_style,
     pop_speakable,
+    should_drop_as_echo,
     starts_with_evie,
     strip_wake_prefix,
 )
@@ -132,3 +135,50 @@ def test_presence_check_detects_hear_me() -> None:
     assert is_presence_check("hey evie are you listening")
     assert not is_presence_check("evie can you check the time")
     assert not is_presence_check("what's next on my calendar")
+
+
+def test_live_offer_yes_survives_echo_and_listen_ack_gates() -> None:
+    """The owner answering EVIE's question is a turn, not our own playback.
+
+    Live failure: EVIE offered to read a mail out, the owner said "yes", and
+    the reply vanished — dropped as echo of EVIE's own line and read as a
+    listen cue instead of an answer.
+    """
+
+    from datetime import timedelta
+
+    from app.cognitive.intent import set_pending_offer
+    from app.cognitive.session_store import current, reset_for_tests
+    from app.utils.text import utcnow
+
+    offer = "Do you want me to read out the full mail?"
+    reset_for_tests()
+    try:
+        set_pending_offer(
+            current(), offer, action={"tool": "read_mail", "args": {"mail_id": "42"}}
+        )
+        assert not is_listen_ack_text("yes")
+        assert not is_echo_of_last_reply("yes", offer)
+        assert not is_echo_of_last_reply("yes", "Yes?")
+        assert not should_drop_as_echo("yes", last_reply=offer, playing=True)
+        assert not should_drop_as_echo(
+            "no",
+            last_reply=offer,
+            spoken_at=utcnow() - timedelta(seconds=0.5),
+            now=utcnow(),
+        )
+        # Residual junk is still echo while an offer is live.
+        assert should_drop_as_echo(
+            "idiot",
+            last_reply=offer,
+            spoken_at=utcnow() - timedelta(seconds=0.5),
+            now=utcnow(),
+        )
+    finally:
+        reset_for_tests()
+
+    # No live offer: "yes" keeps its old echo/ack behavior.
+    assert is_listen_ack_text("yes")
+    assert is_echo_of_last_reply("yes", "Yes?")
+    assert should_drop_as_echo("yes", last_reply="Yes?", playing=True)
+    assert not is_echo_of_last_reply("what's next", offer)

@@ -99,8 +99,8 @@ _INFO_NOT_READOUT = re.compile(
     re.IGNORECASE,
 )
 
-_active: ContextVar["TaskDecision | None"] = ContextVar("ev_spark_task", default=None)
-_LAST_LIFE: "LifeJob | None" = None
+_active: ContextVar[TaskDecision | None] = ContextVar("ev_spark_task", default=None)
+_LAST_LIFE: LifeJob | None = None
 
 
 @dataclass(frozen=True)
@@ -382,7 +382,7 @@ async def _spark_decide(utterance: str, *, family_hint: str) -> TaskDecision | N
             ),
             timeout=_SPARK_BUDGET_S,
         )
-    except (MuseProviderUnavailable, asyncio.TimeoutError):
+    except (TimeoutError, MuseProviderUnavailable):
         logger.info("spark_task unavailable")
         return None
     except Exception:  # noqa: BLE001 - task must still run

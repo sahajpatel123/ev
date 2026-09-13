@@ -89,6 +89,11 @@ def test_responses_history_and_tool_schema_are_provider_neutral() -> None:
     assert payload["tools"] == responses_tools([_tool()])
     assert payload["tools"][0]["type"] == "function"
     assert payload["tools"][0]["name"] == "open_app"
+    assert payload["tool_choice"] == "auto"
+    required = provider._payload(
+        messages, model="grok-4.6", tools=[_tool()], stream=False, tool_choice="required"
+    )
+    assert required["tool_choice"] == "auto"
     assert payload["reasoning"] == {"effort": "high"}
     assert "messages" not in payload
     assert "temperature" not in payload

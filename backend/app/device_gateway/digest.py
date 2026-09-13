@@ -9,12 +9,11 @@ works fully offline and never fabricates a summary.
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
-from uuid import UUID
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from zoneinfo import ZoneInfo
 
 from app.config import settings
 from app.device_gateway.phone_routines import due_times, normalize

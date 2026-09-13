@@ -219,13 +219,39 @@ async def dispatch_phone_action(
             "completion_claim_allowed": sent,
             "spoken": handled.get("spoken"),
         }
+    raw_channel = str(args.get("channel") or "").strip()
+    if raw_channel:
+        from app.ev.messaging.channels import normalize_channel
+
+        if normalize_channel(raw_channel) is None:
+            # The schema advertises channel; an unroutable one must refuse here
+            # instead of falling through to code that drops it (silent SMS).
+            return {
+                "ok": False, "error": "CHANNEL_UNSUPPORTED",
+                "executed": False, "verified": False,
+                "spoken": (
+                    f"I don't have {raw_channel[:40]} connected, so nothing was sent — and I "
+                    "won't send it as an Apple text instead."
+                ),
+            }
     if require_confirmation_context and classify_utterance(transcript) != "unrelated":
         from .store import pending_confirmation
 
         waiting = pending_confirmation(device_id)
+        # pending_confirmation is device-scoped, so any row here is this phone's.
+        # A row parked by the other lane carries only that lane's binding, and an
+        # absent field is not a conflict: a spoken "yes" resolves a typed park and
+        # a typed confirm resolves a spoken park on the same phone.
+        caller_binding = str(text_confirmation_binding or "")
+        caller_session = str(session_id or "")
+        parked_binding = str(waiting.get("phone_text_binding") or "") if waiting else ""
+        parked_session = str(waiting.get("session_id") or "") if waiting else ""
+        foreign_owner = bool(
+            (caller_binding and parked_binding and caller_binding != parked_binding)
+            or (caller_session and parked_session and caller_session != parked_session)
+        )
         if waiting is not None and (
-            (waiting.get("phone_text_binding") != text_confirmation_binding
-             if text_confirmation_binding else not session_id or waiting.get("session_id") != session_id)
+            foreign_owner
             or not instance_id or waiting.get("instance_id") != instance_id
             or waiting.get("origin") != origin
         ):

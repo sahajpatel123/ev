@@ -89,6 +89,28 @@ extension URLRequest {
     }
 }
 
+func clipResponseJSON() -> String {
+    """
+    {
+      "ok": true,
+      "attachment_id": "44444444-4444-4444-8444-444444444444",
+      "event_id": "55555555-5555-4555-8555-555555555555",
+      "memory_id": "66666666-6666-4666-8666-666666666666",
+      "duration_s": 4.0,
+      "frames": 6,
+      "moments": [
+        {"t_start": 0.0, "t_end": 2.0, "labels": ["person"], "colors": ["blue"]},
+        {"t_start": 2.0, "t_end": 4.0, "labels": ["mug"], "ocr_text": "EV"}
+      ],
+      "transcript": "this is the clip",
+      "engine": "ffmpeg",
+      "extraction_degraded": false,
+      "transcript_degraded": false,
+      "spoken": "A recorded clip is stored (4 seconds). Sampled 6 moments across the clip."
+    }
+    """
+}
+
 func attachmentResponseJSON() -> String {
     """
     {

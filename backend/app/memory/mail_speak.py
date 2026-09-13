@@ -14,11 +14,12 @@ import email
 import html as html_lib
 import plistlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.message import Message
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 SPOKEN_GIST_CAP = 220
 DIGEST_HEADLINES = 3

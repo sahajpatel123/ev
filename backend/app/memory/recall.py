@@ -349,10 +349,10 @@ def _visual_item_rank(item: dict, *, recency_first: bool = False, topic: str = "
     from app.memory.visual import (
         _keep_is_thin,
         _remainder_has_identity,
+        _stems,
         is_generic_label_scene,
         visual_content_tokens,
         visual_index_tokens,
-        _stems,
     )
 
     blob = " ".join(
@@ -559,8 +559,61 @@ def _speak_channel(query: str, items: list[dict] | None = None) -> str:
     return "WhatsApp"
 
 
+_READ_FAILURE_LINES = {
+    "whatsapp": (
+        "I couldn't read WhatsApp on this Mac just now — the WhatsApp database "
+        "didn't open, so I can't tell you what's there."
+    ),
+    "imessage": (
+        "I couldn't read Messages on this Mac just now — the message database "
+        "didn't open, so I can't tell you what's there."
+    ),
+    "chats": (
+        "I couldn't read your messages on this Mac just now — the message "
+        "database didn't open, so I can't tell you what's there."
+    ),
+    "mail": (
+        "I couldn't read mail on this Mac just now — the Mail index didn't open, "
+        "so I can't tell you what's in it."
+    ),
+    "contacts": (
+        "I couldn't read your contacts on this Mac just now — the lookup failed, "
+        "so I can't tell you who's there."
+    ),
+    "calls": "I couldn't read your call history on this Mac just now.",
+    "photos": "I couldn't read your photo library on this Mac just now.",
+    "inbox": (
+        "I couldn't read everything on this Mac just now — one of your apps' "
+        "databases didn't open, so I can't tell you what's new."
+    ),
+}
+
+
+def _read_failure_diag(kind: str | None) -> str:
+    """Spoken line when the last read of ``kind`` FAILED. Empty when it read fine.
+
+    A peek that could not read returns an empty list to its callers (they depend
+    on that shape), so without this the spoken layer would report a read failure
+    as "there is no mail". Never invents mail content.
+    """
+    if not kind:
+        return ""
+    from app.memory.live_life import live_read_error
+
+    if live_read_error(kind):
+        return _READ_FAILURE_LINES.get(kind, "")
+    if kind in {"whatsapp", "imessage"} and live_read_error("chats"):
+        return _READ_FAILURE_LINES["chats"]
+    return ""
+
+
 def _freshness_diag(kind: str) -> str:
     """Explain empty WhatsApp/mail/Messages with sync state. Empty when truly just empty."""
+    read_failure = _read_failure_diag(kind)
+    if read_failure:
+        return read_failure
+    if kind not in {"whatsapp", "mail", "imessage"}:
+        return ""
     try:
         from app.services.life_stream_daemon import (
             ensure_background_sync,
@@ -613,8 +666,8 @@ def _freshness_diag(kind: str) -> str:
 
 def _spoken_empty_connected(query: str) -> str:
     from app.memory.life_archive.locate import (
-        CALL_HISTORY_RE,
         _NOTIFICATION_ASK,
+        CALL_HISTORY_RE,
         is_live_now_ask,
         life_channel,
     )
@@ -624,6 +677,9 @@ def _spoken_empty_connected(query: str) -> str:
     if channel == "whatsapp" or "whatsapp" in blob:
         from app.memory.life_archive.locate import _CHAT_WITH_OTHER, _QUOTE_FROM_PERSON
 
+        diag = _freshness_diag("whatsapp")
+        if diag:
+            return diag
         name = ""
         match = _CHAT_WITH_OTHER.search(query or "")
         if match:
@@ -634,9 +690,6 @@ def _spoken_empty_connected(query: str) -> str:
         name = (name or "").strip(" .")
         if name:
             return f"I don't see WhatsApp with {name} on this Mac right now."
-        diag = _freshness_diag("whatsapp")
-        if diag:
-            return diag
         from app.memory.life_archive.locate import chat_search_tokens as _wa_tokens
 
         _wa_structural = _wa_tokens(query or "")
@@ -650,20 +703,29 @@ def _spoken_empty_connected(query: str) -> str:
             "WhatsApp Desktop has to be logged in here."
         )
     if CALL_HISTORY_RE.search(blob):
+        diag = _freshness_diag("calls")
+        if diag:
+            return diag
         return "I don't see recent calls on this Mac right now."
     if re.search(r"\bphotos?\b", blob) and is_live_now_ask(query):
+        diag = _freshness_diag("photos")
+        if diag:
+            return diag
         return "I don't see new photos on this Mac right now."
     if channel == "mail" or re.search(r"\b(e-?mails?|gmail|mails?)\b", blob):
+        diag = _freshness_diag("mail")
+        if diag:
+            return diag
         from app.memory.mail_speak import mail_selector
 
         who = mail_selector(query).who
         if who:
             return f"I don't see mail from {who} on this Mac right now."
-        diag = _freshness_diag("mail")
-        if diag:
-            return diag
         return "I don't see new mail on this Mac right now."
     if channel == "contacts" or re.search(r"\bcontacts?\b", blob):
+        diag = _freshness_diag("contacts")
+        if diag:
+            return diag
         return "I don't see that contact on this Mac right now."
     if channel == "imessage":
         diag = _freshness_diag("imessage")
@@ -671,6 +733,8 @@ def _spoken_empty_connected(query: str) -> str:
             return diag
         from app.memory.life_archive.locate import (
             _chat_person_query_token as _im_person,
+        )
+        from app.memory.life_archive.locate import (
             chat_search_tokens as _im_tokens,
         )
 
@@ -685,8 +749,13 @@ def _spoken_empty_connected(query: str) -> str:
             return f"I don't see messages from {_im_display} on this Mac right now."
         return "I don't see new messages on this Mac right now."
     if re.search(r"\b(messages?|texts?|chats?)\b", blob):
+        diag = _freshness_diag("chats")
+        if diag:
+            return diag
         from app.memory.life_archive.locate import (
             _chat_person_query_token as _mix_person,
+        )
+        from app.memory.life_archive.locate import (
             chat_search_tokens as _mix_tokens,
         )
 
@@ -701,6 +770,9 @@ def _spoken_empty_connected(query: str) -> str:
             return f"I don't see messages from {_mix_display} on this Mac right now."
         return "I don't see new messages on this Mac right now."
     if _NOTIFICATION_ASK.search(blob):
+        diag = _freshness_diag("inbox")
+        if diag:
+            return diag
         return "I don't see new messages or calls on this Mac right now."
     return "I cannot find that particular record."
 
@@ -872,9 +944,7 @@ def _spoken_from_newest_keep(evidence: list, query: str) -> str | None:
         other_aid = str(item.get("attachment_id") or "").strip()
         line = str(item.get("text") or item.get("description") or "").strip()
         if aid:
-            if other_aid == aid:
-                pool.append(item)
-            elif newest_echo and is_keep_identity_speech(line):
+            if other_aid == aid or newest_echo and is_keep_identity_speech(line):
                 pool.append(item)
             continue
         if newest_named:
@@ -913,13 +983,13 @@ def _spoken_from_newest_keep(evidence: list, query: str) -> str | None:
 def _spoken_from_evidence(evidence: list, query: str = "") -> str:
     """Short live line from packed evidence so pipeline/Grok can speak a hit."""
 
+    from app.memory.life_archive.desk import is_chat_desk_query
     from app.memory.life_archive.locate import (
         is_chat_summary_query,
         is_chat_with_other_person,
         is_live_now_ask,
         is_owner_history_query,
     )
-    from app.memory.life_archive.desk import is_chat_desk_query
     from app.memory.visual import is_keep_recall_query, is_visual_recall_query, keep_topic
 
     newest_keep = _spoken_from_newest_keep(evidence, query)
@@ -1107,7 +1177,7 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
         )
     )
     if is_visual_recall_query(query) or is_keep_recall_query(query):
-        from app.memory.visual import visual_content_tokens, visual_index_tokens, _stems
+        from app.memory.visual import _stems, visual_content_tokens, visual_index_tokens
 
         topic = keep_topic(query)
         recency_first = topic in {"", "this", "that", "it", "you"}
@@ -1180,7 +1250,12 @@ def _spoken_from_evidence(evidence: list, query: str = "") -> str:
         for item in evidence
     )
     if person_chat or has_connected or other_live:
-        from app.memory.mail_speak import SPOKEN_MAIL_CAP, SPOKEN_READOUT_CAP, is_mail_ask, is_mail_hit
+        from app.memory.mail_speak import (
+            SPOKEN_MAIL_CAP,
+            SPOKEN_READOUT_CAP,
+            is_mail_ask,
+            is_mail_hit,
+        )
 
         extra = _speak_other_live(query, other_live)
         if extra and (
@@ -1525,7 +1600,10 @@ async def build_explicit_recall_payload(
             "memory.temporal_query",
             extra={"mode": temporal.mode, "query_fp": _query_fp(query)},
         )
-        from app.memory.life_archive.locate import is_owner_history_query, life_shelf_for_memory_search
+        from app.memory.life_archive.locate import (
+            is_owner_history_query,
+            life_shelf_for_memory_search,
+        )
 
         shelf = life_shelf_for_memory_search(query, await resolve_shelf(session, query))
         if is_visual_recall_query(query) or is_keep_recall_query(query):

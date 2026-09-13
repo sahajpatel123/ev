@@ -43,6 +43,23 @@ def args_fingerprint(payload: dict | None) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def binding_fingerprint(route: object, address: str) -> str:
+    """Digest of the transport + destination a confirmation is bound to.
+
+    Stored alongside the arguments digest so a ticket whose approved route or
+    resolved destination was swapped after the owner agreed fails the tamper
+    check, instead of being resumed onto a transport nobody approved.
+    """
+
+    canonical = json.dumps(
+        {"route": route, "address": str(address or "")},
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def parse_iso(value: Any) -> datetime | None:
     if isinstance(value, datetime):
         return value
@@ -278,6 +295,10 @@ async def deliver_parked_result(action: ApprovedAction, result: dict | None) -> 
         payload.get("spoken")
         or life_success_reply(payload, tool_name=action.action_type)
     )
+    # The live socket re-shapes a payload that carries an error into a bare
+    # "I couldn't complete <tool> yet."; keep the composed line where that
+    # path will find it so the owner hears the cause and the next step.
+    payload = {**payload, "spoken": spoken}
     complete = getattr(live, "complete_approval_hold", None)
     if complete is None:
         return False

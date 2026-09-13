@@ -16,7 +16,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Device
-from app.search.live import default_place, extract_place, home_coords, is_weather_query, weather_results
+from app.search.live import (
+    default_place,
+    extract_place,
+    home_coords,
+    is_weather_query,
+    weather_results,
+)
 
 _CALENDAR = re.compile(
     r"\b(what'?s on my (?:calendar|schedule|day)|upcoming events|"
@@ -227,7 +233,7 @@ async def maybe_phone_core_read(
             )
         try:
             results = await asyncio.wait_for(weather_results(raw, limit=2), timeout=8)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return _ok(
                 "Home Station weather lookup timed out. I won't guess the forecast.",
                 route="WEATHER",

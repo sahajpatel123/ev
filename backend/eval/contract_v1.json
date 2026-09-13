@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-09-10T04:58:13.879511+00:00",
+  "locked_at": "2026-09-10T15:09:33.732269+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -262,6 +262,9 @@
       "post"
     ],
     "/v1/device-gateway/looks": [
+      "get"
+    ],
+    "/v1/device-gateway/looks/{look_id}/media": [
       "get"
     ],
     "/v1/device-gateway/memories": [
@@ -1358,6 +1361,9 @@
       "post"
     ],
     "/v1/vision/annotate": [
+      "post"
+    ],
+    "/v1/vision/clip": [
       "post"
     ],
     "/v1/vision/log": [

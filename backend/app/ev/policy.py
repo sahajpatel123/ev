@@ -344,8 +344,47 @@ def infer_channel(actor: str, channel: str | None = None) -> AuthChannel:
     return "voice" if actor == "voice" else "action"
 
 
+# Sends whose target is a recipient reached over a named transport. The
+# transport is part of the target: it is the only string the Confirmation, the
+# parked ``_pol.target``, the tamper comparison, and the spoken question share,
+# so one approval for "WhatsApp to Mansi" must not authorize "SMS to Mansi".
+MESSAGING_SEND_CAPABILITIES = frozenset({"send_message"})
+MESSAGING_RECIPIENT_KEYS = ("name", "to", "destination", "entity")
+
+
+def _messaging_target(args: dict) -> str | None:
+    """``"<channel>:<recipient>"`` for a send, or None when nobody is named.
+
+    A recipient-less send must not fall through to the raw ``channel`` value:
+    that binds the transport as if it were the person being messaged, so the
+    caller's requires-a-target checks could not fail closed.
+    """
+
+    recipient = ""
+    for key in MESSAGING_RECIPIENT_KEYS:
+        value = args.get(key)
+        if value is not None and str(value).strip():
+            recipient = str(value).strip()
+            break
+    if not recipient:
+        return None
+    requested = str(args.get("channel") or "").strip()
+    if not requested:
+        # No transport was named, so none is bound: the owner approved the
+        # recipient alone, and a channel-named approval will not match it.
+        return recipient
+    from app.ev.messaging.channels import normalize_channel
+
+    # An unregistered name keeps its own spelling rather than collapsing onto
+    # another transport's target; aliases normalize to the real channel id.
+    channel = normalize_channel(requested) or requested.lower()
+    return f"{channel}:{recipient}"
+
+
 def canonical_target(name: str, arguments: dict | None) -> str | None:
     args = arguments or {}
+    if name in MESSAGING_SEND_CAPABILITIES:
+        return _messaging_target(args)
     for key in (
         "name",
         "to",

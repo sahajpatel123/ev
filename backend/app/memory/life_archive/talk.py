@@ -18,8 +18,8 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.memory.life_archive.locate import SOURCE, _chat_person_query_token
 from app.memory.life_archive.desk import _ago, _compact, _skip_partner
+from app.memory.life_archive.locate import SOURCE, _chat_person_query_token
 from app.models import Event
 from app.utils.text import utcnow
 
@@ -106,6 +106,7 @@ def is_talk_pattern_query(query: str) -> bool:
     raw = (query or "").strip()
     if not raw:
         return False
+    from app.memory.life_archive.desk import is_chat_desk_query
     from app.memory.life_archive.locate import (
         _ACT_NOW,
         _CURRENT_TALK,
@@ -113,7 +114,6 @@ def is_talk_pattern_query(query: str) -> bool:
         is_chat_summary_query,
         is_chat_with_other_person,
     )
-    from app.memory.life_archive.desk import is_chat_desk_query
 
     if _SEND_NOW.search(raw) or _ACT_NOW.search(raw):
         return False

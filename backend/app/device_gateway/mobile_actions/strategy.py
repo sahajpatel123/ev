@@ -10,6 +10,35 @@ from .registry import (
     is_blocked,
 )
 
+# The iPhone shell advertises feature names, not registry operation ids
+# (ios/EvieShell/App/NativeBridge.swift bootstrapJS posts "timers", "contacts",
+# "message_compose", …). Translate the known feature names so a real handshake
+# is not misread as "capability absent"; unmapped names stay unmapped.
+FEATURE_OPERATIONS: dict[str, frozenset[str]] = {
+    "alarms": frozenset({"create_alarm"}),
+    "timers": frozenset({"create_timer"}),
+    "reminders": frozenset({"create_reminder"}),
+    "calendar": frozenset({"create_calendar_event"}),
+    "contacts": frozenset({"call_contact", "facetime_contact", "message_contact"}),
+    "phone_handoff": frozenset({"call_contact"}),
+    "message_compose": frozenset({"message_contact"}),
+    "facetime": frozenset({"facetime_contact"}),
+    "maps": frozenset({"open_maps", "start_directions"}),
+    "location": frozenset({"current_location"}),
+    "clipboard": frozenset({"copy_to_clipboard"}),
+    "share": frozenset({"share_content"}),
+    "haptics": frozenset({"haptic"}),
+    "app_launch_registry": frozenset({"open_app"}),
+}
+
+
+def _reported_operations(capabilities: Any) -> set[str]:
+    """Advertised capabilities as operation ids, accepting either vocabulary."""
+    reported = set(capabilities or ())
+    for feature in tuple(reported):
+        reported |= FEATURE_OPERATIONS.get(feature, frozenset())
+    return reported
+
 
 def route(
     operation: str,
@@ -28,7 +57,7 @@ def route(
     if cap is None:
         return {"method": "unsupported", "reason": "ACTION_UNAVAILABLE", "class_level": 3}
     native = bool((handshake or {}).get("native_shell"))
-    reported = set((handshake or {}).get("capabilities") or ())
+    reported = _reported_operations((handshake or {}).get("capabilities"))
     legacy_bridge = bool((handshake or {}).get("bridge_installed")) and bool(
         (handshake or {}).get("legacy_bridge")
     )

@@ -473,6 +473,8 @@ Live speech surface modes for the realtime brain (OpenAI Realtime
 | `EV_CODE_HTTP_TIMEOUT_SECONDS` | `60` | 15–90 | Per OpenAI Responses round while Luna is working. |
 | `EV_CODE_MAX_FILE_BYTES` | `256000` | bytes | Max size of one workspace write or patch. |
 
+Real-project coding (owner-requested, 2026-09-12): toy scripts still use the live 20-step / `EV_CODE_LIVE_JOB_SECONDS` budget. Named repos under `EV_CODE_PROJECTS_ROOT` (and a sticky "use the ev repo" pin) get up to 48 tool rounds and a 600s wall clock, keep iterating after a failed check, and never write a heuristic `hello.py` into that git tree. `git checkout -b` is allowlisted; `git push` is not.
+
 # --- MUSE SPARK 1.3 BLESSED WIRING (append-only) -------------------------------
 
 Muse Spark 1.3 Contributor is the one mind. Set these in `.env` (see the
@@ -499,3 +501,11 @@ machine to Spark. Speech stays split by design: Mini/Realtime is the mouth
 | `EV_COGNITIVE_CONVERSATION_MAX_TOOL_TURNS` | `4` | 1–6 | Max Muse tool rounds on compact conversation turns. |
 | `META_MODEL_API_KEY` | _(empty)_ | secret | Canonical Meta Model API credential (also accepts `EV_META_MODEL_API_KEY` / `MODEL_API_KEY`). Missing key = fail-closed `MuseProviderUnavailable`, never a silent double. |
 | `EV_VOICE_ASR_PROVIDER` | `faster_whisper` | `meta_muse_voice` (Muse hearing) \| `faster_whisper` \| `echo` (dev) | Set `meta_muse_voice` to hear through Muse Voice Transcribe; shares the Meta credential. |
+
+### Camera / clip memory (camera-memory field work, 2026-09-10)
+
+| Var | Default | Values | Meaning |
+| --- | --- | --- | --- |
+| `EV_VISION_CLIP_MAX_MB` | `64` | int (MB) | Upload cap for one recorded clip on `POST /v1/vision/clip`. Larger bodies are rejected with HTTP 413 before they are buffered. |
+| `EV_VISION_CLIP_MAX_FRAMES` | `6` | 1–6 | Keyframes sampled per clip, on an even time grid (deterministic for the same clip). |
+| `EV_RETENTION_MEDIA_CLIP_DAYS` | `30` | int days (`-1` keeps forever) | Retention for raw clip pixels. The derived memory (moments, transcript, observation row) is `EV_RETENTION_EVENT` and is not swept. |

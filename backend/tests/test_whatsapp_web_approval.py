@@ -458,6 +458,263 @@ def test_whatsapp_send_does_not_prefetch_apple_contacts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_routed_failures_keep_their_real_error(db_session, monkeypatch) -> None:
+    """A degraded routed result must not be relabeled "not_connected".
+
+    Regression: an approved WhatsApp send that failed in compose used to be
+    reported as a bridge outage, hiding the real cause.
+    """
+
+    from app.ev.policy import PolicyDecision
+    from app.ev.tools import dispatch
+    from app.integrations.life_helper import LifeHelperResult
+
+    async def fake_authorize_routed(*_args, **_kwargs):
+        return PolicyDecision(
+            allowed=True,
+            effect="allow",
+            reason="ok",
+            risk_class="R2",
+            confirmation_required=False,
+            confirmation_policy="none",
+            provider="messaging",
+            spoken="",
+            routed=True,
+        )
+
+    async def no_contacts(command, args, helper_path=None):
+        assert command == "contacts.resolve"
+        return LifeHelperResult(command, {"matches": []}, {})
+
+    monkeypatch.setattr("app.ev.policy.authorize", fake_authorize_routed)
+    monkeypatch.setattr("app.ev.policy.provider_connected", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        "app.services.life_stream_daemon.life_stream_should_run", lambda: True
+    )
+    monkeypatch.setattr(
+        "app.services.life_stream_daemon.LifeStreamDaemon.resolve_whatsapp_peer",
+        lambda self, query: None,
+    )
+    monkeypatch.setattr("app.ev.apps.discover_life_helper_path", lambda: "/tmp/ev-helper")
+    monkeypatch.setattr("app.integrations.life_helper.run_life_helper", no_contacts)
+
+    response = await dispatch(
+        db_session,
+        "send_message",
+        {"to": "Nobody Here", "text": "hi", "channel": "whatsapp", "confirm": True},
+        actor="voice",
+        allow_sensitive=True,
+    )
+    body = response.result or {}
+    assert body.get("ok") is False
+    assert body.get("degraded") is True
+    assert body.get("sent") is not True
+    # The real cause survives; it is not rewritten to "not_connected".
+    assert body.get("error") == "no_whatsapp_chat"
+    assert "Nobody Here" in str(body.get("spoken") or "")
+
+
+@pytest.mark.asyncio
+async def test_open_chat_js_opens_via_search_enter_with_verification() -> None:
+    from app.digital import whatsapp_js as wjs
+
+    script = wjs.open_chat_js("Some Chat")
+    assert "pressEnterOn" in script
+    assert "conversationOpen" in script
+    assert "sameChat" in script
+    assert "searchInput" in script
+    # Row clicks are only the self-chat fallback now, never the open path.
+    assert "found.click()" not in script
+    assert script.count("row.click()") == 1
+
+
+@pytest.mark.asyncio
+async def test_compose_js_requires_exact_match() -> None:
+    from app.digital import whatsapp_js as wjs
+
+    script = wjs.compose_js("hello")
+    assert "matched" in script
+    assert "now === want" in script
+
+
+@pytest.mark.asyncio
+async def test_compose_js_refuses_foreign_draft_before_touching() -> None:
+    from app.digital import whatsapp_js as wjs
+
+    script = wjs.compose_js("hello")
+    assert "foreign_draft" in script
+    assert "prior" in script
+    # The box is read before any selection/replacement gesture.
+    assert script.index("prior") < script.index("selectAll")
+
+
+@pytest.mark.asyncio
+async def test_open_chat_js_numeric_open_requires_digit_match() -> None:
+    from app.digital import whatsapp_js as wjs
+
+    script = wjs.open_chat_js("+15551234567")
+    assert "digitsMatch" in script
+    assert "opened: true" in script
+    # The old "any open thread counts for a number" accept is gone.
+    assert "wantDigits.length >= 7 && !!openedHeader" not in script
+
+
+@pytest.mark.asyncio
+async def test_same_chat_normalizes_unicode_formatting() -> None:
+    from app.digital import whatsapp_js as wjs
+
+    script = wjs.open_chat_js("Mom")
+    assert "normalize('NFC')" in script
+
+
+@pytest.mark.asyncio
+async def test_search_chats_js_keeps_same_name_rows_distinct() -> None:
+    from app.digital import whatsapp_js as wjs
+
+    script = wjs.search_chats_js("")
+    assert "const key" in script
+
+
+@pytest.mark.asyncio
+async def test_read_recent_js_reports_body() -> None:
+    from app.digital import whatsapp_js as wjs
+
+    assert "body" in wjs.read_recent_js(5)
+
+
+def test_open_background_tab_reports_created_window() -> None:
+    import inspect
+
+    from app.digital import chrome_session
+
+    source = inspect.getsource(chrome_session.open_background_tab)
+    assert "created_window" in source
+    assert "front window" in source
+
+
+def _stub_computer_backing(monkeypatch, *, first_row, later_rows=None, compose_ok=True):
+    """ComputerWhatsAppBacking with the osascript seam stubbed (offline).
+
+    The real open/compose/send/read methods run; only ``_act`` is canned.
+    """
+
+    from app.digital.adapters.whatsapp import ComputerWhatsAppBacking
+
+    backing = ComputerWhatsAppBacking()
+    ops: list[str] = []
+    reads = 0
+
+    async def fake_act(op: str, args: dict) -> dict:
+        nonlocal reads
+        ops.append(op)
+        if op == "whatsapp.open_chat":
+            return {"ok": True, "already": True, "chat_ref": "Ada", "name": "Ada"}
+        if op == "whatsapp.read_recent":
+            reads += 1
+            if reads == 1 or not later_rows:
+                return {"messages": [dict(first_row)]}
+            return {"messages": [dict(row) for row in later_rows]}
+        if op == "whatsapp.compose":
+            if not compose_ok:
+                return {"ok": False, "foreign_draft": True, "matched": False}
+            return {
+                "ok": True,
+                "matched": True,
+                "composed": str(args.get("text") or ""),
+                "present_len": 1,
+            }
+        if op == "whatsapp.click_send":
+            return {"ok": True, "clicked": True, "sent": True}
+        if op == "whatsapp.type_search":
+            return {"ok": True, "typed": True}
+        if op == "whatsapp.click_exact_chat":
+            return {"ok": False, "error": "exact_row_missing"}
+        if op == "whatsapp.search_chats":
+            return {"ok": True, "chats": []}
+        raise AssertionError(f"unexpected op {op}")
+
+    monkeypatch.setattr(backing, "_act", fake_act)
+    return backing, ops
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_verify_from_incoming_message(monkeypatch) -> None:
+    backing, _ops = _stub_computer_backing(
+        monkeypatch,
+        first_row={"text": "thanks", "body": "thanks", "from_me": False},
+        later_rows=[{"text": "thanks", "body": "thanks", "from_me": False}],
+    )
+    result = await backing.send("Ada", "thanks")
+    assert result.get("sent") is False
+    assert result.get("verified_in_thread") is False
+
+
+@pytest.mark.asyncio
+async def test_duplicate_guard_suppresses_exact_resend_only(monkeypatch) -> None:
+    backing, ops = _stub_computer_backing(
+        monkeypatch,
+        first_row={
+            "text": "I'll call you at 8\n12:31",
+            "body": "I'll call you at 8",
+            "from_me": True,
+        },
+    )
+    dup = await backing.send("Ada", "I'll call you at 8")
+    assert dup.get("duplicate_prevented") is True
+    assert "whatsapp.compose" not in ops
+
+
+@pytest.mark.asyncio
+async def test_duplicate_guard_sends_substring_of_previous_outbound(
+    monkeypatch,
+) -> None:
+    backing, ops = _stub_computer_backing(
+        monkeypatch,
+        first_row={
+            "text": "I'll call you at 8\n12:31",
+            "body": "I'll call you at 8",
+            "from_me": True,
+        },
+        later_rows=[{"text": "call you", "body": "call you", "from_me": True}],
+    )
+    result = await backing.send("Ada", "call you")
+    assert "whatsapp.compose" in ops
+    assert result.get("verified_in_thread") is True
+
+
+@pytest.mark.asyncio
+async def test_compose_foreign_draft_raises_before_send(monkeypatch) -> None:
+    backing, _ops = _stub_computer_backing(
+        monkeypatch,
+        first_row={"text": "", "body": "", "from_me": False},
+        compose_ok=False,
+    )
+    with pytest.raises(RuntimeError, match="compose_box_has_other_text"):
+        await backing.send("Ada", "hello there")
+
+
+@pytest.mark.asyncio
+async def test_search_chats_clears_the_typed_query(monkeypatch) -> None:
+    from app.digital.adapters.whatsapp import ComputerWhatsAppBacking
+
+    backing = ComputerWhatsAppBacking()
+    calls: list[tuple] = []
+
+    async def fake_act(op: str, args: dict) -> dict:
+        calls.append((op, dict(args)))
+        if op == "whatsapp.type_search":
+            return {"ok": True, "typed": True}
+        if op == "whatsapp.search_chats":
+            return {"ok": True, "chats": [{"chat_ref": "Ada", "name": "Ada"}]}
+        raise AssertionError(f"unexpected op {op}")
+
+    monkeypatch.setattr(backing, "_act", fake_act)
+    rows = await backing.search_chats("Ada")
+    assert [row["name"] for row in rows] == ["Ada"]
+    assert calls[-1] == ("whatsapp.type_search", {"query": ""})
+
+
+@pytest.mark.asyncio
 async def test_expired_approval_is_not_resumed(db_session) -> None:
     from app.utils.text import utcnow
 

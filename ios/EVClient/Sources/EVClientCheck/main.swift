@@ -180,6 +180,60 @@ do {
     print("FAIL: attachment: \(error)")
 }
 
+// 8a2. Clip ingest: recorded video goes to Home Station as multipart, and the
+// sampled moments/transcript come back decoded.
+do {
+    var receivedStatus = 0
+    var receivedBody = ""
+    var receivedPath = ""
+    MockURLProtocol.handler = { request in
+        var bodyData = request.httpBody ?? Data()
+        if bodyData.isEmpty, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                bodyData.append(buffer, count: count)
+            }
+        }
+        receivedBody = String(data: bodyData, encoding: .utf8) ?? ""
+        receivedPath = request.url?.path ?? ""
+        receivedStatus = 201
+        let responseData = Data(clipResponseJSON().utf8)
+        return (httpResponse(201, contentLength: responseData.count), responseData)
+    }
+    do {
+        let result = try await client.ingestClip(
+            filename: "EV-clip.mov",
+            contentType: "video/quicktime",
+            data: Data("clip-bytes".utf8),
+            durationMs: 4000,
+            requestId: "clip-check-1"
+        )
+        expect(receivedStatus == 201, "clip request reached mock")
+        expect(receivedPath == "/v1/vision/clip", "clip upload uses the vision clip path")
+        expect(receivedBody.contains("name=\"file\""), "clip body has file part")
+        expect(receivedBody.contains("filename=\"EV-clip.mov\""), "clip body has filename")
+        expect(receivedBody.contains("clip-bytes"), "clip body contains clip data")
+        expect(receivedBody.contains("name=\"duration_ms\""), "clip body carries duration")
+        expect(result.ok, "clip ingest decoded ok")
+        expect(result.frames == 6, "clip frame count decoded")
+        expect(result.moments.count == 2, "clip moments decoded")
+        expect(result.moments.first?.tStart == 0.0, "clip moment start decoded")
+        expect(result.transcript == "this is the clip", "clip transcript decoded")
+        expect(result.extractionDegraded == false, "clip degradation flag decoded")
+        print("ok: clip ingest")
+    } catch {
+        failures.append("clip ingest: \(error)")
+        print("FAIL: clip ingest: \(error) (status=\(receivedStatus), body=\(receivedBody.prefix(120)))")
+    }
+} catch {
+    failures.append("clip ingest: \(error)")
+    print("FAIL: clip ingest: \(error)")
+}
+
 // 8b. HUD briefing / focus / route: decode, validate, render.
 do {
     let decoder = JSONDecoder()

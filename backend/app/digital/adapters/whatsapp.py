@@ -6,6 +6,8 @@ Muse sees semantic operations only — never coordinates, CSS, or cookies.
 
 from __future__ import annotations
 
+import contextlib
+import re
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -13,6 +15,26 @@ from app.digital.descriptor import ServiceCapabilityDescriptor, cap
 from app.digital.fabric import OpContext, OpResult
 from app.digital.taint import taint_external
 from app.digital.types import WHATSAPP_READ_BOUND, Availability, OpStatus, Verb
+from app.ev.messaging.recipients import UNIQUE_GAP, UNIQUE_SCORE, score_person_name
+
+# One draft per chat that Evie typed and never saw land. The page reports only
+# the *length* of a draft it refuses to replace, never its text, so our own
+# leftover is recognized by that length against this record: a draft of any
+# other length stays foreign and is never cleared.
+_last_failed_compose: dict[str, str] = {}
+
+
+def _own_stale_draft(chat_ref: str, result: dict[str, Any]) -> str:
+    """The text of Evie's own refused draft, or "" when the box is foreign.
+
+    The page never hands back the draft's text, only its length, so ownership
+    is decided against the last text Evie typed into that chat: only a draft
+    of exactly that length is ours to clear.
+    """
+
+    mine = _last_failed_compose.get(chat_ref)
+    prior_len = int(result.get("prior_len") or 0)
+    return mine if mine and prior_len == len(mine) else ""
 
 
 def _sidebar_gist(text: str, cap: int = 80) -> str:
@@ -25,6 +47,18 @@ def _sidebar_gist(text: str, cap: int = 80) -> str:
         if 8 <= at + 1 <= cap:
             return blob[: at + 1].strip()
     return blob[:cap].rstrip()
+
+
+def _thread_body(row: dict[str, Any]) -> str:
+    """Best-effort message body without the thread chrome.
+
+    Thread rows wrap the text with a timestamp line; comparing raw row text
+    lets a short new message hide inside a longer old one (or miss an exact
+    resend). Prefer the page-extracted ``body`` when present.
+    """
+
+    raw = str(row.get("body") or row.get("text") or "")
+    return re.sub(r"\n\d{1,2}:\d{2}(\s?[AP]M)?\s*$", "", raw).strip()
 
 
 class WhatsAppBacking(Protocol):
@@ -193,13 +227,18 @@ class ComputerWhatsAppBacking:
             typed = await self._act("whatsapp.type_search", {"query": q})
             if typed.get("ok"):
                 await asyncio.sleep(1.2)
-        result = await self._act("whatsapp.search_chats", {"query": q})
-        chats = result.get("chats") if isinstance(result.get("chats"), list) else []
-        if not chats and self._looks_self(q):
-            await self._act("whatsapp.open_new_chat", {})
-            await asyncio.sleep(0.8)
+        try:
             result = await self._act("whatsapp.search_chats", {"query": q})
             chats = result.get("chats") if isinstance(result.get("chats"), list) else []
+            if not chats and self._looks_self(q):
+                await self._act("whatsapp.open_new_chat", {})
+                await asyncio.sleep(0.8)
+                result = await self._act("whatsapp.search_chats", {"query": q})
+                chats = result.get("chats") if isinstance(result.get("chats"), list) else []
+        finally:
+            # Never leave the owner's sidebar filtered.
+            with contextlib.suppress(Exception):
+                await self._act("whatsapp.type_search", {"query": ""})
         return [
             {
                 "chat_ref": c.get("chat_ref") or c.get("name"),
@@ -213,19 +252,51 @@ class ComputerWhatsAppBacking:
     async def open_chat(self, chat_ref: str) -> dict[str, Any]:
         import asyncio
 
-        result = await self._act("whatsapp.open_chat", {"chat_ref": chat_ref})
-        if not result.get("ok") and self._looks_self(chat_ref):
+        last_error: str | None = None
+
+        async def _opened() -> dict[str, Any] | None:
+            nonlocal last_error
+            result = await self._act("whatsapp.open_chat", {"chat_ref": chat_ref})
+            if result.get("ok") and (result.get("already") or result.get("opened")):
+                return {
+                    "chat_ref": result.get("chat_ref") or chat_ref,
+                    "name": result.get("name"),
+                }
+            if result.get("error"):
+                last_error = str(result["error"])
+            return None
+
+        opened = await _opened()
+        if opened is None and self._looks_self(chat_ref):
             await self._act("whatsapp.open_new_chat", {})
             await asyncio.sleep(0.8)
-            result = await self._act("whatsapp.open_chat", {"chat_ref": "__self__"})
-        if not result.get("ok"):
-            typed = await self._act("whatsapp.type_search", {"query": str(chat_ref or "")})
-            if typed.get("ok"):
-                await asyncio.sleep(1.2)
-            result = await self._act("whatsapp.open_chat", {"chat_ref": chat_ref})
-        if not result.get("ok"):
-            raise KeyError(result.get("error") or "chat_not_found")
-        return {"chat_ref": result.get("chat_ref") or chat_ref, "name": result.get("name")}
+            opened = await _opened()
+        if opened is None:
+            # Search ranks variants first ("Mansi Makani" over "Mansi"). Clear
+            # and type the name, then open the exact row with a real mouse
+            # gesture; a bare .click() does not navigate and Enter takes the
+            # top hit.
+            await self._act("whatsapp.type_search", {"query": ""})
+            await asyncio.sleep(0.3)
+            await self._act("whatsapp.type_search", {"query": chat_ref})
+            for _ in range(5):
+                await asyncio.sleep(0.7)
+                clicked = await self._act("whatsapp.click_exact_chat", {"chat_ref": chat_ref})
+                if clicked.get("ok") and clicked.get("clicked"):
+                    await asyncio.sleep(1.0)
+                    opened = await _opened()
+                    if opened is not None:
+                        break
+        if opened is None:
+            # Last resort: search+Enter, then one repaint beat to verify.
+            opened = await _opened()
+        if opened is None:
+            await asyncio.sleep(1.5)
+            opened = await _opened()
+        if opened is None:
+            await self._act("whatsapp.type_search", {"query": ""})
+            raise KeyError(last_error or "chat_not_found")
+        return opened
 
     async def read_recent(self, chat_ref: str, *, limit: int) -> list[dict[str, Any]]:
         await self.open_chat(chat_ref)
@@ -243,7 +314,31 @@ class ComputerWhatsAppBacking:
         import asyncio
 
         await self.open_chat(chat_ref)
-        result = await self._act("whatsapp.compose", {"chat_ref": chat_ref, "text": text})
+        # The editor needs a beat after the thread renders; a stale or
+        # missing selection silently appends instead of replacing.
+        await asyncio.sleep(0.8)
+        result: dict[str, Any] = {"ok": False}
+        for _ in range(3):
+            result = await self._act("whatsapp.compose", {"chat_ref": chat_ref, "text": text})
+            if result.get("matched"):
+                # The box now holds our text: remember it as ours in case the
+                # send that follows never lands.
+                _last_failed_compose[chat_ref] = text
+                break
+            if result.get("foreign_draft"):
+                # The page refused before touching the box: a foreign draft
+                # is present. Never click send on top of it.
+                result = {**result, "foreign_draft": True}
+                break
+            if result.get("present_len"):
+                # The page typed for us and the box did not read back as the
+                # exact text (WhatsApp re-renders links, emoji, spacing). It
+                # is still our draft: never click send on unverified text,
+                # but let the sender clear and retype it.
+                _last_failed_compose[chat_ref] = text
+                result = {**result, "matched": False, "own_draft": True}
+                break
+            await asyncio.sleep(0.8)
         await asyncio.sleep(0.35)
         return {"chat_ref": chat_ref, "composed": text, "sent": False, **result}
 
@@ -263,8 +358,10 @@ class ComputerWhatsAppBacking:
         # Observe first — never send twice into an already-matching last message.
         recent = await self.read_recent(chat_ref, limit=3)
         last = recent[-1] if recent else None
-        last_text = str(last.get("text") or "") if last else ""
-        if last and last.get("from_me") and (last_text == text or text in last_text):
+        # Exact body equality only: a new message that merely appears inside
+        # a longer previous outbound must still be sent (and reported
+        # honestly), never swallowed as a "duplicate".
+        if last and last.get("from_me") and text and _thread_body(last) == text:
             return {
                 "chat_ref": chat_ref,
                 "sent": True,
@@ -273,12 +370,45 @@ class ComputerWhatsAppBacking:
                 "verified_in_thread": True,
             }
         composed = await self.compose(chat_ref, text)
-        if not composed.get("ok") and not composed.get("composed"):
+        stale = _own_stale_draft(chat_ref, composed) if composed.get("foreign_draft") else ""
+        if composed.get("foreign_draft") and not stale:
+            raise RuntimeError("compose_box_has_other_text")
+
+        async def _appeared() -> tuple[bool, list[dict[str, Any]]]:
+            await asyncio.sleep(0.8)
+            rows = await self.read_recent(chat_ref, limit=5)
+            # Only our own rows count: an incoming message with the same words
+            # must never verify a send.
+            return any(
+                m.get("from_me") and text in str(m.get("text") or "") for m in rows
+            ), rows
+
+        reclaimed = bool(composed.get("own_draft") or stale)
+        if reclaimed:
+            # Clear the box and type our text again: the guarded compose never
+            # replaces content it did not write, and this content is ours — a
+            # draft of an earlier attempt that never landed, not someone
+            # else's.
+            _last_failed_compose.pop(chat_ref, None)
+            clicked = await self._act("whatsapp.send", {"chat_ref": chat_ref, "text": text})
+        elif not composed.get("matched"):
             raise RuntimeError(composed.get("error") or "compose_failed")
-        clicked = await self._act("whatsapp.click_send", {"chat_ref": chat_ref})
-        await asyncio.sleep(0.8)
-        verify = await self.read_recent(chat_ref, limit=5)
-        appeared = any(text in str(m.get("text") or "") for m in verify)
+        else:
+            clicked = await self._act("whatsapp.click_send", {"chat_ref": chat_ref})
+        appeared, verify = await _appeared()
+        if not appeared and reclaimed:
+            # That op types and clicks in one tick and React may not have
+            # rendered the send control yet. A separate click sees it; once
+            # the text has gone out the box is empty and there is nothing to
+            # click.
+            clicked = await self._act("whatsapp.click_send", {"chat_ref": chat_ref})
+            appeared, verify = await _appeared()
+        if appeared:
+            _last_failed_compose.pop(chat_ref, None)
+        else:
+            # Our text may still sit in the box: remember it so the next
+            # attempt to this chat can clear and retype it.
+            _last_failed_compose[chat_ref] = text
         if not clicked.get("ok") and not clicked.get("sent") and not appeared:
             raise RuntimeError(clicked.get("error") or "send_failed")
         return {
@@ -325,6 +455,8 @@ class ComputerWhatsAppBacking:
             js = wrap_js(wjs.open_new_chat_js())
         elif op == "whatsapp.open_chat":
             js = wrap_js(wjs.open_chat_js(str(args.get("chat_ref") or "")))
+        elif op == "whatsapp.click_exact_chat":
+            js = wrap_js(wjs.click_exact_chat_js(str(args.get("chat_ref") or "")))
         elif op == "whatsapp.read_recent":
             js = wrap_js(wjs.read_recent_js(int(args.get("limit") or 30)))
         elif op == "whatsapp.search_messages":
@@ -424,15 +556,28 @@ class WhatsAppWebAdapter:
             return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="whatsapp", operation=operation,
                             availability=Availability.OPERATED, payload={"chats": chats})
         if operation == "resolve_chat":
-            chats = await backing.search_chats(str(args.get("query") or args.get("name") or args.get("chat_ref") or ""))
-            if len(chats) > 1:
+            query = str(args.get("query") or args.get("name") or args.get("chat_ref") or "")
+            chats = await backing.search_chats(query)
+            # The row set is whatever the page's substring filter returned:
+            # one row is not an identity. Score whole name tokens and accept
+            # only a strong, untied winner; otherwise ask, offering the rows.
+            scored = sorted(
+                ((score_person_name(query, str(row.get("name") or "")), row) for row in chats),
+                key=lambda pair: pair[0],
+                reverse=True,
+            )
+            strong = [(score, row) for score, row in scored if score >= UNIQUE_SCORE]
+            tied = [row for score, row in strong if strong and strong[0][0] - score < UNIQUE_GAP]
+            if len(tied) > 1:
                 return OpResult(status=OpStatus.CLARIFY, service="whatsapp", operation=operation,
                                 availability=Availability.OPERATED, error="ambiguous",
-                                clarify=chats, payload={"sent": False})
-            if not chats:
+                                clarify=tied, payload={"sent": False})
+            if not tied:
                 return OpResult(status=OpStatus.CLARIFY, service="whatsapp", operation=operation,
-                                availability=Availability.OPERATED, error="not_found", payload={"sent": False})
-            opened = await backing.open_chat(chats[0]["chat_ref"])
+                                availability=Availability.OPERATED,
+                                error="ambiguous" if len(chats) > 1 else "not_found",
+                                clarify=chats, payload={"sent": False})
+            opened = await backing.open_chat(tied[0]["chat_ref"])
             return OpResult(status=OpStatus.COMPLETED_VERIFIED, service="whatsapp", operation=operation,
                             availability=Availability.OPERATED, payload={"chat": opened},
                             verification={"chat_ref": opened.get("chat_ref")})

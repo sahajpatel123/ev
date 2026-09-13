@@ -72,6 +72,16 @@ async def web_available(*, refresh: bool = False) -> bool:
         value = bool(status.get("authenticated"))
     except Exception:
         value = False
+    if not value:
+        # The AppleScript tab may be unusable while Evie's CDP profile is
+        # linked; either route is a valid WhatsApp Web transport.
+        try:
+            from app.ev.messaging import whatsapp_cdp
+
+            linked, _diagnosis = await whatsapp_cdp.available()
+            value = linked
+        except Exception:
+            value = False
     _status_cache = (now, value)
     return value
 
@@ -186,6 +196,30 @@ def score_chat(query: str, row: dict[str, Any]) -> float:
 def _resolve_from_rows(query: str, candidates: list[dict[str, Any]]) -> dict[str, Any]:
     """Unique-or-clarify scoring over sidebar rows."""
 
+    # An exact chat name beats punctuation/emoji variants: "Mansi" chooses the
+    # chat literally named Mansi over "Mansi…!!", "Mansi(D)", etc. Only a lone
+    # exact match wins; several exact rows stay ambiguous.
+    exact = [
+        row
+        for row in candidates
+        if str(row.get("name") or "").strip().casefold() == query.casefold()
+    ]
+    if exact:
+        # The same chat can render twice (chat + contact search results); only
+        # genuinely distinct refs with the same name stay ambiguous.
+        refs = {
+            str(row.get("chat_ref") or row.get("name") or "").strip().casefold()
+            for row in exact
+        }
+        if len(refs) == 1:
+            row = exact[0]
+            name = str(row.get("name") or query)
+            return {
+                "status": "unique",
+                "display": name,
+                "chat_ref": str(row.get("chat_ref") or name),
+                "row": row,
+            }
     scored: list[tuple[float, dict[str, Any]]] = []
     for row in candidates:
         score = score_chat(query, row)
@@ -262,14 +296,35 @@ async def send(to: str, text: str) -> dict[str, Any]:
             "spoken": "There's nothing to send.",
             "focus_theft": 0,
         }
+    # CDP delivers trusted input, so chat navigation and Send actually work in
+    # a background tab; prefer it whenever Evie's debug profile is linked.
+    from app.ev.messaging import whatsapp_cdp
+
+    cdp_linked, _cdp_diagnosis = await whatsapp_cdp.available()
+    if cdp_linked:
+        return await whatsapp_cdp.send(to, body)
     if not await web_available():
+        diagnosis = "no_authenticated_tab"
+        spoken = "WhatsApp Web isn't signed in on this Mac right now."
+        try:
+            from app.digital.adapters.whatsapp import ComputerWhatsAppBacking
+
+            web_status = await ComputerWhatsAppBacking().status()
+            diagnosis = str(web_status.get("diagnosis") or diagnosis)
+        except Exception:
+            pass
+        if "javascript_apple_events" in diagnosis or "osascript" in diagnosis:
+            spoken = (
+                "Chrome is blocking background control. Open Chrome \u2192 View \u2192 "
+                "Developer \u2192 Allow JavaScript from Apple Events, then ask me again."
+            )
         return {
             "ok": False,
             "sent": False,
             "channel": "whatsapp",
             "error": "whatsapp_web_unavailable",
-            "diagnosis": "no_authenticated_tab",
-            "spoken": "WhatsApp Web isn't signed in on this Mac right now.",
+            "diagnosis": diagnosis,
+            "spoken": spoken,
             "focus_theft": 0,
         }
     match = await resolve(to)
@@ -331,10 +386,42 @@ async def send(to: str, text: str) -> dict[str, Any]:
             for _ in range(3):
                 await asyncio.sleep(0.7)
                 recent = await backing.read_recent(chat_ref, limit=5)
-                if any(body in str(row.get("text") or "") for row in recent):
+                # Only our own rows count here too: an old or incoming
+                # message with the same words must never verify a send.
+                if any(
+                    row.get("from_me") and body in str(row.get("text") or "")
+                    for row in recent
+                ):
                     verified = True
                     break
     except Exception as exc:
+        await _clear_search()
+        if "compose_box_has_other_text" in str(exc):
+            return {
+                "ok": False,
+                "sent": False,
+                "channel": "whatsapp",
+                "error": "compose_box_blocked",
+                "diagnosis": "foreign_draft",
+                "spoken": (
+                    f"There's already text in {display}'s message box, so I "
+                    "didn't touch it. Clear it and ask me again."
+                ),
+                "focus_theft": 0,
+            }
+        if isinstance(exc, KeyError) or "chat_not_found" in str(exc):
+            return {
+                "ok": False,
+                "sent": False,
+                "channel": "whatsapp",
+                "error": "chat_open_failed",
+                "diagnosis": "chat_not_found",
+                "spoken": (
+                    f"I found {display} on WhatsApp but couldn't open that chat, "
+                    "so nothing was sent. Reload WhatsApp Web and ask me again."
+                ),
+                "focus_theft": 0,
+            }
         return {
             "ok": False,
             "sent": False,
@@ -345,6 +432,7 @@ async def send(to: str, text: str) -> dict[str, Any]:
             "focus_theft": 0,
         }
     display = str(sent.get("chat_ref") or display)
+    await _clear_search()
     return {
         "ok": verified,
         "sent": verified,

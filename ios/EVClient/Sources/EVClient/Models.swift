@@ -603,6 +603,31 @@ public struct AttachmentOut: Codable, Sendable, Equatable {
     public let createdAt: String
 }
 
+public struct EvieClipMoment: Codable, Sendable, Equatable {
+    public let tStart: Double
+    public let tEnd: Double
+    public let labels: [String]
+    public let ocrText: String?
+    public let engine: String?
+    public let degraded: Bool?
+}
+
+public struct EvieClipIngest: Codable, Sendable, Equatable {
+    public let ok: Bool
+    public let attachmentId: String?
+    public let eventId: String?
+    public let memoryId: String?
+    public let durationS: Double?
+    public let frames: Int
+    public let moments: [EvieClipMoment]
+    public let transcript: String?
+    public let engine: String
+    public let extractionDegraded: Bool
+    public let transcriptDegraded: Bool
+    public let error: String?
+    public let spoken: String?
+}
+
 public struct AttachmentCreateResponse: Codable, Sendable, Equatable {
     public let attachment: AttachmentOut
     public let event: EventOut

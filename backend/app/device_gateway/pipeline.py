@@ -685,7 +685,11 @@ async def run_trusted_device_turn(
     # G2 B — deterministic cross-device capability routing (model does NOT decide executor)
     routed = _detect_routed_capability(effective_text)
     if routed is None:
-        from app.everywhere.endpoint_profile import perception_action, resolve_camera_target, wants_perception
+        from app.everywhere.endpoint_profile import (
+            perception_action,
+            resolve_camera_target,
+            wants_perception,
+        )
         from app.memory.visual import is_visual_recall_query, search_visual_observations
 
         if is_visual_recall_query(effective_text) and not wants_perception(effective_text):
@@ -822,7 +826,6 @@ async def run_trusted_device_turn(
                         mac_act["reply"] = (spoken + extra).strip()
             try:
                 from .mobile_v2 import (
-                    ActionResult,
                     classify_interference,
                     map_phone_mac_status,
                     resolve_route_target,
@@ -914,7 +917,11 @@ async def run_trusted_device_turn(
                 try:
                     from .mobile_v2 import (
                         classify_interference as _ci,
+                    )
+                    from .mobile_v2 import (
                         map_broker_status as _mbs,
+                    )
+                    from .mobile_v2 import (
                         resolve_route_target as _rrt,
                     )
                     from .telemetry import emit as _emit3

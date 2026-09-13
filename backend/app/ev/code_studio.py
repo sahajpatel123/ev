@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from datetime import UTC
 from typing import Any
 
 from app.utils.text import utcnow
@@ -234,6 +235,9 @@ _KIND_WORDS: dict[str, tuple[str, ...]] = {
 }
 _LIVE_STATUSES = frozenset({"queued", "running", "paused"})
 _DEAD_STATUSES = frozenset({"done", "failed", "cancelled"})
+# A studio JSON can sit at "running" for days after the drain worker died.
+# Fresh starts still get a short grace so tests and _spawn() can attach.
+_STUDIO_STALE_S = 30.0
 _TITLE_STOP = frozenset({"the", "a", "an", "site", "ui", "page", "goal", "job", "task"})
 _NOT_LIFE_GOAL = re.compile(
     r"\b(?:get fit|lose weight|read more|sleep|habit|exercise|gym)\b",
@@ -443,8 +447,55 @@ def looks_like_code_review(text: str | None) -> bool:
 
 
 def studio_is_active() -> bool:
+    park_stale_studio()
     studio = load_studio()
     return bool(studio and str(studio.get("status") or "") in {"queued", "running"})
+
+
+def _studio_age_s(studio: dict[str, Any]) -> float | None:
+    raw = str(studio.get("updated_at") or studio.get("created_at") or "").strip()
+    if not raw:
+        return None
+    from datetime import datetime
+
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - stamp).total_seconds())
+
+
+def park_stale_studio() -> dict[str, Any] | None:
+    """Close a live studio goal that no drain worker actually owns.
+
+    Leftover ``running`` JSON from days ago was blocking hello.py and
+    queueing calculator behind a clothing site that was not executing.
+    """
+
+    studio = _live_goal()
+    if not studio or str(studio.get("status") or "") not in {"queued", "running"}:
+        return None
+    from app.ev.luna_code import intern_worker_active
+
+    if intern_worker_active():
+        return None
+    age = _studio_age_s(studio)
+    if age is not None and age < _STUDIO_STALE_S:
+        return None
+    title = str(studio.get("title") or "that coding goal")
+    folder = str(studio.get("folder") or "the project")
+    files = [str(item) for item in (studio.get("files") or []) if item]
+    names = ", ".join(_leaf(item) for item in files[-6:]) if files else "no new files"
+    studio["status"] = "failed"
+    studio["updated_at"] = utcnow().isoformat()
+    studio["last_spoken"] = (
+        f"I lost the background worker before finishing {title}. "
+        f"What's on disk: {names} under {folder}/."
+    )[:400]
+    save_studio(studio)
+    return studio
 
 
 def looks_like_code_steer(text: str | None) -> bool:
@@ -463,6 +514,7 @@ def maybe_handle_code_ops(text: str, *, session_key: str = "owner") -> str | Non
     raw = (text or "").strip()
     if not raw:
         return None
+    park_stale_studio()
     if looks_like_code_status(raw):
         return _status_if_relevant(raw)
     action = infer_background_task_action(raw)
@@ -474,6 +526,13 @@ def maybe_handle_code_ops(text: str, *, session_key: str = "owner") -> str | Non
         return apply_code_control(raw)
     if looks_like_code_steer(raw):
         return queue_steer(raw)
+    from app.ev.luna_code import maybe_switch_coding_project, spoken_project_catalog, looks_like_project_catalog_ask
+
+    if looks_like_project_catalog_ask(raw) and not looks_like_long_code_goal(raw):
+        return spoken_project_catalog()
+    switched = maybe_switch_coding_project(raw)
+    if switched:
+        return switched
     if looks_like_long_code_goal(raw):
         return start_coding_goal(raw, session_key=session_key)
     if _BARE_NEW_TASK_RE.search(raw):
@@ -597,7 +656,7 @@ def spoken_completion_summary(studio: dict[str, Any], *, ok: bool = True) -> str
 
 
 def spoken_task_board() -> str:
-    jobs = list((load_board().get("jobs") or []))
+    jobs = list(load_board().get("jobs") or [])
     live = _live_jobs(jobs)
     if not live:
         return "I'm not running a background task."
@@ -677,7 +736,7 @@ def run_background_task(text: str = "") -> str:
     status = str(job.get("status") or "")
     title = str(job.get("title") or "that")
     if status in _DEAD_STATUSES:
-        named = _named_job(text, list((load_board().get("jobs") or [])))
+        named = _named_job(text, list(load_board().get("jobs") or []))
         if named is not None:
             return f"{title} already finished."
         return "There's no new background task to run. Tell me what to build."
@@ -707,7 +766,7 @@ def stop_background_task(text: str = "") -> str:
         return "There's nothing running."
     status = str(job.get("status") or "")
     if status in _DEAD_STATUSES:
-        if _named_job(text, list((load_board().get("jobs") or []))):
+        if _named_job(text, list(load_board().get("jobs") or [])):
             return f"{job.get('title')} already finished."
         return "There's nothing running."
     if _is_draining(job):
@@ -725,7 +784,7 @@ def delete_background_task(text: str = "") -> str:
     job = resolve_task(text, action="delete")
     if not job:
         return "There's no background task to remove."
-    named = _named_job(text, list((load_board().get("jobs") or [])))
+    named = _named_job(text, list(load_board().get("jobs") or []))
     status = str(job.get("status") or "")
     if status in _DEAD_STATUSES and named is None and not _NEW_RE.search(text or ""):
         return "There's no background task to remove."
@@ -751,9 +810,7 @@ def _remove_job(job_id: str) -> None:
     jobs = [item for item in (board.get("jobs") or []) if str(item.get("id") or "") != job_id]
     prev = str(board.get("active_id") or "")
     board["jobs"] = jobs
-    if prev == job_id:
-        board["active_id"] = None
-    elif prev and _job_by_id(board, prev) is None:
+    if prev == job_id or prev and _job_by_id(board, prev) is None:
         board["active_id"] = None
     _write_board(board)
     live = _live_goal_from(board)
@@ -831,6 +888,7 @@ def start_coding_goal(
 ) -> str:
     if _halt_intent(text or ""):
         return stop_background_task(text)
+    park_stale_studio()
     existing = load_studio()
     status = str((existing or {}).get("status") or "")
     kind = classify_goal_kind(text)
@@ -1074,7 +1132,6 @@ def try_heuristic_slice(goal: str) -> dict[str, Any] | None:
     kind = (kind_match.group(1) if kind_match else "generic_site").strip()
     folder = (folder_match.group(1) if folder_match else folder_for_kind(kind)).strip("/")
     phase_title = (phase_match.group(1) if phase_match else "").split("\n")[0].strip().lower()
-    from app.ev.code_runtime import write_file
 
     written = _write_kind_phase(kind, folder, phase_title)
     if not written:
@@ -1096,7 +1153,7 @@ def load_studio() -> dict[str, Any] | None:
 
 
 def last_job() -> dict[str, Any] | None:
-    jobs = list((load_board().get("jobs") or []))
+    jobs = list(load_board().get("jobs") or [])
     return jobs[-1] if jobs else None
 
 
@@ -1363,7 +1420,7 @@ def _live_goal_from(board: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _live_jobs(jobs: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
-    rows = jobs if jobs is not None else list((load_board().get("jobs") or []))
+    rows = jobs if jobs is not None else list(load_board().get("jobs") or [])
     return [item for item in rows if str(item.get("status") or "") in _LIVE_STATUSES]
 
 
@@ -1462,9 +1519,8 @@ def _board_path():
 def _is_draining(job: dict[str, Any] | None) -> bool:
     if not job:
         return False
-    from app.memory.paths import read_json
-
     from app.ev.luna_code import _pending_code_path, _running_code_path
+    from app.memory.paths import read_json
 
     job_id = str(job.get("id") or "")
     for path in (_running_code_path(), _pending_code_path()):
@@ -1479,9 +1535,8 @@ def _is_draining(job: dict[str, Any] | None) -> bool:
 
 
 def _enqueue_slice(studio: dict[str, Any]) -> None:
+    from app.ev.luna_code import _pending_code_path, intern_worker_active
     from app.memory.paths import atomic_write_json, read_json
-
-    from app.ev.luna_code import intern_worker_active, _pending_code_path
 
     pending = read_json(_pending_code_path())
     if pending and str(pending.get("kind") or "") == "intern" and intern_worker_active():
@@ -1515,9 +1570,8 @@ def _spawn() -> None:
 def _drop_job_markers(job_id: str) -> None:
     if not job_id:
         return
-    from app.memory.paths import read_json
-
     from app.ev.luna_code import _pending_code_path, _running_code_path
+    from app.memory.paths import read_json
 
     for path in (_pending_code_path(), _running_code_path()):
         data = read_json(path) or {}

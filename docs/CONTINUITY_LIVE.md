@@ -97,7 +97,67 @@ The user runs the collectors; EV provides the ingestion, storage, and use.
   identification over user-owned data.
 - Digital twin (`/v1/twin`) → aggregate user model.
 
-## 4. Invariants
+## 4. Cross-turn referent (the live offer and the turn ledger)
+
+**Implemented 2026-09-13.** The Muse prompt is built as `[system, user]` with no
+chat history — one turn per request. Continuity therefore cannot come from a
+message list; it comes from two things on the durable cognitive session
+(`storage/cognitive/session.json`, shared by the `:8000` API and the `:18000`
+voice edge):
+
+- **Turn ledger.** `intent.remember_exchange` appends each owner/Evie exchange
+  (bounded to 6, 1200 chars each). `context.compile_context` renders it as
+  `RECENT EXCHANGES`, so *every* surface — voice, Mac, iPhone, PWA, text — gets
+  the referent for "yes", "that one", "read it".
+- **Pending offer.** When Evie's spoken line asks the owner something,
+  `intent.set_pending_offer` records it together with the tool that produced it
+  (`action`), whether it was an offer to read an artifact aloud (`readout`), and
+  a 600 s expiry. `kernel._record_turn` arms it after *every* result kind, not
+  just `muse`, and does so for every channel, including phone/device turns that
+  return before the model call.
+
+Binding rules:
+
+- `ev.continuity.is_affirmative_reply` / `is_negative_reply` recognise a short
+  reply, including a tailed one ("yes, please", "yes, read it out"). An
+  utterance that merely *starts* with yes is a new request ("yes the mail from
+  Rahul was long"), not a reply.
+- A read-aloud confirmation is a **distinct speech act** from approving a parked
+  send, and the two grammars are deliberately separate: `"ok read the mail"` can
+  answer Evie's offer but can never approve a queued message. Laughter never
+  approves anything.
+- The newest question wins. `kernel._offer_outranks_parked_send` keeps a parked
+  WhatsApp send from swallowing the answer to a question Evie has asked since.
+- A greeting does not displace an unanswered offer: the Mac client sends a
+  synthetic `Hi.` on every live open (`intent.is_substantive_turn`).
+- `intent.continuation_readout` promotes a bare affirmative against a read-aloud
+  offer to a readout, so "yes" speaks the body instead of repeating the gist.
+- `intent.readout_offer_live` keeps that read-aloud intent when the model calls
+  the mail/message tool with no query at all.
+- A "which one?" offer carries its numbered `options`, so the owner can answer
+  with a slot ("the second one"); `ev.continuity.choice_index` reads the slot
+  and an ordinal only answers an offer that actually has options.
+- A turn that did not finish what the owner asked for — budget exhausted
+  (`in_flight`), provider down (`unavailable`), or a crash (`failed`) — does NOT
+  spend his answer; the offer stays live so he can say "yes" again.
+- A raise inside a turn is spoken, not swallowed into silence: `handle_turn`
+  returns an honest line and still records the exchange.
+
+`storage/cognitive/session.json` is a private store (0700/0600), and the ledger
+and offer are credential-redacted on write, because they are re-injected into
+later prompts and outlive the input filter that would have scrubbed them.
+
+**Known limitation.** `save()` is last-writer-wins for every field except the
+turn ledger, which is unioned from disk when another process wrote first. One
+global session is shared by the `:8000` API and the `:18000` voice edge, so a
+turn holding its snapshot across a long tool call can still overwrite a
+concurrently armed offer with its own view. See the residual section of the
+workspace analysis.
+
+`make eval` carries a `continuity` gate that asserts all of the above without a
+live model, so this class of regression cannot land silently.
+
+## 5. Invariants
 
 - Raw events and live events are immutable (tombstone/append-only).
 - Every live event carries explicit collector provenance and its effective

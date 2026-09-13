@@ -128,6 +128,55 @@ def _tool_from_response(item: dict[str, Any], index: int) -> ToolCall:
     )
 
 
+def _chat_message_tool_calls(message: dict[str, Any]) -> list[ToolCall]:
+    """Return tool calls from a Chat Completions assistant message."""
+
+    calls: list[ToolCall] = []
+    for index, call in enumerate(message.get("tool_calls") or []):
+        if not isinstance(call, dict):
+            continue
+        fn = call.get("function") or {}
+        calls.append(
+            ToolCall(
+                id=_clean_id(call.get("id"), f"call_{index}"),
+                name=str(fn.get("name") or ""),
+                arguments=_json_arguments(fn.get("arguments")),
+            )
+        )
+    return calls
+
+
+def _tool_call_key(call: ToolCall) -> tuple[str, str, str]:
+    """Identity of one tool call across two provider projections."""
+
+    try:
+        arguments = json.dumps(call.arguments or {}, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        arguments = repr(call.arguments)
+    return (call.id, call.name, arguments)
+
+
+def _merge_tool_calls(
+    primary: Sequence[ToolCall], extra: Sequence[ToolCall]
+) -> list[ToolCall]:
+    """Merge two projections of the same call list, dropping duplicates.
+
+    A provider may report the same call on the Responses ``output`` array and
+    on a Chat Completions ``choices[].message.tool_calls`` projection. The
+    first projection wins so a twice-reported call still executes once.
+    """
+
+    merged = list(primary)
+    seen = {_tool_call_key(call) for call in merged}
+    for call in extra:
+        key = _tool_call_key(call)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(call)
+    return merged
+
+
 def _message_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
     """Return Chat Completions-style calls from a raw assistant row."""
 
@@ -565,8 +614,11 @@ class MuseSparkProvider(StreamingChatProvider):
         if tools:
             payload["tools"] = responses_tools(tools)
         payload.update(self._text_format(response_format) or {})
-        if tool_choice is not None and (isinstance(tool_choice, dict) or str(tool_choice).strip().lower() in {"auto", "none", "required"}):
-            payload["tool_choice"] = tool_choice
+        # Official Meta Model API only accepts tool_choice="auto".
+        # "required" / "none" / named tools 400 and used to open the Spark
+        # breaker, so coding jobs never reached write_file.
+        if payload.get("tools"):
+            payload["tool_choice"] = "auto"
         return self._apply_provider_payload(
             payload, temperature=1.0, reasoning_effort=reasoning_effort
         )
@@ -574,19 +626,24 @@ class MuseSparkProvider(StreamingChatProvider):
     def _result_from_response(self, data: dict[str, Any]) -> ChatResult:
         # Accept a Chat Completions fixture/proxy at the adapter boundary, but
         # always expose the contributor model to EV.
-        if isinstance(data.get("choices"), list) and not data.get("output"):
-            choice = (data.get("choices") or [{}])[0].get("message") or {}
-            calls: list[ToolCall] = []
-            for index, call in enumerate(choice.get("tool_calls") or []):
-                if not isinstance(call, dict):
-                    continue
-                fn = call.get("function") or {}
-                calls.append(ToolCall(id=_clean_id(call.get("id"), f"call_{index}"), name=str(fn.get("name") or ""), arguments=_json_arguments(fn.get("arguments"))))
-            return self._identified(ChatResult(text=str(choice.get("content") or ""), tool_calls=calls, usage=_usage_for_ev(data.get("usage")), model=data.get("model")))
+        choices = data.get("choices")
+        chat_message: dict[str, Any] = {}
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+            if isinstance(message, dict):
+                chat_message = message
+        chat_calls = _chat_message_tool_calls(chat_message)
+        if isinstance(choices, list) and not data.get("output"):
+            return self._identified(ChatResult(text=str(chat_message.get("content") or ""), tool_calls=chat_calls, usage=_usage_for_ev(data.get("usage")), model=data.get("model")))
         output = data.get("output") or []
         if not isinstance(output, list):
             output = []
         calls = [_tool_from_response(item, index) for index, item in enumerate(output) if isinstance(item, dict) and item.get("type") == "function_call"]
+        # Meta can report the same calls on `output` and on a Chat Completions
+        # `choices[].message.tool_calls` projection. Merging instead of
+        # preferring one shape keeps the model's chosen action; de-duplication
+        # stops a twice-reported call from executing twice.
+        calls = _merge_tool_calls(calls, chat_calls)
         text = str(data.get("output_text") or "") or _text_from_output(output)
         return self._identified(ChatResult(text=text, tool_calls=calls, usage=_usage_for_ev(data.get("usage")), model=data.get("model")))
 
@@ -629,6 +686,8 @@ class MuseSparkProvider(StreamingChatProvider):
                 raise
             except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                 status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status in {400, 422}:
+                    raise
                 if is_transient(exc, status) and attempt + 1 < attempts:
                     breaker.record_failure()
                     await wait_for_retry(attempt)
@@ -918,6 +977,8 @@ class MuseSparkProvider(StreamingChatProvider):
                     raise
                 except httpx.HTTPStatusError as exc:
                     status = getattr(exc.response, "status_code", None)
+                    if status in {400, 422}:
+                        raise
                     if status in {401, 403}:
                         breaker.record_failure()
                         raise MuseProviderUnavailable(

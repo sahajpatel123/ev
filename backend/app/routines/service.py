@@ -18,7 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.ev.ev_sense import quiet_hours_active
-from app.models import Alert, Event, LiveChannel, LiveEvent, Routine, RoutineRun
+from app.models import (
+    Alert,
+    ApprovedAction,
+    Event,
+    LiveChannel,
+    LiveEvent,
+    Routine,
+    RoutineRun,
+)
 from app.routines.schedule import next_run_after, validate_cron
 from app.routines.templates import get_template
 from app.schemas import (
@@ -76,6 +84,38 @@ def _requires_approval(routine: Routine) -> bool:
         routine.requires_approval
         or runtime_service.ACTION_PERMISSIONS.get(routine.action_type, True)
     )
+
+
+def _dispatch_failure_reason(result: dict | None) -> str:
+    """Best-effort reason from a tool payload that failed without an ``error``."""
+    body = result if isinstance(result, dict) else {}
+    nested = body.get("result")
+    for source in (body, nested if isinstance(nested, dict) else {}):
+        for key in ("error", "reason", "detail", "message"):
+            value = source.get(key)
+            if value:
+                return str(value)
+    return "action dispatch failed"
+
+
+def _record_dispatch_result(run: RoutineRun, action: ApprovedAction) -> None:
+    """Record the real dispatch outcome on the run.
+
+    ``execute_action`` does not raise for a provider-level failure; it stores
+    the failure in ``action.result``/``action.error``.  The run must reflect
+    that honestly, otherwise ``detect_repeated_failures`` never sees the
+    failed runs and a dead provider is reported as a clean execution.
+    """
+    from app.voice.live.layer import tool_result_is_successful
+
+    run.result = action.result
+    run.finished_at = utcnow()
+    if action.error or not tool_result_is_successful(action.result):
+        run.status = "failed"
+        run.error = action.error or _dispatch_failure_reason(action.result)
+        return
+    run.status = "executed"
+    run.error = None
 
 
 def _new_run(
@@ -153,9 +193,7 @@ async def _route_action_for_run(
                 "payload": routine.action_payload,
             },
         )
-        run.status = "executed"
-        run.result = action.result
-        run.finished_at = utcnow()
+        _record_dispatch_result(run, action)
     await session.flush()
     return run
 
@@ -631,14 +669,21 @@ async def approve_run(
     run = await get_run(session, run_id)
     if run.status != "awaiting_approval" or run.action_id is None:
         raise ValueError("Only runs awaiting approval can be approved")
-    await runtime_service.decide_action(
+    action = await runtime_service.decide_action(
         session,
         run.action_id,
         actor=actor,
         decision="approve",
         reason=data.reason if data else None,
     )
-    run.status = "approved"
+    # A routed routine action carries no ``_pol`` resume meta, so the runtime
+    # never auto-executes on approval.  The owner's "yes" must actually run the
+    # action here, and the run must record what the dispatch really returned.
+    if action.status == "approved":
+        action = await runtime_service.execute_action(
+            session, run.action_id, actor=actor
+        )
+    _record_dispatch_result(run, action)
     run.updated_at = utcnow()
     await log_access(
         session,
@@ -701,9 +746,7 @@ async def execute_run(
         actor=actor,
         result=data.result if data and data.result else {},
     )
-    run.status = "executed"
-    run.result = action.result
-    run.finished_at = utcnow()
+    _record_dispatch_result(run, action)
     run.updated_at = utcnow()
     await log_access(
         session,

@@ -6,10 +6,15 @@ gaps; the fallback never invents a recipient or a body.
 
 Multi-token recipients are handled in two ways: an explicit body lead
 ("... to John Smith saying running late") bounds the name, and otherwise a
-captured extra token is only kept while it is capitalized or a name particle,
-so "text mom running late" stays recipient=mom, body=running late. Channel
-words come from the registry (``app.ev.messaging.channels``), never from a
-catalog of ifs, and a channel is reported only when the owner named it.
+captured extra token is kept while it is capitalized, a name particle, or
+the one surname that follows a given name when the whole lowercase run is
+name-shaped ("text mansi patel good night" keeps "mansi patel"). A single
+lowercase extra, a run holding a body word, and the word after a
+relationship word all stay the body: "text mansi good night" keeps
+recipient "mansi", "text sarah call me later" keeps "sarah", and "text mom
+running late" stays recipient=mom, body=running late. Channel words come
+from the registry (``app.ev.messaging.channels``), never from a catalog of
+ifs, and a channel is reported only when the owner named it.
 
 MAC HUB: inquiry about mail/messages ("did I get any email from X") is NOT
 a send. Do not treat this file as iPhone UI routing.
@@ -30,6 +35,7 @@ SEND_BODY_MAX = 500
 
 __all__ = [
     "SEND_BODY_MAX",
+    "answers_live_offer",
     "channel_from_text",
     "incomplete_send",
     "incomplete_send_recipient",
@@ -40,10 +46,26 @@ __all__ = [
     "prompt_for_send_body",
 ]
 
-_REL = (
-    r"Mom|Dad|Mother|Father|Mama|Papa|Mum|Mummy|Mommy|Daddy|"
-    r"Ammi|Maa|Baba|Papa"
+_REL_NAMES = (
+    "Mom",
+    "Dad",
+    "Mother",
+    "Father",
+    "Mama",
+    "Papa",
+    "Mum",
+    "Mummy",
+    "Mommy",
+    "Daddy",
+    "Ammi",
+    "Maa",
+    "Baba",
 )
+_REL = "|".join(_REL_NAMES)
+# A relationship word is a whole recipient: unlike a given name it never
+# takes a surname, so the lowercase word after one starts the body
+# ("text mom running late" keeps recipient "mom").
+_REL_WORDS = frozenset(name.lower() for name in _REL_NAMES)
 # Complete sends keep a single name token so "text mom hi" stays a body.
 # Incomplete sends may take extra tokens ("customer care") because the
 # utterance ends there.
@@ -55,9 +77,17 @@ _TO_TAIL_STOP = (
 )
 _EXTRA_NAME_WORD = rf"(?!{_TO_TAIL_STOP}){_NAME_WORD}"
 _NAME = rf"(?:{_REL}|{_NAME_WORD})"
-_NAME_LONG = rf"(?:{_REL}|{_NAME_WORD}(?:\s+{_EXTRA_NAME_WORD}){{0,4}})"
+# The tail belongs to a relationship word too: without it alternation
+# settles for "papa" and hands the honourific to the body ("papa ji good
+# night" must keep recipient "papa ji").
+_NAME_TAIL = rf"(?:\s+{_EXTRA_NAME_WORD}){{0,4}}"
+_NAME_LONG = rf"{_NAME}{_NAME_TAIL}"
+# A dictation pause leaves punctuation right after the name ("text Mummy,
+# good night"): it bounds the recipient instead of joining it or blocking
+# the send, and the leading comma is already a body lead.
+_TO_TRAIL = r"[,\.!?]?"
 _TO = rf"(?P<to>(?:my\s+|the\s+)?{_NAME})"
-_TO_LONG = rf"(?P<to>(?:my\s+|the\s+)?{_NAME_LONG})"
+_TO_LONG = rf"(?P<to>(?:my\s+|the\s+)?{_NAME_LONG}){_TO_TRAIL}"
 _CHANNEL_WORDS = sorted(
     {
         alias
@@ -132,7 +162,12 @@ _SKIP_TO = frozenset(
     }
 )
 _NAME_PARTICLES = frozenset(
-    {"de", "del", "della", "van", "von", "bin", "al", "da", "dos", "ben", "ibn", "mac", "mc", "st"}
+    {
+        "de", "del", "della", "van", "von", "bin", "al", "da", "dos", "ben",
+        "ibn", "mac", "mc", "st",
+        # Name words that follow the given name ("papa ji", "mansi bhai").
+        "ji", "bhai",
+    }
 )
 # Questions / lookups are not send acts. "email from Alex" is a mailbox
 # ask; "email Ada the deck is ready" is a send.
@@ -313,33 +348,70 @@ def _utterance_core(raw: str) -> str:
     return text
 
 
+# Words that open a message body, never a surname. This is the body
+# vocabulary the module already knows — pronouns, prepositions, file and
+# kind nouns (_SKIP_TO) plus the short message openers.
+_NON_NAME_WORDS = frozenset(_SKIP_TO) | frozenset(
+    {"yes", "yeah", "yep", "no", "nope", "thanks", "thank", "yo"}
+)
+
+
+def _name_run_plausible(tokens: list[str]) -> bool:
+    """True when a lowercase run could be the rest of a spoken name.
+
+    "patel good" is name-shaped; "call me" is not, because "me" is a body
+    word in this module's vocabulary. Lowercase ASR names must survive the
+    split, so the run is judged whole instead of word by word.
+    """
+
+    return all(
+        "'" not in token
+        and "\u2019" not in token
+        and token.lower() not in _NON_NAME_WORDS
+        for token in tokens
+    )
+
+
 def _recipient_overflow(to: str) -> tuple[str, str]:
     """Split a captured recipient into (name, likely body overflow).
 
-    A captured extra token is only a name while it is capitalized or a known
-    particle; a lowercase word starts the body. "mom running late" keeps
-    recipient "mom"; "John Smith" keeps both; "john smith" keeps "john" and
-    the explicit-delimiter grammar handles the all-lowercase case.
+    A captured extra token is a name while it is capitalized, a known
+    particle, or the one lowercase surname that follows a given name
+    ("text mansi patel good night" keeps "mansi patel") — and only while
+    the whole run is name-shaped, so a run holding a body word starts the
+    body ("text sarah call me later" keeps recipient "sarah"). A single
+    lowercase extra stays the body: one word is too short to tell a
+    surname from a message, which is the module's existing rule ("text
+    mansi good night" keeps recipient "mansi"). A relationship word is a
+    whole recipient, so the lowercase word after it starts the body ("mom
+    running late" keeps "mom"). Once the body has started, every later
+    token belongs to it.
     """
 
     tokens = (to or "").split()
     if len(tokens) <= 1:
         return (to or "").strip(), ""
+    extras = tokens[1:]
+    related = tokens[0].lower() in _REL_WORDS
+    surname = not related and len(extras) >= 2 and _name_run_plausible(extras)
     keep = [tokens[0]]
     overflow: list[str] = []
-    for token in tokens[1:]:
+    for index, token in enumerate(extras):
         # Contractions are never name parts ("text John I'll be late" keeps
         # recipient "John"): without this, "I'll" is Capitalized and would
         # be absorbed into the name, mangling both recipient and body.
         contracted = "'" in token or "\u2019" in token
-        if (
-            overflow
-            or contracted
-            or not (token[:1].isupper() or token.lower() in _NAME_PARTICLES)
-        ):
+        if overflow or contracted:
             overflow.append(token)
-        else:
+            continue
+        if token[:1].isupper() or token.lower() in _NAME_PARTICLES:
             keep.append(token)
+            continue
+        # One lowercase word right after a given name is its surname.
+        if surname and index == 0:
+            keep.append(token)
+            continue
+        overflow.append(token)
     return " ".join(keep), " ".join(overflow)
 
 
@@ -436,6 +508,41 @@ def _body_is_name_tail(body: str) -> bool:
     return bool(re.fullmatch(_NAME_WORD, raw)) and raw.lower() not in _SKIP_TO
 
 
+_DEST_WORD = r"(?P<dest>\+?\d[\d\s().\-]{5,}\d|[\w.+-]+@[\w-]+(?:\.[\w-]+)+)"
+_DEST_VERB = (
+    r"(?:text|message|msg|sms|imessage|i-message|whatsapp|e-?mail|"
+    r"send(?:\s+(?:an?\s+)?"
+    r"(?:(?:whatsapp|imessage|i-message|sms|telegram|signal)\s+)?"
+    r"(?:text|message|msg|e-?mail|mail))?)"
+)
+_DEST_SEND = re.compile(
+    rf"^\s*(?:please\s+)?{_DEST_VERB}\s+(?:to\s+)?{_DEST_WORD}\s+"
+    rf"(?:that\s+|saying\s+|[:\-]\s*)?(?P<text>.+)$",
+    re.IGNORECASE,
+)
+_DEST_ONLY = re.compile(
+    rf"^\s*(?:please\s+)?{_DEST_VERB}\s+(?:to\s+)?{_DEST_WORD}\s*$",
+    re.IGNORECASE,
+)
+
+
+def _parse_destination_send(text: str) -> dict[str, Any] | None:
+    """A send whose recipient is a literal phone number or email address."""
+
+    match = _DEST_SEND.match(text or "")
+    if not match:
+        return None
+    who = match.group("dest").strip()
+    body = _clean_body(match.group("text"))
+    if not who or not body or len(body) < 2 or _KIND_ONLY_BODY.match(body):
+        return None
+    payload: dict[str, Any] = {"to": who, "text": body[:SEND_BODY_MAX]}
+    channel = detect_channel(text)
+    if channel:
+        payload["channel"] = channel
+    return payload
+
+
 _PATTERNS = (
     _LET_KNOW,
     _SEND_DELIM,
@@ -448,6 +555,10 @@ _PATTERNS = (
     _TELL_DELIM,
     _TELL,
 )
+# Verbs where the recipient is followed directly by the body ("text mom bye").
+# A lowercase one-word leftover there is a message; behind "to" ("send a
+# message to customer care") it is a second name word.
+_LOWERCASE_BODY_OK = frozenset({_TELL, _TELL_DELIM, _SEND_A, _REPLY})
 
 
 def parse_send_intent(text: str | None) -> dict[str, Any] | None:
@@ -461,6 +572,9 @@ def parse_send_intent(text: str | None) -> dict[str, Any] | None:
     core = _utterance_core(raw)
     if not core or _INQUIRY.search(core):
         return None
+    destination = _parse_destination_send(core)
+    if destination is not None:
+        return destination
     for pattern in _PATTERNS:
         match = pattern.match(core)
         if not match:
@@ -484,7 +598,13 @@ def parse_send_intent(text: str | None) -> dict[str, Any] | None:
         if len(body) < 2:
             continue
         if _body_is_name_tail(body):
-            continue
+            lowercase_word = (
+                " " not in body
+                and body[:1].islower()
+                and body.lower() not in _NAME_PARTICLES
+            )
+            if not (lowercase_word and pattern in _LOWERCASE_BODY_OK):
+                continue
         payload: dict[str, Any] = {"to": to, "text": body[:SEND_BODY_MAX]}
         channel = detect_channel(raw)
         named = match.groupdict().get("channel")
@@ -492,10 +612,25 @@ def parse_send_intent(text: str | None) -> dict[str, Any] | None:
             channel = detect_channel(named) or named.strip().lower()
         if channel:
             payload["channel"] = channel
+        else:
+            from app.ev.messaging.channels import unknown_channel
+
+            unknown = unknown_channel(raw)
+            if unknown:
+                # A channel the owner named that isn't registered must refuse
+                # at send time — never silently fall through as a message body.
+                payload["channel"] = unknown
         return payload
     loose = _loose_send_act(core)
     if loose and loose.get("text"):
-        return {k: v for k, v in loose.items() if k in {"to", "text", "channel"}}
+        result = {k: v for k, v in loose.items() if k in {"to", "text", "channel"}}
+        if "channel" not in result:
+            from app.ev.messaging.channels import unknown_channel
+
+            unknown = unknown_channel(raw)
+            if unknown:
+                result["channel"] = unknown
+        return result
     return None
 
 
@@ -547,6 +682,9 @@ def incomplete_send_recipient(text: str | None) -> str:
         if not _valid_recipient(to):
             continue
         return to
+    dest_only = _DEST_ONLY.match(hay)
+    if dest_only:
+        return dest_only.group("dest").strip()
     loose = _loose_send_act(hay)
     if loose and not loose.get("text") and _valid_recipient(str(loose.get("to") or "")):
         return str(loose.get("to") or "")
@@ -566,15 +704,43 @@ def incomplete_send(text: str | None) -> dict[str, Any] | None:
     return payload
 
 
+def answers_live_offer(text: str | None) -> bool:
+    """True when a short yes/no answers a question Evie is still waiting on.
+
+    A live offer owns the referent of a bare affirmation, so "yes" is an
+    answer to Evie and never the body of a waiting send (nor a re-arm of the
+    previous Mac goal). With no offer armed this is always False, so every
+    other utterance keeps the meaning it had before.
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    try:
+        from app.ev.continuity import is_affirmative_reply, is_negative_reply
+
+        if not (is_affirmative_reply(raw) or is_negative_reply(raw)):
+            return False
+        from app.cognitive.intent import pending_offer
+        from app.cognitive.session_store import current
+
+        return pending_offer(current()) is not None
+    except Exception:
+        return False
+
+
 def looks_like_message_body(text: str | None) -> bool:
     """True when this utterance can fill a waiting send body.
 
-    Questions, new send acts, and other jobs are not a body. A short
-    statement after Evie asked 'what should I say?' is.
+    Questions, new send acts, other jobs, and an answer to Evie's own live
+    question are not a body. A short statement after Evie asked 'what should
+    I say?' is.
     """
 
     raw = (text or "").strip()
     if not raw or len(raw) > 500:
+        return False
+    if answers_live_offer(raw):
         return False
     if _INQUIRY.search(raw):
         return False

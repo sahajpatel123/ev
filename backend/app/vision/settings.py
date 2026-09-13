@@ -20,6 +20,11 @@ class VisionSettings(BaseSettings):
     # Auto-select Apple Vision as the Darwin default when the binary exists.
     vision_evvision_auto: bool = True
 
+    # Clip ingest: recorded video upload cap and sampled keyframes per clip.
+    # Extraction shells out to ffmpeg; without it every clip degrades honestly.
+    vision_clip_max_mb: int = 64
+    vision_clip_max_frames: int = 6
+
     # Local on-device perception engines. "auto" uses ONNX when the model and
     # runtime are present, otherwise the honest deterministic double.
     vision_detect_engine: str = "auto"

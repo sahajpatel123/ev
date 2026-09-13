@@ -289,6 +289,7 @@ def phone_webrtc_session(*, device: Device | None = None, owner_name: str | None
         # Trusted phones keep evie_state_query as the Core broker and add
         # server-validated phone, perception, and Home Station tools.
         from app.device_gateway.mobile_actions.tool import phone_action_function_spec
+
         from .phone_mac import PHONE_HOME_CAPABILITY_MANIFEST
 
         manifest["home_station_capabilities"] = dict(PHONE_HOME_CAPABILITY_MANIFEST)
@@ -777,6 +778,124 @@ async def inject_look_frame(session_id: str, message: dict[str, Any]) -> None:
     await live._handle_look_frame(message)
 
 
+def _remember_phone_offer(
+    *,
+    spoken: str,
+    owner_text: str,
+    action: dict[str, Any] | None,
+    kind: str,
+) -> None:
+    """Keep a question Evie asked on the phone lane answerable next turn.
+
+    The iPhone/PWA realtime lane hands tool results straight to the speech
+    provider, so an offer spoken here never passes through the cognitive
+    kernel's handle_turn and would otherwise be stored nowhere: the owner's
+    next "yes" arrives with no referent and is answered as a topic-free
+    greeting. The exchange is always appended so the referent survives even
+    if a later offer supersedes it; the offer itself is armed only when the
+    line really asks the owner something.
+    """
+
+    line = (spoken or "").strip()
+    if not line:
+        return
+    try:
+        from app.cognitive.intent import (
+            clear_pending_offer,
+            looks_like_offer,
+            pending_offer,
+            remember_exchange,
+            set_pending_offer,
+        )
+        from app.cognitive.session_store import current
+        from app.ev.continuity import is_affirmative_reply, is_negative_reply
+
+        session = current()
+        said = str(owner_text or "").strip()
+        # This lane arms the offer itself, so it must spend it too: nothing
+        # here goes through the kernel, whose only clearer would otherwise
+        # leave an answered question armed for its whole TTL and let the next
+        # bare "yes" re-answer it.
+        if pending_offer(session) is not None and (
+            is_affirmative_reply(said) or is_negative_reply(said)
+        ):
+            clear_pending_offer(session)
+        remember_exchange(
+            session,
+            owner=said,
+            assistant=line,
+            kind=kind,
+        )
+        if looks_like_offer(line):
+            set_pending_offer(session, line, action=action)
+    except Exception as exc:  # noqa: BLE001 - continuity bookkeeping, not the action
+        # An unreadable session must never turn a completed phone action into
+        # a failure for the owner.
+        with contextlib.suppress(Exception):
+            from app.cognitive import telemetry
+
+            telemetry.note(last_error=f"phone_offer_unavailable:{type(exc).__name__}")
+
+
+def _live_offer_answer_hint(owner_text: str) -> str | None:
+    """Hand the speaker the question a short phone-lane yes/no is answering.
+
+    Realtime tool results go straight to the speech provider, so a bare "yes"
+    arrives there carrying no referent of its own: without the live offer's own
+    words the provider can only greet. Returns None whenever no live offer
+    binds the utterance, which keeps the unbound handback byte-for-byte as it
+    was.
+    """
+
+    raw = (owner_text or "").strip()
+    if not raw:
+        return None
+    try:
+        from app.cognitive.intent import continuation_readout, pending_offer
+        from app.cognitive.session_store import current
+        from app.ev.continuity import is_affirmative_reply, is_negative_reply
+
+        affirmed = is_affirmative_reply(raw)
+        if not (affirmed or is_negative_reply(raw)):
+            return None
+        session = current()
+        offer = pending_offer(session)
+        if offer is None:
+            return None
+        referent = str(offer.get("text") or "").strip()
+        if not referent:
+            return None
+        if not affirmed:
+            return (
+                f"The owner is answering your own question: \"{referent[:600]}\" "
+                f"They said \"{raw}\" — they declined. Drop that offer and "
+                "acknowledge briefly; do not ask again."
+            )
+        action = offer.get("action") if isinstance(offer.get("action"), dict) else None
+        carry = " Carry out exactly that offer now."
+        if action and action.get("tool"):
+            carry = (
+                " The offer came from "
+                f"{action.get('tool')} with {str(action.get('args') or {})[:400]} — "
+                "carry it out with that same tool, changing only what the offer "
+                "asked for."
+            )
+        readout = (
+            " Your offer was to read the artifact out: ask for the read-aloud "
+            "itself (read it out, the whole thing) — never the same short gist "
+            "again."
+            if continuation_readout(raw, session)
+            else ""
+        )
+        return (
+            f"The owner is answering your own question: \"{referent[:600]}\" "
+            f"They said \"{raw}\". Do not greet them and do not invent what "
+            f"they meant.{carry}{readout}"
+        )
+    except Exception:  # noqa: BLE001 - an unreadable ledger keeps today's handback
+        return None
+
+
 async def run_phone_tool(
     *,
     session_id: str,
@@ -836,7 +955,12 @@ async def run_phone_tool(
             # F1: turn-scoped recalled history, clearly labeled and bound to
             # this tool result only — never session-persistent.
             history = str(result.get("recalled_history") or "").strip()
-            hint = "No canonical state matched; answer the owner conversationally yourself."
+            # A short yes/no answers Evie's own live offer, and this lane has no
+            # other way to tell the provider which question that was. With no
+            # live offer this is exactly the previous hint, byte for byte.
+            hint = _live_offer_answer_hint(str(args.get("query_text") or "")) or (
+                "No canonical state matched; answer the owner conversationally yourself."
+            )
             if history:
                 hint = (
                     f"{hint}\n{history}\n"
@@ -855,6 +979,12 @@ async def run_phone_tool(
             )
         spoken = result.get("reply") or (
             "Done." if result.get("ok") else "That didn't complete."
+        )
+        _remember_phone_offer(
+            spoken=spoken,
+            owner_text=str(args.get("query_text") or ""),
+            action={"tool": "evie_state_query", "args": dict(args)},
+            kind="phone_state_query",
         )
         return compact_live_tool_json(
             {
@@ -1005,10 +1135,20 @@ async def run_phone_tool(
                 )
                 await db.commit()
                 if acted is not None:
+                    acted_spoken = str(acted.get("reply") or "")
+                    _remember_phone_offer(
+                        spoken=acted_spoken,
+                        owner_text=transcript or utterance,
+                        action={
+                            "tool": "evie_home_action",
+                            "args": {"capability": cap, "arguments": extra},
+                        },
+                        kind="phone_home_action",
+                    )
                     return compact_live_tool_json(
                         {
                             **acted,
-                            "spoken": acted.get("reply"),
+                            "spoken": acted_spoken,
                             "executed": bool(acted.get("executed")),
                             "verified": bool(acted.get("verified")),
                         }
@@ -1028,6 +1168,15 @@ async def run_phone_tool(
         spoken = broker.get("message") or (
             "Queued for Home Station." if queued else ("Done." if executed else "I could not complete that on the Mac.")
         )
+        _remember_phone_offer(
+            spoken=spoken,
+            owner_text=transcript or utterance,
+            action={
+                "tool": "evie_home_action",
+                "args": {"capability": cap, "arguments": extra},
+            },
+            kind="phone_home_action",
+        )
         return compact_live_tool_json(
             {
                 **broker,
@@ -1039,8 +1188,8 @@ async def run_phone_tool(
         )
     if name == "phone_action":
         from app.db import SessionLocal
-        from app.models import Device as DeviceRow
         from app.device_gateway.mobile_actions.tool import dispatch_phone_action
+        from app.models import Device as DeviceRow
 
         async with SessionLocal() as db:
             drow = (

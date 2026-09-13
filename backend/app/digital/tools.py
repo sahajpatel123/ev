@@ -28,6 +28,8 @@ DIGITAL_TOOL_SPECS: list[dict[str, Any]] = [
                 "service": {"type": "string", "enum": ["gmail", "contacts", "calendar", "whatsapp", "browser", "files", "phone"]},
                 "operation": {"type": "string"},
                 "args": {"type": "object"},
+                # Accepted for caller compatibility only. A flag supplied in
+                # tool arguments is never human approval and is ignored.
                 "confirmed": {"type": "boolean", "default": False},
             },
             "required": ["service", "operation"],
@@ -170,16 +172,38 @@ async def _park_digital_whatsapp(
     if not await web_available():
         return None
     display = to
+    address = ""
     try:
         from app.ev.messaging import whatsapp_web
 
-        match = await whatsapp_web.resolve(to)
+        resolved = await whatsapp_web.resolve(to)
+        match: dict[str, Any] = resolved if isinstance(resolved, dict) else {}
         if match.get("status") == "unique" and match.get("display"):
             display = str(match["display"])
+        raw_peer = match.get("peer")
+        peer: dict[str, Any] = raw_peer if isinstance(raw_peer, dict) else {}
+        address = str(peer.get("phone") or "").strip() or str(
+            match.get("chat_ref") or ""
+        ).strip()
     except Exception:
         pass
+    # Parking is only reached with an authenticated Web tab, so that is the
+    # transport the owner is approving. Without this binding the execution
+    # path has nothing to hold itself to and may re-route the send.
+    from app.ev.messaging.routing import RouteBinding, route_channel
+
+    approved_binding = RouteBinding.of(
+        route_channel("whatsapp", helper_available=False, web_available=True)
+    )
     action = await park_send(
-        session, to=to, text=text, display=display, channel="whatsapp", actor=actor
+        session,
+        to=address or to,
+        text=text,
+        display=display,
+        channel="whatsapp",
+        actor=actor,
+        route=approved_binding,
+        address=address or to,
     )
     return {
         "ok": False,
@@ -205,17 +229,19 @@ async def handle_digital_tool(session: AsyncSession, name: str, args: dict[str, 
         return owner_brief(GLOBAL_WAITING)
     if name == "digital_capabilities":
         return answer_can_you(str(args.get("q") or ""))
-    ctx = OpContext(actor=actor, session=session, autonomy=AutonomyLevel.SEND_WITH_CONFIRMATION, confirmed=bool(args.get("confirmed")))
+    # `confirmed` may arrive in the tool arguments; it is model-supplied, never
+    # human approval, so it is never authoritative here. Operations that need
+    # the owner's yes park for a spoken confirmation (see
+    # _park_digital_whatsapp) and are only executed with a confirmation the
+    # owner actually gave.
+    ctx = OpContext(actor=actor, session=session, autonomy=AutonomyLevel.SEND_WITH_CONFIRMATION, confirmed=False)
     if name == "digital_act":
         service = str(args.get("service") or "").strip().lower()
         operation = str(args.get("operation") or "").strip().lower()
         if service == "whatsapp" and operation in _WHATSAPP_WRITE_OPS:
-            # A model-supplied confirmed flag is not human approval. Park the
-            # prepared send for one spoken yes instead of autosending.
             pending = await _park_digital_whatsapp(session, args, actor=actor)
             if pending is not None:
                 return pending
-            ctx.confirmed = False
         hub = await _mac_hub_digital_act(args)
         if hub is not None:
             return hub

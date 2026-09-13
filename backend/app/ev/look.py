@@ -1316,6 +1316,8 @@ def _live_image_result(
     person_count: int | None = None,
     colors: list[str] | None = None,
     frames_summary: list[dict[str, Any]] | None = None,
+    moments: list[dict[str, Any]] | None = None,
+    transcript: str | None = None,
     keep_request: str | None = None,
 ) -> dict[str, Any]:
     if spoken:
@@ -1394,6 +1396,10 @@ def _live_image_result(
             pass
     if frames_summary:
         result["frames_summary"] = frames_summary
+    if moments:
+        result["moments"] = moments
+    if transcript:
+        result["transcript"] = transcript[:2000]
     if attachment_id:
         result["attachment_id"] = attachment_id
     hud_meta = result["hud"].get("meta") if isinstance(result.get("hud"), dict) else None
@@ -2133,9 +2139,20 @@ async def observe_camera_now(
         ocr = str(getattr(frame, "ocr_text", None) or "").strip() or None
         if ocr:
             ocr_bits.append(ocr)
+        offset_ms = getattr(frame, "captured_at_ms", None)
+        try:
+            start_s = (
+                max(0.0, float(offset_ms) / 1000.0)
+                if offset_ms is not None
+                else max(0.0, float(index) * interval)
+            )
+        except (TypeError, ValueError):
+            start_s = max(0.0, float(index) * interval)
         summaries.append(
             {
                 "sequence": index,
+                "t_start": round(start_s, 2),
+                "t_end": round(start_s + interval, 2),
                 "labels": frame_labels,
                 "colors": frame_colors,
                 "ocr_text": ocr,
@@ -2180,6 +2197,7 @@ async def observe_camera_now(
             person_count=getattr(last_frame, "person_count", None) if last_frame is not None else None,
             face_count=getattr(last_frame, "face_count", None) if last_frame is not None else None,
             frames_summary=summaries,
+            moments=summaries,
             keep_request=keep_request,
         ),
         actor=actor,
@@ -2418,6 +2436,7 @@ async def record_video_now(
     people = 0
     faces = 0
     jpeg_count = 0
+    moments: list[dict[str, Any]] = []
     for index, item in enumerate(frames):
         if item.jpeg:
             jpeg_count += 1
@@ -2432,6 +2451,8 @@ async def record_video_now(
                 t0=t0,
                 sequence=index,
             )
+        frame_labels = _frame_labels(item)
+        frame_colors = _frame_colors(item)
         labels = _frame_labels(item, extra=labels)
         colors = _frame_colors(item, extra=colors)
         people = max(people, int(getattr(item, "person_count", None) or 0))
@@ -2439,6 +2460,31 @@ async def record_video_now(
         ocr = str(getattr(item, "ocr_text", None) or "").strip()
         if ocr and ocr not in ocr_bits:
             ocr_bits.append(ocr)
+        offset_ms = getattr(item, "captured_at_ms", None)
+        try:
+            start_s = (
+                max(0.0, float(offset_ms) / 1000.0)
+                if offset_ms is not None
+                else max(0.0, float(duration) * index / max(len(frames), 1))
+            )
+        except (TypeError, ValueError):
+            start_s = max(0.0, float(duration) * index / max(len(frames), 1))
+        span = float(duration) / max(len(frames), 1)
+        moment: dict[str, Any] = {
+            "t_start": round(start_s, 2),
+            "t_end": round(start_s + span, 2),
+            "labels": frame_labels,
+            "colors": frame_colors,
+        }
+        if ocr:
+            moment["ocr_text"] = ocr[:400]
+        frame_engine = getattr(item, "engine", None)
+        if frame_engine:
+            moment["engine"] = str(frame_engine)[:32]
+        person_count = getattr(item, "person_count", None)
+        if person_count:
+            moment["person_count"] = int(person_count)
+        moments.append(moment)
     duration_s = None
     if frame.duration_ms:
         duration_s = max(frame.duration_ms / 1000.0, 0.0)
@@ -2482,6 +2528,7 @@ async def record_video_now(
             face_count=faces or getattr(frame, "face_count", None),
             person_count=people or getattr(frame, "person_count", None),
             colors=colors,
+            moments=moments,
             keep_request=keep_request,
         ),
         actor=actor,

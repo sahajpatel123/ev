@@ -275,6 +275,9 @@ def goal_from_transcript(
             if colon_channel:
                 resolved_args["channel"] = colon_channel
             resolved = ("send_message", resolved_args)
+    if resolved is not None and resolved[0] == "send_incomplete":
+        # An unfinished send is an owner question, not a capability to route.
+        resolved = None
     if resolved is not None:
         tool_name, arguments = resolved
         return ActionGoal(

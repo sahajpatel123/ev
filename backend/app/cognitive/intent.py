@@ -131,6 +131,256 @@ def clear_pending_send(session: CognitiveSession) -> CognitiveSession:
     return save(session)
 
 
+PENDING_OFFER_KEY = "pending_offer"
+PENDING_OFFER_TTL_S = 600.0
+RECENT_TURNS_KEY = "recent_turns"
+RECENT_TURNS_MAX = 6
+_RECENT_TURN_CHARS = 1200
+
+_OFFER_RE = re.compile(
+    r"\b(?:do you want me to|want me to|should i|shall i|would you like me to|"
+    r"would you like|may i|can i|should we)\b",
+    re.I,
+)
+
+
+def _read_aloud_offer(text: str) -> bool:
+    """True when the offer itself is to speak an artifact through."""
+
+    try:
+        from app.ev.spark_task import wants_readout
+
+        return bool(wants_readout(text))
+    except Exception:
+        return False
+
+
+def looks_like_offer(spoken: str | None) -> bool:
+    """True when an assistant line asks the owner to confirm a next action.
+
+    The test is on the END of the line, not its length: a mail summary that
+    runs to a paragraph and then asks "do you want me to read out the full
+    mail?" is still an offer, and capping the whole string used to throw the
+    ask away exactly when Evie had said the most.
+    """
+
+    text = (spoken or "").strip()
+    if not text:
+        return False
+    text = text[:4000]
+    tail = text[-600:]
+    if _OFFER_RE.search(tail):
+        return True
+    return text.rstrip().endswith("?")
+
+
+def set_pending_offer(
+    session: CognitiveSession,
+    spoken: str | None,
+    *,
+    action: dict[str, Any] | None = None,
+    ttl_seconds: float = PENDING_OFFER_TTL_S,
+) -> CognitiveSession:
+    """Remember an assistant offer so the next yes/no binds to it.
+
+    The offer keeps the assistant's own words (the referent a short "yes"
+    answers) plus the semantic action that produced them, so an affirmative
+    can be carried out on any channel instead of becoming a topic-free
+    greeting.
+    """
+
+    text = _scrub((spoken or "").strip())
+    if not text or not looks_like_offer(text):
+        return session
+    now = datetime.now(UTC)
+    payload: dict[str, Any] = {
+        "text": text[:2000],
+        "at": now.isoformat(),
+        "expires_at": now.timestamp() + float(ttl_seconds),
+    }
+    if isinstance(action, dict) and action.get("tool"):
+        raw_args = dict(action.get("args") or {})
+        payload["action"] = {
+            "tool": str(action.get("tool") or "")[:120],
+            "args": {
+                str(key): (_scrub(str(value)) if isinstance(value, str) else value)
+                for key, value in raw_args.items()
+            },
+        }
+    if _read_aloud_offer(text):
+        payload["readout"] = True
+    session.constraints[PENDING_OFFER_KEY] = payload
+    session.waiting = "offer_pending"
+    return save(session)
+
+
+def pending_offer(session: CognitiveSession) -> dict[str, Any] | None:
+    raw = session.constraints.get(PENDING_OFFER_KEY)
+    if not isinstance(raw, dict):
+        return None
+    text = str(raw.get("text") or "").strip()
+    if not text:
+        return None
+    try:
+        expires = raw.get("expires_at")
+        if expires is not None and datetime.now(UTC).timestamp() > float(expires):
+            return None
+    except (TypeError, ValueError):
+        pass
+    found: dict[str, Any] = {"text": text}
+    if raw.get("at"):
+        found["at"] = raw.get("at")
+    if isinstance(raw.get("action"), dict):
+        found["action"] = raw["action"]
+    if raw.get("readout"):
+        found["readout"] = True
+    return found
+
+
+def clear_pending_offer(session: CognitiveSession) -> CognitiveSession:
+    if PENDING_OFFER_KEY in session.constraints:
+        session.constraints.pop(PENDING_OFFER_KEY, None)
+        if session.waiting == "offer_pending":
+            session.waiting = ""
+        return save(session)
+    return session
+
+
+def _scrub(text: str) -> str:
+    """Redact credential-like content before it is written to durable state.
+
+    The ledger and the offer are re-injected into the model prompt on later
+    turns, and they outlive the input filter that would have redacted a
+    credential for the turn it arrived on. Scrubbing at the write keeps a
+    secret from being parked in a file and re-sent from there.
+    """
+
+    try:
+        from app.security.boundary import redact_secrets
+
+        return redact_secrets(text)
+    except Exception:  # pragma: no cover - import guard
+        return text
+
+
+def remember_exchange(
+    session: CognitiveSession,
+    *,
+    owner: str,
+    assistant: str,
+    kind: str = "",
+) -> CognitiveSession:
+    """Append one owner/Evie exchange to the durable turn ledger.
+
+    Every surface compiles its prompt from this session, so a bounded ledger
+    is what lets a bare "yes", "that one", or "read it" resolve against what
+    Evie actually just said — on voice, Mac, iPhone, PWA, or text — without a
+    bespoke per-feature state store.
+    """
+
+    said = _scrub((owner or "").strip())
+    replied = _scrub((assistant or "").strip())
+    if not said and not replied:
+        return session
+    session.recent_turns.append(
+        {
+            "owner": said[:_RECENT_TURN_CHARS],
+            "evie": replied[:_RECENT_TURN_CHARS],
+            "kind": str(kind or "")[:60],
+            "at": datetime.now(UTC).isoformat(),
+        }
+    )
+    session.recent_turns = session.recent_turns[-RECENT_TURNS_MAX:]
+    return save(session)
+
+
+def recent_exchanges(session: CognitiveSession) -> list[dict[str, Any]]:
+    rows = session.recent_turns if isinstance(session.recent_turns, list) else []
+    return [row for row in rows if isinstance(row, dict)][-RECENT_TURNS_MAX:]
+
+
+def readout_offer_live(session: CognitiveSession | None = None) -> bool:
+    """True when Evie has offered to read an artifact out and it is unanswered."""
+
+    row = session
+    if row is None:
+        try:
+            from app.cognitive.session_store import current
+
+            row = current()
+        except Exception:
+            return False
+    offer = pending_offer(row) if row is not None else None
+    return bool(offer and offer.get("readout"))
+
+
+def continuation_readout(query: str, session: CognitiveSession | None = None) -> bool:
+    """True when a short reply answers a live offer to read an artifact aloud.
+
+    The owner answers "Do you want me to read out the full mail?" with "yes".
+    That word carries no read-aloud cue of its own, so the live offer decides
+    the manner instead of the follow-up utterance.
+    """
+
+    raw = (query or "").strip()
+    if not raw:
+        return False
+    if _read_aloud_offer(raw):
+        return True
+    try:
+        from app.ev.continuity import is_affirmative_reply
+
+        if not is_affirmative_reply(raw):
+            return False
+    except Exception:
+        return False
+    row = session
+    if row is None:
+        try:
+            from app.cognitive.session_store import current
+
+            row = current()
+        except Exception:
+            return False
+    offer = pending_offer(row)
+    return bool(offer and offer.get("readout"))
+
+
+
+_SMALL_TALK_ONLY = re.compile(
+    r"^(?:"
+    r"hi|hello|hey|yo|hiya|hii|"
+    r"good\s+(?:morning|afternoon|evening|night)|"
+    r"morning|afternoon|evening|"
+    r"how\s+are\s+you|how'?s\s+it\s+going|how\s+are\s+things|"
+    r"thanks|thank\s+you|thankyou|thx|cool|nice|great|awesome|"
+    r"you\s+there|are\s+you\s+there|u\s+there|"
+    r"evie|ev"
+    r")"
+    # A greeting is short, and may name who it is aimed at: "hey there",
+    # "hi Evie", "good morning Evie".
+    r"(?:[\s,]+(?:there|evie|ev|buddy|mate|dear|sir|madam))*"
+    r"[\s,.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def is_substantive_turn(text: str) -> bool:
+    """False for greetings, pleasantries, and a bare wake word.
+
+    The Mac client sends a synthetic "Hi." when a live conversation opens.
+    Treating that as a real turn used to clear the live offer and replace it
+    with a greeting, which is exactly how the owner's "yes" ended up
+    answering "I am here, what would you like me to do?" instead of the mail
+    question Evie had just asked.
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    return not bool(_SMALL_TALK_ONLY.match(raw))
+
+
 def is_stale(session: CognitiveSession) -> bool:
     raw = str(session.updated_at or "").strip()
     if not raw:

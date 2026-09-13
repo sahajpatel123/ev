@@ -152,6 +152,15 @@ def fallback_act(utterance: str) -> ActDecision | None:
     raw = (utterance or "").strip()
     if not raw or _CHAT_RE.match(raw):
         return None
+    from app.ev.send_intent import parse_send_intent
+
+    if parse_send_intent(raw) is not None:
+        # A complete send (recipient + body) is a life message even when the
+        # body names an app ("text mansi I'll open notes in the morning"):
+        # the send verb means the app word is content, not a computer job.
+        # Must precede the file/computer checks below, which otherwise
+        # swallow the turn and the message is silently never sent.
+        return ActDecision(act="life", source="fallback")
     from app.ev.code_studio import looks_like_long_code_goal
     from app.ev.luna_code import looks_like_code_continue, looks_like_code_request
     from app.ev.spark_look import fallback_camera_action
@@ -163,8 +172,8 @@ def fallback_act(utterance: str) -> ActDecision | None:
         return ActDecision(act="look", source="fallback")
     if camera == "recall":
         return ActDecision(act="recall", source="fallback")
-    from app.search.live import is_weather_query, looks_world_knowledge
     from app.ev.tool_select import SEARCH_WEB_RE
+    from app.search.live import is_weather_query, looks_world_knowledge
 
     if is_weather_query(raw) or SEARCH_WEB_RE.search(raw) or looks_world_knowledge(raw):
         return ActDecision(act="search", source="fallback")
@@ -284,9 +293,15 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
     if act == "files":
         return _safe_live_tool("computer", {"goal": raw[:500]})
     if act == "computer":
-        from app.ev.laptop_files import looks_like_file_task, parse_file_goal
         from app.ev.desk_meaning import looks_like_desk_job, spark_desk_candidate
+        from app.ev.laptop_files import looks_like_file_task, parse_file_goal
+        from app.ev.send_intent import parse_send_intent
 
+        send = parse_send_intent(raw)
+        if send is not None:
+            # A turn labelled computer still routes its parsed send: a
+            # message is not a generic computer goal.
+            return _safe_live_tool("send_message", send)
         if (
             parse_file_goal(raw) is not None
             or looks_like_file_task(raw)
@@ -297,7 +312,13 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
         from app.ev.tool_select import resolve_live_action
 
         resolved = resolve_live_action(raw)
-        if resolved is not None and resolved[0] in {"open_app", "close_app", "open_url", "computer"}:
+        if resolved is not None and resolved[0] in {
+            "open_app",
+            "close_app",
+            "open_url",
+            "computer",
+            "send_message",
+        }:
             return _safe_live_tool(*resolved)
         return _safe_live_tool("computer", {"goal": raw[:500]})
     if act == "home":
@@ -308,9 +329,16 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
             return _safe_live_tool("home_act", parsed)
         return _safe_live_tool("home_status", {})
     if act == "life":
+        from app.ev.send_intent import parse_send_intent
         from app.ev.spark_task import last_life_job
         from app.ev.tool_select import resolve_live_action
 
+        send = parse_send_intent(raw)
+        if send is not None:
+            # A complete send owns the turn. A read/app verb inside its body
+            # ("I'll check my messages later") is message content, never a
+            # reason to read the inbox or launch an app instead.
+            return _safe_live_tool("send_message", send)
         resolved = resolve_live_action(raw)
         prior = last_life_job()
         live_names = {
@@ -340,8 +368,8 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
         desk = parse_desk_act(raw)
         if desk is not None and desk.get("channel") == "tool":
             return _safe_live_tool(str(desk["name"]), dict(desk.get("args") or {}))
-        from app.ev.laptop_files import looks_like_file_task, parse_file_goal
         from app.ev.desk_meaning import looks_like_desk_job, spark_desk_candidate
+        from app.ev.laptop_files import looks_like_file_task, parse_file_goal
 
         if (
             parse_file_goal(raw) is not None
@@ -414,7 +442,7 @@ async def _spark_decide(utterance: str) -> str | None:
             ),
             timeout=_SPARK_BUDGET_S,
         )
-    except (MuseProviderUnavailable, asyncio.TimeoutError):
+    except (TimeoutError, MuseProviderUnavailable):
         logger.info("spark_act unavailable")
         return None
     except Exception:  # noqa: BLE001 - Mini must still be able to talk

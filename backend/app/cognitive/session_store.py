@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +14,13 @@ from uuid import uuid4
 from app.config import settings
 
 _ACTIVE: CognitiveSession | None = None
+_ACTIVE_STAMP: tuple[float, int] | None = None
+
+# The session holds the owner's own words and Evie's replies, so it is a
+# private store: same 0700/0600 convention as the memory store, not the
+# default umask.
+_DIR_MODE = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR
 
 
 def _now() -> str:
@@ -21,7 +30,7 @@ def _now() -> str:
 def _path() -> Path:
     root = Path(str(getattr(settings, "storage_root", None) or "storage"))
     folder = root / "cognitive"
-    folder.mkdir(parents=True, exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True, mode=_DIR_MODE)
     return folder / "session.json"
 
 
@@ -35,6 +44,7 @@ class CognitiveSession:
     steering_version: int = 0
     plan_version: int = 0
     completed_effects: list[dict[str, Any]] = field(default_factory=list)
+    recent_turns: list[dict[str, Any]] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
     evidence_refs: list[dict[str, Any]] = field(default_factory=list)
     live_session_id: str | None = None
@@ -66,6 +76,9 @@ def _load_file() -> CognitiveSession | None:
             steering_version=int(raw.get("steering_version") or 0),
             plan_version=int(raw.get("plan_version") or 0),
             completed_effects=list(raw.get("completed_effects") or []),
+            recent_turns=[
+                row for row in (raw.get("recent_turns") or []) if isinstance(row, dict)
+            ],
             open_questions=list(raw.get("open_questions") or []),
             evidence_refs=list(raw.get("evidence_refs") or []),
             live_session_id=raw.get("live_session_id"),
@@ -77,16 +90,43 @@ def _load_file() -> CognitiveSession | None:
         return None
 
 
+def _offer_epoch(offer: Any) -> float:
+    """When an offer was asked, as epoch seconds. Missing or bad -> -inf."""
+
+    if not isinstance(offer, dict):
+        return float("-inf")
+    raw = str(offer.get("at") or "").strip()
+    if not raw:
+        return float("-inf")
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return float("-inf")
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.timestamp()
+
+
+def _file_stamp() -> tuple[float, int] | None:
+    try:
+        stat = _path().stat()
+    except OSError:
+        return None
+    return (stat.st_mtime, stat.st_size)
+
+
 def forget_live_cache() -> None:
     """Drop in-process cache so the next current() reloads durable JSON."""
 
-    global _ACTIVE
+    global _ACTIVE, _ACTIVE_STAMP
     _ACTIVE = None
+    _ACTIVE_STAMP = None
 
 
 def reset_for_tests() -> None:
-    global _ACTIVE
+    global _ACTIVE, _ACTIVE_STAMP
     _ACTIVE = None
+    _ACTIVE_STAMP = None
     path = _path()
     try:
         if path.exists():
@@ -96,22 +136,75 @@ def reset_for_tests() -> None:
 
 
 def current() -> CognitiveSession:
-    global _ACTIVE
+    """The live session, reloaded when another process has written it.
+
+    Mac Talk runs the voice edge on its own port and the API runs the kernel
+    on another; both hold this same durable session. Without the stamp check
+    an offer armed by one process is invisible to the other, and the owner's
+    "yes" arrives with no referent.
+    """
+
+    global _ACTIVE, _ACTIVE_STAMP
+    stamp = _file_stamp()
+    if _ACTIVE is not None and stamp != _ACTIVE_STAMP:
+        _ACTIVE = None
     if _ACTIVE is not None:
         return _ACTIVE
     loaded = _load_file()
     if loaded is None:
         loaded = CognitiveSession(session_id=uuid4().hex, updated_at=_now())
     _ACTIVE = loaded
+    _ACTIVE_STAMP = stamp
     return loaded
 
 
 def save(session: CognitiveSession) -> CognitiveSession:
-    global _ACTIVE
+    global _ACTIVE, _ACTIVE_STAMP
+    path = _path()
+    # Another process may have written while this one held its copy (a live
+    # voice turn on the voice edge and a typed turn on the API both do). The
+    # turn ledger only ever grows, so union it in rather than erasing the
+    # other surface's rows.
+    stale = _file_stamp() != _ACTIVE_STAMP
+    if stale:
+        from app.cognitive.intent import PENDING_OFFER_KEY, RECENT_TURNS_MAX
+
+        other = _load_file()
+        if other is not None:
+            seen = {str(row.get("at")) for row in session.recent_turns}
+            for row in other.recent_turns:
+                if str(row.get("at")) not in seen:
+                    session.recent_turns.append(row)
+            session.recent_turns.sort(key=lambda row: str(row.get("at") or ""))
+            session.recent_turns = session.recent_turns[-RECENT_TURNS_MAX:]
+            # The offer is the other field both processes touch. Ours may be
+            # older than the disk copy, so let the newer question win — and if
+            # the other process has answered ours, do not resurrect it.
+            theirs = (other.constraints or {}).get(PENDING_OFFER_KEY)
+            ours = (session.constraints or {}).get(PENDING_OFFER_KEY)
+            if theirs is not None:
+                if ours is None or _offer_epoch(theirs) > _offer_epoch(ours):
+                    session.constraints[PENDING_OFFER_KEY] = theirs
+            elif ours is not None:
+                file_written = (_file_stamp() or (0.0, 0))[0]
+                if _offer_epoch(ours) < file_written:
+                    session.constraints.pop(PENDING_OFFER_KEY, None)
+
     session.updated_at = _now()
     _ACTIVE = session
-    path = _path()
-    path.write_text(json.dumps(session.public(), indent=2, default=str), encoding="utf-8")
+    # Replace, never truncate-and-write: the other process reads this file on
+    # every turn, and a torn read silently mints a fresh session that drops
+    # the offer, the goal, and the ledger.
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(session.public(), indent=2, default=str), encoding="utf-8")
+    os.chmod(tmp, _FILE_MODE)
+    # Stamp the bytes we actually wrote, taken before the swap. Stamping the
+    # path afterwards would cache another writer's stamp against our content
+    # and `current()` would stop reloading — a wedge, not just a lost update.
+    written = tmp.stat()
+    stamp = (written.st_mtime, written.st_size)
+    os.replace(tmp, path)
+    _ACTIVE_STAMP = stamp
     return session
 
 

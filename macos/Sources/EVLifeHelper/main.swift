@@ -121,10 +121,15 @@ func quitBundle(_ bundleID: String) {
     NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.terminate()
 }
 
-func openURLForeground(_ url: URL) -> Bool {
+/// Open a URL through LaunchServices.
+///
+/// `activates` decides whether the receiving app is brought to the front.
+/// The returned flag means only that LaunchServices accepted the URL: it is
+/// never evidence that the receiving app performed any action.
+func openURL(_ url: URL, activates: Bool) -> Bool {
     let config = NSWorkspace.OpenConfiguration()
-    config.activates = true
-    config.hides = false
+    config.activates = activates
+    config.hides = !activates
     config.addsToRecentItems = false
     var opened = false
     let sema = DispatchSemaphore(value: 0)
@@ -151,23 +156,17 @@ func launchBundleForeground(_ bundleID: String) {
     _ = sema.wait(timeout: .now() + 1.5)
 }
 
-func openURLHeadless(_ url: URL) -> Bool {
-    let config = NSWorkspace.OpenConfiguration()
-    config.activates = false
-    config.hides = true
-    config.addsToRecentItems = false
-    var opened = false
-    let sema = DispatchSemaphore(value: 0)
-    NSWorkspace.shared.open(url, configuration: config) { _, err in
-        opened = err == nil
-        sema.signal()
+/// A WhatsApp destination must be an explicit phone number: an optional
+/// leading `+` followed by at least eight digits, nothing else. Names,
+/// emails, and formatted numbers are refused instead of having their letters
+/// stripped away into a different number.
+func phoneDestination(_ value: String) -> String? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let digits = trimmed.hasPrefix("+") ? trimmed.dropFirst() : Substring(trimmed)
+    guard digits.count >= 8, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else {
+        return nil
     }
-    _ = sema.wait(timeout: .now() + 2.0)
-    return opened
-}
-
-func digitsOnly(_ value: String) -> String {
-    value.filter(\.isNumber)
+    return trimmed.hasPrefix("+") ? "+" + String(digits) : String(digits)
 }
 
 func queryEncode(_ value: String) -> String {
@@ -400,41 +399,56 @@ case "whatsapp.send":
     guard let text = argumentValue("--text"), !text.isEmpty else {
         fail(.badArguments, "bad_arguments", "whatsapp.send requires --text")
     }
-    let phone = digitsOnly(recipient)
-    guard phone.count >= 8 else {
-        fail(.badArguments, "bad_arguments", "whatsapp.send --to must be a phone number")
+    let phone = phoneDestination(recipient)
+    guard let phone else {
+        fail(
+            .badArguments,
+            "bad_arguments",
+            "whatsapp.send --to must be an explicit phone number (optional leading +, then digits)"
+        )
     }
     let encoded = queryEncode(text)
+    // whatsapp:// hands the phone and text to WhatsApp itself; wa.me is the
+    // registered HTTPS fallback for a Mac without the app installed.
     let candidates = [
-        "whatsapp://send?phone=\(phone)&text=\(encoded)",
-        "https://wa.me/\(phone)?text=\(encoded)",
+        (scheme: "whatsapp", raw: "whatsapp://send?phone=\(phone)&text=\(encoded)"),
+        (scheme: "https", raw: "https://wa.me/\(phone)?text=\(encoded)"),
     ]
-    var opened = false
+    var openedScheme: String?
     launchBundleForeground("net.whatsapp.WhatsApp")
-    for raw in candidates {
-        guard let url = URL(string: raw) else { continue }
-        if openURLForeground(url) {
-            opened = true
+    for candidate in candidates {
+        guard let url = URL(string: candidate.raw) else { continue }
+        if openURL(url, activates: true) {
+            openedScheme = candidate.scheme
             break
         }
     }
-    if opened {
-        success([
-            "to": phone,
-            "channel": "whatsapp",
-            "opened": true,
-            "sent": false,
-            "headless": false,
-            "focus_stolen": true,
-            "system_ui": true,
-        ])
-    } else {
+    guard let scheme = openedScheme else {
         fail(
             .notAvailable,
             "not_available",
             "whatsapp.send could not open WhatsApp"
         )
     }
+    // LaunchServices accepted a URL. That is the whole of what this helper
+    // knows: no chat was resolved and no message was sent, so the envelope
+    // reports a compose-only result and carries the URL scheme it opened.
+    // The receiving app was activated deliberately — the owner has to finish
+    // the send in its own UI (system_ui), which takes focus.
+    success([
+        "to": phone,
+        "channel": "whatsapp",
+        "opened": true,
+        "compose_only": true,
+        "compose_evidence": [
+            "scheme": scheme,
+            "address": phone,
+            "verified_destination": false,
+        ],
+        "headless": false,
+        "focus_stolen": true,
+        "system_ui": true,
+    ])
 
 // MARK: - Mail
 
@@ -513,7 +527,7 @@ case "call.place":
     }
     // FaceTime/Phone still present their own system call UI — that is macOS,
     // not an EV window. We never activate or fall back to a focus-stealing open.
-    if openURLHeadless(url) {
+    if openURL(url, activates: false) {
         success([
             "destination": destination,
             "kind": kind,

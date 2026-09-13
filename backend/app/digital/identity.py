@@ -13,10 +13,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ev.resolve import pick_unique
+from app.ev.resolve import looks_like_destination
 from app.models import Entity
 
 _PHONE = re.compile(r"\d+")
+_WORD = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 @dataclass
@@ -51,6 +52,12 @@ def normalize_email(value: str) -> str:
 
 
 async def load_canonical_people(session: AsyncSession) -> list[PersonHit]:
+    """Canonical Entity rows as recipient identities.
+
+    A known phone number is also the WhatsApp handle (WhatsApp addresses by
+    number), so canonical people without a bridged chat ref are still
+    reachable instead of resolving to no channel at all.
+    """
     rows = (
         await session.execute(select(Entity).where(Entity.entity_type == "person"))
     ).scalars().all()
@@ -58,14 +65,20 @@ async def load_canonical_people(session: AsyncSession) -> list[PersonHit]:
     for row in rows:
         aliases = list(row.aliases or [])
         emails = [normalize_email(a) for a in aliases if "@" in str(a)]
-        phones = [normalize_phone(a) for a in aliases if normalize_phone(str(a))]
+        phones = [p for p in (normalize_phone(a) for a in aliases) if len(p) >= 8]
+        channels = ["memory"]
+        if phones:
+            channels.append("whatsapp")
+        if emails:
+            channels.append("email")
         hits.append(
             PersonHit(
                 entity_id=str(row.id),
                 name=row.name,
                 emails=emails,
-                phones=[p for p in phones if len(p) >= 8],
-                channels=["memory"],
+                phones=phones,
+                whatsapp_ref=phones[0] if phones else None,
+                channels=channels,
             )
         )
     return hits
@@ -124,50 +137,152 @@ def merge_external(canonical: list[PersonHit], external: list[dict[str, Any]]) -
     return out
 
 
-def resolve_person(query: str, people: list[PersonHit]) -> dict[str, Any]:
-    """Never guess a consequential recipient. Unique or clarify."""
+def _identity_tokens(value: str) -> tuple[str, ...]:
+    """Whole-word tokens of a name/handle; stop words carry no identity."""
+    return tuple(
+        part.lower() for part in _WORD.findall(str(value or "")) if part.lower() not in _PERSON_STOP
+    )
+
+
+def _handle_matches(query: str, person: PersonHit) -> bool:
+    """True only when the destination is exactly one of this person's handles."""
+    email = normalize_email(query)
+    if "@" in email:
+        return email in {normalize_email(item) for item in person.emails}
+    phone = normalize_phone(query)
+    if len(phone) >= 7:
+        known = {normalize_phone(item) for item in person.phones}
+        known.add(normalize_phone(person.whatsapp_ref or ""))
+        return phone in known
+    raw = (query or "").strip().lower()
+    handles = {
+        str(person.whatsapp_ref or "").strip().lower(),
+        str(person.google_contact_id or "").strip().lower(),
+    }
+    return raw in handles - {""}
+
+
+def _name_tier(query_tokens: tuple[str, ...], person: PersonHit) -> int:
+    """Whole-token identity tier; 0 means not this person.
+
+    ``john`` scores 0 against ``Johnson`` — a substring is not an identity.
+    3 is the exact name, 2 a leading run ("Rahul" for "Rahul Shah"), 1 a run
+    inside a longer name ("Shah" for "Rahul Shah").
+    """
+    name = _identity_tokens(person.name)
+    if not name or not query_tokens:
+        return 0
+    if query_tokens == name:
+        return 3
+    if query_tokens == name[: len(query_tokens)]:
+        return 2
+    width = len(query_tokens)
+    for start in range(len(name) - width + 1):
+        if name[start : start + width] == query_tokens:
+            return 1
+    return 0
+
+
+def _verdict(found: list[PersonHit]) -> dict[str, Any]:
+    """One candidate is unique; several stay a question, never a winner."""
+    seen: set[str] = set()
+    distinct: list[PersonHit] = []
+    for person in found:
+        if person.entity_id:
+            if person.entity_id in seen:
+                continue
+            seen.add(person.entity_id)
+        distinct.append(person)
+    if not distinct:
+        return {"status": "none", "person": None, "sent": False}
+    if len(distinct) > 1:
+        return {
+            "status": "ambiguous",
+            "candidates": [person.as_public() for person in distinct[:4]],
+            "sent": False,
+        }
+    return {"status": "unique", "person": distinct[0].as_public(), "sent": False}
+
+
+def _match(query: str, people: list[PersonHit]) -> dict[str, Any]:
+    """Strict identity verdict for one spoken recipient. Never a first hit."""
+    who = (query or "").strip()
+    if not who or not people:
+        return {"status": "none", "person": None, "sent": False}
+    exact = [person for person in people if _handle_matches(who, person)]
+    if exact:
+        return _verdict(exact)
+    if looks_like_destination(who):
+        return {"status": "none", "person": None, "sent": False}
+    tokens = _identity_tokens(who)
+    if not tokens:
+        return {"status": "none", "person": None, "sent": False}
+    tiers: dict[int, list[PersonHit]] = {}
+    for person in people:
+        tier = _name_tier(tokens, person)
+        if tier:
+            tiers.setdefault(tier, []).append(person)
+    if not tiers:
+        return {"status": "none", "person": None, "sent": False}
+    return _verdict(tiers[max(tiers)])
+
+
+def _explicit_handle_verdict(query: str, people: list[PersonHit]) -> dict[str, Any] | None:
+    """A destination spoken in full outranks any name mention in the same ask."""
+    for chunk in re.split(r"[\s,;]+", (query or "").strip()):
+        token = chunk.strip(".,;:!?()[]<>\"'")
+        if not token or not looks_like_destination(token):
+            continue
+        verdict = _verdict([person for person in people if _handle_matches(token, person)])
+        if verdict["status"] != "none":
+            return verdict
+    return None
+
+
+def resolve_person(query: str, people: list[PersonHit] | None = None) -> dict[str, Any]:
+    """Never guess a consequential recipient. Unique or clarify.
+
+    Pure matching, no I/O: callers holding a loaded roster pay nothing, and an
+    empty roster honestly answers "no identity known". When the canonical store
+    still has to be read, call :func:`resolve_person_live` instead.
+    """
+    roster = [person for person in (people or []) if person is not None]
+    if not roster:
+        return {"status": "none", "person": None, "sent": False}
+    raw = (query or "").strip()
+    explicit = _explicit_handle_verdict(raw, roster)
+    if explicit is not None:
+        return explicit
     cleaned = extract_person_query(query) or re.sub(
         r"(?i)^(message|email|e-mail|whatsapp|contact|call|text|ping|send)\s+",
         "",
         query or "",
     ).strip() or (query or "")
-    match = pick_unique(
-        cleaned,
-        people,
-        labels=lambda p: [p.name, *p.emails, *p.phones, p.whatsapp_ref or "", p.google_contact_id or ""],
-    )
-    if match.status == "none" and cleaned != query:
-        match = pick_unique(
-            query,
-            people,
-            labels=lambda p: [p.name, *p.emails, *p.phones, p.whatsapp_ref or "", p.google_contact_id or ""],
-        )
-    if match.status == "unique" and match.item is not None:
-        # Shared first name with another candidate is still ambiguous.
-        token = cleaned.split()[0].lower() if cleaned else ""
-        same = [p for p in people if token and token in (p.name or "").lower().split()[:1]]
-        if len(same) > 1:
-            return {
-                "status": "ambiguous",
-                "candidates": [c.as_public() for c in same[:4]],
-                "sent": False,
-            }
-        return {"status": "unique", "person": match.item.as_public(), "sent": False}
-    if match.status == "ambiguous":
-        return {
-            "status": "ambiguous",
-            "candidates": [c.as_public() for c in match.candidates],
-            "sent": False,
-        }
-    token = cleaned.split()[0] if cleaned else ""
-    same = [p for p in people if token and token.lower() in (p.name or "").lower()]
-    if len(same) > 1:
-        return {
-            "status": "ambiguous",
-            "candidates": [c.as_public() for c in same[:4]],
-            "sent": False,
-        }
-    return {"status": "none", "person": None, "sent": False}
+    match = _match(cleaned, roster)
+    if match["status"] == "none" and cleaned != raw:
+        match = _match(raw, roster)
+    return match
+
+
+async def resolve_person_live(
+    query: str,
+    session: AsyncSession,
+    people: list[PersonHit] | None = None,
+    *,
+    external: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Fetch-and-resolve in one call: the send seam when a session exists.
+
+    Loads canonical people only when none are supplied, then bridges any
+    Google/WhatsApp rows onto them. No import-time or eager DB work: the query
+    runs exactly once, at call time.
+    """
+    hits = [person for person in (people or []) if person is not None]
+    if not hits:
+        hits = await load_canonical_people(session)
+    if external:
+        hits = merge_external(hits, external)
+    return resolve_person(query, hits)
 
 
 def preferred_channel(person: dict[str, Any], *, explicit: str | None = None, prefs: dict[str, str] | None = None) -> str | None:

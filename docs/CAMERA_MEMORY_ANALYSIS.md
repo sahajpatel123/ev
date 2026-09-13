@@ -536,3 +536,149 @@ retrieval), 18 (clients) and 20 (gates/ops).
 - The production API on :8000 is currently running an older provider profile
   (`chat=xai`, `live=openai-realtime` in `/v1/health`) than the tree's Spark
   wiring; the running process was left untouched (deployment law).
+
+---
+
+# PART II — IMPLEMENTED (2026-09-10)
+
+Everything in this part was built, run, and measured after the analysis above.
+The analysis is kept intact so the before/after is auditable.
+
+## 13. What now exists
+
+### 13.1 Honest capture (no fabricated sightings)
+
+- **Grounding gate** — `app/memory/visual.py::_visual_grounding`. A
+  `camera.observation` is written only when something was actually observed:
+  a stored attachment, delivered frame bytes (`encoded_bytes > 0`), on-device
+  facts (labels/colours/OCR), or a local perception pass. `image_ready` alone is
+  no longer evidence. The mind's own spoken sentence can no longer become a
+  "scene" (that is how 42% of pre-existing rows carried conversation).
+- **Keep intent, not a fake sighting** —
+  `_persist_ungrounded_keep_intent`. When the owner says "memorise this" and no
+  frame arrived, the row is `kind="keep_intent"`, `grounded=false`, text
+  *"…no camera frame was stored, so I have no grounded description of it."*
+  It answers "what did I ask you to remember?" and is excluded from content
+  recall. It also blocks later chat speech from binding to an older keep.
+- **Truthful media kinds** — `_phone_media_kind` in
+  `app/device_gateway/phone_look.py` plus `_clip_evidence` in `app/ev/look.py`.
+  A browser that can only send stills is stored as `burst`; a declared `video`
+  without `has_clip` is downgraded. The clip instruction text now follows the
+  client's real capability (`camera_runtime._clip_instruction`).
+
+### 13.2 Real video: clip ingest with a moment timeline and a transcript
+
+- **`POST /v1/vision/clip`** (new, additive) — multipart clip upload, device/
+  actor scoped, content-type allowlist (`video/*` + known suffixes), chunked
+  read with a size cap (`EV_VISION_CLIP_MAX_MB`, default 64 MB → HTTP 413).
+- **`app/vision/clips.py`** (new) — `ffprobe` duration/streams, keyframes on a
+  deterministic even time grid (`EV_VISION_CLIP_MAX_FRAMES`, default 6, capped at
+  6), and a 16 kHz mono WAV for ASR. No ffmpeg ⇒ `degraded=true` with **no**
+  frames (never invented).
+- **`app/memory/clip.py`** (new) — stores the clip as an attachment, reads each
+  keyframe through the local OCR provider (Apple Vision), transcribes the audio
+  through the configured **local** ASR (`faster_whisper` here), and writes one
+  `camera.observation` with `media_kind="clip"`, `moments[]`
+  (`t_start`/`t_end`/labels/OCR), `moment_count`, `transcript`, and the stored
+  `attachment_id`. Nothing is sent to a hosted model.
+- **Clip memories are not stills** — the still-identity/keep heuristics are
+  skipped for `clip`/`burst` media (`clip_like` in `persist_visual_observation`),
+  which previously produced recall lines like *"That's a clip."*
+- **Retention** — new `media_clip` compliance category (`EV_RETENTION_MEDIA_CLIP_DAYS`,
+  default 30 days) and `compliance/erasure.py::sweep_clip_media`, wired into the
+  retention sweep. Raw pixels expire; the derived observation/timeline/transcript
+  (`EVENT`) stay until the owner deletes them.
+
+### 13.3 Phone bursts (the iPhone story without MediaRecorder)
+
+- **PWA** (`backend/clients/pwa/app.js`): `videoRecordingSupported()` feature-
+  detects `MediaRecorder` + a video mime; `cameraHardware()` reports
+  `media: {still, burst, video, clip_mime?}` to the device registry. A `record`
+  request records a real clip when the browser can, otherwise captures
+  `BURST_FRAMES` (5) timestamped stills (`captured_at_ms`) and posts them
+  truthfully (`media_kind="burst"`, `has_clip=false`, `clip_supported=false`).
+- **Server burst path** — `POST /v1/device-gateway/camera/result` accepts
+  `frames[]`, and `ingest_phone_frame` reads each frame into `moments[]` on the
+  same observation shape as a clip (media kind stays `burst`).
+- **Capability truth** — `endpoint_profile.merge_endpoint_profile` sanitises
+  `hardware.media`, `camera_media_capabilities(device)` exposes it, and
+  `resolve_camera_target` returns it, so the server only advertises recording a
+  target can honour.
+
+### 13.4 Native clients: the Mac records a real clip and uploads it
+
+- `ios/EVClient` — `EVAPIClient.ingestClip(...)` (multipart → `/v1/vision/clip`)
+  + `EvieClipIngest`/`EvieClipMoment` models; `sendLookFrame` gained
+  `hasClip`/`clipSupported`/`capturedAtMs`.
+- `macos/Sources/EV/LiveConversation.swift` and
+  `ios/EVClient/.../LiveVoiceCoordinator.swift` — after `recordClip`, the `.mov`
+  is uploaded in a background task (non-fatal; posters still ship) and every
+  poster frame declares `has_clip: true` + its clip offset.
+- Playback — `GET /v1/device-gateway/looks/{look_id}/media` serves only the
+  media referenced by that observation, to a trusted (non-sandbox) device, with
+  HTTP 410 when retention removed it. The PWA Look history lists clip duration,
+  moment count and transcript, and plays/view it inline via a blob URL.
+
+### 13.5 Verification surfaces
+
+- `make camera-memory-check` (new) — PWA syntax + JS tests, `EVClientCheck`,
+  and the field's pytest suites (204 tests).
+- New eval gate `camera_memory` in `app/scripts/eval_gates.py` (five checks):
+  every visual observation is grounded; clip claims carry stored media; a
+  generated clip is sampled into ≥2 moments; pixels are kept; the observation is
+  grounded. Skips honestly (never passes) when ffmpeg is absent.
+- New tests: `tests/test_clip_ingest.py` (13), `tests/test_visual_honesty.py`
+  (13), `backend/clients/pwa/tests/camera_capture_test.js` (5), plus one
+  `EVClientCheck` case.
+- `make update-contract` regenerated the locked manifest: **477 → 479 paths,
+  518 → 520 operations** (the two new routes).
+
+## 14. Measured results (this machine, 2026-09-10)
+
+| Measurement | Value | How |
+| --- | --- | --- |
+| 8 s 1280×720 clip, OCR only | **1,192 ms** end to end | `ingest_clip` with `EV_VISION_PROVIDER=apple_vision`, 6 frames + 6 moments, clip 190 KB |
+| 4 s clip **with speech**, local ASR | **2,092 ms** end to end | `EV_VOICE_ASR_PROVIDER=faster_whisper`; `transcript_degraded=false` |
+| Transcript read back from a real recording | *"Evie, this is my test clip, I am holding a blue mug."* | `say`-generated speech muxed into a clip, transcribed locally |
+| Memory written for that clip | *"I recorded a video clip. Sampled 6 moments across the clip. Duration 4 seconds. Speech in the clip: …"* | `events.content.text` |
+| Recall of the clip | 2 hits for "what did I say about the mug" | `search_visual_observations` |
+| Field test suites | **204 passed** | `make camera-memory-check` |
+| Eval gates | **18/19 passed, 2 skipped**, `camera_memory` 5/5 | `python -m app.scripts.eval_gates` |
+| Alembic | unchanged (no schema change: clip metadata rides in existing JSON columns) | — |
+| ruff / mypy | no new errors from this work (ruff 157→160, mypy 299→299; the ruff delta is other in-flight files) | `ruff check app clients tests`, `mypy app clients` |
+
+## 15. Still not real (ranked)
+
+1. **No background or always-on capture.** Every look/burst/clip remains an
+   explicit owner request (FLEET_LAW §10/§11). Nothing records without a request.
+2. **iOS Safari still cannot record video on the shipped path** — it is a burst
+   of stills. The real-clip path exists in the optional native track. A physical
+   two-iPhone pass has not been run.
+3. **App-level frame re-reading is not wired.** Keyframes are re-extractable
+   deterministically from the stored clip, but no tool yet answers "look again at
+   that clip" by re-sampling it; `_enrich_keep_from_attachment` still only serves
+   kept stills.
+4. **No visual (image) vector index.** Clip/still retrieval is text: the moment
+   timeline, OCR and transcript. Similarity search over frames is not built.
+5. **Burst frames are not stored as pixels** (only read into moments). The
+   observation keeps the text timeline; there is no poster attachment per burst.
+6. **Mac Photos / Takeout libraries are still filename-only**; no opt-in pixel
+   analysis of the owner's existing library.
+7. **Clip play is a plain HTTP GET** (no Range/streaming), fine at these sizes
+   but not a media server.
+8. **Retention sweep is manual/scheduled by the existing job**, not verified
+   against a real 30-day-old clip on disk.
+
+## 16. Pre-existing failures observed (not from this work)
+
+- `eval_gates` `restore_drill` and 6 tests in `tests/test_backup.py` fail with
+  `403 CONFIRMATION_REQUIRED` — destructive backup endpoints now require a
+  confirmation token from `POST /backup/restore/prepare`, and that gate/test
+  predates the change. Owner of that area should update the gate.
+- `tests/test_iphone_capability_plan.py::test_muse_kernel_turn_receipt_lets_spark_decide`
+  fails on the kernel reply text ("I can't think that through right now…"),
+  unrelated to vision.
+- `tests/test_gateway_xai.py::test_slow_tool_does_not_block_pcm_event_pump`
+  fails in the realtime bridge (parallel work on `app/voice/live/grok_voice.py`).
+- Ear/voice/wake modules fail with `ModuleNotFoundError` in this checkout
+  (missing optional audio deps in the current environment).

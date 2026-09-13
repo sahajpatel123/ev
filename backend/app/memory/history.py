@@ -370,9 +370,9 @@ async def recall_history(
             "spoken": "I need a question to search your history.",
         }
     k = max(1, min(int(k or 8), 20))
+    from app.memory.life_archive.desk import answer_desk_query, is_chat_desk_query
     from app.memory.life_archive.locate import is_chat_summary_query
     from app.memory.life_archive.sessions import summarize_chat_for_query
-    from app.memory.life_archive.desk import answer_desk_query, is_chat_desk_query
 
     if is_chat_desk_query(query):
         desk = await answer_desk_query(session, query)

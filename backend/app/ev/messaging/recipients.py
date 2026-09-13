@@ -21,8 +21,26 @@ from app.ev.resolve import ambiguous_spoken, looks_like_destination
 RecipientStatus = Literal["direct", "unique", "ambiguous", "none"]
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+# A dialable value: an optional +, then digits with the usual phone
+# separators. Anything else (a display name, a handle, an emoji-laden
+# WhatsApp pushname) is not an address and must never stand in as one.
+_DIALABLE_RE = re.compile(r"^\+?[\d][\d\s\-().]{5,}$")
 UNIQUE_SCORE = 0.8
 UNIQUE_GAP = 0.1
+
+
+def dialable_number(value: object) -> str:
+    """The value when it is really a phone number, else an empty string.
+
+    Contacts and WhatsApp chat rows both carry human strings in fields named
+    like numbers. Adopting one of those as an address is how an approved
+    message reaches the wrong place, so the shape is checked here once.
+    """
+
+    text = str(value or "").strip()
+    if not text or not _DIALABLE_RE.match(text):
+        return ""
+    return text if len(re.sub(r"\D", "", text)) >= 7 else ""
 
 
 @dataclass(frozen=True)
@@ -126,8 +144,9 @@ def _contact_scores(query: str, matches: Sequence[dict[str, Any]]) -> list[tuple
 
 def _phones(row: dict[str, Any]) -> tuple[str, ...]:
     values = [str(item).strip() for item in (row.get("phone_numbers") or []) if str(item).strip()]
-    usable = [value for value in values if len(re.sub(r"\D", "", value)) >= 7]
-    return tuple(usable or values)
+    # Only real numbers count. Falling back to the raw field is how a display
+    # name became the approved destination of a send.
+    return tuple(dialable for dialable in (dialable_number(value) for value in values) if dialable)
 
 
 def _emails(row: dict[str, Any]) -> tuple[str, ...]:

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 
-from app.memory.life_archive.locate import CALL_HISTORY_RE, life_channel
 from app.ev.continuity import classify_memory_intent
 from app.ev.send_intent import parse_send_intent
+from app.memory.life_archive.locate import CALL_HISTORY_RE, life_channel
 from app.schemas import ToolSelectionResponse
 from app.search.live import is_weather_query, looks_world_knowledge
 
@@ -567,6 +567,11 @@ def select_tool(message: str) -> ToolSelectionResponse:
     if TEXT_PHRASE_RE.search(message) or parse_send_intent(message):
         add("send_message", 6, "The message asks to send a text/message.")
         add("resolve_contact", 4, "Life sends should resolve the recipient first.")
+    from app.ev.in_app import parse_in_app_intent
+
+    in_app_item = parse_in_app_intent(message)
+    if in_app_item is not None:
+        add("open_in_app", 14, "The owner asked to open a specific item inside an app.")
     from app.memory.visual import wants_keep_visible as _keep_from_sight
 
     if (
@@ -723,8 +728,8 @@ def select_tool(message: str) -> ToolSelectionResponse:
         lowered,
     ):
         add("home_act", 9, "The owner asked to lock a door or move the garage.")
-    from app.memory.room import looks_like_object_locate
     from app.ev.edith import looks_like_twin_query
+    from app.memory.room import looks_like_object_locate
 
     if looks_like_twin_query(message):
         add("search_memory", 12, "The owner asked to rewind who they were.")
@@ -839,8 +844,8 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_quiet_hours", 8, "The owner is setting quiet hours.")
     if "what just happened" in lowered:
         add("list_callouts", 6, "The owner asked what just happened.")
-    from app.memory.life_archive.locate import classify_shelf, is_owner_history_query
     from app.memory.life_archive.desk import is_chat_desk_query
+    from app.memory.life_archive.locate import classify_shelf, is_owner_history_query
 
     if is_chat_desk_query(message) and not _is_app_window_command(message):
         add("recall_history", 12, "The owner asked the WhatsApp correspondence desk.")
@@ -1007,6 +1012,11 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         return None
     from app.ev.laptop_files import looks_like_file_task
     from app.ev.luna_code import looks_like_code_request
+
+    # Memorize-from-sight is a look, not a file/code goal, even if the
+    # utterance also names a folder or a book file. First-try "look at
+    # what I'm holding" is the same job — Mini must not refuse it.
+    from app.ev.spark_look import fallback_camera_action
     from app.memory.visual import (
         is_keep_recall_query,
         is_visual_recall_query,
@@ -1014,14 +1024,16 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         wants_keep_visible,
     )
 
-    # Memorize-from-sight is a look, not a file/code goal, even if the
-    # utterance also names a folder or a book file. First-try "look at
-    # what I'm holding" is the same job — Mini must not refuse it.
-    from app.ev.spark_look import fallback_camera_action
-
     camera = fallback_camera_action(text)
     if wants_keep_visible(text) or wants_held_object_look(text):
         return "look", {"prompt": text[:400], "focus": "auto"}
+    # "open John's chat in WhatsApp" is an in-app item action, not an app
+    # launch and not a recall read. Checked before open_app/recall routing.
+    from app.ev.in_app import parse_in_app_intent
+
+    in_app_item = parse_in_app_intent(text)
+    if in_app_item is not None:
+        return "open_in_app", in_app_item.as_args()
     if REMINDER_LIST_RE.search(text):
         return "list_reminders", {}
     cancel_reminder = REMINDER_CANCEL_RE.search(text)
@@ -1267,4 +1279,28 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
                 "kind": "auto",
             }
         return name, {}
+    if name == "send_message":
+        # The phrase regex can name a send the tight grammar cannot finish
+        # ("message mom", "send a WhatsApp message"). Falling out of here as
+        # None is how that turn dies: Spark reads None as "chat" and the send
+        # neither runs nor gets an honest ask. Hand the caller the missing
+        # piece instead. "send_incomplete" is deliberately NOT in
+        # LIVE_VOICE_TOOLS: a consumer that has not learned it must still
+        # treat this turn as unhandled rather than dispatch it as a tool.
+        send = parse_send_intent(text)
+        if send:
+            return "send_message", send
+        from app.ev.send_intent import incomplete_send
+
+        partial = incomplete_send(text) or {}
+        to = str(partial.get("to") or "").strip()
+        payload = {
+            "to": to,
+            "text": "",
+            "missing": "body" if to else "recipient",
+        }
+        channel = str(partial.get("channel") or "").strip()
+        if channel:
+            payload["channel"] = channel
+        return "send_incomplete", payload
     return None

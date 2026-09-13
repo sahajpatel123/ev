@@ -571,6 +571,11 @@ async def approve_action(
             actor=actor,
             decision="approve",
             reason=data.reason if data else None,
+            # Same proof the caller presented here must travel with the resume
+            # dispatch, or a device-token approve of a parked send degrades to
+            # an unknown-device denial after the row was marked approved.
+            device_id=ctx.device_id,
+            reverify_token=x_ev_reverify,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None
@@ -611,6 +616,7 @@ async def execute_action(
     data: ActionDecisionRequest | None = None,
     session: AsyncSession = Depends(get_session),
     ctx: ActorContext = Depends(require_reverification("runtime.action")),
+    x_ev_reverify: str | None = Header(default=None, alias="X-EV-Reverify"),
 ) -> ApprovedActionOut:
     actor = ctx.actor
     try:
@@ -619,6 +625,11 @@ async def execute_action(
             action_id,
             actor=actor,
             result=data.result if data else None,
+            # Device identity comes from the authenticated actor context, never
+            # the request body: a device actor dispatched with device_id=None is
+            # denied as an "unknown device" after the row was already approved.
+            device_id=ctx.device_id,
+            reverify_token=x_ev_reverify,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from None

@@ -58,7 +58,9 @@ _COMPLETE_INTENT = re.compile(
     r"look(?:\s+up)?|set|tell me|is it|are you)\b",
     re.IGNORECASE,
 )
-#: Words that are not turns at all: thinking sounds, acknowledgements, "yes".
+#: Words that are not turns on their own: thinking sounds, acknowledgements,
+#: and bare "yes"/"no" — which *are* a turn while Evie is waiting on an offer
+#: (see ``is_non_turn``).
 _NON_TURN = re.compile(
     r"^(?:hmm+|uh+|um+|mm+|mhm|uh huh|yeah|yes|yep|no|nope|ok|okay|right|"
     r"got it|sure|wow|oh|aha|ah)\W*$",
@@ -136,9 +138,40 @@ def pause_class(text: str | None) -> str:
     return "thinking"
 
 
+def _answers_live_offer(text: str | None) -> bool:
+    """True when a bare yes/no answers the offer Evie has just spoken.
+
+    "yes" on its own is a thinking sound only while nothing is waiting on it.
+    When Evie has just asked "do you want me to read out the full mail?", the
+    same word is the owner's answer — the runtime must respond to it instead of
+    dropping the turn and replying to nothing.
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    try:
+        from app.cognitive.intent import pending_offer
+        from app.cognitive.session_store import current
+        from app.ev.continuity import is_affirmative_reply, is_negative_reply
+
+        if not (is_affirmative_reply(raw) or is_negative_reply(raw)):
+            return False
+        return pending_offer(current()) is not None
+    except Exception:  # noqa: BLE001 - session/grammar unavailable → old rule
+        return False
+
+
 def is_non_turn(text: str | None) -> bool:
-    """True when the (partial) transcript is a thinking sound, not a turn."""
-    return bool(_NON_TURN.match((text or "").strip()))
+    """True when the (partial) transcript is a thinking sound, not a turn.
+
+    Context-aware: a bare yes/no stops being a thinking sound while an offer
+    from Evie is live, because then it is the owner's answer.
+    """
+
+    if not _NON_TURN.match((text or "").strip()):
+        return False
+    return not _answers_live_offer(text)
 
 
 class TurnTakingPolicy:

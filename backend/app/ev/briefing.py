@@ -35,6 +35,7 @@ WRITE_TOOLS = frozenset(
         "open_url",
         "open_app",
         "close_app",
+        "open_in_app",
         "set_reminder",
         "present",
         "code",
@@ -289,6 +290,11 @@ def infer_write_args(name: str, message: str) -> dict[str, Any] | None:
         if not body:
             return None
         return {"title": "EVIE", "body": body[:4000]}
+    if name == "open_in_app":
+        from app.ev.in_app import parse_in_app_intent
+
+        parsed = parse_in_app_intent(message)
+        return parsed.as_args() if parsed is not None else None
     if name == "code":
         body = (message or "").strip()
         if not body:
@@ -312,13 +318,27 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
     tool-loop fallback so OpenCode-shaped replies still hit ``dispatch``.
     """
 
+    from app.ev.in_app import parse_in_app_intent
+    from app.ev.tool_select import _CALL_INQUIRY_RE, CALL_HISTORY_RE
+
+    in_app = parse_in_app_intent(message)
+    if in_app is not None and "open_in_app" in offered:
+        return [
+            ToolCall(
+                id="plan-open-in-app",
+                name="open_in_app",
+                arguments=in_app.as_args(),
+            )
+        ]
     selection = select_tool(message)
     life = detect_life_action(message)
     want: str | None = None
     if life == "send_message" or selection.selected == "send_message":
         want = "send_message"
     elif life == "phone_call" or selection.selected == "place_call":
-        want = "place_call"
+        # "Did I call Mom" is a call-history read, not a request to dial.
+        if not CALL_HISTORY_RE.search(message) and not _CALL_INQUIRY_RE.search(message):
+            want = "place_call"
     elif life == "reminder" or selection.selected == "set_reminder":
         want = "set_reminder"
     elif selection.selected == "open_url":
@@ -541,11 +561,27 @@ def _prefetch_names(message: str) -> list[str]:
     # resolved from the WhatsApp chat list, not by an Apple Contacts
     # prefetch that would say "not in your contacts".
     whatsapp_send = _whatsapp_send(infer_write_args("send_message", message) or {})
+    from app.ev.in_app import parse_in_app_intent
+    from app.ev.tool_select import _is_app_window_command
+
+    in_app_item = parse_in_app_intent(message)
+    # An open/close command is not a mailbox read, and an incomplete send
+    # ("email Mum") is a body prompt — neither should fire a live bridge read.
+    from app.ev.send_intent import incomplete_send_recipient
+
+    opening = in_app_item is not None or _is_app_window_command(message)
+    incomplete = bool(incomplete_send_recipient(message))
     names: list[str] = []
     for name in (selection.selected, *selection.alternatives):
         if name in OWNER_PROFILE_TOOLS:
             continue
         if name in WRITE_TOOLS:
+            continue
+        if opening and name in {"list_messages", "list_mail", "get_upcoming_alerts"}:
+            continue
+        if incomplete and name in {"list_messages", "list_mail"}:
+            continue
+        if name == "recall_history" and in_app_item is not None:
             continue
         if name == "resolve_contact" and whatsapp_send:
             continue

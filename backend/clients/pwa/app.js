@@ -1870,11 +1870,73 @@ async function refreshLooks() {
       const when = todayTime(look.occurred_at);
       const text = look.summary || (look.scene ? "Saw " + look.scene : "A look");
       li.textContent = (when ? when + " · " : "") + text;
+      if (look.has_media && look.media_url) {
+        const row = document.createElement("div");
+        row.className = "look-media";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary";
+        const isClip = String(look.media_kind || "") === "clip" || String(look.media_kind || "") === "video";
+        button.textContent = isClip
+          ? "Play clip" + (look.duration_s ? " · " + Math.round(look.duration_s) + "s" : "")
+          : "View image";
+        button.addEventListener("click", () => toggleLookMedia(li, button, look));
+        row.appendChild(button);
+        if (look.moment_count) {
+          const note = document.createElement("span");
+          note.className = "quiet";
+          note.textContent = " · " + look.moment_count + " moments";
+          row.appendChild(note);
+        }
+        li.appendChild(row);
+      }
+      if (look.transcript) {
+        const transcript = document.createElement("p");
+        transcript.className = "quiet";
+        transcript.textContent = "Speech: " + look.transcript;
+        li.appendChild(transcript);
+      }
       if (list) list.appendChild(li);
     });
     textOf(meta, looks.length + " look" + (looks.length === 1 ? "" : "s") + " recorded");
   } catch (err) {
     textOf(meta, "Look history unavailable: " + String(err.message || err));
+  }
+}
+
+async function toggleLookMedia(li, button, look) {
+  const existing = li.querySelector("video, img");
+  if (existing) {
+    if (existing.src && existing.src.indexOf("blob:") === 0) URL.revokeObjectURL(existing.src);
+    existing.remove();
+    button.textContent = String(look.media_kind || "") === "clip" ? "Play clip" : "View image";
+    return;
+  }
+  button.disabled = true;
+  const label = button.textContent;
+  button.textContent = "Loading…";
+  try {
+    const response = await fetch(look.media_url, {
+      headers: state.deviceToken ? { Authorization: "Bearer " + state.deviceToken } : {},
+    });
+    if (!response.ok) {
+      throw new Error(response.status === 410 ? "The stored media was deleted by retention." : "Media unavailable.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const isClip = String(look.media_kind || "") === "clip" || String(look.media_kind || "") === "video";
+    const node = document.createElement(isClip ? "video" : "img");
+    node.src = url;
+    node.controls = isClip;
+    node.playsInline = true;
+    node.className = "look-media-view";
+    li.appendChild(node);
+    button.textContent = "Close";
+  } catch (err) {
+    button.textContent = label;
+    textOf($("looks-meta"), String(err.message || err));
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -2845,13 +2907,48 @@ function paintCameraRole() {
 }
 
 function cameraHardware() {
-  if (state.cameraRole === "pro") {
-    return { camera_quality: "pro", camera_preference_rank: 0, provenance: "owner_declared" };
+  const base = (function () {
+    if (state.cameraRole === "pro") {
+      return { camera_quality: "pro", camera_preference_rank: 0, provenance: "owner_declared" };
+    }
+    if (state.cameraRole === "standard") {
+      return { camera_quality: "standard", camera_preference_rank: 10, provenance: "owner_declared" };
+    }
+    return { camera_quality: "unknown", camera_preference_rank: 50, provenance: "undeclared" };
+  })();
+  // Media capability is a browser fact, reported so the server never offers
+  // recording this phone cannot honour. Safari on iOS usually cannot record
+  // video from a live camera stream; when it cannot, we send timestamped stills.
+  const media = {
+    still: true,
+    burst: true,
+    video: videoRecordingSupported(),
+  };
+  const mime = preferredClipMime();
+  if (mime) media.clip_mime = mime;
+  return Object.assign(base, { media: media });
+}
+
+const CLIP_MIME_CANDIDATES = [
+  "video/mp4;codecs=h264",
+  "video/mp4",
+  "video/webm;codecs=vp8",
+  "video/webm",
+];
+
+function preferredClipMime() {
+  if (typeof window.MediaRecorder === "undefined") return null;
+  if (typeof window.MediaRecorder.isTypeSupported !== "function") return null;
+  for (let i = 0; i < CLIP_MIME_CANDIDATES.length; i += 1) {
+    if (window.MediaRecorder.isTypeSupported(CLIP_MIME_CANDIDATES[i])) {
+      return CLIP_MIME_CANDIDATES[i];
+    }
   }
-  if (state.cameraRole === "standard") {
-    return { camera_quality: "standard", camera_preference_rank: 10, provenance: "owner_declared" };
-  }
-  return { camera_quality: "unknown", camera_preference_rank: 50, provenance: "undeclared" };
+  return null;
+}
+
+function videoRecordingSupported() {
+  return preferredClipMime() !== null;
 }
 
 function refreshInstallHint() {
@@ -3199,17 +3296,82 @@ async function sendText(text, requestIdOverride) {
   return body;
 }
 
+const CLIP_CAPTURE_SECONDS = 4;
+const BURST_FRAMES = 5;
+const BURST_GAP_MS = 750;
+
+function isRecordAction(action) {
+  const value = String(action || "").toLowerCase();
+  return value === "record" || value === "record_clip" || value === "record_video";
+}
+
+function cameraCopyFor(action) {
+  if (!isRecordAction(action)) return "Opening camera";
+  return videoRecordingSupported()
+    ? "Recording a short clip on this phone"
+    : "Capturing a short sequence of still frames (this browser cannot record video)";
+}
+
+async function grabStill(video, canvas) {
+  await new Promise((r) => requestAnimationFrame(r));
+  canvas.width = Math.min(video.videoWidth || 640, 1280);
+  canvas.height = Math.min(video.videoHeight || 480, 720);
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+}
+
+/** Record a real clip with MediaRecorder when this browser supports it. */
+async function recordClipBlob(stream) {
+  const mime = preferredClipMime();
+  if (!mime || typeof window.MediaRecorder === "undefined") return null;
+  let recorder;
+  try {
+    recorder = new MediaRecorder(stream, { mimeType: mime });
+  } catch (_err) {
+    return null;
+  }
+  const chunks = [];
+  const done = new Promise((resolve) => { recorder.onstop = resolve; });
+  recorder.ondataavailable = (event) => {
+    if (event.data && event.data.size) chunks.push(event.data);
+  };
+  recorder.start(250);
+  const posters = [];
+  const canvas = document.createElement("canvas");
+  const wanted = BURST_FRAMES;
+  for (let index = 0; index < wanted; index += 1) {
+    await new Promise((r) => setTimeout(r, (CLIP_CAPTURE_SECONDS * 1000) / wanted));
+    try {
+      posters.push(await grabStill(streamVideo(), canvas));
+    } catch (_err) {
+      break;
+    }
+  }
+  if (recorder.state !== "inactive") recorder.stop();
+  await done;
+  if (!chunks.length) return null;
+  return { blob: new Blob(chunks, { type: mime }), posters: posters };
+}
+
+let _clipVideoEl = null;
+function streamVideo() {
+  return _clipVideoEl;
+}
+
 async function captureCamera(body, facing) {
   const action = (body && (body.camera_action || body.action)) || "look_once";
+  const wantsClip = isRecordAction(action);
   const generation = (state._roomCameraGeneration || 0) + 1;
   state._roomCameraGeneration = generation;
   showSheet("camera-sheet", true);
-  textOf($("camera-copy"), action === "record_clip" ? "Capturing a still image · video clips are not supported here" : "Opening camera");
+  textOf($("camera-copy"), cameraCopyFor(action));
   setMood("Camera");
   const video = $("preview");
   const canvas = $("snap");
   let stream;
   let jpeg;
+  let clip = null;
+  let burst = [];
   try {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: { ideal: facing || "environment" }, width: { max: 1280 }, height: { max: 720 } },
@@ -3219,16 +3381,22 @@ async function captureCamera(body, facing) {
     video.srcObject = stream;
     video.hidden = false;
     await video.play();
-    if (action === "record_clip") {
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (wantsClip) {
+      _clipVideoEl = video;
+      clip = await recordClipBlob(stream);
+      _clipVideoEl = null;
+      if (generation !== state._roomCameraGeneration) throw new Error("Camera cancelled.");
+      if (clip && clip.posters.length) {
+        burst = clip.posters;
+        jpeg = clip.posters[Math.floor(clip.posters.length / 2)] || clip.posters[0];
+      } else {
+        // Honest fallback: timestamped stills, never called a video.
+        burst = await captureBurst(video, canvas, generation);
+        jpeg = burst.length ? burst[Math.floor(burst.length / 2)] : null;
+      }
     } else {
-      await new Promise((r) => requestAnimationFrame(r));
+      jpeg = await grabStill(video, canvas);
     }
-    if (generation !== state._roomCameraGeneration) throw new Error("Camera cancelled.");
-    canvas.width = Math.min(video.videoWidth || 640, 1280);
-    canvas.height = Math.min(video.videoHeight || 480, 720);
-    canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-    jpeg = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
   } finally {
     if (stream) stream.getTracks().forEach((t) => t.stop());
     if (generation === state._roomCameraGeneration) {
@@ -3237,23 +3405,123 @@ async function captureCamera(body, facing) {
       showSheet("camera-sheet", false);
     }
   }
+  const hasClip = !!(clip && clip.blob);
   if (body && body.camera_request_id) {
-    const receipt = await api("/v1/device-gateway/camera/result", {
-      method: "POST",
-      body: JSON.stringify({ request_id: body.camera_request_id, jpeg_b64: jpeg, action: action }),
-    });
-    if (!receipt || !receipt.ok) throw new Error("Camera upload failed. Try Look again.");
-    const vision = receipt.vision || {};
-    const description = vision.spoken || vision.description || vision.caption || vision.summary || receipt.ocr_text;
-    state.caption = typeof description === "string" && description.trim()
-      ? description
-      : "Image received. " + (receipt.vision ? "No description was returned." : "Visual analysis is unavailable for this phone’s current access.");
-    if (description) pushHistory("evie", state.caption);
-    showCameraStatus(receipt.persisted_to_memory_os ? "image saved to memory" : "image received · not saved to personal memory");
+    if (hasClip) {
+      await uploadClip({
+        requestId: body.camera_request_id,
+        blob: clip.blob,
+        durationMs: CLIP_CAPTURE_SECONDS * 1000,
+        posters: burst,
+        action: action,
+      });
+    } else {
+      const images = burst.length ? burst : [jpeg];
+      const receipt = await postCameraFrames({
+        requestId: body.camera_request_id,
+        images: images.filter(Boolean),
+        action: action,
+        mediaKind: burst.length > 1 ? "burst" : "frame",
+        hasClip: false,
+      });
+      applyCameraReceipt(receipt);
+    }
   }
   if (state.talking) setMood("Listening");
   else setMood("Ready");
   return jpeg;
+}
+
+async function captureBurst(video, canvas, generation) {
+  const frames = [];
+  for (let index = 0; index < BURST_FRAMES; index += 1) {
+    if (generation !== state._roomCameraGeneration) break;
+    frames.push(await grabStill(video, canvas));
+    if (index + 1 < BURST_FRAMES) {
+      await new Promise((r) => setTimeout(r, BURST_GAP_MS));
+    }
+  }
+  return frames;
+}
+
+async function postCameraFrames({ requestId, images, action, mediaKind, hasClip }) {
+  const clipSupported = videoRecordingSupported();
+  const total = images.length;
+  const span = mediaKind === "burst" ? CLIP_CAPTURE_SECONDS * 1000 : 0;
+  for (let index = 0; index < total; index += 1) {
+    const capturedAt = total > 1 ? Math.round((span * index) / (total - 1)) : 0;
+    const payload = {
+      request_id: requestId,
+      jpeg_b64: images[index],
+      action: action,
+      media_kind: mediaKind,
+      has_clip: !!hasClip,
+      clip_supported: clipSupported,
+      captured_at_ms: capturedAt,
+      sequence: index,
+      last: index === total - 1,
+    };
+    if (index === total - 1) {
+      const receipt = await api("/v1/device-gateway/camera/result", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        _timeoutMs: 45000,
+      });
+      if (!receipt || !receipt.ok) throw new Error("Camera upload failed. Try Look again.");
+      return receipt;
+    }
+    // Non-final frames only need to reach the server; failures are non-fatal.
+    await api("/v1/device-gateway/camera/result", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      _timeoutMs: 45000,
+    }).catch(() => null);
+  }
+  return null;
+}
+
+async function uploadClip({ requestId, blob, durationMs, posters, action }) {
+  const form = new FormData();
+  form.append("file", blob, "ev-clip." + (blob.type.indexOf("webm") >= 0 ? "webm" : "mp4"));
+  form.append("duration_ms", String(durationMs));
+  form.append("request_id", requestId);
+  form.append("analyze", "true");
+  const receipt = await api("/v1/vision/clip", {
+    method: "POST",
+    body: form,
+    headers: {},
+    _timeoutMs: 90000,
+  });
+  const spoken = (receipt && receipt.spoken) || "Clip stored.";
+  state.caption = spoken;
+  pushHistory("evie", spoken);
+  showCameraStatus(
+    receipt && receipt.frames
+      ? "clip saved to memory · " + receipt.frames + " moments"
+      : "clip saved to memory"
+  );
+  // Posters ride along as the live frame for the same request, so the pending
+  // request resolves with what the camera actually saw.
+  if (posters && posters.length) {
+    await postCameraFrames({
+      requestId: requestId,
+      images: posters,
+      action: action,
+      mediaKind: "video",
+      hasClip: true,
+    }).catch(() => null);
+  }
+}
+
+function applyCameraReceipt(receipt) {
+  if (!receipt) return;
+  const vision = receipt.vision || {};
+  const description = vision.spoken || vision.description || vision.caption || vision.summary || receipt.ocr_text;
+  state.caption = typeof description === "string" && description.trim()
+    ? description
+    : "Image received. " + (receipt.vision ? "No description was returned." : "Visual analysis is unavailable for this phone’s current access.");
+  if (description) pushHistory("evie", state.caption);
+  showCameraStatus(receipt.persisted_to_memory_os ? "image saved to memory" : "image received · not saved to personal memory");
 }
 
 async function waitForCameraReceipt(body) {

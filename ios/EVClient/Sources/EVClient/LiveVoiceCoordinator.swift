@@ -219,15 +219,25 @@ public final class LiveVoiceCoordinator: ObservableObject {
     }
 
     public func confirmHold() {
-        guard !confirmingHud, let card = hudCard, card.isApprovalHold,
-              let name = card.holdToolName, !name.isEmpty else { return }
+        guard !confirmingHud, let card = hudCard, card.isApprovalHold else { return }
         confirmingHud = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.confirmingHud = false }
+            // A confirmation tap may only resolve the parked action the owner was
+            // shown. Re-dispatching the tool here would re-resolve the transport
+            // and recipient at send time and run them unconfirmed.
+            guard let actionId = card.holdActionId, !actionId.isEmpty else {
+                self.lastError =
+                    "That request has no parked action on the server, so there is nothing to approve. Ask me again and I’ll start a fresh one."
+                return
+            }
             if EVLifeBiometric.isAvailable {
+                let label = card.holdToolName.flatMap {
+                    $0.isEmpty ? nil : $0.replacingOccurrences(of: "_", with: " ")
+                } ?? "this action"
                 let ok = await EVLifeBiometric.confirmLifeAction(
-                    reason: "Confirm \(name.replacingOccurrences(of: "_", with: " "))"
+                    reason: "Confirm \(label)"
                 )
                 guard ok else {
                     self.lastError = "Confirmation cancelled"
@@ -235,36 +245,20 @@ public final class LiveVoiceCoordinator: ObservableObject {
                 }
             }
             do {
-                if let actionId = card.holdActionId, !actionId.isEmpty {
-                    let proof = try? await self.client?.issueReverification(
-                        purpose: "runtime.action",
-                        voiceSessionId: self.sessionId
-                    )
-                    let response = try await self.client?.approveAction(
-                        id: actionId,
-                        reverifyToken: proof?.token
-                    )
-                    if response?.status == "executed" || response?.status == "approved" {
-                        self.lastError = nil
-                        self.hudCard = nil
-                    } else {
-                        self.lastError = response?.error ?? "Confirmation failed"
-                    }
-                    return
-                }
-                var arguments = card.holdArguments
-                arguments["confirm"] = true
-                let response = try await self.client?.dispatchTool(
-                    name: name,
-                    arguments: arguments,
-                    confirm: true,
-                    allowSensitive: true
+                let proof = try? await self.client?.issueReverification(
+                    purpose: "runtime.action",
+                    voiceSessionId: self.sessionId
                 )
-                if response?.ok == true {
+                let response = try await self.client?.approveAction(
+                    id: actionId,
+                    reverifyToken: proof?.token
+                )
+                if response?.status == "executed" || response?.status == "approved" {
                     self.lastError = nil
                     self.hudCard = nil
                 } else {
-                    self.lastError = response?.error ?? "Confirmation failed"
+                    self.lastError =
+                        response?.error ?? "Confirmation failed. The action was not executed."
                 }
             } catch {
                 self.lastError = Self.renderLiveError(error)
@@ -595,6 +589,9 @@ public final class LiveVoiceCoordinator: ObservableObject {
             let seconds = TimeInterval(durationMs ?? 8000) / 1000
             let clip = try await CameraManager.shared.recordClip(duration: seconds)
             let posters = clip.posterJPEGs
+            // Real clip bytes go to Home Station so the recording becomes a
+            // durable, sampleable memory. Non-fatal: posters still ship.
+            uploadRecordedClip(clip: clip, requestId: requestId)
             if posters.isEmpty {
                 connection.sendLookFrame(
                     requestId: requestId,
@@ -616,7 +613,10 @@ public final class LiveVoiceCoordinator: ObservableObject {
                     colors: clip.colors,
                     savedPath: clip.savedPath,
                     mediaKind: "video",
-                    clipDurationMs: Int(clip.duration * 1000)
+                    clipDurationMs: Int(clip.duration * 1000),
+                    hasClip: true,
+                    clipSupported: true,
+                    capturedAtMs: 0
                 )
             } else {
                 for (index, jpeg) in posters.enumerated() {
@@ -641,7 +641,12 @@ public final class LiveVoiceCoordinator: ObservableObject {
                         colors: clip.colors,
                         savedPath: clip.savedPath,
                         mediaKind: "video",
-                        clipDurationMs: Int(clip.duration * 1000)
+                        clipDurationMs: Int(clip.duration * 1000),
+                        hasClip: true,
+                        clipSupported: true,
+                        capturedAtMs: Int(
+                            Double(index) / Double(max(posters.count, 1)) * clip.duration * 1000
+                        )
                     )
                 }
             }
@@ -661,6 +666,31 @@ public final class LiveVoiceCoordinator: ObservableObject {
             )
         }
 #endif
+    }
+
+    /// Upload one recorded clip for server-side sampling. Never blocks the turn.
+    private func uploadRecordedClip(clip: CameraManager.Clip, requestId: String?) {
+        guard let client, let data = try? Data(contentsOf: clip.fileURL), !data.isEmpty else {
+            return
+        }
+        let ext = clip.fileURL.pathExtension.lowercased()
+        let contentType = ext == "mp4" ? "video/mp4" : "video/quicktime"
+        let filename = clip.fileURL.lastPathComponent
+        let durationMs = Int(clip.duration * 1000)
+        Task { [weak self] in
+            do {
+                _ = try await client.ingestClip(
+                    filename: filename,
+                    contentType: contentType,
+                    data: data,
+                    durationMs: durationMs,
+                    requestId: requestId,
+                    deviceID: self?.deviceId
+                )
+            } catch {
+                // Posters are already on their way; the clip upload is best-effort.
+            }
+        }
     }
 
     private func uploadCameraMedia(

@@ -88,6 +88,8 @@ class LookFrame:
     # produce stills only (Safari PWA burst). ``None`` = older client, unknown.
     has_clip: bool | None = None
     clip_supported: bool | None = None
+    # Offset of this frame inside the recorded clip/burst, in milliseconds.
+    captured_at_ms: int | None = None
 
 
 @dataclass
@@ -122,6 +124,10 @@ class CameraReadiness:
     camera_name: str | None = None
     device_id: str | None = None
     session_id: str | None = None
+    # Client-declared media capability. ``None`` means the client never said,
+    # and the safe default is "unknown" — never "yes".
+    clip_capable: bool | None = None
+    burst_capable: bool | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -136,6 +142,8 @@ class CameraReadiness:
             "camera_name": self.camera_name,
             "device_id": self.device_id,
             "session_id": self.session_id,
+            "clip_capable": self.clip_capable,
+            "burst_capable": self.burst_capable,
             "model_image_path_ready": bool(
                 self.capture_ready and self.realtime_image_input_ready
             ),
@@ -320,6 +328,7 @@ def parse_look_frame_meta(message: dict[str, Any]) -> dict[str, Any]:
         "duration_ms": _int("duration_ms") or _int("clip_duration_ms"),
         "has_clip": _bool("has_clip") if "has_clip" in message else _bool("clip_ready"),
         "clip_supported": _bool("clip_supported"),
+        "captured_at_ms": _int("captured_at_ms") or _int("captured_ms"),
     }
 
 
@@ -488,7 +497,24 @@ def readiness_from_camera_state(
         camera_name=str(raw.get("camera_name") or raw.get("device_name") or "") or None,
         device_id=str(raw.get("device_id") or device_id or "") or None,
         session_id=session_id,
+        clip_capable=_optional_bool(raw.get("clip_supported")),
+        burst_capable=_optional_bool(raw.get("burst_supported")),
     )
+
+
+def _optional_bool(value: Any) -> bool | None:
+    """Tri-state client declaration: True / False / unknown (None)."""
+
+    if value is None or isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 
 def overlay_vision_entry(entry: dict[str, Any], readiness: CameraReadiness) -> dict[str, Any]:
@@ -575,10 +601,39 @@ def camera_operator_line(readiness: CameraReadiness | dict[str, Any] | None) -> 
     )
 
 
+def _clip_instruction(raw: dict[str, Any]) -> str:
+    """Advertise recording only as far as the connected camera can honour it.
+
+    ``clip_capable``/``burst_capable`` are client declarations. ``None`` means
+    the client never said (legacy path) — only then do we keep the historical
+    wording, because the native clients do record real clips.
+    """
+
+    clip = raw.get("clip_capable")
+    burst = raw.get("burst_capable")
+    if clip is True:
+        return "If they ask to record a video or film something, call record_video."
+    if clip is False and burst is True:
+        return (
+            "This camera can capture a short sequence of still frames, not video: "
+            "if they ask to record a video or film something, call record_video, "
+            "then describe the frames and say plainly that it is a still sequence, "
+            "not a video."
+        )
+    if clip is False and burst is not True:
+        return (
+            "Recording is not available on the connected camera: if they ask to "
+            "record a video or film something, say that plainly, offer a photo "
+            "with capture_photo instead, and never claim a recording was made."
+        )
+    return "If they ask to record a video or film something, call record_video."
+
+
 def camera_model_instructions(readiness: CameraReadiness | dict[str, Any] | None) -> str:
     raw = readiness.as_dict() if isinstance(readiness, CameraReadiness) else dict(readiness or {})
     available = bool(raw.get("capture_ready") and raw.get("realtime_image_input_ready"))
     line = camera_operator_line(raw)
+    clip_line = _clip_instruction(raw)
     if available:
         return (
             f"{line} If answering requires seeing the room, a person, clothing, "
@@ -593,7 +648,7 @@ def camera_model_instructions(readiness: CameraReadiness | dict[str, Any] | None
             "call look — that is computer. If the "
             "owner asks to take a photo, picture, or selfie of the room, call "
             "capture_photo. "
-            "If they ask to record a video or film something, call record_video. "
+            f"{clip_line} "
             "Do not open the Camera app for those jobs. Do not guess. Do not "
             "claim you cannot see. After look, capture_photo, record_video, or "
             "observe_camera returns, attached images are already in the "

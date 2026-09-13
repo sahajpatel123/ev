@@ -644,7 +644,7 @@ async def _rewrite_with_model(
             )
             if drafted:
                 return drafted
-        except (MuseProviderUnavailable, TimeoutError, asyncio.TimeoutError, Exception):
+        except (MuseProviderUnavailable, TimeoutError, Exception):
             pass
     provider_name = (getattr(settings, "chat_provider", None) or "").strip().lower()
     if provider_name in {"", "echo", "mock"}:
@@ -653,7 +653,7 @@ async def _rewrite_with_model(
         from app.gateway.providers import get_chat_provider
 
         return await _chat(get_chat_provider())
-    except (MuseProviderUnavailable, TimeoutError, asyncio.TimeoutError, Exception):
+    except (MuseProviderUnavailable, TimeoutError, Exception):
         return None
 
 

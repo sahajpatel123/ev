@@ -68,39 +68,46 @@ async def _duplicate_event_id(
     *,
     title: str,
     start: str,
-    integration: Integration | None = None,
+    integration: Integration,
 ) -> str | None:
-    wanted_title = title
-    wanted_start = start
-    rows = list(
-        (
+    """Existing id only when the near-duplicate is on the calendar being written.
+
+    The probe is scoped to the target integration: its own live channel and its
+    own stored event ledger. Scanning every calendar event in the database can
+    match an unrelated feed, and skipping the create on that basis would tell
+    the owner the event is already on a calendar it never reached.
+    """
+    wanted_calendar = str((integration.config or {}).get("calendar_id") or "")
+    candidates: list[dict] = []
+    if integration.live_channel_id is not None:
+        rows = (
             await session.execute(
                 select(LiveEvent)
-                .where(LiveEvent.event_type == "calendar.event.updated")
+                .where(
+                    LiveEvent.channel_id == integration.live_channel_id,
+                    LiveEvent.event_type == "calendar.event.updated",
+                )
                 .order_by(LiveEvent.occurred_at.desc())
                 .limit(80)
             )
         ).scalars().all()
-    )
-    for row in rows:
-        payload = row.payload or {}
-        summary = str(payload.get("summary") or payload.get("title") or "")
-        start_at = payload.get("start") or payload.get("starts_at")
-        event_id = payload.get("id") or payload.get("event_id")
-        if event_id and is_near_duplicate(
-            title=wanted_title, start=wanted_start, other_title=summary, other_start=start_at
-        ):
-            return str(event_id)
-    events: list[dict] = []
-    if integration is not None:
-        stored = (integration.config or {}).get("events")
-        if isinstance(stored, list):
-            events.extend(item for item in stored if isinstance(item, dict))
-    for existing in events:
+        for row in rows:
+            payload = row.payload
+            if not isinstance(payload, dict):
+                continue
+            event_calendar = str(payload.get("calendar_id") or "")
+            if wanted_calendar and event_calendar and event_calendar != wanted_calendar:
+                # Another calendar inside the same integration feed.
+                continue
+            candidates.append(payload)
+    stored = (integration.config or {}).get("events")
+    if isinstance(stored, list):
+        candidates.extend(item for item in stored if isinstance(item, dict))
+    for existing in candidates:
         event_id = existing.get("id") or existing.get("event_id")
         if event_id and is_near_duplicate(
-            title=wanted_title,
-            start=wanted_start,
+            title=title,
+            start=start,
             other_title=str(existing.get("summary") or existing.get("title") or ""),
             other_start=existing.get("start") or existing.get("starts_at"),
         ):
@@ -131,8 +138,16 @@ async def calendar_add(
     replayed = await prior_result(session, name="calendar_add", key=key)
     if replayed is not None:
         return replayed
-    duplicate_id = await _duplicate_event_id(
-        session, title=title, start=start, integration=None
+    integration = await _calendar_integration(session)
+    # The duplicate probe is scoped to the integration this write targets: an
+    # unscoped scan can match an event from another feed and then skip the
+    # create while telling the owner it is already on their calendar.
+    duplicate_id = (
+        await _duplicate_event_id(
+            session, title=title, start=start, integration=integration
+        )
+        if integration is not None
+        else None
     )
     if duplicate_id:
         evidence = evidence_base(
@@ -160,7 +175,6 @@ async def calendar_add(
             "error": "confirm_required",
             "spoken": f"Confirm to add {title} to the calendar.",
         }
-    integration = await _calendar_integration(session)
     if integration is None:
         return {
             "ok": False,
@@ -174,29 +188,6 @@ async def calendar_add(
             "error": "write_scope_required",
             "spoken": "I need a calendar write re-consent before I can create events.",
         }
-    duplicate_id = await _duplicate_event_id(
-        session, title=title, start=start, integration=integration
-    )
-    if duplicate_id:
-        evidence = evidence_base(
-            source="calendar",
-            accepted=True,
-            observed=True,
-            now=now,
-            event_id=duplicate_id,
-            duplicate=True,
-        )
-        result = {
-            "ok": True,
-            "event_id": duplicate_id,
-            "duplicate": True,
-            "spoken": f"{title} is already on the calendar.",
-            "evidence": {"id": duplicate_id, **evidence},
-        }
-        await record_actuator(
-            session, name="calendar_add", actor=actor, key=key, result=result, target=title
-        )
-        return result
     from app.integrations import service as integration_service
     from app.integrations.adapters import registry
 
@@ -337,11 +328,14 @@ async def ticket_hold(
 ) -> dict:
     url = ticket_search_url(query)
     hold_title = title or f"Ticket hold: {query}"
-    calendar = None
+    calendar: dict | None = None
+    calendar_ok = True
     if start and end:
         # A ticket hold may add a calendar entry, but that nested write must
         # re-enter the canonical tool/policy path instead of calling the
-        # calendar adapter directly from this convenience helper.
+        # calendar adapter directly from this convenience helper. It is not
+        # pre-confirmed here: the calendar write's own confirmation gate
+        # decides, and its outcome is reported below instead of assumed.
         from app.ev.tools import dispatch
 
         calendar_call = await dispatch(
@@ -352,19 +346,49 @@ async def ticket_hold(
                 "start": start,
                 "end": end,
                 "location": url,
-                "confirm": True,
             },
             actor=actor,
             allow_sensitive=True,
             channel="action",
             request_id=f"ticket-hold:{fingerprint('ticket_hold', query, start, end)}",
         )
-        calendar = calendar_call.result if isinstance(calendar_call.result, dict) else {
-            "ok": calendar_call.ok,
-            "error": calendar_call.error,
-        }
-        if not calendar_call.ok or not calendar.get("ok", True):
-            calendar = {"ok": False, "hold": "search_only", "error": calendar.get("error")}
+        nested = calendar_call.result
+        calendar = dict(nested) if isinstance(nested, dict) else {}
+        calendar_ok = bool(calendar_call.ok) and bool(calendar.get("ok", True))
+        calendar["ok"] = calendar_ok
+        if not calendar_ok:
+            calendar.setdefault("hold", "search_only")
+            if not calendar.get("error"):
+                calendar["error"] = calendar_call.error or "calendar_write_failed"
+    nested_error = str((calendar or {}).get("error") or "")
+    needs_confirmation = nested_error in {"confirm_required", "confirmation_required"}
+    spoken = f"I drafted a ticket search for {query}. I did not buy anything."
+    if calendar is not None:
+        if calendar_ok and calendar.get("duplicate"):
+            spoken = (
+                f"I drafted a ticket search for {query}. The hold is already on your "
+                "calendar. I did not buy anything."
+            )
+        elif calendar_ok:
+            spoken = (
+                f"I drafted a ticket search for {query} and added the hold to your "
+                "calendar. I did not buy anything."
+            )
+        elif needs_confirmation:
+            spoken = (
+                f"I drafted a ticket search for {query}, but I need your confirmation "
+                "before I add the hold to your calendar. I did not buy anything."
+            )
+        else:
+            reason = str(calendar.get("spoken") or "").strip()
+            detail = f" {reason}" if reason else ""
+            spoken = (
+                f"I drafted a ticket search for {query}, but I could not add the hold to "
+                f"your calendar.{detail} I did not buy anything."
+            )
+    details: dict = {"query": query, "url": url, "price": price}
+    if calendar is not None:
+        details["calendar"] = calendar
     await log_access(
         session,
         actor=actor,
@@ -372,17 +396,22 @@ async def ticket_hold(
         endpoint="tool:ticket_hold",
         resource_type="ticket",
         resource_ids=[],
-        details={"query": query, "url": url, "price": price},
+        details=details,
     )
-    return {
-        "ok": True,
+    result = {
+        "ok": calendar_ok,
         "url": url,
         "price": price,
         "draft": True,
         "purchased": False,
         "calendar": calendar,
-        "spoken": f"I drafted a ticket search for {query}. I did not buy anything.",
+        "spoken": spoken,
     }
+    if calendar is not None and not calendar_ok:
+        result["error"] = (
+            "calendar_hold_confirm_required" if needs_confirmation else "calendar_hold_failed"
+        )
+    return result
 
 
 async def ticket_buy(

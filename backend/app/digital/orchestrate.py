@@ -210,8 +210,11 @@ async def _mac_whatsapp_read(text: str, name: str) -> dict[str, Any] | None:
 async def _mac_whatsapp_send(text: str, name: str) -> dict[str, Any] | None:
     """Mac hub WhatsApp send via EVLifeHelper. None when hub off/unresolvable.
 
-    The helper opens WhatsApp compose with the text ready — it does NOT tap
-    send. Spoken is honest about that. No Chrome tab needed.
+    ``name`` is the recipient the caller already resolved; it is never
+    re-derived from the utterance here, so the person addressed is the one
+    that was resolved and shown. The helper opens WhatsApp compose with the
+    text ready — it does NOT tap send. Spoken is honest about that. No
+    Chrome tab needed.
     """
     try:
         from app.ev.apps import discover_life_helper_path
@@ -233,11 +236,8 @@ async def _mac_whatsapp_send(text: str, name: str) -> dict[str, Any] | None:
             from app.ev.send_intent import parse_send_intent
 
             send = parse_send_intent(text)
-            if send:
-                if str(send.get("to") or "").strip():
-                    who = str(send["to"]).strip()
-                if str(send.get("text") or "").strip():
-                    body_early = str(send["text"]).strip()
+            if send and str(send.get("text") or "").strip():
+                body_early = str(send["text"]).strip()
         except Exception:
             pass
         if not who:
@@ -466,17 +466,25 @@ async def _gmail_path(text: str, ask: str, resolved: dict[str, Any], ctx: OpCont
     }
 
 
+# Whole-token floor for a resolved WhatsApp chat. Substring hits score 0.0
+# ("John" never reaches "Johnson"), so a loose match is refused, not sent to.
+_WHATSAPP_MATCH_MIN = 0.8
+
+
 async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) -> dict[str, Any]:
     person = resolved.get("person") or {}
+    # A resolved contact is a stable identity and outranks a regex on the
+    # owner's own words; the utterance grammar is only the fallback.
     name = person.get("name") or _extract_person_name(text)
-    try:
-        from app.ev.send_intent import parse_send_intent
+    if not name:
+        try:
+            from app.ev.send_intent import parse_send_intent
 
-        _send = parse_send_intent(text)
-        if _send and str(_send.get("to") or "").strip():
-            name = str(_send["to"]).strip()
-    except Exception:
-        pass
+            _send = parse_send_intent(text)
+            if _send and str(_send.get("to") or "").strip():
+                name = str(_send["to"]).strip()
+        except Exception:
+            pass
     ask_early = compile_semantic_owner_ask(text)
     explicit_early = ask_early in {"send", "reply"} or bool(
         re.search(r"(?i)\b(send|reply|reroute|forward)\b", text)
@@ -504,8 +512,61 @@ async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) ->
             return mac
     found = await execute("whatsapp", "resolve_chat", {"query": name}, ctx=ctx)
     if found.status == OpStatus.CLARIFY:
-        return {"kind": "whatsapp", "status": "CLARIFY", "sent": False, "clarify": found.clarify}
-    chat_ref = (found.payload.get("chat") or {}).get("chat_ref")
+        from app.ev.resolve import ambiguous_spoken, candidate_names
+
+        candidates = candidate_names(
+            found.clarify or [],
+            name_of=lambda row: str((row or {}).get("name") or (row or {}).get("chat_ref") or ""),
+        )
+        if found.error == "ambiguous" and candidates:
+            return {
+                "kind": "whatsapp",
+                "status": OpStatus.CLARIFY.value,
+                "sent": False,
+                "candidates": candidates,
+                "clarify": found.clarify,
+                "spoken": ambiguous_spoken("WhatsApp chat", candidates),
+            }
+        # No whole-token identity: one substring row is not a recipient, and
+        # nothing is sent until the owner names one.
+        only = candidates[0] if len(candidates) == 1 else ""
+        return {
+            "kind": "whatsapp",
+            "status": OpStatus.CLARIFY.value,
+            "sent": False,
+            "candidates": candidates,
+            "spoken": (
+                f"The only WhatsApp chat I found is {only}, not {name} — I didn't send."
+                if only and name
+                else f"I couldn't resolve {name or 'that recipient'} to a WhatsApp chat, so I didn't send."
+            ),
+        }
+    chat = found.payload.get("chat") if isinstance(found.payload.get("chat"), dict) else {}
+    chat_ref = str((chat or {}).get("chat_ref") or "").strip()
+    resolved_name = str((chat or {}).get("name") or "").strip()
+    # The opened chat must carry the identity that was asked for, on whole
+    # tokens: the send below addresses exactly this chat_ref, never a name
+    # re-derived from the utterance.
+    from app.ev.messaging.recipients import score_person_name
+
+    if (
+        found.status != OpStatus.COMPLETED_VERIFIED
+        or not chat_ref
+        or not name
+        or score_person_name(name, resolved_name) < _WHATSAPP_MATCH_MIN
+    ):
+        return {
+            "kind": "whatsapp",
+            "status": OpStatus.CLARIFY.value,
+            "sent": False,
+            "candidates": [resolved_name] if resolved_name else [],
+            "spoken": (
+                f"The WhatsApp chat I found is {resolved_name}, not {name} — I didn't send."
+                if resolved_name and name
+                else f"I couldn't confirm a WhatsApp chat for {name or 'that recipient'}, so I didn't send."
+            ),
+        }
+    who = resolved_name or name
     ask = compile_semantic_owner_ask(text)
     explicit_send = ask in {"send", "reply"} or bool(
         re.search(r"(?i)\b(send|reply|reroute|forward)\b", text)
@@ -519,12 +580,12 @@ async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) ->
                 "kind": "whatsapp",
                 "status": OpStatus.CLARIFY.value,
                 "sent": False,
-                "spoken": f"What should I say to {name or 'them'} on WhatsApp?",
+                "spoken": f"What should I say to {who or 'them'} on WhatsApp?",
             }
         if not ctx.confirmed and ctx.autonomy.value in {"SEND_WITH_CONFIRMATION", "PREPARE_ONLY", "READ"}:
             composed = await execute("whatsapp", "compose", {"chat_ref": chat_ref, "text": _draft_body(text)}, ctx=ctx)
             if composed.status in {OpStatus.SERVICE_OFFLINE, OpStatus.SERVICE_AUTH_REQUIRED}:
-                mac = await _mac_whatsapp_send(text, name)
+                mac = await _mac_whatsapp_send(text, who)
                 if mac is not None:
                     return mac
             return {
@@ -536,7 +597,7 @@ async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) ->
             }
         sent = await execute("whatsapp", "send", {"chat_ref": chat_ref, "text": _draft_body(text)}, ctx=ctx)
         if sent.status in {OpStatus.SERVICE_OFFLINE, OpStatus.SERVICE_AUTH_REQUIRED}:
-            mac = await _mac_whatsapp_send(text, name)
+            mac = await _mac_whatsapp_send(text, who)
             if mac is not None:
                 return mac
         return {
@@ -551,8 +612,8 @@ async def _whatsapp_path(text: str, resolved: dict[str, Any], ctx: OpContext) ->
     latest = str((inner or {}).get("latest_state") or "") if isinstance(inner, dict) else ""
     from app.memory.mail_speak import gist_from_preview
 
-    gist = gist_from_preview(latest or name or "", cap=160)
-    spoken = f"Last on WhatsApp with {name or 'that chat'}. {gist}".strip()
+    gist = gist_from_preview(latest or who or "", cap=160)
+    spoken = f"Last on WhatsApp with {who or 'that chat'}. {gist}".strip()
     return {
         "kind": "whatsapp",
         "status": summary.status.value,

@@ -87,11 +87,34 @@ CASUAL_GREETING_TOKENS = frozenset(
         "hey", "hi", "hello", "yo", "howdy", "sup", "greetings",
         "good", "morning", "afternoon", "evening", "night", "day",
         "how", "are", "you", "doing", "how's", "hows", "it", "going", "things",
-        "thanks", "thank", "ok", "okay", "cool", "nice", "great", "alright",
+        "thanks", "thank", "yes", "ok", "okay", "cool", "nice", "great", "alright",
         "got", "sounds", "perfect", "yep", "yeah", "nope",
         "bye", "goodbye", "evie", "ev", "e.v", "e", "v"
     }
 )
+
+
+def _answers_live_offer(message: str) -> bool:
+    """True when a short yes/no is answering Evie's own unanswered offer.
+
+    A bare "yes" after "Do you want me to read out the full mail?" carries a
+    decision; treating it as small talk drops the offer. Fail open: if the
+    durable session cannot be read, the utterance is not small talk.
+    """
+
+    try:
+        from app.ev.continuity import is_affirmative_reply, is_negative_reply
+
+        if not (is_affirmative_reply(message) or is_negative_reply(message)):
+            return False
+    except Exception:
+        return False
+    try:
+        from app.cognitive import intent, session_store
+
+        return intent.pending_offer(session_store.current()) is not None
+    except Exception:
+        return True
 
 
 def is_casual_social_turn(message: str | None) -> bool:
@@ -100,6 +123,8 @@ def is_casual_social_turn(message: str | None) -> bool:
         return False
     msg = message.strip()
     if len(msg) > 100:
+        return False
+    if _answers_live_offer(msg):
         return False
     if CASUAL_SOCIAL_RE.match(msg):
         return True

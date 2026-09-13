@@ -10,6 +10,7 @@ import logging
 import re
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -835,6 +836,77 @@ def _packet_put_intent(text: str) -> bool:
     return "packet" in lowered or "visa" in lowered or bool(LAND_NAME.search(raw))
 
 
+def _offer_asked_at(raw: Any) -> float | None:
+    """Epoch seconds for the cognitive offer's own ISO stamp; None if unreadable."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.timestamp()
+
+
+def scene_offer_at() -> float | None:
+    """When this scene's own pending offer was recorded, from its own store.
+
+    The offer record carries no clock of its own. Its time is the landed
+    object's ``touched_at`` — ``remember_file`` stamps it in the same breath
+    that ``scan_landed_files`` writes the offer — falling back to the ledger
+    entry for that object. None means the stamp cannot be read.
+    """
+    scene = _load()
+    offer = scene.get("pending_offer")
+    if not isinstance(offer, dict):
+        return None
+    landed_id = str(offer.get("landed_id") or "")
+    landed = _by_id(landed_id)
+    if landed is not None:
+        try:
+            stamp = float(landed.get("touched_at") or 0.0)
+        except (TypeError, ValueError):
+            stamp = 0.0
+        if stamp > 0.0:
+            return stamp
+    for entry in reversed(list(scene.get("ledger") or [])):
+        if not isinstance(entry, dict) or str(entry.get("object_id") or "") != landed_id:
+            continue
+        try:
+            return float(entry.get("at") or 0.0) or None
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _scene_may_claim_affirmative() -> bool:
+    """False only when Evie has asked something newer than this scene's offer.
+
+    The desk scene keeps its own land-file offer, but the owner's "yes" answers
+    the question Evie asked most recently. When the cognitive ledger holds a
+    live offer asked after the scene recorded its own, the scene must not
+    consume the reply. Any unreadable state fails open to today's behaviour.
+    """
+    if not isinstance(_load().get("pending_offer"), dict):
+        return False
+    try:
+        from app.cognitive.intent import pending_offer as live_offer
+        from app.cognitive.session_store import current
+
+        offer = live_offer(current())
+    except Exception:  # noqa: BLE001 - unreadable session keeps today's path
+        return True
+    if not isinstance(offer, dict):
+        return True
+    asked_at = _offer_asked_at(offer.get("at"))
+    scene_at = scene_offer_at()
+    if asked_at is None or scene_at is None:
+        return True
+    return asked_at <= scene_at
+
+
 def looks_like_scene_turn(text: str) -> bool:
     raw = (text or "").strip()
     if not raw:
@@ -845,7 +917,7 @@ def looks_like_scene_turn(text: str) -> bool:
         or ALSO_RE.search(raw)
         or ADD_SLOT_RE.search(raw)
         or OPEN_SLOT_RE.search(raw)
-        or (YES_RE.search(raw) and (_load().get("pending_offer")))
+        or (YES_RE.search(raw) and _scene_may_claim_affirmative())
     ):
         return True
     if resolve_spoken_object(raw) and FRAGMENT_RE.search(raw):
@@ -889,7 +961,7 @@ def parse_scene_goal(text: str, last_path: str | None = None) -> dict[str, Any] 
 def _parse_one_scene(raw: str, last_path: str | None) -> dict[str, Any] | None:
     lowered = raw.lower().strip()
     offer = _load().get("pending_offer")
-    if offer and YES_RE.search(lowered):
+    if offer and YES_RE.search(lowered) and _scene_may_claim_affirmative():
         return {"action": "confirm_land", "goal": raw}
     if OTHER_RE.search(lowered) and not ALSO_RE.search(lowered) and "put" not in lowered:
         return {"action": "scene_other", "goal": raw}
@@ -954,7 +1026,7 @@ def _parse_one_scene(raw: str, last_path: str | None) -> dict[str, Any] | None:
             "goal": raw,
         }
     if ADD_SLOT_RE.search(raw) and not ADD_TO_NAMED_RE.search(raw):
-        if offer:
+        if offer and _scene_may_claim_affirmative():
             return {"action": "confirm_land", "goal": raw}
         packet = active_packet()
         source = scene_file_path("that", "landed", "focus", "other")

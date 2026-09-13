@@ -698,7 +698,12 @@ async def test_muse_kernel_turn_receipt_lets_spark_decide(
     await db_session.commit()
     assert timer["core_takeover"] is True
     assert timer["core_route"] == "HOME_STATION"
-    assert kernel_calls["n"] == 0
+    # Muse Spark is the one mind (DC-15), so it is consulted first and the
+    # deterministic Home Station lane is the fallback. That ordering is what
+    # keeps a provider outage from becoming a dead end: the owner still gets a
+    # real Mac action instead of an apology. The kernel is therefore entered
+    # once for this turn, and the action is still carried out by Home Station.
+    assert kernel_calls["n"] == 1
     dead = await record_turn_receipt(
         db_session,
         device=device,

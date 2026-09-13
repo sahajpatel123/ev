@@ -9,6 +9,7 @@ and the existing protocol sheet, quiet-hours gate, device registry, and
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -18,6 +19,8 @@ from app.utils.text import utcnow
 
 if TYPE_CHECKING:
     from app.voice.live.session import LiveSession
+
+logger = logging.getLogger("ev.voice")
 
 LiveIntent = Literal[
     "pause",
@@ -800,18 +803,66 @@ def protocol_hud_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     return hud if isinstance(hud, dict) else None
 
 
+def owner_turn_in_flight(live: LiveSession | None = None) -> bool:
+    """True while the owner is mid-turn, or an unanswered offer is live.
+
+    A proactive line injected here lands on top of the owner's answer to
+    Evie's own question: it steals the turn and the referent that answer was
+    meant for. Callers keep the line parked instead, so it still speaks — on
+    the first tick after the turn or the offer clears.
+    """
+
+    if live is not None:
+        state = getattr(getattr(live, "engine", None), "state", None)
+        if state is not None and (
+            bool(getattr(state, "user_is_speaking", False))
+            or bool(getattr(state, "assistant_is_speaking", False))
+        ):
+            return True
+        tasks: list[Any] = [
+            getattr(live, "_respond_task", None),
+            getattr(live, "_owner_text_task", None),
+        ]
+        tasks.extend(getattr(live, "_turn_gate_tasks", ()) or ())
+        for task in tasks:
+            done = getattr(task, "done", None)
+            if task is not None and callable(done) and not done():
+                return True
+    from app.cognitive.intent import pending_offer
+    from app.cognitive.session_store import current
+
+    try:
+        return pending_offer(current()) is not None
+    except Exception:  # noqa: BLE001 - an unreadable ledger must not mute her
+        return False
+
+
 def proactive_speech_allowed(
     *,
     emergency: bool = False,
     bypass_quiet_hours: bool = False,
+    live: LiveSession | None = None,
 ) -> bool:
-    """Quiet hours suppress unsolicited live speech. Owner-scheduled still speak."""
+    """Quiet hours or an in-flight owner turn suppress unsolicited live speech.
+
+    Owner-scheduled lines (timers the owner asked for) and emergencies still
+    speak: they are not conversational, and holding them behind an unanswered
+    offer would be worse than the overlap they cause.
+
+    ``live`` is the socket the caller is about to speak on. Without one there
+    is nothing to interrupt and nothing to lose: the caller parks the line
+    instead, so only the quiet-hours verdict applies.
+    """
 
     if emergency or bypass_quiet_hours:
         return True
     from app.ev.ev_sense import quiet_hours_active
 
-    return not quiet_hours_active()
+    if quiet_hours_active():
+        return False
+    if live is None:
+        return True
+    return not owner_turn_in_flight(live)
 
 
 def _hud_owner_scheduled(hud: dict | None) -> bool:
@@ -981,6 +1032,26 @@ async def enqueue_live_mail(
     return row
 
 
+def record_proactive_spoken(text: str) -> None:
+    """Put a spoken proactive line in the ledger the model reads.
+
+    Proactive lines are part of what the owner heard. Without this row the
+    model's next prompt has a hole exactly where the line landed, so "yes"
+    answers a question whose setup Evie no longer sees.
+    """
+
+    spoken = (text or "").strip()
+    if not spoken:
+        return
+    try:
+        from app.cognitive.intent import remember_exchange
+        from app.cognitive.session_store import current
+
+        remember_exchange(current(), owner="", assistant=spoken, kind="proactive")
+    except Exception as exc:  # noqa: BLE001 - ledger failure must not swallow the line
+        logger.warning("proactive_ledger_record_failed err=%s", exc)
+
+
 async def deliver_pending_live_mail(session: Any, live: LiveSession) -> int:
     """Speak parked injects on the socket that owns this process. Never waits."""
 
@@ -1006,15 +1077,23 @@ async def deliver_pending_live_mail(session: Any, live: LiveSession) -> int:
     live_session = str(getattr(live, "session_id", None) or "")
     live_device = str(getattr(live, "device_id", None) or "")
     live_tts = str(getattr(live, "tts_device_id", None) or "")
+    live_silent = bool(getattr(live, "_muted", False)) or bool(
+        getattr(live, "_paused", False)
+    )
     for row in rows:
         hud = dict(row.hud or {})
         mail = hud.get(LIVE_MAIL_KEY)
         if not isinstance(mail, dict) or not mail.get("pending"):
             continue
         owner_scheduled = _hud_owner_scheduled(hud)
+        if live_silent and not row.emergency and not owner_scheduled:
+            # speak_proactive would drop this line on a muted socket: leave it
+            # parked instead of marking it spoken.
+            continue
         if not proactive_speech_allowed(
             emergency=bool(row.emergency),
             bypass_quiet_hours=owner_scheduled,
+            live=live,
         ):
             continue
         want_session = str(mail.get("session_id") or "")
@@ -1037,6 +1116,7 @@ async def deliver_pending_live_mail(session: Any, live: LiveSession) -> int:
             emergency=bool(row.emergency),
             bypass_quiet_hours=owner_scheduled,
         )
+        record_proactive_spoken(row.text)
         row.spoken = True
         mail = dict(mail)
         mail["pending"] = False
@@ -1088,12 +1168,23 @@ async def speak_on_live(
         live = pick_in_process_live(device_id=device_id, emergency=emergency)
     if live is None:
         live = live_for_device(device_id)
-        if (
-            live is not None
-            and not emergency
-            and (getattr(live, "_muted", False) or getattr(live, "_paused", False))
-        ):
-            live = None
+    if live is not None and not emergency and (
+        getattr(live, "_closed", False)
+        or getattr(live, "_muted", False)
+        or getattr(live, "_paused", False)
+    ):
+        # speak_proactive would drop this line on a closed, muted, or paused
+        # socket: park it instead of reporting speech that never happened.
+        live = None
+    if live is not None and not proactive_speech_allowed(
+        emergency=emergency,
+        bypass_quiet_hours=owner_scheduled,
+        live=live,
+    ):
+        # The owner is mid-turn, or Evie still has an offer they have not
+        # answered. Park the line: it speaks on the first idle tick instead of
+        # talking over the answer it was interrupting.
+        live = None
     if live is not None:
         speaker = getattr(live, "speak_proactive", None)
         if speaker is not None:
@@ -1112,6 +1203,7 @@ async def speak_on_live(
                 emergency=emergency,
                 bypass_quiet_hours=owner_scheduled,
             )
+            record_proactive_spoken(text)
             return True
     if not persist_on_miss:
         return False

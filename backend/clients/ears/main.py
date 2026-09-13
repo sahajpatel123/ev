@@ -1087,6 +1087,11 @@ async def run_ears(
     watchdog_stop: threading.Event | None = None
     block_samples = max(1, int(cfg.sample_rate * cfg.block_ms / 1000))
     simulate = bool(cfg.simulate_wav)
+    # A caller that supplies its own stream, or asks for a simulated file, is
+    # not opening the microphone — so it must not stand down for the live
+    # session that owns it. Consulting the marker here made the ears tests
+    # block for the ownership window on any machine where EV.app was running.
+    owns_input = simulate or stream is not None
     ring: Any
     if simulate and cfg.simulate_wav is not None:
         ring = _SimulatedRing(cfg.simulate_wav, block_samples, cfg.sample_rate)
@@ -1586,7 +1591,7 @@ async def run_ears(
             "ears: EV menu-bar app is not running; microphone not opened"
         )
         return stats
-    if not await wait_for_mic_ownership():
+    if not owns_input and not await wait_for_mic_ownership():
         # EV.app's live session owns the input (accepted-wake handoff).
         # ONE mic owner applies in every wake mode; exit without touching
         # the mic and let launchd re-run this check.
@@ -1645,10 +1650,12 @@ async def run_ears(
                         "ears: EV menu-bar app is not running; releasing microphone"
                     )
                     break
-                if ev_live_owns_mic():
+                if not owns_input and ev_live_owns_mic():
                     # A live session started while ears was already running.
                     # ONE mic owner (every wake mode): release the input; the
                     # post-exit respawn waits on the marker before reopening.
+                    # A caller that supplied its own stream never held the
+                    # microphone, so there is nothing to release.
                     LOGGER.warning(
                         "ears: EV.app live session owns the mic; releasing"
                     )

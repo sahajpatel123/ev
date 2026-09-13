@@ -13,7 +13,12 @@ from app.ev.ev_sense import quiet_hours_active
 from app.models import Alert, ApprovedAction, DeadLetter, Device, Notification
 from app.notify.backends import get_backend
 from app.notify.models import DeliveryReceipt, NotificationRecord, NotifierError
-from app.notify.policy import decide, is_emergency
+from app.notify.policy import (
+    decide,
+    is_emergency,
+    is_failure_notice,
+    is_retryable_suppression,
+)
 from app.notify.routing import device_reachability
 from app.utils.text import sha256_hex, utcnow
 
@@ -56,9 +61,13 @@ async def _update_alert(session: AsyncSession, row: Notification) -> None:
             "delivered_at": (row.delivered_at or utcnow()).isoformat(),
         }
     elif row.status == "suppressed":
-        if row.reason == "max_attempts":
-            alert.status = "failed"
-            details["failure_reason"] = row.reason
+        if is_retryable_suppression(row.reason):
+            # "Not now" is not "never": quiet hours, the daily cap, and the
+            # retryable failure latch leave the alert pending so a later window
+            # delivers it. Only pending alerts are ever retried, so closing the
+            # alert here would silence it for good.
+            if alert.status == "pending":
+                details["retry_reason"] = row.reason
         else:
             alert.status = "suppressed"
             details["suppression_reason"] = row.reason
@@ -324,7 +333,9 @@ async def deliver_pending_alerts(
     """Deliver pending alert-radar rows (watch, EV Sense, gear, routines).
 
     Non-emergency rows during quiet hours are deliberately left pending so the
-    daemon's digest batches them; urgent rows go out immediately.
+    daemon's digest batches them; urgent rows go out immediately. A failure
+    notice (a failed routine or action) pierces quiet hours and the cap: muting
+    it would hide the outcome the owner asked to hear about.
     """
     now = now or utcnow()
     quiet = quiet_hours_active(now)
@@ -340,7 +351,11 @@ async def deliver_pending_alerts(
     )
     counts = {"delivered": 0, "suppressed": 0, "failed": 0, "skipped": 0}
     for alert in rows:
-        emergency = is_emergency(priority=alert.priority, tier=alert.tier, emergency=False)
+        emergency = is_emergency(
+            priority=alert.priority,
+            tier=alert.tier,
+            emergency=is_failure_notice(kind=alert.kind, details=alert.details),
+        )
         if quiet and not emergency:
             counts["skipped"] += 1
             continue
@@ -370,8 +385,10 @@ async def build_and_deliver_digest(
     """Batch pending non-urgent alerts into one delivered quiet-hours digest.
 
     Alerts are only marked delivered after the digest notification receipt
-    proves backend delivery. Suppressed digests carry a reason; failed digests
-    leave alerts pending for the next tick.
+    proves backend delivery. A suppressed or failed digest is not delivery
+    evidence, so its alerts stay pending for a later window to deliver or
+    retry: marking them suppressed here would silence them for good, because
+    only pending alerts are ever retried.
     """
     pending = [
         alert
@@ -401,7 +418,7 @@ async def build_and_deliver_digest(
         now=now,
     )
     delivered = 0
-    suppressed = 0
+    retry_pending = 0
     for alert in pending:
         details = dict(alert.details or {})
         if row.status == "delivered":
@@ -416,9 +433,12 @@ async def build_and_deliver_digest(
             }
             delivered += 1
         elif row.status == "suppressed":
-            alert.status = "suppressed"
-            details["suppression_reason"] = row.reason
-            suppressed += 1
+            # The digest was withheld (quiet hours are waived for it, so this
+            # is the cap or the failure latch), which says nothing about these
+            # alerts. They stay pending so a later window delivers them
+            # individually.
+            details["digest_suppressed_reason"] = row.reason
+            retry_pending += 1
         alert.details = details
     await session.flush()
     return {
@@ -426,7 +446,7 @@ async def build_and_deliver_digest(
         "digest_id": digest_id,
         "generated_at": utcnow().isoformat(),
         "delivered": delivered,
-        "suppressed": suppressed,
+        "suppressed": retry_pending,
         "failed": 1 if row.status == "failed" else 0,
         "alerts": [
             {

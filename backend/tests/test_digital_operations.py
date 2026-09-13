@@ -357,10 +357,29 @@ def test_parse_message_taint_fields() -> None:
 
 @pytest.mark.asyncio
 async def test_browser_captcha_is_owner_boundary() -> None:
-    result = await execute("browser", "form_submit", {"page": "please complete the captcha"}, ctx=OpContext())
+    # form_submit now parks for approval before the adapter runs, so the
+    # owner-boundary check is exercised on the confirmed path it guards.
+    result = await execute(
+        "browser",
+        "form_submit",
+        {"page": "please complete the captcha"},
+        ctx=OpContext(confirmed=True),
+    )
     assert result.status == OpStatus.BLOCKED
     assert result.diagnosis == "captcha_or_password"
     assert result.payload.get("submitted") is False
+
+
+@pytest.mark.asyncio
+async def test_consequential_browser_write_waits_for_approval() -> None:
+    result = await execute(
+        "browser",
+        "form_submit",
+        {"page": "checkout"},
+        ctx=OpContext(),
+    )
+    assert result.status == OpStatus.WAITING_FOR_APPROVAL
+    assert result.payload.get("sent") is False
 
 
 @pytest.mark.asyncio

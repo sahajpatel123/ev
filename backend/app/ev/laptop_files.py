@@ -104,6 +104,19 @@ DENY_SUBSTRINGS = (
     "/.ev/secrets",
     "/.git/",
 )
+# Dev/artifact trees are not owner documents; keep search results readable.
+_SEARCH_NOISE_PARTS = frozenset(
+    {
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".build",
+        "deriveddata",
+        ".mypy_cache",
+        ".ruff_cache",
+    }
+)
 APP_STEAL = re.compile(
     r"\b(?:textedit|safari|chrome|spotify|slack|notes|music|finder|calculator)\b",
     re.I,
@@ -258,6 +271,18 @@ FINDABLE_DOC_RE = re.compile(
     r"\b(?:resumes?|cvs?|curriculum vitae|pdfs?|receipts?|invoices?|letters?)\b",
     re.I,
 )
+FIND_FILE_RE = re.compile(
+    r"\b(?:find|locate|search(?:\s+for)?|look(?:ing)?\s+for|where(?:'s| is))\b"
+    r".{0,60}?\b(?:files?|documents?|folders?|pdfs?|screenshots?|spreadsheets?|"
+    r"presentations?|resumes?|cvs?|receipts?|invoices?)\b",
+    re.I,
+)
+LAPTOP_CUE = re.compile(
+    r"\b(?:on|from|in|inside)\s+(?:my\s+|the\s+)?"
+    r"(?:laptop|mac|macbook|computer|machine)\b|"
+    r"\blocal(?:ly)?\b|\bmy\s+(?:desk(?:top)?|home\s+folder)\b",
+    re.I,
+)
 WEB_STEAL_RE = re.compile(
     r"\b(?:on the web|online|google|the internet|youtube|safari|chrome)\b",
     re.I,
@@ -319,7 +344,7 @@ def allowed_roots() -> list[Path]:
         root = Path(override).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
         return [root]
-    home = Path.home()
+    home = Path.home().resolve()
     roots: list[Path] = []
     for name in ("Desktop", "Documents", "Downloads", "Movies", "Music", "Pictures", "Code"):
         path = (home / name).resolve()
@@ -331,6 +356,10 @@ def allowed_roots() -> list[Path]:
     icloud = (home / "Library/Mobile Documents/com~apple~CloudDocs").resolve()
     if icloud.exists() and icloud.is_dir():
         roots.append(icloud)
+    # Owner law: any folder under the owner's home is searchable. Secrets and
+    # the Library internals stay denied in path_denied().
+    if home.exists() and home.is_dir() and home not in roots:
+        roots.append(home)
     return roots
 
 
@@ -586,9 +615,7 @@ def parse_referent_append(
         from app.ev.desk_scene import _live_path
 
         note_path = _live_path(note)
-    if found is not None and found.suffix.lower() not in TEXT_EXTENSIONS and note_path is not None:
-        found = note_path
-    elif found is None:
+    if found is not None and found.suffix.lower() not in TEXT_EXTENSIONS and note_path is not None or found is None:
         found = note_path
     if found is None:
         return None
@@ -716,7 +743,13 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
         )
     )
     opening = bool(re.search(r"\b(?:open|read|pull up)\b", raw, re.I))
-    if finding and (FINDABLE_DOC_RE.search(raw) or DOC_NOUN_RE.search(raw)):
+    if finding and (
+        FINDABLE_DOC_RE.search(raw)
+        or DOC_NOUN_RE.search(raw)
+        or FIND_FILE_RE.search(raw)
+        or LAPTOP_CUE.search(raw)
+        or re.search(r"\bfiles?\b", raw, re.I)
+    ):
         return True
     if opening and FINDABLE_DOC_RE.search(raw):
         return True
@@ -1111,7 +1144,8 @@ def _search_needle(text: str) -> str:
     raw = re.sub(
         r"\b(?:please|can you|could you|find|search(?:\s+for)?|locate|look for|"
         r"where'?s|where is|open(?:\s+it)?|and open(?:\s+it)?|"
-        r"the|a|an|my|on|in|inside|desktop|documents|downloads|files?|"
+        r"the|a|an|my|on|in|inside|from|desktop|documents|downloads|files?|"
+        r"laptop|macbook|computer|machine|local|locally|"
         r"and|that|this|it|for me)\b",
         " ",
         text or "",
@@ -1265,6 +1299,13 @@ def path_denied(path: Path) -> str | None:
         return "path_denied"
     if any(token in lowered for token in DENY_SUBSTRINGS):
         return "path_denied"
+    # Home-wide search is allowed, but macOS Library internals are not owner
+    # documents — except iCloud Drive, which lives underneath it.
+    home = Path.home().resolve()
+    library = home / "Library"
+    icloud = library / "Mobile Documents"
+    if _is_inside(resolved, library) and not _is_inside(resolved, icloud):
+        return "path_denied"
     roots = allowed_roots()
     if not any(_is_inside(resolved, root) for root in roots):
         return "path_outside_allowed"
@@ -1399,6 +1440,40 @@ def _spotlight_name_hits(needle: str, roots: list[Path]) -> list[Path]:
     return hits
 
 
+def _spotlight_content_hits(needle: str, roots: list[Path]) -> list[Path]:
+    """Content search fallback: Spotlight can find text inside any indexed file."""
+
+    token = (needle or "").strip()
+    if len(token) < 3 or os.name != "posix":
+        return []
+    if str(getattr(settings, "laptop_files_root", None) or "").strip():
+        return []
+    cmd: list[str] = ["mdfind"]
+    for root in roots:
+        cmd.extend(["-onlyin", str(root)])
+    cmd.append(token)
+    try:
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=8, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    hits: list[Path] = []
+    for line in (proc.stdout or "").splitlines():
+        raw = line.strip()
+        if not raw:
+            continue
+        path = Path(raw)
+        try:
+            if path.is_file() and path_denied(path) is None:
+                hits.append(path.resolve())
+        except OSError:
+            continue
+        if len(hits) >= MAX_LIST * 2:
+            break
+    return hits
+
+
 def _collect_file_hits(
     needle: str,
     *,
@@ -1412,12 +1487,15 @@ def _collect_file_hits(
     seen: set[Path] = set()
     hits: list[Path] = []
 
+    def _is_noise(path: Path) -> bool:
+        return any(part.lower() in _SEARCH_NOISE_PARTS for part in path.parts)
+
     def add(path: Path) -> None:
         try:
             resolved = path.resolve()
         except OSError:
             return
-        if resolved in seen or not resolved.is_file():
+        if resolved in seen or not resolved.is_file() or _is_noise(resolved):
             return
         if path_denied(resolved) is not None:
             return
@@ -1430,8 +1508,13 @@ def _collect_file_hits(
 
     for path in _spotlight_name_hits(token, search_roots):
         add(path)
+    home = Path.home().resolve()
     per_root = 80
     for root in search_roots:
+        if roots is None and root == home:
+            # Spotlight already covers the whole home tree; a raw walk would
+            # scan caches and duplicates for no benefit.
+            continue
         depth = _search_depth(root) if roots is None else 6
         for child in _walk_matching_files(
             root,
@@ -1443,6 +1526,20 @@ def _collect_file_hits(
             add(child)
             if len(hits) >= MAX_LIST * 3:
                 return hits
+    if not hits:
+        for path in _spotlight_content_hits(token, search_roots):
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if resolved in seen or path_denied(resolved) is not None:
+                continue
+            if _is_noise(resolved):
+                continue
+            if kind and not _matches_kind(resolved, kind):
+                continue
+            seen.add(resolved)
+            hits.append(resolved)
     return hits
 
 
@@ -2587,7 +2684,7 @@ def _receipt_items_from_bodies(before: str, after: str) -> list[str]:
 
 
 async def _run_undo(args: dict[str, Any]) -> dict[str, Any]:
-    from app.ev.desk_scene import forget_file, last_mutating_entry, remember_file, record_mutation
+    from app.ev.desk_scene import forget_file, last_mutating_entry, record_mutation, remember_file
 
     entry = last_mutating_entry()
     if entry is None:

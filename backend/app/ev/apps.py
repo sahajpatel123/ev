@@ -39,6 +39,20 @@ APP_URL_SCHEMES = frozenset(
         "music",
         "itms",
         "itmss",
+        "slack",
+        "notion",
+        "obsidian",
+        "zoommtg",
+        "vscode",
+        "discord",
+        "whatsapp",
+        "telegram",
+        "figma",
+        "linear",
+        "shortcuts",
+        "x-apple",
+        "msteams",
+        "skype",
     }
 )
 MACOS_LIFE_ADAPTERS = ("messaging", "phone", "mail", "contacts")
@@ -80,8 +94,16 @@ APP_ALIASES: dict[str, str] = {
     "google chrome": "chrome",
     "google-chrome": "chrome",
     "imessage": "messages",
+    "imessages": "messages",
     "i message": "messages",
+    "i messages": "messages",
     "apple mail": "mail",
+    "mails": "mail",
+    "apple music": "music",
+    "applemusic": "music",
+    "apple notes": "notes",
+    "phones": "phone",
+    "phone app": "phone",
     "apple calendar": "calendar",
     "system settings": "settings",
     "system preferences": "settings",
@@ -347,7 +369,7 @@ async def open_url(session: AsyncSession, args: dict, *, actor: str) -> dict:
         }
     row = await find_macos_life_integration(session)
     path = helper_path_for(row)
-    if row is None or not path:
+    if not path:
         return _unavailable("no open-url bridge is installed")
     try:
         result = await run_life_helper("open.url", {"url": url}, helper_path=path)
@@ -375,7 +397,7 @@ async def open_app(session: AsyncSession, args: dict, *, actor: str) -> dict:
     raw_name = str(args.get("name") or args.get("app") or "")
     row = await find_macos_life_integration(session)
     path = helper_path_for(row)
-    if row is None or not path:
+    if not path:
         return _unavailable("no open-url bridge is installed")
     resolved = resolve_app(raw_name)
     if resolved is None:
@@ -422,7 +444,7 @@ async def close_app(session: AsyncSession, args: dict, *, actor: str) -> dict:
     raw_name = str(args.get("name") or args.get("app") or "")
     row = await find_macos_life_integration(session)
     path = helper_path_for(row)
-    if row is None or not path:
+    if not path:
         return _unavailable("no open-url bridge is installed")
     resolved = resolve_app(raw_name)
     if resolved is None:

@@ -217,8 +217,17 @@ async def test_action_lifecycle_is_written_to_access_log(client, db_session) -> 
 
 
 async def test_routine_rollback_marks_linked_action_rolled_back(
-    client, db_session
+    client, db_session, monkeypatch
 ) -> None:
+    # The subject here is rollback of the linked action, not notification
+    # delivery: a hud_card whose overlay cannot open is now honestly recorded
+    # as a failed run. Stub the delivery surface so the run succeeds for the
+    # reason under test.
+    async def _delivered(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr("app.notify.service.dispatch_action", _delivered)
+
     routine = await create_undoable_routine(db_session)
     run = await manual_run(db_session, routine.id, actor="owner")
     await db_session.commit()

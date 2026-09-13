@@ -36,6 +36,11 @@ from tests.test_life_agency import _add_bridge
 # --------------------------------------------------------------------------- #
 
 
+@pytest.fixture(autouse=True)
+def _presence_dispatch(opened_presence) -> None:
+    """These tests are about scheduling, not about the overlay."""
+
+
 def test_next_run_after_basic_fields() -> None:
     after = datetime(2026, 8, 9, 10, 0, tzinfo=UTC)
     assert next_run_after("* * * * *", after) == datetime(2026, 8, 9, 10, 1, tzinfo=UTC)
@@ -261,16 +266,20 @@ async def test_sensitive_action_requires_approval_then_executes(
 
     run = await approve_run(db_session, run.id, actor="owner")
     await db_session.commit()
-    assert run.status == "approved"
-
-    run = await execute_run(
-        db_session,
-        run.id,
-        actor="owner",
-        data=RoutineRunDecisionRequest(result={"sent": True}),
-    )
-    await db_session.commit()
+    # Approving a routed routine action runs it: the runtime does not
+    # auto-execute these (they carry no `_pol` resume meta), so the run must
+    # record what the dispatch really returned rather than a bare "approved".
     assert run.status == "executed"
+
+    # The action already ran on approval, so a second execute is refused:
+    # one owner "yes" must not dispatch the same send twice.
+    with pytest.raises(ValueError, match="Only approved runs can be executed"):
+        await execute_run(
+            db_session,
+            run.id,
+            actor="owner",
+            data=RoutineRunDecisionRequest(result={"sent": True}),
+        )
     assert run.result.get("ok") is True
     assert run.result["delivery"]["confirmed"] is True
 

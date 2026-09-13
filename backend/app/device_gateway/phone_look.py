@@ -30,10 +30,104 @@ _PHONE_KIND_BY_ACTION = {
 }
 
 
-def _phone_media_kind(action: str) -> str:
-    """Never claim a kind the phone did not produce (stills stay bursts)."""
+# A browser burst is a handful of stills over a few seconds; the client sends
+# ``captured_at_ms`` offsets, so the timeline is the client's, not a guess.
+_BURST_MAX_FRAMES = 6
+_BURST_SPAN_MS = 4000
 
+
+def _phone_media_kind(
+    action: str,
+    *,
+    requested: str | None = None,
+    has_clip: bool | None = None,
+) -> str:
+    """Never claim a kind the phone did not produce (stills stay bursts).
+
+    The client's own ``media_kind`` is honoured only when it is truthful: a
+    declared ``video`` without ``has_clip`` is downgraded to a burst.
+    """
+
+    declared = (requested or "").strip().lower()
+    if declared in {"video", "clip", "movie", "recording"}:
+        return declared if has_clip else "burst"
+    if declared in {"burst", "frame", "observe", "photo", "image"}:
+        return "photo" if declared in {"photo", "image"} else declared
     return _PHONE_KIND_BY_ACTION.get((action or "").strip().lower(), "frame")
+
+
+async def _read_frame(jpeg: bytes) -> tuple[str | None, list[str], str | None, bool]:
+    """Local OCR (+ labels) for one phone frame. Failure is not fatal."""
+
+    try:
+        from app.vision.providers import get_vision_provider
+
+        provider = get_vision_provider()
+        result = await provider.analyze(data=jpeg, content_type="image/jpeg", filename="phone.jpg")
+        ocr = (getattr(result, "ocr_text", None) or "")[:280] or None
+        derived = getattr(result, "labels", None) or []
+        labels = [str(item)[:48] for item in derived[:8]]
+        return (
+            ocr,
+            labels,
+            str(getattr(result, "provider", "") or "") or None,
+            bool(getattr(result, "degraded", False)),
+        )
+    except Exception:
+        return None, [], None, True
+
+
+async def _burst_moments(
+    frames: list[dict[str, Any]],
+    media_kind: str | None,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    """Read every burst frame into a bounded timeline of moments."""
+
+    if len(frames) < 2:
+        return [], [], []
+    kind = str(media_kind or "").strip().lower()
+    if kind in {"video", "clip", "movie", "recording"}:
+        # A real clip is processed from its bytes, not from posters.
+        return [], [], []
+    moments: list[dict[str, Any]] = []
+    ocr: list[str] = []
+    labels: list[str] = []
+    total = min(len(frames), _BURST_MAX_FRAMES)
+    for index, frame in enumerate(frames[:total]):
+        try:
+            payload = base64.b64decode(str(frame.get("jpeg_b64") or ""))
+        except Exception:
+            continue
+        checked = validate_jpeg(payload)
+        if checked is None:
+            continue
+        payload, _, _ = checked
+        frame_ocr, frame_labels, _, _ = await _read_frame(payload)
+        captured = frame.get("captured_at_ms")
+        try:
+            start_ms = (
+                max(0, int(captured))
+                if captured is not None
+                else int(_BURST_SPAN_MS * index / max(total, 1))
+            )
+        except (TypeError, ValueError):
+            start_ms = int(_BURST_SPAN_MS * index / max(total, 1))
+        end_ms = int(_BURST_SPAN_MS * (index + 1) / max(total, 1))
+        moment: dict[str, Any] = {
+            "t_start": round(start_ms / 1000.0, 2),
+            "t_end": round(max(end_ms, start_ms + 1) / 1000.0, 2),
+            "labels": frame_labels,
+            "colors": [],
+        }
+        if frame_ocr:
+            moment["ocr_text"] = frame_ocr[:400]
+            if frame_ocr not in ocr:
+                ocr.append(frame_ocr)
+        for name in frame_labels:
+            if name not in labels:
+                labels.append(name)
+        moments.append(moment)
+    return moments, ocr, labels
 
 
 async def ingest_phone_frame(
@@ -43,6 +137,9 @@ async def ingest_phone_frame(
     request_id: str,
     jpeg_b64: str,
     action: str = "look",
+    frames: list[dict[str, Any]] | None = None,
+    media_kind: str | None = None,
+    has_clip: bool | None = None,
 ) -> dict[str, Any]:
     raw = jpeg_b64 or ""
     try:
@@ -70,18 +167,15 @@ async def ingest_phone_frame(
         camera_name=device.name,
     )
     stash_observation(observation)
-    ocr_text = None
-    labels: list[str] = []
-    try:
-        from app.vision.providers import get_vision_provider
-
-        vision = get_vision_provider()
-        result = await vision.analyze(data=jpeg, content_type="image/jpeg", filename="phone.jpg")
-        ocr_text = (getattr(result, "ocr_text", None) or "")[:280] or None
-        derived = getattr(result, "labels", None) or []
-        labels = [str(item)[:48] for item in derived[:8]]
-    except Exception:
-        ocr_text = None
+    ocr_text, labels, engine, degraded = await _read_frame(jpeg)
+    moments, extra_ocr, extra_labels = await _burst_moments(frames or [], media_kind)
+    printed = [value for value in [ocr_text, *extra_ocr] if value]
+    if printed:
+        ocr_text = " ".join(dict.fromkeys(printed))[:280]
+    for name in extra_labels:
+        if name not in labels:
+            labels.append(name)
+    labels = labels[:8]
 
     persisted = False
     spoken = "I have the current camera frame from this iPhone."
@@ -89,7 +183,7 @@ async def ingest_phone_frame(
         spoken = f"I can read: {ocr_text}"
     elif labels:
         spoken = "I can see " + ", ".join(labels[:4]) + "."
-    media_kind = _phone_media_kind(action)
+    kind = _phone_media_kind(action, requested=media_kind, has_clip=has_clip)
     if not is_sandbox_device(device) and device.revoked_at is None:
         from app.everywhere.sync import emit_everywhere_event
 
@@ -104,7 +198,8 @@ async def ingest_phone_frame(
                 "bytes": len(jpeg),
                 "ocr_text": ocr_text,
                 "labels": labels,
-                "media_kind": media_kind,
+                "media_kind": kind,
+                "moment_count": len(moments) or None,
                 "provenance": "phone_camera",
                 "observed_at": utcnow().isoformat(),
             },
@@ -122,13 +217,15 @@ async def ingest_phone_frame(
                     "labels": labels,
                     "ocr_text": ocr_text,
                     "spoken": spoken,
-                    "media_kind": media_kind,
+                    "media_kind": kind,
                     "visual_facts": "phone_camera",
                     # The bytes were received here, so this is grounded even when
                     # the on-device classifier found nothing.
                     "encoded_bytes": len(jpeg),
                     "image_ready": True,
-                    "frames": 1,
+                    "frames": max(1, len(frames or [])),
+                    "moments": moments,
+                    "observed": True,
                 },
                 actor=f"device:{device.name}",
                 device_id=str(device.id),
@@ -143,7 +240,11 @@ async def ingest_phone_frame(
         "ocr_text": ocr_text,
         "labels": labels,
         "observation_id": request_id,
-        "media_kind": media_kind,
+        "media_kind": kind,
+        "moments": moments,
+        "frame_count": max(1, len(frames or [])),
+        "engine": engine,
+        "degraded": degraded,
         "persisted_to_memory_os": persisted,
         "provenance": "phone_camera",
         "spoken": spoken,

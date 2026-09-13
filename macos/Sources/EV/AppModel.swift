@@ -967,8 +967,15 @@ final class AppModel: ObservableObject {
     }
 
     func confirmHudAction() {
-        guard !confirmingHud, let card = hudCard, card.isApprovalHold,
-              let name = card.holdToolName, !name.isEmpty else { return }
+        guard !confirmingHud, let card = hudCard, card.isApprovalHold else { return }
+        // A confirmation tap may only resolve the action the backend parked.
+        // With no action id there is nothing to approve, and re-dispatching
+        // the tool would re-resolve the recipient and channel at send time.
+        guard let actionId = card.holdActionId, !actionId.isEmpty else {
+            lastError = "That confirmation is no longer valid, so nothing was sent. Ask me again and I'll re-check the recipient."
+            return
+        }
+        let name = card.holdToolName ?? "action"
         confirmingHud = true
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -983,39 +990,36 @@ final class AppModel: ObservableObject {
                 }
             }
             do {
-                if let actionId = card.holdActionId, !actionId.isEmpty {
-                    let proof = try? await client.issueReverification(
-                        purpose: "runtime.action",
-                        voiceSessionId: sessionId
-                    )
-                    let response = try await client.approveAction(
-                        id: actionId,
-                        reverifyToken: proof?.token
-                    )
-                    if response.status == "executed" || response.status == "approved" {
-                        lastError = nil
-                        await refreshHUD(force: true)
-                    } else {
-                        lastError = response.error ?? "Confirmation failed"
-                    }
-                    return
-                }
-                var arguments = card.holdArguments
-                arguments["confirm"] = true
-                let response = try await client.dispatchTool(
-                    name: name,
-                    arguments: arguments,
-                    confirm: true,
-                    allowSensitive: true
+                let proof = try? await client.issueReverification(
+                    purpose: "runtime.action",
+                    voiceSessionId: sessionId
                 )
-                if response.ok {
+                let response = try await client.approveAction(
+                    id: actionId,
+                    reverifyToken: proof?.token
+                )
+                // ``executed`` with an error is the row for a dispatch that
+                // failed, so status alone must never read as a sent message.
+                let failure = response.error?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let failure, !failure.isEmpty {
+                    lastError = confirmationFailureMessage(failure)
+                } else if response.status == "executed" || response.status == "approved" {
                     lastError = nil
                     await refreshHUD(force: true)
                 } else {
-                    lastError = response.error ?? "Confirmation failed"
+                    switch response.status {
+                    case "denied":
+                        lastError = "That request was denied, so nothing was sent."
+                    case "failed":
+                        lastError = "The send failed, so nothing went out. Ask me again."
+                    default:
+                        lastError = "Nothing was sent — the action didn't run. Ask me again."
+                    }
                 }
             } catch {
-                lastError = formattedAPIError(error, fallback: "Confirmation failed")
+                lastError = confirmationFailureMessage(
+                    formattedAPIError(error, fallback: "Confirmation failed")
+                )
             }
         }
     }
@@ -1334,6 +1338,52 @@ final class AppModel: ObservableObject {
             }
         }
         return "AppConfig: built-in default"
+    }
+
+    /// Owner-facing wording for a confirmation that did not become a send.
+    /// Backend codes (``LifePermissionDeniedError``, ``confirmation_required``,
+    /// ``helper_unavailable`` …) mean nothing in the menu bar, so the known
+    /// ones become a sentence; an unmapped token is never painted raw.
+    private func confirmationFailureMessage(_ raw: String) -> String {
+        let detail = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !detail.isEmpty else {
+            return "Nothing was sent — that confirmation failed. Ask me again."
+        }
+        let code = detail.lowercased()
+        if code.contains("confirmation_required") || code.contains("confirmation_expired")
+            || code.contains("expired") {
+            return "That confirmation expired before it ran, so nothing was sent. Ask me again and I'll re-check the recipient."
+        }
+        if code.contains("target_mismatch") || code.contains("no longer matches") {
+            return "That confirmation no longer matches the recipient, so nothing was sent. Ask me again."
+        }
+        if code.contains("permission") || code.contains("not authorized")
+            || code.contains("automation") || code.contains("operation not permitted") {
+            return "macOS hasn't given me permission to control that app, so nothing was sent. Switch it on in System Settings → Privacy & Security → Automation, then ask me again."
+        }
+        if code.contains("helper_unavailable") || code.contains("evlifehelper")
+            || code.contains("not installed") {
+            return "The Mac helper I use to send isn't available, so nothing was sent. Start EVLifeHelper, then ask me again."
+        }
+        if code.contains("whatsapp_web") || code.contains("no_authenticated_tab")
+            || code.contains("chrome_not_running") || code.contains("session_logged_out") {
+            return "WhatsApp Web isn't open and signed in in Chrome, so nothing was sent. Open WhatsApp Web in Chrome, then ask me again."
+        }
+        if code.contains("not_connected") {
+            return "The app I needed isn't connected, so nothing was sent."
+        }
+        if code.contains("not found") || code.contains("not_found") {
+            return "I couldn't find that parked request any more, so nothing was sent. Ask me again."
+        }
+        if code.contains("already approved") || code.contains("already executed")
+            || code.contains("already denied") {
+            return "That confirmation had already been used, so nothing new was sent."
+        }
+        // An unmapped code is a token, not a sentence: never show it raw.
+        if detail.contains(" "), !detail.contains("_") {
+            return "Nothing was sent — \(detail)"
+        }
+        return "Nothing was sent — that confirmation failed. Ask me again."
     }
 
     private func authFailureMessage(_ body: String) -> String {

@@ -3906,3 +3906,35 @@ class SurfaceCalibrateOut(BaseModel):
     evidence: dict = Field(default_factory=dict)
     smoke: dict | None = None
     updated_at: str | None = None
+
+
+# --- CAMERA/MEMORY FIELD WORK (owner-requested, 2026-09-10) -----------------
+class ClipMomentOut(BaseModel):
+    """One sampled moment of a recorded clip (keyframe + local readings)."""
+
+    t_start: float = 0.0
+    t_end: float = 0.0
+    labels: list[str] = Field(default_factory=list)
+    colors: list[str] = Field(default_factory=list)
+    ocr_text: str | None = None
+    person_count: int | None = None
+    engine: str | None = None
+    degraded: bool = False
+
+
+class ClipIngestOut(BaseModel):
+    """Result of ingesting one recorded clip into owner memory."""
+
+    ok: bool
+    attachment_id: UUID | None = None
+    event_id: UUID | None = None
+    memory_id: UUID | None = None
+    duration_s: float | None = None
+    frames: int = 0
+    moments: list[ClipMomentOut] = Field(default_factory=list)
+    transcript: str | None = None
+    engine: str = "none"
+    extraction_degraded: bool = True
+    transcript_degraded: bool = False
+    error: str | None = None
+    spoken: str | None = None

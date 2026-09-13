@@ -237,20 +237,24 @@ async def execute(
                 availability=spec.availability,
                 payload={"prepared": True, "sent": False, "reason": "PREPARE_ONLY"},
             )
-        if (
-            ctx.autonomy in {AutonomyLevel.SEND_WITH_CONFIRMATION, AutonomyLevel.PREPARE_ONLY}
-            and spec.requires_confirmation
-            and not ctx.confirmed
-            and spec.verb == Verb.SEND
-        ):
-            return OpResult(
-                status=OpStatus.WAITING_FOR_APPROVAL,
-                service=service,
-                operation=operation,
-                availability=spec.availability,
-                payload={"prepared": True, "sent": False},
-                error="confirmation_required",
-            )
+    # The descriptor is the single source of truth for approval: whatever
+    # declares requires_confirmation parks for the owner's yes. Matching on
+    # send-ish verbs/operation names let reply, reply_all, forward, trash,
+    # create, update, cancel, delete, attach and form_submit mutate the world
+    # with no owner approval even though they declare the requirement.
+    if (
+        ctx.autonomy in {AutonomyLevel.SEND_WITH_CONFIRMATION, AutonomyLevel.PREPARE_ONLY}
+        and spec.requires_confirmation
+        and not ctx.confirmed
+    ):
+        return OpResult(
+            status=OpStatus.WAITING_FOR_APPROVAL,
+            service=service,
+            operation=operation,
+            availability=spec.availability,
+            payload={"prepared": True, "sent": False},
+            error="confirmation_required",
+        )
     try:
         result = await adapter.execute(operation, args, ctx=ctx)
     except Exception as exc:

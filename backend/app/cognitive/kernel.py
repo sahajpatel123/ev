@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +34,8 @@ from app.contracts import ChatMessage
 from app.device_gateway.cognitive_text import PhoneTextContext
 from app.gateway.muse import MuseProviderUnavailable, muse_spark_key_loaded, muse_spark_model
 from app.gateway.reliability import CircuitOpenError
+
+logger = logging.getLogger("ev.cognitive.kernel")
 
 _CODE_WORKING = (
     "I'm writing that now. I'll tell you when it's saved and I've run it."
@@ -137,6 +141,8 @@ class KernelResult:
     latency_ms: float = 0.0
     tool_calls: int = 0
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    last_tool: str = ""
+    last_tool_args: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         from app.gateway.muse import muse_spark_inference_route
@@ -228,6 +234,176 @@ async def handle_turn(
     actor: str = "master",
     phone_text_context: PhoneTextContext | None = None,
 ) -> KernelResult:
+    """One owner turn. Records the exchange and rebinds the pending offer.
+
+    Every thinking surface — live voice, Mac Talk, iPhone, PWA, text, the
+    device gateway — funnels through here, so the durable turn ledger and the
+    offer rebind happen once for all of them instead of per client.
+    """
+
+    try:
+        result = await _handle_turn(
+            transcript=transcript,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            modality=modality,
+            session=session,
+            actor=actor,
+            phone_text_context=phone_text_context,
+        )
+    except Exception as exc:
+        # A raise here used to reach the live socket as nothing at all: the
+        # owner spoke and Evie went silent, with no way to tell a crash from
+        # being ignored. Say so plainly, record the turn, and leave a trace —
+        # a counter nobody increments would hide a persistent bug forever.
+        logger.exception("cognitive kernel turn failed: %r", (transcript or "")[:120])
+        telemetry.inc("kernel_failures")
+        telemetry.note(
+            last_turn_kind="failed",
+            last_error=f"{type(exc).__name__}: {str(exc)[:160]}",
+        )
+        result = KernelResult(
+            spoken=(
+                "That turn failed on my side and I couldn't finish it. "
+                "Ask me again."
+            ),
+            kind="failed",
+            unavailable=True,
+        )
+    _record_turn(transcript=transcript, result=result)
+    return result
+
+
+# Kinds that answer the owner with a deterministic line and already own their
+# own pending state (a parked send, a body prompt, a cancellation). A generic
+# offer on top of those would fight the dedicated handler for the next "yes".
+_OFFER_EXEMPT_KINDS = frozenset(
+    {"reflex", "offer_dropped", "send_prompt", "send_approval", "phone_cancel"}
+)
+
+# Kinds where the turn did NOT finish what the owner asked for. The answered
+# offer must survive so he can answer it again once the work can run.
+_OFFER_KEEP_KINDS = frozenset({"in_flight", "unavailable", "failed"})
+
+
+def _record_turn(*, transcript: str, result: KernelResult) -> None:
+    """Keep the conversation and the live offer on the durable session."""
+
+    from app.cognitive.session_store import current
+
+    try:
+        cognition = current()
+    except Exception as exc:  # pragma: no cover - unreadable session file
+        telemetry.note(last_error=f"session_unavailable:{type(exc).__name__}")
+        return
+    try:
+        from app.cognitive.intent import (
+            clear_pending_offer,
+            is_substantive_turn,
+            pending_offer,
+            remember_exchange,
+            set_pending_offer,
+        )
+        from app.ev.continuity import is_affirmative_reply, is_negative_reply
+    except ImportError as exc:  # pragma: no cover - broken install
+        telemetry.note(last_error=f"intent_unavailable:{exc.name}")
+        return
+
+    text = (transcript or "").strip()
+    kind = str(result.kind or "")
+    exempt = kind in _OFFER_EXEMPT_KINDS or kind.startswith("reflex")
+    offer = pending_offer(cognition)
+    # A turn that did not finish what the owner asked for must not spend his
+    # answer: the offer stays live so he can say "yes" again once it can run.
+    unfinished = kind in _OFFER_KEEP_KINDS
+    answered = (
+        offer is not None
+        and not unfinished
+        and (is_affirmative_reply(text) or is_negative_reply(text))
+    )
+    if answered:
+        clear_pending_offer(cognition)
+    elif not is_substantive_turn(text):
+        # A greeting (including the client's synthetic "Hi." on live open) must
+        # not displace the offer the owner has not answered yet.
+        remember_exchange(cognition, owner=text, assistant=result.spoken, kind=kind)
+        return
+    if not exempt and result.spoken and not result.unavailable:
+        set_pending_offer(
+            cognition,
+            result.spoken,
+            action={"tool": result.last_tool, "args": result.last_tool_args},
+        )
+    remember_exchange(cognition, owner=text, assistant=result.spoken, kind=kind)
+
+
+def _epoch(value: Any) -> float | None:
+    """Best-effort epoch seconds from an ISO string or a datetime."""
+
+    if isinstance(value, datetime):
+        stamp = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.timestamp()
+
+
+async def _offer_outranks_parked_send(
+    db: AsyncSession,
+    *,
+    offer: dict[str, Any] | None,
+    device_id: str | None,
+    live_session_id: str | None,
+) -> bool:
+    """True when the owner's reply answers a question newer than a parked send.
+
+    A parked WhatsApp send has its own "yes" handler that runs ahead of every
+    other interpretation. When Evie has asked the owner something since that
+    send was parked, the answer belongs to the newer question — the most
+    recent question wins.
+    """
+
+    if not offer:
+        return False
+    asked = _epoch(offer.get("at"))
+    if asked is None:
+        return False
+    from app.ev.confirm import pol_meta
+    from app.ev.messaging.approval import latest_pending
+
+    row = await latest_pending(
+        db,
+        device_id=device_id,
+        live_session_id=live_session_id,
+    )
+    if row is None:
+        return False
+    # `created_at` is the row's first insert, which a re-ask does not move;
+    # the ask time is what the owner actually last heard.
+    meta = pol_meta(getattr(row, "payload", None))
+    parked = _epoch(meta.get("issued_at")) or _epoch(getattr(row, "created_at", None))
+    if parked is None:
+        return False
+    return asked > parked
+
+
+async def _handle_turn(
+    *,
+    transcript: str,
+    live_session_id: str | None = None,
+    device_id: str | None = None,
+    modality: str = "voice",
+    session: AsyncSession | None = None,
+    actor: str = "master",
+    phone_text_context: PhoneTextContext | None = None,
+) -> KernelResult:
     started = time.perf_counter()
     text = (transcript or "").strip()
     if phone_text_context is not None and session is not None:
@@ -266,6 +442,57 @@ async def handle_turn(
         elif reflex.resume:
             cognition.parked = False
             save(cognition)
+        if reflex.kind in {"stop_speech", "cancel_goal"}:
+            # "cancel"/"never mind" also ends a send parked for this surface:
+            # this branch returns before the approval gate below, and a ticket
+            # left pending fires on the next casual "ok" inside its 300s TTL.
+            from app.cognitive.intent import pending_offer
+            from app.ev.messaging.approval import handle_send_approval
+
+            # "never mind" / "cancel" may be declining the question Evie has
+            # asked since the send was parked, not the send itself. Cancelling
+            # the ticket then would destroy a message the owner never decided
+            # against.
+            live_offer = pending_offer(cognition)
+            skip_approval = False
+            if live_offer is not None and session is not None:
+                skip_approval = await _offer_outranks_parked_send(
+                    session,
+                    offer=live_offer,
+                    device_id=device_id,
+                    live_session_id=live_session_id,
+                )
+            if skip_approval:
+                approval = None
+            elif session is None:
+                from app.db import SessionLocal
+
+                async with SessionLocal() as approval_db:
+                    approval = await handle_send_approval(
+                        approval_db,
+                        text,
+                        actor=actor,
+                        device_id=device_id,
+                        live_session_id=live_session_id,
+                    )
+                    if approval is not None:
+                        await approval_db.commit()
+            else:
+                approval = await handle_send_approval(
+                    session,
+                    text,
+                    actor=actor,
+                    device_id=device_id,
+                    live_session_id=live_session_id,
+                )
+            if approval is not None:
+                return KernelResult(
+                    spoken=str(approval.get("spoken") or ""),
+                    kind="send_approval",
+                    persist=False,
+                    steering_version=cognition.steering_version,
+                    latency_ms=telemetry.timed_ms(started),
+                )
         telemetry.note(last_turn_kind="reflex")
         return KernelResult(
             spoken=reflex.spoken,
@@ -285,31 +512,47 @@ async def handle_turn(
     begin_owner_turn(cognition, text)
     dropped_goal = take_dropped_goal_id(cognition)
 
+    # A short yes/no answers the most recent question the owner was asked, and
+    # the ladder below is ordered by that rule. A parked WhatsApp send is
+    # older news than the question Evie has asked since, so it must not
+    # swallow the answer to that question.
+    from app.cognitive.intent import clear_pending_offer, pending_offer
+    from app.ev.continuity import is_affirmative_reply, is_negative_reply
+
+    offer = pending_offer(cognition)
+    answered_offer = offer is not None and (
+        is_affirmative_reply(text) or is_negative_reply(text)
+    )
+
     # A parked WhatsApp Web send is approved or cancelled deterministically
     # before any model call: one "yes" resumes the exact prepared message.
     from app.ev.messaging.approval import handle_send_approval
 
-    if session is None:
-        from app.db import SessionLocal
-
-        async with SessionLocal() as approval_db:
-            approval = await handle_send_approval(
-                approval_db,
-                text,
-                actor=actor,
-                device_id=device_id,
-                live_session_id=live_session_id,
-            )
-            if approval is not None:
-                await approval_db.commit()
-    else:
-        approval = await handle_send_approval(
-            session,
+    async def _approval_turn(approval_db: AsyncSession) -> dict[str, Any] | None:
+        if answered_offer and await _offer_outranks_parked_send(
+            approval_db,
+            offer=offer,
+            device_id=device_id,
+            live_session_id=live_session_id,
+        ):
+            return None
+        return await handle_send_approval(
+            approval_db,
             text,
             actor=actor,
             device_id=device_id,
             live_session_id=live_session_id,
         )
+
+    if session is None:
+        from app.db import SessionLocal
+
+        async with SessionLocal() as approval_db:
+            approval = await _approval_turn(approval_db)
+            if approval is not None:
+                await approval_db.commit()
+    else:
+        approval = await _approval_turn(session)
     if approval is not None:
         return KernelResult(
             spoken=str(approval.get("spoken") or ""),
@@ -318,6 +561,27 @@ async def handle_turn(
             steering_version=cognition.steering_version,
             latency_ms=telemetry.timed_ms(started),
         )
+
+    # Keep the offer visible to this turn's context instead of replying with a
+    # topic-free greeting. The decline is tested first: `answered_offer` already
+    # covers a negative reply, so checking it first made this branch dead and a
+    # clean "no" always cost a full model call.
+    if offer is not None:
+        if is_negative_reply(text):
+            clear_pending_offer(cognition)
+            telemetry.note(last_turn_kind="offer_dropped")
+            return KernelResult(
+                spoken="Okay, never mind.",
+                kind="offer_dropped",
+                persist=False,
+                steering_version=cognition.steering_version,
+                latency_ms=telemetry.timed_ms(started),
+            )
+        if not answered_offer:
+            from app.cognitive.intent import is_substantive_turn
+
+            if is_substantive_turn(text):
+                clear_pending_offer(cognition)
 
     # Phone requests must never enter the deterministic Mac send shortcut.
     # Classify using the persisted device, not a model-supplied tool argument.
@@ -358,6 +622,7 @@ async def handle_turn(
             return phone_result
 
     from app.ev.send_intent import (
+        _clean_body,
         incomplete_send,
         looks_like_message_body,
         parse_send_intent,
@@ -387,17 +652,45 @@ async def handle_turn(
             )
         waiting = pending_send(cognition)
         domain = str((cognition.constraints or {}).get("turn_domain") or "")
-        if (
-            waiting
-            and domain not in {"look", "file"}
-            and looks_like_message_body(text)
-        ):
-            send = {
-                "to": waiting["to"],
-                "text": text.strip()[:500],
-            }
-            if waiting.get("channel"):
-                send["channel"] = waiting["channel"]
+        if waiting and domain not in {"look", "file"}:
+            if is_negative_reply(text):
+                # A refusal at "what should I say?" cancels the send. It is an
+                # answer to the prompt, never the message body.
+                clear_pending_send(cognition)
+                telemetry.note(last_turn_kind="send_cancelled")
+                return KernelResult(
+                    spoken="Okay, cancelled.",
+                    kind="send_cancelled",
+                    persist=False,
+                    steering_version=cognition.steering_version,
+                    latency_ms=telemetry.timed_ms(started),
+                )
+            affirmative = is_affirmative_reply(text)
+            body = "" if affirmative else _clean_body(text)
+            if body and looks_like_message_body(text):
+                send = {
+                    "to": waiting["to"],
+                    "text": body[:500],
+                }
+                if waiting.get("channel"):
+                    send["channel"] = waiting["channel"]
+            elif affirmative or looks_like_message_body(text):
+                # An agreement ("haan bhej do") or a bare lead-in ("that ...")
+                # names no message. Ask again instead of shipping the answer as
+                # the body.
+                telemetry.note(last_turn_kind="send_prompt")
+                return KernelResult(
+                    spoken=prompt_for_send_body(
+                        to=str(waiting["to"]),
+                        channel=waiting.get("channel"),
+                    ),
+                    kind="send_prompt",
+                    persist=False,
+                    steering_version=cognition.steering_version,
+                    latency_ms=telemetry.timed_ms(started),
+                )
+            else:
+                clear_pending_send(cognition)
         elif waiting:
             clear_pending_send(cognition)
     if send is not None:
@@ -510,6 +803,12 @@ async def handle_turn(
             cognition=cognition,
             started=started,
         )
+        # An answered offer is only spent when the turn actually answered it.
+        # A budget-exhausted or failed turn must keep the offer, or the
+        # owner's "yes" is consumed and he is left with nothing.
+        answered_and_spent = answered_offer and result.kind not in _OFFER_KEEP_KINDS
+        if answered_and_spent:
+            clear_pending_offer(cognition)
         await db.commit()
         return result
 
@@ -539,11 +838,12 @@ async def _muse_turn(
     has_work = has_active_work(cognition)
     compact = compact_turn(text=text, domain=domain, has_work=has_work)
     effort = reasoning_effort(domain=domain, compact=compact, has_work=has_work)
+    from app.cognitive.capabilities import PHONE_LOCAL_TOOL_NAMES
     from app.device_gateway.cognitive_phone import (
         capture_phone_binding,
         execute_phone_tool,
         is_phone_turn,
-        phone_tool_specs,
+        phone_turn_specs,
     )
 
     phone_turn = await is_phone_turn(session, device_id) if device_id else False
@@ -563,7 +863,11 @@ async def _muse_turn(
         )
         if routed is not None:
             return routed
-    specs = phone_tool_specs() if phone_turn else tool_specs_for_turn(compact=compact)
+    # A phone turn sees the same semantic bus as every other surface, plus its
+    # own local actuators. Restricting it to three tools made every Core or
+    # Home Station capability unreachable from the device the owner actually
+    # carries.
+    specs = phone_turn_specs(compact=compact) if phone_turn else tool_specs_for_turn(compact=compact)
     if compact:
         telemetry.inc("compact_turns")
     telemetry.note(last_reasoning_effort=effort, last_muse_tools_offered=len(specs))
@@ -603,15 +907,25 @@ async def _muse_turn(
         ChatMessage(role="system", content=system),
         ChatMessage(role="user", content=text[:4000]),
     ]
+    # A phone turn is offered the whole bus and has no local fallback, so it
+    # gets the WORK budget for steps and time: four rounds is not enough to
+    # reach Core or Home Station and still speak the result, and exhausting the
+    # budget used to surface the model's mid-work narration ("pulling your
+    # latest email now") instead of the answer. A purely conversational turn
+    # still returns on its first round, so this costs nothing when no tool is
+    # needed.
+    budget_compact = compact and not phone_turn
     timeout = float(
         getattr(settings, "cognitive_conversation_timeout_seconds", 25.0)
-        if compact
+        if budget_compact
         else getattr(settings, "cognitive_work_timeout_seconds", 90.0)
     )
-    max_steps = max_tool_turns(compact=compact)
+    max_steps = max_tool_turns(compact=budget_compact)
     tool_count = 0
     steering_seen = int(cognition.steering_version)
     last_spoken = ""
+    last_tool = ""
+    last_tool_args: dict[str, Any] = {}
     deadline = started + timeout
 
     def _in_flight() -> KernelResult:
@@ -620,17 +934,23 @@ async def _muse_turn(
             last_turn_kind="muse",
             last_transcript_to_muse_ms=telemetry.timed_ms(started),
         )
+        # `last_spoken` is the model's mid-work narration ("pulling your latest
+        # email now"), not an answer. Speaking it bare presented that narration
+        # as the finished reply; say plainly that the work is unfinished.
+        said = last_spoken.strip()
+        pending = (
+            "I haven't finished that yet — I'm still working on it. Ask me again in a moment."
+        )
         return KernelResult(
-            spoken=(
-                last_spoken
-                or "I still have work in flight. Ask me where we are and I'll use the real task state."
-            )[:2000],
-            kind="muse",
+            spoken=(f"{said} {pending}" if said else pending)[:2000],
+            kind="in_flight",
             persist=bool(cognition.focused_goal_id),
             steering_version=cognition.steering_version,
             goal_id=cognition.focused_goal_id,
             latency_ms=telemetry.timed_ms(started),
             tool_calls=tool_count,
+            last_tool=last_tool,
+            last_tool_args=last_tool_args,
         )
 
     try:
@@ -690,6 +1010,8 @@ async def _muse_turn(
                     goal_id=cognition.focused_goal_id,
                     latency_ms=telemetry.timed_ms(started),
                     tool_calls=tool_count,
+                    last_tool=last_tool,
+                    last_tool_args=last_tool_args,
                 )
             telemetry.inc("muse_tool_turns")
             last_spoken = (result.text or "").strip()
@@ -708,7 +1030,7 @@ async def _muse_turn(
                     return _in_flight()
                 tool_count += 1
                 telemetry.inc("muse_tool_calls")
-                if phone_turn:
+                if phone_turn and str(call.name or "") in PHONE_LOCAL_TOOL_NAMES:
                     if int(current().steering_version) != steering_seen:
                         evidence = {"ok": False, "error": "STEERING_CHANGED", "executed": False}
                     else:
@@ -744,25 +1066,69 @@ async def _muse_turn(
                         set_kernel_turn_deadline,
                     )
 
-                    # A nested code job may take minutes; cap it to what is
-                    # left of this turn so it returns a partial result instead
-                    # of being cancelled after writing files.
-                    deadline_token = set_kernel_turn_deadline(deadline)
-                    try:
-                        evidence = await asyncio.wait_for(
-                            execute_semantic(
-                                session,
-                                call.name,
-                                dict(call.arguments or {}),
-                                cognition=cognition,
-                                actor=actor,
-                                live_session_id=live_session_id,
-                                steering_seen=steering_seen,
-                            ),
-                            timeout=remaining,
+                    # A semantic tool on a phone turn reaches Core and Home
+                    # Station, so it carries the same authority binding as a
+                    # device-local action: the turn that opened the work is the
+                    # turn that may finish it.
+                    changed: str | None = None
+                    if phone_turn:
+                        from app.device_gateway.cognitive_phone import (
+                            phone_turn_authority_changed,
                         )
-                    finally:
-                        reset_kernel_turn_deadline(deadline_token)
+
+                        changed = await phone_turn_authority_changed(
+                            session,
+                            device_id=str(device_id) if device_id else None,
+                            live_session_id=live_session_id,
+                            expected_binding=phone_binding,
+                            text_context=phone_text_context,
+                        )
+                    if changed is not None:
+                        evidence = {
+                            "ok": False,
+                            "error": changed,
+                            "diagnosis": changed,
+                            "executed": False,
+                            "verified": False,
+                            "spoken": (
+                                "The phone connection changed while I was thinking. "
+                                "Please ask again."
+                            ),
+                        }
+                    else:
+                        # A nested code job may take minutes; cap it to what is
+                        # left of this turn so it returns a partial result instead
+                        # of being cancelled after writing files.
+                        deadline_token = set_kernel_turn_deadline(deadline)
+                        try:
+                            evidence = await asyncio.wait_for(
+                                execute_semantic(
+                                    session,
+                                    call.name,
+                                    dict(call.arguments or {}),
+                                    cognition=cognition,
+                                    actor=actor,
+                                    live_session_id=live_session_id,
+                                    steering_seen=steering_seen,
+                                    device_id=str(device_id) if device_id else None,
+                                ),
+                                timeout=remaining,
+                            )
+                        finally:
+                            reset_kernel_turn_deadline(deadline_token)
+                    if isinstance(evidence, dict) and evidence.get("ok") is not False:
+                        last_tool = str(call.name or "")
+                        last_tool_args = dict(call.arguments or {})
+                    # A phone turn's failure has to reach the phone receipt too,
+                    # otherwise the device sees only prose and cannot tell a real
+                    # failure from a refusal.
+                    if (
+                        phone_turn
+                        and action_receipts is not None
+                        and isinstance(evidence, dict)
+                        and evidence.get("ok") is False
+                    ):
+                        action_receipts.append(evidence)
                 messages.append(
                     ChatMessage(
                         role="tool",

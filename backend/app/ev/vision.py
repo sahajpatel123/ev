@@ -125,7 +125,7 @@ def _extract_summary(text: str) -> str:
             break
     summary = " ".join(lines).strip()
     try:
-        from app.memory.visual import is_generic_label_scene, _remainder_has_identity
+        from app.memory.visual import _remainder_has_identity, is_generic_label_scene
     except Exception:  # noqa: BLE001 - perception must still return something
         return summary[:1000] or "Perception completed."
     identity_lines = [

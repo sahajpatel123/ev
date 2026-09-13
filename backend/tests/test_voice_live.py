@@ -7,6 +7,8 @@ import asyncio
 import base64
 import contextlib
 
+import pytest
+
 from app.voice.asr import EchoTranscriber
 from app.voice.contracts import SynthesisResult, Transcript, VoiceError
 from app.voice.live.asr_feed import LivePcmTranscriber, resolve_live_transcriber
@@ -41,6 +43,23 @@ from app.voice.live.turn_taking import (
 from app.voice.speech import pop_speakable
 
 
+@pytest.fixture(autouse=True)
+def _own_cognitive_session(tmp_path, monkeypatch):
+    """Keep turn-taking off the owner's durable session.
+
+    ``is_non_turn`` reads the live offer, so a real ``session.json`` left behind
+    by a running EVIE would decide these assertions.
+    """
+
+    from app.cognitive.session_store import reset_for_tests
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path / "storage"))
+    reset_for_tests()
+    yield
+    reset_for_tests()
+
+
 def test_pause_class_treats_silence_as_information() -> None:
     assert pause_class("That's interesting.") == "complete"
     assert pause_class("I was thinking maybe") == "trailing"
@@ -55,6 +74,8 @@ def test_pause_class_treats_silence_as_information() -> None:
 
 
 def test_non_turns_are_thinking_sounds() -> None:
+    """Nothing is waiting on these words, so none of them is a turn."""
+
     assert is_non_turn("hmm")
     assert is_non_turn("uh")
     assert is_non_turn("yeah")

@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.memory.observe import log_memory
 from app.models import Event
 from app.utils.text import utcnow
 
@@ -235,6 +236,41 @@ def _interleave_life_hits(
     return mixed
 
 
+# Ask-time read outcomes. A peek that could not READ (missing/corrupt index,
+# permission, helper crash) still returns an empty list because callers depend
+# on that shape — but an empty list must not be spoken as "there is no mail".
+# The spoken layer reads this instead; the next successful peek clears the shelf.
+_READ_ERRORS: dict[str, str] = {}
+
+
+def note_live_read_error(shelf: str, error: BaseException | str) -> None:
+    """Record that ``shelf`` could not be read. The spoken layer never echoes this."""
+    if isinstance(error, BaseException):
+        reason = type(error).__name__
+        detail = str(error)[:160]
+    else:
+        reason = str(error or "")[:60] or "read_failed"
+        detail = ""
+    _READ_ERRORS[shelf] = reason
+    log_memory(
+        "memory.live_read_degraded",
+        extra={"shelf": shelf, "error": reason, "detail": detail or None},
+    )
+
+
+def live_read_error(*shelves: str) -> str:
+    """Error type from the most recent FAILED read of ``shelves``. Empty when it read."""
+    for shelf in shelves:
+        reason = _READ_ERRORS.get(shelf)
+        if reason:
+            return reason
+    return ""
+
+
+def _clear_read_error(shelf: str) -> None:
+    _READ_ERRORS.pop(shelf, None)
+
+
 def peek_mac_life(
     query: str,
     *,
@@ -257,15 +293,20 @@ def peek_mac_life(
             return []
         try:
             daemon = get_life_stream_daemon()
-        except Exception:
+        except Exception as exc:
+            note_live_read_error(shelf, exc)
             return []
     distinctive = [token for token in (tokens or []) if token]
     limit = max(1, min(int(k or 8), 8))
+    read_key = shelf
+    failed = False
     try:
         if shelf == "chats":
             from app.memory.life_archive.locate import life_channel
 
             channel = life_channel(query)
+            if channel in {"whatsapp", "imessage"}:
+                read_key = channel
             if channel == "whatsapp":
                 return daemon.peek_whatsapp(tokens=distinctive, limit=limit)
             if channel == "imessage":
@@ -301,8 +342,39 @@ def peek_mac_life(
                 limit=limit,
             )
         return []
-    except Exception:
+    except Exception as exc:
+        failed = True
+        note_live_read_error(read_key, exc)
         return []
+    finally:
+        if not failed:
+            _clear_read_error(read_key)
+
+
+def _helper_shelf(command: str) -> str:
+    shelf = str(command or "").split(".", 1)[0]
+    return shelf if shelf in {"contacts", "mail"} else ""
+
+
+def _note_helper_failure(command: str, error: BaseException | str) -> None:
+    """Contacts have no sqlite peek, so a helper failure IS an unread shelf.
+
+    Mail keeps the Envelope Index as its authority: this helper is only a
+    fallback after the index read, so its failure must not overwrite a readable
+    index's honest empty with "couldn't read mail".
+    """
+    if _helper_shelf(command) == "contacts":
+        note_live_read_error("contacts", error)
+        return
+    log_memory(
+        "memory.live_helper_degraded",
+        extra={
+            "command": str(command or "")[:60],
+            "error": (
+                type(error).__name__ if isinstance(error, BaseException) else str(error or "")[:60]
+            ),
+        },
+    )
 
 
 async def _helper_account_rows(
@@ -319,11 +391,16 @@ async def _helper_account_rows(
         return []
     try:
         result = await run_life_helper(command, args or {}, helper_path=helper, timeout=8.0)
-    except Exception:
+    except Exception as exc:
+        _note_helper_failure(command, exc)
         return []
     raw = (result.data or {}).get(key) if result.data else None
     if not isinstance(raw, list):
+        _note_helper_failure(command, "bad_helper_payload")
         return []
+    shelf = _helper_shelf(command)
+    if shelf:
+        _clear_read_error(shelf)
     return [row for row in raw if isinstance(row, dict)]
 
 
@@ -368,11 +445,15 @@ async def peek_account_life(
                 rows = await _helper_account_rows("contacts.list", "contacts")
             if not rows:
                 rows = list(getattr(daemon, "_cached_contacts", []) or [])
+                if rows:
+                    # A read that produced contacts supersedes an earlier failure.
+                    _clear_read_error("contacts")
         return daemon.peek_contacts(rows, tokens=distinctive, limit=limit)
     rows = mail
     if rows is None:
         sqlite_hits = daemon.peek_mail(tokens=distinctive, limit=limit, query=query)
         if sqlite_hits:
+            _clear_read_error("mail")
             return sqlite_hits
         rows = await _helper_account_rows("mail.list", "messages", args={"limit": limit})
         if not rows:

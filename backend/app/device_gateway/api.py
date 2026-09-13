@@ -57,7 +57,6 @@ from .webrtc_live import (
     SIGNALING_IMPLEMENTATION,
     SIGNALING_VERSION,
     WEBRTC_BACKENDS,
-    assert_session_owns,
     attach_phone_control_live,
     close_phone_control_live,
     drain_control_events,
@@ -249,8 +248,15 @@ class MisheardRequest(BaseModel):
 
 class CameraResult(BaseModel):
     request_id: str
-    jpeg_b64: str
+    jpeg_b64: str = ""
     action: str | None = None
+    # Burst capture: the browser cannot record video, so it sends timestamped
+    # stills. Each entry is ``{jpeg_b64, captured_at_ms}``. Never called a clip.
+    frames: list[dict] = Field(default_factory=list)
+    media_kind: str | None = None
+    has_clip: bool | None = None
+    clip_supported: bool | None = None
+    captured_at_ms: int | None = None
 
 
 class TurnReceiptRequest(BaseModel):
@@ -1853,7 +1859,7 @@ async def device_today(
     from .phone_routines import normalize
 
     quiet_state: dict = {"active": False, "window": None}
-    routines = normalize((profile.get("routines") or {}))
+    routines = normalize(profile.get("routines") or {})
     if routines.get("quiet_hours_start") and routines.get("quiet_hours_end"):
         from .phone_routines import in_quiet_hours
 
@@ -1923,8 +1929,8 @@ async def device_memories(
     _check_origin(request)
     if is_sandbox_device(device):
         return {"ok": True, "memory_enabled": False, "memories": [], "total": 0}
-    from app.models import Memory
     from app.memory.retrieval import Retriever
+    from app.models import Memory
 
     stmt = select(Memory).where(Memory.is_current.is_(True))
     if memory_type:
@@ -2097,8 +2103,8 @@ async def device_search(
     memories: list[dict] = []
     events: list[dict] = []
     if memory_enabled and needle:
-        from app.models import Event, Memory
         from app.memory.retrieval import Retriever
+        from app.models import Event, Memory
 
         mem_rows = list(
             (
@@ -2198,12 +2204,13 @@ async def gateway_capture(
     if privacy not in {"normal", "private", "sensitive", "never_send_to_model"}:
         raise HTTPException(status_code=422, detail="Unknown privacy level")
     key = (data.idempotency_key or "").strip()[:128]
+    from uuid import uuid4
+
     from app.models import Event
     from app.schemas import EventCreate
     from app.services.event_service import EventService
     from app.services.processor import ensure_processed
     from app.utils.text import sha256_hex
-    from uuid import uuid4
 
     if key:
         existing = (
@@ -2439,6 +2446,8 @@ async def device_look_history(
     looks = []
     for ev in rows:
         content = ev.content or {}
+        attachment_id = str(content.get("attachment_id") or "").strip() or None
+        media_kind = str(content.get("media_kind") or "").strip().lower() or None
         looks.append(
             {
                 "id": str(ev.id),
@@ -2446,9 +2455,69 @@ async def device_look_history(
                 "scene": str(content.get("scene") or "")[:200],
                 "device_id": ev.device_id,
                 "occurred_at": ev.occurred_at.isoformat() if ev.occurred_at else None,
+                # Playback affordance: only ever true for media this look
+                # actually stored, and only for a trusted device.
+                "has_media": bool(attachment_id),
+                "media_kind": media_kind,
+                "duration_s": content.get("duration_s"),
+                "moment_count": content.get("moment_count") or None,
+                "transcript": (str(content.get("transcript") or "")[:400] or None),
+                "media_url": (
+                    f"/v1/device-gateway/looks/{ev.id}/media" if attachment_id else None
+                ),
             }
         )
     return {"ok": True, "memory_enabled": True, "looks": looks}
+
+
+@router.get("/looks/{look_id}/media")
+async def device_look_media(
+    look_id: UUID,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Play back the media a camera observation stored (clip or kept frame).
+
+    Scoped twice over: the caller must be a trusted (non-sandbox) device, and
+    only the attachment referenced by that exact observation is served — never
+    an arbitrary attachment id.
+    """
+
+    _check_origin(request)
+    if is_sandbox_device(device):
+        raise HTTPException(status_code=403, detail="Sandbox devices cannot read owner media")
+    from app.models import Attachment, Event
+
+    ev = await session.get(Event, look_id)
+    if ev is None or ev.event_type != "camera.observation" or ev.tombstoned_at is not None:
+        raise HTTPException(status_code=404, detail="No such camera observation")
+    raw_id = str((ev.content or {}).get("attachment_id") or "").strip()
+    if not raw_id:
+        raise HTTPException(status_code=404, detail="This look stored no media")
+    try:
+        attachment = await session.get(Attachment, UUID(raw_id))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=404, detail="This look stored no media") from None
+    if attachment is None:
+        raise HTTPException(
+            status_code=410,
+            detail="The stored media was deleted by the retention policy",
+        )
+    from app.storage.object_store import get_object_store
+
+    try:
+        data = await get_object_store().get(attachment.storage_key)
+    except Exception:  # noqa: BLE001 - a missing blob is an honest 410
+        raise HTTPException(status_code=410, detail="The stored media is no longer available") from None
+    return Response(
+        content=data,
+        media_type=attachment.content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{attachment.filename}"',
+            "Cache-Control": "private, max-age=3600",
+        },
+    )
 
 
 @router.post("/battery")
@@ -2544,14 +2613,14 @@ async def device_weather(
     _check_origin(request)
     import asyncio as _asyncio
 
-    from app.search.live import default_place, extract_place, home_coords, weather_results
+    from app.search.live import default_place, home_coords, weather_results
 
     requested = (place or "").strip() or None
     if requested is None and home_coords() is None and not default_place():
         return {"ok": True, "status": "no_place", "forecast": None, "error_code": "NO_PLACE"}
     try:
         results = await _asyncio.wait_for(weather_results(requested or "home", limit=2), timeout=8)
-    except _asyncio.TimeoutError:
+    except TimeoutError:
         return {"ok": True, "status": "unavailable", "forecast": None, "error_code": "WEATHER_TIMEOUT", "retryable": True}
     except Exception:
         return {"ok": True, "status": "unavailable", "forecast": None, "error_code": "WEATHER_UNAVAILABLE", "retryable": True}
@@ -2895,8 +2964,16 @@ async def camera_result(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
+    frames = [
+        frame
+        for frame in (data.frames or [])
+        if isinstance(frame, dict) and str(frame.get("jpeg_b64") or "").strip()
+    ][:8]
+    primary = data.jpeg_b64 or (str(frames[-1].get("jpeg_b64") or "") if frames else "")
+    if not primary:
+        raise HTTPException(status_code=422, detail="No camera frame supplied")
     try:
-        meta = put_frame(data.request_id, device_id=str(device.id), jpeg_b64=data.jpeg_b64)
+        meta = put_frame(data.request_id, device_id=str(device.id), jpeg_b64=primary)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Unknown camera request") from exc
     except PermissionError as exc:
@@ -2908,12 +2985,23 @@ async def camera_result(
     if not is_sandbox_device(device):
         from .phone_look import ingest_phone_frame
 
+        burst: list[dict] = []
+        for index, frame in enumerate(frames):
+            entry = {
+                "jpeg_b64": str(frame.get("jpeg_b64") or ""),
+                "captured_at_ms": frame.get("captured_at_ms"),
+                "sequence": frame.get("sequence", index),
+            }
+            burst.append(entry)
         vision = await ingest_phone_frame(
             session,
             device=device,
             request_id=data.request_id,
-            jpeg_b64=data.jpeg_b64,
+            jpeg_b64=primary,
             action=data.action or "look",
+            frames=burst or None,
+            media_kind=data.media_kind,
+            has_clip=data.has_clip,
         )
         await session.commit()
     return {
@@ -2922,6 +3010,8 @@ async def camera_result(
         "persisted_to_memory_os": bool(vision and vision.get("persisted_to_memory_os")),
         "vision": vision,
         "ocr_text": (vision or {}).get("ocr_text"),
+        "moments": (vision or {}).get("moments") or [],
+        "media_kind": (vision or {}).get("media_kind"),
         "provenance": "phone_camera" if vision else None,
     }
 

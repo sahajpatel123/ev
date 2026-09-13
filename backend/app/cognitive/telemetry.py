@@ -20,6 +20,7 @@ _STATE: dict[str, Any] = {
     "grok_turns": 0,
     "deepseek_turns": 0,
     "provider_failures": 0,
+    "kernel_failures": 0,
     "provider_timeouts": 0,
     "provider_429": 0,
     "circuit_opens": 0,

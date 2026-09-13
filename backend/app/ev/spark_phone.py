@@ -170,7 +170,7 @@ async def spark_phone_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
             ),
             timeout=_SPARK_BUDGET_S,
         )
-    except (MuseProviderUnavailable, asyncio.TimeoutError):
+    except (TimeoutError, MuseProviderUnavailable):
         logger.info("spark_phone unavailable")
         return None
     except Exception:

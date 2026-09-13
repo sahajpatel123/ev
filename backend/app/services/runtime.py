@@ -1126,6 +1126,8 @@ async def decide_action(
     actor: str,
     decision: Literal["approve", "deny"],
     reason: str | None = None,
+    device_id=None,
+    reverify_token: str | None = None,
 ) -> ApprovedAction:
     action = await session.get(ApprovedAction, action_id)
     if action is None:
@@ -1184,7 +1186,13 @@ async def decide_action(
     }:
         raise ValueError(action.denied_reason.replace("_", " "))
     if decision == "approve" and action.status == "approved" and pol_meta(action.payload).get("resume_on_approve"):
-        return await execute_action(session, action.id, actor=actor)
+        return await execute_action(
+            session,
+            action.id,
+            actor=actor,
+            device_id=device_id,
+            reverify_token=reverify_token,
+        )
     return action
 
 
@@ -1194,6 +1202,8 @@ async def execute_action(
     *,
     actor: str,
     result: dict | None = None,
+    device_id=None,
+    reverify_token: str | None = None,
 ) -> ApprovedAction:
     action = await session.get(ApprovedAction, action_id)
     if action is None:
@@ -1235,6 +1245,14 @@ async def execute_action(
                 issued_at=action.approved_at,
                 session_id=str(meta.get("live_session_id") or action.session_id or "") or None,
             )
+        from app.ev.messaging.routing import RouteBinding
+
+        approved_route = RouteBinding.from_payload(meta.get("route"))
+        # A device actor must be identifiable to policy, or the dispatch is
+        # denied as an "invalid actor/device combination" after the row was
+        # already marked approved. Fall back to the device the action was
+        # parked for when the caller does not name one.
+        action_device = device_id or action.device_id
         tool = await dispatch_tool(
             session,
             action.action_type,
@@ -1243,7 +1261,11 @@ async def execute_action(
             allow_sensitive=True,
             channel="action",
             confirmation=bound,
+            device_id=action_device,
+            reverify_token=reverify_token,
             live_session_id=str(meta.get("live_session_id") or action.session_id or "") or None,
+            approved_route=approved_route,
+            approved_address=str(meta.get("address") or ""),
             audit_endpoint="POST /v1/runtime/actions/{id}/execute",
         )
         dispatched_via_tool = True
@@ -1704,7 +1726,11 @@ async def runtime_health(session: AsyncSession) -> dict:
     checks.append(
         {"name": "queue", "status": queue_status, "mode": settings.processing_mode}
     )
-    from app.gateway.muse import configured_intelligence_provider, muse_brain_active, muse_spark_key_loaded
+    from app.gateway.muse import (
+        configured_intelligence_provider,
+        muse_brain_active,
+        muse_spark_key_loaded,
+    )
 
     intel = configured_intelligence_provider() or settings.chat_provider
     chat_status = "ok"
@@ -2126,7 +2152,6 @@ async def runtime_status(session: AsyncSession) -> RuntimeStatusOut:
 
 def record_dead_letter_sync(*, queue: str, payload: dict, error: str, job_id: str | None = None) -> None:
     """Sync helper for RQ worker entrypoints (no running event loop there)."""
-    import asyncio
 
     from app.db import SessionLocal
 
@@ -2142,7 +2167,6 @@ def record_dead_letter_sync(*, queue: str, payload: dict, error: str, job_id: st
 
 def resolve_dead_letter_sync(*, queue: str, job_id: str) -> None:
     """Sync helper marking a dead letter resolved after a successful retry."""
-    import asyncio
 
     from app.db import SessionLocal
 

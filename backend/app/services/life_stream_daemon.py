@@ -20,6 +20,7 @@ sync and can corrupt the apps.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -1150,6 +1151,8 @@ class LifeStreamDaemon:
         ]
         path = self.whatsapp_db_path
         if not _sqlite_readable(path):
+            if path and os.path.exists(path):
+                logger.warning("WhatsApp peer resolve read failed for %s: not readable", path)
             return None
         try:
             rows = _sqlite_query(
@@ -1174,9 +1177,19 @@ class LifeStreamDaemon:
                       AND IFNULL(ZCONTACTJID, '') NOT LIKE '%@newsletter%'
                     """,
                 )
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "WhatsApp peer resolve read failed for %s: %s",
+                    path,
+                    type(exc).__name__,
+                )
                 return None
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "WhatsApp peer resolve read failed for %s: %s",
+                path,
+                type(exc).__name__,
+            )
             return None
         scored: list[tuple[int, str, str, str]] = []
         for partner, jid in rows or []:
@@ -1225,6 +1238,16 @@ class LifeStreamDaemon:
         if jid:
             out["jid"] = jid
         return out
+
+    async def resolve_whatsapp_peer_async(self, query: str) -> dict[str, str] | None:
+        """Off-loop ``resolve_whatsapp_peer``.
+
+        The ChatStorage read is synchronous sqlite (up to ~15s when locked),
+        so async callers must use this entry point to keep the event loop
+        free for voice, HUD, and other sends.
+        """
+
+        return await asyncio.to_thread(self.resolve_whatsapp_peer, query)
 
     def read_whatsapp_person(self, token: str, *, limit: int = 800) -> list[dict[str, Any]]:
         """Ask-only: live WhatsApp lines whose partner name is that person."""

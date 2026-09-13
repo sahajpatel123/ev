@@ -27,9 +27,9 @@ double is never reported as a quality number.
 | Command | Result |
 | --- | --- |
 | `uv run pytest tests/test_eval_gates.py tests/test_backup.py tests/test_ops_metrics.py tests/test_compliance_regional.py tests/test_maintenance.py -q` | 52 passed |
-| `uv run python -m app.scripts.eval_gates --report eval/last-run.json` | 18/18 gates exit 0; 5 ML gates skip with explicit reasons, grounding measured |
+| `uv run python -m app.scripts.eval_gates --report eval/last-run.json` | 20/20 gates exit 0; 2 ML gates skip with explicit reasons, grounding measured |
 | `uv run pytest -q` | full suite (see runbook log) |
-| `uv run ruff check app clients tests` + `uv run mypy app clients` | 0 errors |
+| `uv run ruff check app clients tests` + `uv run mypy app clients` | **not clean** — measured 71 ruff errors and 298 mypy errors in 49 files on 2026-09-13. Compare per file against a `git worktree` of `HEAD` (157 / 299) rather than trusting a number here. |
 | `make prune-dry-run` | 146.7 MB would be freed (dry run) |
 | `make doctor` | one-screen system/API diagnosis |
 

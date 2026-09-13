@@ -201,9 +201,34 @@ def is_wake_only_name(text: str) -> bool:
     }
 
 
+def _answers_live_offer(heard: str) -> bool:
+    """True when ``heard`` is the owner's yes/no answering a live offer.
+
+    EVIE's offer ("Do you want me to read out the full mail?") is remembered
+    as a pending offer, and a short "yes" then refers back to it. That answer
+    is a real turn: it is neither our own playback nor a listen cue.
+    """
+
+    text = (heard or "").strip()
+    if not text:
+        return False
+    try:
+        from app.cognitive.intent import pending_offer
+        from app.cognitive.session_store import current
+        from app.ev.continuity import is_affirmative_reply, is_negative_reply
+    except ImportError:  # pragma: no cover - broken install
+        return False
+    if not (is_affirmative_reply(text) or is_negative_reply(text)):
+        return False
+    return pending_offer(current()) is not None
+
+
 def is_listen_ack_text(text: str) -> bool:
     normalized = normalize_spoken(text)
     if not normalized:
+        return False
+    if _answers_live_offer(text):
+        # "yes" answering EVIE's live question is an answer, not a listen cue.
         return False
     acks = {normalize_spoken(item) for item in LISTEN_ACKS}
     acks.update({"yes", "hmm", "mhm", "mm", "uh huh"})
@@ -216,6 +241,8 @@ def is_echo_of_last_reply(heard: str, last_reply: str | None) -> bool:
     heard_n = normalize_spoken(heard)
     last_n = normalize_spoken(last_reply or "")
     if not heard_n:
+        return False
+    if _answers_live_offer(heard):
         return False
     if is_listen_ack_text(heard_n):
         return True
@@ -484,6 +511,8 @@ def should_drop_as_echo(
     """
 
     if is_wake_only_name(heard):
+        return False
+    if _answers_live_offer(heard):
         return False
     if playing and not looks_like_new_owner_turn(heard):
         return True

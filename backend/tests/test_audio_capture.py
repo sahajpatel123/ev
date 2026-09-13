@@ -840,12 +840,20 @@ async def test_run_ears_blocks_delivery_without_consent() -> None:
 def test_default_ears_wake_stays_on_the_phrase_double_without_a_model(
     monkeypatch, tmp_path
 ) -> None:
+    """With no on-device model and no local spotter, the cheap double is used.
+
+    The strict-name law (2026-08-29) made the local whisper spotter the
+    authoritative idle path, so it wins whenever it is enabled — which it is
+    by default. The phrase double is the *pure-offline* path, i.e. when the
+    spotter is switched off and no model is on disk.
+    """
+
     from app.config import settings
     from clients.ears.main import EarConfig, default_ears_wake
     from clients.ears.wake import PhraseFallbackWake
 
     monkeypatch.setattr(settings, "voice_vosk_model_path", str(tmp_path / "missing"))
-    engine = default_ears_wake(EarConfig())
+    engine = default_ears_wake(EarConfig(wake_local_spotter=False, wake_strict_name=False))
     assert isinstance(engine, PhraseFallbackWake)
 
 
@@ -864,3 +872,40 @@ def test_default_ears_wake_uses_vosk_when_the_model_is_installed() -> None:
         pytest.skip("vosk is not installed")
     engine = default_ears_wake(EarConfig())
     assert engine.name == "vosk"
+
+
+async def test_simulated_run_is_not_blocked_by_a_live_mic_owner(tmp_path, monkeypatch) -> None:
+    """A simulation opens no microphone, so it must not stand down for one.
+
+    `run_ears` honours the live-session mic marker so the always-on listener
+    never contends with EV.app. On a machine where that marker exists, a
+    simulated run used to wait out the whole ownership window (an hour) and
+    hang the suite instead of finishing.
+    """
+
+    import os
+
+    from clients.ears import main as ears_main
+
+    marker = tmp_path / "live-mic-owner"
+    marker.write_text(str(os.getpid()), encoding="utf-8")
+    monkeypatch.setattr(ears_main, "EV_LIVE_MIC_MARKER", marker)
+    assert ears_main.ev_live_owns_mic() is True
+
+    wav = tmp_path / "sim.wav"
+    wav.write_bytes(pcm_to_wav_bytes(array.array("h", [0] * 1600), 16000))
+    cfg = ears_main.EarConfig(
+        sample_rate=16000,
+        block_ms=20,
+        simulate_wav=str(wav),
+        resource_report=str(tmp_path / "resources.json"),
+        duration_s=1.0,
+        vad_pre_roll_s=0.02,
+        vad_post_roll_s=0.04,
+        vad_min_speech_s=0.02,
+    )
+    stats = await asyncio.wait_for(
+        ears_main.run_ears(cfg, wake_engine=FakeWakeEngine(), vad_engine=EnergyVad()),
+        timeout=30,
+    )
+    assert stats.blocks == 5

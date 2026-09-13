@@ -1135,6 +1135,13 @@ class MessagingAdapter(Adapter):
                     contact = None
                 else:
                     raise ValueError(str(exc)) from exc
+            except (LifePermissionDeniedError, LifeHelperUnavailableError):
+                # Contacts is not the address book of WhatsApp: when the chat
+                # list already proved the recipient, a Contacts permission or
+                # helper failure must not abort the send.
+                if native is None or native.get("status") != "unique":
+                    raise
+                contact = None
             if native is not None and native.get("status") == "unique":
                 merged = contact or {}
                 contact = {

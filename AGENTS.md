@@ -152,17 +152,17 @@ Measured on the working tree by `tools/baseline.py`; recorded in
 
 | Metric | Value |
 | --- | --- |
-| Python modules under `backend/app` | 526 (214,158 lines, 34 subpackages) |
+| Python modules under `backend/app` | 540 (227,997 lines, 34 subpackages) |
 | Python modules under `backend/clients` | 33 (9,016 lines) |
-| Test modules / test functions | 256 / 3,366 |
-| API routers / route decorators | 25 / 430 |
-| Locked contract paths / operations | 474 / 515 |
-| `Settings` fields (`EV_*`) | 418 |
+| Test modules / test functions | 282 / 3,657 |
+| API routers / route decorators | 25 / 431 |
+| Locked contract paths / operations | 479 / 520 |
+| `Settings` fields (`EV_*`) | 421 |
 | ORM tables | 116 |
 | Alembic migrations | 25 |
-| `docs/*.md` files | 75 |
-| `EV_*` keys in `.env.example` / `.env.api-first` | 291 / 39 |
-| Swift files / lines | 234 / 131,146 |
+| `docs/*.md` files | 76 |
+| `EV_*` keys in `.env.example` / `.env.api-first` | 297 / 42 |
+| Swift files / lines | 234 / 132,357 |
 | Fleet size | 20 |
 
 When a change legitimately moves these numbers, run `make baseline-write` and
@@ -179,11 +179,20 @@ re-diagnose the structural issues from scratch:
 
 | Signal | Measured | Note |
 | --- | --- | --- |
-| `ruff` | clean | |
-| `mypy` | **1 error in 264 files** | `app/ops/metrics.py:125` — `total` may be `None` on the Linux `/proc/meminfo` branch. Docs claim 0. Owner: Agent 20. |
-| `pytest` | **1,025 passed, 6 failed, 23 skipped** | 4 × `test_vision_corpus` hard-fail without pillow instead of skipping (breaks FLEET_LAW §7); `test_gear_alerts` asserts `system == "Darwin"`; 1 sandbox test relies on the macOS RSS watchdog. |
-| `eval_gates` | **18/18 gates, 110/110 checks, 5 skipped, exit 0** | The 5 skips are absent ML artifacts (gitignored), which is the designed behaviour. |
+| `ruff` | **71 errors** (`ruff check app clients tests`) | 54 distinct `path:rule` pairs. Mostly `SIM102`/`SIM103`/`I001`/`UP017`. Earlier §6 claimed "clean" — that was never true on this tree; re-measure, and compare against a `git worktree` of `HEAD` rather than the prose. |
+| `mypy` | **298 errors in 49 files** (573 checked) | Earlier §6 claimed 1 error in 264 files, and cited `app/ops/metrics.py:125`, which is already fixed. No single owner; fix incrementally, and never let a change add to the count. |
+| `pytest` | **63 failed, 3744 passed, 45 skipped** (`pytest tests -q`, 28:18) | Was **81 failed / 3726 passed / 1 error** when the run first completed at all — before the two `test_audio_capture` hangs were fixed the suite **never finished**, so every earlier figure in this file was unverifiable. The improvement is 6 files fully cleared (`test_routines`, `test_wake_product`, `test_collectors`, `test_eval_gates`, `test_house_lab_devices`, `test_oauth_calendar`) and **no new failing file**. Compare per file against a `HEAD` worktree — that is the only reliable classification, and it is how every number here was reached. Caveats: `test_oauth_calendar` is flaky on unmodified code, and a failure block can pass in isolation (`test_digital_operations`: 12 in a row in-suite, 40 passed alone), so order and resource pressure matter. |
+| `eval_gates` | **20/20 gates, 147/147 checks, 2 skipped, exit 0** | The 2 skips are absent ML artifacts (gitignored), which is the designed behaviour. The `continuity` gate guards the cross-turn offer/ledger contract. |
 | GitHub Actions | **never executed** | Every run since 2026-08-09 was blocked before starting: *"job was not started because recent account payments have failed or your spending limit needs to be increased."* |
+
+**Measure, do not trust this table.** Anything above was true of one tree at one
+moment; the only reliable comparison is against a worktree of `HEAD`:
+
+```sh
+git worktree add /tmp/ev-head HEAD --detach
+ln -s "$PWD/backend/.venv" /tmp/ev-head/backend/.venv
+cd /tmp/ev-head/backend && .venv/bin/python -m ruff check app clients tests
+```
 
 The consequence worth internalising: **"CI is green" has never been true on
 GitHub.** All verification to date is local, on the owner's macOS machine. The

@@ -71,12 +71,17 @@ def test_new_capability_specs_are_advertised() -> None:
         "life.state": "R2",
         "notify.schedule": "R1",
         "phone.call": "R3",
+        # home.act is the universal Home Station route: it is what stops a
+        # device with no local machinery (an iPhone in Safari) from reaching a
+        # spoken dead end. owner.profile is how the owner teaches their name.
+        "home.act": "R2",
+        "owner.profile": "R1",
     }
     for name, risk in expected.items():
         assert name in specs, name
         assert specs[name].risk_class == risk
-    # Existing surface is untouched in count terms beyond the five additions.
-    assert len(specs) == 23
+    # 23 existing semantic tools plus these two additions.
+    assert len(specs) == 25
 
 
 # --- weather.get ---

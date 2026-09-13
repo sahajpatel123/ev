@@ -33,6 +33,11 @@ from clients.collectors.screen import ScreenState
 
 
 @pytest.fixture(autouse=True)
+def _presence_dispatch(opened_presence) -> None:
+    """The routine this collector fires dispatches a card; open the surface."""
+
+
+@pytest.fixture(autouse=True)
 def _isolate_collector_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("EV_AUDIO_SCENE_FILE", str(tmp_path / "audio-scene.json"))
     monkeypatch.setenv("EV_LOCATION_FILE", str(tmp_path / "location.json"))

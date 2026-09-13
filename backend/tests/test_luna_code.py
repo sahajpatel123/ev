@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -78,6 +79,9 @@ def test_coding_intent_routing() -> None:
     assert looks_like_code_request("write a javascript script that prints hello world")
     assert looks_like_code_request("write a ruby file that prints hello")
     assert looks_like_code_request("refactor the auth module in the ev repo")
+    assert looks_like_code_request("work in the ev repo and add a retry")
+    assert looks_like_code_request("open the ev repo")
+    assert looks_like_code_request("fix the failing test")
     assert looks_like_code_request("run the tests in the demo project")
     assert looks_like_code_request("add a test for the code broker")
     assert looks_like_code_request("can you make me a python helper that grades scores")
@@ -342,6 +346,9 @@ def test_named_project_search_patch_and_sibling_jail(tmp_path: Path, monkeypatch
     other = _seed_project(code_home / "other")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    from app.ev.code_runtime import clear_sticky_project
+
+    clear_sticky_project()
     assert select_project("fix the add function in the ev repo") == ev_root.resolve()
     token = set_active_project(ev_root)
     try:
@@ -575,6 +582,34 @@ def test_stale_intern_pending_does_not_mark_code_jail_busy(
     busy = spoken_studio_busy()
     assert "running" not in busy.lower()
     assert "queued" in busy.lower() or "not running" in busy.lower()
+
+
+def test_stale_running_studio_does_not_block_new_code(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from datetime import datetime, timedelta
+
+    from app.config import settings
+    from app.ev.code_studio import load_studio, maybe_handle_code_ops, save_studio
+    from app.ev.luna_code import code_jail_busy
+
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    ack = maybe_handle_code_ops("make a clothing site UI from scratch")
+    assert ack
+    studio = load_studio()
+    assert studio is not None
+    studio["status"] = "running"
+    studio["updated_at"] = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+    save_studio(studio, claim=True)
+    assert code_jail_busy() is False
+    assert load_studio() is None
+    assert maybe_handle_code_ops("write a python script that prints hello world") is None
+    calc = maybe_handle_code_ops("create a calculator app UI")
+    assert calc
+    assert "queued" not in calc.lower()
+    live = load_studio()
+    assert live is not None
+    assert live.get("kind") == "calculator"
 
 
 @pytest.mark.asyncio
@@ -1350,6 +1385,60 @@ async def test_luna_live_budget_allows_long_jobs(tmp_path: Path, monkeypatch) ->
         actor="voice",
         channel="voice",
     )
+    assert _FakeClient.posts == 48
+
+
+@pytest.mark.asyncio
+async def test_luna_live_hello_stays_on_the_short_budget(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test-luna")
+    monkeypatch.setattr(settings, "code_max_steps", 24)
+    monkeypatch.setattr(settings, "code_live_job_seconds", 60.0)
+
+    class _Resp:
+        def __init__(self, payload: dict, status: int = 200) -> None:
+            self.status_code = status
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    class _FakeClient:
+        posts = 0
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def post(self, url, headers=None, json=None):
+            _FakeClient.posts += 1
+            return _Resp(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": f"call_{_FakeClient.posts}",
+                            "name": "list_dir",
+                            "arguments": "{}",
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+    await run_code_job(
+        "write a python script that prints hello world",
+        actor="voice",
+        channel="voice",
+    )
     assert _FakeClient.posts == 20
 
 
@@ -1530,9 +1619,11 @@ class _ScriptedSparkProvider:
     def __init__(self, replies: list) -> None:
         self.replies = list(replies)
         self.calls: list[list[dict]] = []
+        self.tool_choices: list = []
 
     async def complete_raw(self, messages, *, tools=None, model=None, response_format=None, tool_choice=None):
         self.calls.append([dict(message) for message in messages])
+        self.tool_choices.append(tool_choice)
         if not self.replies:
             return {"choices": [{"message": {"role": "assistant", "content": "Done."}}]}
         item = self.replies.pop(0)
@@ -1921,6 +2012,8 @@ async def test_spark_code_loop_nudges_when_model_only_talks(
     assert (tmp_path / "hello.py").exists()
     assert result["ok"] is True
     assert "hello.py" in result["files_changed"]
+    assert provider.tool_choices
+    assert all(choice in {None, "auto"} for choice in provider.tool_choices)
     second = provider.calls[1]
     assert any(
         "instead of doing it" in str(message.get("content") or "") for message in second
@@ -1989,4 +2082,117 @@ def test_studio_brief_does_not_claim_shipped_without_files() -> None:
     lowered = spoken.lower()
     assert "shipped" not in lowered
     assert "don't have files" in lowered or "do not have files" in lowered
+
+
+def test_sticky_project_survives_vague_repo_phrasing(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import (
+        clear_sticky_project,
+        select_project,
+        use_project,
+    )
+    from app.ev.luna_code import maybe_switch_coding_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    ev_root = _seed_project(code_home / "ev")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    clear_sticky_project()
+    assert select_project("write a python script that prints hello world") == sandbox.resolve()
+    spoken = maybe_switch_coding_project("use the ev repo")
+    assert spoken is not None and "ev" in spoken.lower()
+    assert use_project("ev")["ok"] is True
+    assert select_project("refactor the auth module") == ev_root.resolve()
+    assert select_project("fix that in my repo") == ev_root.resolve()
+    assert select_project("write a python script that prints hello world") == sandbox.resolve()
+    clear_sticky_project()
+    assert select_project("refactor the auth module") == sandbox.resolve()
+
+
+def test_git_checkout_branch_is_allowlisted(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    denied = execute_code_tool("run_command", {"argv": ["git", "push"]})
+    assert denied["ok"] is False
+    whole = execute_code_tool("run_command", {"argv": ["git", "checkout", "."]})
+    assert whole["ok"] is False
+    forced = execute_code_tool("run_command", {"argv": ["git", "checkout", "-f", "main"]})
+    assert forced["ok"] is False
+    # Not a git repo — jail allows the subcommand; git itself fails.
+    ran = execute_code_tool("run_command", {"argv": ["git", "checkout", "-b", "evie/feature"]})
+    assert ran.get("error") != "unknown_code_tool"
+    assert "not allowlisted" not in str(ran.get("detail") or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_spark_does_not_heuristic_hello_into_a_named_repo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    demo = _seed_project(tmp_path / "Code" / "demo")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
+    clear_sticky_project()
+    _force_spark_path(monkeypatch, sandbox)
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
+    provider = _ScriptedSparkProvider(
+        [
+            _spark_text_reply("I refactored auth already."),
+            _spark_text_reply("Still done."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    result = await run_code_job("refactor the auth module in the demo repo")
+    assert result["ok"] is False
+    assert not (demo / "hello.py").exists()
+    assert "heuristic" not in str(result.get("brain") or "")
+    spoken = str(result.get("spoken") or "").lower()
+    assert "wrote" not in spoken
+    assert "couldn't" in spoken or "unavailable" in spoken or "verified" in spoken
+
+
+@pytest.mark.asyncio
+async def test_spark_keeps_going_after_a_failed_check(tmp_path: Path, monkeypatch) -> None:
+    _force_spark_path(monkeypatch, tmp_path)
+    (tmp_path / "mod.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    (tmp_path / "test_mod.py").write_text(
+        "from mod import add\n\n"
+        "ok = add(2, 3) == 5\n"
+        "raise SystemExit(0 if ok else 1)\n",
+        encoding="utf-8",
+    )
+    provider = _ScriptedSparkProvider(
+        [
+            _spark_tool_reply(
+                "c1",
+                "replace_in_file",
+                {"path": "mod.py", "old": "return a - b", "new": "return a - b"},
+            ),
+            _spark_tool_reply("c2", "run_command", {"argv": ["python3", "test_mod.py"]}),
+            _spark_text_reply("Tests passed."),
+            _spark_tool_reply(
+                "c3",
+                "replace_in_file",
+                {"path": "mod.py", "old": "return a - b", "new": "return a + b"},
+            ),
+            _spark_tool_reply("c4", "run_command", {"argv": ["python3", "test_mod.py"]}),
+            _spark_text_reply("Fixed the test."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    result = await run_code_job("fix the failing test in mod.py")
+    joined = " ".join(
+        str(message.get("content") or "") for batch in provider.calls for message in batch
+    )
+    assert "last command failed" in joined.lower()
+    assert "mod.py" in result["files_changed"]
+    assert (tmp_path / "mod.py").read_text(encoding="utf-8").count("return a + b")
 

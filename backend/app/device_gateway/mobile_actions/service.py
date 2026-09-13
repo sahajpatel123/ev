@@ -14,6 +14,8 @@ from typing import Any
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+from app.ev.messaging.channels import channel_label, channel_spec, normalize_channel, spoken_channel
+
 from . import ACTION_TTL_S, BRIDGE_PROTOCOL, BRIDGE_VERSION, store
 from . import registry as reg
 from .strategy import route
@@ -56,6 +58,10 @@ _DURATION_RE = re.compile(
 )
 _PHONE_RE = re.compile(r"^\+?[0-9][0-9 .\-()]{6,20}$")
 _DIGIT_RE = re.compile(r"\d+")
+# Transports this phone's own message composer can carry. Anything else is
+# opened through its own app or refused — never silently sent as an Apple text.
+_PHONE_MESSAGE_CHANNELS = frozenset({"messages", "imessage", "sms"})
+
 SAFE_COMPLETE_KEYS = frozenset(
     {
         "status",
@@ -200,6 +206,17 @@ def sms_url(number: str, body: str) -> str:
     return "sms:" + quote(_digits(number), safe="+") + "&body=" + quote(body[:500])
 
 
+def whatsapp_url(number: str, body: str) -> str:
+    """Public click-to-chat link: opens WhatsApp's composer, never sends."""
+
+    return (
+        "https://wa.me/"
+        + quote(_digits(number), safe="")
+        + "?text="
+        + quote(body[:500], safe="")
+    )
+
+
 def facetime_url(number: str) -> str:
     return "facetime:" + quote(_digits(number), safe="+")
 
@@ -309,9 +326,14 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
         return "I've prepared it and won't send yet."
     if row.get("state") == "awaiting_confirmation" or pending:
         if operation in {"message_contact", "direct_message"}:
-            return (
-                f"Send '{args.get('message')}' to {args.get('contact_query') or 'them'}?"
+            who = args.get("contact_query") or "them"
+            channel = str(args.get("channel") or "")
+            on = (
+                f" on {spoken_channel(channel)}"
+                if channel and channel not in _PHONE_MESSAGE_CHANNELS
+                else ""
             )
+            return f"Send '{args.get('message')}' to {who}{on}?"
         if operation == "create_calendar_event":
             return f"Add {args.get('title') or 'that event'} to your calendar?"
         return "Do you want me to do that on this iPhone?"
@@ -338,6 +360,10 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
         if operation in {"start_directions", "open_maps"}:
             dest = args.get("destination") or "that place"
             return f"I've opened Maps for {dest}."
+        if operation == "message_contact" and args.get("channel") == "whatsapp":
+            return (
+                f"I've opened WhatsApp with the message for {_spoken_who(args)} ready — tap send."
+            )
     if row.get("state") == "executed" and result in {"CREATED", "EXECUTED", "SENT", "SELF_TEST_OK"}:
         if operation == "create_timer":
             mins = max(1, int((args.get("duration_seconds") or 60) / 60))
@@ -349,6 +375,11 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
             return "Alarm set."
         if operation == "create_calendar_event":
             return "That's on your calendar."
+        if operation == "message_contact" and args.get("channel") == "whatsapp":
+            return (
+                f"I've opened WhatsApp with the message for "
+                f"{args.get('contact_query') or 'them'} ready — tap send."
+            )
         if operation == "message_contact" and result == "SENT":
             return f"Message sent to {args.get('contact_query') or 'them'}."
         if operation == "message_contact":
@@ -372,6 +403,11 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
                 return "Setting that alarm now."
             if operation == "create_calendar_event":
                 return "Adding that to your calendar now."
+            if operation == "message_contact" and args.get("channel") == "whatsapp":
+                return (
+                    f"I've prepared the WhatsApp message for "
+                    f"{args.get('contact_query') or 'them'} — open WhatsApp and tap send."
+                )
             if operation == "message_contact":
                 return f"I've prepared the message for {args.get('contact_query') or 'them'}."
             if operation == "call_contact":
@@ -398,6 +434,11 @@ def _spoken(row: dict[str, Any], *, pending: bool = False) -> str:
             return "Tap Start timer on this iPhone."
         if operation == "create_reminder":
             return "Tap Save reminder on this iPhone."
+        if operation == "message_contact" and args.get("channel") == "whatsapp":
+            return (
+                f"Tap the card to open WhatsApp with the message for "
+                f"{args.get('contact_query') or 'them'} ready — you tap send."
+            )
         if operation == "message_contact":
             return "Tap Send on this iPhone."
         if operation == "call_contact":
@@ -467,6 +508,8 @@ def _card(row: dict[str, Any], *, launch_url: str | None, open_url: str | None) 
         "set_focus": "Change Focus",
         "media_play_pause": "Control media",
     }.get(operation, "Run")
+    if operation == "message_contact" and args.get("channel") == "whatsapp":
+        go = "Open WhatsApp"
     if row.get("state") == "awaiting_confirmation":
         go = "Confirm"
     device_label = row.get("device_label") or "This iPhone"
@@ -483,6 +526,7 @@ def _card(row: dict[str, Any], *, launch_url: str | None, open_url: str | None) 
         "open_url": open_url,
         "method": row.get("method"),
         "requires_tap": True,
+        "channel": args.get("channel"),
         "pwa_kind": args.get("pwa_kind"),
         "share_text": args.get("share_text") or args.get("message") or args.get("text"),
         "copy_text": args.get("copy_text") or args.get("text"),
@@ -559,17 +603,23 @@ def _authorized_run(row: dict[str, Any], *, origin: str) -> dict[str, Any]:
         run["label"] = args.get("title") or "Alarm"
     elif operation in {"call_contact", "facetime_contact", "message_contact"}:
         run["contact_query"] = args.get("contact_query")
+        if operation == "message_contact" and args.get("channel"):
+            run["channel"] = args["channel"]
         if args.get("phone_number"):
             run["phone_number"] = args["phone_number"]
-            run["url"] = (
-                facetime_url(args["phone_number"])
-                if operation == "facetime_contact"
-                else sms_url(args["phone_number"], args.get("message") or "")
-                if operation == "message_contact"
-                else tel_url(args["phone_number"])
-            )
-            if args.get("phone_number"):
-                run["kind"] = "open_url" if not args.get("contact_query") else run["kind"]
+            if operation == "facetime_contact":
+                run["url"] = facetime_url(args["phone_number"])
+            elif operation == "message_contact" and args.get("channel") == "whatsapp":
+                # WhatsApp carries its own composer; an sms: URL here would be a
+                # silent downgrade to Apple Messages.
+                run["url"] = whatsapp_url(args["phone_number"], args.get("message") or "")
+                run["kind"] = "open_url"
+            elif operation == "message_contact":
+                run["url"] = sms_url(args["phone_number"], args.get("message") or "")
+            else:
+                run["url"] = tel_url(args["phone_number"])
+            if not args.get("contact_query"):
+                run["kind"] = "open_url"
         if operation == "message_contact":
             run["message"] = args.get("message")
     elif operation in {"start_directions", "open_maps"}:
@@ -706,6 +756,44 @@ def _normalize(
                 extra={"clarify": "Who should I contact?"},
             )
         if operation == "message_contact":
+            raw_channel = str(args.get("channel") or "").strip()[:40]
+            channel = normalize_channel(raw_channel)
+            if raw_channel and channel is None:
+                return None, _fail(
+                    operation,
+                    "CHANNEL_UNSUPPORTED",
+                    spoken=(
+                        f"I don't have {raw_channel} connected, so nothing was sent — and I "
+                        "won't send it as an Apple text instead."
+                    ),
+                )
+            if channel == "whatsapp" and len(_digits(str(out.get("phone_number") or ""))) < 8:
+                who = _spoken_who(out)
+                return None, _fail(
+                    operation,
+                    "CHANNEL_UNSUPPORTED",
+                    spoken=(
+                        f"I can't send a WhatsApp message to {who} without their full number, "
+                        "and I won't send it as an Apple text instead. Give me the number, or "
+                        "ask me to send it from Home Station."
+                    ),
+                )
+            if channel and channel not in _PHONE_MESSAGE_CHANNELS and channel != "whatsapp":
+                label = channel_label(channel)
+                spec = channel_spec(channel)
+                if spec is not None and spec.wired:
+                    spoken = (
+                        f"{label} sends go through Home Station, not this iPhone. Nothing was "
+                        "sent here — ask me to send it from Home Station."
+                    )
+                else:
+                    spoken = (
+                        f"I don't have {label} connected, so nothing was sent — and I won't "
+                        "send it as an Apple text instead."
+                    )
+                return None, _fail(operation, "CHANNEL_UNSUPPORTED", spoken=spoken)
+            if channel:
+                out["channel"] = channel
             message = str(args.get("message") or args.get("text") or "").strip()[:500]
             if not message:
                 return None, _fail(

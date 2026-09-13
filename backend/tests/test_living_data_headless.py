@@ -385,13 +385,14 @@ def test_life_helper_source_never_steals_focus() -> None:
         encoding="utf-8"
     )
     call_block = source.split('case "call.place":', 1)[1].split('case "call.check":', 1)[0]
-    assert "openURLHeadless" in call_block
+    assert "openURL(url, activates: false)" in call_block, call_block[:400]
+    assert "activates: true" not in call_block
     assert "NSWorkspace.shared.open(url)" not in call_block
     send_block = source.split('case "messages.send":', 1)[1].split('case "mail.list":', 1)[0]
     mail_list = source.split('case "mail.list":', 1)[1].split('case "mail.send":', 1)[0]
     mail_send = source.split('case "mail.send":', 1)[1].split('case "call.place":', 1)[0]
     wa_block = source.split('case "whatsapp.send":', 1)[1].split('case "mail.list":', 1)[0]
-    assert "openURLForeground" in wa_block
+    assert "openURL(url, activates: true)" in wa_block
     assert "hideProcess" not in wa_block
     assert "NSWorkspace.shared.open(url)" not in send_block
     assert "NSWorkspace.shared.open(url)" not in mail_send

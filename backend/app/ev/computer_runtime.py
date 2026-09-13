@@ -23,6 +23,7 @@ from app.ev.camera_runtime import (
 from app.ev.computer_strategy import (
     BUDGET_CAPS,
     NON_PROGRESS_SWITCH_AFTER,
+    _resolve_open_content_in_app,
     _search_query_from_goal,
     classify_tool_strategy,
     computer_envelope,
@@ -243,7 +244,21 @@ def parse_owner_computer_goal(text: str, *, goal_id: str | None = None) -> Compu
     lower = raw.lower()
     for needle, name in _APP_HINTS:
         if re.search(rf"\b{re.escape(needle)}\b", lower) and name not in goal.target_apps:
+            # Identity guard: "YouTube Music" is not Apple Music, and
+            # "GoodNotes"/"Bear notes" are not Apple Notes.
+            if name == "Music" and "youtube music" in lower:
+                continue
+            if name == "Notes" and (
+                "goodnotes" in lower or "good notes" in lower or "bear" in lower
+            ):
+                continue
             goal.target_apps.append(name)
+    if not goal.target_apps:
+        opened = _resolve_open_content_in_app(raw, None)
+        if opened is not None:
+            slot = str((opened[1] or {}).get("app") or "").strip()
+            if slot and slot not in goal.target_apps:
+                goal.target_apps.append(slot)
     match = re.search(
         r"(?:the\s+|my\s+)?([A-Za-z0-9][\w &'’\-]{0,48}?)\s+playlist",
         raw,
@@ -435,6 +450,7 @@ class ComputerState:
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
     original_owner_request: str | None = None
     last_file_path: str | None = None
+    last_tab: dict[str, Any] | None = None
 
     def working_context(self) -> dict[str, Any]:
         return {
@@ -467,6 +483,7 @@ class ComputerState:
             "receipts": list(self.receipts[-4:]),
             "traces": list(self.traces[-3:]),
             "last_result": dict(self.last_result) if self.last_result else None,
+            "last_tab": dict(self.last_tab) if self.last_tab else None,
         }
 
 
@@ -904,6 +921,9 @@ def computer_doctrine() -> str:
         "- Owner steering wins: stop, never mind, or don't click that halts the "
         "current path; a correction revises the plan for the same goal instead "
         "of starting over.\n"
+        "- Owner files are local: 'find/open/read my <name> file' searches this "
+        "Mac's home folders (Spotlight, any folder), never the web. Only "
+        "questions about the outside world go to search_web.\n"
         "- A failed attempt is not a dead end. Re-observe, take a different "
         "path, and report failure only after the alternatives are exhausted. "
         "Report the real error; never invent success and never claim what you "
@@ -947,6 +967,11 @@ def computer_working_state_block(snapshot: dict[str, Any] | None) -> str:
         )
     if snapshot.get("dialog_present"):
         lines.append("- A dialog is open. Read it before the next action.")
+    tab = snapshot.get("last_tab")
+    if isinstance(tab, dict) and tab.get("host"):
+        lines.append(
+            f"- Last browser tab: {tab.get('host')} in {tab.get('app') or 'browser'}"
+        )
     last = snapshot.get("last_result")
     if isinstance(last, dict) and last:
         facts = ", ".join(
@@ -1083,6 +1108,12 @@ def _is_continuation_request(text: str, existing: ComputerGoal | None) -> bool:
         return False
     if len(raw) > 96:
         return False
+    from app.ev.send_intent import answers_live_offer
+
+    if answers_live_offer(raw):
+        # A live offer owns a bare yes/no: the turn answers Evie's own
+        # question, so it must not re-arm and re-execute the previous goal.
+        return False
     if (
         any(re.search(rf"\b{re.escape(name.lower())}\b", raw.lower()) for _, name in _APP_HINTS)
         and existing.playlist
@@ -1185,6 +1216,13 @@ def note_goal(state: ComputerState | None, text: str | None) -> None:
         log_computer("computer.goal_cancelled", extra={"reason": "owner_phrase"})
         return
     if state.pending_goal == goal[:400] and state.goal is not None:
+        return
+    from app.ev.send_intent import answers_live_offer
+
+    if answers_live_offer(goal):
+        # "yes"/"no" answering a live offer is not a Mac goal in disguise:
+        # neither a continuation of the previous goal nor a fresh goal parsed
+        # from the reply word. Leave the running goal alone.
         return
     if _is_continuation_request(goal, state.goal) and state.goal is not None:
         apply_goal_continuation(state.goal, goal)
@@ -1862,6 +1900,44 @@ def remember_frame(state: ComputerState | None, payload: dict[str, Any]) -> Scre
         oldest = min(state.frames.values(), key=lambda item: item.captured_at)
         state.frames.pop(oldest.frame_id, None)
     return meta
+
+
+def remember_tab(
+    state: ComputerState | None,
+    arguments: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    """Remember the last browser tab touched, so 'close that tab' has a target."""
+
+    if state is None or result.get("ok") is False:
+        return
+    action = str(arguments.get("action") or result.get("action") or "").lower()
+    if action not in {"navigate", "new_tab", "open_item"}:
+        return
+    url = str(result.get("url") or result.get("query") or "").strip()
+    if not url:
+        return
+    host = ""
+    try:
+        from urllib.parse import urlparse
+
+        host = urlparse(url).hostname or ""
+    except ValueError:
+        host = ""
+    state.last_tab = {
+        "app": result.get("app") or result.get("name"),
+        "url": url,
+        "host": host or url,
+        "action": action,
+    }
+
+
+def close_tab_query_hint(state: ComputerState | None) -> str:
+    """Host of the tab most recently opened/navigated, for close-tab matching."""
+
+    if state is None or not isinstance(state.last_tab, dict):
+        return ""
+    return str(state.last_tab.get("host") or "").strip()
 
 
 def validate_element_ref(state: ComputerState | None, element_ref: str | None) -> dict[str, Any] | None:

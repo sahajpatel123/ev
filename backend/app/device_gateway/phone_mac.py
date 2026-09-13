@@ -390,6 +390,20 @@ async def maybe_phone_mac_act(
     if name in _CAMERA or name in _BLOCKED:
         return None
     args = dict(args or {})
+    if name == "send_incomplete":
+        # An unfinished send is a question, not a tool call: ask for the piece
+        # that is missing instead of dispatching a verb that does not exist.
+        missing = str(args.get("missing") or "").strip()
+        return _ok(
+            "Who should I message, and what should it say?"
+            if missing == "recipient"
+            else "What should the message say?",
+            route="HOME_STATION",
+            tool="send_message",
+            executed=False,
+            ok=False,
+            error_code="MISSING_MESSAGE_FIELDS",
+        )
     if name in {"list_reminders", "cancel_reminder"}:
         return await _phone_reminder_action(session, name=name, args=args)
     if name == "send_message":

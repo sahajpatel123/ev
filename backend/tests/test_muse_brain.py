@@ -1085,7 +1085,7 @@ async def test_muse_spark_complete_raw_strips_reasoning_and_non_auto_tool_choice
     assert item["arguments"] == "{}"
     assert "reasoning_content" not in item
     assert "reasoning" not in item
-    assert captured["payload"]["tool_choice"] == "required"
+    assert captured["payload"]["tool_choice"] == "auto"
 
 
 @pytest.mark.asyncio

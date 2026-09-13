@@ -321,7 +321,11 @@ async def health() -> dict:
 def _cognitive_health() -> dict:
     from app.cognitive.mode import cognitive_mode, cognitive_role, muse_kernel_active
     from app.cognitive.telemetry import snapshot
-    from app.gateway.muse import muse_counters_snapshot, muse_spark_base_url, muse_spark_inference_route
+    from app.gateway.muse import (
+        muse_counters_snapshot,
+        muse_spark_base_url,
+        muse_spark_inference_route,
+    )
 
     tele = snapshot()
     muse = muse_counters_snapshot()
@@ -1407,10 +1411,15 @@ async def run_chat_pipeline(
         session, access="voice_model" if voice_model_access else "model"
     )
     if depth != "standard" and memory_intent != "fresh":
+        from app.memory.select import answers_live_offer
+
         secondary_query = (
             user_state.current_task or user_state.active_project or input_decision.provider_message
         )
-        if secondary_query != input_decision.provider_message:
+        if (
+            secondary_query != input_decision.provider_message
+            and not answers_live_offer(data.message)
+        ):
             extra = await retriever.search(
                 secondary_query,
                 k=retrieval_k,

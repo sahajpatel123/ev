@@ -172,7 +172,7 @@ async def _spark_decide(utterance: str) -> str | None:
             ),
             timeout=_SPARK_BUDGET_S,
         )
-    except (MuseProviderUnavailable, asyncio.TimeoutError):
+    except (TimeoutError, MuseProviderUnavailable):
         logger.info("spark_look unavailable")
         return None
     except Exception:  # noqa: BLE001 - first-try look must still run via fallback

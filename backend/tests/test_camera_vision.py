@@ -165,7 +165,11 @@ def test_lighting_and_dark_excuse_helpers() -> None:
     assert "missing text is not a failure" in instructions
     assert "listed colors are scene hints" in instructions
     assert "attached images are already in the conversation" in instructions
-    assert "natural sentences" in instructions
+    # The kernel-era instruction is terser than the old "natural sentences"
+    # wording; what must stay true is that the model is told to answer from the
+    # attached frame briefly instead of reciting labels or function JSON.
+    assert "speak only the details needed" in instructions
+    assert "short sentences" in instructions
     assert "do not read the function json aloud" in instructions
     assert "readable text" not in instructions or "only when" in instructions
     assert "which app is open" in instructions

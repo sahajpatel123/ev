@@ -84,6 +84,7 @@ async def is_phone_turn(session: AsyncSession, device_id: str | None) -> bool:
 
 
 def phone_tool_specs() -> list[ToolSpec]:
+    """Phone-local actuators only. See ``phone_turn_specs`` for the full bus."""
     parameters = phone_action_parameters()
     # Confirmation is owner input, never a capability the model can grant.
     parameters["properties"].pop("confirm_action_id", None)
@@ -108,6 +109,66 @@ def phone_tool_specs() -> list[ToolSpec]:
             read_only=True, permission="phone:read", risk_class="R0",
         ),
     ]
+
+
+async def phone_turn_authority_changed(
+    session: AsyncSession,
+    *,
+    device_id: str | None,
+    live_session_id: str | None,
+    expected_binding: PhoneTurnBinding | None,
+    text_context: Any | None,
+) -> str | None:
+    """``None`` when the turn's authority is unchanged, else a stable error code.
+
+    Every tool on a phone turn is bound to the authority that opened the turn,
+    not only the device-local ones. A semantic tool reaches Core and Home
+    Station, so it must not run after the conversation moved to the other phone,
+    the device was re-trusted, or the live session was closed mid-inference.
+    """
+
+    if not device_id:
+        return None
+    if text_context is not None:
+        from .cognitive_text import text_context_still_current
+
+        return await text_context_still_current(session, context=text_context)
+    if live_session_id is None:
+        return None
+    current = await capture_phone_binding(
+        session, device_id=str(device_id), live_session_id=live_session_id,
+    )
+    if expected_binding is None:
+        # The turn opened without a capturable binding; nothing to compare.
+        return None if current is None else "PHONE_CONTEXT_CHANGED"
+    if current is None or current.identity != expected_binding.identity:
+        return "PHONE_CONTEXT_CHANGED"
+    return None
+
+
+def phone_turn_specs(*, compact: bool) -> list[ToolSpec]:
+    """The whole tool bus for a phone turn: semantic tools plus phone-local ones.
+
+    A phone used to be offered three tools while every other surface was offered
+    the full set, so anything the phone could not do locally became a spoken
+    "I can't do that on the phone" — even though Core and Home Station could do
+    it. The owner's device is the one place with the least local machinery and
+    the most need for the rest of the system, so it now sees the same bus as
+    every other surface, with the phone-local actuators added on top.
+
+    ``compact`` only trims the semantic half; the phone-local pair is always
+    present because there is no other route to a device-local action.
+    """
+
+    from app.cognitive.speed import tool_specs_for_turn
+
+    local = phone_tool_specs()
+    local_names = {spec.name for spec in local}
+    semantic = [
+        spec for spec in tool_specs_for_turn(compact=compact, expand=True)
+        if spec.name not in local_names
+    ]
+    return semantic + local
 
 
 def _failure(code: str, spoken: str) -> dict[str, Any]:
@@ -167,10 +228,16 @@ async def execute_phone_tool(
             or expected_binding.identity != actual_binding.identity):
         return _failure("PHONE_CONTEXT_CHANGED", "The phone connection changed while I was thinking. Please ask again.")
     # Instance, origin, role and target identity are never taken from model input.
+    # Home Station fallback stays ON: when this iPhone has no local path for an
+    # action (Safari has no native broker, and no Clock/Reminders/Contacts store),
+    # the same request is carried out by Home Station and labelled as such.
+    # Blocking the hop is what made every non-trivial phone action a dead end;
+    # the honesty law is "never SILENTLY become a Mac effect", which the result
+    # evidence (method/executed_on) and the spoken reply now satisfy.
     return await dispatch_phone_action(
         device_id=str(device.id), role=device.role or "companion",
         instance_id=lease.instance_id, session_id=live_session_id, origin=origin,
         arguments=arguments, transcript=transcript, device_label=device.name,
-        allow_home_station_fallback=False, db_session=session,
+        allow_home_station_fallback=True, db_session=session,
         require_confirmation_context=True,
     )

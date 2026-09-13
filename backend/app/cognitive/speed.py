@@ -24,6 +24,10 @@ CONVERSATION_TOOL_NAMES: tuple[str, ...] = (
     "look.capture",
     "weather.get",
     "timer.act",
+    # The owner's own name is a one-word answer they expect every surface to
+    # know, and "call me X" is how they teach it. Without this the stored name
+    # could never be set by voice on any surface.
+    "owner.profile",
 )
 
 

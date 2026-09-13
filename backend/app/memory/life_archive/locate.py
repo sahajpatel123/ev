@@ -1293,15 +1293,14 @@ async def locate_archive(
                     "shelf": chosen,
                 }
             )
+    from app.memory.life_archive.desk import is_chat_desk_query
+    from app.memory.life_archive.talk import is_talk_pattern_query
     from app.memory.live_life import (
         locate_live_life,
         merge_life_hits,
         peek_account_life,
         peek_mac_life,
     )
-
-    from app.memory.life_archive.desk import is_chat_desk_query
-    from app.memory.life_archive.talk import is_talk_pattern_query
 
     # Thread overview is names, not a flood of live lines. Named chats and
     # live notification asks still read the Mac copies. The correspondence

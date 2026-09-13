@@ -129,6 +129,21 @@ _LIVE_TURN_GATE_CONCURRENCY = 2
 logger = logging.getLogger(__name__)
 
 
+def _tri_state(value: Any) -> bool | None:
+    """Client declaration that may be absent: True / False / unknown."""
+
+    if value is None or isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 def _pcm16(data: bytes) -> array.array:
     n = len(data) - (len(data) % 2)
     return array.array("h", data[:n])
@@ -1667,9 +1682,19 @@ class LiveSession:
             duration_ms=meta.get("duration_ms"),
             has_clip=meta.get("has_clip"),
             clip_supported=meta.get("clip_supported"),
+            captured_at_ms=meta.get("captured_at_ms"),
         )
         if permission:
             self._camera_state["permission_state"] = permission
+        declared_clip = getattr(frame, "clip_supported", None)
+        if declared_clip is not None:
+            self._camera_state["clip_supported"] = bool(declared_clip)
+            # A client that records real clips did not say "burst"; only a
+            # client that explicitly cannot record is burst-only.
+            self._camera_state["burst_supported"] = not bool(declared_clip)
+        elif getattr(frame, "has_clip", None) is False:
+            self._camera_state["clip_supported"] = False
+            self._camera_state["burst_supported"] = True
         if error:
             self._last_capture_status = error
         elif jpeg or attachment_id or frame.saved_path:
@@ -1832,6 +1857,8 @@ class LiveSession:
             "raw_frames_persisted": bool(raw.get("raw_frames_persisted", False)),
             "last_error": raw.get("last_error"),
             "updated_at": raw.get("updated_at"),
+            "clip_supported": _tri_state(raw.get("clip_supported")),
+            "burst_supported": _tri_state(raw.get("burst_supported")),
         }
 
     async def _handle_while_held(self, message: dict | bytes) -> bool:

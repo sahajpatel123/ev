@@ -8,8 +8,8 @@ fingerprint helper that CI or a pre-commit wrapper can compare to a baseline.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 FROZEN_MAC_LIVE_SURFACES = frozenset(
     {

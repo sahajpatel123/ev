@@ -24,10 +24,15 @@ from typing import Any
 
 from app.config import settings
 from app.ev.code_runtime import (
+    GENERIC_PROJECT_NAMES,
     CodeJailError,
+    catalog_project_names,
+    is_sandbox_workspace,
+    _mentions_named_project,
     list_dir,
     list_projects,
     read_file,
+    remember_sticky_project,
     replace_in_file,
     reset_active_project,
     run_argv,
@@ -76,6 +81,7 @@ Rules:
 - Do not call yourself Luna, Mini, Grok, or DeepSeek.
 - If the owner request is a CODING GOAL SLICE, finish only that phase as real multi-file work. Do not ship a hello-world stub when they asked for a professional site, app UI, or calculator.
 - If the request is too large for one pass, finish a coherent working slice, leave the tree runnable, and say exactly what still remains.
+- When the selected project is a real owner repo (not the EV sandbox): never invent hello-world stubs, never rewrite the tree from scratch, and do not stop while a test you ran is failing. Map, patch, rerun, fix.
 """
 
 LUNA_CODE_TOOLS = [
@@ -137,7 +143,7 @@ LUNA_CODE_TOOLS = [
             "properties": {
                 "path": {"type": "string", "minLength": 1, "maxLength": 512},
                 "offset": {"type": "integer", "minimum": 1},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 400},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 800},
             },
             "required": ["path"],
         },
@@ -178,7 +184,7 @@ LUNA_CODE_TOOLS = [
         "description": (
             "Run an allowlisted program in the project. argv only, no shell. "
             "python3, node, ruby, php, java, javac, go, swift, swiftc, cargo, "
-            "rustc, pytest, uv run, ruff, mypy, git status/diff/log/show."
+            "rustc, pytest, uv run, ruff, mypy, git status/diff/log/show/checkout -b."
         ),
         "parameters": {
             "type": "object",
@@ -225,10 +231,66 @@ _RUNNERS_BY_SUFFIX = {
 _MAX_GOAL_CHARS = 8000
 _LIVE_JOB_SECONDS = 240.0
 _CHAT_JOB_SECONDS = 300.0
+_PROJECT_JOB_SECONDS = 600.0
 _MAX_CODE_STEPS = 48
+_LIVE_SHORT_STEPS = 20
 _LOOP_CHAR_BUDGET = 140_000
 _LOOP_TAIL_MESSAGES = 14
 _TOOL_RESULT_CHARS = 16_000
+_PROJECT_WORK_RE = re.compile(
+    r"\b(?:"
+    r"refactor|implement|feature|codebase|state machine|"
+    r"multi[- ]file|existing (?:repo|code|module)|"
+    r"in (?:the |my |our )?\w{2,32} (?:repo|project|codebase)|"
+    r"work (?:in|on) (?:the |my |our )?\w{2,32} (?:repo|project|codebase)|"
+    r"open (?:the |my |our )?\w{2,32} (?:repo|project|codebase)"
+    r")\b",
+    re.IGNORECASE,
+)
+_PROJECT_SWITCH_ONLY_RE = re.compile(
+    r"^(?:hey |ok(?:ay)? |evie |please )*"
+    r"(?:use|open|switch to|work (?:in|on)|select) "
+    r"(?:the |my |our )?([a-z0-9._-]{2,40})"
+    r"(?: repo| project| codebase| workspace| folder)?"
+    r"\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
+_CODE_EXPLAIN_RE = re.compile(
+    r"\b(?:"
+    r"tell me about|talk (?:to me )?about|explain|describe|summarize|"
+    r"walk me through|what's in|whats in|what is in|what's inside|what is inside|"
+    r"show me (?:the )?(?:code|repo|project|workspace|folder)|"
+    r"what(?:'s| is) (?:this |the |my )?(?:code|repo|project|workspace|codebase)|"
+    r"what have i (?:written|built|coded)|"
+    r"the code (?:i |that i )?(?:wrote|have written|built)|"
+    r"what does (?:this |the |my )?(?:code|repo|project|workspace|app) do"
+    r")\b",
+    re.IGNORECASE,
+)
+_CODE_PLACE_RE = re.compile(
+    r"\b(?:"
+    r"codebase|source tree|source code|"
+    r"repos?|projects?|workspaces?|codebases?|"
+    r"\bcode\b|software I (?:wrote|built)"
+    r")\b",
+    re.IGNORECASE,
+)
+_CODE_CATALOG_RE = re.compile(
+    r"\b(?:"
+    r"(?:what|which) (?:code )?(?:projects|repos|workspaces|codebases)|"
+    r"list (?:my |the |all )?(?:code )?(?:projects|repos|workspaces)|"
+    r"what(?:'s| is) in (?:my |the )?code folder|"
+    r"what code (?:projects|repos) do i have"
+    r")\b",
+    re.IGNORECASE,
+)
+_NOT_CODE_EXPLAIN_RE = re.compile(
+    r"\b(?:"
+    r"conversation|chats?|email|mail|message|people|photos?|weather|"
+    r"sandwich|mom|dad|calendar|reminder"
+    r")\b",
+    re.IGNORECASE,
+)
 _turn_deadline: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "ev_code_turn_deadline", default=None
 )
@@ -346,7 +408,8 @@ def looks_like_code_request(text: str | None) -> bool:
         return False
     lowered = raw.lower()
     if re.search(
-        r"\b(?:text|message|email|mail|reminder|note to|write mom|write dad)\b",
+        r"\b(?:text|message|email|mail|reminder|note to|write mom|write dad|"
+        r"conversation|chats?)\b",
         lowered,
     ):
         return False
@@ -389,8 +452,13 @@ def looks_like_code_request(text: str | None) -> bool:
             r"build (?:me )?(?:a |an )?(?:script|function|cli|demo|helper)|"
             r"(?:python|javascript|typescript|java|ruby|rust|golang|swift) "
             r"(?:script|program|function|module|class|file)|"
-            r"in (?:the |my |our )?\w{2,32} (?:repo|project|codebase|package)|"
-            r"(?:this|the|my) (?:repo|codebase)|"
+            r"in (?:the |my |our )?\w{2,32} (?:repo|project|codebase|package|workspace|folder)|"
+            r"(?:this|the|my) (?:repo|codebase|workspace)|"
+            r"work (?:in|on) (?:the |my |our )?\w{2,32} (?:repo|project|codebase)|"
+            r"open (?:the |my |our )?\w{2,32} (?:repo|project|codebase)|"
+            r"fix (?:the |this |a )?(?:failing |broken )?(?:test|bug|loop|handler|endpoint|function)|"
+            r"add (?:a |an |the )?(?:feature|retry|endpoint|handler) .{0,80}"
+            r"(?:in|to) (?:the |my )?(?:\w+ )?(?:repo|project|codebase|module|package)|"
             r"write .{0,48}hello world|"
             r"coding goal|"
             r"(?:clothing|fashion|boutique|shop) (?:site|website|storefront|ui)|"
@@ -402,6 +470,8 @@ def looks_like_code_request(text: str | None) -> bool:
             lowered,
         )
         or _natural_code_ask(raw)
+        or looks_like_code_explain(raw)
+        or looks_like_project_catalog_ask(raw)
     )
 
 
@@ -411,6 +481,59 @@ def _natural_code_ask(raw: str) -> bool:
     if not _SOFT_ASK_RE.search(raw):
         return False
     return bool(_SOFT_TASK_RE.search(raw) or _SOFT_THAT_RE.search(raw))
+
+
+def looks_like_project_catalog_ask(text: str | None) -> bool:
+    """Owner asking which code projects exist on this laptop."""
+
+    raw = (text or "").strip()
+    if not raw or _NOT_CODE_EXPLAIN_RE.search(raw):
+        return False
+    return bool(_CODE_CATALOG_RE.search(raw))
+
+
+def looks_like_code_explain(text: str | None) -> bool:
+    """Read-only: tell me about / what's in this repo or a named workspace."""
+
+    raw = (text or "").strip()
+    if not raw or len(raw) > _MAX_GOAL_CHARS:
+        return False
+    if _NOT_CODE_EXPLAIN_RE.search(raw):
+        return False
+    if re.search(
+        r"\b(?:on my desktop|inside my desktop|in my documents|in downloads)\b",
+        raw,
+        re.IGNORECASE,
+    ) and not _named_projects_in_text(raw):
+        return False
+    if re.search(r"\b(?:my |the )?code folder\b", raw, re.IGNORECASE) and not _named_projects_in_text(raw):
+        return looks_like_project_catalog_ask(raw)
+    named = _named_projects_in_text(raw)
+    if named and (_CODE_EXPLAIN_RE.search(raw) or _CODE_PLACE_RE.search(raw)):
+        return True
+    if _CODE_EXPLAIN_RE.search(raw) and _CODE_PLACE_RE.search(raw):
+        return True
+    return False
+
+
+def _named_projects_in_text(text: str) -> list[str]:
+    lowered = (text or "").lower()
+    found: list[str] = []
+    for name in catalog_project_names():
+        if name in GENERIC_PROJECT_NAMES:
+            continue
+        if _mentions_named_project(lowered, name):
+            found.append(name)
+    return found
+
+
+def spoken_project_catalog() -> str:
+    names = catalog_project_names()
+    if not names:
+        return "I don't see any code projects in your Code folder yet."
+    shown = ", ".join(names[:12])
+    extra = f" and {len(names) - 12} more" if len(names) > 12 else ""
+    return f"On this laptop I can work in {shown}{extra}."
 
 
 def owner_asked_to_code(text: str | None) -> bool:
@@ -426,6 +549,29 @@ def owner_asked_to_code(text: str | None) -> bool:
         or looks_like_code_request(raw)
         or looks_like_code_continue(raw)
     )
+
+
+def maybe_switch_coding_project(text: str | None) -> str | None:
+    """Bare 'use the ev repo' — pin later jobs without starting a write."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    hit = _PROJECT_SWITCH_ONLY_RE.match(raw)
+    if not hit:
+        return None
+    name = str(hit.group(1) or "").strip().lower()
+    if not name or name in GENERIC_PROJECT_NAMES:
+        return None
+    from app.ev.code_studio import looks_like_long_code_goal
+
+    if looks_like_long_code_goal(raw):
+        return None
+    result = use_project(name)
+    if not result.get("ok"):
+        return None
+    folder = Path(str(result.get("path") or "")).name or name
+    return f"I'll work in {folder}."
 
 
 def looks_like_code_continue(text: str | None) -> bool:
@@ -618,17 +764,17 @@ def intern_in_flight() -> bool:
 
 
 def code_jail_busy() -> bool:
-    """True when a worker or live studio goal currently owns the coding jail.
+    """True when a drain worker currently owns the coding jail.
 
-    A leftover intern pending file without a worker is not busy: that used to
-    stall live/studio writes behind overnight work that was not executing.
+    Leftover intern pending files and studio JSON marked running with no
+    worker are not busy: those used to stall live writes behind work that
+    was not executing.
     """
 
-    if intern_worker_active():
-        return True
-    from app.ev.code_studio import studio_is_active
+    from app.ev.code_studio import park_stale_studio
 
-    return studio_is_active()
+    park_stale_studio()
+    return intern_worker_active()
 
 
 def abort_background_code() -> None:
@@ -662,36 +808,40 @@ async def run_code_job_and_notify(
 ) -> None:
     """Run a coding job off the live/kernel turn, then speak the real receipt."""
 
+    deadline_token = set_kernel_turn_deadline(None)
     try:
-        result = await run_code_job(
-            goal,
-            actor=actor,
-            channel="voice",
-            session_key=session_key,
-        )
-    except Exception:
-        logger.exception("background code job failed")
-        spoken = "I couldn't finish that coding job honestly."
+        try:
+            result = await run_code_job(
+                goal,
+                actor=actor,
+                channel="background",
+                session_key=session_key,
+            )
+        except Exception:
+            logger.exception("background code job failed")
+            spoken = "I couldn't finish that coding job honestly."
+            from app.memory.paths import atomic_write_json
+
+            atomic_write_json(
+                _ready_code_path(),
+                {"ok": False, "spoken": spoken, "at": utcnow().isoformat()},
+            )
+            schedule_background_code_notify(spoken)
+            return
+        spoken = str(result.get("spoken") or "").strip() or "I couldn't finish that coding job."
         from app.memory.paths import atomic_write_json
 
         atomic_write_json(
             _ready_code_path(),
-            {"ok": False, "spoken": spoken, "at": utcnow().isoformat()},
+            {
+                "ok": bool(result.get("ok")),
+                "spoken": spoken,
+                "at": utcnow().isoformat(),
+            },
         )
         schedule_background_code_notify(spoken)
-        return
-    spoken = str(result.get("spoken") or "").strip() or "I couldn't finish that coding job."
-    from app.memory.paths import atomic_write_json
-
-    atomic_write_json(
-        _ready_code_path(),
-        {
-            "ok": bool(result.get("ok")),
-            "spoken": spoken,
-            "at": utcnow().isoformat(),
-        },
-    )
-    schedule_background_code_notify(spoken)
+    finally:
+        reset_kernel_turn_deadline(deadline_token)
 
 
 def flush_background_code_notify() -> None:
@@ -708,8 +858,13 @@ def flush_background_code_notify() -> None:
 
 
 async def _push_background_code_notify(spoken: str) -> None:
-    from app.voice.live.layer import active_lives
+    from app.voice.live.layer import active_lives, record_proactive_spoken
 
+    # A completion lands outside any owner turn. Record it in the durable
+    # ledger first so the model can see it happened: otherwise the next
+    # utterance has a hole exactly where the finished job was announced, and a
+    # reply to the receipt has no referent.
+    record_proactive_spoken(spoken)
     for live in active_lives():
         if getattr(live, "_closed", False):
             continue
@@ -1079,9 +1234,11 @@ def _goal_needs_new_files(goal: str) -> bool:
         return True
     if looks_like_code_continue(raw) and not _CODE_FRESH_VERB_RE.search(raw):
         return False
-    if _RUN_TESTS.search(raw) and not _CODE_FRESH_VERB_RE.search(raw):
+    if looks_like_code_explain(raw) and not _CODE_FRESH_VERB_RE.search(raw):
         return False
-    return True
+    if looks_like_project_catalog_ask(raw) and not _CODE_FRESH_VERB_RE.search(raw):
+        return False
+    return not (_RUN_TESTS.search(raw) and not _CODE_FRESH_VERB_RE.search(raw))
 
 
 def _run_verifies_work(runs: list[dict[str, Any]] | None) -> bool:
@@ -1095,10 +1252,56 @@ def _run_verifies_work(runs: list[dict[str, Any]] | None) -> bool:
             continue
         head = argv[0].rsplit("/", 1)[-1].lower()
         rest = [part.lower() for part in argv[1:2]]
-        if head == "git" and (not rest or rest[0] in {"status", "diff", "log", "show"}):
+        if head == "git" and (not rest or rest[0] in {"status", "diff", "log", "show", "branch", "describe", "rev-parse", "ls-files"}):
             continue
         return True
     return False
+
+
+def _run_failed(runs: list[dict[str, Any]] | None) -> bool:
+    """True when the last non-git run exited non-zero."""
+
+    for item in reversed(runs or []):
+        argv = [str(part) for part in (item.get("argv") or [])]
+        if not argv:
+            continue
+        head = argv[0].rsplit("/", 1)[-1].lower()
+        rest = [part.lower() for part in argv[1:2]]
+        if head == "git" and (not rest or rest[0] in {"status", "diff", "log", "show", "branch", "describe", "rev-parse", "ls-files", "checkout"}):
+            continue
+        return not (item.get("ok") or item.get("exit_code") == 0)
+    return False
+
+
+def _deep_code_job(goal: str, root: Path | None = None) -> bool:
+    """Real-repo / feature work gets the full step and wall-clock budget."""
+
+    from app.ev.code_studio import looks_like_long_code_goal, looks_like_short_code_job
+
+    raw = (goal or "").strip()
+    if not raw:
+        return False
+    if looks_like_short_code_job(raw) or _HELLO.search(raw):
+        return False
+    if looks_like_code_explain(raw) and not _CODE_FRESH_VERB_RE.search(raw):
+        return root is not None and not is_sandbox_workspace(root)
+    if looks_like_long_code_goal(raw):
+        return True
+    if root is not None and not is_sandbox_workspace(root):
+        return True
+    return bool(_PROJECT_WORK_RE.search(raw))
+
+
+def _code_step_limit(*, live: bool, goal: str) -> int:
+    configured = int(getattr(settings, "code_max_steps", 24) or 24)
+    max_steps = max(1, min(_MAX_CODE_STEPS, configured))
+    if looks_like_code_explain(goal) and not _CODE_FRESH_VERB_RE.search(goal):
+        return min(16, max(8, configured))
+    if _deep_code_job(goal, workspace_root()):
+        return _MAX_CODE_STEPS
+    if live:
+        return min(_LIVE_SHORT_STEPS, max_steps)
+    return max_steps
 
 
 def _code_job_ok(
@@ -1107,10 +1310,13 @@ def _code_job_ok(
     files_changed: list[str],
     runs: list[dict[str, Any]] | None,
     goal: str,
+    inspected: bool = False,
 ) -> bool:
     if not completed:
         return False
     if files_changed:
+        return True
+    if inspected and looks_like_code_explain(goal):
         return True
     if _goal_needs_new_files(goal):
         return False
@@ -1183,6 +1389,11 @@ def shape_code_spoken(result: dict[str, Any]) -> str:
     elif ran_ok:
         parts.append(f"I ran that in {folder}")
     else:
+        if existing and (
+            looks_like_code_explain(str(result.get("goal") or ""))
+            or looks_like_project_catalog_ask(str(result.get("goal") or ""))
+        ):
+            return existing[:700]
         return "I couldn't finish that coding job."
     if did and names and did.lower() not in names.lower():
         parts.append(did)
@@ -1208,6 +1419,8 @@ def _finish_code_job(
     result.setdefault("goal", request)
     result["spoken"] = shape_code_spoken(result)
     remember_code_job(result, session_key=session_key)
+    if result.get("ok") and workspace:
+        remember_sticky_project(Path(workspace))
     return result
 
 
@@ -1233,6 +1446,22 @@ async def run_code_job(
         prior = last_code_job(_OWNER_JOB_KEY)
     if continue_only and not prior:
         return _fail("no_last_job", "I don't have a script from this session to continue.")
+    if looks_like_project_catalog_ask(request) and not _named_projects_in_text(request):
+        spoken = spoken_project_catalog()
+        return _finish_code_job(
+            {
+                "ok": True,
+                "spoken": spoken,
+                "files_changed": [],
+                "runs": [],
+                "brain": "catalog",
+                "degraded": False,
+                "partial": False,
+            },
+            request=request,
+            workspace=str(workspace_root()),
+            session_key=job_key,
+        )
     luna_goal = expand_code_goal(request, prior if continued else None)
     selected = select_project(request)
     prior_root = _prior_root(prior) if continued and prior else None
@@ -1242,13 +1471,26 @@ async def run_code_job(
     started = time.monotonic()
     channel_l = (channel or "").lower()
     live = channel_l == "voice" or actor == "voice"
+    deep = _deep_code_job(request, selected)
     if channel_l in {"background", "intern"}:
         live = False
         budget = float(getattr(settings, "code_chat_job_seconds", _CHAT_JOB_SECONDS) or _CHAT_JOB_SECONDS)
+        if deep:
+            budget = max(budget, _PROJECT_JOB_SECONDS)
     elif live:
-        budget = float(getattr(settings, "code_live_job_seconds", _LIVE_JOB_SECONDS) or _LIVE_JOB_SECONDS)
+        if deep:
+            live = False
+            budget = max(
+                float(getattr(settings, "code_chat_job_seconds", _CHAT_JOB_SECONDS) or _CHAT_JOB_SECONDS),
+                float(getattr(settings, "code_live_job_seconds", _LIVE_JOB_SECONDS) or _LIVE_JOB_SECONDS),
+                _PROJECT_JOB_SECONDS,
+            )
+        else:
+            budget = float(getattr(settings, "code_live_job_seconds", _LIVE_JOB_SECONDS) or _LIVE_JOB_SECONDS)
     else:
         budget = float(getattr(settings, "code_chat_job_seconds", _CHAT_JOB_SECONDS) or _CHAT_JOB_SECONDS)
+        if deep:
+            budget = max(budget, _PROJECT_JOB_SECONDS)
     budget = _effective_job_budget(budget)
     try:
         workspace = str(workspace_root())
@@ -1569,6 +1811,16 @@ def _orientation_block() -> str:
             break
     if not lines:
         return ""
+    if not is_sandbox_workspace(workspace_root()):
+        for extra in ("backend", "src", "app", "tests", "macos", "ios"):
+            try:
+                listing = list_dir(extra)
+            except CodeJailError:
+                continue
+            entries = ", ".join(str(item) for item in (listing.get("entries") or [])[:40])
+            if entries:
+                lines.append(f"{extra}/: {entries[:700]}")
+                break
     return "\nORIENTATION (read-only, from the workspace):\n" + "\n".join(lines) + "\n"
 
 
@@ -1629,6 +1881,19 @@ def _heuristic_if_spark_wrote_nothing(
 ) -> dict[str, Any] | None:
     """If Spark talked and wrote nothing, still ship a real heuristic job when we can."""
 
+    from app.ev.code_studio import looks_like_short_code_job
+
+    if looks_like_code_explain(request) and not _CODE_FRESH_VERB_RE.search(request or ""):
+        survey = _heuristic_survey_job(request)
+        if survey.get("ok"):
+            survey.setdefault("brain", f"{model}+survey")
+            survey.setdefault("actor", actor)
+            survey.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
+            return survey
+    if not is_sandbox_workspace(workspace_root()) and not (
+        looks_like_short_code_job(request) or _HELLO.search(request or "")
+    ):
+        return None
     heuristic = _heuristic_job(request, prior=prior)
     if not heuristic.get("ok"):
         return None
@@ -1641,6 +1906,14 @@ def _heuristic_if_spark_wrote_nothing(
 _SPARK_TOOL_NUDGE = (
     "You described the work instead of doing it. "
     "Call write_file or replace_in_file now. Do not claim the files exist."
+)
+_SPARK_VERIFY_NUDGE = (
+    "The files are on disk but you have not run a real check yet. "
+    "Call run_command with the project's test or the file you wrote. Do not stop."
+)
+_SPARK_EXPLAIN_NUDGE = (
+    "The owner asked what is in this project. Call list_dir and read_file now. "
+    "Do not write files. Then give a short spoken summary of the real tree."
 )
 
 
@@ -1656,12 +1929,31 @@ async def _spark_code_loop(
 
     from app.gateway.muse_spark import muse_spark_provider, responses_tools_to_chat_tools
 
-    configured = int(getattr(settings, "code_max_steps", 24) or 24)
-    max_steps = max(1, min(_MAX_CODE_STEPS, configured))
-    if live:
-        max_steps = min(20, max_steps)
+    max_steps = _code_step_limit(live=live, goal=goal)
     projects = list_projects()
-    catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:12]) or "(none)"
+    catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:24]) or "(none)"
+    explain = looks_like_code_explain(goal) and not _CODE_FRESH_VERB_RE.search(goal)
+    repo_note = (
+        "The owner asked you to READ and EXPLAIN this project. list_dir, search, "
+        "and read_file only. Do not write or patch unless they asked to change it. "
+        "Answer with a short spoken summary of what actually exists on disk.\n"
+        if explain
+        else (
+            "This is a real owner repository. Map with list_dir/search/read_file, "
+            "patch with replace_in_file, run the project's tests, and fix failures "
+            "before you stop. Do not write a hello-world stub unless they asked for that file.\n"
+            if not is_sandbox_workspace(workspace_root())
+            else ""
+        )
+    )
+    work_line = (
+        "Relative paths only. Map the tree, then summarize what is actually there."
+        if explain
+        else (
+            "Relative paths only. Search, then patch. New work may be several files. "
+            "Use the language this repo already speaks. Run a check before you stop."
+        )
+    )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SPARK_CODE_SYSTEM},
         {
@@ -1672,8 +1964,8 @@ async def _spark_code_loop(
                 f"Allowed projects: {catalog}\n"
                 f"{_orientation_block()}"
                 f"{_prior_hint(prior)}"
-                "Relative paths only. Search, then patch. New work may be several files. "
-                "Use the language this repo already speaks. Run a check before you stop."
+                f"{repo_note}"
+                f"{work_line}"
             ),
         },
     ]
@@ -1683,6 +1975,9 @@ async def _spark_code_loop(
     error: str | None = None
     timed_out = False
     nudged = False
+    verify_nudged = False
+    fix_nudges = 0
+    inspected = False
     deadline = time.monotonic() + max(1.0, budget_s)
     tools = responses_tools_to_chat_tools(LUNA_CODE_TOOLS)
     provider = muse_spark_provider()
@@ -1697,7 +1992,7 @@ async def _spark_code_loop(
                     messages,
                     tools=tools,
                     model=model,
-                    tool_choice="required" if not files_changed else "auto",
+                    tool_choice="auto",
                 ),
                 timeout=remaining,
             )
@@ -1706,19 +2001,36 @@ async def _spark_code_loop(
             break
         except Exception as exc:  # noqa: BLE001 - coding must fail honest
             error = type(exc).__name__
-            logger.warning("luna_code.spark_step_failed error_type=%s", error)
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            logger.warning(
+                "luna_code.spark_step_failed error_type=%s status=%s", error, status
+            )
             break
         text, calls = _assistant_turn_from_complete_raw(data if isinstance(data, dict) else {})
         choice: dict[str, Any] = {"role": "assistant", "content": text or None}
         if calls:
             choice["tool_calls"] = calls
         messages.append(choice)
-        if text and files_changed:
+        if text and (files_changed or (explain and inspected)):
             spoken = text
         if not calls:
+            if explain and inspected:
+                if text:
+                    spoken = text
+                break
             if files_changed:
                 if text:
                     spoken = text
+                remaining = deadline - time.monotonic()
+                if remaining > 1.5:
+                    if _run_failed(runs) and fix_nudges < 2:
+                        fix_nudges += 1
+                        messages.append({"role": "user", "content": _SPARK_FIX_NUDGE})
+                        continue
+                    if not _run_verifies_work(runs) and not verify_nudged:
+                        verify_nudged = True
+                        messages.append({"role": "user", "content": _SPARK_VERIFY_NUDGE})
+                        continue
                 break
             if not _goal_needs_new_files(goal) and _run_verifies_work(runs):
                 if text:
@@ -1726,7 +2038,12 @@ async def _spark_code_loop(
                 break
             if not nudged:
                 nudged = True
-                messages.append({"role": "user", "content": _SPARK_TOOL_NUDGE})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": _SPARK_EXPLAIN_NUDGE if explain else _SPARK_TOOL_NUDGE,
+                    }
+                )
                 continue
             break
         for call in calls:
@@ -1738,6 +2055,8 @@ async def _spark_code_loop(
             except json.JSONDecodeError:
                 parsed = {}
             result = execute_code_tool(name, parsed if isinstance(parsed, dict) else {})
+            if name in {"list_dir", "search", "read_file", "list_projects"} and result.get("ok"):
+                inspected = True
             if name in {"write_file", "replace_in_file"} and result.get("ok"):
                 path = str(result.get("path") or "")
                 if path and path not in files_changed:
@@ -1789,7 +2108,7 @@ async def _spark_code_loop(
         "ok": ok,
         "spoken": spoken[:500],
         "files_changed": files_changed,
-        "runs": runs[-6:],
+        "runs": runs[-12:],
         "brain": model,
         "workspace": str(workspace_root()),
         "degraded": not ok,
@@ -1813,12 +2132,9 @@ async def _luna_loop(
     import httpx
 
     key = (getattr(settings, "openai_api_key", None) or "").strip()
-    configured = int(getattr(settings, "code_max_steps", 24) or 24)
-    max_steps = max(1, min(_MAX_CODE_STEPS, configured))
-    if live:
-        max_steps = min(20, max_steps)
+    max_steps = _code_step_limit(live=live, goal=goal)
     projects = list_projects()
-    catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:12]) or "(none)"
+    catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:24]) or "(none)"
     conversation: list[dict[str, Any]] = [
         {"role": "system", "content": LUNA_CODE_SYSTEM},
         {
@@ -1946,7 +2262,7 @@ async def _luna_loop(
         "ok": ok,
         "spoken": spoken[:500],
         "files_changed": files_changed,
-        "runs": runs[-6:],
+        "runs": runs[-12:],
         "brain": model,
         "workspace": str(workspace_root()),
         "degraded": not ok,

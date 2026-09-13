@@ -62,6 +62,97 @@ FOLLOW_UP_PREFIX = re.compile(
 
 MAX_FRAGMENT_CHARS = 60
 
+# Short yes/no replies answer the assistant's own last question. Treating them
+# as continuations keeps the offer in context instead of replying with a
+# topic-free greeting ("yes I am here, what would you like me to do?").
+#
+# There is ONE recogniser for this: ``app.ev.messaging.approval`` owns the
+# grammar (English plus the owner's Romanised Hindi, and the length bound that
+# keeps "yes the mail from Rahul was long" or "send a message to John saying
+# hi" out of the reply grammar). These wrappers exist for the older callers
+# that ask continuity directly — a "yes, go ahead and send it" must read the
+# same here as it does at the approval gate, or the owner's confirmation is
+# treated as conversation and the offer is dropped. They must never grow a
+# second grammar of their own.
+
+
+# A read-aloud confirmation is a different speech act from approving a parked
+# send. "yes, read it out" answers Evie's own offer; it authorises nothing
+# queued. Keeping it out of the approval grammar is what stops "ok read the
+# mail" or "send the whole thing" from approving a message the owner never
+# consented to — so the shape lives here, not in approval._AFFIRM_WORDS.
+_READ_ALOUD_FILLERS = frozenset(
+    {
+        "read",
+        "recite",
+        "it",
+        "them",
+        "that",
+        "this",
+        "the",
+        "a",
+        "an",
+        "to",
+        "me",
+        "my",
+        "out",
+        "aloud",
+        "loud",
+        "through",
+        "line",
+        "by",
+        "word",
+        "whole",
+        "full",
+        "body",
+        "mail",
+        "email",
+        "chat",
+        "message",
+        "note",
+        "thing",
+        "all",
+        "everything",
+        "again",
+        "please",
+        "now",
+        "just",
+    }
+)
+
+
+def _read_aloud_reply(message: str | None) -> bool:
+    """True for "yes, read it out" — an affirmative plus a read-aloud verb."""
+
+    tokens = re.findall(r"[a-z']+", (message or "").lower())
+    if not tokens or len(tokens) > 8:
+        return False
+    from app.ev.messaging import approval
+
+    if not approval.is_affirmative_head(tokens[0]):
+        return False
+    if not any(token in {"read", "recite"} for token in tokens[1:]):
+        return False
+    return all(token in _READ_ALOUD_FILLERS for token in tokens[1:])
+
+
+def is_affirmative_reply(message: str | None) -> bool:
+    """True when the message confirms the question Evie just asked."""
+
+    from app.ev.messaging import approval
+
+    text = message or ""
+    return approval.is_affirmative(text) or _read_aloud_reply(text)
+
+
+def is_negative_reply(message: str | None) -> bool:
+    """True when the message declines the question Evie just asked."""
+
+    from app.ev.messaging import approval
+
+    return approval.is_negative(message or "")
+
+
 MemoryIntent = Literal[
     "continuation",
     "explicit_recall",
@@ -213,6 +304,8 @@ def classify_memory_intent(message: str | None) -> MemoryIntent:
         return "fresh"
     if FORGET_INTENT.search(text):
         return "forget"
+    if is_affirmative_reply(text) or is_negative_reply(text):
+        return "continuation"
     from app.memory.visual import is_keep_recall_query, is_visual_recall_query
 
     if is_keep_recall_query(text) or is_visual_recall_query(text):

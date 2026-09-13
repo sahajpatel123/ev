@@ -316,6 +316,78 @@ public struct EVAPIClient: Sendable {
         return try decode(AttachmentCreateResponse.self, from: responseData)
     }
 
+    /// Upload a recorded clip so Home Station can sample it into memory.
+    ///
+    /// The clip is the owner's own recording; the server stores it, extracts
+    /// keyframe moments and transcribes the audio locally. Posters alone are a
+    /// worse memory than the clip itself, so this is the preferred path when a
+    /// real recording exists.
+    public func ingestClip(
+        filename: String,
+        contentType: String,
+        data: Data,
+        durationMs: Int? = nil,
+        requestId: String? = nil,
+        deviceID: String? = nil
+    ) async throws -> EvieClipIngest {
+        let boundary = "Boundary-\(UUID().uuidString)"
+        let safeFilename = filename
+            .replacingOccurrences(of: "\"", with: "")
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+        var body = Data()
+
+        func appendField(_ name: String, _ value: String) {
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".utf8))
+            body.append(Data("\(value)\r\n".utf8))
+        }
+
+        appendField("analyze", "true")
+        if let durationMs {
+            appendField("duration_ms", String(durationMs))
+        }
+        if let requestId, !requestId.isEmpty {
+            appendField("request_id", requestId)
+        }
+        if let deviceID, !deviceID.isEmpty {
+            appendField("device_id", deviceID)
+        }
+        body.append(Data("--\(boundary)\r\n".utf8))
+        body.append(Data(
+            "Content-Disposition: form-data; name=\"file\"; filename=\"\(safeFilename)\"\r\n".utf8
+        ))
+        body.append(Data("Content-Type: \(contentType)\r\n\r\n".utf8))
+        body.append(data)
+        body.append(Data("\r\n--\(boundary)--\r\n".utf8))
+
+        var request = URLRequest(url: url(for: "/v1/vision/clip"))
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue(
+            "multipart/form-data; boundary=\(boundary)",
+            forHTTPHeaderField: "Content-Type"
+        )
+        request.timeoutInterval = 120
+        let responseData: Data
+        let response: URLResponse
+        do {
+            (responseData, response) = try await session.upload(for: request, from: body)
+        } catch {
+            throw EVAPIError.transport(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw EVAPIError.transport("non-HTTP response")
+        }
+        guard http.statusCode == 201 else {
+            throw EVAPIError.httpStatus(
+                http.statusCode,
+                String(data: responseData, encoding: .utf8) ?? ""
+            )
+        }
+        return try decode(EvieClipIngest.self, from: responseData)
+    }
+
     // MARK: - Ask / browse
 
     public func ask(

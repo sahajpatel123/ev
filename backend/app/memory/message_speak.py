@@ -318,7 +318,6 @@ _STOP = frozenset(
         "there",
         "their",
         "that's",
-        "that's",
         "this",
         "that",
         "they",

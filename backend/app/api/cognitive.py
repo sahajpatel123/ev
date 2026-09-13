@@ -47,6 +47,10 @@ async def cognitive_turn(
         modality=body.modality,
         session=session,
     )
+    # This endpoint owns the session it was handed (`get_session` never
+    # commits). Without this, a tool that wrote state was flushed and then
+    # rolled back while the response still described the action as done.
+    await session.commit()
     return result.as_dict()
 
 
@@ -81,6 +85,11 @@ async def mac_execute(
             "diagnosis": type(exc).__name__,
             "spoken": "I couldn't complete that on the Mac.",
         }
+    # The kernel forwards Mac-bound tools here and trusts the reply, so a write
+    # must be durable before this returns. `get_session` never commits: without
+    # this the timer/reminder/goal was flushed, rolled back on close, and the
+    # owner was still told it was set.
+    await session.commit()
     if hasattr(result, "model_dump"):
         return result.model_dump()
     return dict(result) if isinstance(result, dict) else {"ok": True, "result": result}
@@ -89,8 +98,11 @@ async def mac_execute(
 @router.get("/health")
 async def cognitive_health(_: str = Depends(require_master)) -> dict[str, Any]:
     from app.cognitive.mode import cognitive_mode, cognitive_role
-
-    from app.gateway.muse import muse_counters_snapshot, muse_spark_base_url, muse_spark_inference_route
+    from app.gateway.muse import (
+        muse_counters_snapshot,
+        muse_spark_base_url,
+        muse_spark_inference_route,
+    )
 
     muse = muse_counters_snapshot()
     return {

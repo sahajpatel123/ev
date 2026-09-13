@@ -377,6 +377,60 @@ async def owner_phone(client: AsyncClient) -> AsyncIterator[tuple[dict, AsyncCli
     await phone.aclose()
 
 
+@pytest.fixture
+def opened_presence() -> Iterator[None]:
+    """Make the presence overlay report an opened surface.
+
+    Under pytest the overlay refuses to open and reports ``degraded: True``
+    (``app/notify/presence.py``), which is honest — no window was shown. Any
+    caller that records dispatch honesty therefore correctly reports a failed
+    run, so a test about *scheduling* rather than about the overlay has to say
+    the surface opened, or it asserts a lie.
+
+    Patched by hand rather than through ``monkeypatch``: a test that calls
+    ``monkeypatch.undo()`` (to drop its own stub of a broken integration)
+    would undo this too, and the dispatch would fail for the wrong reason.
+    """
+
+    from app.notify import presence as presence_module
+
+    original = presence_module.open_presence
+
+    async def _open(**kwargs):
+        return {
+            "ok": True,
+            "opened": True,
+            "title": kwargs.get("title"),
+            "body": kwargs.get("body"),
+            "surface": "overlay",
+            "via": "test_fixture",
+        }
+
+    presence_module.open_presence = _open
+    yield
+    presence_module.open_presence = original
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Point storage-backed stores at a per-test directory.
+
+    The cognitive session — the pending offer and the turn ledger — is a plain
+    JSON file under ``settings.storage_root``. Without this, any test that
+    drives a real turn writes the owner's live conversation file, and leaves an
+    offer behind that the next test (and the echo-drop and listen-ack gates)
+    would then see for its whole TTL.
+    """
+
+    from app.cognitive.session_store import reset_for_tests
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path_factory.mktemp("storage")))
+    reset_for_tests()
+    yield
+    reset_for_tests()
+
+
 @pytest.fixture(autouse=True)
 def reset_pair_rate_limiter() -> None:
     """EAC101: clear the in-memory /pair attempt limiter between tests."""
