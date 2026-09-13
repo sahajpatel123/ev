@@ -188,14 +188,40 @@ async def maybe_phone_core_read(
         return _ok(spoken_clock(raw), route="CLOCK", extra={"provenance": "owner.clock"})
 
     if _CAPABILITIES.search(raw):
+        # Answer from the device's own live self-model rather than a frozen
+        # sentence, so what she says she can do is what she can actually do.
+        from .cognitive_phone import phone_self_model
+
+        try:
+            state = phone_self_model(device)
+        except Exception:  # noqa: BLE001 - never fail a question about capability
+            state = {}
+        local = [str(name).replace("_", " ") for name in state.get("local_available") or []]
+        station = [str(name).replace("_", " ") for name in state.get("home_station") or []]
+        parts = [
+            "I can talk with you, see through this camera, tell you the date and time, "
+            "your name if it's saved, weather, your inbox, and what I remember."
+        ]
+        if local:
+            parts.append("On this iPhone itself: " + ", ".join(sorted(set(local))) + ".")
+        if station:
+            parts.append(
+                "Everything else runs on your Home Station — the Mac — including "
+                + ", ".join(sorted(set(station)))
+                + ". Timers and reminders there ping this iPhone with an Evie alert, "
+                "not Clock or Reminders.app."
+            )
+        parts.append(
+            "My own Health numbers stay on Home Station and are never sent to a model."
+        )
         return _ok(
-            "On this iPhone I can talk with you, look through the camera, "
-            "tell you the date and time, your name if it's saved, weather, "
-            "inbox, and what I remember. Timers and reminders run on Home Station "
-            "and can ping this iPhone with an Evie alert — not Clock or Reminders.app. "
-            "Call opens Phone when Home Station has a number. "
-            "Health numbers stay on Home Station and are never sent to a model.",
+            " ".join(parts),
             route="CAPABILITIES",
+            extra={
+                "native_shell": bool(state.get("native_shell")),
+                "local_count": len(local),
+                "home_station_count": len(station),
+            },
         )
 
     from app.memory.visual import is_visual_recall_query

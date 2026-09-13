@@ -95,6 +95,7 @@ async def execute_semantic(
     live_session_id: str | None,
     steering_seen: int,
     device_id: str | None = None,
+    phone_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     args = dict(arguments or {})
     if int(cognition.steering_version) != int(steering_seen) and name in MUTATING:
@@ -135,7 +136,7 @@ async def execute_semantic(
         if name in {"files.act", "code.act", "computer.perform_effect"}:
             args["prepare_only"] = True
     if name == "capability.discover":
-        return {"ok": True, "capabilities": public_descriptors(domain=str(args.get("domain") or ""))}
+        return _discover(args, phone_state=phone_state)
     if name == "memory.search":
         from app.memory.select import explicit_recall_payload
 
@@ -419,6 +420,40 @@ async def execute_semantic(
             cognition=cognition,
         )
     return _failure("CAPABILITY_UNAVAILABLE", f"I don't have {name} on this kernel.")
+
+
+def _discover(args: dict[str, Any], *, phone_state: dict[str, Any] | None) -> dict[str, Any]:
+    """Everything this surface can actually do — one honest, credential-free answer.
+
+    On a phone the semantic catalog alone was half an answer: it listed Core's
+    tools and omitted the device's own actuators, so "what can you do?" could
+    not mention this iPhone's timer, camera, calling, or the Home Station that
+    carries out everything else. This merges both, and still never carries a
+    launch URL or a receipt credential.
+    """
+
+    semantic = public_descriptors(domain=str(args.get("domain") or ""))
+    if not phone_state:
+        return {"ok": True, "capabilities": semantic}
+    local = [
+        {"operation": name, "available": True, "reason": None}
+        for name in phone_state.get("local_available") or []
+    ]
+    local += [
+        {"operation": name, "available": False, "reason": reason}
+        for name, reason in sorted((phone_state.get("local_unavailable") or {}).items())
+    ]
+    return {
+        "ok": True,
+        "capabilities": semantic,
+        "device": {
+            "origin": phone_state.get("origin") or "iPhone",
+            "name": phone_state.get("device"),
+            "native_shell": bool(phone_state.get("native_shell")),
+            "local_actions": local,
+            "home_station_actions": list(phone_state.get("home_station") or []),
+        },
+    }
 
 
 async def _owner_profile(session: AsyncSession, args: dict[str, Any]) -> dict[str, Any]:

@@ -146,6 +146,51 @@ async def phone_turn_authority_changed(
     return None
 
 
+def phone_self_model(device: Device) -> dict[str, Any]:
+    """What this iPhone is, what it can do locally, and what it must route elsewhere.
+
+    One source for the system prompt, for ``capability.discover`` and for the
+    spoken capabilities answer, so the device's self-knowledge cannot drift
+    between surfaces. Before this existed the kernel prompt was written for the
+    Mac and never said which device was speaking, so the mind had no model of
+    its own reach: it knew the tool names it was handed but not that this device
+    has no shell, no Clock, no Mail, and a paired Home Station that does.
+    """
+
+    from .mobile_actions.service import status_snapshot
+    from .phone_mac import PHONE_HOME_CAPABILITIES
+
+    role = device.role or "companion"
+    try:
+        snapshot = status_snapshot(
+            device_id=str(device.id), role=role, display_name=device.name,
+        )
+    except Exception:  # noqa: BLE001 - a missing broker must not break the prompt
+        snapshot = {}
+    available: list[str] = []
+    unavailable: dict[str, str] = {}
+    for row in snapshot.get("capabilities") or []:
+        if not isinstance(row, dict):
+            continue
+        operation = str(row.get("operation") or "").strip()
+        if not operation:
+            continue
+        if row.get("available"):
+            available.append(operation)
+        else:
+            unavailable[operation] = str(row.get("reason") or "unavailable")
+    return {
+        "device": device.name,
+        "role": role,
+        "origin": "iPhone",
+        "native_shell": bool(snapshot.get("native_shell_connected")),
+        "permissions": dict(snapshot.get("permissions") or {}),
+        "local_available": available,
+        "local_unavailable": unavailable,
+        "home_station": list(PHONE_HOME_CAPABILITIES),
+    }
+
+
 def phone_turn_specs(*, compact: bool) -> list[ToolSpec]:
     """The whole tool bus for a phone turn: semantic tools plus phone-local ones.
 
