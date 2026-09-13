@@ -10,8 +10,10 @@
 set -euo pipefail
 
 BUNDLE_ID="com.ev.suit"
-APP="/Applications/EV.app"
-USER_APP="$HOME/Applications/EV.app"
+APP="/Applications/Evie.app"
+USER_APP="$HOME/Applications/Evie.app"
+# Legacy short-name symlink from older installs; fallback only.
+LEGACY_APP="/Applications/EV.app"
 TCC_DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
 
 ok() { print -r -- "✅ $1"; }
@@ -27,6 +29,9 @@ if [ -d "$APP" ]; then
 elif [ -d "$USER_APP" ]; then
     INSTALLED="$USER_APP"
     ok "$USER_APP exists (per-user install)"
+elif [ -d "$LEGACY_APP" ]; then
+    INSTALLED="$LEGACY_APP"
+    ok "$LEGACY_APP exists (legacy short-name symlink)"
 else
     bad "no EV.app in /Applications or ~/Applications"
     fix "./scripts/package.sh && ./scripts/install.sh"

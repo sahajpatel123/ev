@@ -1,5 +1,5 @@
 #!/bin/zsh
-# PULSE launchd installer: api, worker, scheduler, runtime, ears, collector.
+# PULSE launchd installer: api, worker, scheduler, runtime, ears, collector, talk.
 #
 # Default: installs as LaunchAgents (starts at login, no sudo needed).
 #   ./launchd/install.sh
@@ -50,13 +50,18 @@ if [[ ! -x "$HELPER_BIN" ]]; then
     <key>CFBundleShortVersionString</key><string>1.0</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <!-- Helper, not an app: keeps "EV" out of Launchpad/Dock next to Evie. -->
+    <key>LSUIElement</key><true/>
 </dict>
 </plist>
 PLIST
   codesign --force --deep -s - "$HELPER_DIR/EVNotificationHelper.app"
 fi
 
-PLISTS=(api worker scheduler runtime ears collector opencode)
+# talk = the Talk sidecar on :18000 that EV.app itself is configured to call.
+# Without it a reboot leaves the GUI retrying a closed port ("Backend
+# unavailable — retrying until it returns."). See launchd/ev.talk.plist.
+PLISTS=(api worker scheduler runtime ears collector opencode talk)
 for name in "${PLISTS[@]}"; do
   plist="$ROOT/launchd/ev.$name.plist"
   plutil -lint "$plist" >/dev/null

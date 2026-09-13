@@ -10,9 +10,12 @@
 # that no longer exists. Installing into /Applications without quarantine is
 # what makes a grant stick.
 #
-# The signed bundle is named Evie.app so Spotlight (⌘Space) can find it.
-# EV.app is a symlink to the same bundle so existing scripts and "EV.app"
-# searches still resolve.
+# There is exactly ONE app: Evie.app. Earlier installs also dropped an
+# /Applications/EV.app symlink so the short name would still resolve, but Finder
+# draws a symlink to a bundle as a second app icon — which is where the "2-3
+# Evie apps" confusion came from. Nothing needs it any more: presence.py and
+# doctor.sh resolve /Applications/Evie.app and only fall back to the legacy name
+# if it happens to exist. A stale symlink is removed (and unregistered) on install.
 #
 # Usage: ./scripts/install.sh
 
@@ -33,7 +36,8 @@ if [ ! -w "$DEST_DIR" ]; then
     echo "/Applications is not writable; installing into $DEST_DIR"
 fi
 DEST="$DEST_DIR/Evie.app"
-EV_LINK="$DEST_DIR/EV.app"
+# Legacy short-name symlink from earlier installs. Removed, never recreated.
+LEGACY_LINK="$DEST_DIR/EV.app"
 
 # Quit any running copy by pid: replacing a bundle underneath a live process
 # leaves the old signature running and TCC attributing grants to it.
@@ -51,16 +55,25 @@ if PIDS="$(pgrep -f '(Evie|EV)\.app/Contents/MacOS/EV( |$)' 2>/dev/null)"; then
     done
 fi
 
-rm -rf "$EV_LINK" "$DEST"
+# One app only. Unregister the legacy symlink *before* removing it: Launch
+# Services keys that path, and a dangling entry is what keeps a ghost "EV" icon
+# alive in Finder and Launchpad.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [ -e "$LEGACY_LINK" ] || [ -L "$LEGACY_LINK" ]; then
+    if [ -x "$LSREGISTER" ]; then
+        "$LSREGISTER" -u "$LEGACY_LINK" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$LEGACY_LINK"
+    echo "Removed legacy $LEGACY_LINK — one app only now: $DEST"
+fi
+
+rm -rf "$DEST"
 cp -R "$APP" "$DEST"
 xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
-ln -s "$DEST" "$EV_LINK"
 
 # Spotlight and Launchpad only list bundles Launch Services knows about.
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 if [[ -x "$LSREGISTER" ]]; then
     "$LSREGISTER" -f -R "$DEST" >/dev/null 2>&1 || true
-    "$LSREGISTER" -f -R "$EV_LINK" >/dev/null 2>&1 || true
 fi
 mdimport "$DEST" >/dev/null 2>&1 || true
 osascript >/dev/null 2>&1 <<EOF || true
@@ -69,9 +82,23 @@ tell application "Finder"
 end tell
 EOF
 
+# Drop the staging copy now that it is safely installed. build/EV.app is a
+# second com.ev.suit bundle carrying the same CFBundleDisplayName "Evie", so
+# leaving it behind makes Spotlight (Cmd-Space) list TWO identically named
+# "Evie" apps and the owner cannot tell which one to open. `.metadata_never_index`
+# does NOT prevent this on macOS 26 (verified: marker written before the bundle,
+# bundle indexed anyway), so removal is the reliable fix. Re-run package.sh to
+# rebuild the staging bundle.
+if [[ -d "$APP" ]]; then
+    if [[ -x "$LSREGISTER" ]]; then
+        "$LSREGISTER" -u "$APP" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$APP"
+    echo "Removed build staging $APP (no longer indexed as a duplicate 'Evie')"
+fi
+
 echo "Installed $DEST"
-echo "Also listed as $EV_LINK"
-echo "Spotlight: type Evie  or  EV  or  EV.app"
+echo "Spotlight: type Evie"
 codesign --verify --strict --verbose=2 "$DEST" 2>&1 | sed 's/^/  /'
 
 echo

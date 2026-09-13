@@ -85,6 +85,11 @@ class MacOSNotifier:
             "CFBundleShortVersionString": "1.0",
             "CFBundleVersion": "1",
             "LSMinimumSystemVersion": "13.0",
+            # A notification helper is not a user-facing app. Without this the
+            # bundle registers as a launchable application named "EV" and shows
+            # up in Launchpad / the Dock beside the real menu-bar app "Evie".
+            # LSUIElement does not affect UNUserNotificationCenter delivery.
+            "LSUIElement": True,
         }
         (contents_dir / "Info.plist").write_bytes(plistlib.dumps(info))
         sign = subprocess.run(

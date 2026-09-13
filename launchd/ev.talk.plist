@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      DEPENDENCY NOTE (Agent 14 PULSE owns launchd/**): added by an owner-directed
+      repair, please ratify/relocate as you see fit.
+
+      WHY THIS FILE EXISTS
+      --------------------
+      EV.app (the menu-bar app) reads EV_API_URL from
+      ~/Library/Application Support/EV/api.env, which points at the Talk
+      sidecar (127.0.0.1:18000) — NOT at ev.api (:8000). That is deliberate:
+      ev.api runs with EV_LAPTOP_FILES=false, so pointing the GUI at :8000 is
+      the documented "computer deny" regression.
+
+      ev.api is durable because this directory ships ev.api.plist. Talk had NO
+      plist, so it was started by hand and died at every reboot. After a reboot
+      the GUI therefore retried a closed port forever and the menu bar sat on
+      "Backend unavailable — retrying until it returns." (observed 2026-09-12:
+      boot 11:55, Talk last log 11:48, ev.api back at 11:58, GUI broken on open).
+
+      Talk is started through scripts/start_talk_sidecar.py — never a bare
+      `uvicorn --port 18000` — because that script is the only thing that pins
+      the owner Postgres URL, the owner master/vault from
+      ~/.ev/secrets/production.env, EV_LAPTOP_FILES=true, and the Muse brain
+      flags. Do not inline its environment here; keep reusing the script so the
+      tested logic stays in one place.
+
+      EV_TALK_SIDECAR_FOREGROUND=1 makes the script skip its own double-fork so
+      launchd supervises the real server process and can restart it.
+    -->
+    <key>Label</key>
+    <string>ev.talk</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-lc</string>
+        <string>cd /Users/sahajpatel/Code/ev &amp;&amp; EV_TALK_SIDECAR_FOREGROUND=1 exec /usr/bin/python3 scripts/start_talk_sidecar.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/sahajpatel/Code/ev</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Talk talks to owner Postgres. KeepAlive + ThrottleInterval is what lets
+         it come up late if Postgres is not ready yet at login, instead of
+         leaving :18000 permanently empty. -->
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/Users/sahajpatel/Library/Logs/ev/talk.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sahajpatel/Library/Logs/ev/talk.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/sahajpatel/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+</dict>
+</plist>

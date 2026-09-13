@@ -87,6 +87,22 @@ APP="$ROOT/build/EV.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
+# build/EV.app is a BUILD OUTPUT, not an installed app. A second com.ev.suit
+# bundle with CFBundleDisplayName "Evie" left at $HOME/.../macos/build/EV.app is
+# indexed by Spotlight and registered by Launch Services, so Cmd-Space lists TWO
+# identically named "Evie" apps beside /Applications/Evie.app and the owner
+# cannot tell which one to open.
+#
+# NOTE: `.metadata_never_index` does NOT suppress this on macOS 26 — verified by
+# writing the marker first and only then rebuilding; the bundle was indexed
+# anyway. The reliable fix is scripts/install.sh deleting this staging copy
+# after a successful install. The unregister below only shortens the window in
+# which the bundle exists but has not been installed yet.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+    "$LSREGISTER" -u "$APP" >/dev/null 2>&1 || true
+fi
+
 cp "$BIN" "$APP/Contents/MacOS/EV"
 cp "$HELPER" "$APP/Contents/MacOS/EVNotificationHelper"
 cp "$LIFE_HELPER" "$APP/Contents/MacOS/EVLifeHelper"
@@ -202,30 +218,94 @@ echo "Packaged $APP"
 # and MUST NOT contain EV_MASTER_KEY or device secrets. Device tokens live
 # in Keychain (com.ev.suit), not in files that package.sh could overwrite.
 # Normal EV.app startup uses Keychain device token, not master.
+# True when a URL has something listening on it locally. Remote URLs are never
+# probed: this script cannot judge a Tailscale/mTLS endpoint from here, so they
+# are preserved exactly as written.
+url_is_live() {
+    local url="$1"
+    [[ -n "$url" ]] || return 1
+    local host port
+    case "$url" in
+        http://127.0.0.1:*) host="127.0.0.1"; port="${url#http://127.0.0.1:}" ;;
+        http://localhost:*) host="127.0.0.1"; port="${url#http://localhost:}" ;;
+        http://\[::1\]:*)   host="::1";       port="${url#http://[::1]:}" ;;
+        *) return 0 ;;
+    esac
+    port="${port%%/*}"
+    [[ "$port" =~ ^[0-9]+$ ]] || return 0
+    nc -z -w 1 "$host" "$port" >/dev/null 2>&1
+}
+
 sync_api_env() {
     local dest="${HOME}/Library/Application Support/EV/api.env"
     mkdir -p "$(dirname "$dest")"
-    local url=""
     local src="$ROOT/../.env"
-    # Keep the Talk URL this machine already uses. Resetting to :8000 after
-    # every package pointed the GUI at the stale production API (computer
-    # deny). An explicit EV_API_URL in the package environment still wins.
+    local url="" from=""
+
+    # An explicit EV_API_URL in the package environment always wins, even when
+    # nothing answers yet (remote deployments and first-boot ordering are real).
     if [[ -n "${EV_API_URL:-}" ]]; then
         url="$EV_API_URL"
-    else
-        url="$(defaults read com.ev.suit EV_API_URL 2>/dev/null || true)"
-        if [[ -z "$url" && -f "$dest" ]]; then
-            url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$dest" | tr -d "\"'")"
+        from="EV_API_URL environment"
+    fi
+
+    # Otherwise remember what this machine already used — but keep the Talk URL
+    # ONLY while it is actually answering. Resetting to :8000 unconditionally
+    # after every package is what pointed the GUI at the stale production API
+    # (computer deny), so :8000 must never win over a live :18000.
+    if [[ -z "$url" ]]; then
+        local remembered=""
+        remembered="$(defaults read com.ev.suit EV_API_URL 2>/dev/null || true)"
+        [[ -n "$remembered" ]] && from="com.ev.suit defaults"
+        if [[ -z "$remembered" && -f "$dest" ]]; then
+            remembered="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$dest" | tr -d "\"'")"
+            [[ -n "$remembered" ]] && from="api.env"
         fi
-        if [[ -z "$url" && -f "$src" ]]; then
-            url="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
+        if [[ -z "$remembered" && -f "$src" ]]; then
+            remembered="$(awk -F= '/^EV_API_URL=/{v=$2} END{print v}' "$src" | tr -d "\"'")"
+            [[ -n "$remembered" ]] && from="repo .env"
         fi
-        if [[ -z "$url" ]]; then
-            url="http://127.0.0.1:8000"
+        # THE BUG THIS REPLACES: the remembered URL used to be written back
+        # unconditionally. A port with no listener (:18000 after the Talk
+        # sidecar died, e.g. across a reboot) was therefore re-affirmed on
+        # every package run, and EV.app sat on "Backend unavailable —
+        # retrying until it returns." forever. A remembered URL is only kept
+        # when something actually answers on it.
+        if [[ -n "$remembered" ]] && url_is_live "$remembered"; then
+            url="$remembered"
+        elif [[ -n "$remembered" ]]; then
+            echo "WARNING: remembered EV_API_URL $remembered (from $from) has no" >&2
+            echo "         listener — looking for a live backend instead." >&2
         fi
     fi
+
+    if [[ -z "$url" ]]; then
+        # Prefer Talk (:18000) when it is up: it is the only backend that runs
+        # with EV_LAPTOP_FILES=true. Fall back to ev.api (:8000), which is
+        # launchd-supervised, rather than writing a URL that only retries.
+        local candidate
+        for candidate in "http://127.0.0.1:18000" "http://127.0.0.1:8000"; do
+            if url_is_live "$candidate"; then
+                url="$candidate"
+                from="live probe"
+                break
+            fi
+        done
+    fi
+
+    if [[ -z "$url" ]]; then
+        url="http://127.0.0.1:8000"
+        from="built-in default"
+    fi
+    # Scope umask 077 to this one file. A bare `umask 077` leaks out of this
+    # function into the rest of package.sh AND into the exec'd
+    # scripts/install.sh, which then copies the bundle into /Applications with
+    # mode drwx------ instead of the normal drwxr-xr-x. Restore it immediately.
+    local saved_umask
+    saved_umask="$(umask)"
     umask 077
     printf 'EV_API_URL=%s\n' "$url" > "$dest"
+    umask "$saved_umask"
     # Keep legacy cleanup: remove any master/device secrets that may have
     # drifted into api.env or UserDefaults. Device token stays in Keychain.
     if grep -q "EV_MASTER_KEY" "$dest" 2>/dev/null || grep -q "EV_API_KEY" "$dest" 2>/dev/null; then
@@ -237,7 +317,7 @@ sync_api_env() {
     # Clean any legacy UserDefaults master that would be mistaken for device cred.
     defaults delete com.ev.suit EV_API_KEY 2>/dev/null || true
     defaults write com.ev.suit EV_API_URL "$url" 2>/dev/null || true
-    echo "Wrote safe API URL for EV.app → $dest (master/device secrets NOT written; device token in Keychain com.ev.suit)"
+    echo "Wrote safe API URL for EV.app → $dest ($url from $from; master/device secrets NOT written; device token in Keychain com.ev.suit)"
 }
 sync_api_env
 if [ "$INSTALL" -eq 1 ]; then
