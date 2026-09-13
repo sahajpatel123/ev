@@ -544,6 +544,7 @@ async def _muse_turn(
         capture_phone_binding,
         execute_phone_tool,
         is_phone_turn,
+        phone_self_model,
         phone_turn_specs,
     )
 
@@ -551,6 +552,20 @@ async def _muse_turn(
     phone_binding = await capture_phone_binding(
         session, device_id=str(device_id), live_session_id=live_session_id,
     ) if phone_turn else None
+    # What this device is and what it can reach, compiled once and shared by the
+    # prompt and by capability.discover so the two cannot disagree.
+    phone_self: dict[str, Any] | None = None
+    if phone_turn and device_id:
+        from uuid import UUID as _UUID
+
+        from app.models import Device as _Device
+
+        try:
+            device_row = await session.get(_Device, _UUID(str(device_id)))
+        except (TypeError, ValueError):
+            device_row = None
+        if device_row is not None:
+            phone_self = phone_self_model(device_row)
     if not phone_turn:
         routed = await _dispatch_kernel_code(
             session,
@@ -603,6 +618,7 @@ async def _muse_turn(
         capability_names=[spec.name for spec in specs],
         computer_state=computer_state,
         computer_ready=computer_ready,
+        phone_state=phone_self,
     )
     messages = [
         ChatMessage(role="system", content=system),
@@ -802,6 +818,7 @@ async def _muse_turn(
                                     live_session_id=live_session_id,
                                     steering_seen=steering_seen,
                                     device_id=str(device_id) if device_id else None,
+                                    phone_state=phone_self,
                                 ),
                                 timeout=remaining,
                             )

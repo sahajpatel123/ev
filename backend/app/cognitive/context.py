@@ -16,6 +16,64 @@ def _clock() -> str:
     return f"{now.strftime('%A %Y-%m-%d %H:%M')} ({tz})"
 
 
+def _phone_doctrine(phone_state: dict[str, Any], persona: str) -> str:
+    """The phone's self-model: what this device is and every route it can reach.
+
+    This is routing fact, not voice: it says where an effect runs so a reply
+    cannot claim the phone did what Core or Home Station did. It carries no
+    style and no steering toward any feature — every capability below is equal
+    background machinery, and none of it should be mentioned unless asked.
+    """
+
+    shell = (
+        " through the Evie iPhone app"
+        if phone_state.get("native_shell")
+        else " in Safari as a web app, with no native shell installed"
+    )
+    available = ", ".join(phone_state.get("local_available") or []) or "only talking and seeing"
+    missing = phone_state.get("local_unavailable") or {}
+    missing_lines = "; ".join(f"{name}: {reason}" for name, reason in sorted(missing.items()))
+    station = ", ".join(phone_state.get("home_station") or [])
+    lines = [
+        f"DEVICE — you are {persona} running on the owner's iPhone{shell}.",
+        (
+            "This device has no shell, no terminal, no filesystem, no Clock app, no "
+            "Reminders store, no Mail client, no Contacts API, no calendar write and no "
+            "background daemon. It cannot run a coding job or a Mac app, and it cannot "
+            "wake the owner's other iPhone."
+        ),
+        f"What this iPhone can do itself right now: {available}.",
+    ]
+    if missing_lines:
+        lines.append(f"Not available on this surface yet: {missing_lines}.")
+    if station:
+        lines.append(
+            "HOME STATION is the owner's Mac: paired, on, and reached through Core. "
+            f"It runs {station}."
+        )
+    lines.append(
+        "ROUTING — take the first route that exists, and never answer that you cannot "
+        "do something on the phone while a route is still open:\n"
+        "1. this iPhone, via phone_action (timer, alarm, reminder, opening an app, "
+        "calling, messaging, maps or directions, share, clipboard, Focus, media) and "
+        "phone.read (weather, inbox, identity, contacts, calendar, memory, timers);\n"
+        "2. Core or Home Station through the specific tool that fits — life.mail, "
+        "life.messages, life.send, timer.act, weather.get, people.lookup, memory.search, "
+        "life.state, look.capture, notify.schedule, goal.*, files.act, code.act, "
+        "computer.perform_effect, digital.act, research.search, phone.call;\n"
+        "3. home.act, passing the owner's exact words, when no specific tool fits;\n"
+        "4. only when every route returned a real failure, say what failed using the "
+        "tool's own reason — name the specific thing that was missing, not a general "
+        "excuse."
+    )
+    lines.append(
+        "A result that ran elsewhere carries executed_on or method. Say where it ran, "
+        "and never present a Core or Home Station effect as something this iPhone did. "
+        "Never state an effect you have no evidence for."
+    )
+    return "\n".join(lines)
+
+
 def compile_context(
     *,
     transcript: str,
@@ -28,6 +86,7 @@ def compile_context(
     capability_names: list[str] | None = None,
     computer_state: dict[str, Any] | None = None,
     computer_ready: bool = False,
+    phone_state: dict[str, Any] | None = None,
 ) -> str:
     persona = (getattr(settings, "persona_name", None) or "EVIE").strip() or "EVIE"
     blocks = [
@@ -41,6 +100,8 @@ def compile_context(
         f"CURRENT INTENT: {(transcript or '').strip()[:2000]}",
         f"ACTIVE WORK: {status_line(cognition)} steering_version={cognition.steering_version} prepare_only={cognition.prepare_only} parked={cognition.parked} goal_id={cognition.focused_goal_id or 'none'}",
     ]
+    if phone_state:
+        blocks.append(_phone_doctrine(phone_state, persona))
     domain = str((cognition.constraints or {}).get("turn_domain") or "open")
     blocks.append(
         f"THIS TURN DOMAIN: {domain}. CURRENT INTENT is the only live job. "
@@ -127,6 +188,12 @@ def compile_context(
     for required in ("look.capture", "memory.search", "life.mail", "life.messages", "life.send"):
         if required not in names:
             names.append(required)
+    if phone_state:
+        # The universal route and the owner's own name are part of what this
+        # device is, so they belong in the names it is told it has.
+        for required in ("home.act", "owner.profile", "phone.read"):
+            if required not in names:
+                names.append(required)
     blocks.append("CAPABILITIES (subset): " + ", ".join(names))
     blocks.append(
         "POLICY: R0-R4 still apply. When this utterance already names who and what to send, "
