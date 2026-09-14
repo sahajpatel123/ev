@@ -14,6 +14,9 @@
   <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#191c19">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
+  <!-- Cycle 86/88 — per-device launch screens (SE + 16 Pro). -->
+  <link rel="apple-touch-startup-image" media="(max-width: 430px) and (max-height: 900px)" href="/evie/splash-se.png?v=2026.09.09.04">
+  <link rel="apple-touch-startup-image" media="(min-width: 431px)" href="/evie/splash-16pro.png?v=2026.09.09.04">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/evie/style.css?v=2026.09.09.04">
   <title>Evie</title>
@@ -61,12 +64,38 @@
         <p class="ma-target" id="ma-target"></p>
         <p class="ma-body" id="ma-body" hidden></p>
         <p class="ma-status" id="ma-status"></p>
+        <div class="ma-chips" id="ma-chips" hidden></div>
         <div class="ma-actions">
           <button type="button" id="ma-go" class="dock-primary">Run</button>
           <button type="button" id="ma-cancel" class="ghost">Cancel</button>
         </div>
       </article>
       <p class="action-card" id="action-card" role="status" aria-live="polite" aria-atomic="true" hidden></p>
+      <article class="mobile-action-card" id="tool-result-card" hidden>
+        <p class="ma-kicker" id="tr-kicker">Result</p>
+        <p class="ma-op" id="tr-title"></p>
+        <p class="ma-body" id="tr-spoken"></p>
+        <div class="ma-chips" id="tr-chips"></div>
+      </article>
+      <article class="mobile-action-card" id="timer-ring-card" hidden>
+        <p class="ma-kicker" id="tmr-kicker">Timer running</p>
+        <div class="tmr-row">
+          <svg class="tmr-ring" viewBox="0 0 72 72" aria-hidden="true">
+            <circle class="tmr-track" cx="36" cy="36" r="30"></circle>
+            <circle class="tmr-arc" id="tmr-arc" cx="36" cy="36" r="30"></circle>
+          </svg>
+          <div>
+            <p class="tmr-remaining" id="tmr-remaining">--:--</p>
+            <p class="quiet" id="tmr-fire"></p>
+          </div>
+        </div>
+      </article>
+      <article id="camera-ask" class="camera-ask" hidden>
+        <p class="camera-ask-title">Which iPhone is this?</p>
+        <p class="quiet">Tap one. Evie uses this for Look — it is not inferred from the name.</p>
+        <button type="button" data-camera-role="pro">This is the 16 Pro</button>
+        <button type="button" data-camera-role="standard">This is the SE</button>
+      </article>
       <nav id="quick-row" class="quick-row" hidden>
         <button type="button" data-quick="weather">Weather</button>
         <button type="button" data-quick="today">Today</button>
@@ -103,6 +132,10 @@
       <label class="sr-only" for="room-tool-search">Find a tool</label>
       <input id="room-tool-search" class="room-tool-search" type="search" placeholder="Find a tool" autocomplete="off" aria-controls="room-tool-list">
       <p id="room-tool-empty" class="quiet" role="status" hidden>No matching tools. Try “memory” or “camera”.</p>
+      <p class="quiet">One Evie. This phone, Home Station, the thread.</p>
+      <!-- Cycle 51 — server-computed one-tap actions; each chip sends its
+           utterance through the same trusted text path as a spoken turn. -->
+      <div id="qa-chips" class="qa-chips"></div>
       <div class="folio-grid" id="room-tool-list">
         <button type="button" id="look-btn" class="folio-card"><strong>Look</strong><span>Ask Evie to use this iPhone's camera</span></button>
         <button type="button" class="folio-card" data-surface="weather"><strong>Weather</strong><span>Forecast for a place</span></button>
@@ -160,6 +193,11 @@
           <span class="folio-kicker">Today</span>
           <strong>Today</strong>
           <span>Health, calendar, memory</span>
+        </button>
+        <button type="button" class="folio-card folio-wide" data-quick="tactical">
+          <span class="folio-kicker">Tactical</span>
+          <strong>Brief</strong>
+          <span>Right-now system state, read only</span>
         </button>
         <button type="button" class="folio-card" data-surface="activity">
           <span class="folio-kicker">Pulse</span>
@@ -359,6 +397,16 @@
       </p>
       <ol id="history" class="timeline"></ol>
       <p class="quiet" id="conv-export-meta"></p>
+      <h3>Recent turns on this phone</h3>
+      <div id="turn-history" class="turn-history"></div>
+      <h3>Memory — read only</h3>
+      <div id="memory-browser" class="turn-history"></div>
+    </section>
+
+    <section id="tactical-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="tactical-sheet" aria-label="Close">✕</button>
+      <h2>Tactical brief</h2>
+      <div id="tactical-body" class="turn-history"></div>
     </section>
 
     <section id="devices-sheet" class="sheet" hidden>
@@ -397,12 +445,9 @@
       <h2>This iPhone</h2>
       <p class="quiet" id="trust-banner"></p>
       <button type="button" class="quiet camera-role-line" id="camera-role-line" hidden></button>
-      <article id="camera-ask" class="camera-ask" hidden>
-        <p class="camera-ask-title">Which iPhone is this?</p>
-        <p class="quiet">Tap one. Evie uses this for Look — it is not inferred from the name.</p>
-        <button type="button" data-camera-role="pro">This is the 16 Pro</button>
-        <button type="button" data-camera-role="standard">This is the SE</button>
-      </article>
+      <!-- Cycle 42 — server-computed capability manifest: what this phone
+           can do right now, per trust state. Rendered by capabilities.js. -->
+      <div id="capabilities-card"></div>
       <h3>Camera</h3>
       <p class="quiet">Tap the phone you are holding. Look prefers the 16 Pro when both are on.</p>
       <p class="quiet" id="camera-role-status">Current: not set</p>
@@ -433,6 +478,17 @@
         <button type="button" id="bridge-ready-btn" class="secondary">I installed the Bridge</button>
       </div>
       <ol id="mobile-actions-test" class="self-test" hidden></ol>
+      <h3>Voice mode</h3>
+      <p class="quiet">Continuous listens for when you start and stop. Hold-to-talk waits for you to hold the Talk control — better in noisy rooms.</p>
+      <div class="segment" id="voice-mode">
+        <button type="button" data-voice-mode="continuous" class="on">Continuous</button>
+        <button type="button" data-voice-mode="ptt">Hold to talk</button>
+      </div>
+      <h3>EV Sense</h3>
+      <p class="quiet">What this phone shares with Evie — consented sensors only. Health numbers never go to any model.</p>
+      <dl class="meta" id="sense-meta"></dl>
+      <h3>What Evie keeps</h3>
+      <div id="privacy-stance" class="turn-history"></div>
       <h3>Appearance</h3>
       <div class="segment" id="appearance">
         <button type="button" data-appearance="system" class="on">System</button>
@@ -443,6 +499,12 @@
       <p class="quiet">Safari can show local alerts on this iPhone. That is not APNs. Inbox still polls Home Station.</p>
       <button type="button" id="enable-alerts-btn" class="secondary">Allow local alerts</button>
       <p class="quiet" id="alerts-meta"></p>
+      <h3>Density</h3>
+      <div class="segment" id="density">
+        <button type="button" data-density="auto" class="on">Auto</button>
+        <button type="button" data-density="compact">Compact</button>
+        <button type="button" data-density="comfortable">Comfortable</button>
+      </div>
       <h3>Status</h3>
       <dl class="meta" id="settings-meta"></dl>
       <button type="button" id="self-test-btn" class="secondary">Evie system check</button>
@@ -480,6 +542,7 @@
       <p class="mood" id="camera-copy">Opening perception</p>
       <video id="preview" playsinline muted></video>
       <canvas id="snap" hidden></canvas>
+      <button type="button" id="keep-chip" class="chip" hidden>Keep this</button>
     </section>
   </main>
 
@@ -496,6 +559,7 @@
   <script src="/evie/feedback.js?v=2026.09.09.04"></script>
   <script src="/evie/webrtc.js?v=2026.09.09.04"></script>
   <script src="/evie/mobile-actions.js?v=2026.09.09.04"></script>
+  <script src="/evie/capabilities.js?v=2026.09.09.04"></script>
   <script src="/evie/app.js?v=2026.09.09.04"></script>
   <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
        additive window.EvieTrust namespace; no existing markup changed. -->

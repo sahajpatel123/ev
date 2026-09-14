@@ -33,7 +33,15 @@ from .auth import (
 from .camera import get_frame, put_frame
 from .handoff import current_state, state_public
 from .health import snapshot as health_snapshot
-from .lease import claim_lease, heartbeat_lease, lease_belongs, lease_public, release_lease
+from .lease import (
+    _when as _lease_when,
+    claim_lease,
+    current_lease,
+    heartbeat_lease,
+    lease_belongs,
+    lease_public,
+    release_lease,
+)
 from .mobile_actions.engine import status_snapshot as mobile_actions_status
 from .mobile_actions.routes import gateway_origin
 from .mobile_actions.routes import router as mobile_actions_router
@@ -123,6 +131,9 @@ class ClaimRequest(BaseModel):
     session_id: str | None = None
     lease_id: str | None = None
     client_generation: int | None = None
+    battery_percent: float | None = None
+    connectivity: str | None = None
+    takeover: bool = False
 
 
 class ActionCancelRequest(BaseModel):
@@ -257,6 +268,7 @@ class CameraResult(BaseModel):
     has_clip: bool | None = None
     clip_supported: bool | None = None
     captured_at_ms: int | None = None
+    note: str | None = Field(default=None, max_length=512)
 
 
 class TurnReceiptRequest(BaseModel):
@@ -342,6 +354,17 @@ class PushRegisterRequest(BaseModel):
     bundle_id: str | None = None
     delivery: str = "apns"
     authorization: str | None = None
+
+
+class NudgePrefsRequest(BaseModel):
+    enabled: bool = True
+    quiet_start: str = "22:00"
+    quiet_end: str = "07:00"
+
+
+class WebPushSubscriptionRequest(BaseModel):
+    endpoint: str
+    keys: dict[str, str] = {}
 
 
 class MarkHomeStationRequest(BaseModel):
@@ -693,6 +716,24 @@ async def device_status(
     return {"ok": True, **device_status_payload(device), "device": _device_public(device)}
 
 
+@router.get("/capabilities")
+async def device_capabilities(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """Server-computed answer to "what can THIS iPhone do right now?".
+
+    Pure read: derives the manifest from the same policy code the voice and
+    text paths enforce, so what the PWA displays can never drift from what
+    turns actually do. No trust, memory, or tool state is mutated here.
+    """
+
+    _check_origin(request)
+    from .capability_manifest import capability_manifest
+
+    return {"ok": True, **capability_manifest(device)}
+
+
 @router.post("/heartbeat")
 async def heartbeat(
     data: ClaimRequest,
@@ -701,6 +742,14 @@ async def heartbeat(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
+    if data.battery_percent is not None:
+        # Cycle 52 — battery awareness: clamp to a sane range, persist so
+        # nudges and the capability manifest can respect a dying phone.
+        try:
+            battery = max(0.0, min(100.0, float(data.battery_percent)))
+            device.battery_percent = battery
+        except (TypeError, ValueError):
+            pass
     note_presence(device.id, instance_id=data.instance_id, state="ready")
     lease = await heartbeat_lease(session, device_id=device.id, instance_id=data.instance_id)
     await session.commit()
@@ -723,6 +772,21 @@ async def heartbeat(
     return payload
 
 
+async def _refuse_active_lease(session: AsyncSession, existing: Any) -> dict | None:
+    """Cycle 77 — refuse a claim on a lease another device holds ACTIVELY.
+    Returns the refusal body, or None when the holder went quiet (stale
+    lease falls through to a normal claim)."""
+
+    holder = await session.get(Device, existing.device_id)
+    holder_name = ((holder.name or "").split() or ["another device"])[0] if holder else "another device"
+    return {
+        "ok": False,
+        "refused": "lease_active",
+        "holder": {"device_id": str(existing.device_id), "name": holder_name},
+        "spoken": f"Evie is talking with {holder_name}. Tap again to take over here.",
+    }
+
+
 @router.post("/conversation/claim")
 async def conversation_claim(
     data: ClaimRequest,
@@ -731,11 +795,21 @@ async def conversation_claim(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     _check_origin(request)
+    # Cycle 77 — two-iPhone arbitration: a SECOND phone does not silently
+    # rip the conversation from the first. If another device holds an
+    # ACTIVE lease, the first claim is refused with who holds it; only an
+    # EXPLICIT takeover (second tap) takes the lease.
+    existing = await current_lease(session)
+    previous_holder_id = existing.device_id if existing is not None else None
+    if previous_holder_id is not None and previous_holder_id != device.id and data.takeover is not True:
+        refused = await _refuse_active_lease(session, existing)
+        if refused is not None:
+            return refused
     lease = await claim_lease(session, device_id=device.id, instance_id=data.instance_id, method=data.method)
     note_presence(device.id, instance_id=data.instance_id, state="active")
     await session.commit()
     emit("conversation.claimed", device_id=str(device.id), method=data.method)
-    return {"ok": True, "lease": lease_public(lease)}
+    return {"ok": True, "lease": lease_public(lease), "took_over": previous_holder_id is not None and previous_holder_id != device.id}
 
 
 @router.post("/conversation/release")
@@ -808,6 +882,86 @@ async def user_text(
     return result
 
 
+@router.get("/privacy")
+async def privacy_stance(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """Cycle 85 — privacy transparency: ONE honest answer to "what does
+    Evie keep from this phone?". Server-composed from the same policy the
+    surfaces enforce; nothing is stated that is not true."""
+
+    _check_origin(request)
+    from app.everywhere.heading_out import heading_out_consent
+    from app.everywhere.web_push import vapid_configured, web_subscription
+
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+    kept: list[str] = []
+    never: list[str] = []
+    if not is_sandbox_device(device):
+        kept += [
+            "Conversation turns (this phone's history, with provenance)",
+            "Memories you explicitly kept ('remember this')",
+            "Timers, reminders, and their receipts",
+            "Your enrolled people roster (names, not biometrics)",
+            "An encrypted voiceprint IF you enrolled (raw recordings never stored)",
+        ]
+        never += [
+            "Health numbers (they never reach any model)",
+            "Location history (samples are evaluated and dropped)",
+            "Raw voice enrollment clips",
+            "Mail/Message bodies (read back as short gists for that turn only)",
+        ]
+    else:
+        kept += ["Nothing personal — sandbox devices keep memory off."]
+        never += ["Everything personal: history, keeps, roster, voiceprint, health."]
+    return {
+        "ok": True,
+        "environment": "SANDBOX" if is_sandbox_device(device) else "OWNER",
+        "health_snapshot_shared": bool(hk.get("available")),
+        "push_subscribed": bool(vapid_configured() and web_subscription(device) is not None),
+        "heading_out_consent": heading_out_consent(device).get("consent", False),
+        "kept": kept,
+        "never_kept": never,
+        "controls": [
+            "EV Sense turns sensors off",
+            "Heading out row revokes location consent",
+            "Voice row re-enrolls or re-checks; privacy center deletes voiceprints",
+            "Privacy center: correct, forget, restore any memory",
+        ],
+    }
+
+
+class WakeRequest(BaseModel):
+    body: str | None = Field(default=None, max_length=280)
+
+
+@router.post("/conversation/wake")
+async def conversation_wake(
+    data: WakeRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 79 — push-to-wake: a doorbell push that opens the live session
+    on arrival. The intent is expressed elsewhere (quick action, Home
+    Station); the push itself just opens the door with ?wake=1."""
+
+    _check_origin(request)
+    from app.everywhere.web_push import send_web_push
+
+    outcome = await send_web_push(
+        device,
+        title="Evie",
+        body=(data.body or "Tap to start talking.")[:280],
+        url="/evie/?wake=1",
+        wake=True,
+    )
+    await session.commit()
+    return {"ok": True, "push": outcome}
+
+
 @router.post("/live/open")
 async def live_open(
     data: ClaimRequest,
@@ -818,6 +972,13 @@ async def live_open(
     """Open the existing live voice session without lowering /v1/voice/live/open trust."""
 
     _check_origin(request)
+    # Cycle 77 — the talk button arbitrates like conversation/claim.
+    existing = await current_lease(session)
+    previous_holder_id = existing.device_id if existing is not None else None
+    if previous_holder_id is not None and previous_holder_id != device.id and data.takeover is not True:
+        refused = await _refuse_active_lease(session, existing)
+        if refused is not None:
+            return refused
     lease = await claim_lease(
         session,
         device_id=device.id,
@@ -1215,24 +1376,6 @@ async def offline_enqueue(
     status = int(result.get("status") or 201)
     if status in {201, 409, 422}:
         return JSONResponse(result, status_code=status)
-    return result
-
-
-@router.post("/queue/replay")
-async def offline_replay(
-    data: QueueReplayRequest,
-    request: Request,
-    device: Device = Depends(require_gateway_device),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    _check_origin(request)
-    from app.everywhere.offline_queue import replay
-
-    result = await replay(session, device=device, idempotency_key=data.idempotency_key)
-    await session.commit()
-    status = int(result.get("status") or 200)
-    if status in {404, 422}:
-        raise HTTPException(status_code=status, detail=result)
     return result
 
 
@@ -1690,6 +1833,658 @@ async def healthkit_snapshot(
     return {"ok": True, "freshness": freshness, "sent_to_model": False, "available": bool(available)}
 
 
+@router.post("/text/stream")
+async def user_text_stream(
+    data: TextRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Cycle 54 — streaming STATES for the typed path: an SSE body that
+    yields the turn's stages (routing → thinking → reply) so the phone
+    shows honest progress instead of a silent wait. Token streaming is a
+    later, separate change; this endpoint never fakes it."""
+
+    _check_origin(request)
+    if device.revoked_at is not None:
+        raise HTTPException(status_code=401, detail="Device revoked")
+
+    from collections.abc import AsyncIterator
+
+    from fastapi.responses import StreamingResponse
+
+    async def events() -> AsyncIterator[str]:
+        yield "event: state\ndata: {\"stage\": \"routing\"}\n\n"
+        try:
+            if not is_sandbox_device(device):
+                from app.device_gateway.pipeline import run_trusted_device_text
+
+                yield "event: state\ndata: {\"stage\": \"thinking\"}\n\n"
+                result = await run_trusted_device_text(
+                    session,
+                    device=device,
+                    text=data.text or "",
+                    idempotency_key=data.request_id or getattr(data, "idempotency_key", None),
+                )
+                await session.commit()
+                payload = {
+                    "reply": str(result.get("reply") or ""),
+                    "route": result.get("route"),
+                    "conversational": bool(result.get("conversational")),
+                }
+            else:
+                lease = await claim_lease(
+                    session, device_id=device.id, instance_id=data.instance_id or "default", method="manual"
+                )
+                note_presence(device.id, instance_id=data.instance_id or "default", state="active")
+                result = await handle_user_text(
+                    session,
+                    device=device,
+                    text=data.text,
+                    request_id=data.request_id or data.idempotency_key,
+                    instance_id=data.instance_id or "default",
+                    origin=gateway_origin(request),
+                )
+                await session.commit()
+                payload = {"reply": str(result.get("reply") or result.get("text") or "")}
+            import json as _json
+
+
+            # Cycle 57 — streamed TTS on the typed path: the phone's typed
+            # answer gets a voice, sentence by sentence, using the SAME
+            # synthesizer the Mac pipeline uses. Skipped silently when the
+            # synthesizer has no audio for the text (or synth is degraded).
+            reply_text = str(payload.get("reply") or "").strip()
+            if reply_text and not getattr(device, "revoked_at", None):
+                try:
+                    from app.ev.interaction import EMOTION_SPEECH, detect_emotion
+                    from app.voice.contracts import SpeechStyle
+                    from app.voice.speech import pop_speakable
+                    from app.voice.tts import get_synthesizer
+
+                    synth = get_synthesizer()
+                    # Cycle 59 — same prosody map as the desk: the owner's
+                    # affect (EMOTION_SPEECH) drives warmth/urgency/brevity;
+                    # caps respected. The route keys (timers, reads) already
+                    # speak their own crisp lines.
+                    spec = EMOTION_SPEECH.get(
+                        detect_emotion(data.text or ""), EMOTION_SPEECH["neutral"]
+                    )
+                    urgency = min(
+                        1.0,
+                        max(0.0, float(spec.get("urgency_boost", 0.0))),
+                        float(spec.get("urgency_cap", 1.0)),
+                    )
+                    style = SpeechStyle(
+                        warmth=float(spec.get("warmth", 0.72)),
+                        brevity=float(spec.get("brevity", 0.45)),
+                        urgency=urgency,
+                        mode="casual",
+                    )
+                    buffer = reply_text
+                    index = 0
+                    import base64 as _b64
+
+                    from app.voice.pipeline import device_playable_audio
+
+                    while True:
+                        sentence, buffer = pop_speakable(buffer)
+                        if not sentence:
+                            break
+                        spoken = await synth.synthesize(sentence, style=style)
+                        wav = await device_playable_audio(spoken.audio) if getattr(spoken, "audio", None) else b""
+                        if wav:
+                            yield (
+                                "event: tts\ndata: "
+                                + _json.dumps(
+                                    {
+                                        "index": index,
+                                        "audio_b64": _b64.b64encode(wav).decode("ascii"),
+                                        "content_type": "audio/wav",
+                                    }
+                                )
+                                + "\n\n"
+                            )
+                            index += 1
+                    leftover, _ = pop_speakable(buffer, flush=True)
+                    if leftover:
+                        spoken = await synth.synthesize(leftover, style=style)
+                        wav = await device_playable_audio(spoken.audio) if getattr(spoken, "audio", None) else b""
+                        if wav:
+                            yield (
+                                "event: tts\ndata: "
+                                + _json.dumps(
+                                    {
+                                        "index": index,
+                                        "audio_b64": _b64.b64encode(wav).decode("ascii"),
+                                        "content_type": "audio/wav",
+                                    }
+                                )
+                                + "\n\n"
+                            )
+                except Exception:  # noqa: BLE001 - speech is best-effort on the typed path
+                    pass
+            yield f"event: reply\ndata: {_json.dumps(payload)}\n\n"
+        except Exception as exc:  # noqa: BLE001 - SSE must end with an error event
+            yield (
+                "event: error\ndata: "
+                + _json.dumps({"error_code": "TEXT_STREAM_FAILED", "message": str(exc)[:200]})
+                + "\n\n"
+            )
+
+    return StreamingResponse(events(), media_type="text/event-stream")
+
+
+@router.get("/brief")
+async def morning_brief(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 60 — the morning brief, server-computed from the SAME
+    deterministic surfaces the phone already reads (clock, calendar
+    snapshot, inbox, name) — no model call, nothing new leaves the house.
+    The PWA renders it as the Today card; the desk voice summary is a
+    later, separate lane."""
+
+    _check_origin(request)
+    if device.revoked_at is not None:
+        raise HTTPException(status_code=401, detail="Device revoked")
+    from datetime import datetime as _dt
+
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    cal = profile.get("calendar") if isinstance(profile.get("calendar"), dict) else {}
+    events = cal.get("events") if isinstance(cal.get("events"), list) else []
+    today = _dt.now()
+    today_events = []
+    for item in events[:20]:
+        if not isinstance(item, dict):
+            continue
+        start = str(item.get("start") or "")
+        if start[:10] == today.strftime("%Y-%m-%d"):
+            today_events.append(
+                {
+                    "title": str(item.get("title") or "Event")[:120],
+                    "start": start,
+                }
+            )
+    from app.everywhere.inbox import list_inbox
+
+    inbox = await list_inbox(session, device_id=device.id, limit=20)
+    unread = [item for item in inbox if item.get("unread")]
+    from .sandbox import is_sandbox_device
+
+    return {
+        "ok": True,
+        "trust_state": "TRUSTED_OWNER_DEVICE" if not is_sandbox_device(device) else "PAIRED_SANDBOX",
+        "date": today.strftime("%A, %B %-d"),
+        "greeting_name": (device.name or "").split()[0] if (device.name or "").strip() else "",
+        "calendar_today": today_events[:8],
+        "inbox_unread": len(unread),
+        "battery_percent": device.battery_percent,
+        "nudges": [
+            {"title": item.get("title") or "", "body": (item.get("body") or "")[:140]}
+            for item in unread[:3]
+        ],
+    }
+
+
+class PersonEnrollRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=256)
+    relation: str = Field(default="other", max_length=64)
+    note: str | None = Field(default=None, max_length=512)
+
+
+@router.get("/people")
+async def people_roster(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The enrolled-people roster (owner graph, no biometrics)."""
+
+    _check_origin(request)
+    from app.life.people import list_relationships
+
+    return {"ok": True, "people": await list_relationships(session)}
+
+
+@router.post("/people/enroll")
+async def people_enroll(
+    data: PersonEnrollRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Enroll a person into the owner's roster. Explicit only; relation
+    vocabulary comes from the existing G1 set."""
+
+    _check_origin(request)
+    from app.life.people import set_relationship
+
+    result = await set_relationship(
+        session,
+        actor=f"device:{device.name}",
+        person_name=data.name.strip()[:256],
+        relation=data.relation,
+        note=data.note,
+        device_id=str(device.id),
+    )
+    await session.commit()
+    return {"ok": result.get("ok", False), **result}
+
+
+class HeadingOutRequest(BaseModel):
+    consent: bool | None = None
+    radius_meters: float | None = Field(default=None, ge=50, le=5000)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
+
+
+@router.get("/heading-out")
+async def heading_out_state(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """Consent state + whether a home anchor exists (nothing else)."""
+
+    _check_origin(request)
+    from app.everywhere.heading_out import heading_out_consent
+    from app.search.live import home_coords
+
+    state = heading_out_consent(device)
+    home = home_coords()
+    return {
+        "ok": True,
+        **state,
+        "home_anchor": home is not None,
+    }
+
+
+@router.post("/heading-out")
+async def heading_out_update(
+    data: HeadingOutRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Consent toggle and/or one consented position sample."""
+
+    _check_origin(request)
+    from app.everywhere.heading_out import evaluate_heading_out, heading_out_consent, set_heading_out_consent
+
+    if data.consent is not None:
+        set_heading_out_consent(device, consent=data.consent, radius_meters=data.radius_meters)
+        await session.commit()
+    if data.lat is None or data.lng is None:
+        state = heading_out_consent(device)
+        return {"ok": True, **state, "transition": None}
+    outcome = evaluate_heading_out(device, lat=data.lat, lng=data.lng)
+    await session.commit()
+    if outcome.get("transition") == "heading_out":
+        from app.everywhere.nudge import send_nudge
+
+        await send_nudge(
+            session,
+            device,
+            kind="heading_out",
+            title="Heading out",
+            body="You've left home. Ask me for anything you need on the way.",
+        )
+    await session.commit()
+    return {"ok": True, **heading_out_consent(device), **outcome}
+
+
+@router.get("/sense")
+async def ev_sense(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 65 — EV Sense: the phone's CONSENTED sensor surface, stated
+    honestly. Everything here is already-reported device state (healthkit
+    snapshot availability, battery, storage, camera role, nudge policy);
+    nothing is inferred, nothing new is collected, and health numbers stay
+    off the model (sent_to_model is always False)."""
+
+    _check_origin(request)
+    profile = dict(getattr(device, "endpoint_profile", None) or {})
+    hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
+    from app.everywhere.heading_out import heading_out_consent
+    from app.everywhere.nudge import in_quiet_hours, nudge_prefs
+    from app.life.people import list_relationships
+    prefs = nudge_prefs(device)
+    from app.models import VoiceEnrollment as _VoiceEnrollment
+    from sqlalchemy import select as _select
+
+    current_enrollment = (
+        await session.execute(
+            _select(_VoiceEnrollment).where(_VoiceEnrollment.is_current.is_(True)).limit(1)
+        )
+    ).scalar_one_or_none()
+    return {
+        "ok": True,
+        "healthkit": {
+            "available": bool(hk.get("available")),
+            "freshness": str(hk.get("freshness") or "unavailable"),
+            "sent_to_model": False,
+            "captured_at": hk.get("captured_at"),
+        },
+        "battery_percent": device.battery_percent,
+        "storage_free_bytes": device.storage_free_bytes,
+        "voice_enrolled": bool(current_enrollment),
+        "camera_capability": "camera" in (device.capabilities or []),
+        "push_delivery": str((profile.get("notifications") or {}).get("delivery") or "poll"),
+        "nudges": {**prefs, "quiet_now": in_quiet_hours(prefs)},
+        "people_count": len(await list_relationships(session)),
+        "heading_out": heading_out_consent(device),
+        "never_to_model": ["health_numbers", "location_history"],
+    }
+
+
+class PhoneVoiceEnrollRequest(BaseModel):
+    # Cycle 84 — hardening: at most 20 clips, each ≤ 2 MB of base64, and a
+    # bounded reason. Enrollment audio is never stored, but a giant payload
+    # still costs decode memory before that refusal.
+    samples: list[str] = Field(max_length=20)
+    consent: bool = False
+    reason: str | None = Field(default=None, max_length=512)
+
+
+@router.post("/voice/enroll")
+async def phone_voice_enroll(
+    data: PhoneVoiceEnrollRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 69 — voice enrollment from the phone. Same runtime, same
+    consent law, same encrypted voiceprint as the owner-trust API; the
+    phone PWA just provides the recording surface. Explicit consent is
+    required IN THIS REQUEST; raw audio is never stored."""
+
+    _check_origin(request)
+    if is_sandbox_device(device):
+        raise HTTPException(status_code=403, detail="Voice enrollment is an owner surface")
+    if not data.consent:
+        raise HTTPException(status_code=403, detail="Voice enrollment needs explicit consent in this request")
+    if len(data.samples) < 5:
+        raise HTTPException(status_code=422, detail="Enrollment needs at least 5 voice samples")
+    from app.api.voice import _runtime
+
+    runtime = _runtime(session)
+    try:
+        row = await runtime.enroll(
+            [{"audio_b64": sample, "liveness_proof": "live"} for sample in data.samples[:20]],
+            reason=data.reason or f"phone-enroll:{device.name}",
+        )
+    except Exception as exc:
+        from app.voice.contracts import VoiceError as _VoiceError
+
+        if isinstance(exc, _VoiceError):
+            await session.commit()
+            raise HTTPException(status_code=exc.status, detail=exc.message, headers={"X-Error-Code": exc.code}) from exc
+        raise
+    from app.identity.service import identity_service as _identity
+
+    owner = await _identity.get_owner(session)
+    if owner is not None:
+        row.owner_id = owner.id
+    await session.commit()
+    return {
+        "ok": True,
+        "enrollment_id": str(row.id),
+        "version": row.version,
+        "sample_count": row.sample_count,
+        "algorithm": row.algorithm,
+        "raw_samples_stored": False,
+    }
+
+
+
+
+@router.post("/queue/replay")
+async def offline_replay(
+    data: QueueReplayRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.offline_queue import replay
+
+    result = await replay(session, device=device, idempotency_key=data.idempotency_key)
+    # Cycle 53 — exactly-once execution: for queued VOICE intents on a
+    # trusted device the SERVER runs the turn under the queue's idempotency
+    # key (the turn gate dedupes on it), so an offline timer or reminder
+    # fires exactly once. The reply rides back to the client.
+    item = result.get("item") if isinstance(result.get("item"), dict) else {}
+    text = str((item.get("payload") or {}).get("text") or "").strip()
+    if (
+        result.get("ok")
+        and not result.get("executed")
+        and item.get("kind") in {"siri_capture", "voice_intent"}
+        and text
+        and not is_sandbox_device(device)
+        and device.revoked_at is None
+    ):
+        from app.device_gateway.pipeline import run_trusted_device_turn
+        from app.everywhere.offline_queue import mark_executed
+
+        try:
+            turn = await run_trusted_device_turn(
+                session,
+                device=device,
+                text=text,
+                idempotency_key=item.get("idempotency_key") or data.idempotency_key,
+                ingest_conversation=True,
+            )
+            reply_text = str(turn.get("reply") or turn.get("spoken") or "")
+            if turn.get("conversational") and not reply_text:
+                reply_text = "Okay — I'll pick this up when you're back."
+            await mark_executed(
+                session,
+                device_id=device.id,
+                idempotency_key=item.get("idempotency_key") or data.idempotency_key,
+                reply=reply_text,
+            )
+            result = {
+                **result,
+                "executed": True,
+                "reply": reply_text,
+                "item": await _reload_queue_item(
+                    session, device_id=device.id, idempotency_key=data.idempotency_key
+                ),
+            }
+        except Exception:  # noqa: BLE001 - execution failure leaves it retryable
+            pass
+    await session.commit()
+    status = int(result.get("status") or 200)
+    if status in {404, 422}:
+        raise HTTPException(status_code=status, detail=result)
+    return result
+
+
+
+@router.get("/history")
+async def phone_history(
+    request: Request,
+    limit: int = 20,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 72 — the phone's own recent turns with provenance chips.
+    Read from PhoneTurnReceipt (the durable record the text/voice paths
+    already write); nothing is re-derived, nothing invented."""
+
+    _check_origin(request)
+    from sqlalchemy import select as _select
+    from app.models import PhoneTurnReceipt as _Receipt
+
+    rows = (
+        await session.execute(
+            _select(_Receipt)
+            .where(_Receipt.device_id == device.id)
+            .order_by(_Receipt.created_at.desc())
+            .limit(max(1, min(int(limit or 20), 50)))
+        )
+    ).scalars().all()
+    turns = []
+    for row in rows:
+        actions = row.action_calls if isinstance(row.action_calls, list) else []
+        turns.append(
+            {
+                "at": row.created_at.isoformat() if row.created_at else None,
+                "kind": row.kind,
+                "text": (row.transcript or "")[:240],
+                "life_mutation": bool(row.life_mutation),
+                "trusted_owner": bool(row.trusted_owner),
+                "chips": [
+                    {
+                        "tool": str(action.get("name") or action.get("tool") or ""),
+                        "route": str(action.get("route") or action.get("provenance") or ""),
+                        "executed": bool(action.get("executed", action.get("ok"))),
+                    }
+                    for action in actions[:6]
+                    if isinstance(action, dict)
+                ],
+            }
+        )
+    return {"ok": True, "turns": turns}
+
+
+@router.get("/memory")
+async def memory_browser(
+    request: Request,
+    limit: int = 25,
+    kind: str | None = None,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 73 — READ-ONLY memory browser for the trusted phone. Recent
+    memories with type/importance; no edit verbs exist on this surface
+    (correct/forget/restore stay in the privacy center)."""
+
+    _check_origin(request)
+    if is_sandbox_device(device):
+        return {"ok": True, "sandbox": True, "memories": [], "note": "Personal memory is off on this device."}
+    from sqlalchemy import select as _select
+    from app.models import Memory as _Memory
+
+    query = _select(_Memory).order_by(_Memory.created_time.desc()).limit(max(1, min(int(limit or 25), 60)))
+    rows = (await session.execute(query)).scalars().all()
+    memories = [
+        {
+            "id": str(row.id),
+            "kind": row.memory_type,
+            "text": (row.text or "")[:280],
+            "importance": round(float(row.importance or 0), 2),
+            "provenance": row.source_type,
+            "at": row.created_time.isoformat() if row.created_time else None,
+        }
+        for row in rows
+    ]
+    return {"ok": True, "count": len(memories), "memories": memories}
+
+
+
+@router.get("/tactical")
+async def tactical_brief(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 74 — READ-ONLY tactical brief page data: what's true RIGHT
+    NOW across the system (timers, inbox, nudges, devices, voice lease,
+    heading-out state). Server-composed; the phone only renders."""
+
+    _check_origin(request)
+    from sqlalchemy import select as _select, func as _func
+    from app.models import Device as _Device
+    from app.ev.timers import list_timers
+    timers = await list_timers(session)
+    from app.everywhere.inbox import list_inbox
+    inbox_items = await list_inbox(session, device_id=device.id, limit=50)
+    devices = (await session.execute(_select(_Device))).scalars().all()
+    online = [d for d in devices if d.revoked_at is None and d.last_seen_at is not None]
+    from app.everywhere.heading_out import heading_out_consent
+    from app.device_gateway.lease import current_lease
+
+    lease = None
+    try:
+        lease = await current_lease(session)
+    except Exception:
+        lease = None
+    from app.everywhere.nudge import in_quiet_hours, nudge_prefs
+
+    prefs = nudge_prefs(device)
+    return {
+        "ok": True,
+        "at": utcnow().isoformat(),
+        "timers": [
+            {"id": str(t.get("id") or ""), "label": str(t.get("label") or t.get("title") or ""), "fire_at": str(t.get("fire_at") or "")}
+            for t in (timers.get("timers") or [])[:6]
+        ],
+        "inbox_unread": len([i for i in inbox_items if i.get("unread")]),
+        "nudges": {**prefs, "quiet_now": in_quiet_hours(prefs)},
+        "devices_online": len(online),
+        "devices_total": len([d for d in devices if d.revoked_at is None]),
+        "heading_out": heading_out_consent(device).get("state") or "unknown",
+        "voice_lease": bool(lease),
+    }
+
+
+class VoiceVerifyRequest(BaseModel):
+    audio_b64: str = Field(max_length=2_800_000)  # ≈2 MB of audio
+
+
+@router.post("/voice/verify")
+async def phone_voice_verify(
+    data: VoiceVerifyRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Cycle 70 — spoken challenge against the enrolled voiceprint. Success
+    opens the 120 s speaker-verified window for consequential sends."""
+
+    _check_origin(request)
+    if is_sandbox_device(device):
+        raise HTTPException(status_code=403, detail="Speaker verification is an owner surface")
+    from app.api.voice import _runtime
+
+    outcome = await _runtime(session).verify_samples([{"audio_b64": data.audio_b64, "liveness_proof": "live"}])
+    await session.commit()
+    if not outcome.get("accepted"):
+        return {"ok": False, **outcome, "spoken": "That didn't match. Try again."}
+    from app.everywhere.speaker_verify import mark_speaker_verified
+
+    mark_speaker_verified(device)
+    await session.commit()
+    return {"ok": True, **outcome, "spoken": "It's you. Go ahead."}
+
+
+async def _reload_queue_item(
+    session: AsyncSession,
+    *,
+    device_id: UUID,
+    idempotency_key: str,
+) -> dict:
+    from sqlalchemy import select as _select
+
+    from app.everywhere.offline_queue import OfflineQueueItem, public_item
+
+    row = (
+        await session.execute(
+            _select(OfflineQueueItem).where(
+                OfflineQueueItem.device_id == device_id,
+                OfflineQueueItem.idempotency_key == (idempotency_key or "").strip()[:128],
+            )
+        )
+    ).scalar_one_or_none()
+    return public_item(row) if row is not None else {}
+
+
 @router.post("/push/register")
 async def push_register(
     data: PushRegisterRequest,
@@ -1731,6 +2526,109 @@ async def push_register(
     )
     await session.commit()
     return {"ok": True, "registered": True, "delivery": "apns"}
+
+
+@router.get("/vapid-public-key")
+async def vapid_public_key(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """applicationServerKey for the PWA's pushManager.subscribe() call."""
+
+    _check_origin(request)
+    from app.everywhere.web_push import vapid_configured, vapid_public_key
+
+    return {"ok": True, "application_server_key": vapid_public_key(), "configured": vapid_configured()}
+
+
+@router.post("/push/web-subscription")
+async def push_web_subscription(
+    data: WebPushSubscriptionRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Store the browser push subscription (endpoint + p256dh/auth keys)."""
+
+    _check_origin(request)
+    endpoint = (data.endpoint or "").strip()
+    keys = data.keys if isinstance(data.keys, dict) else {}
+    if not endpoint.startswith("https://") or not keys.get("p256dh") or not keys.get("auth"):
+        raise HTTPException(status_code=422, detail="Invalid web push subscription")
+    from app.everywhere.web_push import store_web_subscription
+
+    stored = store_web_subscription(device, endpoint=endpoint, keys=keys)
+    await session.commit()
+    return {"ok": True, "registered": True, "registered_at": stored.get("registered_at")}
+
+
+@router.get("/nudge-prefs")
+async def get_nudge_prefs(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """This phone's nudge policy: enabled + quiet hours (Home Station local)."""
+
+    _check_origin(request)
+    from app.everywhere.nudge import in_quiet_hours, nudge_prefs
+
+    prefs = nudge_prefs(device)
+    return {"ok": True, **prefs, "quiet_now": in_quiet_hours(prefs)}
+
+
+@router.post("/nudge-prefs")
+async def set_nudge_prefs(
+    data: NudgePrefsRequest,
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    _check_origin(request)
+    from app.everywhere.nudge import store_nudge_prefs
+
+    prefs = store_nudge_prefs(
+        device,
+        enabled=data.enabled,
+        quiet_start=data.quiet_start,
+        quiet_end=data.quiet_end,
+    )
+    await session.commit()
+    return {"ok": True, **prefs}
+
+
+
+@router.get("/quick-actions")
+async def quick_actions(
+    request: Request,
+    device: Device = Depends(require_gateway_device),
+) -> dict:
+    """Capability-gated one-tap actions for the phone. Each action is an
+    utterance the PWA sends through the SAME trusted text path a spoken turn
+    would take — no new authority, no client-side tool dispatch."""
+
+    _check_origin(request)
+    from .capability_manifest import capability_manifest
+
+    manifest = capability_manifest(device)
+    trusted = manifest["trust_state"] == "TRUSTED_OWNER_DEVICE"
+    actions: list[dict[str, str]] = []
+    if trusted:
+        actions.extend(
+            [
+                {"id": "timer", "label": "5 min timer", "hint": "Home Station runs it", "utterance": "set a timer for five minutes"},
+                {"id": "weather", "label": "Weather", "hint": "Local forecast", "utterance": "what's the weather"},
+                {"id": "calendar", "label": "Calendar", "hint": "Today's events", "utterance": "what's on my calendar today"},
+                {"id": "recall", "label": "What did we say", "hint": "Recall recent context", "utterance": "what did we talk about most recently"},
+                {"id": "look", "label": "Look", "hint": "Camera + vision", "utterance": "look"},
+            ]
+        )
+    else:
+        actions.extend(
+            [
+                {"id": "chat", "label": "Catch up", "hint": "Chat only in sandbox", "utterance": "what can you do on this phone right now"},
+            ]
+        )
+    return {"ok": True, "actions": actions, "trust_state": manifest["trust_state"]}
 
 
 @router.post("/calendar/snapshot")
@@ -3002,6 +3900,7 @@ async def camera_result(
             frames=burst or None,
             media_kind=data.media_kind,
             has_clip=data.has_clip,
+            note=data.note,
         )
         await session.commit()
     return {

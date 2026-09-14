@@ -152,7 +152,27 @@
 
     presentFromHud: function (ev) {
       const card = (ev && ev.hud) || ev || {};
-      if (card.kind !== "phone_action" && (ev && ev.kind) !== "phone_action") return false;
+      const kind = card.kind || (ev && ev.kind) || "";
+      const meta = card.meta || {};
+      if (kind === "result") {
+        this.presentResult(card.phone_action || card, (ev && ev.name) || card.name || "");
+        return true;
+      }
+      if (kind === "tool_result" || meta.kind === "tool_result") {
+        this.presentResult(
+          {
+            ok: meta.success !== false,
+            executed: meta.success !== false,
+            verified: meta.verified !== false,
+            error_code: meta.error || "",
+            spoken: card.body || "",
+            card: { title: card.title || "" },
+          },
+          meta.tool || ""
+        );
+        return true;
+      }
+      if (kind !== "phone_action") return false;
       if (card.receipt && this.current && card.action_id === this.current.action_id) {
         this.current.card = Object.assign({}, this.current.card, card);
         if (card.ok === false || ["failed", "expired"].includes(card.status)) this._failure(this.current, card);
@@ -230,6 +250,84 @@
       }
       if (cur.done) { cur.error = ""; cur.blocked = false; }
       return !!cur.done;
+    },
+
+    /* Cycle 46 — countdown ring for a voice-set timer: driven by the
+       canonical fire_at from the Home Station dispatch, never a re-parse
+       of the spoken sentence. */
+    presentTimerRing: function (timer) {
+      const root = $("timer-ring-card");
+      const arc = $("tmr-arc");
+      if (!root || !arc || !timer || !timer.fire_at) return;
+      const fireAt = Date.parse(timer.fire_at);
+      if (!isFinite(fireAt)) return;
+      const totalMs = Math.max(1000, fireAt - Date.now());
+      const CIRC = 2 * Math.PI * 30;
+      arc.style.strokeDasharray = String(CIRC);
+      textOf($("tmr-fire"), "until " + new Date(fireAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+      root.hidden = false;
+      clearTimeout(this._tmrTimer);
+      const self = this;
+      const tick = function () {
+        const remain = fireAt - Date.now();
+        if (remain <= 0) {
+          textOf($("tmr-remaining"), "done");
+          arc.style.strokeDashoffset = String(CIRC);
+          clearTimeout(self._tmrTimer);
+          haptic("confirmation_accepted");
+          setTimeout(function () { root.hidden = true; }, 8000);
+          return;
+        }
+        const mins = Math.floor(remain / 60000);
+        const secs = Math.floor((remain % 60000) / 1000);
+        textOf($("tmr-remaining"), (mins > 0 ? mins + ":" : "") + String(secs).padStart(mins > 0 ? 2 : 1, "0"));
+        arc.style.strokeDashoffset = String(CIRC * (1 - remain / totalMs));
+        self._tmrTimer = setTimeout(tick, 1000);
+      };
+      tick();
+    },
+
+    /* Cycle 45 — ev.hud.card.v1 result view: what the tool DID, with
+       provenance chips (route, executed, verified, error). Pure display. */
+    presentResult: function (parsed, toolName) {
+      if (parsed && parsed.timer && parsed.executed) this.presentTimerRing(parsed.timer);
+      const root = $("tool-result-card");
+      if (!root) return;
+      const chips = $("tr-chips");
+      const route = String(parsed.route || "").replace(/_/g, " ").toLowerCase();
+      const operation = String(parsed.operation || "").replace(/_/g, " ").toLowerCase();
+      const title = parsed.card && parsed.card.title
+        ? parsed.card.title
+        : (parsed.capability || toolName || "tool").replace(/_/g, " ");
+      textOf($("tr-kicker"), (parsed.executed ? "Executed" : parsed.ok === false ? "Failed" : "Answered") + " · this turn");
+      textOf($("tr-title"), title);
+      const spoken = String(parsed.spoken || "").trim();
+      if (spoken) {
+        $("tr-spoken").hidden = false;
+        textOf($("tr-spoken"), spoken);
+      } else {
+        $("tr-spoken").hidden = true;
+      }
+      chips.textContent = "";
+      const chipDefs = [];
+      if (route) chipDefs.push({ label: route, tone: "plain" });
+      if (operation && operation !== "unknown") chipDefs.push({ label: operation, tone: "plain" });
+      chipDefs.push({ label: parsed.executed ? "executed ✓" : "not executed", tone: parsed.executed ? "good" : "warn" });
+      if (parsed.verified != null) {
+        chipDefs.push({ label: parsed.verified ? "verified ✓" : "unverified", tone: parsed.verified ? "good" : "warn" });
+      }
+      if (parsed.error_code) chipDefs.push({ label: String(parsed.error_code).toLowerCase(), tone: "bad" });
+      chipDefs.forEach(function (def) {
+        const chip = document.createElement("span");
+        chip.className = "chip chip-" + def.tone;
+        chip.textContent = def.label;
+        chips.appendChild(chip);
+      });
+      root.hidden = false;
+      clearTimeout(window.__trTimer);
+      window.__trTimer = setTimeout(function () {
+        root.hidden = true;
+      }, parsed.ok === false ? 12000 : 7000);
     },
 
     render: function () {

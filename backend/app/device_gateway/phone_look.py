@@ -140,6 +140,7 @@ async def ingest_phone_frame(
     frames: list[dict[str, Any]] | None = None,
     media_kind: str | None = None,
     has_clip: bool | None = None,
+    note: str | None = None,
 ) -> dict[str, Any]:
     raw = jpeg_b64 or ""
     try:
@@ -176,13 +177,35 @@ async def ingest_phone_frame(
         if name not in labels:
             labels.append(name)
     labels = labels[:8]
-
     persisted = False
+    enrolled_names: list[str] = []
     spoken = "I have the current camera frame from this iPhone."
-    if ocr_text:
-        spoken = f"I can read: {ocr_text}"
-    elif labels:
-        spoken = "I can see " + ", ".join(labels[:4]) + "."
+    if action == "remember":
+        # Cycle 68 — recognition against the enrolled roster: if the keep
+        # note names an enrolled person, say so. No biometrics: the OWNER
+        # names who it is; Evie remembers who owns the name.
+        wanted = (note or "").strip()
+        enrolled_names = []
+        if wanted:
+            from sqlalchemy import select as _select
+            from app.models import Entity as _Entity
+
+            wanted_low = wanted.casefold()
+            try:
+                rows = (
+                    await session.execute(_select(_Entity).where(_Entity.entity_type == "person"))
+                ).scalars().all()
+                enrolled_names = [r.name for r in rows if r.name and r.name.casefold() == wanted_low]
+            except Exception:
+                enrolled_names = []
+        spoken = "Kept. I'll remember this."
+        if enrolled_names:
+            spoken = f"Kept — {enrolled_names[0]}. I'll remember this."
+    if action != "remember":
+        if ocr_text:
+            spoken = f"I can read: {ocr_text}"
+        elif labels:
+            spoken = "I can see " + ", ".join(labels[:4]) + "."
     kind = _phone_media_kind(action, requested=media_kind, has_clip=has_clip)
     if not is_sandbox_device(device) and device.revoked_at is None:
         from app.everywhere.sync import emit_everywhere_event
@@ -226,6 +249,8 @@ async def ingest_phone_frame(
                     "frames": max(1, len(frames or [])),
                     "moments": moments,
                     "observed": True,
+                    # Cycle 67 — "remember this": an explicit owner keep.
+                    "keep_request": (note or "remember this") if action == "remember" else None,
                 },
                 actor=f"device:{device.name}",
                 device_id=str(device.id),
@@ -237,6 +262,7 @@ async def ingest_phone_frame(
         "ok": True,
         "request_id": request_id,
         "target_device_id": str(device.id),
+        "recognized_person": enrolled_names[0] if enrolled_names else None,
         "ocr_text": ocr_text,
         "labels": labels,
         "observation_id": request_id,

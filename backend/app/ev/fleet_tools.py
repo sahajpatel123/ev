@@ -177,8 +177,25 @@ FLEET_TOOL_SPECS: list[dict[str, Any]] = [
         "cancellation": "not_applicable",
     },
     {
+        "name": "list_reminders",
+        "description": "List the owner's pending reminders (timed and standing). Never writes.",
+        "parameters": {"type": "object", "additionalProperties": False, "properties": {}},
+        "output": {"type": "object", "required": ["ok", "spoken"]},
+        "sensitive": False,
+        "read_only": True,
+        "permission": "assistant:profile",
+        "undoable": False,
+        "risk_class": "R0",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "local",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+    },
+    {
         "name": "snooze_timer",
-        "description": "Delay a pending timer or restart a fired one.",
+        "description": "Snooze a pending owner timer.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -532,6 +549,58 @@ async def handle_fleet_tool(
         from app.ev.timers import list_timers
 
         return await list_timers(session)
+    if name == "list_reminders":
+        # Cycle 62 — reminders list: pending reminder-shaped timers plus
+        # standing Alert reminders, in one honest spoken answer.
+        from sqlalchemy import select as _select
+        from app.ev.timers import list_timers
+        from app.ev.actuator import evidence_base
+        from app.models import Alert
+        from app.utils.text import utcnow as _utcnow
+
+        now = _utcnow()
+        alerts = list(
+            (
+                await session.execute(
+                    _select(Alert)
+                    .where(Alert.kind == "reminder", Alert.status == "pending")
+                    .order_by(Alert.created_at.desc())
+                    .limit(20)
+                )
+            ).scalars().all()
+        )
+        timers = await list_timers(session)
+        items = [
+            {"id": str(a.id), "text": str(a.body or "")[:200], "fire_at": None}
+            for a in alerts
+            if str(a.body or "").strip()
+        ]
+        spoken_parts: list[str] = []
+        timer_items = timers.get("timers") or []
+        if timer_items:
+            spoken_parts.append(
+                f"{len(timer_items)} timed reminder{'s' if len(timer_items) != 1 else ''}"
+                + f", next: {timer_items[0].get('text') or 'untitled'}"
+            )
+        if items:
+            spoken_parts.append(
+                f"{len(items)} standing reminder{'s' if len(items) != 1 else ''}: "
+                + "; ".join(str(i["text"])[:60] for i in items[:3])
+            )
+        spoken = (
+            ". ".join(spoken_parts) + ("." if spoken_parts else "")
+            or "No reminders waiting."
+        )
+        return {
+            "ok": True,
+            "count": len(items) + len(timer_items),
+            "standing": items,
+            "timers": timer_items,
+            "spoken": spoken,
+            "evidence": evidence_base(
+                source="reminder_list", accepted=True, observed=True, now=now
+            ),
+        }
     if name == "snooze_timer":
         from app.ev.timers import snooze_timer
 
@@ -662,7 +731,42 @@ async def _calendar_read(session: AsyncSession, *, limit: int = 20) -> dict:
     signals = await calendar_feed.calendar_signals(session, limit=min(limit, 500))
     next_event = signals.get("next_event") or {}
     summary = str(next_event.get("summary") or "").strip()
-    spoken = f"Next: {summary}." if summary else "No upcoming calendar events."
+    # Cycle 61 — a real voice summary, not "Next: X.": relative time for the
+    # next event, today's density, and the leave-by nudge when it applies.
+    from datetime import datetime as _dt
+
+    now = utcnow()
+    parts: list[str] = []
+    if summary:
+        when = ""
+        try:
+            start = _dt.fromisoformat(str(next_event.get("start")))
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=now.tzinfo)
+            hours = (start - now).total_seconds() / 3600.0
+            if hours <= 0:
+                when = "happening now"
+            elif hours < 1:
+                when = f"in {max(1, int(hours * 60))} minutes"
+            elif hours < 24:
+                when = f"in {int(hours)} hours" if hours >= 2 else "within the hour"
+            else:
+                days = int(hours / 24)
+                when = f"in {days} days" if days > 1 else "tomorrow"
+        except (TypeError, ValueError):
+            when = ""
+        parts.append(f"Next up {summary}" + (f", {when}" if when else ""))
+    density = signals.get("day_density") or []
+    today_row = density[0] if isinstance(density, list) and density and isinstance(density[0], dict) else {}
+    today_count = int(today_row.get("event_count") or 0)
+    if today_count:
+        parts.append(f"{today_count} event{'s' if today_count != 1 else ''} today")
+    leave_by = str(signals.get("leave_by") or "")
+    if leave_by and summary and when:
+        hhmm = leave_by[11:16]
+        if hhmm:
+            parts.append(f"leave by {hhmm} if you're going")
+    spoken = ". ".join(parts) + ("." if parts else "") or "No upcoming calendar events."
     raw_source = signals.get("source")
     source = raw_source if isinstance(raw_source, dict) else {}
     integration_config = integration.config if isinstance(integration.config, dict) else {}

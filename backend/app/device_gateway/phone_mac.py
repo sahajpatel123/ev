@@ -104,6 +104,17 @@ _OPEN_CALC_RE = re.compile(
 )
 _CLOSE_CALC_RE = re.compile(r"\b(?:close|quit)\s+(?:the\s+)?(?:calculator|calc)\b", re.I)
 
+_WEB_SEARCH_RE = re.compile(
+    r"\b(?:search|look\s?up|google)\b.{0,12}\b(?:the\s+)?web\b|\bweb\s+search\b|\bsearch\s+(?:the\s+)?web\b",
+    re.I,
+)
+
+_REMINDER_LIST_RE = re.compile(
+    r"\b(?:what|list|read).{0,24}\breminders?\b|\breminders?\b.{0,16}\b(?:list|do i have|waiting)\b",
+    re.I,
+)
+
+_CLOSE_CALC_RE = re.compile(r"\b(?:close|quit)\s+(?:the\s+)?(?:calculator|calc)\b", re.I)
 
 def _action_status(*, ok: bool, executed: bool, queued: bool) -> str:
     if not ok:
@@ -158,6 +169,11 @@ def _phrase_action(text: str) -> tuple[str, dict[str, Any]] | None:
             return "start_timer", {"minutes": minutes}
     if _OPEN_CALC_RE.search(text):
         return "open_app", {"name": "Calculator"}
+    if _WEB_SEARCH_RE.search(text):
+        query = _WEB_SEARCH_RE.sub("", text, count=1).lstrip(" for ").strip(" ,.!?") or text
+        return "search_web", {"query": query[:400]}
+    if _REMINDER_LIST_RE.search(text):
+        return "list_reminders", {}
     if _CLOSE_CALC_RE.search(text):
         return "close_app", {"name": "Calculator"}
     return None
@@ -375,20 +391,39 @@ async def maybe_phone_mac_act(
 
     from app.ev.spark_phone import looks_like_phone_chat, spark_phone_tool
     from app.ev.tool_select import resolve_live_action
-
     if looks_like_phone_chat(raw):
         return None
 
-    resolved = _phrase_action(raw)
-    if resolved is None:
-        resolved = resolve_live_action(raw)
-    if resolved is None:
-        resolved = await spark_phone_tool(raw)
+    # Cycle 62 — the reminders list is a Home-Station surface, not memory
+    # recall: check the precise phrase BEFORE resolve_live_action's broad
+    # recall matcher can claim "what are my reminders".
+    reminders_phrase = _phrase_action(raw) if _REMINDER_LIST_RE.search(raw) else None
+    if reminders_phrase is not None:
+        resolved = reminders_phrase
+    else:
+        resolved = _phrase_action(raw)
+        if resolved is None:
+            resolved = resolve_live_action(raw)
+        if resolved is None:
+            resolved = await spark_phone_tool(raw)
     if resolved is None:
         return None
     name, args = resolved
     if name in _CAMERA or name in _BLOCKED:
         return None
+    if name in {"send_message", "place_call"}:
+        # Cycle 70 — a paired token proves the DEVICE is trusted; a voice
+        # check proves the OWNER is present. Outward actions need both.
+        from app.everywhere.speaker_verify import speaker_verified
+
+        if not speaker_verified(device):
+            return _ok(
+                "I need a quick voice check before I message anyone. Tap Verify in EV Sense and say a few words.",
+                route="HOME_STATION",
+                tool=name,
+                executed=False,
+                extra={"needs_speaker_verify": True},
+            )
     args = dict(args or {})
     if name == "send_incomplete":
         # An unfinished send is a question, not a tool call: ask for the piece
@@ -577,18 +612,21 @@ async def maybe_phone_mac_act(
         )
     else:
         verified = bool(payload.get("verified", executed))
+    extra: dict[str, Any] = {"tool_ok": bool(response.ok), "tool_error": response.error}
+    if name == "start_timer" and payload.get("ok") is not False:
+        # Cycle 46 — the phone renders a countdown ring; it needs the
+        # canonical fire time, not a re-parse of the spoken sentence.
+        extra["timer"] = {
+            "id": str(payload.get("timer_id") or payload.get("id") or ""),
+            "fire_at": str(payload.get("fire_at") or ""),
+        }
     return _ok(
         spoken,
         route="HOME_STATION",
         tool=name,
         executed=executed,
-        queued=queued,
-        ok=action_ok,
-        error_code=error_code,
-        verified=verified,
         extra={
-            "tool_ok": bool(response.ok),
-            "tool_error": response.error,
+            **extra,
             "to": str(args.get("to") or "").strip() or None,
             "channel": payload.get("channel") or args.get("channel"),
             "sent": payload.get("sent"),

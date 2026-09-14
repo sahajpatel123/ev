@@ -8,6 +8,7 @@
   "files": {
     "index.html": "c173bbf1365be3e400441216c3217b1c676b52d8459ceddf0085eba047b81b56",
     "app.js": "b30b6b34882dd79fc197be41e64a1144c6a2b6f10d68e6417195b6593eb5af0a",
+    "capabilities.js": "f93c8ccf665b5c80880cdd24ae496f6dcdbd9161af02dcfd17cb50aa5428f385",
     "sw.js": "21f95d85f436ea692fa517fffc09956e44e0792033126f150142018ab3f3b0f9",
     "audio.js": "d001b00ea05f605295b4bc9f06fd184d482cd25af8c7beb5e6fcfd3872f8cd39",
     "webrtc.js": "e109e7c55452e6e6d683ed540df5405f095a4762b2588dacfceb18bcdf4b69ab",
