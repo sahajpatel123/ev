@@ -1713,12 +1713,16 @@ def visual_observation_text(
     visual_facts: str | None = None,
     spoken: str | None = None,
     keep_named: str | None = None,
+    speech: str | None = None,
 ) -> str:
     """One searchable sentence Evie can recall later."""
 
     kind = str(media_kind or "frame").strip().lower()
-    if kind in {"video", "clip"}:
+    if kind in {"video", "clip", "movie", "recording"}:
         lead = "I recorded a video clip"
+    elif kind == "burst":
+        # Still frames only — never dressed up as a recording.
+        lead = "I captured a short sequence of frames"
     elif kind in {"photo", "image"}:
         lead = "I took a photo"
     elif kind == "observe":
@@ -1757,8 +1761,11 @@ def visual_observation_text(
         parts.append("Colors: " + ", ".join(color_names[:4]))
     if ocr and (not scene or ocr.lower() not in scene.lower()):
         parts.append("Text: " + ocr[:120])
-    if duration_s and kind in {"video", "clip"}:
+    if duration_s and kind in {"video", "clip", "movie", "recording", "burst"}:
         parts.append(f"Duration {float(duration_s):.0f} seconds")
+    heard = " ".join(str(speech or "").split()).strip()
+    if heard and heard.lower() not in (scene or "").lower():
+        parts.append("Speech in the clip: " + heard[:300])
     if saved_path:
         parts.append(f"Saved to {saved_path}")
     named = " ".join(str(keep_named or "").split()).strip()
@@ -1811,6 +1818,12 @@ def _observation_row(event: Event, *, score: float, reason: str) -> dict[str, An
         "object": content.get("object") or "",
         "surface": content.get("surface") or "",
         "placement": content.get("placement") or "",
+        "grounded": bool(content.get("grounded", True)),
+        "grounding": content.get("grounding") or None,
+        "media_kind": content.get("media_kind") or None,
+        "attachment_id": content.get("attachment_id") or None,
+        "transcript": content.get("transcript") or None,
+        "moments": [m for m in (content.get("moments") or []) if isinstance(m, dict)][:12],
         "parts": {"lexical": 0.5, "speaker": 0.92, "recency": 1.0, "phrase": 1.0},
         "reason": reason,
     }
@@ -1858,6 +1871,7 @@ async def search_visual_observations(
     )
     keep_hits: list[dict[str, Any]] = []
     other_hits: list[dict[str, Any]] = []
+    intent_hits: list[dict[str, Any]] = []
     seen: set[str] = set()
     recency_first = is_keep_recall_query(query) and keep_topic(query) in {
         "",
@@ -1869,10 +1883,11 @@ async def search_visual_observations(
     for row in keep_rows:
         payload = row.payload or {}
         kind = str(payload.get("kind") or "")
-        if kind not in {"visual", "visual_keep", "object_placement"} and row.memory_type != "observation":
+        keepish_kinds = {"visual", "visual_keep", "object_placement", "keep_intent"}
+        if kind not in keepish_kinds and row.memory_type != "observation":
             continue
         if (
-            kind not in {"visual", "visual_keep", "object_placement"}
+            kind not in keepish_kinds
             and str(row.text or "").lower().startswith("observed:")
         ):
             continue
@@ -1890,19 +1905,38 @@ async def search_visual_observations(
                 str(payload.get("recall") or ""),
                 str(payload.get("description") or ""),
                 str(payload.get("printed") or payload.get("ocr_text") or ""),
+                str(payload.get("transcript") or ""),
+                " ".join(
+                    str(part)
+                    for moment in (payload.get("moments") or [])
+                    if isinstance(moment, dict)
+                    for part in [
+                        " ".join(str(name) for name in (moment.get("labels") or [])),
+                        str(moment.get("ocr_text") or ""),
+                    ]
+                ),
             )
             if part
         )
+        intent_only = kind == "keep_intent"
+        if intent_only and not (recency_first and is_keep_recall_query(query)):
+            # An intent has no scene: it can answer "what did I ask you to
+            # remember?", never "what was I holding?".
+            continue
         recency_keep = recency_first and kind == "visual_keep"
         if is_memory_hedge_scene(row.text) and not recency_keep:
             continue
-        if not recency_keep and not visual_observation_matches(query, blob):
+        if not (recency_keep or intent_only) and not visual_observation_matches(query, blob):
             continue
         memory_id = str(row.id)
         if memory_id in seen:
             continue
         seen.add(memory_id)
-        recall = recall_spoken_from_keep(row.text, payload)
+        recall = (
+            ""
+            if str(payload.get("media_kind") or "") in {"clip", "video", "movie", "recording", "burst"}
+            else recall_spoken_from_keep(row.text, payload)
+        )
         keepish = kind == "visual_keep" or (
             row.memory_type == "fact" and str(payload.get("kind") or "") == "visual_keep"
         )
@@ -1924,11 +1958,24 @@ async def search_visual_observations(
             "labels": list(payload.get("labels") or []),
             "colors": list(payload.get("colors") or []),
             "keep_request": payload.get("keep_request") or None,
+            "grounded": bool(payload.get("grounded", True)),
+            "grounding": payload.get("grounding") or None,
+            "media_kind": payload.get("media_kind") or None,
+            "transcript": payload.get("transcript") or None,
+            "moments": [
+                moment for moment in (payload.get("moments") or []) if isinstance(moment, dict)
+            ][:12],
             "score": 0.94 if kind == "visual_keep" else 0.9,
             "occurred_at": row.event_time,
             "parts": {"lexical": 0.6, "speaker": 0.95, "recency": 1.0, "phrase": 1.0},
             "reason": "visual_keep" if kind == "visual_keep" else "visual_observation",
         }
+        if intent_only:
+            item["reason"] = "keep_intent"
+            item["score"] = 0.4
+            item["text"] = row.text
+            intent_hits.append(item)
+            continue
         item["_thin"] = _keep_is_thin(payload, row.text)
         if kind == "visual_keep":
             keep_hits.append(item)
@@ -1964,6 +2011,9 @@ async def search_visual_observations(
     for item in other_hits:
         item.pop("_thin", None)
     hits: list[dict[str, Any]] = keep_hits + other_hits
+    if intent_hits:
+        # Last resort only: a recorded request with no grounded description.
+        hits = hits + intent_hits
     if enrich and needs_identity:
         upgraded = None
         needle = _attachment_uuid(keep_hits[0].get("attachment_id"))
@@ -2025,6 +2075,11 @@ async def search_visual_observations(
         text = _event_text(event)
         if is_memory_hedge_scene(text):
             continue
+        event_kind = str((event.content or {}).get("kind") or "")
+        if event_kind == "keep_intent" and not (
+            recency_first and is_keep_recall_query(query)
+        ):
+            continue
         keep_asked = str((event.content or {}).get("keep_request") or "")
         extra = " ".join(
             str(part)
@@ -2047,7 +2102,13 @@ async def search_visual_observations(
         if event_id in seen:
             continue
         seen.add(event_id)
-        hits.append(_observation_row(event, score=0.86, reason="visual_content"))
+        hits.append(
+            _observation_row(
+                event,
+                score=0.4 if event_kind == "keep_intent" else 0.86,
+                reason="keep_intent" if event_kind == "keep_intent" else "visual_content",
+            )
+        )
         if len(hits) >= max(1, k):
             break
     return hits
@@ -2418,8 +2479,12 @@ async def _current_keep_for_attachment(
     return chosen
 
 
-async def _newest_visual_keep(session: AsyncSession) -> dict[str, Any] | None:
-    """Newest current keep-from-sight fact, even when the JPEG id was never stored."""
+async def _newest_keep_row(
+    session: AsyncSession,
+    *,
+    kinds: tuple[str, ...] = ("visual_keep",),
+) -> dict[str, Any] | None:
+    """Newest current keep-ish fact (real keep or pixel-less keep intent)."""
 
     from app.models import Memory
 
@@ -2438,11 +2503,17 @@ async def _newest_visual_keep(session: AsyncSession) -> dict[str, Any] | None:
     )
     for memory in rows:
         payload = dict(memory.payload or {})
-        if str(payload.get("kind") or "") != "visual_keep":
+        if str(payload.get("kind") or "") not in kinds:
             continue
         payload["_text"] = memory.text
         return payload
     return None
+
+
+async def _newest_visual_keep(session: AsyncSession) -> dict[str, Any] | None:
+    """Newest current keep-from-sight fact, even when the JPEG id was never stored."""
+
+    return await _newest_keep_row(session, kinds=("visual_keep",))
 
 
 async def _enrich_keep_from_attachment(
@@ -2785,8 +2856,9 @@ def _keep_request_from_result(result: dict[str, Any]) -> str:
 async def _pin_memory_ids(session: AsyncSession, memory_ids: list[str]) -> None:
     from uuid import UUID
 
-    from app.models import Memory
     from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models import Memory
 
     for raw in memory_ids:
         try:
@@ -2813,8 +2885,9 @@ async def _supersede_placeholder_visual_keeps(
 
     from uuid import UUID
 
-    from app.models import Memory
     from sqlalchemy.orm.attributes import flag_modified
+
+    from app.models import Memory
 
     try:
         successor = UUID(str(keep_memory_id))
@@ -3005,6 +3078,163 @@ async def adopt_recent_spoken_keep(
     return None
 
 
+def _visual_grounding(
+    result: dict[str, Any],
+    *,
+    labels: list[str],
+    colors: list[str],
+    ocr: str | None,
+    facts: str | None,
+    encoded_bytes: int,
+) -> tuple[bool, str]:
+    """True only when something about the frame was actually observed.
+
+    Grounding is evidence, not optimism: stored pixels, delivered frame bytes,
+    on-device derived facts (labels/colors/OCR), or a local perception pass.
+    ``image_ready`` alone is NOT grounding — it is set even when nothing came
+    back — which is how unverified scene sentences used to get written.
+    """
+
+    if str(result.get("attachment_id") or "").strip():
+        return True, "attachment"
+    if encoded_bytes > 0:
+        return True, "frame_bytes"
+    if labels or colors or ocr or facts:
+        return True, "derived_facts"
+    if result.get("observed") is True or result.get("local_perception") is True:
+        return True, "local_perception"
+    return False, "none"
+
+
+def _clip_speech(result: dict[str, Any]) -> str | None:
+    """Clip audio transcript, when the clip pipeline produced one."""
+
+    raw = result.get("transcript") or result.get("clip_transcript")
+    if isinstance(raw, str):
+        text = " ".join(raw.split()).strip()
+        return text[:2000] or None
+    if isinstance(raw, dict):
+        text = " ".join(str(raw.get("text") or "").split()).strip()
+        return text[:2000] or None
+    return None
+
+
+def _clip_moments(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Bounded keyframe timeline that travels with a clip observation."""
+
+    raw = result.get("moments")
+    if not isinstance(raw, list):
+        return []
+    moments: list[dict[str, Any]] = []
+    for item in raw[:12]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = round(float(item.get("t_start") or 0.0), 2)
+        except (TypeError, ValueError):
+            start = 0.0
+        try:
+            end = round(float(item.get("t_end") or start), 2)
+        except (TypeError, ValueError):
+            end = start
+        labels = [str(name)[:48] for name in (item.get("labels") or []) if str(name).strip()]
+        moment = {
+            "t_start": start,
+            "t_end": max(end, start),
+            "labels": labels[:8],
+            "colors": [str(name)[:24] for name in (item.get("colors") or [])][:4],
+            "ocr_text": (str(item.get("ocr_text") or "").strip()[:400] or None),
+            "attachment_id": item.get("attachment_id"),
+            "engine": str(item.get("engine") or "")[:32] or None,
+            "degraded": bool(item.get("degraded")),
+        }
+        if item.get("person_count") is not None:
+            try:
+                moment["person_count"] = int(item["person_count"])
+            except (TypeError, ValueError):
+                pass
+        moments.append({key: value for key, value in moment.items() if value not in (None, [], "")})
+    return moments
+
+
+async def _persist_ungrounded_keep_intent(
+    session: AsyncSession,
+    *,
+    actor: str,
+    device_id: str | None,
+    keep_request: str | None,
+    result: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Store the owner's "remember this" when no frame was stored.
+
+    An intent is not a sighting: ``kind="keep_intent"``, ``grounded=False``, and
+    the text never claims anything was seen. This keeps the owner's request
+    recallable without inventing a scene for it.
+    """
+
+    asked = " ".join(str(keep_request or "").split()).strip()[:400]
+    if not asked or not wants_keep_visible(asked):
+        return None
+    text = (
+        "The owner asked me to remember something, but no camera frame was "
+        "stored, so I have no grounded description of it."
+    )
+    try:
+        event = await EventService(session, actor=actor).create(
+            EventCreate(
+                source="camera",
+                event_type=VISUAL_EVENT_TYPE,
+                text=text,
+                content={
+                    "text": text,
+                    "kind": "keep_intent",
+                    "keep_request": asked,
+                    "media_kind": str(result.get("media_kind") or "frame")[:16],
+                    "grounded": False,
+                    "grounding": "none",
+                    "request_id": result.get("request_id"),
+                    "provenance": "phone_camera" if device_id else "camera",
+                },
+                metadata={"visual": True, "visor": True, "keep_intent": True},
+                device_id=device_id,
+                privacy_level="normal",
+            )
+        )
+        from app.embeddings import get_embedder
+        from app.memory.writer import MemoryWriter
+
+        writer = MemoryWriter(session, embeddings=get_embedder())
+        written = await writer.write_all(
+            event,
+            [
+                MemoryCandidate(
+                    memory_type="fact",
+                    text=text,
+                    payload={
+                        "kind": "keep_intent",
+                        "grounded": False,
+                        "grounding": "none",
+                        "keep_request": asked,
+                        "topic": keep_topic(asked) or None,
+                    },
+                    importance=0.5,
+                    confidence=0.5,
+                    source_type="explicit",
+                    privacy_level="normal",
+                    event_time=utcnow(),
+                    entities=[],
+                )
+            ],
+        )
+        await session.flush()
+        if not written:
+            return None
+        return {"event_id": str(event.id), "memory_id": written[0].memory_id, "kept": True}
+    except Exception:  # noqa: BLE001 - recall must never block on this
+        logger.warning("keep intent persist skipped", exc_info=True)
+        return None
+
+
 async def persist_visual_observation(
     session: AsyncSession,
     result: dict[str, Any],
@@ -3053,6 +3283,38 @@ async def persist_visual_observation(
     except (TypeError, ValueError):
         encoded_bytes = 0
     frame_ok = bool(result.get("attachment_id") or encoded_bytes > 0 or result.get("image_ready"))
+    grounded, grounding = _visual_grounding(
+        result,
+        labels=labels,
+        colors=colors,
+        ocr=ocr,
+        facts=facts,
+        encoded_bytes=encoded_bytes,
+    )
+    if not grounded:
+        # Nothing was actually seen: no pixels reached us, no on-device facts,
+        # no stored attachment. The old behaviour stored the mind's own spoken
+        # sentence as a "scene", which put conversation and screen context into
+        # visual memory. Never write an ungrounded sighting — only the owner's
+        # explicit "remember this" intent, and only as an intent.
+        intent = await _persist_ungrounded_keep_intent(
+            session,
+            actor=actor,
+            device_id=device_id,
+            keep_request=keep_user,
+            result=result,
+        )
+        if intent is None:
+            logger.warning(
+                "visual observation skipped: no grounding evidence",
+                extra={
+                    "request_id": result.get("request_id"),
+                    "device_id": device_id,
+                    "media_kind": media_kind,
+                    "spoken_chars": len(raw_spoken),
+                },
+            )
+        return intent
     usable_scene = bool(ocr) or (
         not empty_scene and bool(spoken or labels or colors)
     )
@@ -3086,6 +3348,8 @@ async def persist_visual_observation(
         labels=labels,
         named=keep_named or None,
     )
+    clip_speech = _clip_speech(result)
+    clip_moments = _clip_moments(result)
     text = visual_observation_text(
         labels=labels,
         colors=colors,
@@ -3097,13 +3361,21 @@ async def persist_visual_observation(
         visual_facts=facts,
         spoken=identity.get("scene") or raw_spoken,
         keep_named=keep_named or None,
+        speech=clip_speech,
     )
     place_phrase = str(placement.get("phrase") or "").strip()
     if place_phrase and place_phrase.lower() not in text.lower():
         text = f"{text.rstrip('.')} Last seen: {place_phrase}."[:800]
     seen_object = keep_named or (placement["objects"][0] if placement.get("objects") else None)
+    # A clip or a still burst is not a "keep this object" glance: its content
+    # lives in the moment timeline and the transcript, so the still-identity
+    # machinery (which parses a single scene sentence for an object name) must
+    # not run on it — it produced lines like "That's a clip."
+    clip_like = media_kind in {"clip", "video", "movie", "recording", "burst"}
     payload = {
         "kind": "visual",
+        "grounded": True,
+        "grounding": grounding,
         "labels": labels,
         "colors": colors,
         "people": people_n or None,
@@ -3135,6 +3407,11 @@ async def persist_visual_observation(
         "keep_request": keep_user or None,
         "recall": identity.get("recall") if wants_keep_visible(keep_user) else None,
     }
+    if clip_moments:
+        payload["moments"] = clip_moments
+        payload["moment_count"] = len(clip_moments)
+    if clip_speech:
+        payload["transcript"] = clip_speech[:2000]
     try:
         event = await EventService(session, actor=actor).create(
             EventCreate(
@@ -3159,6 +3436,10 @@ async def persist_visual_observation(
                     "surface": placement.get("surface"),
                     "placement": place_phrase or None,
                     "provenance": "phone_camera" if device_id else "camera",
+                    "grounded": True,
+                    "grounding": grounding,
+                    "moment_count": len(clip_moments) or None,
+                    "transcript": clip_speech[:2000] if clip_speech else None,
                 },
                 metadata={"visual": True, "visor": True},
                 device_id=device_id,
@@ -3194,7 +3475,7 @@ async def persist_visual_observation(
             )
         ]
         place_text = placement_fact_text(placement)
-        if place_text and placement.get("objects"):
+        if place_text and placement.get("objects") and not clip_like:
             topic = str(placement["objects"][0])
             candidates.append(
                 MemoryCandidate(
@@ -3220,7 +3501,7 @@ async def persist_visual_observation(
                     entities=entities,
                 )
             )
-        if wants_keep_visible(keep_user):
+        if wants_keep_visible(keep_user) and not clip_like:
             keep_text = keep_sight_text(
                 user_text=keep_user,
                 scene=(spoken or raw_spoken) if usable_scene and not empty_scene else None,
@@ -3313,7 +3594,7 @@ async def persist_visual_observation(
             result["remembered"] = True
             result["memory_id"] = written[0].memory_id
             result["memory_text"] = written[-1].text
-            if wants_keep_visible(keep_user):
+            if wants_keep_visible(keep_user) and not clip_like:
                 await _pin_memory_ids(session, [row.memory_id for row in written])
                 result["kept"] = True
                 keep_ids = [
@@ -3484,10 +3765,16 @@ async def remember_spoken_scene(
         return None
     if not is_keep_identity_speech(scene):
         return None
-    newest_keep = await _newest_visual_keep(session)
+    newest_attempt = await _newest_keep_row(session, kinds=("visual_keep", "keep_intent"))
+    newest_keep = (
+        newest_attempt
+        if str((newest_attempt or {}).get("kind") or "") == "visual_keep"
+        else None
+    )
     if newest_keep is None or not _keep_has_pixels(newest_keep):
         # Later Mini talk (grocery, files, weather) must not become identity
-        # for a memorize that never stored pixels.
+        # for a memorize that never stored pixels — and neither must a newer
+        # pixel-less keep intent hide an older real description.
         return None
     rows = await _recent_visual_events(session, device_id=device_id)
     event = _prefer_keep_event(rows)

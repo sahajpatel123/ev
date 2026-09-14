@@ -298,9 +298,9 @@ async def stream_chat_tts_pipeline(
 
     async def run_llm() -> None:
         try:
-            from app.gateway.muse import muse_intelligence_active, muse_spark_model
+            from app.gateway.muse import muse_brain_active, muse_spark_model
 
-            if muse_intelligence_active():
+            if muse_brain_active():
                 model = muse_spark_model()
             elif settings.chat_provider == "xai":
                 model = settings.xai_model

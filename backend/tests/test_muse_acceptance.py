@@ -567,7 +567,7 @@ async def test_muse_live_push_to_talk_commits_on_transcript_final() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transparency_chat_egress_names_opencode_not_legacy_when_muse_is_brain(
+async def test_transparency_chat_egress_names_meta_model_api_when_muse_is_brain(
     client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "chat_provider", "meta_muse_spark")
@@ -578,7 +578,9 @@ async def test_transparency_chat_egress_names_opencode_not_legacy_when_muse_is_b
     chat = next(item for item in resp.json()["transmitted"] if item["kind"] == "chat")
     assert chat["provider"] == "meta_muse_spark"
     dest = (chat.get("destination") or "").lower()
-    assert "opencode.ai/zen/go/v1" in dest
+    assert "api.meta.ai" in dest
+    assert "opencode.ai" not in dest
+    assert "/zen/" not in dest
     assert "deepseek" not in dest
     assert "x.ai" not in dest
     assert "openai.com" not in dest
@@ -804,6 +806,7 @@ async def test_research_style_turn_uses_spark_not_deepseek_or_luna(
     reset_muse_counters()
     monkeypatch.setattr(muse_mod, "muse_intelligence_active", lambda: True)
     monkeypatch.setattr(muse_mod, "muse_key_loaded", lambda: True)
+    monkeypatch.setattr(muse_mod, "muse_spark_key_loaded", lambda: True)
     calls = {"spark": 0, "deepseek": 0, "luna": 0}
 
     async def fake_spark(turn, context):
@@ -835,7 +838,7 @@ def test_memory_writer_stays_writer_when_spark_curates() -> None:
 
     source = inspect.getsource(curator)
     assert "MemoryWriter" in source
-    assert "muse_intelligence_active" in inspect.getsource(curator._call_deepseek)
+    assert "muse_brain_active" in inspect.getsource(curator._call_deepseek)
     assert inspect.isclass(MemoryWriter)
 
 
@@ -1080,7 +1083,12 @@ async def test_laptop_file_rewrite_fails_closed_without_muse_key(
     from app.ev import laptop_files
 
     monkeypatch.setattr("app.gateway.muse.muse_intelligence_active", lambda: True)
+    # Both key gates must be pinned: the runtime secrets overlay
+    # (~/.ev/secrets/production.env) legitimately loads a real Meta key, so
+    # conftest blanking alone cannot prove the fail-closed path.
+    monkeypatch.setattr("app.gateway.muse.muse_key_loaded", lambda: False)
     monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    monkeypatch.setattr(settings, "meta_model_api_key", None)
 
     async def boom_legacy(*args, **kwargs):
         raise AssertionError("legacy file intelligence must not run")
@@ -1297,7 +1305,7 @@ def test_diagnostics_calibration_pings_spark_not_grok() -> None:
 
     source = inspect.getsource(diagnostics.run_calibration)
     assert "muse_spark_model" in source
-    assert "muse_intelligence_active" in source
+    assert "muse_brain_active" in source
 
 
 def test_preflight_reports_muse_spark_partial_without_key_not_deepseek_double(

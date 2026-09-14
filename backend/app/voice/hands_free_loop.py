@@ -19,7 +19,8 @@ come out. The loop never asks the human to press anything:
 5. **Follow-up** — the mic stays open for ``follow_up`` seconds with no wake word
    required. Speech that is not addressed to EVIE (acknowledgements, "never
    mind", a stray "mm-hmm") is dropped without a turn, and the window closes
-   itself in silence.
+   itself in silence. A bare "yes"/"no" is the exception: while EVIE has an
+   offer outstanding it is the owner's answer, so it becomes a turn.
 
 All timing is measured in *audio samples consumed*, never wall clock, so a test
 that feeds a WAV file sees exactly the behavior a live microphone produces.
@@ -58,6 +59,8 @@ class LiveState:
 
 # Speech in the follow-up window that is not a request. Kept deliberately small:
 # a false "not addressed" is worse than answering an extra acknowledgement.
+# ``classify_turn`` asks the live offer before using this: a bare yes/no is the
+# owner's answer, not backchannel, while EVIE has a question outstanding.
 _ACK_ONLY = re.compile(
     r"^(?:uh|um|mm|hmm|mhm|uh huh|yeah|yep|yes|no|nope|ok|okay|oh|ah|"
     r"right|sure|cool|nice|thanks|thank you|hm)+$"
@@ -82,8 +85,36 @@ def strip_wake_prefix(text: str) -> str:
     return _WAKE_PREFIX.sub("", (text or "").strip(), count=1).strip()
 
 
+def _answers_live_offer(text: str) -> bool:
+    """True when a bare yes/no answers the offer EVIE has just spoken.
+
+    "yeah" and "okay" on their own are backchannel. After "do you want me to
+    read out the full mail?" the same word is the owner's answer, and dropping
+    it as not addressed to EVIE is what left the owner talking to nothing.
+    """
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    try:
+        from app.cognitive.intent import pending_offer
+        from app.cognitive.session_store import current
+        from app.ev.continuity import is_affirmative_reply, is_negative_reply
+
+        if not (is_affirmative_reply(raw) or is_negative_reply(raw)):
+            return False
+        return pending_offer(current()) is not None
+    except Exception:  # noqa: BLE001 - session/grammar unavailable → old rule
+        return False
+
+
 def classify_turn(text: str) -> str:
-    """``request`` | ``acknowledgement`` | ``dismissal`` | ``empty``."""
+    """``request`` | ``acknowledgement`` | ``dismissal`` | ``empty``.
+
+    Context-aware at the acknowledgement edge: a bare yes/no is only
+    backchannel while nothing is waiting on it. A live offer makes it the
+    answer, i.e. a request.
+    """
 
     normalized = re.sub(r"[^a-z0-9' ]+", " ", (text or "").lower())
     normalized = re.sub(r"\s+", " ", normalized).strip()
@@ -92,7 +123,7 @@ def classify_turn(text: str) -> str:
     if _DISMISS.fullmatch(normalized):
         return "dismissal"
     if _ACK_ONLY.fullmatch(normalized.replace(" ", "")) or _ACK_ONLY.fullmatch(normalized):
-        return "acknowledgement"
+        return "request" if _answers_live_offer(text) else "acknowledgement"
     return "request"
 
 

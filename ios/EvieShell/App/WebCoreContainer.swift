@@ -39,3 +39,18 @@ enum AppOrigin {
         URL(string: apiOrigin + "/evie/")!
     }
 }
+
+// Cycle 32 — iPhone-only, backward compat: offline-retry policy for the web-core loader.
+// Pure value type; WebCoreContainer behavior unchanged.
+struct EvieOfflineRetryPolicy: Sendable, Equatable {
+    var maxAttempts: Int = 5
+    var baseDelaySeconds: Double = 1.0
+    var maxDelaySeconds: Double = 30.0
+
+    func delay(forAttempt attempt: Int) -> Double {
+        guard attempt > 0 else { return 0 }
+        let shift = min(max(attempt - 1, 0), 10)
+        let delay = baseDelaySeconds * Double(1 << shift)
+        return min(delay, maxDelaySeconds)
+    }
+}

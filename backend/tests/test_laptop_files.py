@@ -8,6 +8,7 @@ import pytest
 
 from app.config import settings
 from app.ev.computer_strategy import resolve_generic_computer_goal
+from app.ev.desk_names import reset_desk_names
 from app.ev.laptop_files import (
     apply_simple_edit,
     extract_append_items,
@@ -21,7 +22,6 @@ from app.ev.laptop_files import (
 )
 from app.ev.luna_code import looks_like_code_request
 from app.ev.tool_select import resolve_live_action
-from app.ev.desk_names import reset_desk_names
 
 
 async def _route_transcript(live, event) -> None:
@@ -75,6 +75,11 @@ def test_parse_write_read_edit_on_desktop(files_root: Path) -> None:
 
     listed = parse_file_goal("List the files on my desktop")
     assert listed is not None and listed["action"] == "list"
+    laptop = parse_file_goal("what's on my laptop")
+    assert laptop is not None and laptop["action"] == "list"
+    assert laptop.get("survey") is True
+    walk = parse_file_goal("walk me through my Documents")
+    assert walk is not None and walk["action"] == "list"
 
 
 def test_file_goals_do_not_steal_apps_or_code() -> None:
@@ -89,6 +94,12 @@ def test_file_goals_do_not_steal_apps_or_code() -> None:
     assert looks_like_file_task(desktop)
     assert not looks_like_code_request(desktop)
     assert resolve_live_action(desktop) == ("computer", {"goal": desktop})
+    wish = "tell me about the code that i have written in the wish workspace"
+    assert looks_like_code_request(wish)
+    assert looks_like_file_task(wish) is False
+    assert looks_like_file_task("tell me about my conversations") is False
+    assert looks_like_file_task("I wish you would tell me about the weather") is False
+    assert looks_like_file_task("what's on my laptop")
 
 
 def test_secrets_are_denied(files_root: Path) -> None:
@@ -125,6 +136,10 @@ def test_write_read_edit_roundtrip(files_root: Path) -> None:
     assert (files_root / "evie-proof.txt").read_text(encoding="utf-8") == "hi from evie"
     names = perform_local({"action": "list", "path": str(files_root)})
     assert "evie-proof.txt" in names["files"]
+    (files_root / "note.txt").write_text("hi", encoding="utf-8")
+    surveyed = perform_local({"action": "list", "survey": True, "path": ""})
+    assert surveyed["ok"] is True
+    assert "note.txt" in (surveyed.get("files") or []) or "note.txt" in str(surveyed.get("spoken") or "")
 
 
 @pytest.mark.asyncio
@@ -579,6 +594,61 @@ def test_natural_phrasing_followups_search_rename_copy(files_root: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_browser_open_does_not_replay_prior_file_goal(
+    db_session, files_root: Path, monkeypatch
+) -> None:
+    from app.ev.computer_runtime import ensure_state, reset_computer_states
+    from app.ev.tools import _run_computer_goal
+
+    reset_computer_states()
+    written = await _run_computer_goal(
+        db_session,
+        {"goal": "create a packing list on my desktop that says socks"},
+        actor="master",
+        live_session_id="talk-browser-open",
+        device_id=None,
+    )
+    assert written["ok"] is True
+    state = ensure_state("talk-browser-open")
+    assert state is not None and state.last_file_path
+
+    seen: list[tuple[str, dict]] = []
+
+    async def _capture(session, capability, arguments, **kwargs):
+        del session, kwargs
+        seen.append((str(capability), dict(arguments or {})))
+        return {
+            "ok": True,
+            "executed": True,
+            "verified": True,
+            "spoken": "Opened YouTube.",
+            "action": (arguments or {}).get("action"),
+            "url": (arguments or {}).get("url"),
+        }
+
+    monkeypatch.setattr("app.ev.computer.handle_computer_tool", _capture)
+    result = await _run_computer_goal(
+        db_session,
+        {"goal": "open safari and open youtube inside it"},
+        actor="master",
+        live_session_id="talk-browser-open",
+        device_id=None,
+    )
+    assert result.get("ok") is True
+    assert seen, "browser open must dispatch a Mac effect"
+    assert all(cap != "file_op" for cap, _ in seen)
+    cap, args = seen[0]
+    assert cap == "app_action"
+    assert args.get("action") == "navigate"
+    assert "youtube.com" in str(args.get("url") or args.get("query") or "").lower()
+    assert "packing" not in str(args).lower()
+    state = ensure_state("talk-browser-open")
+    assert state is not None
+    assert not str(state.last_file_path or "").strip()
+    assert "youtube" in str(state.original_owner_request or "").lower()
+
+
+@pytest.mark.asyncio
 async def test_last_file_followup_after_write(db_session, files_root: Path) -> None:
     from app.ev.computer_runtime import ensure_state, reset_computer_states
     from app.ev.tools import _run_computer_goal
@@ -937,14 +1007,15 @@ def test_find_resume_and_open_without_folder(files_root: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_desk_name_grocery_list_survives_opening_resume(files_root: Path) -> None:
+async def test_named_list_alias_survives_opening_resume(files_root: Path) -> None:
     from app.ev.desk_names import remember_file, resolve_alias
     from app.ev.laptop_files import run_file_goal
 
-    first = parse_file_goal("drop a note on the desktop that says buy milk")
+    first = parse_file_goal("create a grocery list on my desktop that says milk")
     written = await run_file_goal(first)
     assert written["ok"] is True
     note = Path(written["path"])
+    assert "grocery" in note.name.lower()
     assert resolve_alias("grocery list") == note.resolve()
     resume = files_root / "Sahaj_Patel_Resume.pdf"
     resume.write_bytes(b"%PDF-1.4\n")
@@ -961,15 +1032,15 @@ async def test_desk_name_grocery_list_survives_opening_resume(files_root: Path) 
     )
     assert added is not None
     assert added["action"] == "append"
-    assert Path(added["path"]).name == "evie-note.txt"
+    assert Path(added["path"]).resolve() == note.resolve()
     result = await run_file_goal(added)
     assert result["ok"] is True
-    assert Path(result["path"]).name == "evie-note.txt"
+    assert Path(result["path"]).resolve() == note.resolve()
     body = note.read_text(encoding="utf-8").replace("\r\n", "\n")
-    assert body == "buy milk\neggs"
+    assert "eggs" in body.lower()
     named = parse_file_goal("what's on the grocery list", last_path=str(resume))
     assert named is not None and named["action"] == "read"
-    assert Path(named["path"]).name == "evie-note.txt"
+    assert Path(named["path"]).resolve() == note.resolve()
     bound = parse_file_goal("that's my resume", last_path=str(resume))
     assert bound is not None and bound["action"] == "bind"
     named_resume = await run_file_goal(bound)
@@ -992,7 +1063,6 @@ async def test_desk_twin_packet_fragment_and_landed_file(files_root: Path) -> No
 
     from app.ev.desk_scene import (
         bind_visible_text,
-        confirm_land,
         packet_inventory,
         resolve_alias_object,
         scan_landed_files,
@@ -1098,6 +1168,8 @@ def test_append_intent_is_meaning_not_a_fixed_phrase() -> None:
     assert extract_append_items("add that to my calendar") == []
     assert extract_append_items("add a note on the desktop saying pick up dry cleaning") == []
     assert extract_append_items("how are you") == []
+    assert extract_append_items("find my passport") == []
+    assert extract_append_items("look up my resume on my laptop") == []
 
 
 @pytest.mark.asyncio

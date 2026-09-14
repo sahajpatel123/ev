@@ -2,8 +2,8 @@
 
 Opencode does not honor native function calling reliably. Voice used to dump
 every tool into the prompt and hope for JSON. This module selects 1–3 read
-tools, dispatches them, and injects cited results so DeepSeek composes wording
-instead of inventing facts.
+tools, dispatches them, and injects cited results so the mind (Muse Spark
+1.3 Contributor when configured) composes wording instead of inventing facts.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ WRITE_TOOLS = frozenset(
         "open_url",
         "open_app",
         "close_app",
+        "open_in_app",
         "set_reminder",
         "present",
         "code",
@@ -191,16 +192,49 @@ def extract_reminder_when(message: str) -> str | None:
     return None
 
 
+def _send_channel_marker(text: str, payload: dict[str, Any]) -> None:
+    """Carry a named channel through, registered or not.
+
+    A named-but-unregistered channel ("send it on pigeon") rides along as
+    ``channel`` so transports refuse it loudly instead of SMS-ing. An
+    unchanged payload means the owner named no channel at all.
+    """
+
+    from app.ev.send_intent import channel_from_text
+
+    channel = channel_from_text(text)
+    if channel:
+        payload["channel"] = channel
+        return
+    try:
+        from app.ev.messaging.channels import unknown_channel
+
+        unknown = unknown_channel(text)
+    except Exception:
+        unknown = None
+    if unknown:
+        payload["channel"] = unknown
+
+
 def infer_send_message_args(message: str) -> dict[str, Any] | None:
-    """Extract ``to`` + ``text`` for an explicit send/text command."""
+    """Extract ``to`` + ``text`` (+ ``channel``) for an explicit send/text command."""
 
     from app.ev.send_intent import parse_send_intent
 
     parsed = parse_send_intent(message)
     if parsed:
+        if "channel" not in parsed:
+            _send_channel_marker(message, parsed)
         return parsed
     text = (message or "").strip()
     if not text:
+        return None
+    from app.ev.send_intent import incomplete_send_recipient
+
+    if incomplete_send_recipient(text):
+        # Bodyless by the send grammar ("text Sarah Jane" names Sarah Jane,
+        # no message). Never synthesize a body from the name here — the turn
+        # must ask what to say instead of sending a name fragment.
         return None
     for pattern in (_SEND_TO_RE, _SEND_TO_ALT_RE):
         match = pattern.search(text)
@@ -209,8 +243,7 @@ def infer_send_message_args(message: str) -> dict[str, Any] | None:
             body = (match.group("text") or "").strip()
             if to and body:
                 payload = {"to": to, "text": body}
-                if "whatsapp" in text.lower():
-                    payload["channel"] = "whatsapp"
+                _send_channel_marker(text, payload)
                 return payload
     person = extract_person_name(text)
     if not person:
@@ -224,8 +257,7 @@ def infer_send_message_args(message: str) -> dict[str, Any] | None:
     ).strip()
     if remainder and remainder.lower() != text.lower():
         payload = {"to": person, "text": remainder}
-        if "whatsapp" in text.lower():
-            payload["channel"] = "whatsapp"
+        _send_channel_marker(text, payload)
         return payload
     return None
 
@@ -258,12 +290,25 @@ def infer_write_args(name: str, message: str) -> dict[str, Any] | None:
         if not body:
             return None
         return {"title": "EVIE", "body": body[:4000]}
+    if name == "open_in_app":
+        from app.ev.in_app import parse_in_app_intent
+
+        parsed = parse_in_app_intent(message)
+        return parsed.as_args() if parsed is not None else None
     if name == "code":
         body = (message or "").strip()
         if not body:
             return None
         return {"goal": body[:4000]}
     return None
+
+
+def _whatsapp_send(args: dict[str, Any]) -> bool:
+    """True when this send is destined for WhatsApp (native chat resolution)."""
+
+    from app.ev.messaging.channels import normalize_channel
+
+    return normalize_channel(str(args.get("channel") or "")) == "whatsapp"
 
 
 def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
@@ -273,13 +318,27 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
     tool-loop fallback so OpenCode-shaped replies still hit ``dispatch``.
     """
 
+    from app.ev.in_app import parse_in_app_intent
+    from app.ev.tool_select import _CALL_INQUIRY_RE, CALL_HISTORY_RE
+
+    in_app = parse_in_app_intent(message)
+    if in_app is not None and "open_in_app" in offered:
+        return [
+            ToolCall(
+                id="plan-open-in-app",
+                name="open_in_app",
+                arguments=in_app.as_args(),
+            )
+        ]
     selection = select_tool(message)
     life = detect_life_action(message)
     want: str | None = None
     if life == "send_message" or selection.selected == "send_message":
         want = "send_message"
     elif life == "phone_call" or selection.selected == "place_call":
-        want = "place_call"
+        # "Did I call Mom" is a call-history read, not a request to dial.
+        if not CALL_HISTORY_RE.search(message) and not _CALL_INQUIRY_RE.search(message):
+            want = "place_call"
     elif life == "reminder" or selection.selected == "set_reminder":
         want = "set_reminder"
     elif selection.selected == "open_url":
@@ -291,7 +350,15 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
     if want is None or want not in offered:
         return []
     calls: list[ToolCall] = []
-    if want in {"send_message", "place_call"} and "resolve_contact" in offered:
+    args = infer_write_args(want, message)
+    if not args:
+        return []
+    whatsapp_native = want == "send_message" and _whatsapp_send(args)
+    if (
+        want in {"send_message", "place_call"}
+        and "resolve_contact" in offered
+        and not whatsapp_native
+    ):
         person = extract_person_name(message)
         if person:
             calls.append(
@@ -301,9 +368,6 @@ def plan_life_tool_calls(message: str, offered: set[str]) -> list[ToolCall]:
                     arguments={"name": person, "limit": 5},
                 )
             )
-    args = infer_write_args(want, message)
-    if not args:
-        return []
     calls.append(ToolCall(id=f"plan-{want}", name=want, arguments=args))
     return calls
 
@@ -350,8 +414,21 @@ def infer_args(name: str, message: str) -> dict[str, Any] | None:
     if name == "resolve_contact":
         person = extract_person_name(message)
         return {"name": person, "limit": 5} if person else None
-    if name in {"list_messages", "list_mail"}:
-        return {"limit": 10}
+    if name in {"recall", "recall_history"}:
+        query = (message or "").strip() or "recent"
+        return {"query": query[:1000]}
+    if name == "list_messages":
+        msg_args: dict[str, Any] = {"limit": 8}
+        query = (message or "").strip()
+        if query:
+            msg_args["query"] = query[:1000]
+        return msg_args
+    if name == "list_mail":
+        msg_args = {"limit": 8}
+        query = (message or "").strip()
+        if query:
+            msg_args["query"] = query[:400]
+        return msg_args
     return {}
 
 
@@ -391,6 +468,11 @@ def voice_needs_tools(message: str) -> bool:
 
 
 def _clip(payload: Any, limit: int = RESULT_CHARS) -> str:
+    if isinstance(payload, dict) and payload.get("spoken"):
+        payload = {
+            "spoken": payload["spoken"],
+            **{key: value for key, value in payload.items() if key != "spoken"},
+        }
     text = json.dumps(payload, default=str, ensure_ascii=False)
     if len(text) > limit:
         return text[: limit - 3] + "..."
@@ -475,11 +557,33 @@ async def _dispatch_one(
 
 def _prefetch_names(message: str) -> list[str]:
     selection = select_tool(message)
+    # Contacts is not the address book of WhatsApp; a WhatsApp send is
+    # resolved from the WhatsApp chat list, not by an Apple Contacts
+    # prefetch that would say "not in your contacts".
+    whatsapp_send = _whatsapp_send(infer_write_args("send_message", message) or {})
+    from app.ev.in_app import parse_in_app_intent
+    from app.ev.tool_select import _is_app_window_command
+
+    in_app_item = parse_in_app_intent(message)
+    # An open/close command is not a mailbox read, and an incomplete send
+    # ("email Mum") is a body prompt — neither should fire a live bridge read.
+    from app.ev.send_intent import incomplete_send_recipient
+
+    opening = in_app_item is not None or _is_app_window_command(message)
+    incomplete = bool(incomplete_send_recipient(message))
     names: list[str] = []
     for name in (selection.selected, *selection.alternatives):
         if name in OWNER_PROFILE_TOOLS:
             continue
         if name in WRITE_TOOLS:
+            continue
+        if opening and name in {"list_messages", "list_mail", "get_upcoming_alerts"}:
+            continue
+        if incomplete and name in {"list_messages", "list_mail"}:
+            continue
+        if name == "recall_history" and in_app_item is not None:
+            continue
+        if name == "resolve_contact" and whatsapp_send:
             continue
         if name == "search_memory":
             # run_chat_pipeline already performs the ranked memory retrieval.
@@ -507,7 +611,11 @@ def _prefetch_names(message: str) -> list[str]:
         names.insert(0, "heading_out")
     if is_weather_query(message) and "get_weather" not in names and "heading_out" not in names:
         names.insert(0, "get_weather")
-    if detect_life_action(message) and "resolve_contact" not in names:
+    if (
+        detect_life_action(message)
+        and "resolve_contact" not in names
+        and not whatsapp_send
+    ):
         names.append("resolve_contact")
     return names[:MAX_PREFETCH]
 
@@ -593,7 +701,10 @@ async def gather_intelligence_briefing(
         lines.append(
             "Tools above already ran. Do not re-call a read tool unless the "
             "briefing is missing the answer. Use write tools (present, "
-            "send_message, place_call, set_reminder) when the owner asked to act."
+            "send_message, place_call, set_reminder) when the owner asked to act. "
+            "When a result carries a 'spoken' field, that is the already-summarized "
+            "answer — speak it; use raw rows only when the owner asked for the "
+            "exact text."
         )
         if source == "voice":
             lines.append("This turn is spoken — keep the reply short and concrete.")

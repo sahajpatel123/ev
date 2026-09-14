@@ -4,11 +4,13 @@ prevention, failure recovery, observability, disable, and undo."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.integrations import service as integrations_service
 from app.models import Event
 from app.routines.schedule import next_run_after, validate_cron
 from app.routines.service import (
@@ -27,10 +29,16 @@ from app.routines.service import (
 )
 from app.routines.templates import list_templates
 from app.schemas import RoutineCreate, RoutineRunDecisionRequest
+from tests.test_life_agency import _add_bridge
 
 # --------------------------------------------------------------------------- #
 # Cron parsing
 # --------------------------------------------------------------------------- #
+
+
+@pytest.fixture(autouse=True)
+def _presence_dispatch(opened_presence) -> None:
+    """These tests are about scheduling, not about the overlay."""
 
 
 def test_next_run_after_basic_fields() -> None:
@@ -214,7 +222,32 @@ async def test_trigger_conditions_can_exclude_events(
 
 async def test_sensitive_action_requires_approval_then_executes(
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    await _add_bridge(
+        db_session, slug="messaging", adapter="messaging", scopes=["messaging:act"]
+    )
+
+    async def fake_execute_action_after_policy(
+        session, integration_id, action, args, *, actor
+    ):
+        return SimpleNamespace(
+            result={
+                "ok": True,
+                "delivery": {
+                    "confirmed": True,
+                    "evidence": {
+                        "recipient": args.get("to") or "Maya",
+                        "channel": "Messages",
+                        "sent_at": "2026-09-10T10:00:00Z",
+                    },
+                },
+            }
+        )
+
+    monkeypatch.setattr(
+        integrations_service, "execute_action_after_policy", fake_execute_action_after_policy
+    )
     routine = await create_routine(
         db_session,
         RoutineCreate(
@@ -222,7 +255,7 @@ async def test_sensitive_action_requires_approval_then_executes(
             kind="trigger",
             trigger={"event_type": "followup_due"},
             action_type="send_message",
-            action_payload={"channel": "whatsapp"},
+            action_payload={"channel": "whatsapp", "to": "Maya", "text": "follow-up"},
         ),
     )
     run = await manual_run(db_session, routine.id, actor="owner")
@@ -233,17 +266,22 @@ async def test_sensitive_action_requires_approval_then_executes(
 
     run = await approve_run(db_session, run.id, actor="owner")
     await db_session.commit()
-    assert run.status == "approved"
-
-    run = await execute_run(
-        db_session,
-        run.id,
-        actor="owner",
-        data=RoutineRunDecisionRequest(result={"sent": True}),
-    )
-    await db_session.commit()
+    # Approving a routed routine action runs it: the runtime does not
+    # auto-execute these (they carry no `_pol` resume meta), so the run must
+    # record what the dispatch really returned rather than a bare "approved".
     assert run.status == "executed"
-    assert run.result == {"sent": True}
+
+    # The action already ran on approval, so a second execute is refused:
+    # one owner "yes" must not dispatch the same send twice.
+    with pytest.raises(ValueError, match="Only approved runs can be executed"):
+        await execute_run(
+            db_session,
+            run.id,
+            actor="owner",
+            data=RoutineRunDecisionRequest(result={"sent": True}),
+        )
+    assert run.result.get("ok") is True
+    assert run.result["delivery"]["confirmed"] is True
 
 
 async def test_failed_run_can_be_retried(

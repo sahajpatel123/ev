@@ -118,31 +118,13 @@ EXECUTOR_TOOLS = frozenset(
     }
 )
 
-# ui_action verbs that change UI state and therefore deserve the verify
-# contract. Read-only ui verbs (e.g. value getters) stay single-observe.
-MUTATING_UI_ACTIONS = frozenset(
-    {
-        "press",
-        "click_at",
-        "focus",
-        "select",
-        "type",
-        "paste",
-        "key",
-        "scroll",
-        "drag",
-        "increment",
-        "decrement",
-        "expand",
-        "collapse",
-        "confirm",
-        "cancel",
-        "append",
-        "replace",
-        "set",
-        "raise",
-    }
-)
+# ui_action verbs that are PROVEN read-only (pure state getters): they may run
+# single-observe, without the observe→act→verify contract. AUTHORITY for what
+# ui_action can do is the verb enum in its tool spec (app/ev/tools.py); this
+# allowlist only records which of those verbs read instead of change the UI.
+# Nothing in the current schema qualifies: every advertised verb reaches an AX
+# action, a HID event, or the client's default AX action.
+READ_ONLY_UI_ACTIONS: frozenset[str] = frozenset()
 
 NAVIGATE_TOOLS = frozenset({"open_app", "close_app", "activate_app", "open_url"})
 OBSERVE_TOOLS = frozenset({"computer_status", "list_apps", "inspect_ui", "screen_look"})
@@ -178,9 +160,49 @@ def family_for_tool(name: str) -> str | None:
     return None
 
 
+_UI_ACTION_SCHEMA_VERBS: frozenset[str] | None = None
+
+
+def _ui_action_schema_verbs() -> frozenset[str]:
+    """Verbs the ``ui_action`` tool spec advertises — the authoritative enum.
+
+    Imported lazily: ``app.ev.tools`` pulls in the whole tool catalog, and this
+    module is imported by the computer path that catalog dispatches back into.
+    """
+
+    global _UI_ACTION_SCHEMA_VERBS
+    if _UI_ACTION_SCHEMA_VERBS is None:
+        from app.ev.tools import TOOL_SPECS
+
+        verbs: frozenset[str] = frozenset()
+        for spec in TOOL_SPECS:
+            if spec.get("name") != "ui_action":
+                continue
+            action = ((spec.get("parameters") or {}).get("properties") or {}).get("action") or {}
+            verbs = frozenset(str(verb).lower() for verb in (action.get("enum") or ()))
+            break
+        _UI_ACTION_SCHEMA_VERBS = verbs
+    return _UI_ACTION_SCHEMA_VERBS
+
+
+def _read_only_ui_actions() -> frozenset[str]:
+    """Read-only ui verbs: advertised by the schema AND proven read-only.
+
+    The intersection keeps a stale or invented name in ``READ_ONLY_UI_ACTIONS``
+    from ever relaxing a verb the client does not implement as a getter.
+    """
+
+    return READ_ONLY_UI_ACTIONS & _ui_action_schema_verbs()
+
+
 def is_mutating(name: str, arguments: dict[str, Any] | None) -> bool:
     if name == "ui_action":
-        return str((arguments or {}).get("action") or "").lower() in MUTATING_UI_ACTIONS
+        action = str((arguments or {}).get("action") or "").lower()
+        # FAIL CLOSED: every verb not proven read-only — including one the
+        # schema does not advertise — may reach the UI, so it gets the
+        # observe-before/observe-after contract and a non-fallback-safe
+        # side-effect state on failure. Only a proven getter stays single-observe.
+        return action not in _read_only_ui_actions()
     return name in NAVIGATE_TOOLS
 
 

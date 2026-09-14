@@ -233,7 +233,7 @@ async def execute_requested_actions(
 
     from app.ev.code_studio import maybe_handle_code_ops, spoken_studio_busy
     from app.ev.luna_code import (
-        intern_in_flight,
+        code_jail_busy,
         last_code_job,
         looks_like_code_continue,
         looks_like_code_followup,
@@ -264,7 +264,7 @@ async def execute_requested_actions(
                 result={"ok": True, "spoken": intern_ack, "deferred": True},
             )
         ]
-    if intern_in_flight() and (
+    if code_jail_busy() and (
         looks_like_code_request(message) or looks_like_code_continue(message)
     ):
         from app.ev.code_studio import apply_code_control, looks_like_code_control

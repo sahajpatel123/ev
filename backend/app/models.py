@@ -2578,3 +2578,205 @@ class StateEpoch(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow
     )
+
+
+# --- PRESENCE OS V1 (additive): durable intent orchestration over Core truth.
+# --- GoalContract layers over goals.* (linked_goal_id); conditions are durable
+# --- waits evaluated event-first, schedule-second. No existing table touched.
+
+
+class PresenceContract(Base):
+    """Durable owner outcome. Orchestration state; Core Goal rows stay truth."""
+
+    __tablename__ = "presence_contracts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    linked_goal_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("goals.id"), index=True
+    )
+    origin_device_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("devices.id"), index=True
+    )
+    objective: Mapped[str] = mapped_column(Text, default="")
+    normalized_objective: Mapped[str] = mapped_column(Text, default="")
+    success_criteria: Mapped[dict] = mapped_column(JSONType, default=dict)
+    constraints: Mapped[dict] = mapped_column(JSONType, default=dict)
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    priority: Mapped[str] = mapped_column(String(16), default="NORMAL", index=True)
+    interruption_policy: Mapped[str] = mapped_column(String(24), default="NORMAL")
+    autonomy_policy: Mapped[str] = mapped_column(String(24), default="SAFE_DIGITAL")
+    risk_ceiling: Mapped[str] = mapped_column(String(8), default="R2")
+    entities: Mapped[dict] = mapped_column(JSONType, default=dict)
+    artifacts: Mapped[dict] = mapped_column(JSONType, default=dict)
+    target_devices: Mapped[list] = mapped_column(JSONType, default=list)
+    state: Mapped[str] = mapped_column(String(24), default="DRAFT", index=True)
+    confidence: Mapped[str] = mapped_column(String(24), default="UNKNOWN")
+    blocked_reason: Mapped[str | None] = mapped_column(Text)
+    next_condition: Mapped[dict] = mapped_column(JSONType, default=dict)
+    graph: Mapped[dict] = mapped_column(JSONType, default=dict)
+    verification: Mapped[dict] = mapped_column(JSONType, default=dict)
+    evidence: Mapped[dict] = mapped_column(JSONType, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, index=True
+    )
+
+
+class PresenceCondition(Base):
+    """Durable wait attached to a contract. Event-driven first, bounded poll."""
+
+    __tablename__ = "presence_conditions"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    contract_id: Mapped[UUID] = mapped_column(
+        ForeignKey("presence_contracts.id"), index=True
+    )
+    cond_class: Mapped[str] = mapped_column(String(24), index=True)
+    source: Mapped[str] = mapped_column(String(64), default="event")
+    strategy: Mapped[str] = mapped_column(String(32), default="event")
+    frequency_s: Mapped[int] = mapped_column(Integer, default=60)
+    ttl_s: Mapped[int] = mapped_column(Integer, default=86400)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    state: Mapped[str] = mapped_column(String(16), default="PENDING", index=True)
+    payload: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow
+    )
+
+
+# --- DIGITAL OPERATIONS V1 (append-only) ------------------------------------
+
+
+class DigitalPersonIdentity(Base):
+    """Derived channel mapping onto canonical Entity people. Not a second DB."""
+
+    __tablename__ = "digital_person_identities"
+    __table_args__ = (
+        UniqueConstraint("channel", "identifier", name="uq_digital_person_channel_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    entity_id: Mapped[UUID | None] = mapped_column(ForeignKey("entities.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(24), index=True)
+    identifier: Mapped[str] = mapped_column(String(256), index=True)
+    display_name: Mapped[str | None] = mapped_column(String(256))
+    service_id: Mapped[str | None] = mapped_column(String(256))
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    extra: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DigitalCommRef(Base):
+    """Reference + snippet only. Authoritative content stays in the service."""
+
+    __tablename__ = "digital_comm_refs"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    channel: Mapped[str] = mapped_column(String(24), index=True)
+    service: Mapped[str] = mapped_column(String(32), index=True)
+    external_id: Mapped[str] = mapped_column(String(256), index=True)
+    thread_id: Mapped[str | None] = mapped_column(String(256), index=True)
+    participants: Mapped[list] = mapped_column(JSONType, default=list)
+    snippet: Mapped[str] = mapped_column(Text, default="")
+    occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    origin: Mapped[str] = mapped_column(String(32), default="EXTERNAL_CONTENT")
+    extra: Mapped[dict] = mapped_column(JSONType, default=dict)
+
+
+class DigitalWaiting(Base):
+    __tablename__ = "digital_waiting"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    direction: Mapped[str] = mapped_column(String(24), index=True)
+    person: Mapped[str] = mapped_column(String(256), index=True)
+    what: Mapped[str] = mapped_column(Text, default="")
+    channel: Mapped[str | None] = mapped_column(String(24))
+    when_due: Mapped[str | None] = mapped_column(String(64))
+    source_ref: Mapped[dict] = mapped_column(JSONType, default=dict)
+    confidence: Mapped[float] = mapped_column(Float, default=0.0)
+    state: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    contract_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    evidence: Mapped[list] = mapped_column(JSONType, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DigitalArtifact(Base):
+    __tablename__ = "digital_artifacts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    source: Mapped[str] = mapped_column(String(32), index=True)
+    original_name: Mapped[str] = mapped_column(String(256))
+    mime: Mapped[str] = mapped_column(String(128), default="application/octet-stream")
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    local_path: Mapped[str] = mapped_column(Text)
+    provenance: Mapped[dict] = mapped_column(JSONType, default=dict)
+    quarantined: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DigitalDraft(Base):
+    __tablename__ = "digital_drafts"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    contract_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    channel: Mapped[str] = mapped_column(String(24), index=True)
+    service: Mapped[str] = mapped_column(String(32), index=True)
+    to_ref: Mapped[str] = mapped_column(Text, default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    attachments: Mapped[list] = mapped_column(JSONType, default=list)
+    state: Mapped[str] = mapped_column(String(24), default="PREPARED", index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), index=True)
+    extra: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class DigitalWatch(Base):
+    __tablename__ = "digital_watches"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    contract_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    channel: Mapped[str] = mapped_column(String(24), index=True)
+    cond_class: Mapped[str] = mapped_column(String(24), index=True)
+    query: Mapped[dict] = mapped_column(JSONType, default=dict)
+    last_cursor: Mapped[str | None] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DigitalOpAudit(Base):
+    __tablename__ = "digital_op_audit"
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    goal_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    service: Mapped[str] = mapped_column(String(32), index=True)
+    operation: Mapped[str] = mapped_column(String(64), index=True)
+    target: Mapped[str | None] = mapped_column(String(256))
+    risk: Mapped[str | None] = mapped_column(String(8))
+    approval_id: Mapped[str | None] = mapped_column(String(64))
+    result: Mapped[str] = mapped_column(String(32))
+    verification: Mapped[dict] = mapped_column(JSONType, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DigitalChannelPref(Base):
+    __tablename__ = "digital_channel_prefs"
+    __table_args__ = (UniqueConstraint("person_key", name="uq_digital_channel_pref_person"),)
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    person_key: Mapped[str] = mapped_column(String(256), index=True)
+    channel: Mapped[str] = mapped_column(String(24))
+    uses: Mapped[int] = mapped_column(Integer, default=1)
+    last_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# --- END DIGITAL OPERATIONS V1 ----------------------------------------------

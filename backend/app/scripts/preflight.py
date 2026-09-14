@@ -99,7 +99,7 @@ def _check_chat() -> tuple[str, str, str]:
         return (
             "PARTIAL",
             "meta_muse_spark",
-            "configured Muse Spark but OPENCODE_API_KEY is missing — "
+            "configured Muse Spark but META_MODEL_API_KEY is missing — "
             "intelligence fails closed; no silent Grok/DeepSeek substitute",
         )
     if provider == "opencode":

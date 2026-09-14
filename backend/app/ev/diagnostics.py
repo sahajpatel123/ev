@@ -110,9 +110,9 @@ async def run_calibration(
         started = time.perf_counter()
         try:
             provider = get_chat_provider()
-            from app.gateway.muse import muse_intelligence_active, muse_spark_model
+            from app.gateway.muse import muse_brain_active, muse_spark_model
 
-            if muse_intelligence_active() or provider.name in {"meta_muse_spark", "muse", "muse_spark"}:
+            if muse_brain_active() or provider.name in {"meta_muse_spark", "muse", "muse_spark"}:
                 ping_model = muse_spark_model()
             elif provider.name == "xai":
                 ping_model = settings.xai_model

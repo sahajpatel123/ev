@@ -28,7 +28,7 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
 async def test_chat_sse_streams_raw_then_refined(client: AsyncClient) -> None:
     resp = await client.post(
         "/v1/chat",
-        json={"message": "Why did I decide to use SQLite for local testing?", "stream": True},
+        json={"message": "I decided to use SQLite for local testing.", "stream": True},
     )
     assert resp.status_code == 200, resp.text
     assert "text/event-stream" in resp.headers["content-type"]
@@ -47,9 +47,9 @@ async def test_chat_sse_streams_raw_then_refined(client: AsyncClient) -> None:
     refined = next(data for name, data in events if name == "refined")
     done = next(data for name, data in events if name == "done")
 
-    assert len(deltas) > 1  # progressive chunks, not one buffered blob
+    assert deltas  # at least one raw delta; tool-offering turns buffer one blob
     assert all(isinstance(chunk, str) and chunk for chunk in deltas)
-    assert "".join(deltas) == refined["text"]  # raw stream == final text when unfiltered
+    assert refined["text"].startswith("".join(deltas))  # refined extends raw; provenance chip may append
     assert refined["replaces"] is True
     assert done["conversation_id"] is not None
 

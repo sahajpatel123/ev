@@ -16,20 +16,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.memory.life_archive.locate import (
-    SOURCE,
     _GENERIC_CHAT_NAMES,
     _SELF_ADDRESSEE,
     _STOP,
+    SOURCE,
     _chat_person_query_token,
 )
 from app.memory.life_archive.parse import read_whatsapp_messages
 from app.memory.life_archive.sessions import (
-    SESSION_GAP,
     _SUMMARY_CHARS,
+    SESSION_GAP,
     _clock_for,
     _display_name,
-    _english_topics,
     _ending_move,
+    _english_topics,
     _item_moment,
     _leftover,
     _live_whatsapp_messages,

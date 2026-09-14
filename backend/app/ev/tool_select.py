@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 
-from app.memory.life_archive.locate import CALL_HISTORY_RE, life_channel
 from app.ev.continuity import classify_memory_intent
 from app.ev.send_intent import parse_send_intent
+from app.memory.life_archive.locate import CALL_HISTORY_RE, life_channel
 from app.schemas import ToolSelectionResponse
 from app.search.live import is_weather_query, looks_world_knowledge
 
@@ -28,17 +28,27 @@ TEXT_PHRASE_RE = re.compile(
     r"\blet\s+\S+\s+know\b|"
     r"\bsend(?: a)? (?:text|message|note|sms|whatsapp|e-?mail)\b|"
     r"\bsend \w+ a (?:text|message|note|sms|whatsapp)\b|"
-    r"\bmessage \S+|"
-    r"\b(?:e-?mail)\s+\S+",
+    r"\bmessage (?!from\b)\S+|"
+    r"\b(?:e-?mail|mail)\s+\S+",
     re.IGNORECASE,
 )
 CALL_PHRASE_RE = re.compile(
     r"\b(?:call|phone|facetime|ring)\b",
     re.IGNORECASE,
 )
-MAIL_PHRASE_RE = re.compile(r"\b(?:mail|email|inbox)\b", re.IGNORECASE)
+# Past/present inquiry about an action ("did you call mom") is never a
+# command to place one. Polite imperatives (can/could/will/would you call)
+# stay commands and are deliberately absent here.
+_CALL_INQUIRY_RE = re.compile(
+    r"\b(?:did|do|does|have|has|was|were|are|is)\s+(?:you|evie|u)\b.{0,24}\bcall(?:ed|s)?\b",
+    re.IGNORECASE,
+)
+MAIL_PHRASE_RE = re.compile(
+    r"\b(?:e-?mails?|gmail|inbox|mailbox|mails?)\b",
+    re.IGNORECASE,
+)
 MAIL_READ_RE = re.compile(
-    r"\b(?:check|read|open|show|list)\b.{0,24}\b(?:mail|email|inbox)\b|"
+    r"\b(?:check|read|open|show|list)\b.{0,24}\b(?:e-?mails?|gmail|inbox|mailbox|mails?)\b|"
     r"\binbox\b",
     re.IGNORECASE,
 )
@@ -52,7 +62,9 @@ OPEN_APP_RE = re.compile(
     r"safari|messages|mail|calendar|finder|notes|music|photos|maps|"
     r"facetime|reminders|settings|terminal|chrome|arc|slack|spotify|"
     r"textedit|text edit|calculator|calc|cursor|vscode|code|"
-    r"google chrome|system settings|system preferences|imessage)"
+    r"google chrome|system settings|system preferences|imessage|"
+    r"browser|vs code|visual studio code|apple mail|apple calendar|i message|"
+    r"whatsapp|whats app)"
     r"(?:\.app)?\b",
     re.IGNORECASE,
 )
@@ -60,7 +72,10 @@ CLOSE_APP_RE = re.compile(
     r"\b(?:close|quit)\s+(?:up\s+)?(?:the\s+)?(?P<name>"
     r"safari|messages|mail|calendar|notes|music|photos|maps|"
     r"facetime|reminders|settings|terminal|chrome|arc|slack|spotify|"
-    r"google chrome|system settings|system preferences|imessage)"
+    r"calculator|calc|cursor|vscode|code|textedit|text edit|"
+    r"google chrome|system settings|system preferences|imessage|"
+    r"browser|vs code|visual studio code|apple mail|apple calendar|i message|"
+    r"whatsapp|whats app)"
     r"(?:\.app)?\b",
     re.IGNORECASE,
 )
@@ -94,6 +109,11 @@ MESSAGES_LIST_RE = re.compile(
 CONTACT_LOOKUP_RE = re.compile(
     r"\b(?P<name>[A-Za-z][A-Za-z'-]+)'s\s+(?:phone\s+)?(?:number|email|contact)\b|"
     r"\b(?:phone\s+)?(?:number|email)\s+for\s+(?P<name2>[A-Za-z][A-Za-z'-]+)\b",
+    re.IGNORECASE,
+)
+CONTACTS_QUERY_RE = re.compile(
+    r"\b(?:find|look\s+up|show|search\s+for)\s+(?:my\s+)?"
+    r"(?P<name>[A-Za-z][A-Za-z'-]+)\s+in\s+(?:my\s+)?contacts\b",
     re.IGNORECASE,
 )
 _CONTACT_LOOKUP_SKIP = frozenset(
@@ -143,7 +163,30 @@ CAPABILITIES_RE = re.compile(
     re.IGNORECASE,
 )
 TIMER_RE = re.compile(
-    r"\b(?:start |set )?(?:a )?timer (?:for )?(\d+)\s*(?:min|mins|minute|minutes)\b",
+    r"\b(?:start |set |make )?(?:a )?(?:"
+    r"(?P<before>\d+)\s*(?:min|mins|minute|minutes)\s+timer|"
+    r"timer (?:for )?(?P<after>\d+)\s*(?:min|mins|minute|minutes)"
+    r")\b",
+    re.IGNORECASE,
+)
+TIMER_LIST_RE = re.compile(
+    r"\b(?:what(?:'s| is)|show|list)\s+(?:my\s+)?(?:pending\s+)?timers?\b|"
+    r"\bhow many\s+(?:pending\s+)?timers?\b",
+    re.IGNORECASE,
+)
+TIMER_CANCEL_RE = re.compile(
+    r"\b(?:cancel|stop|delete|clear)\s+(?:my\s+|the\s+)?"
+    r"(?:pending\s+)?timer(?:\s+(?:for|called|named)\s+(.+?))?\s*$",
+    re.IGNORECASE,
+)
+REMINDER_LIST_RE = re.compile(
+    r"\b(?:what(?:'s| is)|show|list)\s+(?:my\s+)?(?:pending\s+)?reminders?\b|"
+    r"\bany\s+(?:pending\s+)?reminders?\b",
+    re.IGNORECASE,
+)
+REMINDER_CANCEL_RE = re.compile(
+    r"\b(?:cancel|delete|dismiss|clear)\s+(?:my\s+|the\s+)?"
+    r"reminder(?:\s+(?:to|for|called|named)\s+(.+?))?\s*$",
     re.IGNORECASE,
 )
 CALL_TARGET_RE = re.compile(
@@ -232,6 +275,7 @@ LIVE_VOICE_TOOLS = frozenset(
         "ui_action",
         "screen_look",
         "app_action",
+        "open_in_app",
         "look",
         "observe_camera",
         "capture_photo",
@@ -323,6 +367,7 @@ SHADOW_VOICE_TOOLS = frozenset(
         "list_apps",
         "computer_status",
         "app_action",
+        "open_in_app",
         "home_status",
         "home_act",
         "calibrate",
@@ -358,7 +403,7 @@ F4_TARGET_SURFACE = frozenset(
 # Realtime models often refuse Mac open/close in speech even when the
 # function is advertised. The live session executes these from the owner
 # transcript through dispatch; it does not invent success.
-DETERMINISTIC_LIVE_ACTIONS = frozenset({"open_app", "close_app", "open_url"})
+DETERMINISTIC_LIVE_ACTIONS = frozenset({"open_app", "close_app", "open_url", "open_in_app"})
 
 LOOK_RE = re.compile(
     r"\b(?:"
@@ -433,9 +478,7 @@ def is_heading_out(message: str | None) -> bool:
     if not HEADING_OUT_RE.search(text):
         return False
     lowered = text.lower()
-    if re.search(r"\bleav(?:e|ing)\s+(this|the file|the note|a comment)\b", lowered):
-        return False
-    return True
+    return not re.search(r"\bleav(?:e|ing)\s+(this|the file|the note|a comment)\b", lowered)
 
 
 def parse_heading_out(message: str | None) -> dict | None:
@@ -524,11 +567,18 @@ def select_tool(message: str) -> ToolSelectionResponse:
     if TEXT_PHRASE_RE.search(message) or parse_send_intent(message):
         add("send_message", 6, "The message asks to send a text/message.")
         add("resolve_contact", 4, "Life sends should resolve the recipient first.")
+    from app.ev.in_app import parse_in_app_intent
+    from app.ev.laptop_files import looks_like_file_task
+
+    in_app_item = parse_in_app_intent(message)
+    if in_app_item is not None:
+        add("open_in_app", 14, "The owner asked to open a specific item inside an app.")
     from app.memory.visual import wants_keep_visible as _keep_from_sight
 
     if (
         CALL_PHRASE_RE.search(message)
         and not CALL_HISTORY_RE.search(message)
+        and not _CALL_INQUIRY_RE.search(message)
         and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", lowered)
         and not _keep_from_sight(message)
         and not re.search(
@@ -539,12 +589,10 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("place_call", 6, "The message asks to place a call.")
         add("resolve_contact", 4, "Life calls should resolve the recipient first.")
     if MAIL_PHRASE_RE.search(message) and life_channel(message) == "mail":
-        read_mail = bool(MAIL_READ_RE.search(message))
-        add(
-            "list_mail",
-            10 if read_mail else 5,
-            "The message asks about mail/email.",
-        )
+        if _mail_live_read(message):
+            add("list_mail", 12, "The owner asked about live mail on this Mac.")
+        else:
+            add("list_mail", 5, "The message asks about mail/email.")
     lookup = CONTACT_LOOKUP_RE.search(message)
     if lookup:
         found = (lookup.group("name") or lookup.group("name2") or "").strip().lower()
@@ -562,8 +610,14 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_reminder", 5, "The message asks to set a reminder.")
     if TIMER_RE.search(message):
         add("start_timer", 7, "The message asks to start a timer.")
-    if MESSAGES_LIST_RE.search(message) and life_channel(message) not in {"whatsapp", "mail"}:
-        add("list_messages", 4, "The message asks about recent iMessage/SMS.")
+    if MESSAGES_LIST_RE.search(message) and life_channel(message) not in {"mail"}:
+        add("list_messages", 4, "The message asks about recent iMessage/SMS/WhatsApp.")
+    if (
+        life_channel(message) == "whatsapp"
+        and re.search(r"\b(new|recent|latest|unread|any|last|catch|speed|miss|check|update)\b", lowered)
+        and not parse_send_intent(message)
+    ):
+        add("list_messages", 5, "The message asks about recent WhatsApp.")
     if SHOW_PHRASE_RE.search(message):
         add("present", 5, "The message asks EVIE to show something on screen.")
     if _HUD_EXPLICIT_RE.search(message) and not re.search(
@@ -675,8 +729,8 @@ def select_tool(message: str) -> ToolSelectionResponse:
         lowered,
     ):
         add("home_act", 9, "The owner asked to lock a door or move the garage.")
-    from app.memory.room import looks_like_object_locate
     from app.ev.edith import looks_like_twin_query
+    from app.memory.room import looks_like_object_locate
 
     if looks_like_twin_query(message):
         add("search_memory", 12, "The owner asked to rewind who they were.")
@@ -707,7 +761,6 @@ def select_tool(message: str) -> ToolSelectionResponse:
             )
     if is_heading_out(message):
         add("heading_out", 9, "The owner is leaving; weather, calendar, and leave-by in one beat.")
-    from app.ev.laptop_files import looks_like_file_task
     from app.ev.luna_code import looks_like_code_request
 
     if looks_like_code_request(message):
@@ -722,7 +775,11 @@ def select_tool(message: str) -> ToolSelectionResponse:
                 14,
                 "The owner asked to remind or send the live desk list.",
             )
-        elif looks_like_file_task(message):
+        elif (
+            looks_like_file_task(message)
+            and not _is_notification_ask(message)
+            and _live_list_action(message) is None
+        ):
             add("computer", 13, "The owner asked Evie to read, write, or edit a local file.")
     if RECORD_RE.search(message):
         add("record_video", 10, "The owner asked to record a video clip.")
@@ -746,7 +803,9 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_voice", 7, "The owner asked to change TTS voice.")
     if any(p in lowered for p in ("what's public", "public record", "sec filing")):
         add("public_lookup", 6, "The owner asked for public records.")
-    if any(p in lowered for p in ("where's my", "find my ", "backpack tag", "airtag")):
+    if any(p in lowered for p in ("where's my", "find my ", "backpack tag", "airtag")) and (
+        not looks_like_file_task(message)
+    ):
         add("find_gear", 6, "The owner asked to find their gear.")
     if "why did you ping" in lowered or "why'd you ping" in lowered:
         add("why_did_you_ping", 8, "The owner asked why they were pinged.")
@@ -758,7 +817,9 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("drone", 7, "The owner issued a leashed drone command.")
     if is_weather_query(message):
         add("get_weather", 6, "The message asks for live weather or a forecast.")
-    if SEARCH_WEB_RE.search(message) or looks_world_knowledge(message):
+    if (SEARCH_WEB_RE.search(message) or looks_world_knowledge(message)) and (
+        in_app_item is None and not looks_like_file_task(message)
+    ):
         add("search_web", 5, "The message asks for a public/web fact.")
     if CALENDAR_READ_RE.search(message):
         add("calendar_read", 7, "The message asks to read the owner's calendar.")
@@ -787,14 +848,14 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_quiet_hours", 8, "The owner is setting quiet hours.")
     if "what just happened" in lowered:
         add("list_callouts", 6, "The owner asked what just happened.")
-    from app.memory.life_archive.locate import classify_shelf, is_owner_history_query
     from app.memory.life_archive.desk import is_chat_desk_query
+    from app.memory.life_archive.locate import classify_shelf, is_owner_history_query
 
-    if is_chat_desk_query(message):
+    if is_chat_desk_query(message) and not _is_app_window_command(message):
         add("recall_history", 12, "The owner asked the WhatsApp correspondence desk.")
 
     owner_history = is_owner_history_query(message) and not is_visual_recall_query(message)
-    if owner_history:
+    if owner_history and not _is_notification_ask(message) and not _is_app_window_command(message):
         add(
             "search_memory",
             11,
@@ -803,8 +864,14 @@ def select_tool(message: str) -> ToolSelectionResponse:
     if classify_memory_intent(message) == "explicit_recall":
         # Person cards ("who is Maya") stay get_person. Kinship aisle still
         # wins via recall_history 10. Owner-history still searches memory.
+        # App-window commands ("close whatsapp") are never memory jobs — the
+        # channel word must not outscore the verb.
         live_now = _live_list_scored(scores)
-        if not live_now and (owner_history or not person_request):
+        if (
+            not live_now
+            and (owner_history or not person_request)
+            and not _is_app_window_command(message)
+        ):
             add("search_memory", 9, "The owner asked Evie to recall prior conversations or decisions.")
 
     life_shelf = classify_shelf(message)
@@ -863,6 +930,32 @@ def _is_app_window_command(text: str) -> bool:
     return bool(re.match(r"\s*(?:switch to|bring up|activate)\s+", text or "", re.I))
 
 
+def _mail_live_read(text: str) -> bool:
+    """True when they asked about the Mac mailbox, not to compose a send.
+
+    'Did I get any email from X' is Envelope Index, not a send and not a
+    stored-archive tour. Open/close Mail.app stays an app command.
+    """
+
+    if _is_app_window_command(text):
+        return False
+    if life_channel(text) != "mail":
+        return False
+    if parse_send_intent(text):
+        return False
+    from app.ev.send_intent import incomplete_send_recipient
+
+    if incomplete_send_recipient(text):
+        # "email mom" (no body) is a send missing its body, not a read.
+        return False
+    from app.memory.life_archive.locate import is_live_now_ask
+    from app.memory.mail_speak import mail_selector
+
+    if MAIL_READ_RE.search(text) or is_live_now_ask(text):
+        return True
+    return bool(mail_selector(text).particular or mail_selector(text).who)
+
+
 def _live_list_scored(scores: list[tuple[str, int, str]]) -> bool:
     return any(
         name in {"list_messages", "calendar_read"} or (name == "list_mail" and weight >= 10)
@@ -870,14 +963,41 @@ def _live_list_scored(scores: list[tuple[str, int, str]]) -> bool:
     )
 
 
+def _is_notification_ask(text: str) -> bool:
+    """True for mixed-inbox notification asks. Never a file/note job.
+
+    The desk parser treats any phrase as a note name when Desktop notes
+    exist, so this guard must run before any file-task check.
+    """
+    if _is_app_window_command(text):
+        return False
+    if parse_send_intent(text):
+        return False
+    from app.memory.life_archive.locate import _NOTIFICATION_ASK
+
+    return bool(_NOTIFICATION_ASK.search(text or ""))
+
+
 def _live_list_action(text: str) -> tuple[str, dict] | None:
     """Live inbox/calendar reads beat recorded shelves. History questions stay on recall."""
     if _is_app_window_command(text):
         return None
-    if MAIL_READ_RE.search(text) and life_channel(text) == "mail":
+    if _mail_live_read(text):
         return "list_mail", {"query": text[:400]}
-    if MESSAGES_LIST_RE.search(text) and life_channel(text) not in {"whatsapp", "mail"}:
-        return "list_messages", {}
+    if MESSAGES_LIST_RE.search(text) and life_channel(text) not in {"mail"}:
+        return "list_messages", {"query": text[:400]}
+    # "what's new on whatsapp" has no word "messages" — still a live read.
+    if (
+        life_channel(text) == "whatsapp"
+        and re.search(r"\b(new|recent|latest|unread|any|last|catch|speed|miss|check|update)\b", text.lower())
+        and not parse_send_intent(text)
+    ):
+        return "list_messages", {"query": text[:400]}
+    if _is_notification_ask(text):
+        # Mixed inbox (WhatsApp + Messages + calls + mail) via recall's
+        # inbox shelf, which peeks the live Mac copies. Must precede the
+        # file-task branch: "any new notifications" is not a note name.
+        return "recall", {"query": text[:1000]}
     if CALENDAR_READ_RE.search(text):
         return "calendar_read", {}
     return None
@@ -896,6 +1016,11 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         return None
     from app.ev.laptop_files import looks_like_file_task
     from app.ev.luna_code import looks_like_code_request
+
+    # Memorize-from-sight is a look, not a file/code goal, even if the
+    # utterance also names a folder or a book file. First-try "look at
+    # what I'm holding" is the same job — Mini must not refuse it.
+    from app.ev.spark_look import fallback_camera_action
     from app.memory.visual import (
         is_keep_recall_query,
         is_visual_recall_query,
@@ -903,14 +1028,60 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         wants_keep_visible,
     )
 
-    # Memorize-from-sight is a look, not a file/code goal, even if the
-    # utterance also names a folder or a book file. First-try "look at
-    # what I'm holding" is the same job — Mini must not refuse it.
-    from app.ev.spark_look import fallback_camera_action
-
     camera = fallback_camera_action(text)
     if wants_keep_visible(text) or wants_held_object_look(text):
         return "look", {"prompt": text[:400], "focus": "auto"}
+    # "open John's chat in WhatsApp" is an in-app item action, not an app
+    # launch and not a recall read. Checked before open_app/recall routing.
+    from app.ev.in_app import parse_in_app_intent
+
+    in_app_item = parse_in_app_intent(text)
+    if in_app_item is not None:
+        return "open_in_app", in_app_item.as_args()
+    if REMINDER_LIST_RE.search(text):
+        return "list_reminders", {}
+    cancel_reminder = REMINDER_CANCEL_RE.search(text)
+    if cancel_reminder:
+        target = str(cancel_reminder.group(1) or "").strip()
+        return "cancel_reminder", {"text": target[:500]} if target else {}
+    early_open_app = OPEN_APP_RE.search(text)
+    if early_open_app and not re.search(
+        r"\s+(?:and|then|,)\s+(?:open|go to|visit|navigate|play|search|find)\b",
+        text,
+        re.I,
+    ):
+        return "open_app", {"name": early_open_app.group("name")}
+    early_close_app = CLOSE_APP_RE.search(text)
+    if early_close_app:
+        return "close_app", {"name": early_close_app.group("name")}
+    early_life_list = _live_list_action(text)
+    if early_life_list is not None:
+        return early_life_list
+    early_lookup = CONTACT_LOOKUP_RE.search(text)
+    if early_lookup is None:
+        early_lookup = CONTACTS_QUERY_RE.search(text)
+    if early_lookup:
+        found = str(
+            early_lookup.groupdict().get("name")
+            or early_lookup.groupdict().get("name2")
+            or ""
+        ).strip()
+        if found and found.lower() not in _CONTACT_LOOKUP_SKIP:
+            return "resolve_contact", {"name": found}
+    # A complete send beats a call verb buried in its body ("text Sarah
+    # I'll call later" texts Sarah; it never calls "later"). Reads and
+    # contact lookups above keep priority; pure calls never parse as sends.
+    send_first = parse_send_intent(text)
+    if send_first:
+        return "send_message", send_first
+    early_call = CALL_TARGET_RE.search(text)
+    if (
+        early_call
+        and not CALL_HISTORY_RE.search(text)
+        and not _CALL_INQUIRY_RE.search(text)
+        and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", text, re.IGNORECASE)
+    ):
+        return "place_call", {"name": early_call.group(1)}
     if looks_like_code_request(text):
         return "code", {"goal": text[:4000]}
     from app.ev.desk_acts import parse_desk_act
@@ -919,6 +1090,10 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     if desk_act is not None and desk_act.get("channel") == "tool":
         return str(desk_act["name"]), dict(desk_act.get("args") or {})
     if looks_like_file_task(text):
+        return "computer", {"goal": text[:500]}
+    from app.ev.computer_strategy import looks_like_computer_task
+
+    if looks_like_computer_task(text) and not parse_send_intent(text):
         return "computer", {"goal": text[:500]}
     from app.memory.life_archive.locate import (
         classify_shelf,
@@ -974,9 +1149,22 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
             if life_shelf in _life_recall_shelves:
                 return "recall", {"query": text[:1000]}
         return None
+    if TIMER_LIST_RE.search(text):
+        return "list_timers", {}
+    cancel_timer = TIMER_CANCEL_RE.search(text)
+    if cancel_timer:
+        target = str(cancel_timer.group(1) or "").strip()
+        return "cancel_timer", {"text": target[:500]} if target else {}
+    if REMINDER_LIST_RE.search(text):
+        return "list_reminders", {}
+    cancel_reminder = REMINDER_CANCEL_RE.search(text)
+    if cancel_reminder:
+        target = str(cancel_reminder.group(1) or "").strip()
+        return "cancel_reminder", {"text": target[:500]} if target else {}
     timer = TIMER_RE.search(text)
     if timer:
-        return "start_timer", {"minutes": int(timer.group(1))}
+        raw_minutes = timer.group("before") or timer.group("after")
+        return "start_timer", {"minutes": int(raw_minutes)}
     heading = parse_heading_out(text)
     if heading is not None:
         return "heading_out", heading
@@ -995,6 +1183,7 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     if (
         call
         and not CALL_HISTORY_RE.search(text)
+        and not _CALL_INQUIRY_RE.search(text)
         and not re.search(r"\bremind(?:er)?\b.{0,48}\bcall\b", text, re.IGNORECASE)
     ):
         return "place_call", {"name": call.group(1)}
@@ -1058,6 +1247,7 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         "set_quiet_hours",
         "home_act",
         "present",
+        "open_in_app",
     }:
         if name == "calculate":
             return name, {"expression": text}
@@ -1101,5 +1291,34 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
                 "body": text[:400],
                 "kind": "auto",
             }
+        if name == "open_in_app":
+            from app.ev.in_app import parse_in_app_intent
+
+            parsed = parse_in_app_intent(text)
+            return name, parsed.as_args() if parsed is not None else {"item": text[:200]}
         return name, {}
+    if name == "send_message":
+        # The phrase regex can name a send the tight grammar cannot finish
+        # ("message mom", "send a WhatsApp message"). Falling out of here as
+        # None is how that turn dies: Spark reads None as "chat" and the send
+        # neither runs nor gets an honest ask. Hand the caller the missing
+        # piece instead. "send_incomplete" is deliberately NOT in
+        # LIVE_VOICE_TOOLS: a consumer that has not learned it must still
+        # treat this turn as unhandled rather than dispatch it as a tool.
+        send = parse_send_intent(text)
+        if send:
+            return "send_message", send
+        from app.ev.send_intent import incomplete_send
+
+        partial = incomplete_send(text) or {}
+        to = str(partial.get("to") or "").strip()
+        payload = {
+            "to": to,
+            "text": "",
+            "missing": "body" if to else "recipient",
+        }
+        channel = str(partial.get("channel") or "").strip()
+        if channel:
+            payload["channel"] = channel
+        return "send_incomplete", payload
     return None

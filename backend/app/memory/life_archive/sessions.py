@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.memory.life_archive.classify import DEFAULT_ARCHIVE_ROOT
+from app.memory.life_archive.classify import archive_root, archive_search_roots
 from app.memory.life_archive.locate import (
     SOURCE,
     _chat_person_query_token,
@@ -644,7 +644,7 @@ async def _rewrite_with_model(
             )
             if drafted:
                 return drafted
-        except (MuseProviderUnavailable, TimeoutError, asyncio.TimeoutError, Exception):
+        except (MuseProviderUnavailable, TimeoutError, Exception):
             pass
     provider_name = (getattr(settings, "chat_provider", None) or "").strip().lower()
     if provider_name in {"", "echo", "mock"}:
@@ -653,7 +653,7 @@ async def _rewrite_with_model(
         from app.gateway.providers import get_chat_provider
 
         return await _chat(get_chat_provider())
-    except (MuseProviderUnavailable, TimeoutError, asyncio.TimeoutError, Exception):
+    except (MuseProviderUnavailable, TimeoutError, Exception):
         return None
 
 
@@ -725,14 +725,16 @@ async def compose_session_summary(
 
 
 def _archive_root() -> Path:
+    preferred = archive_root()
+    if (preferred / "whatsapp-chat").is_dir():
+        return preferred
     catalog = read_json(ensure_tree() / "catalog" / "last-dry-run.summary.json") or {}
     raw = str(catalog.get("archive_root") or "").strip()
     if raw:
         path = Path(raw).expanduser()
         if path.is_dir():
             return path
-    default = DEFAULT_ARCHIVE_ROOT.expanduser()
-    return default
+    return preferred
 
 
 def _display_name(token: str, title: str) -> str:
@@ -783,7 +785,7 @@ def _zip_path_for_thread(event: Event, *, root: Path | None = None) -> Path | No
     rel = str(content.get("ref") or meta.get("ref") or "").strip()
     if not rel:
         return None
-    bases = [root] if root is not None else [_archive_root(), DEFAULT_ARCHIVE_ROOT.expanduser()]
+    bases = [root] if root is not None else [_archive_root(), *archive_search_roots()]
     for base in bases:
         if base is None:
             continue

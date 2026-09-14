@@ -23,11 +23,15 @@ from app.ev.camera_runtime import (
 from app.ev.computer_strategy import (
     BUDGET_CAPS,
     NON_PROGRESS_SWITCH_AFTER,
+    _resolve_open_content_in_app,
+    _search_query_from_goal,
     classify_tool_strategy,
     computer_envelope,
     control_for_app,
     is_progress,
+    looks_like_app_or_web_task,
     looks_like_computer_task,
+    looks_like_opened_content_item,
     next_strategy,
     preferred_strategy_for_goal,
     progress_milestone_for,
@@ -36,8 +40,6 @@ from app.ev.computer_strategy import (
     wants_first_result_text,
     wants_play_media,
     wants_screen_observation,
-    looks_like_opened_content_item,
-    _search_query_from_goal,
 )
 
 logger = logging.getLogger("ev.computer")
@@ -222,16 +224,41 @@ def _is_speech_only_subgoal(text: str) -> bool:
     return False
 
 
+_GOAL_SEQ = 0
+
+
+def _new_goal_id() -> str:
+    """Collision-proof goal id: two goals can start in the same millisecond."""
+
+    global _GOAL_SEQ
+    _GOAL_SEQ += 1
+    return f"g{time.time_ns()}_{_GOAL_SEQ}"
+
+
 def parse_owner_computer_goal(text: str, *, goal_id: str | None = None) -> ComputerGoal:
     raw = (text or "").strip()
     goal = ComputerGoal(
-        goal_id=goal_id or f"g{int(time.time() * 1000)}",
+        goal_id=goal_id or _new_goal_id(),
         owner_request=raw[:400],
     )
     lower = raw.lower()
     for needle, name in _APP_HINTS:
         if re.search(rf"\b{re.escape(needle)}\b", lower) and name not in goal.target_apps:
+            # Identity guard: "YouTube Music" is not Apple Music, and
+            # "GoodNotes"/"Bear notes" are not Apple Notes.
+            if name == "Music" and "youtube music" in lower:
+                continue
+            if name == "Notes" and (
+                "goodnotes" in lower or "good notes" in lower or "bear" in lower
+            ):
+                continue
             goal.target_apps.append(name)
+    if not goal.target_apps:
+        opened = _resolve_open_content_in_app(raw, None)
+        if opened is not None:
+            slot = str((opened[1] or {}).get("app") or "").strip()
+            if slot and slot not in goal.target_apps:
+                goal.target_apps.append(slot)
     match = re.search(
         r"(?:the\s+|my\s+)?([A-Za-z0-9][\w &'’\-]{0,48}?)\s+playlist",
         raw,
@@ -423,6 +450,7 @@ class ComputerState:
     tool_trace: list[dict[str, Any]] = field(default_factory=list)
     original_owner_request: str | None = None
     last_file_path: str | None = None
+    last_tab: dict[str, Any] | None = None
 
     def working_context(self) -> dict[str, Any]:
         return {
@@ -437,6 +465,25 @@ class ComputerState:
             "last_action": self.last_action,
             "step_count": self.step_count,
             "cancelled": self.cancelled,
+        }
+
+    def prompt_snapshot(self) -> dict[str, Any]:
+        """Live work state for provider system prompts (truthful, bounded)."""
+
+        return {
+            **self.working_context(),
+            "goal_id": self.goal.goal_id if self.goal else None,
+            "goal_request": (
+                (self.goal.requested_outcome or self.goal.owner_request)
+                if self.goal
+                else None
+            ),
+            "milestone": self.last_milestone,
+            "strategy": self.strategy,
+            "receipts": list(self.receipts[-4:]),
+            "traces": list(self.traces[-3:]),
+            "last_result": dict(self.last_result) if self.last_result else None,
+            "last_tab": dict(self.last_tab) if self.last_tab else None,
         }
 
 
@@ -754,9 +801,11 @@ def computer_model_instructions(readiness: ComputerReadiness | dict[str, Any] | 
                 "If they name a URL or domain such as youtube.com, open that "
                 "site; do not Google-search the domain. Search queries must be "
                 "only the words they want found, not leftover clauses. "
-                "Read, write, edit, list, or open local files on this Mac "
-                "(Desktop, Documents, Downloads, and similar owner folders) "
-                "through computer. Put the file name and folder in the goal. "
+                "Find, read, write, edit, list, or open any owner file on this "
+                "Mac — any home folder, not only Desktop — through computer. "
+                "Never call search_web for a laptop file. Put the file name "
+                "in the goal. Open X from Y app, or play a random track from "
+                "a playlist in Music/Spotify, through computer. "
                 "Writing, editing, or running software is the code function, "
                 "not computer and not typing into an editor. "
                 "After a page or search loads, if they asked to open or play "
@@ -773,6 +822,8 @@ def computer_model_instructions(readiness: ComputerReadiness | dict[str, Any] | 
                 "name; those run inside computer. Finish the in-app outcome "
                 "(search done, first result opened, note written, track playing), "
                 "then speak the verified result. Speech is never execution evidence."
+                + "\n\n"
+                + computer_doctrine()
             )
         return (
             "COMPUTER CONTROL: UNAVAILABLE. No Mac control client is connected. "
@@ -819,7 +870,7 @@ def computer_model_instructions(readiness: ComputerReadiness | dict[str, Any] | 
         "capability manifest in speech."
     )
     if ui_ready:
-        return f"{line}{extra}"
+        return f"{line}{extra}\n\n{computer_doctrine()}"
     if life_ready:
         return (
             f"{line} You can still open, activate, and quit apps. If the owner "
@@ -838,6 +889,174 @@ def computer_model_instructions(readiness: ComputerReadiness | dict[str, Any] | 
         "is not connected rather than inventing that you clicked anything."
         + (f" Screen vision ready={vision_ready}." if vision_ready else "")
     )
+
+
+def computer_doctrine() -> str:
+    """General Mac/app operating doctrine, shared by every provider surface.
+
+    Deliberately app-agnostic: it teaches Evie how to learn any app's UI,
+    recover from failed attempts, respect pauses/steering, and keep browser
+    chrome clean — so no per-app, per-action script is required.
+    """
+
+    return (
+        "COMPUTER DOCTRINE — general, applies to every app (not a per-app script):\n"
+        "- One owner request is one goal. Plan it once, then finish the whole "
+        "goal without asking the owner to walk you through it. Opening an app is "
+        "never completion.\n"
+        "- Pick the least invasive tactic that works: a semantic/API adapter when "
+        "one is offered, then the Accessibility tree, then window capture, then "
+        "coordinate clicks on a fresh frame. When a tactic fails, switch tactics "
+        "— never repeat the identical failed call. For an app with no listed "
+        "adapter, inspect its UI and operate the controls you find.\n"
+        "- Observe before acting when the state is unknown; act one step at a "
+        "time; after each action use the new snapshot and refs.\n"
+        "- Reuse what is already open. Activate an existing window or tab and "
+        "navigate the tab already on screen; never open duplicate windows or "
+        "tabs for the same destination.\n"
+        "- When a dialog appears, read it. For a save, delete, discard, or other "
+        "destructive choice, take the owner-safe path and ask unless the owner "
+        "already stated the choice.\n"
+        "- Keep multi-step order (first stays first). Keep going until the "
+        "requested outcome is verified; do not narrate micro-actions and do not "
+        "ask for permission you already have.\n"
+        "- Owner steering wins: stop, never mind, or don't click that halts the "
+        "current path; a correction revises the plan for the same goal instead "
+        "of starting over.\n"
+        "- Owner files are local: 'find/open/read my <name> file' searches this "
+        "Mac's home folders (Spotlight, any folder), never the web. Only "
+        "questions about the outside world go to search_web.\n"
+        "- A failed attempt is not a dead end. Re-observe, take a different "
+        "path, and report failure only after the alternatives are exhausted. "
+        "Report the real error; never invent success and never claim what you "
+        "did not verify."
+    )
+
+
+def computer_working_state_block(snapshot: dict[str, Any] | None) -> str:
+    """Render live computer work state into a bounded system-prompt block."""
+
+    if not isinstance(snapshot, dict) or not snapshot:
+        return ""
+    lines = ["COMPUTER WORK STATE (live, authoritative for follow-ups):"]
+    goal = snapshot.get("goal") if isinstance(snapshot.get("goal"), dict) else None
+    request = str(
+        snapshot.get("goal_request") or snapshot.get("pending_computer_goal") or ""
+    ).strip()
+    if request:
+        lines.append(f"- Working on: {request[:280]}")
+    if goal:
+        lines.append(
+            "- Goal status: "
+            f"{goal.get('status')} verified={bool(goal.get('verified'))} "
+            f"milestone={snapshot.get('milestone')} strategy={snapshot.get('strategy')}"
+        )
+        remaining = str(goal.get("remaining") or "").strip()
+        if remaining and remaining != request:
+            lines.append(f"- Still required: {remaining[:240]}")
+        apps = goal.get("target_apps") or []
+        if apps:
+            lines.append("- App(s): " + ", ".join(str(app) for app in apps[:4]))
+        if goal.get("playlist"):
+            lines.append(f"- Playlist: {goal.get('playlist')}")
+        if goal.get("ordinal") is not None:
+            lines.append(f"- Ordinal: {goal.get('ordinal')}")
+    front = str(snapshot.get("foreground_app") or "").strip()
+    window = str(snapshot.get("foreground_window") or "").strip()
+    if front:
+        lines.append(
+            f"- Front app: {front}" + (f" — {window[:120]}" if window else "")
+        )
+    if snapshot.get("dialog_present"):
+        lines.append("- A dialog is open. Read it before the next action.")
+    tab = snapshot.get("last_tab")
+    if isinstance(tab, dict) and tab.get("host"):
+        lines.append(
+            f"- Last browser tab: {tab.get('host')} in {tab.get('app') or 'browser'}"
+        )
+    last = snapshot.get("last_result")
+    if isinstance(last, dict) and last:
+        facts = ", ".join(
+            f"{key}={last.get(key)}"
+            for key in ("ok", "executed", "verified", "error", "app")
+            if last.get(key) is not None
+        )
+        if facts:
+            lines.append(f"- Last result: {facts}")
+    for item in (snapshot.get("traces") or [])[-3:]:
+        lines.append(f"- Recent: {str(item)[:180]}")
+    receipts = snapshot.get("receipts") or []
+    failed = [
+        row
+        for row in receipts
+        if isinstance(row, dict) and (row.get("ok") is False or row.get("error"))
+    ][-2:]
+    if failed:
+        lines.append(
+            "- Do NOT repeat without a new observation: "
+            + "; ".join(
+                f"{row.get('tool_name')} error={row.get('error')}" for row in failed
+            )
+        )
+    lines.append(
+        "- Continue this goal unless the current request replaces it or the "
+        "owner says stop. Follow-ups like try again / keep going / that didn't "
+        "work revise this goal; they do not start a new one."
+    )
+    return "\n".join(lines)
+
+
+def computer_prompt_state(
+    *,
+    live_session_id: str | None = None,
+    device_id: str | None = None,
+) -> tuple[dict[str, Any] | None, bool]:
+    """(live work snapshot, mac-client readiness) for system-prompt injection."""
+
+    try:
+        from app.voice.live.layer import live_for_device, live_for_session
+
+        live = live_for_session(live_session_id) if live_session_id else None
+        if live is None and device_id:
+            live = live_for_device(str(device_id))
+    except Exception:  # noqa: BLE001 - prompt enrichment must never break a turn
+        return None, False
+    if live is None:
+        return None, False
+    key = getattr(live, "session_id", None) or live_session_id
+    state = state_for(key)
+    ready = True
+    readiness = getattr(live, "computer_readiness", None)
+    if callable(readiness):
+        try:
+            snapshot = readiness()
+            ready = bool(
+                getattr(snapshot, "mac_client_connected", False)
+                or getattr(snapshot, "app_lifecycle_ready", False)
+            )
+        except Exception:  # noqa: BLE001
+            ready = True
+    return (state.prompt_snapshot() if state is not None else None), ready
+
+
+def computer_prompt_block(
+    *,
+    live_session_id: str | None = None,
+    device_id: str | None = None,
+) -> str:
+    """Doctrine + live work state for a connected Mac, else an empty string."""
+
+    snapshot, ready = computer_prompt_state(
+        live_session_id=live_session_id, device_id=device_id
+    )
+    if not ready and not snapshot:
+        return ""
+    parts: list[str] = []
+    state_block = computer_working_state_block(snapshot)
+    if state_block:
+        parts.append(state_block)
+    parts.append(computer_doctrine())
+    return "\n\n".join(parts)
 
 
 def action_signature(name: str, arguments: dict[str, Any]) -> str:
@@ -865,13 +1084,21 @@ def action_signature(name: str, arguments: dict[str, Any]) -> str:
 
 
 _CANCEL_RE = re.compile(
-    r"\b(stop|never mind|cancel(?: that)?|don't play that|dont play that|don't click that)\b",
+    r"\b((?<!don't )(?<!dont )stop|never mind|cancel(?: that)?|"
+    r"don't play that|dont play that|don't click that)\b",
     re.I,
 )
 _CONTINUATION_RE = re.compile(
     r"(?:"
     r"\b(?:now\s+)?(?:play\s+)?(?:the\s+)?(?:first|second|third|fourth|fifth|last|next|previous)\b"
-    r"|\bgo back\b|\bthe other one\b"
+    r"|\bgo back\b|\bthe other one\b|\bthe other\b"
+    r"|\b(?:try|do)\s+(?:it|that|this)\s+again\b|\btry again\b|\bretry\b|\bonce more\b"
+    r"|\b(?:keep|carry)\s+(?:on|going)\b|\bcontinue\b|\bgo on\b|\bdon'?t stop\b"
+    r"|\bthat (?:didn'?t|did not|doesn'?t) work\b|\bnot working\b|\bit'?s not working\b"
+    r"|\b(?:open|click|press|do|use|select|choose|tap)\s+(?:it|that|this)\b"
+    r"|\bnot (?:this|that)(?:\s+one)?\b|\bnot (?:the )?(?:first|second|third)\b"
+    r"|\byes\b|\byeah\b|\bgo ahead\b|\bthat one\b|\bthis one\b"
+    r"|\b(?:and\s+)?now\s*$"
     r")",
     re.I,
 )
@@ -882,6 +1109,12 @@ def _is_continuation_request(text: str, existing: ComputerGoal | None) -> bool:
     if existing is None or not raw:
         return False
     if len(raw) > 96:
+        return False
+    from app.ev.send_intent import answers_live_offer
+
+    if answers_live_offer(raw):
+        # A live offer owns a bare yes/no: the turn answers Evie's own
+        # question, so it must not re-arm and re-execute the previous goal.
         return False
     if (
         any(re.search(rf"\b{re.escape(name.lower())}\b", raw.lower()) for _, name in _APP_HINTS)
@@ -986,6 +1219,13 @@ def note_goal(state: ComputerState | None, text: str | None) -> None:
         return
     if state.pending_goal == goal[:400] and state.goal is not None:
         return
+    from app.ev.send_intent import answers_live_offer
+
+    if answers_live_offer(goal):
+        # "yes"/"no" answering a live offer is not a Mac goal in disguise:
+        # neither a continuation of the previous goal nor a fresh goal parsed
+        # from the reply word. Leave the running goal alone.
+        return
     if _is_continuation_request(goal, state.goal) and state.goal is not None:
         apply_goal_continuation(state.goal, goal)
         state.pending_goal = goal[:400]
@@ -1002,13 +1242,21 @@ def note_goal(state: ComputerState | None, text: str | None) -> None:
         log_computer("computer.goal_started", extra={"goal": state.pending_goal, "continue": True})
         return
     parsed = parse_owner_computer_goal(goal)
+    previous = str(state.original_owner_request or "")
+    replacing_file_with_mac_act = looks_like_app_or_web_task(goal) and not looks_like_app_or_web_task(
+        previous
+    )
     if (
-        state.original_owner_request
-        and _looks_like_model_rewrite(state.original_owner_request, goal)
+        previous
+        and _looks_like_model_rewrite(previous, goal)
         and not _looks_like_owner_correction(goal)
+        and not replacing_file_with_mac_act
     ):
         pass
     else:
+        state.original_owner_request = goal[:400]
+    if replacing_file_with_mac_act:
+        state.last_file_path = None
         state.original_owner_request = goal[:400]
     state.goal = parsed
     state.pending_goal = goal[:400]
@@ -1654,6 +1902,44 @@ def remember_frame(state: ComputerState | None, payload: dict[str, Any]) -> Scre
         oldest = min(state.frames.values(), key=lambda item: item.captured_at)
         state.frames.pop(oldest.frame_id, None)
     return meta
+
+
+def remember_tab(
+    state: ComputerState | None,
+    arguments: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    """Remember the last browser tab touched, so 'close that tab' has a target."""
+
+    if state is None or result.get("ok") is False:
+        return
+    action = str(arguments.get("action") or result.get("action") or "").lower()
+    if action not in {"navigate", "new_tab", "open_item"}:
+        return
+    url = str(result.get("url") or result.get("query") or "").strip()
+    if not url:
+        return
+    host = ""
+    try:
+        from urllib.parse import urlparse
+
+        host = urlparse(url).hostname or ""
+    except ValueError:
+        host = ""
+    state.last_tab = {
+        "app": result.get("app") or result.get("name"),
+        "url": url,
+        "host": host or url,
+        "action": action,
+    }
+
+
+def close_tab_query_hint(state: ComputerState | None) -> str:
+    """Host of the tab most recently opened/navigated, for close-tab matching."""
+
+    if state is None or not isinstance(state.last_tab, dict):
+        return ""
+    return str(state.last_tab.get("host") or "").strip()
 
 
 def validate_element_ref(state: ComputerState | None, element_ref: str | None) -> dict[str, Any] | None:

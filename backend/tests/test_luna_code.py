@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,15 @@ async def _finish_live_code(live) -> None:
     drain = getattr(live, "drain_code_job", None)
     if drain is not None:
         await drain()
+
+
+async def _await_s2s(live, event):
+    """Wait for transcript routing. emit() only schedules it for grok/realtime."""
+
+    routed = await live.emit(event)
+    if routed is not None:
+        await routed
+    return routed
 
 
 def test_code_is_live_broker_not_a_shell() -> None:
@@ -69,11 +79,16 @@ def test_coding_intent_routing() -> None:
     assert looks_like_code_request("write a javascript script that prints hello world")
     assert looks_like_code_request("write a ruby file that prints hello")
     assert looks_like_code_request("refactor the auth module in the ev repo")
+    assert looks_like_code_request("work in the ev repo and add a retry")
+    assert looks_like_code_request("open the ev repo")
+    assert looks_like_code_request("fix the failing test")
     assert looks_like_code_request("run the tests in the demo project")
     assert looks_like_code_request("add a test for the code broker")
     assert looks_like_code_request("can you make me a python helper that grades scores")
     assert looks_like_code_request("I need a small python function that returns pass or fail")
     assert looks_like_code_request("make me a grader")
+    assert looks_like_code_request("write hello.py")
+    assert looks_like_code_request("write src/hello.py")
     assert looks_like_code_continue("run it")
     assert looks_like_code_continue("add a test")
     assert looks_like_code_continue("change 50 to 60")
@@ -97,6 +112,18 @@ def test_coding_intent_routing() -> None:
     )
     assert resolve_live_action("run rm -rf /") is None
     assert resolve_live_action("how are you") is None
+    wish = "tell me about the code that i have written in the wish workspace"
+    assert looks_like_code_request(wish)
+    assert resolve_live_action(wish) == ("code", {"goal": wish})
+    assert select_tool(wish).selected == "code"
+    info = "give me info about the wish workspace"
+    assert looks_like_code_request(info)
+    assert resolve_live_action(info) == ("code", {"goal": info})
+    assert looks_like_code_request("what projects do I have")
+    assert not looks_like_code_request("tell me about my conversations")
+    assert not looks_like_code_request("tell me about my chats")
+    assert not looks_like_code_request("I wish you would tell me about the weather")
+    assert not looks_like_code_request("tell me about John")
 
 
 def test_expand_code_goal_keeps_last_files() -> None:
@@ -216,7 +243,9 @@ async def test_offline_unknown_job_is_honest(tmp_path: Path, monkeypatch) -> Non
     result = await run_code_job("refactor the auth module into a state machine")
     assert result["ok"] is False
     assert result.get("degraded") is True
-    assert "luna" in (result.get("spoken") or "").lower() or "key" in (result.get("spoken") or "").lower()
+    spoken = (result.get("spoken") or "").lower()
+    assert "couldn't" in spoken or "unavailable" in spoken or "key" in spoken
+    assert "wrote" not in spoken
 
 
 @pytest.mark.asyncio
@@ -329,6 +358,9 @@ def test_named_project_search_patch_and_sibling_jail(tmp_path: Path, monkeypatch
     other = _seed_project(code_home / "other")
     monkeypatch.setattr(settings, "code_workspace", str(sandbox))
     monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    from app.ev.code_runtime import clear_sticky_project
+
+    clear_sticky_project()
     assert select_project("fix the add function in the ev repo") == ev_root.resolve()
     token = set_active_project(ev_root)
     try:
@@ -527,8 +559,9 @@ async def test_live_s2s_runs_code_from_owner_transcript(
     live.grok_voice = grok
     goal = "write a python script that prints hello world"
     try:
-        await live.emit(
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime")
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
         )
         await _finish_live_code(live)
         assert cancelled["n"] == 1
@@ -537,6 +570,259 @@ async def test_live_s2s_runs_code_from_owner_transcript(
         assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello world')\n"
         assert spoken
         assert "hello" in spoken[0].lower()
+    finally:
+        live.close()
+
+
+def test_stale_intern_pending_does_not_mark_code_jail_busy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_studio import spoken_studio_busy
+    from app.ev.luna_code import (
+        code_jail_busy,
+        enqueue_code_intern,
+        intern_in_flight,
+        intern_worker_active,
+    )
+
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    enqueue_code_intern("leftover overnight job")
+    assert intern_in_flight() is True
+    assert intern_worker_active() is False
+    assert code_jail_busy() is False
+    busy = spoken_studio_busy()
+    assert "running" not in busy.lower()
+    assert "queued" in busy.lower() or "not running" in busy.lower()
+
+
+def test_stale_running_studio_does_not_block_new_code(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from datetime import datetime, timedelta
+
+    from app.config import settings
+    from app.ev.code_studio import load_studio, maybe_handle_code_ops, save_studio
+    from app.ev.luna_code import code_jail_busy
+
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    ack = maybe_handle_code_ops("make a clothing site UI from scratch")
+    assert ack
+    studio = load_studio()
+    assert studio is not None
+    studio["status"] = "running"
+    studio["updated_at"] = (datetime.now(UTC) - timedelta(days=5)).isoformat()
+    save_studio(studio, claim=True)
+    assert code_jail_busy() is False
+    assert load_studio() is None
+    assert maybe_handle_code_ops("write a python script that prints hello world") is None
+    calc = maybe_handle_code_ops("create a calculator app UI")
+    assert calc
+    assert "queued" not in calc.lower()
+    live = load_studio()
+    assert live is not None
+    assert live.get("kind") == "calculator"
+
+
+@pytest.mark.asyncio
+async def test_stale_intern_pending_does_not_block_live_hello(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import json
+
+    from app.config import settings
+    from app.ev.luna_code import enqueue_code_intern
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    enqueue_code_intern("leftover overnight job")
+
+    seen: list[tuple[str, dict, str]] = []
+    spoken: list[str] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        seen.append((name, dict(args), call_id))
+        result = await run_code_job(str(args.get("goal") or ""))
+        return json.dumps(
+            {
+                "ok": result.get("ok"),
+                "result": result,
+                "spoken": result.get("spoken"),
+            }
+        )
+
+    class _OpenAI:
+        _provider = "openai"
+        supports_function_calls = True
+        _open_turn_id = "turn-code-stale"
+        _shadow_response_for_turn = None
+
+        async def cancel(self) -> None:
+            return None
+
+        async def speak_ack(self, text: str) -> bool:
+            spoken.append(text)
+            return True
+
+        async def send_text(self, text: str) -> None:
+            raise AssertionError(f"Mini must not receive the coding command: {text}")
+
+    grok = _OpenAI()
+    live = LiveSession(session_id="owner-code-stale-intern", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = grok
+    goal = "write a python script that prints hello world"
+    try:
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+        )
+        await _finish_live_code(live)
+        assert seen == [("code", {"goal": goal}, "owner-code-exec")]
+        assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello world')\n"
+        assert spoken
+        assert "hello" in spoken[-1].lower()
+        assert all("i'm running" not in item.lower() for item in spoken)
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_partial_code_transcript_cancels_mini_before_she_claims_a_write() -> None:
+    from app.voice.live.events import PartialTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    cancelled = {"n": 0}
+
+    class _OpenAI:
+        _provider = "openai"
+        supports_function_calls = True
+        _open_turn_id = "turn-code-partial"
+        _shadow_response_for_turn = None
+        _response_active = True
+        _assistant_open = True
+
+        async def cancel(self) -> None:
+            cancelled["n"] += 1
+
+    live = LiveSession(session_id="owner-code-partial", backchannel_enabled=False)
+    live.run_live_tool = lambda *_a, **_k: None
+    live.grok_voice = _OpenAI()
+    try:
+        await live.emit(
+            PartialTranscriptEvent(
+                at_ms=1,
+                text="write a python script that prints hello world",
+                sequence=1,
+            )
+        )
+        assert cancelled["n"] == 1
+        assert live.grok_voice._shadow_response_for_turn == "turn-code-partial"
+    finally:
+        live.close()
+
+
+@pytest.mark.asyncio
+async def test_background_code_job_stashes_a_receipt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.luna_code import peek_code_intern_receipt, run_code_job_and_notify
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    notes: list[str] = []
+    monkeypatch.setattr(
+        "app.ev.luna_code.schedule_background_code_notify",
+        lambda spoken: notes.append(spoken),
+    )
+    await run_code_job_and_notify(
+        "write a python script that prints hello world", session_key="owner"
+    )
+    assert (tmp_path / "hello.py").is_file()
+    receipt = peek_code_intern_receipt()
+    assert receipt
+    assert "hello" in receipt.lower()
+    assert notes
+    assert "hello" in notes[0].lower()
+
+
+@pytest.mark.asyncio
+async def test_live_code_still_runs_when_muse_kernel_is_on(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Muse kernel must not skip the coding jail and invent a spoken success."""
+
+    import json
+
+    from app.config import settings
+    from app.voice.live.events import FinalTranscriptEvent
+    from app.voice.live.session import LiveSession
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "cognitive_mode", "muse_kernel")
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    kernel_calls = {"n": 0}
+
+    async def boom_kernel(**_kwargs):
+        kernel_calls["n"] += 1
+        raise AssertionError("coding must not wait on the cognitive kernel")
+
+    monkeypatch.setattr("app.cognitive.kernel.handle_turn_maybe_remote", boom_kernel)
+
+    seen: list[tuple[str, dict, str]] = []
+    spoken: list[str] = []
+
+    async def runner(name: str, args: dict, call_id: str) -> str:
+        seen.append((name, dict(args), call_id))
+        result = await run_code_job(str(args.get("goal") or ""))
+        return json.dumps(
+            {
+                "ok": result.get("ok"),
+                "result": result,
+                "spoken": result.get("spoken"),
+            }
+        )
+
+    class _OpenAI:
+        _provider = "openai"
+        supports_function_calls = True
+        _open_turn_id = "turn-code-kernel"
+        _shadow_response_for_turn = None
+
+        async def cancel(self) -> None:
+            return None
+
+        async def speak_ack(self, text: str) -> bool:
+            spoken.append(text)
+            return True
+
+        async def send_text(self, text: str) -> None:
+            raise AssertionError(f"Mini must not receive the coding command: {text}")
+
+    grok = _OpenAI()
+    live = LiveSession(session_id="owner-code-kernel", backchannel_enabled=False)
+    live.run_live_tool = runner
+    live.grok_voice = grok
+    goal = "write a python script that prints hello world"
+    try:
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
+        )
+        await _finish_live_code(live)
+        assert kernel_calls["n"] == 0
+        assert seen == [("code", {"goal": goal}, "owner-code-exec")]
+        assert (tmp_path / "hello.py").read_text(encoding="utf-8") == "print('hello world')\n"
+        assert spoken
     finally:
         live.close()
 
@@ -648,8 +934,9 @@ async def test_live_s2s_runs_tests_in_named_project(tmp_path: Path, monkeypatch)
     live.grok_voice = _OpenAI()
     goal = "run the tests in the demo project"
     try:
-        await live.emit(
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime")
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
         )
         await _finish_live_code(live)
         assert seen == [("code", {"goal": goal}, "owner-code-exec")]
@@ -839,8 +1126,9 @@ async def test_live_followup_speaks_where_the_file_was_saved(
         "and if the gender is female print hello miss world"
     )
     try:
-        await live.emit(
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime")
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
         )
         await _finish_live_code(live)
         assert seen == ["code"]
@@ -849,10 +1137,11 @@ async def test_live_followup_speaks_where_the_file_was_saved(
         assert "greet.py" in spoken[0].lower()
         spoken.clear()
         live.grok_voice._open_turn_id = "turn-follow-2"
-        await live.emit(
+        await _await_s2s(
+            live,
             FinalTranscriptEvent(
                 at_ms=2, text="where is the file saved", provider="openai-realtime"
-            )
+            ),
         )
         assert seen == ["code"]
         assert spoken
@@ -910,11 +1199,12 @@ async def test_live_code_job_keeps_the_mouth_free(tmp_path: Path, monkeypatch) -
     goal = "write a python script that prints hello world"
     try:
         started["at"] = time.monotonic()
-        await live.emit(
-            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime")
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(at_ms=1, text=goal, provider="openai-realtime"),
         )
         assert time.monotonic() - started["at"] < 0.8
-        await live.drain_code_job()
+        await _finish_live_code(live)
         assert (tmp_path / "hello.py").is_file()
         assert any("hello" in item.lower() for item in spoken)
     finally:
@@ -1107,6 +1397,60 @@ async def test_luna_live_budget_allows_long_jobs(tmp_path: Path, monkeypatch) ->
         actor="voice",
         channel="voice",
     )
+    assert _FakeClient.posts == 48
+
+
+@pytest.mark.asyncio
+async def test_luna_live_hello_stays_on_the_short_budget(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test-luna")
+    monkeypatch.setattr(settings, "code_max_steps", 24)
+    monkeypatch.setattr(settings, "code_live_job_seconds", 60.0)
+
+    class _Resp:
+        def __init__(self, payload: dict, status: int = 200) -> None:
+            self.status_code = status
+            self._payload = payload
+
+        def json(self) -> dict:
+            return self._payload
+
+    class _FakeClient:
+        posts = 0
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def post(self, url, headers=None, json=None):
+            _FakeClient.posts += 1
+            return _Resp(
+                {
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": f"call_{_FakeClient.posts}",
+                            "name": "list_dir",
+                            "arguments": "{}",
+                        }
+                    ]
+                }
+            )
+
+    monkeypatch.setattr("httpx.AsyncClient", _FakeClient)
+    await run_code_job(
+        "write a python script that prints hello world",
+        actor="voice",
+        channel="voice",
+    )
     assert _FakeClient.posts == 20
 
 
@@ -1150,7 +1494,8 @@ async def test_run_it_continues_the_last_job(tmp_path: Path, monkeypatch) -> Non
 @pytest.mark.asyncio
 async def test_change_threshold_patches_last_files(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
-    from app.ev.code_runtime import set_active_project, write_file as jail_write
+    from app.ev.code_runtime import set_active_project
+    from app.ev.code_runtime import write_file as jail_write
 
     monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
     monkeypatch.setattr(settings, "code_projects_root", "")
@@ -1230,18 +1575,20 @@ async def test_live_run_it_after_a_script(tmp_path: Path, monkeypatch) -> None:
     live.run_live_tool = runner
     live.grok_voice = _OpenAI()
     try:
-        await live.emit(
+        await _await_s2s(
+            live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="write a python script that prints hello world",
                 provider="openai-realtime",
-            )
+            ),
         )
         await _finish_live_code(live)
         spoken.clear()
         live.grok_voice._open_turn_id = "turn-flex-2"
-        await live.emit(
-            FinalTranscriptEvent(at_ms=2, text="run it", provider="openai-realtime")
+        await _await_s2s(
+            live,
+            FinalTranscriptEvent(at_ms=2, text="run it", provider="openai-realtime"),
         )
         await _finish_live_code(live)
         assert spoken
@@ -1276,3 +1623,1023 @@ async def test_chat_run_it_continues_last_job(
     assert receipts
     assert receipts[0].name == "code"
     assert receipts[0].ok is True
+
+
+class _ScriptedSparkProvider:
+    """Mimics the Meta Responses projection `complete_raw` returns to loops."""
+
+    def __init__(self, replies: list) -> None:
+        self.replies = list(replies)
+        self.calls: list[list[dict]] = []
+        self.tool_choices: list = []
+
+    async def complete_raw(self, messages, *, tools=None, model=None, response_format=None, tool_choice=None):
+        self.calls.append([dict(message) for message in messages])
+        self.tool_choices.append(tool_choice)
+        if not self.replies:
+            return {"choices": [{"message": {"role": "assistant", "content": "Done."}}]}
+        item = self.replies.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _spark_tool_reply(call_id: str, name: str, arguments: dict) -> dict:
+    import json
+
+    return {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": name, "arguments": json.dumps(arguments)},
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+
+def _spark_text_reply(text: str) -> dict:
+    return {"choices": [{"message": {"role": "assistant", "content": text}}]}
+
+
+def _force_spark_path(monkeypatch, tmp_path, model: str = "muse-spark-1.3-contributor"):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    monkeypatch.setattr(settings, "code_projects", "")
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "code_max_steps", 8)
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: model)
+    return model
+
+
+@pytest.mark.asyncio
+async def test_spark_code_loop_runs_real_jail_tools_end_to_end(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _force_spark_path(monkeypatch, tmp_path)
+    provider = _ScriptedSparkProvider(
+        [
+            _spark_tool_reply(
+                "c1",
+                "write_file",
+                {"path": "mod.py", "content": "def add(a, b):\n    return a + b\n"},
+            ),
+            _spark_tool_reply(
+                "c2",
+                "write_file",
+                {
+                    "path": "test_mod.py",
+                    "content": "from mod import add\n\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+                },
+            ),
+            _spark_tool_reply("c3", "run_command", {"argv": ["python3", "mod.py"]}),
+            _spark_text_reply("Wrote mod.py and test_mod.py; the script ran clean."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+
+    result = await run_code_job("add an add() helper with a test")
+
+    assert result["ok"] is True
+    assert result["partial"] is False
+    assert result["timed_out"] is False
+    assert result["error"] is None
+    assert result["files_changed"] == ["mod.py", "test_mod.py"]
+    assert (tmp_path / "mod.py").read_text(encoding="utf-8").startswith("def add")
+    assert (tmp_path / "test_mod.py").exists()
+    assert any(item.get("exit_code") == 0 for item in result["runs"])
+    # The second model call must carry the first tool round back in a shape
+    # the Responses adapter converts to function_call_output.
+    second = provider.calls[1]
+    assert any(str(message.get("role")) == "tool" for message in second)
+    assert any(str(message.get("role")) == "assistant" and message.get("tool_calls") for message in second)
+
+
+@pytest.mark.asyncio
+async def test_spark_code_loop_keeps_partial_files_when_provider_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _force_spark_path(monkeypatch, tmp_path)
+    provider = _ScriptedSparkProvider(
+        [
+            _spark_tool_reply(
+                "c1",
+                "write_file",
+                {"path": "partial.py", "content": "print('hi')\n"},
+            ),
+            RuntimeError("meta 500"),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+
+    result = await run_code_job("write partial.py then verify it")
+
+    assert result["ok"] is False
+    assert result["partial"] is True
+    assert result["timed_out"] is False
+    assert result["error"] == "RuntimeError"
+    assert result["files_changed"] == ["partial.py"]
+    assert (tmp_path / "partial.py").exists()
+    spoken = str(result["spoken"]).lower()
+    assert "partial.py" in spoken
+    assert "verify" in spoken or "problem" in spoken
+
+
+@pytest.mark.asyncio
+async def test_spark_code_loop_times_out_honestly(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    from app.ev import luna_code
+
+    _force_spark_path(monkeypatch, tmp_path)
+
+    class _SlowProvider:
+        async def complete_raw(self, messages, **kwargs):
+            await asyncio.sleep(3)
+
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: _SlowProvider())
+
+    result = await luna_code._spark_code_loop(
+        "write slow.py",
+        model="muse-spark-1.3-contributor",
+        budget_s=0.1,
+        live=False,
+    )
+
+    assert result["timed_out"] is True
+    assert result["partial"] is True
+    assert result["ok"] is False
+    assert result["files_changed"] == []
+
+
+def test_tool_output_clip_keeps_failure_tail() -> None:
+    from app.ev.luna_code import _clip_tool_output
+
+    payload = {"exit_code": 1, "stdout": "x" * 20_000 + "\nFAILED test_tail_marker"}
+    text = _clip_tool_output(payload)
+
+    assert "FAILED test_tail_marker" in text
+    assert "chars trimmed" in text
+    assert len(text) < 16_500
+
+
+def test_loop_compaction_bounds_context() -> None:
+    from app.ev.luna_code import _compact_loop, _loop_chars
+
+    messages: list[dict] = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "go"},
+    ]
+    for index in range(40):
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"c{index}",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{}"},
+                    }
+                ],
+            }
+        )
+        messages.append({"role": "tool", "tool_call_id": f"c{index}", "content": "y" * 20_000})
+
+    before = _loop_chars(messages)
+    _compact_loop(messages)
+    after = _loop_chars(messages)
+
+    assert before > 140_000
+    assert after < before
+    assert messages[0]["content"] == "sys"
+    assert messages[1]["content"] == "go"
+    # Index 2 is the trim note; the first kept history row must be an
+    # assistant call, never an orphaned tool row.
+    assert str(messages[2].get("role")) == "user"
+    assert "trimmed" in str(messages[2].get("content"))
+    assert str(messages[3].get("role")) == "assistant"
+    assert after <= 150_000
+
+
+def test_kernel_deadline_caps_code_job_budget() -> None:
+    import time
+
+    from app.ev.luna_code import (
+        _effective_job_budget,
+        kernel_turn_budget,
+        kernel_turn_remaining_s,
+        reset_kernel_turn_deadline,
+        set_kernel_turn_deadline,
+    )
+
+    assert _effective_job_budget(300) == 300.0
+    token = set_kernel_turn_deadline(time.monotonic() + 30.0)
+    try:
+        remaining = kernel_turn_remaining_s()
+        assert remaining is not None and 0 < remaining <= 30.0
+        capped = _effective_job_budget(300)
+        assert 5.0 <= capped <= 28.5
+    finally:
+        reset_kernel_turn_deadline(token)
+    assert _effective_job_budget(300) == 300.0
+    with kernel_turn_budget(None):
+        assert _effective_job_budget(60) == 60.0
+
+
+def test_fresh_deliverable_does_not_continue_prior_job() -> None:
+    from app.ev.luna_code import _continues_prior_job
+
+    assert _continues_prior_job("run it") is True
+    assert _continues_prior_job("run the tests") is True
+    assert _continues_prior_job("add a test to it") is True
+    assert _continues_prior_job("also add a test") is True
+    assert _continues_prior_job("do that in python instead") is True
+    assert _continues_prior_job("write a python module stats.py and run the tests") is False
+    assert _continues_prior_job("in the ev repo add a test for mean") is False
+    assert _continues_prior_job("write hello world") is False
+
+
+def _seed_stale_prior(luna_code, old: Path) -> None:
+    luna_code.remember_code_job(
+        {"workspace": str(old), "files": ["old.py"], "goal": "write old.py", "ok": True},
+        session_key="owner",
+    )
+
+
+@pytest.mark.asyncio
+async def test_fresh_request_stays_in_default_workspace_with_stale_prior(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev import luna_code
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    old = tmp_path / "oldproject"
+    old.mkdir()
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects", "")
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(luna_code, "_persist_last_code_job", lambda payload: None)
+    monkeypatch.setattr(luna_code, "_load_last_code_job", lambda: None)
+    monkeypatch.setattr(luna_code, "_LAST_CODE_JOBS", {})
+    _seed_stale_prior(luna_code, old)
+
+    result = await run_code_job("write a python module stats.py and run the tests")
+
+    assert str(sandbox) in str(result.get("workspace") or "")
+    assert str(old) not in str(result.get("workspace") or "")
+
+
+@pytest.mark.asyncio
+async def test_pure_continuation_keeps_prior_workspace(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev import luna_code
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    old = tmp_path / "oldproject"
+    old.mkdir()
+    (old / "old.py").write_text("value = 50\n", encoding="utf-8")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects", "")
+    monkeypatch.setattr(settings, "code_projects_root", "")
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(luna_code, "_persist_last_code_job", lambda payload: None)
+    monkeypatch.setattr(luna_code, "_load_last_code_job", lambda: None)
+    monkeypatch.setattr(luna_code, "_LAST_CODE_JOBS", {})
+    _seed_stale_prior(luna_code, old)
+
+    result = await run_code_job("change 50 to 60")
+
+    assert str(old) in str(result.get("workspace") or "")
+    assert "60" in (old / "old.py").read_text(encoding="utf-8")
+
+
+def test_shape_code_spoken_does_not_repeat_a_fake_success() -> None:
+    from app.ev.luna_code import shape_code_spoken
+    from app.ev.tools import life_success_reply
+
+    spoken = shape_code_spoken(
+        {
+            "ok": False,
+            "spoken": "I wrote hello.py and ran it.",
+            "files_changed": [],
+            "workspace": "/tmp/ws",
+        }
+    )
+    assert "wrote" not in spoken.lower()
+    assert "couldn't finish" in spoken.lower()
+    reply = life_success_reply(
+        {
+            "ok": False,
+            "degraded": True,
+            "spoken": "I wrote hello.py and ran it.",
+            "files_changed": [],
+        },
+        tool_name="code",
+    )
+    assert "wrote" not in reply.lower()
+    assert "couldn't finish" in reply.lower()
+    lying_ok = life_success_reply(
+        {
+            "ok": True,
+            "spoken": "I wrote hello.py and ran it.",
+            "files_changed": [],
+        },
+        tool_name="code",
+    )
+    assert "wrote" not in lying_ok.lower()
+    assert "couldn't finish" in lying_ok.lower()
+
+
+@pytest.mark.asyncio
+async def test_complete_raw_projects_output_tools_over_lying_choices() -> None:
+    from app.gateway.muse_spark import MuseSparkProvider
+
+    provider = MuseSparkProvider(
+        base_url="https://api.meta.ai/v1",
+        api_key="test-key",
+        default_model="muse-spark-1.3-contributor",
+    )
+
+    async def fake_post(_payload):
+        return {
+            "output": [
+                {
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "write_file",
+                    "arguments": '{"path":"hello.py","content":"print(1)\\n"}',
+                }
+            ],
+            "choices": [
+                {"message": {"role": "assistant", "content": "I already wrote hello.py"}}
+            ],
+            "output_text": "I already wrote hello.py",
+        }
+
+    provider._post_json = fake_post  # type: ignore[method-assign]
+    data = await provider.complete_raw(
+        [{"role": "user", "content": "write hello.py"}],
+        tools=[{"type": "function", "name": "write_file", "parameters": {}}],
+    )
+    calls = ((data.get("choices") or [{}])[0].get("message") or {}).get("tool_calls") or []
+    assert calls
+    assert calls[0]["function"]["name"] == "write_file"
+
+
+@pytest.mark.asyncio
+async def test_spark_code_loop_nudges_when_model_only_talks(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _force_spark_path(monkeypatch, tmp_path)
+    provider = _ScriptedSparkProvider(
+        [
+            _spark_text_reply("I wrote hello.py and ran it."),
+            _spark_tool_reply(
+                "c1",
+                "write_file",
+                {"path": "hello.py", "content": "print('hi')\n"},
+            ),
+            _spark_tool_reply("c2", "run_command", {"argv": ["python3", "hello.py"]}),
+            _spark_text_reply("Saved hello.py."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    result = await run_code_job("write a python script that prints hi")
+    assert (tmp_path / "hello.py").exists()
+    assert result["ok"] is True
+    assert "hello.py" in result["files_changed"]
+    assert provider.tool_choices
+    assert all(choice in {None, "auto"} for choice in provider.tool_choices)
+    second = provider.calls[1]
+    assert any(
+        "instead of doing it" in str(message.get("content") or "") for message in second
+    )
+
+
+@pytest.mark.asyncio
+async def test_spark_talk_without_tools_still_writes_via_heuristic(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _force_spark_path(monkeypatch, tmp_path)
+    provider = _ScriptedSparkProvider(
+        [
+            _spark_text_reply("I wrote hello.py already."),
+            _spark_text_reply("Still done."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    result = await run_code_job("write a python script that prints hello world")
+    assert (tmp_path / "hello.py").exists()
+    assert result["ok"] is True
+    assert "heuristic" in str(result.get("brain") or "")
+    spoken = str(result.get("spoken") or "").lower()
+    assert "hello.py" in spoken or "saved" in spoken
+
+
+@pytest.mark.asyncio
+async def test_spark_git_status_alone_is_not_a_successful_write(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.ev import luna_code
+
+    _force_spark_path(monkeypatch, tmp_path)
+    provider = _ScriptedSparkProvider(
+        [
+            _spark_tool_reply("c1", "run_command", {"argv": ["git", "status", "--short"]}),
+            _spark_text_reply("I wrote the calculator and ran it."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    result = await luna_code._spark_code_loop(
+        "create a calculator app UI",
+        model="muse-spark-1.3-contributor",
+        budget_s=30,
+        live=False,
+    )
+    assert result["ok"] is False
+    assert result["files_changed"] == []
+    spoken = str(result.get("spoken") or "").lower()
+    assert "wrote" not in spoken
+    assert "couldn't" in spoken or "verified" in spoken
+
+
+def test_studio_brief_does_not_claim_shipped_without_files() -> None:
+    from app.ev.code_studio import spoken_completion_summary
+
+    spoken = spoken_completion_summary(
+        {
+            "title": "calculator UI",
+            "folder": "calc",
+            "files": [],
+            "phases": [{"title": "Foundation", "status": "skipped"}],
+        },
+        ok=True,
+    )
+    lowered = spoken.lower()
+    assert "shipped" not in lowered
+    assert "don't have files" in lowered or "do not have files" in lowered
+
+
+def test_sticky_project_survives_vague_repo_phrasing(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import (
+        clear_sticky_project,
+        select_project,
+        use_project,
+    )
+    from app.ev.luna_code import maybe_switch_coding_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    ev_root = _seed_project(code_home / "ev")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    clear_sticky_project()
+    assert select_project("write a python script that prints hello world") == sandbox.resolve()
+    spoken = maybe_switch_coding_project("use the ev repo")
+    assert spoken is not None and "ev" in spoken.lower()
+    assert use_project("ev")["ok"] is True
+    assert select_project("refactor the auth module") == ev_root.resolve()
+    assert select_project("fix that in my repo") == ev_root.resolve()
+    assert select_project("write a python script that prints hello world") == sandbox.resolve()
+    clear_sticky_project()
+    assert select_project("refactor the auth module") == sandbox.resolve()
+
+
+def test_git_checkout_branch_is_allowlisted(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "code_workspace", str(tmp_path))
+    denied = execute_code_tool("run_command", {"argv": ["git", "push"]})
+    assert denied["ok"] is False
+    whole = execute_code_tool("run_command", {"argv": ["git", "checkout", "."]})
+    assert whole["ok"] is False
+    forced = execute_code_tool("run_command", {"argv": ["git", "checkout", "-f", "main"]})
+    assert forced["ok"] is False
+    # Not a git repo — jail allows the subcommand; git itself fails.
+    ran = execute_code_tool("run_command", {"argv": ["git", "checkout", "-b", "evie/feature"]})
+    assert ran.get("error") != "unknown_code_tool"
+    assert "not allowlisted" not in str(ran.get("detail") or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_spark_does_not_heuristic_hello_into_a_named_repo(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    demo = _seed_project(tmp_path / "Code" / "demo")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
+    clear_sticky_project()
+    _force_spark_path(monkeypatch, sandbox)
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(tmp_path / "Code"))
+    provider = _ScriptedSparkProvider(
+        [
+            _spark_text_reply("I refactored auth already."),
+            _spark_text_reply("Still done."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    result = await run_code_job("refactor the auth module in the demo repo")
+    assert result["ok"] is False
+    assert not (demo / "hello.py").exists()
+    assert "heuristic" not in str(result.get("brain") or "")
+    spoken = str(result.get("spoken") or "").lower()
+    assert "wrote" not in spoken
+    assert "couldn't" in spoken or "unavailable" in spoken or "verified" in spoken
+
+
+@pytest.mark.asyncio
+async def test_spark_keeps_going_after_a_failed_check(tmp_path: Path, monkeypatch) -> None:
+    _force_spark_path(monkeypatch, tmp_path)
+    (tmp_path / "mod.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+    (tmp_path / "test_mod.py").write_text(
+        "from mod import add\n\n"
+        "ok = add(2, 3) == 5\n"
+        "raise SystemExit(0 if ok else 1)\n",
+        encoding="utf-8",
+    )
+    provider = _ScriptedSparkProvider(
+        [
+            _spark_tool_reply(
+                "c1",
+                "replace_in_file",
+                {"path": "mod.py", "old": "return a - b", "new": "return a - b"},
+            ),
+            _spark_tool_reply("c2", "run_command", {"argv": ["python3", "test_mod.py"]}),
+            _spark_text_reply("Tests passed."),
+            _spark_tool_reply(
+                "c3",
+                "replace_in_file",
+                {"path": "mod.py", "old": "return a - b", "new": "return a + b"},
+            ),
+            _spark_tool_reply("c4", "run_command", {"argv": ["python3", "test_mod.py"]}),
+            _spark_text_reply("Fixed the test."),
+        ]
+    )
+    monkeypatch.setattr("app.gateway.muse_spark.muse_spark_provider", lambda: provider)
+    result = await run_code_job("fix the failing test in mod.py")
+    joined = " ".join(
+        str(message.get("content") or "") for batch in provider.calls for message in batch
+    )
+    assert "last command failed" in joined.lower()
+    assert "mod.py" in result["files_changed"]
+    assert (tmp_path / "mod.py").read_text(encoding="utf-8").count("return a + b")
+
+
+def _seed_wish_project(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".git").mkdir()
+    (root / "OVERVIEW.md").write_text(
+        "# Wish — Sweet Potato — Project Overview\n\n"
+        "Inspected from /tmp/wish on 2026-09-13.\n\n"
+        "## What it is\n"
+        "`wish` is **Sweet Potato**, a Next.js Three.js birthday film for the owner.\n\n"
+        "## Purpose\n"
+        "Personal cinematic gift: interactive birthday film.\n",
+        encoding="utf-8",
+    )
+    (root / "package.json").write_text(
+        '{"name":"wish","description":"Interactive Three.js workspace",'
+        '"dependencies":{"next":"16.3.4","three":"0.186.0"},'
+        '"scripts":{"dev":"next dev","test":"npm run lint"}}\n',
+        encoding="utf-8",
+    )
+    (root / "src").mkdir()
+    (root / "src" / "app").mkdir()
+    (root / "src" / "app" / "layout.tsx").write_text(
+        'export const metadata = { title: "Sweet Potato", '
+        'description: "A little visitor is waiting for you." };\n',
+        encoding="utf-8",
+    )
+    (root / "src" / "experience").mkdir()
+    (root / "src" / "experience" / "PlushTeddy.tsx").write_text(
+        "export function PlushTeddy() { return null }\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_wish_workspace_is_a_named_code_project(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project, select_project
+    from app.ev.code_studio import looks_like_long_code_goal, maybe_handle_code_ops
+    from app.ev.luna_code import looks_like_code_explain, spoken_project_catalog
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    wish_root = _seed_wish_project(code_home / "wish")
+    _seed_project(code_home / "ev")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    clear_sticky_project()
+    ask = "tell me about the code that i have written in the wish workspace"
+    assert looks_like_code_explain(ask)
+    assert not looks_like_long_code_goal(ask)
+    assert maybe_handle_code_ops(ask) is None
+    assert select_project(ask) == wish_root.resolve()
+    assert select_project("give me info about the wish workspace") == wish_root.resolve()
+    assert select_project("give me information about wish workspace") == wish_root.resolve()
+    assert select_project("tell me about the ev repo") == (code_home / "ev").resolve()
+    assert select_project("I wish you would tell me about the weather") == sandbox.resolve()
+    catalog = spoken_project_catalog().lower()
+    assert "wish" in catalog
+    assert "ev" in catalog
+    listed = maybe_handle_code_ops("what projects do I have")
+    assert listed is not None
+    assert "wish" in listed.lower()
+    assert "sweet potato" in listed.lower() or "three" in listed.lower()
+
+
+@pytest.mark.asyncio
+async def test_offline_surveys_wish_workspace_without_writing(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    wish_root = _seed_wish_project(code_home / "wish")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    clear_sticky_project()
+    ask = "tell me about the code that i have written in the wish workspace"
+    result = await run_code_job(ask)
+    assert result["ok"] is True
+    assert result.get("project") == "wish"
+    spoken = str(result.get("spoken") or "")
+    lowered = spoken.lower()
+    assert "wish" in lowered
+    assert "sweet potato" in lowered
+    assert "next" in lowered or "three" in lowered
+    assert "overview.md" not in lowered
+    assert "package.json" not in lowered
+    from app.ev.luna_code import _spoken_is_file_dump
+
+    assert not _spoken_is_file_dump(spoken)
+    assert "hello.py" not in lowered
+    assert not result.get("files_changed")
+    assert not (wish_root / "hello.py").exists()
+    assert not (sandbox / "hello.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_offline_catalogs_code_projects(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project, sticky_project_path
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    _seed_wish_project(code_home / "wish")
+    _seed_project(code_home / "ev")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    clear_sticky_project()
+    result = await run_code_job("what projects do I have")
+    assert result["ok"] is True
+    spoken = str(result.get("spoken") or "").lower()
+    assert "wish" in spoken
+    assert "ev" in spoken
+    assert not result.get("files_changed")
+    assert sticky_project_path() is None
+    assert "sweet potato" in spoken or "three" in spoken or "python" in spoken
+
+
+@pytest.mark.asyncio
+async def test_info_about_named_workspace_is_not_the_sandbox(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "hello.py").write_text("print('sandbox')\n", encoding="utf-8")
+    code_home = tmp_path / "Code"
+    wish_root = _seed_wish_project(code_home / "wish")
+    zombie = code_home / "zombie-game"
+    zombie.mkdir(parents=True)
+    (zombie / "README.md").write_text("# Zombie game\nArcade shooter.\n", encoding="utf-8")
+    certify = _seed_project(code_home / "certify")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    clear_sticky_project()
+    remember_code_job(
+        {
+            "ok": True,
+            "workspace": str(sandbox),
+            "project": "code-workspace",
+            "files_changed": ["hello.py"],
+            "spoken": "Wrote hello.py.",
+            "goal": "write a python script that prints hello world",
+        },
+        session_key="owner",
+    )
+    result = await run_code_job("give me info about the wish workspace")
+    assert result["ok"] is True
+    assert result.get("project") == "wish"
+    spoken = str(result.get("spoken") or "").lower()
+    assert "wish" in spoken
+    assert "code-workspace" not in spoken
+    assert "ev coding folder" not in spoken
+    assert "sweet potato" in spoken
+    assert "overview.md" not in spoken
+    assert "package.json" not in spoken
+    assert not (wish_root / "hello.py").exists()
+
+    unnamed = await run_code_job("tell me about the workspace")
+    unnamed_spoken = str(unnamed.get("spoken") or "").lower()
+    assert "which project" in unnamed_spoken or "wish" in unnamed_spoken
+    assert "code-workspace" not in unnamed_spoken
+
+    z_result = await run_code_job("tell me about the zombie game folder")
+    assert z_result.get("project") == "zombie-game"
+    assert "arcade" in str(z_result.get("spoken") or "").lower() or "zombie" in str(
+        z_result.get("spoken") or ""
+    ).lower()
+
+    c_result = await run_code_job("give me information about certify")
+    assert c_result.get("project") == "certify"
+    assert certify.name in str(c_result.get("workspace") or "")
+    certify_spoken = str(c_result.get("spoken") or "").lower()
+    assert "python" in certify_spoken
+    assert "add" in certify_spoken
+    assert "mathy.py" not in certify_spoken
+
+
+def test_spoken_is_file_dump_detects_listings_not_purpose() -> None:
+    from app.ev.luna_code import _spoken_is_file_dump
+
+    assert _spoken_is_file_dump(
+        "In wish: OVERVIEW.md, package.json, src/, README.md, next.config.ts"
+    )
+    assert _spoken_is_file_dump("I looked through wish.")
+    assert not _spoken_is_file_dump(
+        "Wish is Sweet Potato, a Next.js and Three.js birthday film."
+    )
+
+
+@pytest.mark.asyncio
+async def test_named_explain_skips_spark_when_purpose_is_known(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    _seed_wish_project(code_home / "wish")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
+
+    async def boom(*_args, **_kwargs):
+        raise AssertionError("spark should not run for a purpose-ready explain")
+
+    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", boom)
+    clear_sticky_project()
+    result = await run_code_job("give me info about the wish workspace")
+    spoken = str(result.get("spoken") or "").lower()
+    assert result["ok"] is True
+    assert result.get("project") == "wish"
+    assert "sweet potato" in spoken
+    assert "overview.md" not in spoken
+
+
+@pytest.mark.asyncio
+async def test_spark_file_dump_explain_is_replaced_with_purpose(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    notes = code_home / "notes"
+    notes.mkdir(parents=True)
+    (notes / "scratch.log").write_text("log\n", encoding="utf-8")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr(settings, "code_max_steps", 8)
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
+
+    async def dump_loop(*_args, **_kwargs):
+        return {
+            "ok": True,
+            "spoken": "In notes: scratch.log, README.md, package.json, src/, app/",
+            "files_changed": [],
+            "runs": [],
+            "workspace": str(notes.resolve()),
+        }
+
+    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", dump_loop)
+    clear_sticky_project()
+    result = await run_code_job("give me info about the notes workspace")
+    spoken = str(result.get("spoken") or "").lower()
+    assert result.get("project") == "notes"
+    assert "scratch.log" not in spoken
+    assert "package.json" not in spoken
+    from app.ev.luna_code import _spoken_is_file_dump
+
+    assert not _spoken_is_file_dump(str(result.get("spoken") or ""))
+
+
+def _literacy_env(tmp_path: Path, monkeypatch):
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    wish_root = _seed_wish_project(code_home / "wish")
+    certify = _seed_project(code_home / "certify")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    clear_sticky_project()
+    return sandbox, wish_root, certify
+
+
+def test_code_literacy_routing_does_not_steal_chats(tmp_path: Path, monkeypatch) -> None:
+    from app.ev.code_literacy import looks_like_code_how_to_run, looks_like_code_literacy
+    from app.ev.luna_code import looks_like_code_request
+    from app.ev.tool_select import resolve_live_action
+
+    _literacy_env(tmp_path, monkeypatch)
+    run_wish = "how do I run the wish workspace"
+    assert looks_like_code_how_to_run(run_wish)
+    assert looks_like_code_literacy(run_wish)
+    assert looks_like_code_request(run_wish)
+    assert resolve_live_action(run_wish) == ("code", {"goal": run_wish})
+    teddy = "where is the teddy in the wish workspace"
+    assert looks_like_code_request(teddy)
+    assert not looks_like_code_request("I wish you would tell me about the weather")
+    assert not looks_like_code_request("tell me about my chats")
+    assert not looks_like_code_literacy("where is John")
+    assert looks_like_code_request("how is the wish workspace structured")
+
+
+@pytest.mark.asyncio
+async def test_alias_catalog_run_search_git_and_sticky_followups(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import subprocess
+
+    from app.ev.code_literacy import project_name_for_alias
+    from app.ev.code_runtime import remember_sticky_project, select_project
+    from app.ev.luna_code import spoken_project_catalog
+
+    _, wish_root, _certify = _literacy_env(tmp_path, monkeypatch)
+    subprocess.run(["git", "init"], cwd=wish_root, check=True, capture_output=True)
+    (wish_root / "scratch.txt").write_text("dirty\n", encoding="utf-8")
+
+    catalog = spoken_project_catalog().lower()
+    assert "wish" in catalog
+    assert "sweet potato" in catalog or "three" in catalog
+    assert "overview.md" not in catalog
+    assert project_name_for_alias("tell me about sweet potato") == "wish"
+    assert select_project("give me info about the wish workspace") == wish_root.resolve()
+    assert select_project("tell me about sweet potato") == wish_root.resolve()
+
+    alias = await run_code_job("tell me about sweet potato")
+    assert alias.get("project") == "wish"
+    spoken = str(alias.get("spoken") or "").lower()
+    assert "sweet potato" in spoken
+    assert "overview.md" not in spoken
+
+    run = await run_code_job("how do I run the wish workspace")
+    run_spoken = str(run.get("spoken") or "").lower()
+    assert run.get("project") == "wish"
+    assert "npm run dev" in run_spoken
+    assert "cannot run npm" in run_spoken
+    assert "overview.md" not in run_spoken
+
+    teddy = await run_code_job("where is the teddy in the wish workspace")
+    teddy_spoken = str(teddy.get("spoken") or "").lower()
+    assert "teddy" in teddy_spoken
+    assert "plushteddy" in teddy_spoken.replace(" ", "") or "experience" in teddy_spoken
+
+    structure = await run_code_job("how is the wish workspace structured")
+    structure_spoken = str(structure.get("spoken") or "").lower()
+    assert structure.get("project") == "wish"
+    assert "experience" in structure_spoken or "src/app" in structure_spoken
+    assert "overview.md" not in structure_spoken
+
+    dirty = await run_code_job("what's dirty in the wish workspace")
+    dirty_spoken = str(dirty.get("spoken") or "").lower()
+    assert "scratch.txt" in dirty_spoken or "uncommitted" in dirty_spoken
+
+    remember_sticky_project(wish_root)
+    follow = await run_code_job("how do I run it")
+    assert follow.get("project") == "wish"
+    assert "npm run dev" in str(follow.get("spoken") or "").lower()
+
+    from app.ev.code_literacy import looks_like_code_literacy
+
+    assert looks_like_code_literacy("where is the teddy")
+    assert not looks_like_code_literacy("where is John")
+    sticky_teddy = await run_code_job("where is the teddy")
+    sticky_teddy_spoken = str(sticky_teddy.get("spoken") or "").lower()
+    assert sticky_teddy.get("project") == "wish"
+    assert "plushteddy" in sticky_teddy_spoken.replace(" ", "") or "experience" in sticky_teddy_spoken
+
+    deeper = await run_code_job("go deeper")
+    deeper_spoken = str(deeper.get("spoken") or "").lower()
+    assert deeper.get("project") == "wish"
+    assert "sweet potato" in deeper_spoken
+    assert "src/" in deeper_spoken or "experience" in deeper_spoken or "npm run" in deeper_spoken
+
+
+def test_purpose_catalog_ranks_named_work_ahead_of_clones(tmp_path: Path, monkeypatch) -> None:
+    from app.ev.luna_code import spoken_project_catalog
+
+    _sandbox, _wish_root, _certify = _literacy_env(tmp_path, monkeypatch)
+    code_home = tmp_path / "Code"
+    for name in ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"):
+        _seed_project(code_home / name)
+    clone = code_home / "ev-remote.git"
+    clone.mkdir()
+    (clone / "README.md").write_text("clone of ev\n", encoding="utf-8")
+
+    catalog = spoken_project_catalog().lower()
+    assert "wish" in catalog
+    assert "sweet potato" in catalog
+    assert "overview.md" not in catalog
+    assert "ev-remote.git" not in catalog
+    wish_at = catalog.find("wish")
+    hotel_at = catalog.find("hotel")
+    assert wish_at >= 0
+    assert hotel_at == -1 or wish_at < hotel_at
+
+
+def test_spark_code_loop_injects_purpose_card() -> None:
+    import inspect
+
+    from app.ev.luna_code import _spark_code_loop
+
+    source = inspect.getsource(_spark_code_loop)
+    assert "This repo's purpose" in source
+    assert "project_card" in source
+
+
+def test_git_relpath_strips_status_not_folder_name() -> None:
+    from pathlib import Path
+
+    from app.ev.code_literacy import _git_relpath
+
+    assert _git_relpath(" M scripts/capture.cjs") == "scripts/capture.cjs"
+    assert Path(_git_relpath(" M scripts/capture.cjs")).parts[0] == "scripts"
+    assert _git_relpath("?? OVERVIEW.md") == "OVERVIEW.md"
+    assert _git_relpath("R  old.ts -> src/new.ts") == "src/new.ts"
+
+
+

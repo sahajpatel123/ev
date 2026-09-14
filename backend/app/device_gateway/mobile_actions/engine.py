@@ -62,6 +62,7 @@ def _public_action_result(row: dict[str, Any], launch: dict[str, Any], *, cap: A
     native = row.get("method") == "native_broker"
     system_ui = bool(getattr(cap, "system_confirmation_required", False)) if cap is not None else False
     interaction = (not native) or system_ui or state in {"awaiting_confirmation", "draft"}
+    # pwa_local needs a tap so Notification.requestPermission has a user gesture.
     return {
         "ok": True,
         "accepted": True,
@@ -258,7 +259,7 @@ def create_phone_action(
         run = enrich_run(svc._authorized_run(row, origin=origin.rstrip("/")), operation, normalized)
         row = store.update_action(row["action_id"], authorized_run=run) or row
         launch = svc._launch_payload(row, origin=origin.rstrip("/"))
-        if decision["method"] == "native_broker":
+        if decision["method"] in {"native_broker", "pwa_local"}:
             launch["launch_url"] = None
             launch["card"] = svc._card(row, launch_url=None, open_url=launch.get("open_url"))
     else:
@@ -443,9 +444,13 @@ def status_snapshot(*, device_id: str, role: str, display_name: str) -> dict[str
                 "open_maps",
                 "share_content",
                 "copy_to_clipboard",
+                "create_timer",
+                "create_reminder",
             }
             reason = None
-            if name in {"call_contact", "message_contact", "facetime_contact"}:
+            if name in {"create_timer", "create_reminder"}:
+                reason = "Evie timer on this Home Screen page — not Clock.app"
+            elif name in {"call_contact", "message_contact", "facetime_contact"}:
                 reason = "names need the Evie iPhone app; a typed number can still open Phone/Messages"
             elif not available:
                 reason = "Needs the Evie iPhone app"
@@ -480,7 +485,12 @@ def status_snapshot(*, device_id: str, role: str, display_name: str) -> dict[str
     }
 
 
-_TEXT_TIMER = re.compile(r"\b(?:set|start|make)\s+(?:a\s+)?timer\b", re.I)
+_TEXT_TIMER = re.compile(
+    r"\b(?:set|start|make)\s+(?:a\s+)?(?:\d+\s*(?:min|mins|minute|minutes)\s+)?timer\b"
+    r"|\btimer\s+(?:for\s+)?(?:\d+|one|two|three|four|five|ten|fifteen|twenty|thirty)\s*"
+    r"(?:min|mins|minute|minutes)\b",
+    re.I,
+)
 _TEXT_REMIND = re.compile(r"\bremind(?:er)?\s+me\b", re.I)
 _TEXT_CALL = re.compile(r"\b(?:call|facetime)\s+([A-Za-z][A-Za-z0-9'+\- ]{1,40})\s*$", re.I)
 _TEXT_MESSAGE = re.compile(

@@ -21,8 +21,16 @@ _TMP = tempfile.mkdtemp(prefix="ev-tests-")
 # the running Postgres. Opt in with EV_TEST_USE_LIVE_DB=1 only.
 if os.environ.get("EV_TEST_USE_LIVE_DB") != "1":
     os.environ["EV_DATABASE_URL"] = f"sqlite+aiosqlite:///{_TMP}/test.db"
+# The P0 secrets overlay must not repopulate conftest-blanked provider keys
+# from the owner's ~/.ev/secrets/production.env (config.py:40 fills any key
+# whose env value is blank). Point it at a nonexistent path so test blanking
+# stays authoritative and the suite stays offline.
+os.environ["EV_SECRETS_FILE"] = f"{_TMP}/nonexistent-secrets.env"
 os.environ["EV_MASTER_KEY"] = "test-key"
 os.environ["EV_API_KEY"] = "test-key"
+# Cognitive OS V2 is opt-in per test. Default keeps Mini-as-brain live tests intact.
+os.environ["EV_COGNITIVE_MODE"] = "legacy_mini"
+os.environ["EV_COGNITIVE_ROLE"] = "auto"
 # Force sync: inherited EV_PROCESSING_MODE=queue would enqueue onto owner Redis.
 os.environ["EV_PROCESSING_MODE"] = "sync"
 _LIVE_MUSE = os.environ.get("EV_TEST_USE_LIVE_MUSE") == "1"
@@ -189,11 +197,77 @@ def reset_mutable_settings() -> Iterator[None]:
         settings.code_projects = ""
         settings.code_projects_root = ""
         settings.voice_live_mode = "supervised"
+        settings.cognitive_mode = os.environ.get("EV_COGNITIVE_MODE", "legacy_mini")
+        settings.cognitive_role = os.environ.get("EV_COGNITIVE_ROLE", "auto")
 
+    def _restore_provider_flags() -> None:
+        """Restore chat/intelligence/realtime/persona surfaces to env defaults.
+
+        Muse Spark wiring and provider-swap tests reassign these directly;
+        without a pre-test restore the first case inherits the previous
+        run's override. Values re-derive from the conftest env defaults, so
+        an operator opt-in (EV_TEST_USE_LIVE_CHAT / _LIVE_MUSE) survives.
+        """
+
+        settings.chat_provider = os.environ.get("EV_CHAT_PROVIDER") or "echo"
+        settings.intelligence_provider = (
+            os.environ.get("EV_INTELLIGENCE_PROVIDER") or ""
+        )
+        settings.turn_control_provider = (
+            os.environ.get("EV_TURN_CONTROL_PROVIDER") or "openai"
+        )
+        settings.meta_model_api_key = os.environ.get("EV_META_MODEL_API_KEY") or None
+        settings.muse_spark_base_url = (
+            os.environ.get("EV_MUSE_SPARK_BASE_URL") or "https://api.meta.ai/v1"
+        )
+        settings.deepseek_base_url = (
+            os.environ.get("EV_DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
+        )
+        settings.xai_base_url = (
+            os.environ.get("EV_XAI_BASE_URL") or "https://api.x.ai/v1"
+        )
+        settings.search_provider = os.environ.get("EV_SEARCH_PROVIDER") or "none"
+        settings.brave_search_api_key = (
+            os.environ.get("EV_BRAVE_SEARCH_API_KEY") or None
+        )
+        settings.openai_realtime_model = (
+            os.environ.get("EV_OPENAI_REALTIME_MODEL") or "gpt-realtime-2.1-mini"
+        )
+        settings.openai_realtime_voice = (
+            os.environ.get("EV_OPENAI_REALTIME_VOICE") or "marin"
+        )
+        settings.openai_realtime_reasoning_effort = (
+            os.environ.get("EV_OPENAI_REALTIME_REASONING_EFFORT") or "low"
+        )
+        settings.persona_name = os.environ.get("EV_PERSONA_NAME") or "EV"
+        settings.persona_description = (
+            os.environ.get("EV_PERSONA_DESCRIPTION")
+            or "the owner's personal AI — house, phone, workshop, and visor"
+        )
+        settings.always_available_wake = (
+            os.environ.get("EV_ALWAYS_AVAILABLE_WAKE") or "OFF"
+        )
+        if not _LIVE_MUSE:
+            # Some tests write provider keys into os.environ directly (e.g.
+            # dotenv-style setup) and outlive their test. muse_api_key()
+            # reads os.environ at call time, so scrub the Meta aliases per
+            # test or keyless tests see a credential that was never theirs.
+            for _meta_name in (
+                "EV_META_MODEL_API_KEY",
+                "META_MODEL_API_KEY",
+                "MODEL_API_KEY",
+            ):
+                os.environ[_meta_name] = ""
+
+
+    from app.gateway.providers import PROVIDER_REGISTRY
+
+    builtin_provider_names = frozenset(PROVIDER_REGISTRY)
     _restore_flags()
     from app.voice.live.layer import reset_live_registry
 
     reset_live_registry()
+    _restore_provider_flags()
     yield
     from app.memory.bootstrap import reset_bootstrap_cache
     from app.memory.prefetch import reset_prefetch
@@ -203,6 +277,28 @@ def reset_mutable_settings() -> Iterator[None]:
     reset_live_registry()
     reset_bootstrap_cache()
     reset_prefetch()
+    _restore_provider_flags()
+    # Drop providers a test registered into the shared registry without
+    # restoring it (same shape as the finally-block swap in
+    # test_gateway_unit.test_provider_swap_is_registry_config_change).
+    for _name in tuple(PROVIDER_REGISTRY):
+        if _name not in builtin_provider_names:
+            PROVIDER_REGISTRY.pop(_name, None)
+    # Provider-acknowledged sandbox catalog, the derived semantic capability
+    # snapshot, and the retrieval embed/calibration/token caches must all
+    # re-derive against the restored settings.
+    import app.device_gateway.sandbox_tools as _sandbox_tools
+
+    _sandbox_tools._PROVIDER_EFFECTIVE_HASH = None
+    _sandbox_tools._PROVIDER_EFFECTIVE_NAMES = ()
+    import app.ev.capability_registry as _capability_registry
+
+    _capability_registry._semantic_cache = None
+    import app.memory.retrieval as _retrieval
+
+    _retrieval.reset_embed_cache()
+    _retrieval._CAL_CACHE.clear()
+    _retrieval._TOKEN_CACHE.clear()
 
 
 @pytest.fixture
@@ -223,3 +319,121 @@ async def db_session() -> AsyncIterator[AsyncSession]:
     reset_people_cache()
     async with SessionLocal() as session:
         yield session
+
+
+# --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# --- AGENT EAC (iPhone gateway) ---
+# Device-gateway phone fixtures: sandbox pair and owner-promoted pair.
+# Additive only; never edit existing fixtures above.
+# --------------------------------------------------------------------------- #
+async def _pair_gateway_phone(client: AsyncClient) -> tuple[dict, AsyncClient]:
+    from httpx import ASGITransport
+    from httpx import AsyncClient as _Client
+
+    from app.main import app as _app
+
+    minted = await client.post(
+        "/v1/device-gateway/pairing-tokens",
+        json={"role": "primary_companion", "display_name": "Fixture iPhone"},
+    )
+    assert minted.status_code == 200, minted.text
+    phone = _Client(transport=ASGITransport(app=_app), base_url="http://test")
+    paired = await phone.post(
+        "/v1/device-gateway/pair",
+        json={
+            "pairing_token": minted.json()["pairing_token"],
+            "display_name": "Fixture iPhone",
+            "protocol_version": "1",
+            "client_version": "2026.09.08.01",
+            "platform": "ios",
+            "capabilities": ["foreground_voice", "camera", "text"],
+            "instance_id": "fixture-phone-tab",
+            "memory_scope": "owner",
+            "role": "primary_companion",
+        },
+    )
+    assert paired.status_code == 200, paired.text
+    phone.headers["Authorization"] = f"Bearer {paired.json()['device_token']}"
+    return paired.json(), phone
+
+
+@pytest.fixture
+async def gateway_phone(client: AsyncClient) -> AsyncIterator[tuple[dict, AsyncClient]]:
+    body, phone = await _pair_gateway_phone(client)
+    yield body, phone
+    await phone.aclose()
+
+
+@pytest.fixture
+async def owner_phone(client: AsyncClient) -> AsyncIterator[tuple[dict, AsyncClient]]:
+    body, phone = await _pair_gateway_phone(client)
+    promoted = await client.post(
+        "/v1/device-gateway/admin/promote-owner",
+        json={"device_id": body["device"]["device_id"], "reason": "owner"},
+    )
+    assert promoted.status_code == 200, promoted.text
+    yield body, phone
+    await phone.aclose()
+
+
+@pytest.fixture
+def opened_presence() -> Iterator[None]:
+    """Make the presence overlay report an opened surface.
+
+    Under pytest the overlay refuses to open and reports ``degraded: True``
+    (``app/notify/presence.py``), which is honest — no window was shown. Any
+    caller that records dispatch honesty therefore correctly reports a failed
+    run, so a test about *scheduling* rather than about the overlay has to say
+    the surface opened, or it asserts a lie.
+
+    Patched by hand rather than through ``monkeypatch``: a test that calls
+    ``monkeypatch.undo()`` (to drop its own stub of a broken integration)
+    would undo this too, and the dispatch would fail for the wrong reason.
+    """
+
+    from app.notify import presence as presence_module
+
+    original = presence_module.open_presence
+
+    async def _open(**kwargs):
+        return {
+            "ok": True,
+            "opened": True,
+            "title": kwargs.get("title"),
+            "body": kwargs.get("body"),
+            "surface": "overlay",
+            "via": "test_fixture",
+        }
+
+    presence_module.open_presence = _open
+    yield
+    presence_module.open_presence = original
+
+
+@pytest.fixture(autouse=True)
+def isolated_storage(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Point storage-backed stores at a per-test directory.
+
+    The cognitive session — the pending offer and the turn ledger — is a plain
+    JSON file under ``settings.storage_root``. Without this, any test that
+    drives a real turn writes the owner's live conversation file, and leaves an
+    offer behind that the next test (and the echo-drop and listen-ack gates)
+    would then see for its whole TTL.
+    """
+
+    from app.cognitive.session_store import reset_for_tests
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path_factory.mktemp("storage")))
+    reset_for_tests()
+    yield
+    reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def reset_pair_rate_limiter() -> None:
+    """EAC101: clear the in-memory /pair attempt limiter between tests."""
+    from app.device_gateway import api as _gw_api
+
+    _gw_api._PAIR_ATTEMPTS.clear()

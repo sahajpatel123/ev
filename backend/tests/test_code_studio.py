@@ -18,7 +18,12 @@ from app.ev.code_studio import (
     save_studio,
     spoken_studio_progress,
 )
-from app.ev.luna_code import drain_pending_code_jobs, intern_in_flight, looks_like_code_request, maybe_enqueue_code_intern
+from app.ev.luna_code import (
+    drain_pending_code_jobs,
+    intern_in_flight,
+    looks_like_code_request,
+    maybe_enqueue_code_intern,
+)
 from app.ev.tool_select import LIVE_VOICE_TOOLS
 
 
@@ -62,6 +67,28 @@ def test_calculator_app_ui_auto_backgrounds(tmp_path: Path, monkeypatch) -> None
     assert stopped
     assert "stopped" in stopped.lower()
     assert intern_in_flight() is False
+
+
+def test_stale_intern_pending_does_not_block_studio(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.luna_code import _pending_code_path, enqueue_code_intern
+    from app.memory.paths import read_json
+
+    monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
+    enqueue_code_intern("leftover overnight job")
+    leftover = read_json(_pending_code_path())
+    assert leftover is not None
+    assert leftover.get("kind") == "intern"
+    ack = maybe_handle_code_ops("create a calculator app UI")
+    assert ack
+    assert "queued" not in ack.lower()
+    assert "calculator" in ack.lower()
+    live = load_studio()
+    assert live is not None
+    assert live.get("kind") == "calculator"
+    pending = read_json(_pending_code_path())
+    assert pending is not None
+    assert pending.get("kind") == "goal_slice"
 
 
 def test_casual_stop_does_not_need_the_clothing_name(tmp_path: Path, monkeypatch) -> None:
@@ -222,7 +249,7 @@ def test_stop_building_aborts_and_does_not_queue(tmp_path: Path, monkeypatch) ->
     studio = load_studio()
     assert studio is not None
     assert studio.get("kind") == "clothing_site"
-    jobs = list((load_board().get("jobs") or []))
+    jobs = list(load_board().get("jobs") or [])
     assert any(str(item.get("kind") or "") == "dashboard" for item in jobs)
     stopped = maybe_handle_code_ops(ask)
     assert stopped
@@ -247,7 +274,6 @@ def test_stop_building_aborts_and_does_not_queue(tmp_path: Path, monkeypatch) ->
 async def test_stop_cancels_the_running_drain(tmp_path: Path, monkeypatch) -> None:
     from app.config import settings
     from app.ev import luna_code as luna
-    from app.ev.code_studio import load_studio
 
     monkeypatch.setattr(settings, "memory_dir", str(tmp_path / "mem"))
     started = asyncio.Event()

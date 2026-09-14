@@ -20,6 +20,8 @@ from app.ev.continuity import (
     MemoryIntent,
     classify_memory_intent,
     conversation_time_requested,
+    is_affirmative_reply,
+    is_negative_reply,
     wants_historical_truth,
 )
 from app.ev.memory_ops import apply_forget
@@ -58,6 +60,50 @@ def _keep_implicit(query: str, memory: RetrievedMemory) -> bool:
     return semantic_raw >= 0.35 and memory.score >= 0.45
 
 
+def _answers_live_offer(query: str) -> bool:
+    """True when a short yes/no answers an offer the assistant has on the table.
+
+    "Do you want me to read out the full mail?" — "yes" names no topic of its
+    own. The referent is the offer Evie just made, never a retrievable query,
+    and retrieval on the bare word injects whatever the retriever's per-query
+    min-max normalisation pushed to the top of an unrelated pool. A real
+    question ("what did the mail from Rahul say?") is not a reply to the offer
+    and keeps today's retrieval exactly. An unreadable ledger fails open, so
+    one broken session file cannot silently mute recall for every turn.
+    """
+
+    text = (query or "").strip()
+    if not text:
+        return False
+    if not (is_affirmative_reply(text) or is_negative_reply(text)):
+        return False
+    try:
+        from app.cognitive.intent import pending_offer
+        from app.cognitive.session_store import current
+
+        return pending_offer(current()) is not None
+    except Exception:  # noqa: BLE001 - session unavailable → today's behavior
+        return False
+
+
+def _log_offer_answer(query: str) -> None:
+    log_memory(
+        "memory.retrieval_skipped",
+        extra={"reason": "answers_live_offer", "query_chars": len(query or "")},
+    )
+
+
+def answers_live_offer(query: str) -> bool:
+    """Public: the turn is a short reply answering Evie's own live question.
+
+    Callers that do their own retrieval (the chat pipeline's secondary search)
+    must skip it for these turns too, or the answer to Evie's question arrives
+    with unrelated memories bolted on.
+    """
+
+    return _answers_live_offer(query)
+
+
 async def select_context_memories(
     session: AsyncSession,
     query: str,
@@ -67,6 +113,14 @@ async def select_context_memories(
     include_sensitive: bool = False,
 ) -> tuple[MemoryIntent, list[RetrievedMemory]]:
     intent = classify_memory_intent(query)
+    if intent == "continuation" and _answers_live_offer(query):
+        # The turn answers Evie's own offer ("yes" to "do you want me to read
+        # out the full mail?"). There is no query to retrieve on — the referent
+        # is the offer, rendered into the prompt from the session ledger — so
+        # injecting hits here only derails the answer with unrelated memories.
+        _log_offer_answer(query)
+        _log_selected(intent, [])
+        return intent, []
     retriever = Retriever(session)
     log_memory("memory.retrieval_started", extra={"intent": intent, "k": k})
     if intent == "fresh":
@@ -137,6 +191,24 @@ async def explicit_recall_payload(
     k: int = 10,
     memory_type_hint: str | None = None,
 ) -> dict:
+    if _answers_live_offer(query):
+        # The Muse/kernel prefetch hands this the owner's raw words for every
+        # non-compact turn, so a bare "yes" reached explicit fusion unguarded.
+        # Same rule as the context path: answering the offer is not a recall
+        # request, and an empty pack is the honest report of that.
+        _log_offer_answer(query)
+        return {
+            "ok": True,
+            "intent": "continuation",
+            "question": (query or "")[:240],
+            "count": 0,
+            "evidence": [],
+            "results": [],
+            "timeline": [],
+            "grounding": "none",
+            "spoken": "",
+            "skipped": "answers_live_offer",
+        }
     from app.memory.recall import build_explicit_recall_payload
 
     return await build_explicit_recall_payload(

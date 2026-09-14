@@ -13,7 +13,7 @@ import pytest
 
 
 def test_wake_state_machine_no_stuck() -> None:
-    from backend.app.wake.state_machine import WakeState, WakeStateMachine
+    from app.wake.state_machine import WakeState, WakeStateMachine
 
     sm = WakeStateMachine()
     assert sm.state == WakeState.IDLE_EARS
@@ -53,7 +53,7 @@ def test_wake_state_machine_no_stuck() -> None:
 
 
 def test_speculative_commit_gate_forbids_actions() -> None:
-    from backend.app.wake.state_machine import SPECULATIVE_FORBIDDEN, WakeStateMachine
+    from app.wake.state_machine import SPECULATIVE_FORBIDDEN, WakeStateMachine
 
     sm = WakeStateMachine()
     sm.candidate(confidence=0.9)
@@ -130,7 +130,7 @@ def test_speaker_fusion_progressive() -> None:
 
 
 def test_directed_speech_cases() -> None:
-    from backend.app.wake.directed import DirectedSpeechChecker
+    from app.wake.directed import DirectedSpeechChecker
 
     chk = DirectedSpeechChecker()
     accepts = [
@@ -247,7 +247,7 @@ def test_self_hearing_half_duplex() -> None:
 
 
 def test_device_arbitration_one_winner() -> None:
-    from backend.app.wake.arbitration import WakeArbitration, WakeCandidate
+    from app.wake.arbitration import WakeArbitration, WakeCandidate
 
     arb = WakeArbitration()
     a = WakeCandidate(device_id="mac-ears", confidence=0.82)
@@ -328,7 +328,7 @@ def test_mic_ownership_20_cycles_no_conflict() -> None:
 def test_self_wake_suppressed() -> None:
     """§31: Evie saying 'Evie' in own response must not self-wake."""
     # TTS playback half-duplex gate already tested, here verify transcript containing Evie in assistant reply is not treated as wake
-    from backend.app.wake.directed import DirectedSpeechChecker
+    from app.wake.directed import DirectedSpeechChecker
 
 
     chk = DirectedSpeechChecker()
@@ -345,21 +345,27 @@ def test_privacy_ring_volatile() -> None:
     assert "Event" not in ring_src or "not stored" in ring_src.lower() or "PCM16RingBuffer" in ring_src
 
 
-def test_live_mic_marker_pid_liveness() -> None:
+def test_live_mic_marker_pid_liveness(tmp_path, monkeypatch) -> None:
     """ONE mic owner: ears stands down only for a LIVE owner PID, and a
-    stale marker whose PID is gone must never wedge the always-on listener."""
+    stale marker whose PID is gone must never wedge the always-on listener.
+
+    The marker is pointed at a temp path. The real one lives in the owner's
+    Application Support directory and is held by a running EV.app; writing to
+    it — and unlinking it, as this test used to — would let ears open the
+    microphone while a live session owns it, on the owner's own machine.
+    """
     import os
 
-    from clients.ears.main import EV_LIVE_MIC_MARKER, ev_live_owns_mic
+    from clients.ears import main as ears_main
+
+    marker = tmp_path / "live-mic-owner"
+    monkeypatch.setattr(ears_main, "EV_LIVE_MIC_MARKER", marker)
+    ev_live_owns_mic = ears_main.ev_live_owns_mic
 
     assert not ev_live_owns_mic(), "no marker -> ears owns the mic"
-    try:
-        EV_LIVE_MIC_MARKER.write_text(str(os.getpid()), encoding="utf-8")
-        assert ev_live_owns_mic(), "live owner PID -> ears stands down"
-        EV_LIVE_MIC_MARKER.write_text("999999999", encoding="utf-8")
-        assert not ev_live_owns_mic(), "dead owner PID -> marker is self-healing"
-        EV_LIVE_MIC_MARKER.write_text("not-a-pid", encoding="utf-8")
-        assert not ev_live_owns_mic(), "garbage marker ignored"
-    finally:
-        EV_LIVE_MIC_MARKER.unlink(missing_ok=True)
-    assert not ev_live_owns_mic()
+    marker.write_text(str(os.getpid()), encoding="utf-8")
+    assert ev_live_owns_mic(), "live owner PID -> ears stands down"
+    marker.write_text("999999999", encoding="utf-8")
+    assert not ev_live_owns_mic(), "dead owner PID -> marker is self-healing"
+    marker.write_text("not-a-pid", encoding="utf-8")
+    assert not ev_live_owns_mic(), "garbage marker ignored"

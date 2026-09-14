@@ -22,6 +22,10 @@ LIVE_AUDIO = "live_audio"
 ACCESS_LOG = "access_log"
 EVENT = "event"
 INTEGRATION_CACHE = "integration_cache"
+# --- CAMERA/MEMORY FIELD WORK (owner-requested, 2026-09-10) -----------------
+# Recorded clip pixels. Derived memory (the observation, its moment timeline and
+# transcript) is EVENT and lives on; only the raw video is swept.
+MEDIA_CLIP = "media_clip"
 
 CATEGORIES = (
     VOICEPRINT,
@@ -31,6 +35,7 @@ CATEGORIES = (
     ACCESS_LOG,
     EVENT,
     INTEGRATION_CACHE,
+    MEDIA_CLIP,
 )
 
 TRACKS = (
@@ -114,7 +119,12 @@ _ENV_RETENTION = {
     ACCESS_LOG: "EV_RETENTION_ACCESS_LOG_DAYS",
     EVENT: "EV_RETENTION_EVENT_DAYS",
     INTEGRATION_CACHE: "EV_RETENTION_INTEGRATION_CACHE_DAYS",
+    MEDIA_CLIP: "EV_RETENTION_MEDIA_CLIP_DAYS",
 }
+
+# Recorded clips are the heaviest pixels the owner stores. Default: keep the
+# raw video for 30 days, keep the derived memory until the owner deletes it.
+_DEFAULT_MEDIA_CLIP_DAYS = 30
 
 _REMOTE_PROCESSING_ENV = {
     "voice_enrollment": "EV_ALLOW_REMOTE_VOICEPRINT_PROCESSING",
@@ -172,6 +182,8 @@ def retention_days(category: str) -> int:
             return int(override)
         except ValueError as exc:
             raise ValueError(f"{_ENV_RETENTION[category]} must be an integer") from exc
+    if category == MEDIA_CLIP:
+        return _DEFAULT_MEDIA_CLIP_DAYS
     defaults = _DEFAULT_RETENTION_DAYS.get(region(), _DEFAULT_RETENTION_DAYS["global"])
     return defaults[category]
 

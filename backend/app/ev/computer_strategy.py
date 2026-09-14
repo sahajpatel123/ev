@@ -12,7 +12,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 # Supervised-era primitives. Shadow advertises UI verbs instead of
 # inspect_ui/ui_action/screen_look/app_action; schema match is against
@@ -232,8 +232,14 @@ _COMPUTER_TASK_RE = re.compile(
     r")\b",
     re.I,
 )
-_NAVIGATION_URL_RE = re.compile(
-    r"^(?:https?://)?(?:www\.)?"
+# Spoken transcripts are lowercase. "play it in the background" is excluded
+# by a negative lookahead so it never becomes a computer task.
+_PLAY_IN_APP_RE = re.compile(
+    r"\b(?:play|watch)\b.{0,80}\b(?:in|inside|using|from)\s+(?:the\s+)?"
+    r"(?!background\b)[A-Za-z][\w .+-]{0,30}",
+    re.I,
+)
+_NAVIGATION_URL_RE = re.compile(    r"^(?:https?://)?(?:www\.)?"
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}"
     r"(?::\d{2,5})?(?:/[^\s]*)?$",
     re.I,
@@ -402,7 +408,7 @@ def clean_computer_query(text: str, app: str | None = None) -> str:
     )
     query = re.sub(
         r"\s+(?:in|on|using|with)\s+(?:the\s+)?(?:google\s+)?"
-        r"(?:chrome|safari|browser|spotify|notes|finder)\b.*$",
+        r"(?:chrome|safari|browser|firefox|edge|brave|arc|orion|spotify|notes|finder)\b.*$",
         "",
         query,
         flags=re.I,
@@ -582,6 +588,11 @@ def looks_like_web_research(text: str) -> bool:
     raw = (text or "").strip()
     if not raw:
         return False
+    from app.ev.laptop_files import looks_like_file_task
+
+    if looks_like_file_task(raw):
+        # "find my tax return file" is a local file, never a web lookup.
+        return False
     lower = raw.lower()
     if re.search(r"\b(?:safari|chrome|new tab|close tab)\b", lower):
         return False
@@ -697,6 +708,149 @@ def navigation_url_in_utterance(text: str) -> str | None:
         if found:
             return found
     return None
+
+
+# Spoken site names → homepage. Generic lexicon, not product examples.
+_WEB_DESTINATIONS: tuple[tuple[str, str], ...] = (
+    ("whatsapp web", "https://web.whatsapp.com/"),
+    ("google maps", "https://maps.google.com/"),
+    ("youtube", "https://www.youtube.com/"),
+    ("gmail", "https://mail.google.com/"),
+    ("outlook", "https://outlook.live.com/"),
+    ("twitter", "https://twitter.com/"),
+    ("facebook", "https://www.facebook.com/"),
+    ("instagram", "https://www.instagram.com/"),
+    ("linkedin", "https://www.linkedin.com/"),
+    ("wikipedia", "https://www.wikipedia.org/"),
+    ("netflix", "https://www.netflix.com/"),
+    ("reddit", "https://www.reddit.com/"),
+    ("github", "https://github.com/"),
+    ("amazon", "https://www.amazon.com/"),
+    ("google", "https://www.google.com/"),
+    ("maps", "https://maps.google.com/"),
+)
+_OPEN_SITE_RE = re.compile(
+    r"\b(?:open|launch|start|go\s+to|visit|navigate(?:\s+to)?|take me to|pull up)\b",
+    re.I,
+)
+_SEARCH_SITE_RE = re.compile(
+    r"\b(?:search(?:\s+for)?|look\s+up|google\s+(?!chrome\b))\b",
+    re.I,
+)
+_NOT_SIMPLE_OPEN_RE = re.compile(
+    r"\b(?:click|type|press|scroll|play|watch|pause|write|create|append)\b",
+    re.I,
+)
+
+
+def _site_haystack(text: str) -> str:
+    """Drop browser compound names so 'Google Chrome' is not the Google homepage."""
+
+    lowered = (text or "").lower()
+    return re.sub(r"\bgoogle\s+chrome\b", "chrome", lowered)
+
+
+def named_site_in_text(text: str) -> str | None:
+    """Homepage URL if a known site name appears. Does not require an open-verb."""
+
+    haystack = _site_haystack(text)
+    if not haystack.strip():
+        return None
+    best_url = None
+    best_len = 0
+    for name, url in _WEB_DESTINATIONS:
+        if re.search(rf"\b{re.escape(name)}\b", haystack) and len(name) > best_len:
+            best_url = url
+            best_len = len(name)
+    return best_url
+
+
+def named_web_destination(text: str) -> str | None:
+    """Navigate target when they asked to open/go to a named site, not search for it."""
+
+    raw = (text or "").strip()
+    if not raw or not _OPEN_SITE_RE.search(raw):
+        return None
+    if _SEARCH_SITE_RE.search(raw):
+        return None
+    return named_site_in_text(raw)
+
+
+def utterance_navigation_dest(text: str, query: str = "") -> str | None:
+    """URL to open: typed host, then a spoken site name on an open/go utterance."""
+
+    dest = navigation_url_from_text(query) if query else None
+    if dest is None:
+        dest = navigation_url_in_utterance(text)
+    if dest is None:
+        dest = named_web_destination(text)
+    return dest
+
+
+def looks_like_app_or_web_task(text: str) -> bool:
+    """True when this utterance is a browser/URL act, not a leftover file job."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return False
+    if navigation_url_in_utterance(raw) or named_site_in_text(raw):
+        return True
+    if _TAB_ACTION_RE.search(raw):
+        return True
+    if re.search(
+        r"\b(?:open|search|play|watch|type)\b.{0,80}\b(?:in|inside|using)\s+"
+        r"(?:the\s+)?[A-Za-z][\w .+-]{0,30}",
+        raw,
+        re.I,
+    ):
+        return True
+    if re.search(
+        r"\bopen\s+(?:up\s+)?(?:the\s+)?[A-Za-z][\w .+-]{1,40}?\s*(?:,|\band\b|\bthen\b)",
+        raw,
+        re.I,
+    ):
+        return True
+    return bool(
+        re.search(
+            r"\b(?:open|launch|start|go\s+to|visit|navigate(?:\s+to)?)\b",
+            raw,
+            re.I,
+        )
+        and re.search(r"\b(?:safari|chrome|browser|firefox|google chrome)\b", raw, re.I)
+    )
+
+
+def parse_open_intent(text: str) -> tuple[str, dict[str, Any]] | None:
+    """Deterministic open-app / navigate. None when the ask is not a simple open."""
+
+    raw = (text or "").strip()
+    if not looks_like_app_or_web_task(raw):
+        return None
+    if _NOT_SIMPLE_OPEN_RE.search(raw):
+        return None
+    if re.search(r"\bsearch\s+for\b", raw, re.I) and not navigation_url_in_utterance(raw):
+        return None
+    if re.search(r"\b(?:and|then)\b", raw, re.I):
+        dest = named_web_destination(raw) or navigation_url_in_utterance(raw)
+        if not dest:
+            return None
+    resolved = resolve_in_app_computer_goal(raw) or resolve_generic_computer_goal(raw)
+    if resolved is None:
+        dest = named_web_destination(raw) or navigation_url_in_utterance(raw)
+        if dest:
+            browser = _browser_app_from_text(raw, None) or "Safari"
+            return "app_action", {
+                "app": browser,
+                "action": "navigate",
+                "query": dest,
+                "url": dest,
+            }
+        return None
+    capability, args = resolved
+    if capability == "app_action" and str(args.get("action") or "").lower() == "status":
+        app = str(args.get("app") or "Safari").strip() or "Safari"
+        return "open_app", {"name": app}
+    return resolved
 
 
 def wants_play_media(text: str) -> bool:
@@ -838,7 +992,7 @@ def resolve_media_computer_goal(
         first_item and _host_looks_like_video_index(navigation_url_in_utterance(raw) or "")
     ):
         return None
-    app = _browser_app_from_text(raw, target_app) or "Safari"
+    app = _explicit_target_app(raw, target_app)
     dest = navigation_url_in_utterance(raw)
     title = media_query_from_goal(raw)
     if title and (dest is None or _host_looks_like_video_index(dest)):
@@ -966,7 +1120,27 @@ def _browser_app_from_text(text: str, target_app: str | None) -> str | None:
         return "Chrome"
     if "safari" in app or re.search(r"\bsafari\b", lowered):
         return "Safari"
+    if "firefox" in app or re.search(r"\bfirefox\b", lowered):
+        return "Firefox"
     return None
+
+
+def _explicit_target_app(
+    raw: str, target_app: str | None, default: str = "Safari"
+) -> str:
+    """Browser named in the utterance, else the caller's explicit target app,
+    else the default — so a named Firefox/Arc is never silently swapped."""
+
+    browser = _browser_app_from_text(raw, target_app)
+    if browser:
+        return browser
+    named = _target_app_from_utterance(raw, target_app)
+    if named:
+        return named
+    explicit = str(target_app or "").strip()
+    if explicit and explicit.lower() not in {"front", "this", "that", "it"}:
+        return explicit
+    return default
 
 
 def _resolve_close_app(text: str) -> tuple[str, dict[str, Any]] | None:
@@ -995,11 +1169,558 @@ def _resolve_close_app(text: str) -> tuple[str, dict[str, Any]] | None:
     )[0]
     name = re.sub(r"^(?:the\s+)?", "", name).strip()
     name = re.sub(r"\s+(?:app|application|windows?)$", "", name).strip(" .")
-    if not name or re.search(r"\b(result|link|tab|dialog|this|that|it)\b", name):
+    if not name or re.search(r"\b(result|link|tabs?|dialog|this|that|it)\b", name):
         return None
     if re.search(r"\b(and|then|search|click|type|write|press)\b", name):
         return None
     return "close_app", {"name": name}
+
+
+# ---------------------------------------------------------------------------
+# Any-app "open X in Y" support.
+#
+# The dedicated branches below only know six semantic apps. Everything else
+# used to collapse into a garbage open_app name ("standup notes in slack")
+# or get hijacked into Safari ("open youtube in firefox"). This parser is
+# structural — the app-slot position proves the words name an app — so it
+# works for every installed app without per-app scripting. Apps with a
+# dedicated semantic adapter defer to their branch.
+# ---------------------------------------------------------------------------
+
+_BROWSER_SLOT_NAMES = frozenset(
+    {
+        "firefox",
+        "mozilla firefox",
+        "arc",
+        "edge",
+        "microsoft edge",
+        "brave",
+        "brave browser",
+        "orion",
+        "zen",
+        "dia",
+    }
+)
+
+_APP_SLOT_STOP = frozenset(
+    {
+        "new tab",
+        "a new tab",
+        "another tab",
+        "the tab",
+        "that tab",
+        "this tab",
+        "current tab",
+        "specific tab",
+        "browser tab",
+        "tab",
+        "tabs",
+        "this",
+        "that",
+        "it",
+        "there",
+        "here",
+        "front",
+        "browser",
+        "web browser",
+        "the browser",
+        "file",
+        "files",
+        "folder",
+        "folders",
+        "window",
+        "windows",
+        "app",
+        "application",
+        "laptop",
+        "mac",
+        "macbook",
+        "computer",
+        "machine",
+        "desktop",
+        "documents",
+        "downloads",
+    }
+)
+
+_TAB_ACTION_RE = re.compile(
+    r"\b(?:new|another|fresh)\s+tab\b"
+    r"|\bopen a(?:nother)? tab\b"
+    r"|\b(?:close|shut|dismiss)\s+[^,.;!?]{0,32}?\btabs?\b",
+    re.I,
+)
+
+_TAB_CLOSE_RE = re.compile(
+    r"\b(?:close|shut|dismiss)\s+[^,.;!?]{0,32}?\btabs?\b",
+    re.I,
+)
+
+_TAB_OPEN_RE = re.compile(
+    r"\b(?:new|another|fresh)\s+tab\b|\bopen a(?:nother)? tab\b",
+    re.I,
+)
+
+_TAB_WORD_RE = re.compile(r"\btabs?\b", re.I)
+
+_TAB_SLOT_WORDS = frozenset(
+    {
+        "the",
+        "that",
+        "this",
+        "current",
+        "specific",
+        "active",
+        "browser",
+        "new",
+        "last",
+        "previous",
+        "next",
+        "other",
+        "another",
+        "a",
+    }
+)
+
+_CONTENT_PRONOUNS = frozenset({"it", "that", "this", "there", "here"})
+
+_PLAY_FROM_COLLECTION_RE = re.compile(
+    r"^(?:please\s+)?(?P<verb>play|watch)\s+"
+    r"(?P<content>.+?)\s+from\s+(?:my\s+|the\s+)?(?P<collection>.+?)"
+    r"\s+(?:in|inside|on|using)\s+(?:the\s+)?"
+    r"(?P<app>[A-Za-z][\w .+-]{0,40}?)(?:\s+app)?\.?\s*$",
+    re.I,
+)
+
+_OPEN_IN_APP_RE = re.compile(
+    r"^(?:please\s+)?(?P<verb>go to|look up|navigate to|navigate|open|launch|start|"
+    r"play|watch|visit|search|find|locate|type|"
+    r"select|choose|toggle|enable|disable|set value|set|"
+    r"submit|dismiss|scroll to|scroll|go back|save|new item|menu|share)\s+"
+    r"(?P<content>.+?)\s+(?:in|inside|using|with|from)\s+(?:the\s+)?"
+    r"(?P<app>[A-Za-z][\w .+-]{0,40}?)(?:\s+app)?\.?\s*$",
+    re.I,
+)
+
+_RANDOM_RE = re.compile(r"\b(?:random(?:ly)?|shuffled?|shuffle|any)\b", re.I)
+
+_FROM_COLLECTION_RE = re.compile(
+    r"\bfrom\s+(?:my\s+|the\s+)?(?P<collection>.+?)"
+    r"(?=\s+in\s+[A-Za-z]|\s+on\s+[A-Za-z]|$)",
+    re.I,
+)
+
+_PLAYLIST_NAME_RE = re.compile(
+    r"(?:the\s+|my\s+)?(?P<name>[A-Za-z0-9][\w &'’\-]{0,48}?)\s+playlist",
+    re.I,
+)
+
+_IN_APP_VERB_RE = re.compile(
+    r"^(?:in|inside|using)\s+(?:the\s+)?(?P<app>[A-Za-z][\w .+-]{0,40}?)"
+    r"(?:\s+app)?\s*[,:\s]\s*"
+    r"(?P<verb>go to|look up|navigate to|navigate|open|launch|start|play|watch|"
+    r"search|find|locate|type|enter|write|"
+    r"select|choose|toggle|enable|disable|set value|set|"
+    r"submit|dismiss|scroll to|scroll|go back|save|new item|menu|share)"
+    r"\s+(?P<content>.+)$",
+    re.I,
+)
+
+_QUERYLESS_IN_APP_RE = re.compile(
+    r"^(?:please\s+)?(?P<verb>save|go back|submit|dismiss|share|new item|menu|scroll)"
+    r"\s+in\s+(?:the\s+)?(?P<app>[A-Za-z][\w .+-]{0,40}?)(?:\s+app)?\.?\s*$",
+    re.I,
+)
+
+_OPEN_APP_COMPOUND_RE = re.compile(
+    r"^(?:please\s+)?open\s+(?:up\s+)?(?:the\s+)?"
+    r"(?P<app>[A-Za-z][\w .+-]{1,40}?)(?:\s+app)?\s*(?:,|\band\b|\bthen\b)\s+"
+    r"(?P<rest>.+)$",
+    re.I,
+)
+
+_IN_IT_SUFFIX_RE = re.compile(r"\s+in\s+(?:it|there|inside)\s*\.?\s*$", re.I)
+
+_REST_VERB_RE = re.compile(
+    r"^(?P<verb>go to|look up|navigate to|navigate|open|launch|start|visit|"
+    r"play|watch|search|find|locate|type|enter|write|click|press|tap|"
+    r"select|choose|toggle|enable|disable|set value|set|"
+    r"submit|dismiss|scroll to|scroll|go back|"
+    r"save|new item|menu|share)\b\s*(?P<content>.*)$",
+    re.I,
+)
+
+_GENERIC_VERB_ACTIONS: dict[str, str] = {
+    "select": "select",
+    "choose": "select",
+    "toggle": "toggle",
+    "enable": "toggle",
+    "disable": "toggle",
+    "set value": "set_value",
+    "set": "set_value",
+    "submit": "submit",
+    "dismiss": "dismiss",
+    "scroll to": "scroll_to",
+    "scroll": "scroll",
+    "go back": "back",
+    "save": "save",
+    "new item": "new_item",
+    "menu": "menu",
+    "share": "menu",
+}
+
+_QUERYLESS_ACTIONS = frozenset(
+    {"submit", "dismiss", "back", "save", "new_item", "scroll"}
+)
+
+_TAB_CHROME_RE = re.compile(
+    r"\b(?:new|another|fresh)\s+tab\b|\bopen a(?:nother)? tab\b",
+    re.I,
+)
+
+
+def _clean_app_slot(raw: str | None) -> str:
+    name = re.sub(r"\s+", " ", (raw or "").strip())
+    name = re.sub(r"^the\s+", "", name, flags=re.I).strip()
+    if name.lower() != "app store":
+        name = re.sub(r"^app\s+", "", name, flags=re.I).strip()
+    name = re.sub(r"\s+(?:app|application)$", "", name, flags=re.I).strip(" .")
+    return name
+
+
+def _slot_rejected(app: str) -> bool:
+    """True when a parsed app slot is not an app (tab/window/location words)."""
+
+    lowered = (app or "").strip().lower()
+    if not lowered or lowered in _APP_SLOT_STOP:
+        return True
+    if _TAB_WORD_RE.search(lowered):
+        return True
+    return bool(re.search(r"\b(?:in|inside|using|with)\b", lowered))
+
+
+def _tab_target_query(raw: str) -> str | None:
+    """Host/word identifying which tab to close, from the owner's words."""
+
+    dest = navigation_url_in_utterance(raw)
+    if dest:
+        return urlparse(dest).hostname or dest
+    site = named_site_in_text(raw)
+    if site:
+        return urlparse(site).hostname or site
+    match = re.search(
+        r"\b(?:close|shut|dismiss)\s+(?:the\s+|that\s+|this\s+)?"
+        r"(?P<name>[A-Za-z0-9][\w.-]*)\s+(?:specific\s+|browser\s+|current\s+)?tab",
+        raw,
+        re.I,
+    )
+    if match:
+        name = match.group("name").strip().lower()
+        if name not in _TAB_SLOT_WORDS:
+            known = named_site_in_text(name)
+            if known:
+                return urlparse(known).hostname or known
+            return name
+    return None
+
+
+def _slot_is_adapter_app(app: str) -> bool:
+    """True only when the slot names an adapter app itself.
+
+    Identity-based on purpose: "YouTube Music", "GoodNotes" or "Bear notes"
+    must not be swallowed by the Apple Music/Notes adapters.
+    """
+
+    if not app:
+        return False
+    if adapter_for(app) is not None:
+        return True
+    return (app or "").strip().lower() in _ADAPTER_SLOT_NAMES
+
+
+_ADAPTER_SLOT_NAMES = frozenset(
+    {
+        "music",
+        "apple music",
+        "safari",
+        "notes",
+        "apple notes",
+        "finder",
+        "spotify",
+        "chrome",
+        "google chrome",
+        "calculator",
+        "calc",
+    }
+)
+
+
+def _slot_is_browser_app(app: str) -> bool:
+    """True for any browser by slot, without per-browser scripting."""
+
+    lowered = (app or "").strip().lower()
+    if not lowered:
+        return False
+    if lowered in _BROWSER_SLOT_NAMES:
+        return True
+    return _browser_app_from_text(app, app) is not None
+
+
+def web_search_url(query: str) -> str:
+    """Generic web-search destination so any browser can search, not just Safari/Chrome."""
+
+    return f"https://www.google.com/search?q={quote_plus((query or '').strip())}"
+
+
+def _looks_like_file_path(text: str) -> bool:
+    raw = (text or "").strip().strip("\"'")
+    if not raw or "://" in raw:
+        return False
+    if raw.startswith("/") or raw.startswith("~/") or raw.lower().startswith("file://"):
+        return True
+    return " " not in raw and re.search(
+        r"\.(pdf|png|jpe?g|gif|webp|mp4|mov|m4v|mkv|avi|doc|docx|xls|xlsx|"
+        r"ppt|pptx|txt|md|csv|json|zip|dmg|pkg)$",
+        raw,
+        re.I,
+    ) is not None
+
+
+_AUDIO_CONTENT_RE = re.compile(r"\b(?:playlist|tracks?|songs?)\b", re.I)
+
+
+def _adapter_owns_content_verb(app: str, verb: str, raw: str) -> bool:
+    """True when a dedicated adapter must keep this in-app request.
+
+    Only apps that actually have a semantic adapter defer — and only for the
+    semantics that adapter owns. Browsers without an adapter (Firefox, Arc,
+    Brave) and every other app fall through to the generic engine, so a
+    request never gets swallowed or hijacked to Safari.
+    """
+
+    adapter = adapter_for(app)
+    if adapter is None and not _slot_is_adapter_app(app):
+        return False
+    if _slot_is_browser_app(app):
+        return verb in {
+            "search", "open", "play", "watch", "type", "enter", "write",
+            "find", "look up", "locate",
+        }
+    key = str((adapter or {}).get("semantic_adapter") or "")
+    if not key:
+        slot = (app or "").strip().lower()
+        if slot in {"music", "apple music"}:
+            key = "music"
+        elif slot in {"notes", "apple notes"}:
+            key = "notes"
+        elif slot == "finder":
+            key = "finder"
+    if key in {"music", "spotify"}:
+        if verb in {"play", "pause"}:
+            return True
+        return bool(_AUDIO_CONTENT_RE.search(raw)) and verb != "open"
+    if key == "notes":
+        return verb in {"create", "append", "read"}
+    if key == "finder":
+        return verb in {"play", "open_item"}
+    return False
+
+
+def _site_label_from_url(text: str) -> str:
+    """In-app search term for a URL: youtube.com → youtube, open.spotify.com → spotify."""
+
+    raw = (text or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    host = parsed.hostname or ""
+    if not host:
+        return raw
+    labels = [part for part in host.split(".") if part and part != "www"]
+    if len(labels) >= 2 and len(labels[-1]) <= 6:
+        labels = labels[:-1]
+    return max(labels, key=len) if labels else host
+
+
+def _open_content_capability(
+    *, app: str, verb: str, content: str
+) -> tuple[str, dict[str, Any]] | None:
+    """One app_action for content inside any app.
+
+    Browsers navigate/search the web. Every other app gets an in-app search
+    (the only general way to "use" arbitrary content in an app), or a file
+    open when the content is a real path.
+    """
+
+    text = clean_computer_query((content or "").strip().strip(" ."), app=app)
+    browser = _slot_is_browser_app(app)
+    generic_action = _GENERIC_VERB_ACTIONS.get(verb)
+    if generic_action is not None and not text:
+        return "app_action", {"app": app, "action": generic_action}
+    if not text or text.lower() in _CONTENT_PRONOUNS:
+        return None
+    if verb == "open" and _TAB_CHROME_RE.search(text):
+        return "app_action", {"app": app, "action": "new_tab"}
+    if generic_action is not None:
+        query = clean_computer_query(text, app=app)
+        payload: dict[str, Any] = {"app": app, "action": generic_action}
+        if query and generic_action not in _QUERYLESS_ACTIONS:
+            if generic_action == "set_value":
+                payload["value"] = query
+            else:
+                payload["query"] = query
+        return "app_action", payload
+    if verb in {"search", "type", "enter", "write"}:
+        if verb == "search":
+            query = _search_query_from_goal(text) or re.sub(
+                r"^for\s+", "", text, flags=re.I
+            ).strip()
+        else:
+            query = text
+        query = clean_computer_query(query, app=app)
+        if not query:
+            return None
+        if browser and not navigation_url_from_text(query):
+            engine = web_search_url(query)
+            return "app_action", {
+                "app": app,
+                "action": "navigate",
+                "query": engine,
+                "url": engine,
+            }
+        if browser or verb == "search":
+            payload = {"app": app, "action": "search", "query": query}
+        else:
+            payload = {"app": app, "action": "type", "query": query}
+        if verb != "search":
+            payload["text"] = query
+        return "app_action", payload
+    dest = navigation_url_in_utterance(text) or named_site_in_text(text)
+    if browser:
+        if dest:
+            return "app_action", {
+                "app": app,
+                "action": "navigate",
+                "query": dest,
+                "url": dest,
+            }
+        engine = (
+            video_search_url(None, text)
+            if verb in {"play", "watch"}
+            else web_search_url(text)
+        )
+        return "app_action", {
+            "app": app,
+            "action": "navigate",
+            "query": engine,
+            "url": engine,
+        }
+    if _looks_like_file_path(text):
+        return "app_action", {"app": app, "action": "open_item", "query": text}
+    playlist_match = re.match(
+        r"(?:the\s+|my\s+)?(?P<name>[A-Za-z0-9][\w &'’\-]{0,48}?)\s+playlist\s*$",
+        text,
+        re.I,
+    )
+    if playlist_match:
+        text = playlist_match.group("name").strip()
+    query = _site_label_from_url(dest) if dest else text
+    action = "play" if verb in {"play", "watch"} else "search"
+    return "app_action", {"app": app, "action": action, "query": query}
+
+
+def _resolve_open_content_in_app(
+    text: str,
+    target_app: str | None = None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Map 'open X in Y' / 'in Y, <verb> X' / 'open Y and <verb> X in it' for
+    any installed app. Adapter-backed apps return None (defer)."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    app: str | None = None
+    verb = "open"
+    content: str | None = None
+    collection = ""
+    random = bool(_RANDOM_RE.search(raw))
+    from_collection = _PLAY_FROM_COLLECTION_RE.match(raw)
+    if from_collection:
+        app = _clean_app_slot(from_collection.group("app"))
+        verb = from_collection.group("verb").lower()
+        content = from_collection.group("content").strip()
+        collection = from_collection.group("collection").strip(" .,'\"")
+        content = _RANDOM_RE.sub(" ", content)
+        content = re.sub(r"\b(?:some|a|an|song|track|video|clip)\b", " ", content, flags=re.I)
+        content = re.sub(r"\s+", " ", content).strip()
+    if app is None:
+        compound = _OPEN_APP_COMPOUND_RE.match(raw)
+        if compound:
+            candidate = _clean_app_slot(compound.group("app"))
+            if not _slot_rejected(candidate):
+                rest = _IN_IT_SUFFIX_RE.sub("", compound.group("rest").strip()).strip()
+                parsed = _REST_VERB_RE.match(rest)
+                if parsed and (parsed.group("content") or "").strip():
+                    app, verb, content = (
+                        candidate,
+                        parsed.group("verb").lower().replace("look up", "search"),
+                        parsed.group("content").strip(),
+                    )
+                    if verb == "find":
+                        verb = "search"
+                    elif verb in {"visit", "go to", "navigate", "navigate to", "launch", "start"}:
+                        verb = "open"
+    if app is None:
+        single = _OPEN_IN_APP_RE.match(raw)
+        if single:
+            app, verb, content = (
+                _clean_app_slot(single.group("app")),
+                single.group("verb").lower().replace("look up", "search"),
+                single.group("content").strip(),
+            )
+    if app is None:
+        led = _IN_APP_VERB_RE.match(raw)
+        if led:
+            app, verb, content = (
+                _clean_app_slot(led.group("app")),
+                led.group("verb").lower().replace("look up", "search"),
+                led.group("content").strip(),
+            )
+            if verb in {"enter", "write"}:
+                verb = "type"
+    if app is None:
+        bare = _QUERYLESS_IN_APP_RE.match(raw)
+        if bare:
+            app = _clean_app_slot(bare.group("app"))
+            verb = bare.group("verb").lower()
+            content = ""
+    if app is None or content is None:
+        return None
+    if _slot_rejected(app):
+        return None
+    if verb in {"visit", "go to", "navigate", "navigate to", "launch", "start"}:
+        verb = "open"
+    if verb in {"look up", "find", "locate"}:
+        verb = "search"
+    if _adapter_owns_content_verb(app, verb, raw):
+        return None
+    if verb in {"click", "press", "tap"}:
+        query = clean_computer_query(content, app=app)
+        if not query:
+            return None
+        payload = {"app": app, "action": "open_item", "query": query}
+    else:
+        mapped = _open_content_capability(app=app, verb=verb, content=content)
+        if mapped is None:
+            return None
+        _, payload = mapped
+        payload = dict(payload)
+    if collection:
+        payload["playlist"] = collection
+    if random:
+        payload["random"] = True
+        if str(payload.get("action") or "") not in {"pause", "status"}:
+            payload["action"] = "play" if verb in {"play", "watch"} else payload.get("action")
+    return "app_action", payload
 
 
 def _resolve_app_lifecycle_and_browser_chrome(
@@ -1012,21 +1733,42 @@ def _resolve_app_lifecycle_and_browser_chrome(
         return None
     lowered = raw.lower()
     browser = _browser_app_from_text(raw, target_app)
-    chrome_app = browser or "front"
-    wants_tab = bool(
-        re.search(
-            r"\b(?:new|another|fresh)\s+tab\b|\bopen a(?:nother)? tab\b|\bopen another tab\b",
-            lowered,
-        )
-    )
-    if wants_tab and _browser_chrome_is_exclusive(raw):
-        return "app_action", {"app": chrome_app if browser else "front", "action": "new_tab"}
-    if re.search(r"\b(?:close|shut)\s+(?:this\s+|the\s+|current\s+)?tab\b", lowered):
-        return "app_action", {"app": chrome_app if browser else "front", "action": "close_tab"}
+    chrome_app = _explicit_target_app(raw, target_app, default="front")
+    wants_tab = bool(_TAB_OPEN_RE.search(raw))
+    if _TAB_CLOSE_RE.search(raw):
+        if re.search(r"\b(?:all|every|each)\s+tabs?\b", lowered):
+            return "app_action", {"app": chrome_app, "action": "close_tab", "all": True}
+        payload: dict[str, Any] = {"app": chrome_app, "action": "close_tab"}
+        target = _tab_target_query(raw)
+        if target:
+            payload["query"] = target
+        return "app_action", payload
+    if wants_tab:
+        query = _search_query_from_goal(raw)
+        dest = utterance_navigation_dest(raw, query)
+        tab_app = browser or chrome_app
+        if dest:
+            return "app_action", {
+                "app": tab_app,
+                "action": "navigate",
+                "query": dest,
+                "url": dest,
+                "new_tab": True,
+            }
+        if query and (browser or re.search(r"\bsearch\b", lowered)):
+            return "app_action", {
+                "app": tab_app,
+                "action": "search",
+                "query": query,
+                "new_tab": True,
+            }
+        if not _browser_chrome_is_exclusive(raw):
+            return None
+        return "app_action", {"app": tab_app, "action": "new_tab"}
     if re.search(r"\b(?:next|following)\s+tab\b", lowered) and _browser_chrome_is_exclusive(raw):
-        return "app_action", {"app": chrome_app if browser else "front", "action": "next_tab"}
+        return "app_action", {"app": chrome_app, "action": "next_tab"}
     if re.search(r"\b(?:previous|prior|last)\s+tab\b", lowered) and _browser_chrome_is_exclusive(raw):
-        return "app_action", {"app": chrome_app if browser else "front", "action": "previous_tab"}
+        return "app_action", {"app": chrome_app, "action": "previous_tab"}
     closed = _resolve_close_app(raw)
     if closed is not None:
         return closed
@@ -1045,17 +1787,17 @@ def _resolve_app_lifecycle_and_browser_chrome(
         if name and not re.search(
             r"\b(and|then|click|type|search|press|write|first result|tab)\b", name
         ):
-            dest_name = navigation_url_from_text(name)
+            dest_name = navigation_url_from_text(name) or named_web_destination(raw)
             if dest_name:
                 return "app_action", {
-                    "app": browser or "Safari",
+                    "app": _explicit_target_app(raw, target_app),
                     "action": "navigate",
                     "query": dest_name,
                     "url": dest_name,
                 }
             return "open_app", {"name": name}
     query = _search_query_from_goal(raw)
-    dest = navigation_url_from_text(query)
+    dest = utterance_navigation_dest(raw, query)
     if dest is None and re.search(r"\b(go to|open|visit|navigate to)\b", lowered):
         after = re.search(
             r"\b(?:go to|open|visit|navigate to)\s+(?P<dest>\S+)",
@@ -1063,15 +1805,15 @@ def _resolve_app_lifecycle_and_browser_chrome(
             re.I,
         )
         if after:
-            dest = navigation_url_from_text(after.group("dest"))
-    if dest is None:
-        dest = navigation_url_in_utterance(raw)
+            dest = navigation_url_from_text(after.group("dest")) or named_site_in_text(
+                after.group("dest")
+            )
     if dest is not None and (
         browser
         or query
         or re.search(r"\b(go to|visit|navigate to|open)\b", lowered)
     ):
-        app_name = browser or "Safari"
+        app_name = _explicit_target_app(raw, target_app)
         return "app_action", {
             "app": app_name,
             "action": "navigate",
@@ -1089,7 +1831,7 @@ def _resolve_app_lifecycle_and_browser_chrome(
     )
     if query and webish:
         return "app_action", {
-            "app": browser or "Safari",
+            "app": _explicit_target_app(raw, target_app),
             "action": "search",
             "query": query,
         }
@@ -1114,6 +1856,10 @@ def resolve_in_app_computer_goal(
     lowered = raw.lower()
     app = str(target_app or "").strip().lower()
 
+    opened_in_app = _resolve_open_content_in_app(raw, target_app)
+    if opened_in_app is not None:
+        return opened_in_app
+
     lifecycle = _resolve_app_lifecycle_and_browser_chrome(raw, target_app)
     if lifecycle is not None:
         return lifecycle
@@ -1131,7 +1877,7 @@ def resolve_in_app_computer_goal(
         if media is not None:
             return media
         query = _search_query_from_goal(raw)
-        dest = navigation_url_from_text(query) or navigation_url_in_utterance(raw)
+        dest = utterance_navigation_dest(raw, query)
         if dest:
             return "app_action", {
                 "app": "Chrome",
@@ -1147,7 +1893,7 @@ def resolve_in_app_computer_goal(
         if media is not None:
             return media
         query = _search_query_from_goal(raw)
-        dest = navigation_url_from_text(query) or navigation_url_in_utterance(raw)
+        dest = utterance_navigation_dest(raw, query)
         if dest:
             return "app_action", {
                 "app": "Safari",
@@ -1165,12 +1911,18 @@ def resolve_in_app_computer_goal(
                 return "app_action", {"app": "Spotify", "action": "search", "query": query}
         if any(word in lowered for word in ("pause", "paused")):
             return "app_action", {"app": "Spotify", "action": "pause"}
-        if query or "play" in lowered:
-            return "app_action", {
+        if query or "play" in lowered or _RANDOM_RE.search(raw):
+            payload: dict[str, Any] = {
                 "app": "Spotify",
                 "action": "play" if "search" not in lowered else "search",
                 "query": query,
             }
+            collection = _FROM_COLLECTION_RE.search(raw)
+            if collection:
+                payload["playlist"] = collection.group("collection").strip(" .,'\"")
+            if _RANDOM_RE.search(raw):
+                payload["random"] = True
+            return "app_action", payload
         return "app_action", {"app": "Spotify", "action": "status"}
     if named("notes", "note"):
         if re.search(r"\b(read|what's in|what is in|show me)\b", lowered) and not re.search(
@@ -1196,8 +1948,11 @@ def resolve_in_app_computer_goal(
             action = "append" if "append" in lowered or "add to" in lowered else "create"
             return "app_action", {"app": "Notes", "action": action, "text": body, "value": body}
         return "app_action", {"app": "Notes", "action": "status"}
-    if named("music") and any(word in lowered for word in ("play", "pause", "playlist", "track")):
-        args: dict[str, Any] = {"app": "Music", "action": "pause" if "pause" in lowered else "play"}
+    if named("music") and any(word in lowered for word in ("play", "pause", "playlist", "track", "random", "shuffle")):
+        args: dict[str, Any] = {
+            "app": "Music",
+            "action": "pause" if "pause" in lowered else "play",
+        }
         playlist = re.search(
             r"(?:the|my)\s+([A-Za-z0-9][\w &'’\-]{0,48}?)\s+playlist",
             raw,
@@ -1211,11 +1966,20 @@ def resolve_in_app_computer_goal(
             )
         if playlist:
             args["playlist"] = playlist.group(1).strip()
+        else:
+            collection = _FROM_COLLECTION_RE.search(raw)
+            if collection:
+                args["playlist"] = collection.group("collection").strip(" .,'\"")
+        if _RANDOM_RE.search(raw):
+            args["random"] = True
         ordinal = re.search(r"\b(first|second|third|1st|2nd|3rd)\b", lowered)
         if ordinal:
             args["index"] = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3}[
                 ordinal.group(1)
             ]
+        title = media_query_from_goal(raw)
+        if title and not args.get("playlist"):
+            args["query"] = title
         return "app_action", args
     browser = resolve_browser_computer_goal(raw, target_app)
     if browser is not None:
@@ -1236,7 +2000,7 @@ def resolve_browser_computer_goal(
     if not raw or looks_like_web_research(raw):
         return None
     query = _search_query_from_goal(raw)
-    dest = navigation_url_from_text(query) if query else navigation_url_in_utterance(raw)
+    dest = utterance_navigation_dest(raw, query)
     first = wants_first_result_text(raw) or wants_first_on_page_item(raw)
     looking = bool(re.search(r"\b(?:search|google|look\s+up)\b", raw, re.I))
     if not dest and re.search(r"\b(?:music|spotify|playlist|track)\b", raw, re.I):
@@ -1247,7 +2011,7 @@ def resolve_browser_computer_goal(
         return None
     if not dest and not looking and not first:
         return None
-    app = _browser_app_from_text(raw, target_app) or "Safari"
+    app = _explicit_target_app(raw, target_app)
     if dest:
         return "app_action", {
             "app": app,
@@ -1273,6 +2037,42 @@ def resolve_generic_computer_goal(
     closed = _resolve_close_app(raw)
     if closed is not None:
         return closed
+
+    opened_in_app = _resolve_open_content_in_app(raw, target_app)
+    if opened_in_app is not None:
+        return opened_in_app
+
+    browser_goal = _resolve_app_lifecycle_and_browser_chrome(raw, target_app)
+    if browser_goal is not None:
+        return browser_goal
+
+    if _TAB_CLOSE_RE.search(raw):
+        tab_payload: dict[str, Any] = {"app": app or "front", "action": "close_tab"}
+        if re.search(r"\b(?:all|every|each)\s+tabs?\b", lowered):
+            tab_payload["all"] = True
+        target = _tab_target_query(raw)
+        if target:
+            tab_payload["query"] = target
+        return "app_action", tab_payload
+    if _TAB_OPEN_RE.search(raw):
+        query = _search_query_from_goal(raw)
+        dest = utterance_navigation_dest(raw, query)
+        if dest:
+            return "app_action", {
+                "app": app or "front",
+                "action": "navigate",
+                "query": dest,
+                "url": dest,
+                "new_tab": True,
+            }
+        if query and re.search(r"\bsearch\b", lowered):
+            return "app_action", {
+                "app": app or "front",
+                "action": "search",
+                "query": query,
+                "new_tab": True,
+            }
+        return "app_action", {"app": app or "front", "action": "new_tab"}
 
     open_only = re.match(
         r"^(?:please\s+)?(?:open|launch|start)\s+(?:up\s+)?(?:the\s+)?(?:app\s+)?"
@@ -1347,7 +2147,7 @@ def resolve_generic_computer_goal(
             query,
             flags=re.I,
         ).strip()
-        dest = navigation_url_from_text(query)
+        dest = utterance_navigation_dest(raw, query)
         if dest and _browser_app_from_text(app, app):
             return "app_action", {
                 "app": app,
@@ -1428,7 +2228,23 @@ def looks_like_computer_task(text: str) -> bool:
         return False
     if looks_like_file_task(raw):
         return True
-    if _APP_NAME_RE.search(raw) or _COMPUTER_TASK_RE.search(raw):
+    from app.ev.in_app import parse_in_app_intent
+
+    if parse_in_app_intent(raw) is not None:
+        return True
+    if _PLAY_IN_APP_RE.search(raw):
+        return True
+    from app.ev.mac_host import looks_like_mac_command
+
+    if looks_like_mac_command(raw):
+        return True
+    if _APP_NAME_RE.search(raw) and re.search(
+        r"\b(?:open|close|quit|launch|play|pause|search|click|type|scroll)\b",
+        raw,
+        re.I,
+    ):
+        return True
+    if _COMPUTER_TASK_RE.search(raw):
         return True
     return bool(re.search(r"\b(open|launch|quit|play the|find my)\b", raw, re.I))
 

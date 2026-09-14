@@ -11,9 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import ActorContext
 from app.ev.actions import autonomy_mode
 from app.integrations.life_helper import (
+    EXIT_BAD_ARGUMENTS,
     EXIT_NOT_AVAILABLE,
+    EXIT_PERMISSION_DENIED,
     LifeHelperError,
     LifeHelperUnavailableError,
+    LifePermissionDeniedError,
 )
 from app.services.access_log import log_access
 
@@ -48,11 +51,26 @@ def requires_biometric(name: str, args: dict | None = None) -> bool:
     return False
 
 
-def biometric_denied_payload() -> dict:
+def biometric_remedy(actor: str | None = None) -> str:
+    """How the owner satisfies the gate on the surface she is actually on.
+
+    Face ID never crosses a microphone, so the gate stays a purpose-bound
+    proof: she approves on a signed-in device, or connects with the master key.
+    """
+
+    surface = "this device" if str(actor or "").startswith("device:") else "a signed-in device"
+    return (
+        "I can't take Face ID over the microphone, so nothing has gone out yet. "
+        f"Approve it with Face ID or a passkey in the evie app on {surface}, "
+        "or reconnect with the master key, then ask me again."
+    )
+
+
+def biometric_denied_payload(actor: str | None = None) -> dict:
     return {
         "ok": False,
         "error": "biometric_required",
-        "spoken": "I need Face ID, a passkey, or the master key before I do that.",
+        "spoken": biometric_remedy(actor),
     }
 
 
@@ -76,7 +94,7 @@ async def consume_life_reverify(
     if actor == "master" or actor == "voice":
         return None
     if not reverify_token:
-        return biometric_denied_payload()
+        return biometric_denied_payload(actor)
     from app.identity.service import IdentityError, consume_reverification
 
     ctx = ActorContext(
@@ -92,7 +110,7 @@ async def consume_life_reverify(
             ctx=ctx,
         )
     except IdentityError:
-        return biometric_denied_payload()
+        return biometric_denied_payload(actor)
     return None
 
 
@@ -204,6 +222,80 @@ async def _resolve_callee(session: AsyncSession, target: str, *, actor: str) -> 
     return resolved
 
 
+# Helper exit codes are internal vocabulary: "exit 3" and Python exception
+# names tell the owner nothing she can act on. Every code she could hear maps
+# to a sentence naming what happened and what fixes it; the raw code stays in
+# ``error`` for the logs and never reaches ``spoken``.
+_CALL_PERMISSION_SPOKEN = (
+    "macOS hasn't given me permission to control FaceTime, so that call didn't go out. "
+    "Open System Settings → Privacy & Security → Automation, switch on FaceTime, "
+    "then ask me again."
+)
+_CALL_HELPER_MISSING_SPOKEN = (
+    "The Mac helper I place calls with isn't installed, so nothing was dialled. "
+    "Install or start EVLifeHelper, then ask me again."
+)
+_CALL_UNCONFIRMED_SPOKEN = (
+    "I couldn't confirm the call to {who} actually opened, so I'm not claiming it rang. "
+    "Ask me again once FaceTime is signed in."
+)
+_CALL_BAD_ARGUMENTS_SPOKEN = (
+    "I couldn't turn that into a call, so nothing was dialled. "
+    "Check the number or address, then ask me again."
+)
+_CALL_FAILURE_FALLBACK = (
+    "The call to {who} didn't go out, and I won't claim it did. Ask me again in a moment."
+)
+_CALL_FAILURE_SPOKEN: dict[str, str] = {
+    "permission_denied": _CALL_PERMISSION_SPOKEN,
+    f"exit {EXIT_PERMISSION_DENIED}": _CALL_PERMISSION_SPOKEN,
+    "helper_unavailable": _CALL_HELPER_MISSING_SPOKEN,
+    "missing_delivery_evidence": _CALL_UNCONFIRMED_SPOKEN,
+    "missing_compose_evidence": _CALL_UNCONFIRMED_SPOKEN,
+    "timeout": "The call to {who} timed out, and I won't claim it rang.",
+    "bad_arguments": _CALL_BAD_ARGUMENTS_SPOKEN,
+    f"exit {EXIT_BAD_ARGUMENTS}": _CALL_BAD_ARGUMENTS_SPOKEN,
+    "not_available": "Calling isn't available on this device",
+    f"exit {EXIT_NOT_AVAILABLE}": "Calling isn't available on this device",
+    "invalid_json": (
+        "The Mac helper answered in a way I couldn't read, so nothing was dialled."
+    ),
+    "output_too_large": (
+        "The Mac helper answered with more than I could read, so nothing was dialled."
+    ),
+    "unsupported_command": (
+        "This build of the Mac helper can't place calls, so nothing was dialled."
+    ),
+    "failed": "The Mac helper couldn't place the call to {who}, so nothing was dialled.",
+    "not_opened": "The call to {who} did not open.",
+}
+_MESSAGING_CHANNELS = frozenset({"whatsapp", "wa", "messages", "imessage", "sms"})
+
+
+def _call_failure(code: str, *, display: str = "", payload: dict | None = None) -> dict:
+    """One honest, actionable sentence for a failed call.
+
+    A bridge result that names a messaging channel is worded by the shared
+    mapper instead, so the same send failure reads the same way everywhere.
+    """
+
+    source = payload if isinstance(payload, dict) else {}
+    channel = str(source.get("channel") or "").strip().lower()
+    if channel in _MESSAGING_CHANNELS:
+        from app.ev.messaging.failures import spoken_failure
+
+        shaped = {key: value for key, value in source.items() if key != "spoken"}
+        shaped["ok"] = False
+        shaped["error"] = str(code or "")
+        shared = spoken_failure(shaped, channel=channel)
+        if shared and str(code) not in shared:
+            return {"ok": False, "error": code, "spoken": shared}
+    spoken = (_CALL_FAILURE_SPOKEN.get(str(code)) or _CALL_FAILURE_FALLBACK).format(
+        who=display or "them"
+    )
+    return {"ok": False, "error": code, "spoken": spoken}
+
+
 async def place_call(
     session: AsyncSession,
     args: dict,
@@ -312,33 +404,18 @@ async def place_call(
             spoken="The call request timed out. I will not claim it rang.",
         )
     except LifeHelperUnavailableError:
-        return {
-            "ok": False,
-            "error": "not_available",
-            "spoken": "Calling isn't available on this device",
-        }
+        return _call_failure("helper_unavailable", display=display)
+    except LifePermissionDeniedError:
+        return _call_failure("permission_denied", display=display)
     except LifeHelperError as exc:
         if exc.exit_code == EXIT_NOT_AVAILABLE or exc.error_code in {
             "not_available",
             "unavailable",
         }:
-            return {
-                "ok": False,
-                "error": "not_available",
-                "spoken": "Calling isn't available on this device",
-            }
-        code = exc.error_code or f"exit {exc.exit_code}"
-        return {
-            "ok": False,
-            "error": code,
-            "spoken": str(code),
-        }
+            return _call_failure("not_available", display=display)
+        return _call_failure(exc.error_code or f"exit {exc.exit_code}", display=display)
     except Exception as exc:  # noqa: BLE001 - tool boundary
-        return {
-            "ok": False,
-            "error": type(exc).__name__,
-            "spoken": str(exc) or type(exc).__name__,
-        }
+        return _call_failure(type(exc).__name__, display=display)
 
     if isinstance(outcome, dict) and outcome.get("error") in {"timeout", "cancelled"}:
         return outcome
@@ -388,11 +465,12 @@ async def place_call(
     error = (
         str(data.get("error") or payload.get("error") or helper_evidence.get("error") or "not_opened")
     )
+    failure = _call_failure(error, display=display, payload=payload)
     return {
         "ok": False,
         "opened": False,
-        "error": error,
-        "spoken": error if error != "not_opened" else f"The call to {display} did not open.",
+        "error": failure["error"],
+        "spoken": failure["spoken"],
         "kind": kind,
         "name": display,
         "destination": destination,

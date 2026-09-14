@@ -549,6 +549,10 @@ final class LiveConversation {
             let seconds = TimeInterval(durationMs ?? 8000) / 1000
             let clip = try await CameraManager.shared.recordClip(duration: seconds)
             let posters = clip.posterJPEGs
+            // Real clip bytes go to Home Station so the owner's video becomes a
+            // durable, sampleable memory instead of three posters and a path.
+            // Non-fatal: a failed upload still delivers the poster frames.
+            uploadRecordedClip(clip: clip, model: model, requestId: requestId)
             if posters.isEmpty {
                 connection.sendLookFrame(
                     requestId: requestId,
@@ -570,7 +574,10 @@ final class LiveConversation {
                     colors: clip.colors,
                     savedPath: clip.savedPath,
                     mediaKind: "video",
-                    clipDurationMs: Int(clip.duration * 1000)
+                    clipDurationMs: Int(clip.duration * 1000),
+                    hasClip: true,
+                    clipSupported: true,
+                    capturedAtMs: 0
                 )
             } else {
                 for (index, jpeg) in posters.enumerated() {
@@ -595,7 +602,10 @@ final class LiveConversation {
                         colors: clip.colors,
                         savedPath: clip.savedPath,
                         mediaKind: "video",
-                        clipDurationMs: Int(clip.duration * 1000)
+                        clipDurationMs: Int(clip.duration * 1000),
+                        hasClip: true,
+                        clipSupported: true,
+                        capturedAtMs: Int(Double(index) / Double(max(posters.count, 1)) * clip.duration * 1000)
                     )
                 }
                 if let lastJpeg = posters.last {
@@ -620,6 +630,36 @@ final class LiveConversation {
                 last: true,
                 mediaKind: "video"
             )
+        }
+    }
+
+    /// Upload one recorded clip for server-side sampling. Never blocks the turn.
+    private func uploadRecordedClip(
+        clip: CameraManager.Clip,
+        model: AppModel,
+        requestId: String?
+    ) {
+        guard let data = try? Data(contentsOf: clip.fileURL), !data.isEmpty else { return }
+        let filename = clip.fileURL.lastPathComponent
+        let ext = clip.fileURL.pathExtension.lowercased()
+        let contentType = ext == "mp4" ? "video/mp4" : "video/quicktime"
+        Task { @MainActor [weak model] in
+            do {
+                let receipt = try await model?.client.ingestClip(
+                    filename: filename,
+                    contentType: contentType,
+                    data: data,
+                    durationMs: Int(clip.duration * 1000),
+                    requestId: requestId
+                )
+                if let receipt {
+                    NSLog(
+                        "EV_CLIP[uploaded] frames=\(receipt.frames) moments=\(receipt.moments.count) degraded=\(receipt.extractionDegraded)"
+                    )
+                }
+            } catch {
+                NSLog("EV_CLIP[upload-failed] posters still sent: \(error.localizedDescription)")
+            }
         }
     }
 

@@ -19,3 +19,18 @@ public enum FeedbackEngine {
         #endif
     }
 }
+
+// Cycle 46 — iPhone-only, backward compat: orb-state haptic mapping helper.
+// Additive extension; existing FeedbackEngine.play(_:) unchanged.
+public extension FeedbackEngine {
+    static func play(forOrbState state: EvieOrbState) {
+        switch state {
+        case .idle, .thinking: play(.selection)
+        case .listening: play(.voiceStarted)
+        case .speaking: play(.voiceStopped)
+        case .confirming: play(.confirmationRequested)
+        case .succeeded: play(.actionSuccess)
+        case .failed: play(.actionFailure)
+        }
+    }
+}

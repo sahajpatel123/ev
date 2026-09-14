@@ -12,7 +12,7 @@ from typing import Any, Literal
 from .trust import ConfirmPolicy, RiskClass, risk_for_operation
 
 ClassLevel = Literal[0, 1, 2, 3]
-Method = Literal["native_broker", "web_handoff", "shortcuts_bridge", "app_url", "unsupported"]
+Method = Literal["native_broker", "web_handoff", "shortcuts_bridge", "app_url", "pwa_local", "unsupported"]
 Verification = Literal["strong", "medium", "weak"]
 Confirm = Literal["none", "voice_ok", "required", "system_ui", "block"]
 
@@ -88,7 +88,7 @@ CAPABILITIES: dict[str, MobileCapability] = {
         "create_timer",
         "Timer",
         CLASS_REVERSIBLE,
-        ("native_broker",),
+        ("native_broker", "pwa_local"),
         "strong",
         needs_native=True,
         permission="alarmkit_or_notifications",
@@ -98,10 +98,11 @@ CAPABILITIES: dict[str, MobileCapability] = {
         "create_reminder",
         "Reminder",
         CLASS_REVERSIBLE,
-        ("native_broker",),
+        ("native_broker", "pwa_local"),
         "strong",
         needs_native=True,
         permission="reminders",
+        notes="Home Station reminder plus an Evie local alert. Never claimed as Reminders.app.",
     ),
     "create_alarm": _cap(
         "create_alarm",

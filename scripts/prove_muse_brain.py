@@ -107,10 +107,10 @@ def main() -> None:
         os.environ.get("EV_SECRETS_FILE", str(Path.home() / ".ev/secrets/production.env"))
     ).expanduser()
     mod.load(secrets)
-    mod.refuse_muse_without_key()
-    # Export Muse Talk selection before (re)starting the sidecar so its
-    # launcher keeps the Muse brain even when the repo .env selects S2S
-    # voice. The sidecar child inherits this process env.
+    # This script proves the Muse brain, so select it before the refusal gate:
+    # the gate must see the intended Muse selection even when the repo .env
+    # selects legacy S2S voice. Export before (re)starting the sidecar so its
+    # launcher keeps the Muse brain. The sidecar child inherits this env.
     for _key, _value in {
         "EV_CHAT_PROVIDER": "meta_muse_spark",
         "EV_INTELLIGENCE_PROVIDER": "meta_muse_spark",
@@ -120,6 +120,7 @@ def main() -> None:
         "EV_VOICE_LIVE_BRAIN": "pipeline",
     }.items():
         os.environ[_key] = _value
+    mod.refuse_muse_without_key()
     if not _is_muse(_health()):
         subprocess.check_call(
             [sys.executable, str(REPO / "scripts" / "start_talk_sidecar.py")],

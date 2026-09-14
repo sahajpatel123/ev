@@ -125,7 +125,7 @@ def _extract_summary(text: str) -> str:
             break
     summary = " ".join(lines).strip()
     try:
-        from app.memory.visual import is_generic_label_scene, _remainder_has_identity
+        from app.memory.visual import _remainder_has_identity, is_generic_label_scene
     except Exception:  # noqa: BLE001 - perception must still return something
         return summary[:1000] or "Perception completed."
     identity_lines = [
@@ -363,10 +363,10 @@ def _may_send_raw_pixels(provider: ChatProvider | None) -> bool:
     name = _provider_name(provider)
     if name == "deepseek":
         return False
-    from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_intelligence_active
+    from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_brain_active
 
     if (
-        muse_intelligence_active()
+        muse_brain_active()
         and name not in MUSE_SPARK_PROVIDERS
         and not name.startswith("fake")
     ):
@@ -415,7 +415,7 @@ async def analyze_attachment(
             provider = get_chat_provider()
         except MuseProviderUnavailable:
             provider = None
-    from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_intelligence_active
+    from app.gateway.muse import MUSE_SPARK_PROVIDERS, muse_brain_active
 
     if allow_raw and (attachment.content_type or "").startswith("image/"):
         if not _may_send_raw_pixels(provider):
@@ -425,7 +425,7 @@ async def analyze_attachment(
                 if _may_send_raw_pixels(spark):
                     provider = spark
     elif (
-        muse_intelligence_active()
+        muse_brain_active()
         and provider is not None
         and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS
     ):

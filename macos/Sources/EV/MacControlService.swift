@@ -395,6 +395,9 @@ public final class MacControlService: @unchecked Sendable {
     private static let allowedURLSchemes: Set<String> = [
         "http", "https", "mailto", "maps", "message", "sms", "tel",
         "facetime", "spotify", "notes", "music", "itms", "itmss",
+        "slack", "notion", "obsidian", "zoommtg", "vscode", "discord",
+        "whatsapp", "telegram", "figma", "linear", "shortcuts",
+        "x-apple", "msteams", "skype",
     ]
 
     private func openURL(_ arguments: [String: Any], requestId: String) -> [String: Any] {
@@ -1613,31 +1616,90 @@ public final class MacControlService: @unchecked Sendable {
     }
 
     private func appAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
-        let app = (string(arguments, "app") ?? lastApp ?? "")
+        var app = (string(arguments, "app") ?? lastApp ?? "")
+        let appKey = app.lowercased()
+        if app.isEmpty || ["front", "this", "that", "it", "last", "current"].contains(appKey),
+           let front = NSWorkspace.shared.frontmostApplication?.localizedName {
+            app = front
+        }
         let lower = app.lowercased()
-        if lower.contains("music") || lower == "itunes" {
+        // Adapter dispatch is identity-based: "YouTube Music", "GoodNotes" or
+        // "Path Finder" must reach the generic engine, not someone else's adapter.
+        let adapterKind: String? = {
+            switch lower {
+            case "music", "apple music", "itunes": return "music"
+            case "safari": return "safari"
+            case "notes", "apple notes": return "notes"
+            case "finder": return "finder"
+            case "calculator", "calc": return "calculator"
+            case "chrome", "google chrome": return "chrome"
+            case "spotify": return "spotify"
+            default: return nil
+            }
+        }()
+        let requestedAction = (string(arguments, "action") ?? "status").lowercased()
+        // Generic verbs the small semantic adapters do not own (search, click,
+        // type) must fall through to the Accessibility engine instead of
+        // failing with "Music cannot do that".
+        if requestedAction == "search",
+           string(arguments, "playlist") == nil,
+           lower.contains("music") || lower.contains("notes") {
+            return genericAppAction(arguments, requestId: requestId)
+        }
+        switch adapterKind {
+        case "music":
             return musicAction(arguments, requestId: requestId)
-        }
-        if lower.contains("safari") {
+        case "safari":
             return safariAction(arguments, requestId: requestId)
-        }
-        if lower.contains("notes") {
+        case "notes":
             return notesAction(arguments, requestId: requestId)
-        }
-        if lower.contains("finder") {
+        case "finder":
             return finderAction(arguments, requestId: requestId)
-        }
-        if lower.contains("calculator") || lower == "calc" {
+        case "calculator":
             return calculatorAction(arguments, requestId: requestId)
-        }
-        if lower.contains("chrome") {
+        case "chrome":
             return chromeAction(arguments, requestId: requestId)
-        }
-        if lower.contains("spotify") {
+        case "spotify":
             return spotifyAction(arguments, requestId: requestId)
+        default:
+            break
+        }
+        let action = (string(arguments, "action") ?? "play").lowercased()
+        if action == "navigate" || action == "open_item" || action == "play" || action == "search" {
+            var target = locationQuery(arguments)
+            if target.isEmpty, action == "search" {
+                target = searchQuery(arguments)
+            }
+            if let dest = Self.navigationURL(from: target) {
+                let host = URL(string: dest)?.host?.lowercased() ?? ""
+                let isPlayer = looksLikeLocalVideoPlayer(name: lower, bundle: "")
+                // A bare web address only opens inside a browser (or a media
+                // player for play). Anywhere else it becomes an in-app search
+                // for the site — never a blind click and never opened in the
+                // default browser behind the owner's back.
+                if action != "play" && !Self.isBrowserApp(name: app, bundle: nil) && !isPlayer {
+                    var args = arguments
+                    args["action"] = "search"
+                    args["query"] = Self.siteLabel(fromHost: host.isEmpty ? target : host)
+                    return genericAppAction(args, requestId: requestId)
+                }
+                if let done = openContentWithApp(
+                    dest, appName: app, originalAction: action, query: target,
+                    requestId: requestId, isFile: false
+                ) {
+                    return done
+                }
+            }
+            if action != "search",
+               let file = Self.localFilePath(from: target),
+               let done = openContentWithApp(
+                   file, appName: app, originalAction: action, query: target,
+                   requestId: requestId, isFile: true
+               ) {
+                return done
+            }
         }
         if looksLikeLocalVideoPlayer(name: lower, bundle: "") {
-            let action = (string(arguments, "action") ?? "play").lowercased()
             if action == "play" || action == "open_item" {
                 return finderPlayVideo(
                     query: string(arguments, "query") ?? string(arguments, "value") ?? "",
@@ -1646,6 +1708,420 @@ public final class MacControlService: @unchecked Sendable {
             }
         }
         return genericAppAction(arguments, requestId: requestId)
+    }
+
+    /// Universal content opener: open a URL or file with ANY installed app.
+    /// No per-app scripting — NSWorkspace opens the address with the named
+    /// app, which lands as a new browser tab, a stream in a player, or a
+    /// document in an editor depending on the app. Adapter-backed apps
+    /// (Safari, Chrome, Music, …) never reach here.
+    private static let browserBundles: Set<String> = [
+        "com.apple.Safari", "com.google.Chrome", "org.mozilla.firefox",
+        "com.microsoft.edgemac", "com.brave.Browser", "company.thebrowser.Browser",
+    ]
+
+    private static func isBrowserApp(name: String, bundle: String?) -> Bool {
+        if let bundle, browserBundles.contains(bundle) { return true }
+        let lower = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let browserNames: Set<String> = [
+            "safari", "chrome", "firefox", "edge", "brave", "arc",
+            "orion", "zen", "dia",
+        ]
+        if browserNames.contains(lower) { return true }
+        if lower.hasSuffix(" edge") || lower.contains(" browser") || lower.hasSuffix("browser") {
+            return true
+        }
+        return false
+    }
+
+    private static func siteLabel(fromHost host: String) -> String {
+        var labels = host.lowercased().split(separator: ".").map(String.init)
+            .filter { $0 != "www" && !$0.isEmpty }
+        if labels.count >= 2, let last = labels.last, last.count <= 6 {
+            labels.removeLast()
+        }
+        return labels.max(by: { $0.count < $1.count }) ?? host
+    }
+
+    private func openContentWithApp(
+        _ target: String,
+        appName: String,
+        originalAction: String,
+        query: String,
+        requestId: String,
+        isFile: Bool
+    ) -> [String: Any]? {
+        // Unresolvable app: return nil so the caller falls through to the
+        // Accessibility path, which reports the miss honestly.
+        guard let resolved = resolve(name: appName.isEmpty ? nil : appName, bundleId: nil) else {
+            return nil
+        }
+        guard let appURL = resolved.url else {
+            return nil
+        }
+        let targetURL: URL
+        if isFile {
+            targetURL = URL(fileURLWithPath: (target as NSString).expandingTildeInPath)
+        } else {
+            guard let parsed = URL(string: target), parsed.scheme != nil else {
+                return fail("invalid_url", "That address didn't look like a link.", command: "app_action", requestId: requestId)
+            }
+            targetURL = parsed
+        }
+        if resolved.running == nil {
+            let launchConfig = NSWorkspace.OpenConfiguration()
+            launchConfig.activates = false
+            NSWorkspace.shared.openApplication(at: appURL, configuration: launchConfig) { _, _ in }
+            Thread.sleep(forTimeInterval: 0.6)
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        var opened = false
+        let sema = DispatchSemaphore(value: 0)
+        NSWorkspace.shared.open([targetURL], withApplicationAt: appURL, configuration: config) { _, err in
+            opened = (err == nil)
+            sema.signal()
+        }
+        _ = sema.wait(timeout: .now() + 5.0)
+        Thread.sleep(forTimeInterval: 0.4)
+        let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == resolved.bundle
+        let verified = opened && front
+        lastBundle = resolved.bundle
+        lastApp = resolved.name
+        return ok(
+            [
+                "ok": verified,
+                "executed": true,
+                "verified": verified,
+                "must_continue": !verified,
+                "adapter": "generic",
+                "method": "open_with_app",
+                "app": resolved.name,
+                "action": originalAction,
+                "query": query,
+                isFile ? "path" : "url": target,
+                "goal_complete": verified,
+                "spoken": verified
+                    ? "Opened \(isFile ? targetURL.lastPathComponent : target) in \(resolved.name)."
+                    : "I couldn't open that in \(resolved.name).",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: verified
+        )
+    }
+
+    private static func localFilePath(from query: String) -> String? {
+        var trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        trimmed = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "\"'`"))
+        if trimmed.lowercased().hasPrefix("file://") {
+            if let url = URL(string: trimmed), url.isFileURL { return url.path }
+            return nil
+        }
+        if trimmed.hasPrefix("/") || trimmed.hasPrefix("~/") {
+            let expanded = (trimmed as NSString).expandingTildeInPath
+            return FileManager.default.fileExists(atPath: expanded) ? expanded : nil
+        }
+        return nil
+    }
+
+    /// Wait until a launched app actually has a window AX can inspect.
+    private func waitForAppWindow(
+        _ inspectArgs: [String: Any],
+        timeout: TimeInterval = 4.0
+    ) -> NSRunningApplication? {
+        let wanted = resolve(name: string(inspectArgs, "app"), bundleId: nil)?.bundle
+            ?? NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let bundle = wanted {
+                let app = pickUIProcess(bundleId: bundle)
+                    ?? NSWorkspace.shared.runningApplications.first {
+                        $0.bundleIdentifier == bundle && !isHelperProcess($0)
+                    }
+                if let app {
+                    let appEl = AXUIElementCreateApplication(app.processIdentifier)
+                    if !axElements(appEl, kAXWindowsAttribute).isEmpty {
+                        return app
+                    }
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        if let bundle = wanted {
+            return NSWorkspace.shared.runningApplications.first {
+                $0.bundleIdentifier == bundle && !isHelperProcess($0)
+            }
+        }
+        return nil
+    }
+
+    private func isTextish(_ element: AXUIElement) -> Bool {
+        let role = stringValue(element, kAXRoleAttribute) ?? ""
+        let subrole = stringValue(element, kAXSubroleAttribute) ?? ""
+        return role == "AXTextField" || role == "AXSearchField"
+            || role == "AXComboBox" || role == "AXTextArea"
+            || subrole == "AXSearchField"
+    }
+
+    /// Press an Edit/View/File "Find…"/"Search…" menu item. Pure AX, so it
+    /// needs no extra Automation grant and works for most AppKit apps.
+    private func findSearchMenuItem(appEl: AXUIElement) -> AXUIElement? {
+        guard let menuBar = axElement(appEl, kAXMenuBarAttribute) else { return nil }
+        for barItem in axElements(menuBar, kAXChildrenAttribute) {
+            let menuTitle = (stringValue(barItem, kAXTitleAttribute) ?? "").lowercased()
+            if !["edit", "view", "file", "find", "search"].contains(menuTitle) { continue }
+            guard let menu = axElement(barItem, kAXChildrenAttribute) else { continue }
+            for item in axElements(menu, kAXChildrenAttribute) {
+                let title = (stringValue(item, kAXTitleAttribute) ?? "").lowercased()
+                if ["find…", "find...", "find", "search…", "search",
+                    "search for…", "search for..."].contains(title)
+                    || title.hasPrefix("find ") || title.hasPrefix("search ") {
+                    return item
+                }
+                // Nested submenu (Edit → Find → Find…): descend one level.
+                if let submenu = axElement(item, kAXChildrenAttribute) {
+                    for sub in axElements(submenu, kAXChildrenAttribute) {
+                        let subTitle = (stringValue(sub, kAXTitleAttribute) ?? "").lowercased()
+                        if subTitle.hasPrefix("find") || subTitle.hasPrefix("search") {
+                            return sub
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// General "put the cursor in this app's search box" engine, for every
+    /// app without a semantic adapter: AX search field, then Find/Search menu,
+    /// then the two common search shortcuts.
+    private func focusSearchField(
+        inspectArgs: [String: Any],
+        requestId: String
+    ) -> (AXUIElement?, [String]) {
+        var tried: [String] = []
+        guard let app = waitForAppWindow(inspectArgs) else {
+            return (nil, ["app_window_unavailable"])
+        }
+        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+        let snapshot = inspectUI(
+            inspectArgs.merging(["query": "search"]) { _, new in new },
+            requestId: requestId
+        )
+        if let elements = snapshot["elements"] as? [[String: Any]] {
+            let searchRoles: Set<String> = ["AXSearchField", "AXTextField", "AXComboBox"]
+            let preferred = elements.first {
+                searchRoles.contains(($0["ax_role"] as? String) ?? "")
+            } ?? elements.first {
+                (($0["title"] as? String) ?? "").lowercased().contains("search")
+            }
+            if let ref = preferred?["ref"] as? String {
+                tried.append("ax_search_field")
+                _ = uiAction(["action": "press", "element_ref": ref], requestId: requestId)
+                Thread.sleep(forTimeInterval: 0.15)
+                if let focused = axElement(appEl, kAXFocusedUIElementAttribute),
+                   isTextish(focused) {
+                    return (focused, tried)
+                }
+            } else {
+                tried.append("ax_search_field_missing")
+            }
+        }
+        if let item = findSearchMenuItem(appEl: appEl) {
+            tried.append("menu_find")
+            _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
+            Thread.sleep(forTimeInterval: 0.25)
+            if let focused = axElement(appEl, kAXFocusedUIElementAttribute),
+               isTextish(focused) {
+                return (focused, tried)
+            }
+        }
+        for spec in ["cmd+f", "cmd+option+f"] {
+            tried.append(spec)
+            _ = postHotkey(spec)
+            Thread.sleep(forTimeInterval: 0.25)
+            if let focused = axElement(appEl, kAXFocusedUIElementAttribute),
+               isTextish(focused) {
+                return (focused, tried)
+            }
+        }
+        if let focused = axElement(appEl, kAXFocusedUIElementAttribute),
+           isTextish(focused) {
+            return (focused, tried)
+        }
+        return (nil, tried)
+    }
+
+    /// General element action by name for any app: press the best matching
+    /// control (button/row/cell/checkbox), replace a field's text, or scroll a
+    /// target into view. No per-app scripting.
+    private func genericElementAction(
+        _ action: String,
+        query: String,
+        inspectArgs: [String: Any],
+        requestId: String
+    ) -> [String: Any] {
+        _ = waitForAppWindow(inspectArgs)
+        let inspect = inspectUI(
+            inspectArgs.merging(query.isEmpty ? [:] : ["query": query]) { _, new in new },
+            requestId: requestId
+        )
+        let elementRows = (inspect["elements"] as? [[String: Any]]) ?? []
+        let preferredRoles: [String]
+        switch action {
+        case "replace", "type":
+            preferredRoles = ["AXTextField", "AXSearchField", "AXComboBox", "AXTextArea"]
+        case "press":
+            preferredRoles = ["AXButton", "AXCheckBox", "AXRow", "AXCell", "AXRadioButton", "AXLink"]
+        default:
+            preferredRoles = []
+        }
+        let chosen = elementRows.first { item in
+            let role = (item["ax_role"] as? String) ?? ""
+            return preferredRoles.contains(role)
+                && ((item["actions"] as? [String]) ?? []).contains("AXPress")
+        } ?? elementRows.first { item in
+            preferredRoles.contains((item["ax_role"] as? String) ?? "")
+        } ?? elementRows.first { item in
+            ((item["actions"] as? [String]) ?? []).contains("AXPress")
+        } ?? elementRows.first
+        guard let target = chosen, let ref = target["ref"] as? String else {
+            return ok(
+                [
+                    "ok": false,
+                    "executed": true,
+                    "verified": false,
+                    "adapter": "generic",
+                    "app": inspect["app"] as Any,
+                    "action": action,
+                    "query": query,
+                    "spoken": query.isEmpty
+                        ? "I couldn't find a control to \(action)."
+                        : "I didn't find “\(query)” in this app.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: false
+            )
+        }
+        if action == "scroll_to", let record = elements[ref] {
+            let status = AXUIElementPerformAction(record.element, "AXScrollToVisible" as CFString)
+            Thread.sleep(forTimeInterval: 0.25)
+            return ok(
+                [
+                    "ok": status == .success,
+                    "executed": true,
+                    "verified": status == .success,
+                    "adapter": "generic",
+                    "app": inspect["app"] as Any,
+                    "action": action,
+                    "query": query,
+                    "element_ref": ref,
+                    "spoken": status == .success
+                        ? "Scrolled that into view."
+                        : "I couldn't scroll to that control.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: status == .success
+            )
+        }
+        let uiActionName = action == "replace" ? "replace" : (action == "type" ? "type" : "press")
+        let result = uiAction(
+            ["action": uiActionName, "element_ref": ref, "value": query],
+            requestId: requestId
+        )
+        let okDone = (result["ok"] as? Bool) == true
+        _ = waitForAppWindow(inspectArgs, timeout: 0.6)
+        return ok(
+            [
+                "ok": okDone,
+                "executed": true,
+                "verified": okDone,
+                "adapter": "generic",
+                "app": inspect["app"] as Any,
+                "action": action,
+                "query": query,
+                "element_ref": ref,
+                "spoken": okDone
+                    ? (action == "replace" || action == "type"
+                        ? "Set that field."
+                        : "Pressed \(target["title"] as? String ?? query).")
+                    : "I found that control but couldn't \(action) it.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: okDone
+        )
+    }
+
+    private func pressMenuPath(
+        _ path: String,
+        appName: String,
+        requestId: String
+    ) -> [String: Any] {
+        let segments = path
+            .split(whereSeparator: { $0 == ">" || $0 == "→" })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+        guard !segments.isEmpty,
+              let app = waitForAppWindow(["app": appName]),
+              let menuBar = axElement(AXUIElementCreateApplication(app.processIdentifier), kAXMenuBarAttribute)
+        else {
+            return ok(
+                ["ok": false, "executed": false, "verified": false, "adapter": "generic",
+                 "action": "menu", "query": path,
+                 "spoken": "I couldn't find that menu."],
+                command: "app_action", requestId: requestId, ok: false
+            )
+        }
+        var current: AXUIElement? = menuBar
+        var pressed: AXUIElement?
+        for segment in segments {
+            guard let parent = current else { break }
+            var match: AXUIElement?
+            for child in axElements(parent, kAXChildrenAttribute) {
+                let title = (stringValue(child, kAXTitleAttribute) ?? "").lowercased()
+                if title == segment || title.hasPrefix(segment) {
+                    match = child
+                    break
+                }
+            }
+            guard let found = match else { current = nil; break }
+            pressed = found
+            // Menu bar item → AXMenu → items.
+            if let menu = axElement(found, kAXChildrenAttribute) {
+                current = menu
+            } else {
+                current = found
+            }
+        }
+        guard let item = pressed else {
+            return ok(
+                ["ok": false, "executed": false, "verified": false, "adapter": "generic",
+                 "action": "menu", "query": path,
+                 "spoken": "I couldn't find that menu item."],
+                command: "app_action", requestId: requestId, ok: false
+            )
+        }
+        let status = AXUIElementPerformAction(item, kAXPressAction as CFString)
+        Thread.sleep(forTimeInterval: 0.25)
+        return ok(
+            [
+                "ok": status == .success,
+                "executed": true,
+                "verified": status == .success,
+                "adapter": "generic",
+                "action": "menu",
+                "query": path,
+                "method": "menu",
+                "spoken": status == .success ? "Done." : "I couldn't press that menu item.",
+            ],
+            command: "app_action",
+            requestId: requestId,
+            ok: status == .success
+        )
     }
 
     private func genericAppAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
@@ -1719,19 +2195,50 @@ public final class MacControlService: @unchecked Sendable {
                 requestId: requestId,
                 ok: posted
             )
-        case "search", "create", "append":
+        case "search":
+            if query.isEmpty {
+                return fail("missing_query", "What should I search for?", command: "app_action", requestId: requestId)
+            }
+            let (target, tried) = focusSearchField(inspectArgs: inspectArgs, requestId: requestId)
+            let typed = enterText(query, mode: "replace", element: target, requestId: requestId)
+            _ = postHotkey("return")
+            Thread.sleep(forTimeInterval: 0.45)
+            let typedOk = typed["ok"] as? Bool == true
+            let verified = typed["verified"] as? Bool == true
+            let appName = (inspectArgs["app"] as? String)
+                ?? (NSWorkspace.shared.frontmostApplication?.localizedName ?? "the app")
+            return ok(
+                [
+                    "ok": typedOk,
+                    "executed": true,
+                    "verified": verified,
+                    "must_continue": !verified,
+                    "adapter": "generic",
+                    "app": appName,
+                    "action": "search",
+                    "query": query,
+                    "method": target != nil ? "ax_search_field" : "focused_text",
+                    "tried": tried,
+                    "spoken": verified
+                        ? "Searched \(appName) for \(query)."
+                        : "I typed \(query) in \(appName), but I couldn't confirm the search.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: typedOk
+            )
+        case "create", "append":
             if query.isEmpty {
                 return fail("missing_query", "What should I type?", command: "app_action", requestId: requestId)
             }
-            let fieldQuery = action == "search" ? "search" : ""
-            let inspect = inspectUI(inspectArgs.merging(["query": fieldQuery]) { _, new in new }, requestId: requestId)
+            let inspect = inspectUI(inspectArgs, requestId: requestId)
             let typed: [String: Any]
             if let elements = inspect["elements"] as? [[String: Any]],
                let ref = elements.first?["ref"] as? String
             {
                 typed = uiAction(
                     [
-                        "action": action == "append" ? "append" : (action == "search" ? "replace" : "type"),
+                        "action": action == "append" ? "append" : "type",
                         "element_ref": ref,
                         "value": query,
                     ],
@@ -1740,28 +2247,89 @@ public final class MacControlService: @unchecked Sendable {
             } else {
                 typed = enterText(query, mode: action == "append" ? "append" : "insert", element: nil, requestId: requestId)
             }
-            if action == "search" {
-                _ = postHotkey("return")
-                Thread.sleep(forTimeInterval: 0.35)
-            }
             let okTyped = typed["ok"] as? Bool == true
             return ok(
                 [
                     "ok": okTyped,
                     "executed": true,
-                    "verified": okTyped,
+                    "verified": typed["verified"] as? Bool == true,
                     "adapter": "generic",
                     "app": inspect["app"] as Any,
                     "action": action,
                     "query": query,
                     "method": "accessibility",
-                    "spoken": okTyped
-                        ? (action == "search" ? "Searched for \(query)." : "Typed that.")
-                        : "I couldn't type in this app.",
+                    "spoken": okTyped ? "Typed that." : "I couldn't type in this app.",
                 ],
                 command: "app_action",
                 requestId: requestId,
                 ok: okTyped
+            )
+        case "type":
+            if query.isEmpty {
+                return fail("missing_query", "What should I type?", command: "app_action", requestId: requestId)
+            }
+            let typed = enterText(query, mode: "insert", element: nil, requestId: requestId)
+            let okTyped = typed["ok"] as? Bool == true
+            return ok(
+                [
+                    "ok": okTyped,
+                    "executed": true,
+                    "verified": typed["verified"] as? Bool == true,
+                    "adapter": "generic",
+                    "app": inspectArgs["app"] as Any,
+                    "action": "type",
+                    "query": query,
+                    "spoken": okTyped ? "Typed that." : "I couldn't type in this app.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: okTyped
+            )
+        case "toggle", "select", "click", "press":
+            return genericElementAction(
+                "press", query: query, inspectArgs: inspectArgs, requestId: requestId
+            )
+        case "set_value":
+            let value = string(arguments, "value") ?? query
+            return genericElementAction(
+                "replace", query: value, inspectArgs: inspectArgs, requestId: requestId
+            )
+        case "scroll_to":
+            return genericElementAction(
+                "scroll_to", query: query, inspectArgs: inspectArgs, requestId: requestId
+            )
+        case "menu":
+            let appName = (inspectArgs["app"] as? String)
+                ?? (NSWorkspace.shared.frontmostApplication?.localizedName ?? "")
+            let path = query.isEmpty ? "Share" : query
+            return pressMenuPath(path, appName: appName, requestId: requestId)
+        case "back", "save", "new_item", "submit", "dismiss", "scroll":
+            let spec: String
+            let spoken: String
+            switch action {
+            case "back": spec = "cmd+["; spoken = "Went back."
+            case "save": spec = "cmd+s"; spoken = "Saved."
+            case "new_item": spec = "cmd+n"; spoken = "Created a new item."
+            case "submit": spec = "return"; spoken = "Submitted."
+            case "dismiss": spec = "escape"; spoken = "Dismissed."
+            default: spec = "pagedown"; spoken = "Scrolled."
+            }
+            let posted = postHotkey(spec)
+            Thread.sleep(forTimeInterval: 0.25)
+            return ok(
+                [
+                    "ok": posted,
+                    "executed": true,
+                    "verified": posted,
+                    "adapter": "generic",
+                    "app": inspectArgs["app"] as Any,
+                    "action": action,
+                    "method": "keyboard",
+                    "spoken": posted ? spoken : "I couldn't send that command.",
+                ],
+                command: "app_action",
+                requestId: requestId,
+                ok: posted
             )
         default:
             return genericClickVisible(
@@ -1814,31 +2382,37 @@ public final class MacControlService: @unchecked Sendable {
             inspectArgs.merging(needle.isEmpty ? [:] : ["query": needle]) { _, new in new },
             requestId: requestId
         )
-        if let elements = inspect["elements"] as? [[String: Any]],
-           let first = elements.first,
-           let ref = first["ref"] as? String
-        {
-            let pressed = uiAction(["action": "press", "element_ref": ref], requestId: requestId)
-            let okPress = pressed["ok"] as? Bool == true
-            return ok(
-                [
-                    "ok": okPress,
-                    "executed": true,
-                    "verified": okPress,
-                    "adapter": "generic",
-                    "app": inspect["app"] as Any,
-                    "action": "open_item",
-                    "query": needle,
-                    "element_ref": ref,
-                    "method": "accessibility",
-                    "spoken": okPress
-                        ? "Clicked \(first["title"] as? String ?? needle)."
-                        : "I found that control but couldn't press it.",
-                ],
-                command: "app_action",
-                requestId: requestId,
-                ok: okPress
-            )
+        if let elements = inspect["elements"] as? [[String: Any]] {
+            let actionable = elements.first { item in
+                ((item["actions"] as? [String]) ?? []).contains("AXPress")
+            } ?? elements.first { item in
+                let role = (item["ax_role"] as? String) ?? ""
+                return ["AXButton", "AXLink", "AXMenuItem", "AXCell", "AXRow",
+                        "AXRadioButton", "AXCheckBox"].contains(role)
+            } ?? elements.first
+            if let first = actionable, let ref = first["ref"] as? String {
+                let pressed = uiAction(["action": "press", "element_ref": ref], requestId: requestId)
+                let okPress = pressed["ok"] as? Bool == true
+                return ok(
+                    [
+                        "ok": okPress,
+                        "executed": true,
+                        "verified": okPress,
+                        "adapter": "generic",
+                        "app": inspect["app"] as Any,
+                        "action": "open_item",
+                        "query": needle,
+                        "element_ref": ref,
+                        "method": "accessibility",
+                        "spoken": okPress
+                            ? "Clicked \(first["title"] as? String ?? needle)."
+                            : "I found that control but couldn't press it.",
+                    ],
+                    command: "app_action",
+                    requestId: requestId,
+                    ok: okPress
+                )
+            }
         }
         if !needle.isEmpty, let hit = clickVisibleText(needle) {
             return ok(
@@ -1951,7 +2525,7 @@ public final class MacControlService: @unchecked Sendable {
         case "play", "play_track", "play_playlist", "play_playlist_track":
             return musicPlay(arguments, requestId: requestId)
         default:
-            return fail("unknown_action", "Music cannot do that.", command: "app_action", requestId: requestId)
+            return genericAppAction(arguments, requestId: requestId)
         }
     }
 
@@ -2267,6 +2841,13 @@ public final class MacControlService: @unchecked Sendable {
     }
 
     private func musicPlay(_ arguments: [String: Any], requestId: String) -> [String: Any] {
+        var arguments = arguments
+        let wantsRandom = bool(arguments, "random")
+        if wantsRandom,
+           (string(arguments, "playlist") ?? "").isEmpty,
+           (string(arguments, "query") ?? "").isEmpty {
+            arguments["playlist"] = "Library"
+        }
         let resolved = resolvedPlaylistName(arguments)
         if let err = resolved.error, resolved.name == nil {
             if err == "ambiguous" {
@@ -2316,6 +2897,9 @@ public final class MacControlService: @unchecked Sendable {
         let countScript = "tell application id \"com.apple.Music\" to count tracks of playlist \(asLiteral(playlist))"
         let counted = runAppleScript(countScript)
         let total = Int(counted.text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        if wantsRandom, total > 0 {
+            index = Int.random(in: 1...total)
+        }
         if index < 0 { index = max(total, 1) }
         if total > 0 && index > total {
             return ok(
@@ -2389,7 +2973,7 @@ public final class MacControlService: @unchecked Sendable {
 
     private func safariAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
         let action = (string(arguments, "action") ?? "status").lowercased()
-        if let chrome = safariBrowserChrome(action, requestId: requestId) {
+        if let chrome = safariBrowserChrome(action, arguments: arguments, requestId: requestId) {
             return chrome
         }
         switch action {
@@ -2406,25 +2990,17 @@ public final class MacControlService: @unchecked Sendable {
             lastSafariQuery = query
             let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
             let url = "https://www.google.com/search?q=\(encoded)"
-            let script = """
-            tell application id "com.apple.Safari"
-              if (count of windows) is 0 then
-                make new document
-              else
-                tell window 1
-                  set current tab to (make new tab at end of tabs)
-                end tell
-              end if
-              set URL of current tab of window 1 to \(asLiteral(url))
-            end tell
-            """
-            let ran = runAppleScript(script)
+            let ran = runAppleScript(safariReuseOrOpenScript(url))
             if !ran.ok {
                 return fail("safari_search_failed", ran.error ?? "Safari search failed.", command: "app_action", requestId: requestId)
             }
-            Thread.sleep(forTimeInterval: 1.8)
-            let status = safariNow()
-            let loaded = !status.url.isEmpty
+            Thread.sleep(forTimeInterval: 0.3)
+            var status = safariNow()
+            for _ in 0..<12 where status.url.isEmpty || status.url.lowercased().hasPrefix("favorites:") {
+                Thread.sleep(forTimeInterval: 0.3)
+                status = safariNow()
+            }
+            let loaded = !status.url.isEmpty && !status.url.lowercased().hasPrefix("favorites:")
             return ok(
                 [
                     "ok": true,
@@ -2445,9 +3021,10 @@ public final class MacControlService: @unchecked Sendable {
                 requestId: requestId
             )
         case "navigate", "open_item":
+            let forceNew = bool(arguments, "new_tab")
             let query = locationQuery(arguments)
             if let dest = Self.navigationURL(from: query) {
-                return safariOpenLocation(dest, requestId: requestId)
+                return safariOpenLocation(dest, requestId: requestId, forceNewTab: forceNew)
             }
             if queryLooksLikeMedia(query) {
                 return playMediaInBrowser(browser: "safari", arguments: arguments, requestId: requestId)
@@ -2460,21 +3037,72 @@ public final class MacControlService: @unchecked Sendable {
         }
     }
 
-    private func safariOpenLocation(_ url: String, requestId: String) -> [String: Any] {
-        let script = """
+    /// Navigate Safari without tab spam: reuse a tab already on the target
+    /// host, or the current blank tab; only then open one new tab. When the
+    /// owner explicitly asked for another tab, force a fresh one.
+    private func safariReuseOrOpenScript(_ url: String, forceNewTab: Bool = false) -> String {
+        if forceNewTab {
+            return """
+            tell application id "com.apple.Safari"
+              if (count of windows) is 0 then
+                make new document
+                set URL of current tab of window 1 to \(asLiteral(url))
+              else
+                tell window 1
+                  set current tab to (make new tab at end of tabs)
+                  set URL of current tab to \(asLiteral(url))
+                end tell
+              end if
+            end tell
+            """
+        }
+        let host = URL(string: url)?.host?.lowercased() ?? ""
+        return """
         tell application id "com.apple.Safari"
+          set targetURL to \(asLiteral(url))
+          set targetHost to \(asLiteral(host))
           if (count of windows) is 0 then
             make new document
-            set URL of current tab of window 1 to \(asLiteral(url))
+            set URL of current tab of window 1 to targetURL
           else
             tell window 1
-              set current tab to (make new tab at end of tabs)
-              set URL of current tab to \(asLiteral(url))
+              set matchedIndex to 0
+              if targetHost is not "" then
+                repeat with i from 1 to (count of tabs)
+                  try
+                    if (URL of tab i) contains targetHost then
+                      set matchedIndex to i
+                      exit repeat
+                    end if
+                  end try
+                end repeat
+              end if
+              if matchedIndex > 0 then
+                set current tab to tab matchedIndex
+              else
+                set currentURL to ""
+                try
+                  set currentURL to URL of current tab
+                end try
+                if currentURL is "" or currentURL starts with "favorites:" or currentURL starts with "about:" then
+                  set URL of current tab to targetURL
+                else
+                  set current tab to (make new tab at end of tabs)
+                  set URL of current tab to targetURL
+                end if
+              end if
             end tell
           end if
         end tell
         """
-        var ran = runAppleScript(script)
+    }
+
+    private func safariOpenLocation(
+        _ url: String,
+        requestId: String,
+        forceNewTab: Bool = false
+    ) -> [String: Any] {
+        var ran = runAppleScript(safariReuseOrOpenScript(url, forceNewTab: forceNewTab))
         if !ran.ok {
             ran = runAppleScript("tell application id \"com.apple.Safari\" to open location \(asLiteral(url))")
         }
@@ -2520,7 +3148,11 @@ public final class MacControlService: @unchecked Sendable {
         )
     }
 
-    private func safariBrowserChrome(_ action: String, requestId: String) -> [String: Any]? {
+    private func safariBrowserChrome(
+        _ action: String,
+        arguments: [String: Any],
+        requestId: String
+    ) -> [String: Any]? {
         let script: String
         let spoken: String
         switch action {
@@ -2538,19 +3170,67 @@ public final class MacControlService: @unchecked Sendable {
             """
             spoken = "Opened a new Safari tab."
         case "close_tab":
+            let hint = (string(arguments, "query") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if bool(arguments, "all") {
+                script = """
+                tell application id "com.apple.Safari"
+                  if (count of windows) is 0 then return
+                  tell window 1
+                    repeat while (count of tabs) > 1
+                      close tab (count of tabs)
+                    end repeat
+                    set URL of current tab to "about:blank"
+                  end tell
+                end tell
+                """
+                spoken = "Closed all Safari tabs."
+            } else {
             script = """
             tell application id "com.apple.Safari"
               if (count of windows) is 0 then return
               tell window 1
-                if (count of tabs) <= 1 then
-                  close
-                else
-                  close current tab
+                set targetHost to \(asLiteral(hint))
+                set done to false
+                if targetHost is not "" then
+                  try
+                    if (URL of current tab) contains targetHost then
+                      if (count of tabs) <= 1 then
+                        close
+                      else
+                        close current tab
+                      end if
+                      set done to true
+                    end if
+                  end try
+                  if done is false then
+                    repeat with i from 1 to (count of tabs)
+                      try
+                        if (URL of tab i) contains targetHost then
+                          if (count of tabs) <= 1 then
+                            close
+                          else
+                            close tab i
+                          end if
+                          set done to true
+                          exit repeat
+                        end if
+                      end try
+                    end repeat
+                  end if
+                end if
+                if done is false then
+                  if (count of tabs) <= 1 then
+                    close
+                  else
+                    close current tab
+                  end if
                 end if
               end tell
             end tell
             """
             spoken = "Closed the Safari tab."
+            }
         case "next_tab":
             script = """
             tell application id "com.apple.Safari"
@@ -3865,7 +4545,7 @@ public final class MacControlService: @unchecked Sendable {
                 requestId: requestId
             )
         default:
-            return fail("unknown_action", "Notes cannot do that.", command: "app_action", requestId: requestId)
+            return genericAppAction(arguments, requestId: requestId)
         }
     }
 
@@ -4467,7 +5147,7 @@ public final class MacControlService: @unchecked Sendable {
 
     private func chromeAction(_ arguments: [String: Any], requestId: String) -> [String: Any] {
         let action = (string(arguments, "action") ?? "status").lowercased()
-        if let chrome = chromeBrowserChrome(action, requestId: requestId) {
+        if let chrome = chromeBrowserChrome(action, arguments: arguments, requestId: requestId) {
             return chrome
         }
         switch action {
@@ -4496,19 +5176,7 @@ public final class MacControlService: @unchecked Sendable {
             lastChromeQuery = query
             let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
             let target = "https://www.google.com/search?q=\(encoded)"
-            let script = """
-            tell application id "com.google.Chrome"
-              if (count of windows) is 0 then
-                make new window
-                set URL of active tab of front window to \(asLiteral(target))
-              else
-                tell front window
-                  make new tab with properties {URL:\(asLiteral(target))}
-                end tell
-              end if
-            end tell
-            """
-            let ran = runAppleScript(script)
+            let ran = runAppleScript(chromeReuseOrOpenScript(target))
             if !ran.ok {
                 return fail("chrome_failed", ran.error ?? "Chrome failed.", command: "app_action", requestId: requestId)
             }
@@ -4537,9 +5205,10 @@ public final class MacControlService: @unchecked Sendable {
                 requestId: requestId
             )
         case "navigate", "open_item":
+            let forceNew = bool(arguments, "new_tab")
             let query = locationQuery(arguments)
             if let dest = Self.navigationURL(from: query) {
-                return chromeOpenLocation(dest, requestId: requestId)
+                return chromeOpenLocation(dest, requestId: requestId, forceNewTab: forceNew)
             }
             if queryLooksLikeMedia(query) {
                 return playMediaInBrowser(browser: "chrome", arguments: arguments, requestId: requestId)
@@ -4552,20 +5221,71 @@ public final class MacControlService: @unchecked Sendable {
         }
     }
 
-    private func chromeOpenLocation(_ url: String, requestId: String) -> [String: Any] {
-        let script = """
+    /// Navigate Chrome without tab spam: reuse a tab already on the target
+    /// host, or the current blank tab; only then open one new tab. When the
+    /// owner explicitly asked for another tab, force a fresh one.
+    private func chromeReuseOrOpenScript(_ url: String, forceNewTab: Bool = false) -> String {
+        if forceNewTab {
+            return """
+            tell application id "com.google.Chrome"
+              if (count of windows) is 0 then
+                make new window
+                set URL of active tab of front window to \(asLiteral(url))
+              else
+                tell front window
+                  make new tab with properties {URL:\(asLiteral(url))}
+                end tell
+              end if
+            end tell
+            """
+        }
+        let host = URL(string: url)?.host?.lowercased() ?? ""
+        return """
         tell application id "com.google.Chrome"
+          set targetURL to \(asLiteral(url))
+          set targetHost to \(asLiteral(host))
           if (count of windows) is 0 then
             make new window
-            set URL of active tab of front window to \(asLiteral(url))
+            set URL of active tab of front window to targetURL
           else
             tell front window
-              make new tab with properties {URL:\(asLiteral(url))}
+              set matchedIndex to 0
+              if targetHost is not "" then
+                repeat with i from 1 to (count of tabs)
+                  try
+                    if (URL of tab i) contains targetHost then
+                      set matchedIndex to i
+                      exit repeat
+                    end if
+                  end try
+                end repeat
+              end if
+              if matchedIndex > 0 then
+                set active tab index to matchedIndex
+              else
+                set activeTab to active tab
+                set currentURL to ""
+                try
+                  set currentURL to URL of activeTab
+                end try
+                if currentURL is "" or currentURL starts with "chrome://newtab" or currentURL starts with "about:" then
+                  set URL of activeTab to targetURL
+                else
+                  make new tab with properties {URL:targetURL}
+                end if
+              end if
             end tell
           end if
         end tell
         """
-        let ran = runAppleScript(script)
+    }
+
+    private func chromeOpenLocation(
+        _ url: String,
+        requestId: String,
+        forceNewTab: Bool = false
+    ) -> [String: Any] {
+        let ran = runAppleScript(chromeReuseOrOpenScript(url, forceNewTab: forceNewTab))
         Thread.sleep(forTimeInterval: 1.0)
         var now = chromeNow()
         for _ in 0..<6 where now.url.isEmpty {
@@ -4593,7 +5313,11 @@ public final class MacControlService: @unchecked Sendable {
         )
     }
 
-    private func chromeBrowserChrome(_ action: String, requestId: String) -> [String: Any]? {
+    private func chromeBrowserChrome(
+        _ action: String,
+        arguments: [String: Any],
+        requestId: String
+    ) -> [String: Any]? {
         let script: String
         let spoken: String
         switch action {
@@ -4609,19 +5333,68 @@ public final class MacControlService: @unchecked Sendable {
             """
             spoken = "Opened a new Chrome tab."
         case "close_tab":
+            let hint = (string(arguments, "query") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if bool(arguments, "all") {
+                script = """
+                tell application id "com.google.Chrome"
+                  if (count of windows) is 0 then return
+                  tell front window
+                    repeat while (count of tabs) > 1
+                      close tab (count of tabs)
+                    end repeat
+                    set URL of active tab to "chrome://newtab"
+                  end tell
+                end tell
+                """
+                spoken = "Closed all Chrome tabs."
+            } else {
             script = """
             tell application id "com.google.Chrome"
               if (count of windows) is 0 then return
               tell front window
-                if (count of tabs) <= 1 then
-                  close
-                else
-                  close active tab
+                set targetHost to \(asLiteral(hint))
+                set done to false
+                if targetHost is not "" then
+                  try
+                    if (URL of active tab) contains targetHost then
+                      if (count of tabs) <= 1 then
+                        close
+                      else
+                        close active tab
+                      end if
+                      set done to true
+                    end if
+                  end try
+                  if done is false then
+                    repeat with i from 1 to (count of tabs)
+                      try
+                        if (URL of tab i) contains targetHost then
+                          set active tab index to i
+                          if (count of tabs) <= 1 then
+                            close
+                          else
+                            close active tab
+                          end if
+                          set done to true
+                          exit repeat
+                        end if
+                      end try
+                    end repeat
+                  end if
+                end if
+                if done is false then
+                  if (count of tabs) <= 1 then
+                    close
+                  else
+                    close active tab
+                  end if
                 end if
               end tell
             end tell
             """
             spoken = "Closed the Chrome tab."
+            }
         case "next_tab":
             script = """
             tell application id "com.google.Chrome"
@@ -4969,7 +5742,7 @@ public final class MacControlService: @unchecked Sendable {
                 ok: opened
             )
         default:
-            return fail("unknown_action", "Spotify cannot do that.", command: "app_action", requestId: requestId)
+            return genericAppAction(arguments, requestId: requestId)
         }
     }
 
@@ -5557,6 +6330,10 @@ public final class MacControlService: @unchecked Sendable {
         if fm.fileExists(atPath: code.path) {
             roots.append(code.resolvingSymlinksInPath())
         }
+        let home = fm.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
+        if !roots.contains(where: { $0.path == home.path }) {
+            roots.append(home)
+        }
         return roots
     }
 
@@ -5582,12 +6359,19 @@ public final class MacControlService: @unchecked Sendable {
         {
             return "path_denied"
         }
-        if !allowedFileRoots().contains(where: { root in
-            path == root.path || path.hasPrefix(root.path + "/")
-        }) {
-            return "path_outside_allowed"
+        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
+        let library = home.appendingPathComponent("Library", isDirectory: true).resolvingSymlinksInPath()
+        let icloud = library.appendingPathComponent("Mobile Documents", isDirectory: true)
+        if path == library.path || path.hasPrefix(library.path + "/") {
+            if path == icloud.path || path.hasPrefix(icloud.path + "/") {
+                return nil
+            }
+            return "path_denied"
         }
-        return nil
+        if path == home.path || path.hasPrefix(home.path + "/") {
+            return nil
+        }
+        return "path_outside_allowed"
     }
 
     private func expandFilePath(_ raw: String) -> URL? {
@@ -5603,6 +6387,53 @@ public final class MacControlService: @unchecked Sendable {
             return desktop.appendingPathComponent(trimmed)
         }
         return URL(fileURLWithPath: trimmed)
+    }
+
+    /// Home-wide Spotlight name search. Fast (indexed) and complete, unlike a
+    /// shallow directory listing. fileDenied still guards secrets.
+    private func spotlightFileSearch(needle: String, scopedRoot: URL?) -> [URL] {
+        let token = needle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard token.count >= 2 else { return [] }
+        var roots: [URL] = []
+        if let scopedRoot, isDirectory(scopedRoot) {
+            roots = [scopedRoot]
+        } else {
+            roots = allowedFileRoots()
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            if !roots.contains(where: { $0.path == home.path }) {
+                roots.append(home)
+            }
+        }
+        let escaped = token.replacingOccurrences(of: "\"", with: "\\\"")
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        var arguments: [String] = []
+        for root in roots {
+            arguments.append(contentsOf: ["-onlyin", root.path])
+        }
+        arguments.append("kMDItemFSName == \"*\(escaped)*\"cd")
+        proc.arguments = arguments
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = Pipe()
+        do {
+            try proc.run()
+        } catch {
+            return []
+        }
+        proc.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        var found: [URL] = []
+        for line in text.split(separator: "\n") {
+            let raw = line.trimmingCharacters(in: .whitespaces)
+            guard !raw.isEmpty else { continue }
+            let url = URL(fileURLWithPath: raw).resolvingSymlinksInPath()
+            guard fileDenied(url) == nil, !isDirectory(url) else { continue }
+            found.append(url)
+            if found.count >= 60 { break }
+        }
+        return found
     }
 
     private func locateFile(path: String, query: String) -> (url: URL?, matches: [URL], error: String?) {
@@ -5627,9 +6458,12 @@ public final class MacControlService: @unchecked Sendable {
         var matches: [URL] = []
         let fm = FileManager.default
         var searchRoots = allowedFileRoots()
-        if let scoped = expandFilePath(path), isDirectory(scoped) {
-            searchRoots = [scoped]
+        let scopedRoot = expandFilePath(path)
+        if let scopedRoot, isDirectory(scopedRoot) {
+            searchRoots = [scopedRoot]
         }
+        // Spotlight first: complete and indexed, covers every home folder.
+        matches.append(contentsOf: spotlightFileSearch(needle: needle, scopedRoot: scopedRoot))
         for root in searchRoots {
             guard let children = try? fm.contentsOfDirectory(
                 at: root,
@@ -5642,6 +6476,12 @@ public final class MacControlService: @unchecked Sendable {
                 }
             }
         }
+        var unique: [URL] = []
+        var seen = Set<String>()
+        for url in matches {
+            if seen.insert(url.path).inserted { unique.append(url) }
+        }
+        matches = unique
         let exact = matches.filter { $0.lastPathComponent.lowercased() == needle }
         let pool = exact.isEmpty ? matches : exact
         if pool.count == 1 { return (pool[0], [], nil) }
@@ -5810,8 +6650,28 @@ public final class MacControlService: @unchecked Sendable {
                 command: "file_op",
                 requestId: requestId
             )
+        case "search":
+            let found = locateFile(path: path, query: query)
+            if let url = found.url {
+                return ok(
+                    [
+                        "ok": true,
+                        "executed": true,
+                        "verified": true,
+                        "action": "search",
+                        "path": url.path,
+                        "files": [url.lastPathComponent],
+                        "count": 1,
+                        "spoken": "I found \(url.lastPathComponent) on \(url.deletingLastPathComponent().lastPathComponent).",
+                        "source": "mac_control",
+                    ],
+                    command: "file_op",
+                    requestId: requestId
+                )
+            }
+            return fileLocateFail(found, requestId: requestId)
         default:
-            return fail("unknown_action", "I can read, write, edit, list, or open local files.", command: "file_op", requestId: requestId)
+            return fail("unknown_action", "I can read, write, edit, list, search, or open local files.", command: "file_op", requestId: requestId)
         }
     }
 
@@ -6116,6 +6976,9 @@ public final class MacControlService: @unchecked Sendable {
 
     private static let known: [String: String] = [
         "safari": "com.apple.Safari",
+        "firefox": "org.mozilla.firefox",
+        "edge": "com.microsoft.edgemac",
+        "brave": "com.brave.Browser",
         "messages": "com.apple.MobileSMS",
         "mail": "com.apple.mail",
         "calendar": "com.apple.iCal",
@@ -6142,6 +7005,16 @@ public final class MacControlService: @unchecked Sendable {
     private static let aliases: [String: String] = [
         "google chrome": "chrome",
         "imessage": "messages",
+        "imessages": "messages",
+        "i message": "messages",
+        "i messages": "messages",
+        "apple mail": "mail",
+        "mails": "mail",
+        "apple music": "music",
+        "applemusic": "music",
+        "apple notes": "notes",
+        "phones": "phone",
+        "phone app": "phone",
         "system settings": "settings",
         "system preferences": "settings",
         "text edit": "textedit",

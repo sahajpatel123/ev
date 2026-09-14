@@ -57,3 +57,10 @@ struct EvieShortcuts: AppShortcutsProvider {
         )
     }
 }
+
+// Spare (voice shortcut) — iPhone-only, backward compat: additive Siri phrase catalog.
+// Existing TalkWithEvieIntent / CaptureForEvieIntent / EvieShortcuts unchanged.
+struct EvieVoiceShortcutPhrases: Sendable {
+    static let talkAlternates: [String] = ["Chat with Evie", "Speak with Evie", "Open Evie"]
+    static let captureAlternates: [String] = ["Dictate to Evie", "Save a note for Evie"]
+}

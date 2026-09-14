@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -1505,6 +1506,48 @@ async def run_restore_gate() -> GateResult:
             _check("mutation_created", mutation.status_code == 201, f"HTTP {mutation.status_code}")
         )
 
+        # P0 containment: a master bearer alone may not run restore. Mint the
+        # single-use confirmation token the endpoint now requires, and prove
+        # the un-tokened call is still refused.
+        unconfirmed = await client.post(
+            "/v1/backup/restore",
+            json={
+                "path": backup_path,
+                "passphrase": passphrase,
+                "mode": "wipe",
+                "confirm_wipe": True,
+            },
+        )
+        checks.append(
+            _check(
+                "restore_without_confirmation_refused",
+                unconfirmed.status_code == 403,
+                f"HTTP {unconfirmed.status_code}: {unconfirmed.text[:200]}",
+            )
+        )
+
+        prepared = await client.post(
+            "/v1/backup/restore/prepare",
+            json={
+                "path": backup_path,
+                "passphrase": passphrase,
+                "mode": "wipe",
+                "confirm_wipe": True,
+            },
+        )
+        token = (
+            str(prepared.json().get("confirmation_token") or "")
+            if prepared.status_code == 200
+            else ""
+        )
+        checks.append(
+            _check(
+                "restore_confirmation_minted",
+                prepared.status_code == 200 and bool(token),
+                f"HTTP {prepared.status_code}: {prepared.text[:200]}",
+            )
+        )
+
         restore = await client.post(
             "/v1/backup/restore",
             json={
@@ -1512,6 +1555,7 @@ async def run_restore_gate() -> GateResult:
                 "passphrase": passphrase,
                 "mode": "wipe",
                 "confirm_wipe": True,
+                "restore_confirmation": token,
             },
         )
         restore_body = restore.json()
@@ -1550,6 +1594,150 @@ async def run_restore_gate() -> GateResult:
         )
 
     return _gate("restore_drill", checks, int((time.perf_counter() - started) * 1000))
+
+
+def run_continuity_gate() -> GateResult:
+    """The owner's own report, as a gate: "yes" must answer Evie's question.
+
+    Every thinking surface compiles its prompt from the durable cognitive
+    session, and the kernel sends `[system, user]` with no chat history, so a
+    short reply is answerable only if the offer and the turn ledger reach that
+    prompt. The model prompt is built here without a provider, so this gate
+    catches the loss of either one without needing a live model.
+    """
+
+    # The gate arms a real offer, which writes the durable session file. Snapshot
+    # and restore it so running `make eval` can never edit the owner's live
+    # conversation, whatever storage root the harness resolved.
+    started = time.perf_counter()
+    from app.cognitive.session_store import _path as _session_path
+    from app.cognitive.session_store import forget_live_cache
+
+    session_file = _session_path()
+    try:
+        original: str | None = session_file.read_text(encoding="utf-8")
+    except OSError:
+        original = None
+
+    try:
+        return _continuity_checks(started)
+    finally:
+        if original is None:
+            session_file.unlink(missing_ok=True)
+        else:
+            session_file.write_text(original, encoding="utf-8")
+        forget_live_cache()
+
+
+def _continuity_checks(started: float) -> GateResult:
+    from app.cognitive.context import compile_context
+    from app.cognitive.intent import (
+        clear_pending_offer,
+        continuation_readout,
+        is_substantive_turn,
+        pending_offer,
+        recent_exchanges,
+        remember_exchange,
+        set_pending_offer,
+    )
+    from app.cognitive.session_store import CognitiveSession
+    from app.ev.continuity import is_affirmative_reply, is_negative_reply
+
+    checks: list[Check] = []
+    session = CognitiveSession(session_id="eval-continuity")
+    offer = (
+        "The newest mail is from GitHub about a failed CI run on main, arrived "
+        "Friday at 2:21 am. Do you want me to read out the full mail?"
+    )
+    set_pending_offer(
+        session, offer, action={"tool": "life.mail", "args": {"query": "search for x in mail"}}
+    )
+    remember_exchange(session, owner="search for x in mail", assistant=offer, kind="muse")
+
+    armed = pending_offer(session)
+    checks.append(
+        _check(
+            "offer_is_armed_with_its_action",
+            armed is not None
+            and (armed.get("action") or {}).get("tool") == "life.mail",
+            f"armed={armed is not None}, "
+            f"action={((armed or {}).get('action') or {}).get('tool')}",
+        )
+    )
+    checks.append(
+        _check(
+            "read_aloud_offer_is_marked_for_readout",
+            armed is not None and armed.get("readout") is True,
+            "an offer to read an artifact out must promote the follow-up to a readout",
+        )
+    )
+
+    prompt = compile_context(
+        transcript="yes",
+        modality="voice",
+        device_id=None,
+        cognition=session,
+        capability_names=["life.mail"],
+    )
+    checks.append(
+        _check(
+            "prompt_carries_the_offer",
+            offer in prompt,
+            "the model must see the question it is answering",
+        )
+    )
+    checks.append(
+        _check(
+            "prompt_carries_the_turn_ledger",
+            "RECENT EXCHANGES" in prompt and "search for x in mail" in prompt,
+            "the durable ledger is the referent for every channel",
+        )
+    )
+    checks.append(
+        _check(
+            "bare_yes_binds_to_the_offer",
+            is_affirmative_reply("yes")
+            and is_affirmative_reply("yes, please")
+            and is_affirmative_reply("yes, read it out")
+            and continuation_readout("yes", session),
+            "a bare or tailed affirmative must bind, not fall through to a greeting",
+        )
+    )
+    checks.append(
+        _check(
+            "statements_are_not_replies",
+            not is_affirmative_reply("yes the mail from Rahul was long")
+            and not is_affirmative_reply("okay so open Safari and search YouTube")
+            and not is_negative_reply("no idea what the weather is"),
+            "an utterance that merely starts with yes/no is a new request",
+        )
+    )
+    checks.append(
+        _check(
+            "greeting_does_not_displace_the_offer",
+            not is_substantive_turn("Hi.")
+            and not is_substantive_turn("Hey there")
+            and is_substantive_turn("search for x in mail"),
+            "the client greets on every live open; that must not consume the offer",
+        )
+    )
+
+    clear_pending_offer(session)
+    checks.append(
+        _check(
+            "answered_offer_is_cleared",
+            pending_offer(session) is None,
+            "an answered offer must not survive to mis-bind the next reply",
+        )
+    )
+    checks.append(
+        _check(
+            "ledger_survives_the_offer",
+            len(recent_exchanges(session)) >= 1,
+            "the referent must outlive the offer's own lifetime",
+        )
+    )
+    return _gate("continuity", checks, int((time.perf_counter() - started) * 1000))
 
 
 def run_roadmap_gate(spec: dict) -> GateResult:
@@ -2036,6 +2224,222 @@ def run_wake_reliability_gate() -> GateResult:
     )
 
 
+async def run_camera_memory_gate(session) -> GateResult:
+    """Camera memory honesty: grounded sightings, truthful kinds, sampled clips.
+
+    1. Every stored ``camera.observation`` must carry a grounding signal
+       (pixels, an attachment, labels/colours/OCR, or an explicit intent).
+    2. A row may only claim a media kind it has evidence for — a still-only
+       client must never produce a "recorded a video clip" observation.
+    3. Clip ingest must run end to end on a locally generated clip (ffmpeg),
+       or skip honestly when the extractor is not installed.
+    """
+
+    started = time.perf_counter()
+    from sqlalchemy import select
+
+    from app.memory.visual import VISUAL_EVENT_TYPE
+    from app.models import Event
+
+    checks: list[Check] = []
+    rows = list(
+        (
+            await session.execute(
+                select(Event).where(
+                    Event.event_type == VISUAL_EVENT_TYPE,
+                    Event.tombstoned_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    def _grounded(content: dict) -> bool:
+        if content.get("kind") == "keep_intent":
+            return True  # an intent is allowed to have no pixels; it claims none
+        if content.get("grounded") is True:
+            return True
+        if str(content.get("attachment_id") or "").strip():
+            return True
+        if content.get("labels") or content.get("colors") or content.get("ocr_text"):
+            return True
+        if content.get("visual_facts"):
+            return True
+        try:
+            return int(content.get("encoded_bytes") or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    ungrounded = [str(row.id) for row in rows if not _grounded(dict(row.content or {}))]
+    checks.append(
+        _check(
+            "every_visual_observation_is_grounded",
+            not ungrounded,
+            f"ungrounded rows: {len(ungrounded)}" + (f" e.g. {ungrounded[:3]}" if ungrounded else ""),
+        )
+    )
+    clip_claims = [
+        str(row.id)
+        for row in rows
+        if str((row.content or {}).get("media_kind") or "").lower()
+        in {"clip", "video", "movie", "recording"}
+        and not str((row.content or {}).get("attachment_id") or "").strip()
+    ]
+    checks.append(
+        _check(
+            "clip_claims_carry_stored_media",
+            not clip_claims,
+            f"clip rows without stored media: {len(clip_claims)}",
+        )
+    )
+
+    from app.vision.clips import extraction_available
+
+    if not extraction_available():
+        result = _gate(
+            "camera_memory",
+            checks,
+            int((time.perf_counter() - started) * 1000),
+            metrics={
+                "visual_rows": len(rows),
+                "ungrounded_rows": len(ungrounded),
+                "clip_ingest_ran": 0,
+            },
+        )
+        result.skipped = True
+        result.skip_reason = (
+            "ffmpeg/ffprobe absent: clip extraction degrades honestly to "
+            "degraded=true, so the sampled-moments gate is SKIPPED (never passed)"
+        )
+        return result
+
+    ingest = await _camera_memory_clip_probe(session)
+    checks.append(
+        _check(
+            "clip_ingest_samples_moments",
+            bool(ingest.get("ok") and int(ingest.get("moments") or 0) >= 2),
+            f"frames={ingest.get('frames')} moments={ingest.get('moments')} "
+            f"degraded={ingest.get('degraded')}",
+        )
+    )
+    checks.append(
+        _check(
+            "clip_ingest_keeps_pixels",
+            bool(ingest.get("attachment_id")),
+            f"attachment={ingest.get('attachment_id')}",
+        )
+    )
+    checks.append(
+        _check(
+            "clip_observation_is_grounded",
+            bool(ingest.get("grounded")),
+            f"grounded={ingest.get('grounded')}",
+        )
+    )
+    return _gate(
+        "camera_memory",
+        checks,
+        int((time.perf_counter() - started) * 1000),
+        metrics={
+            "visual_rows": len(rows),
+            "ungrounded_rows": len(ungrounded),
+            "clip_frames": int(ingest.get("frames") or 0),
+            "clip_moments": int(ingest.get("moments") or 0),
+            "clip_ingest_ran": 1,
+        },
+    )
+
+
+async def _camera_memory_clip_probe(session) -> dict:
+    """Ingest one generated clip and report what the memory actually holds."""
+
+    import shutil
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    from sqlalchemy import select
+
+    from app.memory.visual import VISUAL_EVENT_TYPE
+    from app.models import Event
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        return {"ok": False}
+    tmp = Path(tempfile.mkdtemp(prefix="ev-clip-gate-")) / "probe.mov"
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x120:rate=10:duration=3",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-an",
+                str(tmp),
+            ],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        if proc.returncode != 0 or not tmp.is_file():
+            return {"ok": False, "error": "clip_generation_failed"}
+        data = tmp.read_bytes()
+    except Exception as exc:  # noqa: BLE001 - a broken ffmpeg must skip, not pass
+        return {"ok": False, "error": type(exc).__name__}
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+    from app.memory.clip import ingest_clip
+
+    try:
+        result = await ingest_clip(
+            session,
+            data,
+            actor="eval-gates",
+            filename="probe.mov",
+            content_type="video/quicktime",
+            duration_ms=3000,
+            request_id="eval-clip-gate",
+        )
+    except Exception as exc:  # noqa: BLE001 - the gate reports the failure
+        return {"ok": False, "error": type(exc).__name__}
+    await session.commit()
+    row = (
+        (
+            await session.execute(
+                select(Event)
+                .where(
+                    Event.event_type == VISUAL_EVENT_TYPE,
+                    Event.content["attachment_id"].as_string() == str(result.attachment_id),
+                )
+                .order_by(Event.occurred_at.desc())
+            )
+        )
+        .scalars()
+        .first()
+    )
+    content = dict(getattr(row, "content", None) or {})
+    return {
+        "ok": bool(result.ok),
+        "frames": result.frames,
+        "moments": len(result.moments or []),
+        "attachment_id": result.attachment_id,
+        "degraded": result.extraction_degraded,
+        "grounded": bool(content.get("grounded")),
+        "media_kind": content.get("media_kind"),
+    }
+
+
 async def run_grounding_gate() -> GateResult:
     """Grounding: ≥95% ungrounded flagged and ≤5% false removal (Agent 16)."""
 
@@ -2151,6 +2555,7 @@ async def _run_all(session) -> list[GateResult]:
         run_ci_parity_gate(),
         await run_latency_gate(),
         await run_restore_gate(),
+        run_continuity_gate(),
         run_roadmap_gate(spec),
         # --- LAUNCH ML quality gates ---
         run_asr_quality_gate(),
@@ -2159,6 +2564,8 @@ async def _run_all(session) -> list[GateResult]:
         run_face_recognition_gate(),
         run_wake_reliability_gate(),
         await run_grounding_gate(),
+        # --- CAMERA/MEMORY FIELD (owner-requested) ---
+        await run_camera_memory_gate(session),
     ]
     return gates
 
@@ -2177,6 +2584,12 @@ async def _main(report_path: Path) -> int:
     os.environ["EV_MASTER_KEY"] = "eval-local-key"
     os.environ["EV_VAULT_KEY"] = "eval-vault-key-0123456789abcdef"
     os.environ["EV_STORAGE_ROOT"] = tempfile.mkdtemp(prefix="ev-eval-storage-")
+    # P0 containment: the restore drill is a deliberate, operator-run wipe on a
+    # throwaway SQLite file in a temp dir. The pinning law requires maintenance
+    # mode to be ON for exactly this, so the drill turns it on rather than
+    # weakening the endpoint. The gate still proves the un-tokened call is
+    # refused (restore_without_confirmation_refused).
+    os.environ["EV_MAINTENANCE_MODE"] = "1"
     os.environ["EV_CHAT_PROVIDER"] = "mock"
     os.environ["EV_VOICE_ASR_PROVIDER"] = "echo"
     os.environ["EV_VOICE_TTS_PROVIDER"] = "meta"

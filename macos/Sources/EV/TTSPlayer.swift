@@ -15,18 +15,22 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private static let sourceBytesPerSample = 2
     private static let sourceBytesPerFrame = sourceChannels * sourceBytesPerSample
     private static let aggregationMs = 160
-    // Cold-start prime: ~250 ms of real audio before the first word. The
-    // provider streams at ~1x realtime over WAN, so the sustainable riding
-    // lead can never exceed what was banked before play starts. An 80 ms
-    // prime rode at ~80-150 ms and every routine arrival jitter (>100 ms)
-    // ran the node dry — 4-6 underruns/second on EVERY response, heard as
-    // constant jitter with and without tools. 250 ms absorbs normal jitter
-    // (±150-200 ms) for ~170 ms of extra first-word latency, still prompt.
-    private static let startupPrebufferMs = 250
-    /// Restart lead margin after starvation/gap (~180 ms). Prevents single-chunk
-    /// underrun loops where an 80 ms arrival immediately restarts playback with
-    /// zero lead, starving on every subsequent packet.
-    private static let restartPrebufferMs = 180
+    // Cold-start prime: ~400 ms of real audio before the first word. The
+    // S2S provider streams at ~1x realtime over WAN in ~200 ms drips, so the
+    // sustainable riding lead can never exceed what was banked before play
+    // starts. A 250 ms prime rode at ~250 ms and every routine WAN jitter
+    // hole (>250 ms) or tool micro-pause ran the node dry — 10-95 underruns
+    // per response, heard as constant lag/glitch with and without tools and
+    // worse on every tool turn. 400 ms absorbs normal jitter (±300 ms) plus
+    // model think-pauses for ~150 ms of extra first-word latency, still
+    // prompt. Tool gaps (0.3-20 s silence) still starve by design; the lane
+    // adopt + 8 s mic hold + 300 ms restart below cover the resume.
+    private static let startupPrebufferMs = 400
+    /// Restart lead margin after starvation/gap (~300 ms). Prevents single-chunk
+    /// underrun loops where a 200 ms arrival immediately restarts playback with
+    /// zero lead, starving on every subsequent packet. Matches the backend
+    /// 200 ms chunk size so one packet plus margin restarts cleanly.
+    private static let restartPrebufferMs = 300
     /// Steady PlayerNode lead ceiling after the ~250 ms prime. 500 ms ran dry
     /// on ~14–20 s replies (underruns with overflow=0). 900 ms absorbs
     /// provider/WS bursts without delaying the first word and keeps the
@@ -35,9 +39,11 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     /// Safety valve only. A realtime provider generates audio FASTER than
     /// realtime (a 30 s answer can arrive in ~3 s), so the hold buffer must
     /// absorb whole-response bursts — bounded speech latency is maintained by
-    /// the scheduled-lead gate, not by dropping speech. 60 s of backlog is
-    /// impossible in practice and means a broken client.
-    private static let hardCeilingMs = 60000
+    /// the scheduled-lead gate, not by dropping speech. Muse replies can be
+    /// two minutes of audio in one burst; 60 s dropped the tail and the
+    /// player starved into a colliding second speak. Three minutes covers
+    /// a long verbatim mouth pass without silently deleting speech.
+    private static let hardCeilingMs = 180000
     private static let echoTail: TimeInterval = 1.5
 
     private let audioQueue = DispatchQueue(label: "com.ev.audio.playback", qos: .userInitiated)
@@ -639,12 +645,12 @@ final class TTSPlayer: NSObject, @unchecked Sendable {
     private func maybeStartPlayback() {
         guard pendingBuffers > 0 else { return }
         if playerStarted { return }
-        // Cold start needs a real prime (~250 ms) so the first word does not
+        // Cold start needs a real prime (~400 ms) so the first word does not
         // stutter on the second chunk and the ride has jitter margin.
         let primed = responseFinished || scheduledLeadMs() >= Self.startupPrebufferMs
         // Mid-response restart: mid-sentence starvation or tool gap recovery
-        // must re-accumulate a safe cushion (~180 ms) before restarting playback.
-        // Resuming on a single ~80 ms chunk with zero lead margin traps the player
+        // must re-accumulate a safe cushion (~300 ms) before restarting playback.
+        // Resuming on a single ~200 ms chunk with zero lead margin traps the player
         // in an inescapable cascade of ~5-12 underruns per second on network jitter.
         let restartTargetMs = underrunEvents > 0 ? Self.restartPrebufferMs : Self.startupPrebufferMs
         let starvedResume = underrunEvents > 0 && (responseFinished || scheduledLeadMs() >= restartTargetMs)

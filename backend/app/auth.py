@@ -124,6 +124,14 @@ async def _resolve_actor(
     if device_any is None:
         # Neither master nor device — distinguish from master-only failure.
         # Keep legacy phrase for backwards compat but prefix with code.
+        #
+        # AGENT LAW — DO NOT "FIX" THIS BY MINTING A NEW MAC DEVICE:
+        # When EV.app talks to Talk (:18000), DEVICE_TOKEN_INVALID almost
+        # always means Talk booted on pytest sqlite / test-key and cannot
+        # see Postgres ``devices.token_hash``. The Keychain token is still
+        # valid on ev.api (:8000). Restart Talk via
+        # ``scripts/start_talk_sidecar.py`` (owner DB pin). Do not rewrite
+        # auth to accept master-as-device. Do not create a second device row.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="DEVICE_TOKEN_INVALID: Invalid device token (master mismatch)",

@@ -1071,6 +1071,22 @@ async def route_action(
     )
     session.add(action)
     await session.flush()
+    # Mobile V2: pending approvals must reach the owner's trusted iPhone
+    # (inbox now, APNs via digest path when registered). Poll fallback keeps
+    # this honest without credentials. Never breaks action creation.
+    if action.status == "pending":
+        try:
+            from app.device_gateway.push import notify_trusted_companions
+
+            await notify_trusted_companions(
+                session,
+                kind="approval_required",
+                title=f"Approval needed: {action.title or action.action_type}",
+                body="An Evie action needs your approval. Open Approvals to review.",
+                payload={"action_id": str(action.id), "action_type": action.action_type},
+            )
+        except Exception:
+            pass
     await record_runtime_event(
         session,
         kind="action",
@@ -1110,6 +1126,8 @@ async def decide_action(
     actor: str,
     decision: Literal["approve", "deny"],
     reason: str | None = None,
+    device_id=None,
+    reverify_token: str | None = None,
 ) -> ApprovedAction:
     action = await session.get(ApprovedAction, action_id)
     if action is None:
@@ -1168,7 +1186,13 @@ async def decide_action(
     }:
         raise ValueError(action.denied_reason.replace("_", " "))
     if decision == "approve" and action.status == "approved" and pol_meta(action.payload).get("resume_on_approve"):
-        return await execute_action(session, action.id, actor=actor)
+        return await execute_action(
+            session,
+            action.id,
+            actor=actor,
+            device_id=device_id,
+            reverify_token=reverify_token,
+        )
     return action
 
 
@@ -1178,6 +1202,8 @@ async def execute_action(
     *,
     actor: str,
     result: dict | None = None,
+    device_id=None,
+    reverify_token: str | None = None,
 ) -> ApprovedAction:
     action = await session.get(ApprovedAction, action_id)
     if action is None:
@@ -1219,6 +1245,14 @@ async def execute_action(
                 issued_at=action.approved_at,
                 session_id=str(meta.get("live_session_id") or action.session_id or "") or None,
             )
+        from app.ev.messaging.routing import RouteBinding
+
+        approved_route = RouteBinding.from_payload(meta.get("route"))
+        # A device actor must be identifiable to policy, or the dispatch is
+        # denied as an "invalid actor/device combination" after the row was
+        # already marked approved. Fall back to the device the action was
+        # parked for when the caller does not name one.
+        action_device = device_id or action.device_id
         tool = await dispatch_tool(
             session,
             action.action_type,
@@ -1227,7 +1261,11 @@ async def execute_action(
             allow_sensitive=True,
             channel="action",
             confirmation=bound,
+            device_id=action_device,
+            reverify_token=reverify_token,
             live_session_id=str(meta.get("live_session_id") or action.session_id or "") or None,
+            approved_route=approved_route,
+            approved_address=str(meta.get("address") or ""),
             audit_endpoint="POST /v1/runtime/actions/{id}/execute",
         )
         dispatched_via_tool = True
@@ -1688,14 +1726,18 @@ async def runtime_health(session: AsyncSession) -> dict:
     checks.append(
         {"name": "queue", "status": queue_status, "mode": settings.processing_mode}
     )
-    from app.gateway.muse import configured_intelligence_provider, muse_intelligence_active, muse_spark_key_loaded
+    from app.gateway.muse import (
+        configured_intelligence_provider,
+        muse_brain_active,
+        muse_spark_key_loaded,
+    )
 
     intel = configured_intelligence_provider() or settings.chat_provider
     chat_status = "ok"
     chat_detail: dict = {"provider": intel}
-    if muse_intelligence_active() and not muse_spark_key_loaded():
+    if muse_brain_active() and not muse_spark_key_loaded():
         chat_status = "degraded"
-        chat_detail["reason"] = "OPENCODE_API_KEY missing"
+        chat_detail["reason"] = "META_MODEL_API_KEY missing"
     checks.append(
         {
             "name": "chat_provider",
@@ -1850,6 +1892,22 @@ async def daemon_tick(session: AsyncSession) -> dict:
         },
     )
 
+    # Presence OS: bounded durable-continuation sweep (conditions → resume →
+    # advance → stall detect). Best-effort; never breaks the daemon tick.
+    try:
+        from app.presence.runner import presence_tick as _presence_tick
+
+        presence = await _presence_tick(session, utcnow())
+    except Exception:
+        presence = {"error": "presence_tick_unavailable"}
+
+    try:
+        from app.digital.watch import digital_tick as _digital_tick
+
+        digital = await _digital_tick(session)
+    except Exception:
+        digital = {"error": "digital_tick_unavailable"}
+
     return {
         "expired_session_id": str(expired_session_id) if expired_session_id else None,
         "re_enqueued": re_enqueued,
@@ -1863,8 +1921,8 @@ async def daemon_tick(session: AsyncSession) -> dict:
         "dlq_escalations": len(dlq_escalations),
         "life_routing": life_routing,
         "life_reconciled": life_reconciled,
-        "timers": timers,
-        "empties": empties,
+        "presence": presence,
+        "digital": digital,
         "health": health,
         "code_intern": intern,
     }
@@ -2094,7 +2152,6 @@ async def runtime_status(session: AsyncSession) -> RuntimeStatusOut:
 
 def record_dead_letter_sync(*, queue: str, payload: dict, error: str, job_id: str | None = None) -> None:
     """Sync helper for RQ worker entrypoints (no running event loop there)."""
-    import asyncio
 
     from app.db import SessionLocal
 
@@ -2110,7 +2167,6 @@ def record_dead_letter_sync(*, queue: str, payload: dict, error: str, job_id: st
 
 def resolve_dead_letter_sync(*, queue: str, job_id: str) -> None:
     """Sync helper marking a dead letter resolved after a successful retry."""
-    import asyncio
 
     from app.db import SessionLocal
 

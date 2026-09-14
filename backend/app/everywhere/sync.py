@@ -483,3 +483,12 @@ async def emit_everywhere_event(
             occurred_at=utcnow(),
         )
     )
+    # Presence OS: event-driven resume. Cheap prefix gate first; goal.*
+    # excluded (recursion guard — own transitions re-emit here).
+    try:
+        if not event_type.startswith("goal."):
+            from app.presence.runner import consider_event as _presence_consider
+
+            await _presence_consider(session, event_type, content)
+    except Exception:
+        pass

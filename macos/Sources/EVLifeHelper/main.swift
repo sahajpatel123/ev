@@ -121,10 +121,15 @@ func quitBundle(_ bundleID: String) {
     NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.terminate()
 }
 
-func openURLHeadless(_ url: URL) -> Bool {
+/// Open a URL through LaunchServices.
+///
+/// `activates` decides whether the receiving app is brought to the front.
+/// The returned flag means only that LaunchServices accepted the URL: it is
+/// never evidence that the receiving app performed any action.
+func openURL(_ url: URL, activates: Bool) -> Bool {
     let config = NSWorkspace.OpenConfiguration()
-    config.activates = false
-    config.hides = true
+    config.activates = activates
+    config.hides = !activates
     config.addsToRecentItems = false
     var opened = false
     let sema = DispatchSemaphore(value: 0)
@@ -136,8 +141,32 @@ func openURLHeadless(_ url: URL) -> Bool {
     return opened
 }
 
-func digitsOnly(_ value: String) -> String {
-    value.filter(\.isNumber)
+func launchBundleForeground(_ bundleID: String) {
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+        return
+    }
+    let config = NSWorkspace.OpenConfiguration()
+    config.activates = true
+    config.hides = false
+    config.addsToRecentItems = false
+    let sema = DispatchSemaphore(value: 0)
+    NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+        sema.signal()
+    }
+    _ = sema.wait(timeout: .now() + 1.5)
+}
+
+/// A WhatsApp destination must be an explicit phone number: an optional
+/// leading `+` followed by at least eight digits, nothing else. Names,
+/// emails, and formatted numbers are refused instead of having their letters
+/// stripped away into a different number.
+func phoneDestination(_ value: String) -> String? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let digits = trimmed.hasPrefix("+") ? trimmed.dropFirst() : Substring(trimmed)
+    guard digits.count >= 8, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else {
+        return nil
+    }
+    return trimmed.hasPrefix("+") ? "+" + String(digits) : String(digits)
 }
 
 func queryEncode(_ value: String) -> String {
@@ -287,13 +316,49 @@ case "messages.send":
     guard let text = argumentValue("--text"), !text.isEmpty else {
         fail(.badArguments, "bad_arguments", "messages.send requires --text")
     }
+    let service = (argumentValue("--service") ?? "auto").lowercased()
+    guard ["auto", "imessage", "sms"].contains(service) else {
+        fail(
+            .badArguments,
+            "bad_arguments",
+            "messages.send --service must be auto, imessage, or sms"
+        )
+    }
     do {
+        let buddy = appleScriptEscape(recipient)
+        let body = appleScriptEscape(text)
+        let sendBlock: String
+        switch service {
+        case "imessage":
+            sendBlock = """
+                set targetService to 1st service whose service type = iMessage
+                set targetBuddy to buddy "\(buddy)" of targetService
+                send "\(body)" to targetBuddy
+            """
+        case "sms":
+            sendBlock = """
+                set targetService to 1st service whose service type = SMS
+                set targetBuddy to buddy "\(buddy)" of targetService
+                send "\(body)" to targetBuddy
+            """
+        default:
+            // Auto: iMessage when the handle has it, SMS when it doesn't.
+            sendBlock = """
+                try
+                    set targetService to 1st service whose service type = iMessage
+                    set targetBuddy to buddy "\(buddy)" of targetService
+                    send "\(body)" to targetBuddy
+                on error
+                    set targetService to 1st service whose service type = SMS
+                    set targetBuddy to buddy "\(buddy)" of targetService
+                    send "\(body)" to targetBuddy
+                end try
+            """
+        }
         let script = """
         tell application "Messages" to launch
         tell application "Messages"
-            set targetService to 1st service whose service type = iMessage
-            set targetBuddy to buddy "\(appleScriptEscape(recipient))" of targetService
-            send "\(appleScriptEscape(text))" to targetBuddy
+        \(sendBlock)
         end tell
         """
         if arguments.contains("--dry-run") {
@@ -305,12 +370,24 @@ case "messages.send":
                 )
             }
             _ = try compileAppleScript(script)
-            success(["to": recipient, "dry_run": true, "compiled": true, "headless": true])
+            success([
+                "to": recipient,
+                "dry_run": true,
+                "compiled": true,
+                "service": service,
+                "headless": true,
+            ])
         }
         launchBundleHeadless("com.apple.MobileSMS")
         _ = try runAppleScript(script)
         hideProcess("Messages")
-        success(["to": recipient, "sent": true, "headless": true, "focus_stolen": false])
+        success([
+            "to": recipient,
+            "sent": true,
+            "service": service,
+            "headless": true,
+            "focus_stolen": false,
+        ])
     } catch {
         fail(.failed, "failed", "messages.send failed: \(error)")
     }
@@ -322,42 +399,56 @@ case "whatsapp.send":
     guard let text = argumentValue("--text"), !text.isEmpty else {
         fail(.badArguments, "bad_arguments", "whatsapp.send requires --text")
     }
-    let phone = digitsOnly(recipient)
-    guard phone.count >= 8 else {
-        fail(.badArguments, "bad_arguments", "whatsapp.send --to must be a phone number")
+    let phone = phoneDestination(recipient)
+    guard let phone else {
+        fail(
+            .badArguments,
+            "bad_arguments",
+            "whatsapp.send --to must be an explicit phone number (optional leading +, then digits)"
+        )
     }
     let encoded = queryEncode(text)
+    // whatsapp:// hands the phone and text to WhatsApp itself; wa.me is the
+    // registered HTTPS fallback for a Mac without the app installed.
     let candidates = [
-        "whatsapp://send?phone=\(phone)&text=\(encoded)",
-        "https://wa.me/\(phone)?text=\(encoded)",
+        (scheme: "whatsapp", raw: "whatsapp://send?phone=\(phone)&text=\(encoded)"),
+        (scheme: "https", raw: "https://wa.me/\(phone)?text=\(encoded)"),
     ]
-    var opened = false
-    launchBundleHeadless("net.whatsapp.WhatsApp")
-    for raw in candidates {
-        guard let url = URL(string: raw) else { continue }
-        if openURLHeadless(url) {
-            opened = true
+    var openedScheme: String?
+    launchBundleForeground("net.whatsapp.WhatsApp")
+    for candidate in candidates {
+        guard let url = URL(string: candidate.raw) else { continue }
+        if openURL(url, activates: true) {
+            openedScheme = candidate.scheme
             break
         }
     }
-    hideProcess("WhatsApp")
-    if opened {
-        success([
-            "to": phone,
-            "channel": "whatsapp",
-            "opened": true,
-            "sent": false,
-            "headless": true,
-            "focus_stolen": false,
-            "system_ui": true,
-        ])
-    } else {
+    guard let scheme = openedScheme else {
         fail(
             .notAvailable,
             "not_available",
-            "whatsapp.send could not open WhatsApp without stealing focus"
+            "whatsapp.send could not open WhatsApp"
         )
     }
+    // LaunchServices accepted a URL. That is the whole of what this helper
+    // knows: no chat was resolved and no message was sent, so the envelope
+    // reports a compose-only result and carries the URL scheme it opened.
+    // The receiving app was activated deliberately — the owner has to finish
+    // the send in its own UI (system_ui), which takes focus.
+    success([
+        "to": phone,
+        "channel": "whatsapp",
+        "opened": true,
+        "compose_only": true,
+        "compose_evidence": [
+            "scheme": scheme,
+            "address": phone,
+            "verified_destination": false,
+        ],
+        "headless": false,
+        "focus_stolen": true,
+        "system_ui": true,
+    ])
 
 // MARK: - Mail
 
@@ -436,7 +527,7 @@ case "call.place":
     }
     // FaceTime/Phone still present their own system call UI — that is macOS,
     // not an EV window. We never activate or fall back to a focus-stealing open.
-    if openURLHeadless(url) {
+    if openURL(url, activates: false) {
         success([
             "destination": destination,
             "kind": kind,

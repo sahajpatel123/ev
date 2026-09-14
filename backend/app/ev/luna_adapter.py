@@ -586,25 +586,20 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
         record_route_source("DETERMINISTIC")
         return intent
     use_spark = False
+    kernel_on = False
     try:
+        from app.cognitive.mode import muse_kernel_active
         from app.gateway.muse import (
-            muse_intelligence_active,
+            muse_brain_active,
             muse_spark_key_loaded,
             muse_spark_model,
         )
 
-        use_spark = muse_intelligence_active()
+        use_spark = muse_brain_active()
+        kernel_on = muse_kernel_active()
     except Exception:
         use_spark = False
-    if use_spark:
-        if not muse_spark_key_loaded():
-            return TurnIntent(
-                route="CLARIFICATION",
-                operation="UNKNOWN",
-                needs_clarification=True,
-                clarification_question="Intelligence provider is unavailable.",
-                confidence=0.0,
-            )
+    if use_spark and muse_spark_key_loaded():
         try:
             intent = await _call_luna(turn, context)
             latency = (time.perf_counter() - start) * 1000
@@ -625,6 +620,18 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
                 clarification_question="Intelligence provider is unavailable.",
                 confidence=0.0,
             )
+    if use_spark and not muse_spark_key_loaded() and not kernel_on:
+        # Legacy slot-driven Spark without a key: fail closed loudly. Under
+        # muse_kernel the kernel owns the spoken turn and speaks its own
+        # honest unavailable line, so the legacy turn controller must not
+        # preempt it with a blocking question — fall through to routing.
+        return TurnIntent(
+            route="CLARIFICATION",
+            operation="UNKNOWN",
+            needs_clarification=True,
+            clarification_question="Intelligence provider is unavailable.",
+            confidence=0.0,
+        )
     use_luna_api = bool((settings.openai_api_key or "").strip()) and (
         (getattr(settings, "turn_control_provider", None) or "openai").strip().lower() == "openai"
     )
@@ -671,9 +678,9 @@ async def classify_intent(turn: str, context: dict | None = None) -> TurnIntent:
 async def _call_luna(turn: str, context: dict | None) -> TurnIntent:
     """Structured TurnIntent. Muse Spark is the normal brain; OpenAI is legacy."""
 
-    from app.gateway.muse import muse_intelligence_active, muse_spark_model
+    from app.gateway.muse import muse_brain_active, muse_spark_model
 
-    if muse_intelligence_active():
+    if muse_brain_active():
         intent = await _call_spark_intent(turn, context)
         model = muse_spark_model()
         _record_luna_model(model, model, success=True)

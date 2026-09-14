@@ -2,8 +2,9 @@
 
 Logical thread continuation, NOT live socket migration. A conversation that
 started on the Mac resumes on the phone from: the canonical thread, its
-ephemeral state (focus/topics/pending questions), the durable rollup, and
-active Project/Goal references — bounded, never a giant transcript dump.
+ephemeral state (focus/topics/pending questions), the live pending offer Evie
+actually just spoke, the durable rollup, and active Project/Goal references —
+bounded, never a giant transcript dump.
 """
 
 from __future__ import annotations
@@ -22,6 +23,23 @@ MAX_TOPICS = 8
 MAX_OPEN_QUESTIONS = 5
 MAX_DECISIONS = 5
 SUMMARY_CHARS = 1200
+
+
+def _live_pending_offer() -> dict | None:
+    """The offer Evie actually just made, so a resumed "yes" has a referent.
+
+    ``ConversationState.pending_questions`` is the durable ask queue; it does
+    not carry the question Evie just spoke. The live offer does, and it is
+    process-shared through the cognitive session file. Fail open: an
+    unreadable session is no offer, never an error.
+    """
+
+    try:
+        from app.cognitive import intent, session_store
+
+        return intent.pending_offer(session_store.current())
+    except Exception:
+        return None
 
 
 async def resume_context(
@@ -93,7 +111,7 @@ async def resume_context(
         parts.append(f"Recent arc: {summary[:400]}")
     resume_hint = " ".join(parts) if parts else "No active context found."
 
-    return {
+    payload = {
         "ok": True,
         "thread_id": str(thread.id) if thread is not None else None,
         "last_activity": last_activity,
@@ -114,3 +132,10 @@ async def resume_context(
         "resume_hint": resume_hint,
         "generated_at": utcnow().isoformat(),
     }
+    # Additive key: the question Evie just asked, which pending_questions does
+    # not carry. Omitted when there is no live offer so the payload is
+    # otherwise byte-identical.
+    offer = _live_pending_offer()
+    if offer:
+        payload["pending_offer"] = offer
+    return payload

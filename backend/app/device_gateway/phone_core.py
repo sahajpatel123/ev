@@ -12,10 +12,17 @@ import asyncio
 import re
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Device
-from app.search.live import default_place, extract_place, home_coords, is_weather_query, weather_results
+from app.search.live import (
+    default_place,
+    extract_place,
+    home_coords,
+    is_weather_query,
+    weather_results,
+)
 
 _CALENDAR = re.compile(
     r"\b(what'?s on my (?:calendar|schedule|day)|upcoming events|"
@@ -90,6 +97,50 @@ async def _owner_spoken_name(session: AsyncSession) -> str | None:
     return name
 
 
+def _metric_bits(metrics: dict[str, Any]) -> list[str]:
+    bits: list[str] = []
+    blob = metrics if isinstance(metrics, dict) else {}
+    steps = blob.get("steps")
+    if isinstance(steps, (int, float)):
+        bits.append(f"{int(steps)} steps")
+    sleep = blob.get("sleep_hours")
+    if isinstance(sleep, (int, float)):
+        hours = f"{sleep:g}"
+        bits.append(f"{hours} hours of sleep")
+    hr = blob.get("heart_rate") or blob.get("resting_hr")
+    if isinstance(hr, (int, float)):
+        bits.append(f"heart rate {int(hr)}")
+    return bits
+
+
+def _speak_health(metrics: dict[str, Any], *, source: str) -> str:
+    bits = _metric_bits(metrics)
+    if not bits:
+        return (
+            "I have a local Health snapshot on Home Station, but it is not sent to a model. "
+            "Review it on this iPhone if you want the numbers."
+        )
+    return (
+        f"On {source}: {', '.join(bits)}. "
+        "Those numbers stay on Home Station and are not sent to a model."
+    )
+
+
+async def _latest_series_metrics(session: AsyncSession) -> dict[str, Any] | None:
+    from app.models import HealthSnapshot
+
+    row = (
+        await session.execute(select(HealthSnapshot).order_by(HealthSnapshot.occurred_at.desc()).limit(1))
+    ).scalars().first()
+    if row is None:
+        return None
+    metrics = dict(row.metrics or {})
+    keep = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+    if row.readiness is not None:
+        keep["readiness"] = row.readiness
+    return keep or None
+
+
 async def maybe_phone_core_read(
     session: AsyncSession,
     *,
@@ -103,13 +154,19 @@ async def maybe_phone_core_read(
 
     if _HEALTH.search(raw):
         hk = profile.get("healthkit") if isinstance(profile.get("healthkit"), dict) else {}
-        if hk.get("available"):
+        from .sandbox import is_sandbox_device as _sandbox_device
+
+        series = None
+        if not _sandbox_device(device):
+            series = await _latest_series_metrics(session)
+        has_numbers = bool(_metric_bits(hk.get("snapshot") if isinstance(hk.get("snapshot"), dict) else {}) or _metric_bits(series or {}))
+        if hk.get("available") or has_numbers:
             return _ok(
-                "I have a local Health snapshot on Home Station, but it is not sent to a model. "
-                "Review it on this iPhone if you want the numbers.",
+                "I have Health numbers on this iPhone's Health sheet. "
+                "They stay on Home Station and are not sent to a model.",
                 route="HEALTHKIT",
                 executed=False,
-                extra={"sent_to_model": False, "freshness": hk.get("freshness") or "reported"},
+                extra={"sent_to_model": False, "freshness": hk.get("freshness") or ("home_station_series" if series else "reported")},
             )
         return _ok(
             "Health data isn't connected in this Evie build. HealthKit isn't entitled, "
@@ -137,14 +194,40 @@ async def maybe_phone_core_read(
         return _ok(spoken_clock(raw), route="CLOCK", extra={"provenance": "owner.clock"})
 
     if _CAPABILITIES.search(raw):
+        # Answer from the device's own live self-model rather than a frozen
+        # sentence, so what she says she can do is what she can actually do.
+        from .cognitive_phone import phone_self_model
+
+        try:
+            state = phone_self_model(device)
+        except Exception:  # noqa: BLE001 - never fail a question about capability
+            state = {}
+        local = [str(name).replace("_", " ") for name in state.get("local_available") or []]
+        station = [str(name).replace("_", " ") for name in state.get("home_station") or []]
+        parts = [
+            "I can talk with you, see through this camera, tell you the date and time, "
+            "your name if it's saved, weather, your inbox, and what I remember."
+        ]
+        if local:
+            parts.append("On this iPhone itself: " + ", ".join(sorted(set(local))) + ".")
+        if station:
+            parts.append(
+                "Everything else runs on your Home Station — the Mac — including "
+                + ", ".join(sorted(set(station)))
+                + ". Timers and reminders there ping this iPhone with an Evie alert, "
+                "not Clock or Reminders.app."
+            )
+        parts.append(
+            "My own Health numbers stay on Home Station and are never sent to a model."
+        )
         return _ok(
-            "On this iPhone I can talk with you, look through the camera, "
-            "tell you the date and time, your name if it's saved, weather, "
-            "inbox, and what I remember. Timers, reminders, opening Mac apps, "
-            "mail, and calendar run on Home Station — the same Mac Evie uses. "
-            "I can ping or notify the Mac. Health numbers stay off the model "
-            "unless this phone has granted those snapshots.",
+            " ".join(parts),
             route="CAPABILITIES",
+            extra={
+                "native_shell": bool(state.get("native_shell")),
+                "local_count": len(local),
+                "home_station_count": len(station),
+            },
         )
 
     from app.memory.visual import is_visual_recall_query
@@ -169,8 +252,10 @@ async def maybe_phone_core_read(
         )
 
     if is_weather_query(raw):
-        has_place = extract_place(raw) is not None
-        has_home = home_coords() is not None or bool(default_place())
+        requested_place = extract_place(raw)
+        home_location = default_place()
+        has_place = requested_place is not None
+        has_home = home_coords() is not None or bool(home_location)
         if not has_place and not has_home:
             return _ok(
                 "I need a place for the forecast. Ask 'weather in <city>' "
@@ -181,22 +266,52 @@ async def maybe_phone_core_read(
             )
         try:
             results = await asyncio.wait_for(weather_results(raw, limit=2), timeout=8)
-        except Exception:
+        except TimeoutError:
             return _ok(
-                "I couldn't fetch live weather just now.",
+                "Home Station weather lookup timed out. I won't guess the forecast.",
                 route="WEATHER",
                 executed=False,
+                extra={"error_code": "WEATHER_TIMEOUT", "retryable": True},
+            )
+        except Exception:
+            return _ok(
+                "I couldn't fetch live weather from Home Station just now.",
+                route="WEATHER",
+                executed=False,
+                extra={"error_code": "WEATHER_UNAVAILABLE", "retryable": True},
             )
         snippet = ""
         if results:
             snippet = str(getattr(results[0], "snippet", None) or "").strip()
         if not snippet:
             return _ok(
-                "I couldn't fetch live weather just now.",
+                "I couldn't fetch live weather from Home Station just now.",
                 route="WEATHER",
                 executed=False,
+                extra={"error_code": "WEATHER_EMPTY", "retryable": True},
             )
-        return _ok(snippet, route="WEATHER", extra={"provenance": "open-meteo"})
+        lowered = snippet.lower()
+        if "weather location needed" in lowered or "no coarse place is configured" in lowered:
+            return _ok(
+                "I need a Home Station location for the forecast. Ask for weather in a city "
+                "or set the Home Station location.",
+                route="WEATHER",
+                executed=False,
+                extra={"error_code": "WEATHER_LOCATION_REQUIRED", "needs_place": True},
+            )
+        return _ok(
+            snippet,
+            route="WEATHER",
+            extra={
+                "provenance": "open-meteo",
+                "location": requested_place or home_location or "Home Station",
+                "location_source": (
+                    "query"
+                    if requested_place
+                    else ("home_station_coordinates" if home_coords() is not None else "home_station_place")
+                ),
+            },
+        )
 
     if _CALENDAR.search(raw):
         cal = profile.get("calendar") if isinstance(profile.get("calendar"), dict) else {}
@@ -223,15 +338,25 @@ async def maybe_phone_core_read(
             elif isinstance(item, str) and item.strip():
                 names.append(item.strip())
         if not names:
+            try:
+                from .phone_people import list_phone_people
+                from .sandbox import is_sandbox_device
+
+                if not is_sandbox_device(device):
+                    harvested = await list_phone_people(session, limit=12)
+                    names = [row["name"] for row in harvested if row.get("name")]
+            except Exception:
+                names = []
+        if not names:
             return _ok(
-                "I don't have a contacts snapshot from this iPhone yet. "
-                "Safari Evie can't read the address book.",
+                "I don't have people on Home Station yet, and Safari Evie can't read "
+                "the iPhone address book.",
                 route="CONTACTS",
                 executed=False,
                 extra={"sent_to_model": False},
             )
         return _ok(
-            "People on this iPhone: " + ", ".join(names) + ".",
+            "People I know: " + ", ".join(names) + ".",
             route="CONTACTS",
             extra={"sent_to_model": False},
         )

@@ -368,7 +368,10 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         colors: [String]? = nil,
         savedPath: String? = nil,
         mediaKind: String? = nil,
-        clipDurationMs: Int? = nil
+        clipDurationMs: Int? = nil,
+        hasClip: Bool? = nil,
+        clipSupported: Bool? = nil,
+        capturedAtMs: Int? = nil
     ) {
         var payload: [String: Any] = [
             "type": "look_frame",
@@ -401,6 +404,11 @@ public final class LiveVoiceConnection: @unchecked Sendable {
         if let savedPath, !savedPath.isEmpty { payload["saved_path"] = savedPath }
         if let mediaKind, !mediaKind.isEmpty { payload["media_kind"] = mediaKind }
         if let clipDurationMs { payload["duration_ms"] = clipDurationMs }
+        // Client-declared clip evidence: the server only says a clip was
+        // recorded when this is true (or an older client proves it another way).
+        if let hasClip { payload["has_clip"] = hasClip }
+        if let clipSupported { payload["clip_supported"] = clipSupported }
+        if let capturedAtMs { payload["captured_at_ms"] = capturedAtMs }
         sendJSON(payload)
     }
 

@@ -363,6 +363,7 @@ def _spoken_from_frame(
     people: int | None = None,
     faces: int | None = None,
     keep_request: str | None = None,
+    clip_evidence: bool | None = None,
 ) -> str:
     """Ask the live model to describe attached frames; facts are grounding only."""
 
@@ -404,23 +405,31 @@ def _spoken_from_frame(
         )
     elif purpose == "record":
         seconds = duration_s if duration_s and duration_s > 0 else None
-        if saved_path and seconds:
+        # A clip sentence is only admissible when the client proved it recorded
+        # one (has_clip / a saved playable file). A browser that can send stills
+        # only must never be described as a recording.
+        recorded = bool(clip_evidence) if clip_evidence is not None else bool(saved_path)
+        if not recorded:
+            spoken = (
+                "Frames from the sequence the owner just captured are attached "
+                "(still frames, not a video). Describe what is happening across "
+                "them in one or two short sentences: who is there, clothing, "
+                "objects, colors, and movement. Never say a video or clip was "
+                "recorded and never mention a saved file."
+                + grounding
+            )
+        elif saved_path and seconds:
             save = (
                 f" After the description, mention the {seconds:.0f}-second "
                 f"clip is saved to {saved_path}."
             )
+            spoken = _record_clip_instruction(grounding=grounding, save=save)
         elif saved_path:
             save = f" After the description, mention the recorded clip is saved to {saved_path}."
+            spoken = _record_clip_instruction(grounding=grounding, save=save)
         else:
             save = " After the description, mention the recorded clip is saved."
-        spoken = (
-            "Frames from the video you just recorded are attached. Describe "
-            "the clip in one or two short sentences: who is in it, "
-            "clothing, objects, colors, and what they are doing. Do not only "
-            "say that you saved a file."
-            + grounding
-            + save
-        )
+            spoken = _record_clip_instruction(grounding=grounding, save=save)
     elif purpose == "observe":
         spoken = OBSERVE_CAPTURED_SPOKEN + grounding
         if width and height:
@@ -437,6 +446,42 @@ def _spoken_from_frame(
     if looks_like_dark_excuse(spoken) and lighting_value and lighting_value != "dim":
         spoken = spoken.replace("too dark", lighting_value).replace("too dim", lighting_value)
     return spoken[:1100] or LIVE_CAPTURED_SPOKEN
+
+
+def _record_clip_instruction(*, grounding: str, save: str) -> str:
+    """Clip wording for a recording the client actually produced."""
+
+    return (
+        "Frames from the video you just recorded are attached. Describe "
+        "the clip in one or two short sentences: who is in it, "
+        "clothing, objects, colors, and what they are doing. Do not only "
+        "say that you saved a file."
+        + grounding
+        + save
+    )
+
+
+def _clip_evidence(frame: Any | None, frames: list[Any]) -> bool:
+    """True only when the client proved it recorded a playable clip.
+
+    ``has_clip`` is the client's explicit answer and wins either way. Older
+    clients are judged on their own metadata: a saved path plus a video media
+    kind means a recording; a bare JPEG sequence means stills only.
+    """
+
+    for item in [frame, *frames]:
+        if item is None:
+            continue
+        declared = getattr(item, "has_clip", None)
+        if declared is True:
+            return True
+        if declared is False:
+            return False
+        saved = str(getattr(item, "saved_path", "") or "").strip()
+        kind = str(getattr(item, "media_kind", "") or "").strip().lower()
+        if saved and kind in {"video", "clip", "movie", "recording"}:
+            return True
+    return False
 
 
 def _observe_spoken(summaries: list[dict[str, Any]], *, duration_s: float) -> str:
@@ -1162,7 +1207,7 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
     from app.gateway.muse import (
         MUSE_SPARK_PROVIDERS,
         MuseProviderUnavailable,
-        muse_intelligence_active,
+        muse_brain_active,
     )
     from app.memory.visual import is_clarity_hedge, is_generic_label_scene
 
@@ -1181,7 +1226,7 @@ async def _polish_spoken(draft: str, payload: dict[str, Any]) -> str:
         return draft
     if getattr(provider, "name", "") in {"echo", "mock"} or not getattr(provider, "api_key", True):
         return draft
-    if muse_intelligence_active() and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS:
+    if muse_brain_active() and getattr(provider, "name", "") not in MUSE_SPARK_PROVIDERS:
         return draft
     if provider.name == "deepseek" and not settings.deepseek_api_key:
         return draft
@@ -1271,6 +1316,8 @@ def _live_image_result(
     person_count: int | None = None,
     colors: list[str] | None = None,
     frames_summary: list[dict[str, Any]] | None = None,
+    moments: list[dict[str, Any]] | None = None,
+    transcript: str | None = None,
     keep_request: str | None = None,
 ) -> dict[str, Any]:
     if spoken:
@@ -1349,6 +1396,10 @@ def _live_image_result(
             pass
     if frames_summary:
         result["frames_summary"] = frames_summary
+    if moments:
+        result["moments"] = moments
+    if transcript:
+        result["transcript"] = transcript[:2000]
     if attachment_id:
         result["attachment_id"] = attachment_id
     hud_meta = result["hud"].get("meta") if isinstance(result.get("hud"), dict) else None
@@ -2088,9 +2139,20 @@ async def observe_camera_now(
         ocr = str(getattr(frame, "ocr_text", None) or "").strip() or None
         if ocr:
             ocr_bits.append(ocr)
+        offset_ms = getattr(frame, "captured_at_ms", None)
+        try:
+            start_s = (
+                max(0.0, float(offset_ms) / 1000.0)
+                if offset_ms is not None
+                else max(0.0, float(index) * interval)
+            )
+        except (TypeError, ValueError):
+            start_s = max(0.0, float(index) * interval)
         summaries.append(
             {
                 "sequence": index,
+                "t_start": round(start_s, 2),
+                "t_end": round(start_s + interval, 2),
                 "labels": frame_labels,
                 "colors": frame_colors,
                 "ocr_text": ocr,
@@ -2135,6 +2197,7 @@ async def observe_camera_now(
             person_count=getattr(last_frame, "person_count", None) if last_frame is not None else None,
             face_count=getattr(last_frame, "face_count", None) if last_frame is not None else None,
             frames_summary=summaries,
+            moments=summaries,
             keep_request=keep_request,
         ),
         actor=actor,
@@ -2373,6 +2436,7 @@ async def record_video_now(
     people = 0
     faces = 0
     jpeg_count = 0
+    moments: list[dict[str, Any]] = []
     for index, item in enumerate(frames):
         if item.jpeg:
             jpeg_count += 1
@@ -2387,6 +2451,8 @@ async def record_video_now(
                 t0=t0,
                 sequence=index,
             )
+        frame_labels = _frame_labels(item)
+        frame_colors = _frame_colors(item)
         labels = _frame_labels(item, extra=labels)
         colors = _frame_colors(item, extra=colors)
         people = max(people, int(getattr(item, "person_count", None) or 0))
@@ -2394,9 +2460,35 @@ async def record_video_now(
         ocr = str(getattr(item, "ocr_text", None) or "").strip()
         if ocr and ocr not in ocr_bits:
             ocr_bits.append(ocr)
+        offset_ms = getattr(item, "captured_at_ms", None)
+        try:
+            start_s = (
+                max(0.0, float(offset_ms) / 1000.0)
+                if offset_ms is not None
+                else max(0.0, float(duration) * index / max(len(frames), 1))
+            )
+        except (TypeError, ValueError):
+            start_s = max(0.0, float(duration) * index / max(len(frames), 1))
+        span = float(duration) / max(len(frames), 1)
+        moment: dict[str, Any] = {
+            "t_start": round(start_s, 2),
+            "t_end": round(start_s + span, 2),
+            "labels": frame_labels,
+            "colors": frame_colors,
+        }
+        if ocr:
+            moment["ocr_text"] = ocr[:400]
+        frame_engine = getattr(item, "engine", None)
+        if frame_engine:
+            moment["engine"] = str(frame_engine)[:32]
+        person_count = getattr(item, "person_count", None)
+        if person_count:
+            moment["person_count"] = int(person_count)
+        moments.append(moment)
     duration_s = None
     if frame.duration_ms:
         duration_s = max(frame.duration_ms / 1000.0, 0.0)
+    clip_evidence = _clip_evidence(frame, frames)
     spoken = _spoken_from_frame(
         purpose="record",
         frame=frame,
@@ -2404,14 +2496,15 @@ async def record_video_now(
         colors=colors,
         ocr_text=" ".join(ocr_bits) or None,
         lighting=getattr(frame, "lighting", None),
-        saved_path=frame.saved_path,
+        saved_path=frame.saved_path if clip_evidence else None,
         duration_s=duration_s or duration,
         width=frame.width,
         height=frame.height,
         people=people or None,
         faces=faces or None,
+        clip_evidence=clip_evidence,
     )
-    return await _finish_vision_result(
+    result = await _finish_vision_result(
         session,
         _live_image_result(
             request_id=frame.request_id or capture_id,
@@ -2426,21 +2519,24 @@ async def record_video_now(
             labels=labels,
             spoken=spoken,
             lighting=getattr(frame, "lighting", None),
-            saved_path=frame.saved_path,
+            saved_path=frame.saved_path if clip_evidence else None,
             persist_raw=True,
             attachment_id=frame.attachment_id,
-            media_kind="video",
+            media_kind="video" if clip_evidence else "burst",
             duration_s=duration_s or duration,
             luminance=getattr(frame, "luminance", None),
             face_count=faces or getattr(frame, "face_count", None),
             person_count=people or getattr(frame, "person_count", None),
             colors=colors,
+            moments=moments,
             keep_request=keep_request,
         ),
         actor=actor,
         device_id=device_id,
         keep_request=keep_request,
     )
+    result["clip_evidence"] = clip_evidence
+    return result
 
 
 async def record_video_with_timeout(session: AsyncSession, **kwargs: Any) -> dict[str, Any]:

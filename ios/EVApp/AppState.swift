@@ -77,3 +77,18 @@ final class AppState: ObservableObject {
         }
     }
 }
+// Cycle EAC-01 — Evie Today-state snapshot.
+/// iPhone-only additive helper; backward compatible (new type, no existing API touched).
+struct EvieTodayState: Equatable, Sendable {
+    var title: String
+    var detail: String
+    var pendingCount: Int
+
+    static let empty = EvieTodayState(title: "", detail: "", pendingCount: 0)
+
+    init(title: String = "", detail: String = "", pendingCount: Int = 0) {
+        self.title = title
+        self.detail = detail
+        self.pendingCount = pendingCount
+    }
+}

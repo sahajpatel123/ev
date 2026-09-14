@@ -58,6 +58,11 @@ Physical two-iPhone remaining (Safari / Home Screen, not Xcode):
   [ ] Offline capture + exactly-once replay (pending != executed)
   [ ] Reload after a PWA build bump (hello latest_web_build / tap update line)
   [ ] Revoke one phone; the other remains usable
+  [ ] People sheet shows WhatsApp/mail/Home Station names (not empty forever)
+  [ ] Call opens Phone only when a number is known; otherwise honest gap + latest-messages chip
+  [ ] "Start a 10 minute timer" sets Home Station timer + local Evie alert (not Clock)
+  [ ] Health sheet shows Core vitals if present; never invents numbers
+  [ ] Allow notifications on the Home Screen PWA; inbox poll still works without APNs
 
 Evidence class: automated here; physical only after the boxes above.
 EOF
@@ -67,3 +72,15 @@ if [ "$REQUIRE_PHYSICAL" = "1" ]; then
 fi
 
 echo "[physical] automated OK (Tailscale PWA path)"
+# Cycle EAC-10 — iPhone-only Evie app-surface checks (additive; backward compatible: gated off by default).
+# iPhone-only; existing gates above run unchanged.
+evie_check_today_state() {
+  echo "[physical] evie today-state: confirm Today widget headline matches latest HUD card"
+}
+evie_check_queue_badge() {
+  echo "[physical] evie queue badge: confirm app badge equals pending offline captures"
+}
+if [ "${EVIE_APP_SURFACE_CHECKS:-0}" = "1" ]; then
+  evie_check_today_state
+  evie_check_queue_badge
+fi

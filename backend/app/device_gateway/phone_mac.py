@@ -16,6 +16,35 @@ from app.models import Device
 
 from .sandbox import is_sandbox_device
 
+PHONE_HOME_CAPABILITIES: tuple[str, ...] = (
+    "get_weather",
+    "calendar_read",
+    "list_mail",
+    "list_messages",
+    "resolve_contact",
+    "list_timers",
+    "start_timer",
+    "cancel_timer",
+    "list_reminders",
+    "set_reminder",
+    "cancel_reminder",
+    "open_app",
+    "close_app",
+    "send_message",
+    "place_call",
+    "home_act",
+    "computer.open_calculator",
+    "computer.close_calculator",
+)
+
+PHONE_HOME_CAPABILITY_MANIFEST: dict[str, Any] = {
+    "executor": "home_station",
+    "availability": "server_validated",
+    "safe_actions": list(PHONE_HOME_CAPABILITIES),
+    "verification": "result_and_evidence",
+    "blocked": ["shell", "drone", "unsafe_ui", "credentials", "payments"],
+}
+
 _CAMERA = frozenset({"look", "observe_camera", "capture_photo", "record_video"})
 _BLOCKED = frozenset(
     {
@@ -28,6 +57,9 @@ _BLOCKED = frozenset(
         "print_start",
         "camera_replay",
         "app_action",
+        "computer",
+        "code",
+        "open_url",
     }
 )
 _NEGATED_RE = re.compile(
@@ -66,6 +98,11 @@ _TIMER_WORD_RE = re.compile(
     + r")\s*(?:min|mins|minute|minutes)\b",
     re.I,
 )
+_OPEN_CALC_RE = re.compile(
+    r"\b(?:open|launch|start|bring up)\s+(?:the\s+)?calculator\b",
+    re.I,
+)
+_CLOSE_CALC_RE = re.compile(r"\b(?:close|quit)\s+(?:the\s+)?(?:calculator|calc)\b", re.I)
 
 _WEB_SEARCH_RE = re.compile(
     r"\b(?:search|look\s?up|google)\b.{0,12}\b(?:the\s+)?web\b|\bweb\s+search\b|\bsearch\s+(?:the\s+)?web\b",
@@ -79,18 +116,45 @@ _REMINDER_LIST_RE = re.compile(
 
 _CLOSE_CALC_RE = re.compile(r"\b(?:close|quit)\s+(?:the\s+)?(?:calculator|calc)\b", re.I)
 
-def _ok(reply: str, *, route: str, tool: str, executed: bool, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+def _action_status(*, ok: bool, executed: bool, queued: bool) -> str:
+    if not ok:
+        return "FAILED"
+    if queued and not executed:
+        return "QUEUED"
+    if executed:
+        return "COMPLETED"
+    return "ACCEPTED"
+
+
+def _ok(
+    reply: str,
+    *,
+    route: str,
+    tool: str,
+    executed: bool,
+    accepted: bool = True,
+    verified: bool | None = None,
+    queued: bool = False,
+    ok: bool = True,
+    error_code: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    verified_value = executed if verified is None else bool(verified)
     payload: dict[str, Any] = {
         "reply": reply,
-        "ok": True,
+        "ok": bool(ok),
+        "accepted": bool(accepted),
         "route": route,
         "operation": tool,
+        "tool": tool,
+        "status": _action_status(ok=bool(ok), executed=executed, queued=queued),
         "turn_id": None,
-        "executed": executed,
-        "verified": executed,
+        "executed": bool(executed),
+        "verified": verified_value,
+        "queued": bool(queued),
+        "error_code": error_code,
         "conversational": False,
         "provenance": "home_station.dispatch",
-        "tool": tool,
     }
     if extra:
         payload.update(extra)
@@ -103,6 +167,8 @@ def _phrase_action(text: str) -> tuple[str, dict[str, Any]] | None:
         minutes = _WORD_MINUTES.get(word.group("word").lower())
         if minutes:
             return "start_timer", {"minutes": minutes}
+    if _OPEN_CALC_RE.search(text):
+        return "open_app", {"name": "Calculator"}
     if _WEB_SEARCH_RE.search(text):
         query = _WEB_SEARCH_RE.sub("", text, count=1).lstrip(" for ").strip(" ,.!?") or text
         return "search_web", {"query": query[:400]}
@@ -113,9 +179,118 @@ def _phrase_action(text: str) -> tuple[str, dict[str, Any]] | None:
     return None
 
 
+async def _phone_reminder_action(
+    session: AsyncSession,
+    *,
+    name: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    from app.ev import alert_radar
+
+    reminders = await alert_radar.list_alerts(
+        session,
+        status="pending",
+        kind="reminder",
+        limit=50,
+    )
+    if name == "list_reminders":
+        items = [
+            {
+                "id": str(row.id),
+                "text": str(row.body or row.title or "untitled"),
+                "status": str(row.status or "pending"),
+            }
+            for row in reminders
+        ]
+        if not items:
+            spoken = "No pending reminders."
+        elif len(items) == 1:
+            spoken = f"One pending reminder: {items[0]['text']}."
+        else:
+            spoken = f"{len(items)} pending reminders. Next: {items[0]['text']}."
+        return _ok(
+            spoken,
+            route="HOME_STATION",
+            tool=name,
+            executed=True,
+            verified=True,
+            extra={"reminders": items, "count": len(items)},
+        )
+
+    target = str(args.get("text") or args.get("query") or "").strip().lower()
+    matches = (
+        [
+            row
+            for row in reminders
+            if target in str(row.body or row.title or "").lower()
+        ]
+        if target
+        else reminders
+    )
+    if len(matches) > 1:
+        labels = [str(row.body or row.title or "untitled") for row in matches[:3]]
+        return _ok(
+            "I found multiple matching reminders: "
+            + ", ".join(labels)
+            + ". Tell me which one to cancel.",
+            route="HOME_STATION",
+            tool=name,
+            executed=False,
+            ok=False,
+            error_code="AMBIGUOUS",
+            extra={"candidates": [str(row.id) for row in matches[:3]]},
+        )
+    if not matches:
+        return _ok(
+            "I don't have a matching pending reminder.",
+            route="HOME_STATION",
+            tool=name,
+            executed=False,
+            ok=False,
+            error_code="NOT_FOUND",
+        )
+    row = await alert_radar.dismiss_alert(
+        session,
+        matches[0].id,
+        reason="phone_owner",
+    )
+    await session.flush()
+    return _ok(
+        f"Reminder cancelled: {row.body or row.title}.",
+        route="HOME_STATION",
+        tool=name,
+        executed=True,
+        verified=True,
+        extra={"reminder_id": str(row.id)},
+    )
+
+
 def _spoken_from_dispatch(response: Any, name: str, payload: dict[str, Any]) -> str:
+    if name == "resolve_contact":
+        matches = payload.get("matches") or payload.get("contacts") or []
+        names: list[str] = []
+        for item in matches[:5] if isinstance(matches, list) else []:
+            if isinstance(item, dict):
+                label = str(
+                    item.get("full_name")
+                    or item.get("display_name")
+                    or item.get("name")
+                    or ""
+                ).strip()
+                if label and label not in names:
+                    names.append(label)
+        if names:
+            return (
+                "I found "
+                + ", ".join(names)
+                + " in Home Station Contacts."
+            )
+        if payload.get("error") in {"not_connected", "contacts_unavailable"}:
+            return "Home Station Contacts isn't connected yet."
     spoken = str(payload.get("spoken") or payload.get("owner_message") or "").strip()
     if spoken:
+        if name in {"list_mail", "calendar_read", "list_messages"}:
+            return spoken[:1600]
         return spoken
     if name == "calendar_read" and payload.get("error") == "not_connected":
         return (
@@ -167,10 +342,19 @@ def utterance_from_phone_action(arguments: dict[str, Any], transcript: str) -> s
         who = str(args.get("contact_query") or args.get("name") or "").strip()
         if who:
             return f"call {who}"
-    if op in {"message_contact", "send_message"}:
+    if op in {"message_contact", "send_message", "direct_message"}:
         who = str(args.get("contact_query") or args.get("to") or "").strip()
         body = str(args.get("message") or args.get("text") or "").strip()
         if who and body:
+            # Rebuilt utterances are re-parsed, so the channel must survive
+            # the rebuild or a WhatsApp ask silently becomes SMS.
+            from app.ev.messaging.channels import normalize_channel
+
+            utter_channel = normalize_channel(args.get("channel"))
+            if utter_channel == "whatsapp":
+                return f"text {who} {body} on whatsapp"
+            if utter_channel == "mail":
+                return f"email {who} {body}"
             return f"text {who} {body}"
     return str(args.get("text") or "").strip()
 
@@ -187,11 +371,29 @@ async def maybe_phone_mac_act(
     raw = (text or "").strip()
     if not raw:
         return None
+    from app.ev.messaging.approval import handle_send_approval
+
+    approval = await handle_send_approval(
+        session, raw, actor="voice", device_id=device.id
+    )
+    if approval is not None:
+        return _ok(
+            str(approval.get("spoken") or ""),
+            route="HOME_STATION",
+            tool="send_message",
+            executed=bool(approval.get("sent")),
+            ok=bool(approval.get("ok")),
+            verified=bool(approval.get("sent")),
+            error_code=None if approval.get("ok") else "CANCELLED_OR_FAILED",
+        )
     if _NEGATED_RE.search(raw) or _HEARING_RE.search(raw):
         return None
 
     from app.ev.spark_phone import looks_like_phone_chat, spark_phone_tool
     from app.ev.tool_select import resolve_live_action
+    if looks_like_phone_chat(raw):
+        return None
+
     # Cycle 62 — the reminders list is a Home-Station surface, not memory
     # recall: check the precise phrase BEFORE resolve_live_action's broad
     # recall matcher can claim "what are my reminders".
@@ -199,9 +401,9 @@ async def maybe_phone_mac_act(
     if reminders_phrase is not None:
         resolved = reminders_phrase
     else:
-        resolved = resolve_live_action(raw)
+        resolved = _phrase_action(raw)
         if resolved is None:
-            resolved = _phrase_action(raw)
+            resolved = resolve_live_action(raw)
         if resolved is None:
             resolved = await spark_phone_tool(raw)
     if resolved is None:
@@ -223,6 +425,111 @@ async def maybe_phone_mac_act(
                 extra={"needs_speaker_verify": True},
             )
     args = dict(args or {})
+    if name == "send_incomplete":
+        # An unfinished send is a question, not a tool call: ask for the piece
+        # that is missing instead of dispatching a verb that does not exist.
+        missing = str(args.get("missing") or "").strip()
+        return _ok(
+            "Who should I message, and what should it say?"
+            if missing == "recipient"
+            else "What should the message say?",
+            route="HOME_STATION",
+            tool="send_message",
+            executed=False,
+            ok=False,
+            error_code="MISSING_MESSAGE_FIELDS",
+        )
+    if name in {"list_reminders", "cancel_reminder"}:
+        return await _phone_reminder_action(session, name=name, args=args)
+    if name == "send_message":
+        if not args.get("text") and args.get("message"):
+            args["text"] = args["message"]
+        if not args.get("to") and args.get("contact_query"):
+            args["to"] = args["contact_query"]
+        if not str(args.get("to") or "").strip() or not str(args.get("text") or "").strip():
+            return _ok(
+                "I need both the message recipient and the message text.",
+                route="HOME_STATION",
+                tool=name,
+                executed=False,
+                ok=False,
+                error_code="MISSING_MESSAGE_FIELDS",
+            )
+    if name == "place_call" and re.search(r"\bfacetime\b", raw, re.I):
+        args.setdefault("kind", "facetime")
+    if idempotency_key and name in {"start_timer", "set_reminder", "send_message"} and "idempotency_key" not in args:
+        args["idempotency_key"] = idempotency_key[:80]
+
+    if idempotency_key and name in {"start_timer", "set_reminder", "send_message"}:
+        from app.ev.actuator import prior_result
+
+        prior = await prior_result(
+            session,
+            name=name,
+            key=idempotency_key[:128],
+        )
+        if prior is not None:
+            replayed_ok = bool(prior.get("ok", True))
+            replayed_executed = bool(prior.get("executed", replayed_ok))
+            return _ok(
+                str(prior.get("spoken") or "Done on Home Station."),
+                route="HOME_STATION",
+                tool=name,
+                executed=replayed_executed,
+                ok=replayed_ok,
+                queued=bool(prior.get("queued")),
+                verified=bool(prior.get("verified", replayed_executed)),
+                error_code=str(prior.get("error") or "").strip() or None,
+                extra={"idempotent_replay": True, "idempotency_key": idempotency_key[:128]},
+            )
+
+    if name == "cancel_timer" and not args.get("id") and not args.get("text"):
+        from app.ev.timers import list_timers
+
+        pending = await list_timers(session)
+        items = pending.get("timers") if isinstance(pending, dict) else []
+        if isinstance(items, list) and len(items) > 1:
+            labels = [
+                str(item.get("text") or "untitled")
+                for item in items[:3]
+                if isinstance(item, dict)
+            ]
+            suffix = ", ".join(labels)
+            return _ok(
+                f"I found multiple pending timers: {suffix}. Tell me which one to cancel.",
+                route="HOME_STATION",
+                tool=name,
+                executed=False,
+                ok=False,
+                error_code="AMBIGUOUS",
+                extra={"candidates": items[:3]},
+            )
+        if isinstance(items, list) and len(items) == 1 and isinstance(items[0], dict):
+            args["id"] = str(items[0].get("id") or "")
+
+    if name == "home_act":
+        from app.ev.home import match_home_entity, normalize_action
+
+        entity_name = str(args.get("entity") or "").strip()
+        action_name = str(args.get("action") or "").strip()
+        match = await match_home_entity(session, entity_name)
+        row = match.item if match.unique else None
+        canonical = normalize_action(str(getattr(row, "domain", "")), action_name) if row else None
+        if (
+            row is None
+            or str(getattr(row, "domain", "")).lower() != "light"
+            or canonical not in {"on", "off"}
+        ):
+            return _ok(
+                "From the phone I can only turn an identified light on or off. "
+                "I won't change locks, doors, or covers from this path.",
+                route="HOME_STATION",
+                tool=name,
+                executed=False,
+                ok=False,
+                error_code="PHONE_HOME_ACTION_LIMIT",
+            )
+        args["action"] = canonical
 
     from app.ev.tools import dispatch
 
@@ -250,10 +557,61 @@ async def maybe_phone_mac_act(
         audit_endpoint="POST /v1/device-gateway/text",
     )
     payload = response.result if isinstance(response.result, dict) else {}
+    if (
+        name == "send_message"
+        and idempotency_key
+        and response.ok
+        and payload.get("sent") is True
+    ):
+        from app.ev.actuator import record_actuator
+
+        await record_actuator(
+            session,
+            name=name,
+            actor="voice",
+            key=idempotency_key,
+            result=payload,
+            target=str(args.get("to") or ""),
+        )
     spoken = _spoken_from_dispatch(response, name, payload)
-    executed = bool(response.ok and payload.get("ok", True) is not False and not payload.get("degraded"))
-    if name == "calendar_read" and payload.get("error") == "not_connected":
+    queued = bool(
+        payload.get("queued")
+        or payload.get("status") in {"QUEUED", "ROUTED"}
+    )
+    executed = bool(
+        response.ok
+        and payload.get("ok", True) is not False
+        and not payload.get("degraded")
+    )
+    error_code = str(
+        payload.get("error_code")
+        or payload.get("error")
+        or response.error
+        or ""
+    ).strip() or None
+    if error_code == "not_connected":
         executed = False
+    action_ok = bool(response.ok and payload.get("ok", True) is not False and not payload.get("degraded"))
+    if error_code == "not_connected" and not queued:
+        action_ok = False
+    if name == "send_message":
+        sent = payload.get("sent") is True
+        executed = bool(executed and sent)
+        action_ok = bool(action_ok and sent)
+    connected = payload.get("connected") is True or payload.get("answered") is True
+    if name == "place_call":
+        initiated = payload.get("opened") is True or payload.get("dialed") is True
+        executed = bool(executed and initiated)
+        action_ok = bool(action_ok and initiated)
+        verified = bool(connected)
+    elif name == "home_act":
+        evidence = payload.get("evidence") if isinstance(payload.get("evidence"), dict) else {}
+        verified = bool(
+            not payload.get("simulated")
+            and evidence.get("observed") is True
+        )
+    else:
+        verified = bool(payload.get("verified", executed))
     extra: dict[str, Any] = {"tool_ok": bool(response.ok), "tool_error": response.error}
     if name == "start_timer" and payload.get("ok") is not False:
         # Cycle 46 — the phone renders a countdown ring; it needs the
@@ -267,5 +625,18 @@ async def maybe_phone_mac_act(
         route="HOME_STATION",
         tool=name,
         executed=executed,
-        extra=extra,
+        extra={
+            **extra,
+            "to": str(args.get("to") or "").strip() or None,
+            "channel": payload.get("channel") or args.get("channel"),
+            "sent": payload.get("sent"),
+            "opened": payload.get("opened"),
+            "connected": payload.get("connected"),
+            "answered": payload.get("answered"),
+            "kind": payload.get("kind") or args.get("kind"),
+            "simulated": payload.get("simulated"),
+            "confirmation_required": payload.get("confirmation_required"),
+            "confirmation_id": payload.get("confirmation_id"),
+            "action_id": payload.get("action_id"),
+        },
     )

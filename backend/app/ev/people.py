@@ -7,7 +7,15 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Entity, EntityRelationship, Event, Memory, MemoryEntity, ObservationRecord, RecognitionLog
+from app.models import (
+    Entity,
+    EntityRelationship,
+    Event,
+    Memory,
+    MemoryEntity,
+    ObservationRecord,
+    RecognitionLog,
+)
 from app.schemas import PersonWhereaboutsOut
 from app.utils.text import normalize_text, utcnow
 

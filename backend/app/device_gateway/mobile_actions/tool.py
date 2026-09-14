@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from .engine import create_phone_action
 from .registry import advertised_operations
 from .store import handshake_of
@@ -27,7 +29,9 @@ PHONE_ACTION_DESCRIPTION = (
     "alarm, call or FaceTime a contact, message a contact, open Maps or start "
     "directions, calendar, share, copy, and (if available) Focus or media. "
     "Use contact_query for names like Mom — do not invent numbers. "
-    "Put the exact message text in message. Put durations in duration_seconds "
+    "Put the exact message text in message. Put the transport the owner named "
+    "in channel (whatsapp when they say WhatsApp, mail for email; omit it for "
+    "a plain text). Put durations in duration_seconds "
     "or duration_minutes. Put places in destination. Target this_phone unless "
     "the owner named the other phone, which v1 cannot wake remotely. "
     "Never use this for payments, passwords, deletions, or Wi-Fi."
@@ -49,6 +53,11 @@ def phone_action_parameters(device: Any | None = None) -> dict[str, Any]:
             },
             "contact_query": {"type": "string", "maxLength": 80},
             "message": {"type": "string", "maxLength": 500},
+            "channel": {
+                "type": "string",
+                "maxLength": 32,
+                "description": "Message transport the owner named: whatsapp, mail, or omit for Messages.",
+            },
             "duration_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
             "duration_minutes": {"type": "number", "minimum": 0.25, "maximum": 1440},
             "title": {"type": "string", "maxLength": 200},
@@ -147,6 +156,36 @@ async def _home_station_phone_action(
     }
 
 
+async def _approve_parked_mac_send(
+    db_session: AsyncSession | None,
+    transcript: str,
+    device_id: str,
+) -> dict[str, Any] | None:
+    """Resume a WhatsApp Web send parked on the Mac from the iPhone side."""
+
+    from app.ev.messaging.approval import (
+        handle_send_approval,
+        is_affirmative,
+        is_negative,
+    )
+
+    if not transcript or not (is_affirmative(transcript) or is_negative(transcript)):
+        return None
+    if db_session is not None:
+        return await handle_send_approval(
+            db_session, transcript, actor="voice", device_id=device_id
+        )
+    from app.db import SessionLocal
+
+    async with SessionLocal() as approval_db:
+        handled = await handle_send_approval(
+            approval_db, transcript, actor="voice", device_id=device_id
+        )
+        if handled is not None:
+            await approval_db.commit()
+    return handled
+
+
 async def dispatch_phone_action(
     *,
     device_id: str,
@@ -157,11 +196,70 @@ async def dispatch_phone_action(
     arguments: dict[str, Any],
     transcript: str = "",
     device_label: str = "This iPhone",
+    allow_home_station_fallback: bool = True,
+    db_session: AsyncSession | None = None,
+    require_confirmation_context: bool = False,
+    text_confirmation_binding: str | None = None,
 ) -> dict[str, Any]:
     from .engine import apply_confirmation_utterance
     from .trust import classify_utterance
 
     args = arguments if isinstance(arguments, dict) else {}
+    handled = await _approve_parked_mac_send(db_session, transcript, device_id)
+    if handled is not None:
+        sent = bool(handled.get("sent"))
+        return {
+            "ok": bool(handled.get("ok")),
+            "status": "executed" if sent else "cancelled",
+            "operation": "send_message",
+            "executed": sent,
+            "verified": sent,
+            "confirmation_required": False,
+            "must_continue": False,
+            "completion_claim_allowed": sent,
+            "spoken": handled.get("spoken"),
+        }
+    raw_channel = str(args.get("channel") or "").strip()
+    if raw_channel:
+        from app.ev.messaging.channels import normalize_channel
+
+        if normalize_channel(raw_channel) is None:
+            # The schema advertises channel; an unroutable one must refuse here
+            # instead of falling through to code that drops it (silent SMS).
+            return {
+                "ok": False, "error": "CHANNEL_UNSUPPORTED",
+                "executed": False, "verified": False,
+                "spoken": (
+                    f"I don't have {raw_channel[:40]} connected, so nothing was sent — and I "
+                    "won't send it as an Apple text instead."
+                ),
+            }
+    if require_confirmation_context and classify_utterance(transcript) != "unrelated":
+        from .store import pending_confirmation
+
+        waiting = pending_confirmation(device_id)
+        # pending_confirmation is device-scoped, so any row here is this phone's.
+        # A row parked by the other lane carries only that lane's binding, and an
+        # absent field is not a conflict: a spoken "yes" resolves a typed park and
+        # a typed confirm resolves a spoken park on the same phone.
+        caller_binding = str(text_confirmation_binding or "")
+        caller_session = str(session_id or "")
+        parked_binding = str(waiting.get("phone_text_binding") or "") if waiting else ""
+        parked_session = str(waiting.get("session_id") or "") if waiting else ""
+        foreign_owner = bool(
+            (caller_binding and parked_binding and caller_binding != parked_binding)
+            or (caller_session and parked_session and caller_session != parked_session)
+        )
+        if waiting is not None and (
+            foreign_owner
+            or not instance_id or waiting.get("instance_id") != instance_id
+            or waiting.get("origin") != origin
+        ):
+            return {
+                "ok": False, "error": "CONFIRMATION_CONTEXT_CHANGED",
+                "executed": False, "verified": False,
+                "spoken": "That pending action belongs to an earlier phone session. Please request it again.",
+            }
     pending = apply_confirmation_utterance(
         device_id=device_id,
         origin=origin,
@@ -183,23 +281,50 @@ async def dispatch_phone_action(
             device_label=device_label,
             confirm=bool(args.get("confirm_action_id")),
         )
-        if str(result.get("failure") or "") == "NATIVE_SHELL_REQUIRED":
+        if allow_home_station_fallback and (
+            str(result.get("failure") or "") == "NATIVE_SHELL_REQUIRED"
+            or str(result.get("method") or "") == "pwa_local"
+        ):
             home = await _home_station_phone_action(
                 device_id=device_id,
                 arguments=args,
                 transcript=transcript,
             )
             if home is not None:
+                if result.get("ok") and result.get("card"):
+                    spoken = str(home.get("spoken") or "").rstrip()
+                    extra = (
+                        " Tap Start timer on this iPhone for a local alert — Evie's timer, not Clock."
+                        if str(args.get("operation") or "") == "create_timer"
+                        else " Tap Save reminder on this iPhone for a local alert — not Reminders.app."
+                        if str(args.get("operation") or "") == "create_reminder"
+                        else ""
+                    )
+                    if extra and "local alert" not in spoken.lower():
+                        home["spoken"] = (spoken + extra).strip()
+                    home["phone_action"] = result
+                    home["card"] = result.get("card")
+                    home["method"] = result.get("method") or home.get("method")
                 result = home
-        action_id = str(result.get("action_id") or "")
-        if action_id:
-            from app.db import SessionLocal
-            from app.device_gateway.durable_actions import upsert_action
+    action_id = str(result.get("action_id") or "")
+    if action_id:
+        from app.db import SessionLocal
+        from app.device_gateway.durable_actions import upsert_action
 
-            from .store import get_action
+        from .store import get_action, update_action
 
-            row = get_action(action_id)
-            if row:
+        row = get_action(action_id)
+        if row:
+            if row.get("state") == "cancelled":
+                from .service import _card
+
+                result["card"] = _card(row, launch_url=None, open_url=None)
+                result["status"] = "cancelled"
+            if text_confirmation_binding:
+                row = update_action(action_id, phone_text_binding=text_confirmation_binding) or row
+            if db_session is not None:
+                await upsert_action(db_session, row)
+            else:
                 async with SessionLocal() as db:
                     await upsert_action(db, row)
                     await db.commit()

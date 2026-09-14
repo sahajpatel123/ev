@@ -109,6 +109,14 @@ class TurnController:
             if resolved:
                 canonical_turn = resolved
 
+        # A parked send owns the next unambiguous yes/no. This runs BEFORE
+        # Luna: an affirmation that answers an approval question must resume
+        # that exact ticket, never be classified as chit-chat and dropped.
+        resumed = await self._resume_pending_send(canonical_turn)
+        if resumed is not None:
+            resumed.latency_ms = (time.perf_counter() - start) * 1000
+            return resumed
+
         # Luna classification — bounded context, cache-friendly prompt
         # Provide minimal context: known projects, current focus, capabilities
         if context is None:
@@ -141,6 +149,86 @@ class TurnController:
                 error=f"route_failed: {e}",
                 latency_ms=(time.perf_counter() - start) * 1000,
             )
+
+    async def _resume_pending_send(self, owner_turn: str) -> TurnResult | None:
+        """Resume or cancel a parked send when this turn answers its question.
+
+        Deterministic and model-free: the approval ticket already holds the
+        exact recipient, body, and bound transport, so a spoken "yes" must
+        spend that ticket rather than reach the conversational route, where it
+        would be acknowledged and silently dropped.  Device/live-session ids
+        are passed through so a "yes" can only answer a ticket bound to the
+        surface that is now speaking.  Returns None when this turn is not an
+        affirmative/negative answer to anything parked.
+        """
+        from app.ev.messaging.approval import handle_send_approval
+
+        try:
+            handled = await handle_send_approval(
+                self.session,
+                owner_turn,
+                actor=self.actor,
+                device_id=self.device_id,
+                live_session_id=self.session_id,
+            )
+        except Exception:
+            # TRANSACTION POISONING LAW: a failed statement aborts the whole
+            # transaction, so roll back before returning — the parked ticket
+            # stays pending and the next turn runs on a healthy session. The
+            # outcome is UNVERIFIED: never reported as sent, never claimed
+            # undone either, because the send may already have left.
+            with contextlib.suppress(Exception):
+                await self.session.rollback()
+            return TurnResult(
+                ok=False,
+                route="ACTION",
+                operation="UNKNOWN",
+                error="approval_resume_failed",
+                owner_message=(
+                    "I couldn't confirm whether that message went out — check "
+                    "WhatsApp before asking me again."
+                ),
+            )
+        if handled is None:
+            return None
+
+        sent = bool(handled.get("sent"))
+        cancelled = bool(handled.get("cancelled"))
+        awaiting = bool(handled.get("pending_approval"))
+        spoken = str(handled.get("spoken") or "").strip()
+        canonical_data: dict[str, Any] = {
+            "send_approval": True,
+            "sent": sent,
+            "awaiting_confirmation": awaiting,
+        }
+        if handled.get("action_id"):
+            canonical_data["action_id"] = str(handled["action_id"])
+
+        if awaiting:
+            # The ticket was parked on another surface.  Adopting it here and
+            # asking once more is the only safe answer: this "yes" never
+            # named the message it would send, so it must not send it.
+            question = spoken or "Should I send that message?"
+            return TurnResult(
+                ok=False,
+                route="ACTION",
+                operation="UNKNOWN",
+                canonical_data=canonical_data,
+                owner_message=question,
+                needs_clarification=True,
+                clarification_question=question,
+                approval_required=True,
+            )
+
+        done = sent or cancelled
+        return TurnResult(
+            ok=done,
+            route="ACTION",
+            operation="UNKNOWN",
+            canonical_data=canonical_data,
+            owner_message=spoken or ("Sent it." if sent else "I didn't send it."),
+            error=None if done else "send_not_completed",
+        )
 
     async def _resolve_turn_transcript(self, turn_id: str) -> str | None:
         """Resolve turn_id to a canonical transcript Event when it IS one.
@@ -246,7 +334,24 @@ class TurnController:
             )
 
         if route == "ACTION":
-            return TurnResult(ok=True, route="ACTION", operation=op, canonical_data={"stub": "action_via_existing_tools"}, owner_message=None)
+            # Luna classified a real-world action, but nothing was executed
+            # here (actions ride the surface's own tool calls; this controller
+            # has no executor for them). A stub must NEVER report ok=True: the
+            # response layer reads success as "the action already happened" and
+            # the owner is told work is done that never ran.
+            return TurnResult(
+                ok=False, route="ACTION", operation=op,
+                error="action_not_executed",
+                canonical_data={
+                    "stub": "not_executed",
+                    "executed": False,
+                    "owner_turn": owner_turn,
+                },
+                owner_message=(
+                    "I haven't actually run that action yet — nothing was sent "
+                    "or changed."
+                ),
+            )
 
         return TurnResult(ok=False, route=route, operation=op, error="unknown_route")
 

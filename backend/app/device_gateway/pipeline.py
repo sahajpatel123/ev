@@ -1,8 +1,9 @@
 """Device Gateway text pipelines.
 
 Sandbox devices stay isolated from Memory OS. Trusted devices use canonical
-Core routing first, then hand conversational turns to Evie's normal chat
-pipeline so a text request always receives an actual answer.
+Core routing first, then hand conversational leftover to Muse Spark 1.3 when
+the cognitive kernel is on (HTTP text always; live Talk via turn receipts).
+GPT Realtime 2.1 Mini is speech-only in that mode.
 """
 
 from __future__ import annotations
@@ -421,6 +422,250 @@ async def run_trusted_device_turn(
         }
 
     effective_text = text or ""
+    # WhatsApp send approval loop (device realtime/Safari path).
+    #
+    # A spoken "yes"/"no" resumes the parked WhatsApp Web send from any
+    # surface; a complete send parks once and asks
+    # ("Should I send ... ?") instead of sending blind. The approved send
+    # drives the existing WhatsApp Web Chrome tab in the background
+    # (eval_in_tab, never activate) — no new tabs, no focus theft.
+    # Falls through to TurnGate when there is no pending approval and no
+    # send intent, so non-send turns behave exactly as before.
+    live_key = f"device-text:{device.id}"
+    try:
+        from app.ev.messaging.approval import handle_send_approval
+
+        _approval = await handle_send_approval(
+            session,
+            effective_text,
+            actor="master",
+            device_id=str(device.id),
+            live_session_id=live_key,
+        )
+    except Exception:  # noqa: BLE001 - approval must never fail a device turn
+        _approval = None
+    if _approval is not None:
+        await session.commit()
+        _sent = bool(_approval.get("sent"))
+        _ok = bool(_approval.get("ok", _sent))
+        return {
+            "reply": str(
+                _approval.get("spoken")
+                or ("Sent it." if _sent else "I couldn't send that.")
+            ),
+            "ok": _ok,
+            "error_code": None if _ok else "SEND_NOT_COMPLETED",
+            "route": "ACTION",
+            "operation": "send_message",
+            "needs_clarification": False,
+            "turn_id": None,
+        }
+    try:
+        from app.ev.send_intent import (
+            incomplete_send,
+            parse_send_intent,
+            prompt_for_send_body,
+        )
+
+        _send = parse_send_intent(effective_text)
+        _asked = None if _send is not None else incomplete_send(effective_text)
+    except Exception:  # noqa: BLE001 - send detection must never fail a turn
+        _send, _asked = None, None
+    if _send is not None:
+        try:
+            from app.ev.tools import dispatch as dispatch_tool
+
+            _tool_args: dict[str, Any] = {
+                "to": str(_send.get("to") or ""),
+                "text": str(_send.get("text") or ""),
+            }
+            if str(_send.get("channel") or "").strip():
+                _tool_args["channel"] = str(_send.get("channel"))
+            _tool_result = await dispatch_tool(
+                session,
+                "send_message",
+                _tool_args,
+                actor="master",
+                allow_sensitive=True,
+                device_id=device.id,
+                live_session_id=live_key,
+            )
+        except Exception:  # noqa: BLE001 - fall through to TurnGate on error
+            _tool_result = None
+        _body = (
+            _tool_result.result
+            if _tool_result is not None and isinstance(_tool_result.result, dict)
+            else {}
+        )
+        await session.commit()
+        if isinstance(_body, dict) and _body.get("pending_approval"):
+            return {
+                "reply": str(_body.get("spoken") or "Should I send that?"),
+                "ok": True,
+                "error_code": None,
+                "route": "ACTION",
+                "operation": "send_message",
+                "needs_clarification": False,
+                "pending_approval": True,
+                "action_id": _body.get("action_id"),
+                "turn_id": None,
+            }
+        _spoken = str((_body.get("spoken") if isinstance(_body, dict) else "") or "").strip()
+        _ok = bool(
+            _tool_result is not None
+            and _tool_result.ok
+            and isinstance(_body, dict)
+            and _body.get("sent")
+        )
+        return {
+            "reply": _spoken or ("Sent it." if _ok else "I couldn't send that."),
+            "ok": _ok,
+            "error_code": (
+                None
+                if _ok
+                else str(
+                    (_body.get("error") if isinstance(_body, dict) else None)
+                    or "SEND_NOT_COMPLETED"
+                )
+            ),
+            "route": "ACTION",
+            "operation": "send_message",
+            "needs_clarification": False,
+            "turn_id": None,
+        }
+    if _asked is not None:
+        return {
+            "reply": prompt_for_send_body(
+                to=str(_asked.get("to") or "them"),
+                channel=str(_asked.get("channel") or ""),
+            ),
+            "ok": True,
+            "error_code": None,
+            "route": "ACTION",
+            "operation": "send_message",
+            "needs_clarification": True,
+            "turn_id": None,
+        }
+    # Mobile V2: obvious stop/cancel needs no model reasoning. Reach the
+    # executor via the cancel endpoint for specific action_ids; this turn
+    # itself stops immediately and honestly.
+    try:
+        from .mobile_v2 import is_stop_request as _mv2_is_stop
+        from .telemetry import emit as _mv2_emit
+    except Exception:
+        _mv2_is_stop = None  # type: ignore[assignment]
+        _mv2_emit = None  # type: ignore[assignment]
+    if _mv2_is_stop is not None and _mv2_is_stop(effective_text):
+        if _mv2_emit is not None:
+            try:
+                _mv2_emit(
+                    "mobile.stop",
+                    device_id=str(device.id),
+                    route_target="CORE",
+                    result="COMPLETED",
+                )
+            except Exception:
+                pass
+        return {
+            "reply": "Stopped. Any running task was asked to cancel — check task status for confirmation.",
+            "ok": True,
+            "route": "STOP",
+            "operation": "cancel",
+            "route_target": "CORE",
+            "interference": "NON_DISRUPTIVE",
+            "action_result": "COMPLETED",
+            "stopped": True,
+            "turn_id": None,
+        }
+    # Presence OS: contextual short commands resolve against durable intent
+    # (continue/park/resume/teleport/what-changed). No model needed.
+    try:
+        from app.presence.service import resolve_short_command as _presence_resolve
+    except Exception:
+        _presence_resolve = None  # type: ignore[assignment]
+    if _presence_resolve is not None:
+        try:
+            _pres = await _presence_resolve(session, effective_text, device_id=device.id)
+        except Exception:
+            _pres = {"command": "UNKNOWN", "resolved": False}
+        if isinstance(_pres, dict) and _pres.get("resolved"):
+            try:
+                from app.presence.service import presence_turn as _presence_turn
+
+                _pres_reply = await _presence_turn(
+                    session, device=device, resolution=_pres, text=effective_text
+                )
+                await session.commit()
+            except Exception:
+                _pres_reply = None
+            if isinstance(_pres_reply, dict):
+                return _pres_reply
+    try:
+        from app.digital.phone_turn import maybe_digital_turn as _digital_turn
+    except Exception:
+        _digital_turn = None  # type: ignore[assignment]
+    from .mobile_actions.engine import create_phone_action, infer_from_text
+
+    inferred = infer_from_text(effective_text)
+    if inferred and inferred.get("operation") in {"call_contact", "facetime_contact"}:
+        from .phone_people import resolve_callable_number
+
+        who = str(inferred.get("contact_query") or "them").strip()
+        hit = await resolve_callable_number(session, who)
+        if not hit.get("number"):
+            return {
+                "reply": (
+                    f"I don't have a number for {who} on Home Station. "
+                    "Safari Evie can't read the iPhone address book. "
+                    "I can summarize their last messages instead."
+                ),
+                "ok": True,
+                "route": "PHONE_CALL",
+                "operation": inferred["operation"],
+                "executed": False,
+                "verified": False,
+                "conversational": False,
+                "follow_prompts": [
+                    {
+                        "label": f"Latest with {who}",
+                        "prompt": f"latest messages with {who}",
+                    }
+                ],
+            }
+        inferred["phone_number"] = hit["number"]
+        role = (device.role or "companion").strip().lower()
+        action = create_phone_action(
+            device_id=str(device.id),
+            role=role,
+            instance_id="",
+            session_id=None,
+            origin="https://evie.local",
+            arguments=inferred,
+            transcript=effective_text,
+            device_label=device.name or "This iPhone",
+        )
+        return {
+            "reply": str(action.get("spoken") or f"Tap to open Phone for {who}."),
+            "ok": bool(action.get("ok", True)),
+            "route": "PHONE_CALL",
+            "operation": inferred["operation"],
+            "executed": False,
+            "verified": False,
+            "conversational": False,
+            "phone_action": action,
+        }
+    from .phone_core import maybe_phone_core_read
+
+    core = await maybe_phone_core_read(session, device=device, text=effective_text)
+    if core is not None:
+        return core
+    if _digital_turn is not None:
+        try:
+            _dig = await _digital_turn(session, effective_text, device=device)
+        except Exception:
+            _dig = None
+        if isinstance(_dig, dict):
+            return _dig
     if (
         focus_title
         and focus_title not in effective_text
@@ -441,7 +686,11 @@ async def run_trusted_device_turn(
     # G2 B — deterministic cross-device capability routing (model does NOT decide executor)
     routed = _detect_routed_capability(effective_text)
     if routed is None:
-        from app.everywhere.endpoint_profile import perception_action, resolve_camera_target, wants_perception
+        from app.everywhere.endpoint_profile import (
+            perception_action,
+            resolve_camera_target,
+            wants_perception,
+        )
         from app.memory.visual import is_visual_recall_query, search_visual_observations
 
         if is_visual_recall_query(effective_text) and not wants_perception(effective_text):
@@ -459,12 +708,17 @@ async def run_trusted_device_turn(
                     "executed": True,
                     "verified": True,
                 }
-
-        from .phone_core import maybe_phone_core_read
-
-        core = await maybe_phone_core_read(session, device=device, text=effective_text)
-        if core is not None:
-            return core
+            return {
+                "reply": "I don't have a saved camera observation that matches that.",
+                "ok": False,
+                "route": "VISUAL_RECALL",
+                "operation": "recall",
+                "provenance": "camera.observation",
+                "turn_id": None,
+                "executed": False,
+                "verified": False,
+                "evidence": "durable_camera_observation_missing",
+            }
 
         if wants_perception(effective_text):
             from . import camera as cam
@@ -503,9 +757,14 @@ async def run_trusted_device_turn(
                 if same
                 else f"I routed look to {target_info.get('display_name') or 'the preferred camera'}."
             )
-            if freshness == "OFFLINE" and not same:
+            if freshness == "OFFLINE":
+                target_name = (
+                    "This iPhone"
+                    if same
+                    else (target_info.get("display_name") or "The preferred camera")
+                )
                 spoken = (
-                    f"{target_info.get('display_name') or 'The preferred camera'} is offline. "
+                    f"{target_name} is offline. "
                     "I queued the look instead of inventing what it sees."
                 )
             return {
@@ -535,6 +794,66 @@ async def run_trusted_device_turn(
             idempotency_key=idempotency_key,
         )
         if mac_act is not None:
+            tool = str(mac_act.get("tool") or mac_act.get("operation") or "")
+            if tool in {"start_timer", "set_reminder"}:
+                role = (device.role or "companion").strip().lower()
+                local = create_phone_action(
+                    device_id=str(device.id),
+                    role=role,
+                    instance_id="",
+                    session_id=None,
+                    origin="https://evie.local",
+                    arguments=(
+                        inferred
+                        if inferred and inferred.get("operation") in {"create_timer", "create_reminder"}
+                        else {
+                            "operation": "create_timer" if tool == "start_timer" else "create_reminder",
+                            "title": effective_text,
+                            "text": effective_text,
+                        }
+                    ),
+                    transcript=effective_text,
+                    device_label=device.name or "This iPhone",
+                )
+                if local.get("ok") and local.get("card"):
+                    mac_act["phone_action"] = local
+                    spoken = str(mac_act.get("reply") or "").rstrip()
+                    extra = (
+                        " Tap Start timer on this iPhone for a local alert — Evie's timer, not Clock."
+                        if tool == "start_timer"
+                        else " Tap Save reminder on this iPhone for a local alert — not Reminders.app."
+                    )
+                    if extra.lower() not in spoken.lower():
+                        mac_act["reply"] = (spoken + extra).strip()
+            try:
+                from .mobile_v2 import (
+                    classify_interference,
+                    map_phone_mac_status,
+                    resolve_route_target,
+                )
+                from .telemetry import emit as _emit2
+
+                _status = str(
+                    mac_act.get("status") or ("COMPLETED" if mac_act.get("executed") else "FAILED")
+                )
+                mac_act.setdefault("route_target", str(resolve_route_target(effective_text).value))
+                mac_act.setdefault(
+                    "interference", str(classify_interference(effective_text).value)
+                )
+                mac_act.setdefault("action_result", str(map_phone_mac_status(_status).value))
+                try:
+                    _emit2(
+                        "mobile.route",
+                        device_id=str(device.id),
+                        route_target=str(mac_act.get("route_target")),
+                        interference=str(mac_act.get("interference")),
+                        result=str(mac_act.get("action_result")),
+                        operation="phone_mac",
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
             return mac_act
 
     if routed is not None:
@@ -595,6 +914,35 @@ async def run_trusted_device_turn(
                     await session.commit()
                 except Exception:
                     pass
+                # Mobile V2 contract: honest result + route target + non-interference.
+                try:
+                    from .mobile_v2 import (
+                        classify_interference as _ci,
+                    )
+                    from .mobile_v2 import (
+                        map_broker_status as _mbs,
+                    )
+                    from .mobile_v2 import (
+                        resolve_route_target as _rrt,
+                    )
+                    from .telemetry import emit as _emit3
+
+                    _rt = str(_rrt(effective_text).value)
+                    _inf = str(_ci(effective_text).value)
+                    _ar = str(_mbs(status).value)
+                except Exception:
+                    _rt, _inf, _ar = "HOME_STATION", "NON_DISRUPTIVE", "PARTIAL"
+                try:
+                    _emit3(
+                        "mobile.route",
+                        device_id=str(device.id),
+                        route_target=_rt,
+                        interference=_inf,
+                        result=_ar,
+                        operation=str(cap),
+                    )
+                except Exception:
+                    pass
                 return {
                     "reply": reply,
                     "ok": True,
@@ -602,6 +950,9 @@ async def run_trusted_device_turn(
                     "operation": cap,
                     "broker": broker,
                     "turn_id": None,
+                    "route_target": _rt,
+                    "interference": _inf,
+                    "action_result": _ar,
                 }
         # Broker returned soft error (offline, capability unavailable)
         err = broker.get("error_code") or "CAPABILITY_UNAVAILABLE"
@@ -626,6 +977,9 @@ async def run_trusted_device_turn(
                 "broker": broker,
                 "executed": False,
                 "turn_id": None,
+                "route_target": "HOME_STATION",
+                "interference": "NON_DISRUPTIVE",
+                "action_result": "DEVICE_OFFLINE",
             }
         return {
             "reply": broker.get("message") or "I couldn't complete that capability on the other device.",
@@ -635,6 +989,9 @@ async def run_trusted_device_turn(
             "operation": cap,
             "broker": broker,
             "turn_id": None,
+            "route_target": "HOME_STATION",
+            "interference": "NON_DISRUPTIVE",
+            "action_result": "BLOCKED" if err == "CAPABILITY_UNAVAILABLE" else "FAILED",
         }
 
     # G2 C — bounded cross-device context pronoun resolution (pronoun -> focused entity)

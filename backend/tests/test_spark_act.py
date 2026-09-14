@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 import pytest
+
 from app.ev.spark_act import (
+    ActDecision,
     decide_owner_act,
     fallback_act,
     live_tool_for_act,
     maybe_spark_act_utterance,
 )
+from app.ev.spark_task import LifeJob, clear_life_job, remember_life_job
+
+
+@pytest.fixture(autouse=True)
+def _clear_life_job() -> None:
+    clear_life_job()
+    yield
+    clear_life_job()
 
 
 def test_greetings_stay_on_mini() -> None:
@@ -190,3 +200,110 @@ def test_propose_contents_list_is_a_file_job_not_chat() -> None:
     tool = live_tool_for_act(phrase, decision)
     assert tool is not None
     assert tool[0] == "computer"
+
+
+def test_followup_without_mail_word_stays_on_last_life_job() -> None:
+    remember_life_job(
+        LifeJob(
+            family="mail",
+            tool="list_mail",
+            query="what was the last mail I got",
+            who="Airline",
+            subject="Flight change",
+            when="2026-09-05T10:00:00+00:00",
+        )
+    )
+    assert maybe_spark_act_utterance("when did I get it") is True
+    assert maybe_spark_act_utterance("what time was that") is True
+    tool = live_tool_for_act(
+        "when did I get it", ActDecision(act="life", source="spark")
+    )
+    assert tool is not None
+    assert tool[0] == "list_mail"
+    assert "when did I get it" in str(tool[1].get("query") or "")
+    assert maybe_spark_act_utterance("how are you") is False
+
+
+@pytest.mark.asyncio
+async def test_spark_gets_the_hand_on_last_mail_followup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remember_life_job(
+        LifeJob(
+            family="mail",
+            tool="list_mail",
+            query="what was the last mail I got",
+            who="Airline",
+            when="2026-09-05T10:00:00+00:00",
+        )
+    )
+
+    async def fake_spark(_utterance: str) -> str:
+        return "life"
+
+    monkeypatch.setattr("app.ev.spark_act._spark_decide", fake_spark)
+    decision = await decide_owner_act("when did I get it")
+    assert decision is not None
+    assert decision.act == "life"
+    assert decision.source == "spark"
+    tool = live_tool_for_act("when did I get it", decision)
+    assert tool is not None
+    assert tool[0] == "list_mail"
+
+
+@pytest.mark.asyncio
+async def test_recent_messages_poke_spark_not_obvious_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = {"n": 0}
+
+    async def fake_spark(utterance: str) -> str:
+        called["n"] += 1
+        assert "recent messages" in utterance.lower()
+        return "life"
+
+    monkeypatch.setattr("app.ev.spark_act._spark_decide", fake_spark)
+    decision = await decide_owner_act("what are my recent messages")
+    assert called["n"] == 1
+    assert decision is not None
+    assert decision.act == "life"
+    assert decision.source == "spark"
+    tool = live_tool_for_act("what are my recent messages", decision)
+    assert tool is not None
+    assert tool[0] == "list_messages"
+
+
+def test_file_find_and_in_app_are_not_web_search() -> None:
+    find = "find my w2 file from laptop"
+    assert fallback_act(find) is not None
+    assert fallback_act(find).act == "files"
+    find_tool = live_tool_for_act(find, fallback_act(find))
+    assert find_tool is not None and find_tool[0] == "computer"
+
+    play = "play some song randomly from Chill in Music"
+    assert fallback_act(play) is not None
+    assert fallback_act(play).act == "computer"
+    play_tool = live_tool_for_act(play, fallback_act(play))
+    assert play_tool is not None and play_tool[0] == "open_in_app"
+    assert play_tool[1].get("random") is True
+
+    opened = "open YouTube from Safari"
+    assert fallback_act(opened).act == "computer"
+    open_tool = live_tool_for_act(opened, fallback_act(opened))
+    assert open_tool is not None and open_tool[0] == "open_in_app"
+    assert str(open_tool[1].get("app") or "") == "Safari"
+
+
+@pytest.mark.asyncio
+async def test_spark_cannot_demote_file_find_to_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_spark(_utterance: str) -> str:
+        return "search"
+
+    monkeypatch.setattr("app.ev.spark_act._spark_decide", fake_spark)
+    decision = await decide_owner_act("find my resume file on my laptop")
+    assert decision is not None
+    assert decision.act == "files"
+    tool = live_tool_for_act("find my resume file on my laptop", decision)
+    assert tool is not None and tool[0] == "computer"

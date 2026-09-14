@@ -1,5 +1,5 @@
 {
-  "locked_at": "2026-09-08T00:03:18.564161+00:00",
+  "locked_at": "2026-09-10T15:09:33.732269+00:00",
   "paths": {
     "/v1/alerts": [
       "get"
@@ -84,6 +84,15 @@
     "/v1/chat": [
       "post"
     ],
+    "/v1/cognitive/health": [
+      "get"
+    ],
+    "/v1/cognitive/mac-execute": [
+      "post"
+    ],
+    "/v1/cognitive/turn": [
+      "post"
+    ],
     "/v1/commands": [
       "get"
     ],
@@ -138,6 +147,9 @@
     "/v1/decisions/{decision_id}/outcome": [
       "post"
     ],
+    "/v1/device-gateway/actions/cancel": [
+      "post"
+    ],
     "/v1/device-gateway/admin/mark-home-station": [
       "post"
     ],
@@ -168,6 +180,9 @@
     "/v1/device-gateway/audio-diag/truth": [
       "get"
     ],
+    "/v1/device-gateway/battery": [
+      "post"
+    ],
     "/v1/device-gateway/brief": [
       "get"
     ],
@@ -181,6 +196,15 @@
       "get"
     ],
     "/v1/device-gateway/capabilities": [
+      "get"
+    ],
+    "/v1/device-gateway/capture": [
+      "post"
+    ],
+    "/v1/device-gateway/capture/audio": [
+      "post"
+    ],
+    "/v1/device-gateway/contacts": [
       "get"
     ],
     "/v1/device-gateway/contacts/snapshot": [
@@ -223,6 +247,9 @@
     "/v1/device-gateway/inbox/ack": [
       "post"
     ],
+    "/v1/device-gateway/inbox/ack-all": [
+      "post"
+    ],
     "/v1/device-gateway/live/close": [
       "post"
     ],
@@ -246,6 +273,21 @@
     ],
     "/v1/device-gateway/live/webrtc/sdp": [
       "post"
+    ],
+    "/v1/device-gateway/looks": [
+      "get"
+    ],
+    "/v1/device-gateway/looks/{look_id}/media": [
+      "get"
+    ],
+    "/v1/device-gateway/memories": [
+      "get"
+    ],
+    "/v1/device-gateway/memories/{memory_id}": [
+      "get"
+    ],
+    "/v1/device-gateway/memories/{memory_id}/provenance": [
+      "get"
     ],
     "/v1/device-gateway/memory": [
       "get"
@@ -302,6 +344,10 @@
       "get",
       "post"
     ],
+    "/v1/device-gateway/onboarding": [
+      "get",
+      "put"
+    ],
     "/v1/device-gateway/pair": [
       "post"
     ],
@@ -313,6 +359,49 @@
     ],
     "/v1/device-gateway/people/enroll": [
       "post"
+    ],
+    "/v1/device-gateway/phone-capabilities": [
+      "get"
+    ],
+    "/v1/device-gateway/presence/goals": [
+      "get",
+      "post"
+    ],
+    "/v1/device-gateway/presence/goals/{goal_id}/advance": [
+      "post"
+    ],
+    "/v1/device-gateway/presence/goals/{goal_id}/compile": [
+      "post"
+    ],
+    "/v1/device-gateway/presence/goals/{goal_id}/conditions": [
+      "post"
+    ],
+    "/v1/device-gateway/presence/goals/{goal_id}/nodes": [
+      "post"
+    ],
+    "/v1/device-gateway/presence/goals/{goal_id}/resume": [
+      "post"
+    ],
+    "/v1/device-gateway/presence/goals/{goal_id}/teleport": [
+      "post"
+    ],
+    "/v1/device-gateway/presence/goals/{goal_id}/transition": [
+      "post"
+    ],
+    "/v1/device-gateway/presence/goals/{goal_id}/wait": [
+      "post"
+    ],
+    "/v1/device-gateway/presence/mission": [
+      "get"
+    ],
+    "/v1/device-gateway/presence/simulate": [
+      "post"
+    ],
+    "/v1/device-gateway/presence/situation": [
+      "get"
+    ],
+    "/v1/device-gateway/presence/what-changed": [
+      "get"
     ],
     "/v1/device-gateway/privacy": [
       "get"
@@ -330,7 +419,17 @@
     "/v1/device-gateway/queue/replay": [
       "post"
     ],
+    "/v1/device-gateway/queue/{item_id}": [
+      "delete"
+    ],
     "/v1/device-gateway/quick-actions": [
+      "get"
+    ],
+    "/v1/device-gateway/routines": [
+      "get",
+      "put"
+    ],
+    "/v1/device-gateway/search": [
       "get"
     ],
     "/v1/device-gateway/sense": [
@@ -357,7 +456,13 @@
     "/v1/device-gateway/text/stream": [
       "post"
     ],
+    "/v1/device-gateway/today": [
+      "get"
+    ],
     "/v1/device-gateway/vapid-public-key": [
+      "get"
+    ],
+    "/v1/device-gateway/vitals": [
       "get"
     ],
     "/v1/device-gateway/voice/enroll": [
@@ -365,6 +470,9 @@
     ],
     "/v1/device-gateway/voice/verify": [
       "post"
+    ],
+    "/v1/device-gateway/weather": [
+      "get"
     ],
     "/v1/devices": [
       "get",
@@ -390,6 +498,24 @@
       "post"
     ],
     "/v1/diagnostics/last": [
+      "get"
+    ],
+    "/v1/digital/act": [
+      "post"
+    ],
+    "/v1/digital/can-you": [
+      "get"
+    ],
+    "/v1/digital/capabilities": [
+      "get"
+    ],
+    "/v1/digital/connection-pack": [
+      "get"
+    ],
+    "/v1/digital/outcome": [
+      "post"
+    ],
+    "/v1/digital/waiting": [
       "get"
     ],
     "/v1/ears/wake": [
@@ -1288,6 +1414,9 @@
       "post"
     ],
     "/v1/vision/annotate": [
+      "post"
+    ],
+    "/v1/vision/clip": [
       "post"
     ],
     "/v1/vision/log": [

@@ -21,8 +21,10 @@ from app.gateway.validation import validate_arguments
 from app.integrations import oauth
 from app.integrations.calendar_signals import derive_calendar_signals, parse_event_time
 from app.integrations.life_helper import (
+    AmbiguousRecipientError,
     LifeHelperError,
     LifeHelperUnavailableError,
+    LifePermissionDeniedError,
     run_life_helper,
 )
 from app.integrations.life_policy import evaluate_life_policy
@@ -949,6 +951,83 @@ def _life_action_common(
     return helper_args, decision.to_dict()
 
 
+async def _resolve_life_contact(
+    recipient: str | None, helper_path: str | None
+) -> dict[str, Any] | None:
+    """Resolve a send/call recipient to a contacts row for life policy.
+
+    The policy pre-authorizes known contacts; without this every send looks
+    unknown and is blocked. Returns None when no contact matches (policy
+    then reports not-pre-authorized honestly). Raises
+    :class:`AmbiguousRecipientError` when the name fits more than one
+    distinct person — the caller must ask, never send to matches[0].
+    Helper-missing and permission failures propagate so the caller speaks
+    the real next step instead of masking them as an unknown contact.
+    """
+    from app.ev.messaging.recipients import match_recipient
+
+    who = (recipient or "").strip()
+    if not who:
+        return None
+    try:
+        result = await run_life_helper(
+            "contacts.resolve", {"query": who}, helper_path=helper_path
+        )
+    except (LifeHelperUnavailableError, LifePermissionDeniedError):
+        raise
+    except Exception:
+        return None
+    rows = [
+        row
+        for row in list((result.data or {}).get("matches") or [])
+        if isinstance(row, dict)
+    ]
+    match = match_recipient(who, rows)
+    if match.status == "ambiguous":
+        raise AmbiguousRecipientError(who, list(match.candidates))
+    if match.status == "direct":
+        contact: dict[str, Any] = {
+            "phone": who if "@" not in who else "",
+            "email": who if "@" in who else "",
+            "id": "",
+            "display": who,
+            "starred": False,
+        }
+        return contact
+    if match.status != "unique":
+        return None
+    contact = {
+        "phone": match.primary_phone,
+        "email": match.primary_email,
+        "id": match.contact_id,
+        "display": match.display or who,
+        "starred": False,
+    }
+    if not (contact["phone"] or contact["email"] or contact["id"]):
+        return None
+    return contact
+
+
+def _life_digits(value: str | None) -> str:
+    return "".join(ch for ch in (value or "") if ch.isdigit())
+
+
+def _life_tel(value: str | None) -> str:
+    """Dialable tel: form. Spaces/dashes break URL(string:) — strip to digits.
+
+    Emails pass through untouched (facetime:// accepts them); names yield "".
+    """
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if "@" in text:
+        return text
+    digits = _life_digits(text)
+    if not digits:
+        return ""
+    return ("+" if text.startswith("+") else "") + digits
+
+
 def _life_read_only_action(*, provider: object) -> None:
     if provider != "macos_life":
         raise LifeHelperUnavailableError(
@@ -1004,15 +1083,147 @@ class MessagingAdapter(Adapter):
             "messaging.send": "messages.send",
         }[action]
         if action == "messaging.send":
-            channel = str(args.get("channel") or "").strip().lower()
-            if channel in {"whatsapp", "wa"}:
+            from app.ev.messaging.channels import normalize_channel
+            from app.ev.messaging.routing import route_channel
+
+            # Explicit channels are authoritative and never remapped onto a
+            # different transport. Omitted channel defaults to Messages;
+            # named-but-unwired channels fail loudly instead of becoming SMS.
+            explicit = str(args.get("channel") or "").strip() or None
+            channel = normalize_channel(explicit)
+            if explicit is not None and channel is None:
+                raise ValueError(
+                    f"I don't have {explicit} connected on this Mac, "
+                    "so I didn't send anything."
+                )
+            routing = route_channel(channel or "messages", helper_available=True)
+            if routing.channel == "whatsapp":
+                from app.ev.messaging.whatsapp_web import web_available
+
+                routing = route_channel(
+                    "whatsapp",
+                    helper_available=True,
+                    web_available=await web_available(),
+                )
+            if routing.mode == "unavailable":
+                raise ValueError(routing.spoken)
+            if routing.channel == "mail":
+                raise ValueError("email goes through send_mail, not messaging.send")
+            if routing.channel == "whatsapp":
                 command = "whatsapp.send"
+            raw_to = str(args.get("to") or "").strip()
+            send_args = dict(args)
+            native = None
+            if routing.channel == "whatsapp":
+                # WhatsApp decides who exists. Apple Contacts is not the
+                # gate: a chat-list match is a known recipient even when the
+                # person was never saved on this Mac.
+                from app.ev.messaging.native import resolve_native_contact
+
+                native = await resolve_native_contact("whatsapp", raw_to)
+                if native is not None and native.get("status") == "ambiguous":
+                    names = ", ".join(
+                        str(name) for name in native.get("candidates") or [] if name
+                    )
+                    raise ValueError(
+                        f"I found more than one WhatsApp chat for {raw_to}: {names}. Which one?"
+                    )
+            try:
+                contact = await _resolve_life_contact(raw_to, config.get("helper_path"))
+            except AmbiguousRecipientError as exc:
+                if native is not None and native.get("status") == "unique":
+                    contact = None
+                else:
+                    raise ValueError(str(exc)) from exc
+            except (LifePermissionDeniedError, LifeHelperUnavailableError):
+                # Contacts is not the address book of WhatsApp: when the chat
+                # list already proved the recipient, a Contacts permission or
+                # helper failure must not abort the send.
+                if native is None or native.get("status") != "unique":
+                    raise
+                contact = None
+            if native is not None and native.get("status") == "unique":
+                merged = contact or {}
+                contact = {
+                    **merged,
+                    "id": str(merged.get("id") or native.get("id") or ""),
+                    "display": str(merged.get("display") or native.get("display") or raw_to),
+                    "phone": str(merged.get("phone") or native.get("phone") or ""),
+                    "email": str(merged.get("email") or ""),
+                    "starred": bool(merged.get("starred", False)),
+                }
+            send_args["contact"] = contact
             helper_args, policy = _life_action_common(
                 action=action,
-                args=args,
+                args=send_args,
                 scopes=scopes,
                 config=config,
             )
+            if routing.provider == "web":
+                from app.ev.messaging.whatsapp_web import send as send_whatsapp_web
+
+                body = str(args.get("text") or args.get("body") or "").strip()
+                web_result = await send_whatsapp_web(
+                    str((contact or {}).get("display") or raw_to), body
+                )
+                if not web_result.get("ok"):
+                    raise ValueError(
+                        str(web_result.get("spoken") or "I couldn't send that WhatsApp.")
+                    )
+                return {
+                    "ok": True,
+                    "mode": "whatsapp_web",
+                    "action": action,
+                    "sent": True,
+                    "channel": "whatsapp",
+                    "to": web_result.get("to") or raw_to,
+                    "verified_in_thread": True,
+                    "focus_theft": int(web_result.get("focus_theft") or 0),
+                    "spoken": str(web_result.get("spoken") or ""),
+                    "delivery": {
+                        "confirmed": True,
+                        "evidence": {
+                            "provider": "whatsapp_web",
+                            "confirmed_by": "verified_in_thread",
+                            "to": web_result.get("to") or raw_to,
+                        },
+                    },
+                    "policy": policy,
+                }
+            if routing.channel == "whatsapp":
+                # Helper --to must be digits. Apple Contacts are optional —
+                # WhatsApp ChatStorage is the chat list, but only a strong
+                # whole-name match is trusted.
+                digits = _life_digits((contact or {}).get("phone") or raw_to)
+                if len(digits) < 8:
+                    try:
+                        from app.services.life_stream_daemon import (
+                            get_life_stream_daemon,
+                            life_stream_should_run,
+                        )
+
+                        if life_stream_should_run():
+                            peer = get_life_stream_daemon().resolve_whatsapp_peer(raw_to)
+                            from app.ev.messaging.recipients import verify_peer
+
+                            if verify_peer(raw_to, peer):
+                                digits = _life_digits((peer or {}).get("phone") or "")
+                    except Exception:
+                        pass
+                if len(digits) < 8:
+                    raise ValueError(
+                        f"I couldn't find {raw_to or 'that chat'} on WhatsApp on this Mac."
+                    )
+                helper_args["to"] = digits
+            else:
+                phone = (contact or {}).get("phone") or ""
+                email = (contact or {}).get("email") or ""
+                if phone:
+                    helper_args["to"] = phone
+                elif email:
+                    helper_args["to"] = email
+                # else: keep raw — Messages buddy lookup may still resolve it.
+                helper_args["service"] = routing.service or "auto"
         else:
             helper_args = {key: value for key, value in args.items() if key != "confirm"}
             policy = {"allowed": True, "confirmation_required": False, "reason": "read"}
@@ -1236,16 +1447,52 @@ class PhoneAdapter(Adapter):
                 },
             }
         if provider == "macos_life":
+            recipient = (
+                str(args.get("to") or "").strip()
+                or str(args.get("destination") or "").strip()
+                or str(args.get("name") or "").strip()
+            )
+            call_args = dict(args)
+            if recipient and not str(call_args.get("to") or "").strip():
+                call_args["to"] = recipient
+            try:
+                contact = await _resolve_life_contact(recipient, config.get("helper_path"))
+            except AmbiguousRecipientError as exc:
+                raise ValueError(str(exc)) from exc
+            call_args["contact"] = contact
             helper_args, policy = _life_action_common(
                 action=action,
-                args=args,
+                args=call_args,
                 scopes=scopes,
                 config=config,
             )
             command = "call.place"
-            destination = helper_args.pop("to", None)
+            raw_dest = (
+                helper_args.pop("to", None)
+                or helper_args.pop("destination", None)
+                or helper_args.pop("name", None)
+                or recipient
+            )
+            # tel:// needs digits; facetime:// also accepts an email. A bare
+            # contact name builds a dead URL — fail friendly instead.
+            phone = (contact or {}).get("phone") or ""
+            email = (contact or {}).get("email") or ""
+            destination = ""
+            for candidate in (phone, raw_dest):
+                tel = _life_tel(candidate)
+                if tel and len(_life_digits(tel)) >= 7:
+                    destination = tel
+                    break
+            if not destination and action == "facetime.call":
+                for candidate in (email, raw_dest):
+                    if candidate and "@" in str(candidate):
+                        destination = str(candidate).strip()
+                        break
             if not destination:
-                raise ValueError("phone call requires a destination")
+                raise ValueError(
+                    f"I don't have a phone number for {recipient or 'that contact'}, "
+                    "so I couldn't place that call."
+                )
             helper_args["destination"] = destination
             helper_args["kind"] = "facetime" if action == "facetime.call" else "tel"
             helper_args.pop("video", None)
@@ -1347,12 +1594,30 @@ class MailAdapter(Adapter):
             "mail.send": "mail.send",
         }[action]
         if action == "mail.send":
+            raw_to = str(args.get("to") or "").strip()
+            mail_args = dict(args)
+            try:
+                contact = await _resolve_life_contact(raw_to, config.get("helper_path"))
+            except AmbiguousRecipientError as exc:
+                raise ValueError(str(exc)) from exc
+            mail_args["contact"] = contact
             helper_args, policy = _life_action_common(
                 action=action,
-                args=args,
+                args=mail_args,
                 scopes=scopes,
                 config=config,
             )
+            if "@" not in raw_to:
+                # The helper addresses Mail.app recipients — a bare name is
+                # not an address. Resolve first, fail friendly if none.
+                email = (contact or {}).get("email") or ""
+                if "@" in email:
+                    helper_args["to"] = email
+                else:
+                    raise ValueError(
+                        f"I don't have an email for {raw_to or 'that contact'}, "
+                        "so I couldn't send that email."
+                    )
         else:
             helper_args = args
             policy = {"allowed": True, "confirmation_required": False, "reason": "read"}

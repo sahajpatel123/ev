@@ -1599,6 +1599,45 @@ class VoiceRuntime:
         # Feature-flag gate (§36) — must be first so OFF/SHADOW never opens a session.
         gate = (settings.always_available_wake or "OFF").strip().upper()
         if gate == "OFF":
+            # A follow-up on an already-open verified in-flight session is
+            # queued, never opened: queue_pending_ingest does not create a
+            # session, so the gate's own invariant (OFF never OPENS one)
+            # holds and nothing else runs.
+            if device_id:
+                bypass = await self._active_session(device_id)
+                if (
+                    bypass is not None
+                    and bypass.owner_verified
+                    and bypass.state in BUSY_STATES
+                    and self._busy_session_age(bypass) < STALE_BUSY_SECONDS
+                    and session_in_flight(str(bypass.id))
+                ):
+                    queued_audio = None
+                    if frames_b64:
+                        import base64
+
+                        from app.audio.capture import pcm_to_wav_bytes
+
+                        queued_audio = base64.b64encode(
+                            pcm_to_wav_bytes(base64.b64decode(frames_b64), sample_rate)
+                        ).decode("ascii")
+                    queue_pending_ingest(
+                        device_id,
+                        {
+                            "audio_b64": queued_audio,
+                            "audio_ref": audio_ref,
+                            "text_hint": text_hint,
+                            "session_id": str(bypass.id),
+                        },
+                    )
+                    return EarsIngestOutcome(
+                        accepted=True,
+                        message="queued",
+                        session_id=str(bypass.id),
+                        state=bypass.state,
+                        listening=True,
+                        queued=True,
+                    )
             # Also respect explicit owner disable: ears_consent false already above.
             return EarsIngestOutcome(
                 accepted=False,

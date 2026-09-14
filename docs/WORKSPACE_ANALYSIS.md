@@ -287,23 +287,37 @@ Found 1 error in 1 file (checked 264 source files)
 is `None` until then. This is also a latent runtime `TypeError` on any Linux
 host whose `/proc/meminfo` lists `SwapFree` before `SwapTotal` or omits
 `SwapTotal`. Guarding the subtraction fixes both. `AGENT_FLEET.md:225` claims "0
-issues in 262 source files"; the tree is now 264 files and one error. Owner:
-Agent 20 LAUNCH (`app/ops/**`).
+issues in 262 source files", and this file previously said "the tree is now 264
+files and one error". Both are stale: measured on 2026-09-13, `mypy app clients`
+reports **298 errors in 49 files (573 checked)**, and the `metrics.py:125`
+diagnostic this paragraph describes is itself already fixed. There is no single
+owner; treat the count as a budget — fix incrementally and never let a change
+add to it. Owner of the original `app/ops/**` item: Agent 20 LAUNCH.
 
-### 5.4 What is green
+### 5.4 What is green — and what is not
 
 ```text
-$ uv run ruff check app clients tests
-All checks passed!
-
 $ uv run python -m app.scripts.eval_gates --report eval/last-run.json
-Summary: 18/18 gates, 110/110 checks passed, 5 skipped (explicit reasons above).
+Summary: 20/20 gates, 147/147 checks passed, 2 skipped (explicit reasons above).
 exit 0
 ```
 
-The 5 skips are `asr_quality`, `speaker_security`, `retrieval_quality`,
-`face_recognition`, and `wake_reliability` — all "no eval artifact" because
-`backend/eval/ml/` is gitignored. This is the designed behaviour, and it is the
+`ruff` is **not** clean here, and this section previously claimed it was. Measured
+on the working tree on 2026-09-13: `ruff check app clients tests` reports 71
+errors (54 distinct `path:rule` pairs) and `mypy app clients` reports 298 errors
+in 49 files. A `HEAD` worktree measured the same day reports 157 and 299, so the
+honest reading is "improving, not clean". Never compare against prose — compare
+against a worktree:
+
+```sh
+git worktree add /tmp/ev-head HEAD --detach
+ln -s "$PWD/backend/.venv" /tmp/ev-head/backend/.venv
+cd /tmp/ev-head/backend && .venv/bin/python -m ruff check app clients tests
+```
+
+The 2 skips are `speaker_security` and `face_recognition` — both "no eval
+artifact" because `backend/eval/ml/` is gitignored. This is the designed
+behaviour, and it is the
 single best-engineered thing in the repo: a missing or `degraded: true`
 artifact skips rather than passes, so no double can be reported as a measured
 quality number. `AGENT_FLEET.md:230` cites 124/124 checks with 3 skips, which is

@@ -275,3 +275,18 @@ enum EVLifeSync {
         }
     }
 }
+// Cycle EAC-05 — Life-access permission explainer.
+/// iPhone-only additive helper; backward compatible (new type, existing permission flow untouched).
+enum EviePermissionExplainer {
+    static func blurb(for kind: iOSPermissionKind) -> String {
+        switch kind {
+        case .contacts: return "Contacts help Evie mention the right people. Optional."
+        case .microphone: return "Microphone powers voice capture. Optional."
+        case .speech: return "Speech recognition transcribes what you say. Optional."
+        case .camera: return "Camera enables look-and-ask moments. Optional."
+        case .notifications: return "Notifications flag holds and mentions. Optional."
+        case .location: return "Location grounds nearby answers. Optional."
+        case .bluetooth: return "Bluetooth finds nearby accessories. Optional."
+        }
+    }
+}

@@ -7,6 +7,8 @@ real VAD/ASR/TTS.
 
 from __future__ import annotations
 
+import pytest
+
 from app.voice.live.backchannel import BackchannelPolicy
 from app.voice.live.behavior import BehaviorEnvelope, behavior_from_state, to_speech_style
 from app.voice.live.events import BackchannelEvent, ReadyEvent, TtsChunkEvent
@@ -41,6 +43,23 @@ class FakeClock:
 
     def advance(self, ms: int) -> None:
         self.now += ms
+
+
+@pytest.fixture(autouse=True)
+def _own_cognitive_session(tmp_path, monkeypatch):
+    """Keep turn-taking off the owner's durable session.
+
+    ``is_non_turn`` reads the live offer, so a real ``session.json`` left behind
+    by a running EVIE would decide these assertions.
+    """
+
+    from app.cognitive.session_store import reset_for_tests
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path / "storage"))
+    reset_for_tests()
+    yield
+    reset_for_tests()
 
 
 # --------------------------------------------------------------------------- #
@@ -105,6 +124,8 @@ def test_pause_class_distinguishes_complete_trailing_thinking() -> None:
 
 
 def test_is_non_turn_recognizes_thinking_sounds() -> None:
+    """With no live offer: yes/yeah/okay are thinking sounds, not turns."""
+
     for text in ("hmm", "Hmm.", "uh", "um", "mhm", "yeah", "okay"):
         assert is_non_turn(text), text
     assert not is_non_turn("what's the weather")
@@ -121,6 +142,18 @@ def _scenario(**kwargs):
     policy = TurnTakingPolicy(config=config, clock_ms=clock)
     state = LiveConversationState()
     return clock, state, policy
+
+
+def _arm_offer() -> None:
+    """Record a live offer, exactly as the kernel does after EVIE asks."""
+
+    from app.cognitive.intent import set_pending_offer
+    from app.cognitive.session_store import current
+
+    set_pending_offer(
+        current(),
+        "I found the mail from Rahul. Do you want me to read out the full mail?",
+    )
 
 
 def test_complete_sentence_pause_triggers_response() -> None:
@@ -196,6 +229,47 @@ def test_non_turn_never_triggers_response() -> None:
     decision = policy.decide(state, now_ms=clock.now)
     assert decision.action != TURN_RESPOND_NOW
     assert decision.action == TURN_KEEP_LISTENING
+
+
+def test_bare_yes_answering_a_live_offer_is_a_turn() -> None:
+    """The owner's "yeah" answers EVIE's own question, so it must be a turn."""
+
+    _arm_offer()
+    clock, state, policy = _scenario()
+    state.note_user_speech_start(now_ms=clock.now)
+    policy.on_speech_start(now_ms=clock.now)
+    clock.advance(600)
+    state.note_user_speech_end(now_ms=clock.now)
+    policy.on_speech_end(now_ms=clock.now)
+    policy.on_partial("yeah", seq=1)
+
+    assert not is_non_turn("yeah")
+    clock.advance(100)
+    state.note_silence(now_ms=clock.now)
+    assert policy.decide(state, now_ms=clock.now).action == TURN_STAY_QUIET
+    clock.advance(1000)  # past the thinking grace
+    state.note_silence(now_ms=clock.now)
+    decision = policy.decide(state, now_ms=clock.now)
+    assert decision.action == TURN_RESPOND_NOW
+    assert decision.last_partial == "yeah"
+
+
+def test_thinking_sound_stays_a_non_turn_while_an_offer_is_live() -> None:
+    """"hmm" answers nothing, so a live offer must not turn it into a turn."""
+
+    _arm_offer()
+    clock, state, policy = _scenario()
+    state.note_user_speech_start(now_ms=clock.now)
+    policy.on_speech_start(now_ms=clock.now)
+    clock.advance(600)
+    state.note_user_speech_end(now_ms=clock.now)
+    policy.on_speech_end(now_ms=clock.now)
+    policy.on_partial("hmm", seq=1)
+    clock.advance(5000)
+    state.note_silence(now_ms=clock.now)
+
+    assert is_non_turn("hmm")
+    assert policy.decide(state, now_ms=clock.now).action == TURN_KEEP_LISTENING
 
 
 def test_user_speech_while_assistant_speaking_is_interruption() -> None:

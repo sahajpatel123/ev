@@ -131,6 +131,91 @@ async def remaining_steps(session: AsyncSession) -> list[str]:
     return [step for step in TRAINING_STEPS if not done.get(step)]
 
 
+async def _outstanding_steps(session: AsyncSession) -> list[str] | None:
+    """Outstanding steps when the checklist is readable, else None (unknown, not zero)."""
+
+    try:
+        return await remaining_steps(session)
+    except Exception:
+        return None
+
+
+def _step_phrase(remaining: list[str] | None) -> str:
+    """Spoken phrase for the outstanding checklist steps, '' when none are known."""
+
+    if not remaining:
+        return ""
+    labels = ", ".join(STEP_TITLES.get(step, step) for step in remaining)
+    noun = "step" if len(remaining) == 1 else "steps"
+    return f"{len(remaining)} {noun} left ({labels})"
+
+
+def _training_wheels_spoken(remaining: list[str] | None) -> str:
+    """Owner sentence for a lock that only finishing Training Wheels clears."""
+
+    if remaining is None:
+        return (
+            "That's locked until Training Wheels is finished — say \"what's locked\" "
+            "and I'll read out the steps left."
+        )
+    if not remaining:
+        return (
+            "That's locked until Training Wheels is marked complete — say \"complete "
+            "training wheels\" and I'll unlock it."
+        )
+    return (
+        f"That's locked until Training Wheels is finished — {_step_phrase(remaining)}. "
+        "Say \"complete training wheels\" when they're done."
+    )
+
+
+def _gate_spoken(
+    gate_key: str,
+    row: FeatureGate | None,
+    remaining: list[str] | None,
+) -> str:
+    """Owner sentence naming a locked gate and the one action that clears it."""
+
+    if gate_key in UNLOCK_ON_COMPLETE or gate_key == "training_wheels":
+        return _training_wheels_spoken(remaining)
+    reason = str(getattr(row, "reason", "") or "").strip()
+    hint = str(getattr(row, "setup_hint", "") or "").strip()
+    if reason and hint:
+        return f"That's locked — {reason} {hint}"
+    if reason:
+        return f"That's locked — {reason}"
+    if hint:
+        return f"That's locked. {hint}"
+    return (
+        f"That's locked — I don't have the unlock step for {gate_key} on file; "
+        "say \"what's locked\" and I'll re-check."
+    )
+
+
+def _refused_spoken(row: FeatureGate | None) -> str:
+    """Owner sentence for a protocol refusal: permanent, with the standing reason."""
+
+    reason = str(getattr(row, "reason", "") or "").strip()
+    if reason:
+        return f"That's refused by design and stays refused — {reason}"
+    return "That's refused by design and stays refused, so there's nothing to unlock."
+
+
+def _unverified_spoken(remaining: list[str] | None) -> str:
+    """Owner sentence when the gate store cannot answer: unverified, so no action."""
+
+    phrase = _step_phrase(remaining)
+    if phrase:
+        return (
+            f"I can't check that lock right now — Training Wheels still has {phrase}. "
+            "Say \"what's locked\" and I'll re-check before I do anything."
+        )
+    return (
+        "I can't check that lock right now, so I won't act — say \"what's locked\" "
+        "and I'll re-check before I do anything."
+    )
+
+
 async def list_locked(session: AsyncSession) -> dict:
     await ensure_seed_gates(session)
     remaining = await remaining_steps(session)
@@ -165,7 +250,18 @@ async def complete_step(session: AsyncSession, step: str) -> dict:
     from app.ev.protocols import complete_training_wheels, start_training_wheels
 
     if step not in TRAINING_STEPS:
-        return {"ok": False, "error": f"unknown step '{step}'", "remaining": list(TRAINING_STEPS)}
+        remaining = await remaining_steps(session)
+        return {
+            "ok": False,
+            "error": f"unknown step '{step}'",
+            "code": "unknown_training_step",
+            "remaining": remaining,
+            "spoken": (
+                f"I don't have a Training Wheels step called '{step}' — the steps are: "
+                + ", ".join(STEP_TITLES[name] for name in TRAINING_STEPS)
+                + "."
+            ),
+        }
     profile = await get_profile(session)
     if profile.training_wheels_started_at is None:
         await start_training_wheels(session)
@@ -213,7 +309,13 @@ async def unlock_after_training(session: AsyncSession) -> list[str]:
 
 
 async def refuse_if_locked(session: AsyncSession, spec: dict | None) -> dict | None:
-    """Return a refuse payload when the tool maps to a locked/refused gate."""
+    """Return a refuse payload when the tool maps to a locked/refused gate.
+
+    Every payload carries ``spoken``: the live loop speaks that line verbatim,
+    so a refusal without it reaches the owner as a bare "I couldn't complete
+    <tool> yet." — no gate named, no unlock step. ``error``/``code`` stay
+    machine-readable and the allow/deny decision is untouched.
+    """
 
     if spec is None:
         return None
@@ -225,11 +327,15 @@ async def refuse_if_locked(session: AsyncSession, spec: dict | None) -> dict | N
         if read_only:
             return None
         if permission in ACTUATOR_PERMISSIONS or not read_only and gate_key:
-            remaining = list(TRAINING_STEPS)
+            remaining = await _outstanding_steps(session)
             return {
                 "ok": False,
                 "error": "training_wheels",
-                "remaining": remaining,
+                "code": "training_wheels_unverified",
+                "remaining": (
+                    remaining if remaining is not None else list(TRAINING_STEPS)
+                ),
+                "spoken": _unverified_spoken(remaining),
             }
         return None
 
@@ -239,20 +345,33 @@ async def refuse_if_locked(session: AsyncSession, spec: dict | None) -> dict | N
     row = await _gate(session, gate_key)
     if row is None:
         if permission in ACTUATOR_PERMISSIONS:
+            remaining = await remaining_steps(session)
             return {
                 "ok": False,
                 "error": "training_wheels",
-                "remaining": await remaining_steps(session),
+                "code": "training_wheels_unverified",
+                "remaining": remaining,
+                "spoken": _unverified_spoken(remaining),
             }
         return None
     if row.status == "refused":
-        return {"ok": False, "error": "refused", "remaining": [], "gate": gate_key}
+        return {
+            "ok": False,
+            "error": "refused",
+            "code": "gate_refused",
+            "remaining": [],
+            "gate": gate_key,
+            "spoken": _refused_spoken(row),
+        }
     if row.status == "locked":
+        remaining = await remaining_steps(session)
         return {
             "ok": False,
             "error": "training_wheels",
-            "remaining": await remaining_steps(session),
+            "code": "training_wheels_locked",
+            "remaining": remaining,
             "gate": gate_key,
+            "spoken": _gate_spoken(gate_key, row, remaining),
         }
     return None
 

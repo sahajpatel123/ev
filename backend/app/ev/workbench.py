@@ -537,10 +537,10 @@ async def handle_heading_out(
 
 async def handle_brief_me(session: AsyncSession, topic: str | None = None) -> dict:
     from app.ev import tactical
+    from app.ev.code_studio import spoken_studio_status
     from app.ev.companionship import isolation_nudge_text, scan_isolation
     from app.ev.health_radar import morning_brief
     from app.ev.luna_code import intern_in_flight, last_code_job, peek_code_intern_receipt
-    from app.ev.code_studio import spoken_studio_status
 
     wanted = " ".join(str(topic or "today").split()).strip() or "today"
     lowered = wanted.lower()

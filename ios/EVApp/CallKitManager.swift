@@ -34,3 +34,9 @@ final class EVCallKitManager: NSObject, CXProviderDelegate {
     }
 }
 #endif
+// Cycle EAC-03 — CallKit display-name label helper.
+/// iPhone-only additive helper; backward compatible (new free function, existing CallKit flow untouched).
+func EvieCallDisplayLabel(callerName: String, fallback: String = "Evie") -> String {
+    let trimmed = callerName.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? fallback : trimmed
+}

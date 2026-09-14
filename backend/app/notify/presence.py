@@ -147,8 +147,17 @@ def _helper_path() -> Path | None:
         path = Path(configured).expanduser()
         if path.is_file():
             return path
-    bundled = Path("/Applications/EV.app/Contents/MacOS/EVNotificationHelper")
-    return bundled if bundled.is_file() else None
+    # One app only: the installed bundle is /Applications/Evie.app. The
+    # /Applications/EV.app short-name symlink shipped by older installs is
+    # accepted as a fallback so an un-migrated machine still finds the helper,
+    # but it is never required.
+    for candidate in (
+        Path("/Applications/Evie.app/Contents/MacOS/EVNotificationHelper"),
+        Path("/Applications/EV.app/Contents/MacOS/EVNotificationHelper"),
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _in_pytest() -> bool:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 from datetime import datetime
 from uuid import UUID
 
@@ -34,7 +35,43 @@ from app.training import consent as consent_service
 from app.training import corpus as corpus_service
 from app.voice.lifecycle import VoiceRuntime
 
-from .policy import ACCESS_LOG, FACEPRINT, VOICEPRINT, deletion_due, policy_summary
+from .policy import (
+    ACCESS_LOG,
+    FACEPRINT,
+    MEDIA_CLIP,
+    VOICEPRINT,
+    deletion_due,
+    policy_summary,
+    retention_days,
+)
+
+logger = logging.getLogger("ev.compliance.erasure")
+
+
+def _clear_cognitive_transcript() -> bool:
+    """Drop the durable turn ledger and any unanswered offer.
+
+    The cognitive session holds the owner's own words and Evie's replies —
+    including whatever she read aloud from mail or chat — in
+    ``storage_root/cognitive/session.json``. It is not a database table, so
+    the sweep below never saw it, and an erasure would have left the
+    transcript on disk and in the backups that copy that root.
+    """
+
+    try:
+        from app.cognitive.session_store import current, save
+
+        row = current()
+        row.recent_turns = []
+        for key in ("pending_offer", "pending_send"):
+            row.constraints.pop(key, None)
+        row.open_questions = []
+        row.waiting = ""
+        save(row)
+    except Exception:  # noqa: BLE001 - erasure must report, not crash
+        logger.exception("cognitive transcript could not be cleared")
+        return False
+    return True
 
 ERASURE_TRACKS = (
     "voice_enrollment",
@@ -257,6 +294,7 @@ async def erase_biometric_data(
         "memories_redacted": memories_redacted,
         "attachments_deleted": attachments_deleted,
         "storage_keys": storage_keys,
+        "cognitive_transcript_cleared": _clear_cognitive_transcript(),
         "backup_purge_required": bool(
             storage_keys or enrollments or face_enrollments
         ),
@@ -276,6 +314,8 @@ async def erase_biometric_data(
             "events",
             "attachments",
             "consent_records",
+            "cognitive_session_recent_turns",
+            "cognitive_session_pending_offer",
         ],
     }
     session.add(
@@ -385,6 +425,7 @@ async def retention_sweep(
         )
         access_logs_deleted = len(stale_access)
     summary = policy_summary()
+    clips_deleted = await sweep_clip_media(session, reason=reason, actor=actor, now=now)
     return {
         "voiceprints_deleted": len(deleted_ids),
         "enrollment_ids": deleted_ids,
@@ -392,5 +433,63 @@ async def retention_sweep(
         "face_enrollment_ids": face_deleted_ids,
         "corpus_snapshots_redacted": corpus_deleted,
         "access_logs_deleted": access_logs_deleted,
+        "media_clips_deleted": clips_deleted["clips_deleted"],
+        "media_clip_bytes_freed": clips_deleted["bytes_freed"],
         "policy_retention_days": summary["retention_days"][VOICEPRINT],
+        "media_clip_retention_days": retention_days(MEDIA_CLIP),
     }
+
+
+async def sweep_clip_media(
+    session: AsyncSession,
+    *,
+    reason: str = "media clip retention",
+    actor: str = "compliance",
+    now: datetime | None = None,
+) -> dict:
+    """Delete recorded-clip bytes past the retention window.
+
+    Only the raw video goes: the derived observation, its moment timeline and
+    the transcript are ``EVENT`` and stay until the owner deletes them. A
+    recall that points at a swept clip will report the clip is no longer
+    stored rather than pretending the pixels are there.
+    """
+
+    from app.memory.clip import CLIP_EVENT_TYPE
+    from app.models import Attachment, Event
+    from app.storage.object_store import get_object_store
+
+    rows = list(
+        (
+            await session.execute(
+                select(Attachment, Event)
+                .join(Event, Attachment.event_id == Event.id)
+                .where(Event.event_type == CLIP_EVENT_TYPE)
+            )
+        ).all()
+    )
+    store = get_object_store()
+    deleted = 0
+    freed = 0
+    for attachment, event in rows:
+        reference = event.occurred_at or attachment.created_at
+        if not deletion_due(MEDIA_CLIP, reference, now=now):
+            continue
+        try:
+            await store.delete(attachment.storage_key)
+        except Exception:  # noqa: BLE001 - a missing blob must not block the sweep
+            logger.info("clip blob already absent attachment=%s", str(attachment.id)[:8])
+        await session.delete(attachment)
+        deleted += 1
+        freed += int(attachment.size_bytes or 0)
+    if deleted:
+        await log_access(
+            session,
+            actor=actor,
+            action="retention",
+            endpoint="POST /v1/compliance/retention/sweep",
+            resource_type="media_clip",
+            resource_ids=[],
+            details={"reason": reason, "clips_deleted": deleted, "bytes_freed": freed},
+        )
+    return {"clips_deleted": deleted, "bytes_freed": freed}

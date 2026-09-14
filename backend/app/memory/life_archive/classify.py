@@ -6,6 +6,7 @@ files are never opened. Large media is never hashed here.
 
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -13,7 +14,46 @@ from typing import Any, Literal
 Disposition = Literal["ingest", "index", "skip", "quarantine"]
 Origin = Literal["apple", "google", "other"]
 
-DEFAULT_ARCHIVE_ROOT = Path.home() / "personal-data-for-training"
+_LEGACY_ARCHIVE_ROOT = Path.home() / "personal-data-for-training"
+_REPO_ARCHIVE_ROOT = Path(__file__).resolve().parents[4] / "data" / "life-archive"
+
+
+def _repo_archive_root() -> Path:
+    return _REPO_ARCHIVE_ROOT
+
+
+def archive_root() -> Path:
+    """Takeout root Evie still re-reads for named WhatsApp recaps.
+
+    Prefer EV_LIFE_ARCHIVE_ROOT, then the gitignored repo copy, then the
+    original home-folder dump. Daily recall already lives in Postgres.
+    """
+
+    raw = (os.environ.get("EV_LIFE_ARCHIVE_ROOT") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    repo = _repo_archive_root()
+    if (repo / "whatsapp-chat").is_dir():
+        return repo
+    return _LEGACY_ARCHIVE_ROOT
+
+
+def archive_search_roots() -> list[Path]:
+    """Lookup order so recaps work during a move off the home dump."""
+
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for path in (archive_root(), _repo_archive_root(), _LEGACY_ARCHIVE_ROOT):
+        expanded = path.expanduser()
+        key = str(expanded)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(expanded)
+    return roots
+
+
+DEFAULT_ARCHIVE_ROOT = archive_root()
 
 _SKIP_NAMES = frozenset({".ds_store", "archive_browser.html", ".localized"})
 _SKIP_SUFFIXES = frozenset({".apk", ".bin", ".dmg", ".iso"})

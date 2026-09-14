@@ -48,6 +48,7 @@ ios-ci-check:
 iphone-parity-check:
 	node --check backend/clients/pwa/app.js
 	node --check backend/clients/pwa/webrtc.js
+	node --test backend/clients/pwa/tests/phone_working_features_test.js
 	bash -n scripts/ios/build-evie-ipa.sh
 	bash -n scripts/ios/verify-release.sh
 
@@ -72,7 +73,7 @@ phone-parity-matrix:
 	bash -n scripts/ios/physical-acceptance.sh
 	bash -n scripts/ios/archive-if-possible.sh
 	cd ios/EvieShell && swift run EvieBrokerCheck
-	cd backend && uv run pytest -q tests/test_iphone_capability_plan.py tests/test_g2_trust_lifecycle.py tests/test_release_contract.py tests/test_device_gateway.py tests/test_pwa_audio.py tests/test_webrtc_connection.py tests/test_everywhere_g2.py tests/test_regression_golden.py tests/test_mobile_actions.py tests/test_mobile_shell.py
+	cd backend && uv run pytest -q tests/test_iphone_capability_plan.py tests/test_g2_trust_lifecycle.py tests/test_release_contract.py tests/test_device_gateway.py tests/test_pwa_audio.py tests/test_webrtc_connection.py tests/test_everywhere_g2.py tests/test_regression_golden.py tests/test_mobile_actions.py tests/test_mobile_shell.py tests/test_pure_pwa_no_native_shell.py
 	@echo "iphone-parity-check OK (automated + broker; ship path is Tailscale PWA, not Xcode)"
 
 # Full native build — requires macOS with Xcode.app (CI runner or dev Mac).
@@ -367,3 +368,15 @@ baseline-write:
 
 baseline-check:
 	@python3 tools/baseline.py --check
+
+# --- CAMERA/MEMORY FIELD WORK (owner-requested, 2026-09-10) -----------------
+# Camera → memory: stills, bursts, and recorded clips (sampled locally).
+camera-memory-check:
+	node --check backend/clients/pwa/app.js
+	node --test backend/clients/pwa/tests/camera_capture_test.js
+	bash -n scripts/ios/physical-acceptance.sh
+	cd ios/EVClient && swift run EVClientCheck
+	cd backend && uv run pytest -q tests/test_visual_honesty.py tests/test_clip_ingest.py \
+		tests/test_camera_vision.py tests/test_visual_identity.py tests/test_look.py \
+		tests/test_device_gateway.py tests/test_perception.py
+	@echo "camera-memory-check OK (stills + burst + clip timeline + memory honesty)"

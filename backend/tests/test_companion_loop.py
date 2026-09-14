@@ -1018,12 +1018,13 @@ async def test_live_s2s_transcript_runs_memory_instead_of_hedge() -> None:
     live.run_live_tool = runner
     live.grok_voice = _Grok()
     try:
-        await live.emit(
+        await _await_s2s(
+            live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="did you remember the book",
                 provider="grok-voice",
-            )
+            ),
         )
         assert cancelled["n"] == 1
         assert seen == [
@@ -1090,12 +1091,13 @@ async def test_live_s2s_people_chats_run_recall_from_transcript() -> None:
     live.run_live_tool = runner
     live.grok_voice = _Grok()
     try:
-        await live.emit(
+        await _await_s2s(
+            live,
             FinalTranscriptEvent(
                 at_ms=1,
                 text="tell me about my conversations with different people",
                 provider="openai-realtime",
-            )
+            ),
         )
         assert cancelled["n"] == 1
         assert seen == [
@@ -1112,14 +1114,18 @@ async def test_live_s2s_people_chats_run_recall_from_transcript() -> None:
         weather.run_live_tool = runner
         weather.grok_voice = _Grok()
         seen.clear()
-        await weather.emit(
+        await _await_s2s(
+            weather,
             FinalTranscriptEvent(
                 at_ms=2,
                 text="what's the weather?",
                 provider="openai-realtime",
-            )
+            ),
         )
-        assert seen == []
+        # A weather ask is work-shaped and Muse Spark may broker it via
+        # get_weather (owner-spark). What must never happen is the chats
+        # recall broker firing again for a non-chat transcript.
+        assert not [item for item in seen if item[0] in {"recall", "search_memory"}]
         weather.close()
     finally:
         live.close()
@@ -1592,7 +1598,7 @@ async def test_keep_jpeg_inject_falls_back_to_hold_copy() -> None:
     )
     from app.ev.look import KEEP_CAPTURED_SPOKEN, KEEP_HOLD_CALL_ID
     from app.voice.live.events import FinalTranscriptEvent
-    from app.voice.live.session import LiveSession, _KEEP_INJECT_CALL_ID
+    from app.voice.live.session import _KEEP_INJECT_CALL_ID, LiveSession
 
     reset_pending_observations()
     jpeg = b"\xff\xd8" + b"\x00" * 40 + b"\xff\xd9"
@@ -1758,10 +1764,10 @@ async def test_keep_jpeg_offered_when_compact_spoken_is_stripped() -> None:
 async def test_keep_look_timeout_speech_still_offers_jpeg() -> None:
     import json
 
+    from app.ev.camera_runtime import reset_pending_observations
     from app.ev.look import TIMEOUT_SPOKEN
     from app.voice.live.events import FinalTranscriptEvent
     from app.voice.live.session import LiveSession
-    from app.ev.camera_runtime import reset_pending_observations
 
     injects: list[str] = []
     spoken: list[str] = []
@@ -1874,7 +1880,7 @@ async def test_keep_jpeg_inject_reloads_stored_attachment(
     from app.ev.camera_runtime import reset_pending_observations
     from app.ev.look import KEEP_CAPTURED_SPOKEN
     from app.voice.live.events import FinalTranscriptEvent
-    from app.voice.live.session import LiveSession, _KEEP_INJECT_CALL_ID
+    from app.voice.live.session import _KEEP_INJECT_CALL_ID, LiveSession
 
     reset_pending_observations()
     jpeg = b"\xff\xd8" + b"\x00" * 40 + b"\xff\xd9"
@@ -2995,8 +3001,9 @@ def test_hedge_looks_are_not_spoken_as_book_memory() -> None:
         "I looked. I checked for any record of a book you were holding before, "
         "but it didn’t give me anything."
     )
-    from app.memory.extraction import Extractor
     from types import SimpleNamespace
+
+    from app.memory.extraction import Extractor
 
     echo = SimpleNamespace(
         source="voice",

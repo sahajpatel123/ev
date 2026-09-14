@@ -87,3 +87,49 @@ def public_action(row: PhoneActionRecord) -> dict[str, Any]:
         "verified": row.verified,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+async def reconcile_recovered_actions(
+    session: AsyncSession, *, device_id: str, payload: dict[str, Any],
+) -> dict[str, Any]:
+    """A prepared turn receipt is not the current action state."""
+    import time
+
+    from .mobile_actions.store import get_action, public_row
+
+    terminal = {"cancelled", "executed", "failed", "expired"}
+    resolved: dict[str, dict[str, Any]] = {}
+
+    async def reconcile(action: dict[str, Any]) -> dict[str, Any]:
+        action_id = str(action.get("action_id") or "")
+        if action_id in resolved:
+            return resolved[action_id]
+        durable = await load_action(session, action_id)
+        memory = get_action(action_id)
+        owned = [row for row in (durable, memory) if row is not None and str(row.get("device_id")) == device_id]
+        row = next((row for row in owned if row.get("state") in terminal), memory if memory in owned else durable if durable in owned else None)
+        state = str((row or {}).get("state") or "expired")
+        if row is not None and state not in terminal and float(row.get("exp") or 0) <= time.time():
+            state = "expired"
+        if row is None or state in terminal:
+            prior_card = action.get("card") if isinstance(action.get("card"), dict) else {}
+            card = {key: prior_card[key] for key in ("title", "target", "body", "device_label", "operation") if key in prior_card}
+            card.update(action_id=action_id, status=state, native_execute=False)
+            result = {
+                "ok": state in {"cancelled", "executed"}, "action_id": action_id,
+                "status": state, "card": card, "recovered": True,
+                "native_execute": False, "executed": state == "executed",
+                "verified": bool((row or {}).get("receipt", {}).get("verified")) if isinstance((row or {}).get("receipt"), dict) else False,
+                "receipt": public_row(row) if row is not None else {"state": state},
+            }
+        else:
+            result = {**action, "recovered": True}
+        resolved[action_id] = result
+        return result
+
+    result = dict(payload)
+    if isinstance(result.get("phone_action"), dict):
+        result["phone_action"] = await reconcile(result["phone_action"])
+    if isinstance(result.get("phone_actions"), list):
+        result["phone_actions"] = [await reconcile(action) for action in result["phone_actions"] if isinstance(action, dict)]
+    return result

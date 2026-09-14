@@ -223,6 +223,12 @@ def maybe_ambiguous_append(text: str, items: list[str] | None = None) -> dict[st
     raw = _norm(text)
     if not raw or ADD_TO_NAMED_RE.search(raw) or STRONG_DEIXIS_RE.search(raw):
         return None
+    if re.search(
+        r"\b(?:find|search(?:\s+for)?|locate|look(?:ing)?\s+(?:for|up)|where'?s|where is)\b",
+        raw,
+        re.I,
+    ):
+        return None
     from app.ev.laptop_files import extract_append_items
 
     found = list(items or extract_append_items(raw))
@@ -397,7 +403,12 @@ def parse_named_list_create(text: str) -> dict[str, Any] | None:
         return None
     body_match = LIST_BODY_RE.search(raw[match.end() :] if match.end() <= len(raw) else raw)
     payload = (body_match.group(1) if body_match else "").strip()
-    from app.ev.desk_meaning import extract_inventory, occasion_label, reject_terms, wants_generated_contents
+    from app.ev.desk_meaning import (
+        extract_inventory,
+        occasion_label,
+        reject_terms,
+        wants_generated_contents,
+    )
 
     if not label:
         label = occasion_label(raw) or "list"
@@ -487,10 +498,19 @@ def parse_list_tool(text: str, last_path: str | None = None) -> dict[str, Any] |
         who = _text_recipient(raw)
         if not who:
             return None
+        from app.ev.send_intent import channel_from_text
+
+        send_args: dict[str, object] = {
+            "to": who,
+            "text": _message_body(held, body)[:4000],
+        }
+        desk_channel = channel_from_text(raw)
+        if desk_channel:
+            send_args["channel"] = desk_channel
         return {
             "channel": "tool",
             "name": "send_message",
-            "args": {"to": who, "text": _message_body(held, body)[:4000]},
+            "args": send_args,
         }
     return None
 

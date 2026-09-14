@@ -1,25 +1,25 @@
 {
-  "web_build": "2026.09.08.42",
+  "web_build": "2026.09.09.04",
   "web_protocol": 1,
   "api_protocol": "1",
   "web_protocol_min": 1,
   "web_protocol_max": 1,
-  "generated_at": "2026-09-08T00:13:36.913132+00:00",
+  "generated_at": "2026-09-10T16:06:22.451058+00:00",
   "files": {
-    "index.html": "ca35987ac84aa997b4f7999c24a62f4b9bfdcc4ee81aaac47348b578fe66b20a",
-    "app.js": "130752710210444299036c15deed9093cf5ce4d058f3eb7abd9e5d6c762587e0",
+    "index.html": "c173bbf1365be3e400441216c3217b1c676b52d8459ceddf0085eba047b81b56",
+    "app.js": "b30b6b34882dd79fc197be41e64a1144c6a2b6f10d68e6417195b6593eb5af0a",
     "capabilities.js": "f93c8ccf665b5c80880cdd24ae496f6dcdbd9161af02dcfd17cb50aa5428f385",
-    "sw.js": "28b7f349076a2b7edab0e3f5a47110ea963e436828233a8a3832b8e9eba78e3f",
-    "audio.js": "211ae6fe786be2f94fad06a5f52457a52e4443fcfba80830c1ce1d78c6c8ce3a",
-    "webrtc.js": "da6f3f9b41820a10c6fd52903aedda22c22d875d07412d9796bb56e374135560",
-    "mobile-actions.js": "5feb04b27850a3f307ee2d04a49b5a35b9ed62a54f775e6f61e8f99c24985425",
-    "presence.js": "55afac3c0a53ed14ce0fffc7768898c622dfb558eef3b65690e24cff16755060",
+    "sw.js": "21f95d85f436ea692fa517fffc09956e44e0792033126f150142018ab3f3b0f9",
+    "audio.js": "d001b00ea05f605295b4bc9f06fd184d482cd25af8c7beb5e6fcfd3872f8cd39",
+    "webrtc.js": "e109e7c55452e6e6d683ed540df5405f095a4762b2588dacfceb18bcdf4b69ab",
+    "mobile-actions.js": "291ad237a4293e481f2560990d400860ab737e10b9dbacae44405624a23b1b7f",
+    "presence.js": "235042445519825a8695050150bf23022171df1e0c1ba997ca213271c256c81b",
     "orb.js": "119fdf144d970af320c2ca9b963fab08b1bca7bde4ce70734661e66f261c9748",
     "pcm-worklet.js": "153f30b0616ef32a560af572642f7246b72b5d5593bef27ed8ec10690c24c6c5",
     "playback-worklet.js": "e9959d2a2e162bedcaf0671f6b97c766d60a04b5ccce7dbc911d23dc8453d602",
     "feedback.js": "736a976751c2c7978c94cd5f5b53524ebaf13b2fb9125b3020560b9075c472d3",
-    "style.css": "58e10d5a3363ad0b3c6c795670f0214d92f06be42146c983241f59ef09cfc7a9",
-    "manifest.webmanifest": "494ea3bc9cc52bcb0263cacc1db84bc9d8134ebd22174200c61837f551de760a"
+    "style.css": "03c7e37dfebe1717054df4b396eac6fad3d010e3bdc4ab43e8cf45e830e8b1c4",
+    "manifest.webmanifest": "dd7a814eea117511b16398af11bbee5a55fa341c73313a5d693122d5816c349a"
   },
-  "asset_manifest_hash": "8197bd0320aaad0f7faae3e41a6c150a962ca6a33f238bcc4b81ca7730917b68"
+  "asset_manifest_hash": "e7e622a4d263330032aa6f9e80dc679452526345aaa4355d719a26d91b906a55"
 }

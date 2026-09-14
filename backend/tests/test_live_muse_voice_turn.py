@@ -9,10 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import io
-import struct
 import subprocess
-import wave
 from types import SimpleNamespace
 from uuid import uuid4
 

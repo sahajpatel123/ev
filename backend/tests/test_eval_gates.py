@@ -148,9 +148,14 @@ async def test_latency_gate_passes(client) -> None:
     assert result.passed, result.to_dict()
 
 
-async def test_restore_drill_gate_passes(client) -> None:
+async def test_restore_drill_gate_passes(client, monkeypatch) -> None:
     from app.scripts.eval_gates import run_restore_gate
 
+    # P0 containment: a wipe restore requires maintenance mode, and the gate
+    # mints its own single-use token. The gate harness sets this in `_main`;
+    # calling `run_restore_gate()` directly must stand the same way up, or the
+    # drill reports MAINTENANCE_MODE_DISABLED instead of exercising the path.
+    monkeypatch.setenv("EV_MAINTENANCE_MODE", "1")
     result = await run_restore_gate()
     assert result.passed, result.to_dict()
 

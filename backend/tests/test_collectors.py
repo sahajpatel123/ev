@@ -33,6 +33,11 @@ from clients.collectors.screen import ScreenState
 
 
 @pytest.fixture(autouse=True)
+def _presence_dispatch(opened_presence) -> None:
+    """The routine this collector fires dispatches a card; open the surface."""
+
+
+@pytest.fixture(autouse=True)
 def _isolate_collector_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("EV_AUDIO_SCENE_FILE", str(tmp_path / "audio-scene.json"))
     monkeypatch.setenv("EV_LOCATION_FILE", str(tmp_path / "location.json"))
@@ -656,3 +661,25 @@ def test_location_native_coarse_presence(monkeypatch: pytest.MonkeyPatch) -> Non
         },
     )
     assert location_module.location_context() == {"place": "Home", "presence": "home"}
+
+
+def test_collector_api_key_prefers_production_master_overlay(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    # The API accepts the production master from ~/.ev/secrets/production.env.
+    # Sending the stale repo .env dev key 401-loops every tick (rejected1).
+    overlay = tmp_path / "production.env"
+    overlay.write_text("EV_MASTER_KEY=prod-master-key\n")
+    monkeypatch.delenv("EV_MASTER_KEY", raising=False)
+    monkeypatch.setenv("EV_API_KEY", "dev-stale-key")
+    monkeypatch.setenv("EV_SECRETS_FILE", str(overlay))
+    assert collector_agent._api_key() == "prod-master-key"
+
+
+def test_collector_api_key_falls_back_to_dev_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    monkeypatch.delenv("EV_MASTER_KEY", raising=False)
+    monkeypatch.setenv("EV_API_KEY", "dev-key")
+    monkeypatch.setenv("EV_SECRETS_FILE", str(tmp_path / "missing.env"))
+    assert collector_agent._api_key() == "dev-key"

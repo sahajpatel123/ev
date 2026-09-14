@@ -13,7 +13,10 @@
 		E10000000000000000000004 /* CapabilityBroker.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000004 /* CapabilityBroker.swift */; };
 		E10000000000000000000005 /* DeviceAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000005 /* DeviceAuth.swift */; };
 		E10000000000000000000006 /* AppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000006 /* AppIntents.swift */; };
-		E10000000000000000000007 /* EvieNativeBroker in Frameworks */ = {isa = PBXBuildFile; productRef = E60000000000000000000001 /* EvieNativeBroker */; };
+		E10000000000000000000010 /* EvieNativeBroker in Frameworks */ = {isa = PBXBuildFile; productRef = E60000000000000000000001 /* EvieNativeBroker */; };
+		E10000000000000000000007 /* GeofenceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000009 /* GeofenceMonitor.swift */; };
+		E10000000000000000000008 /* QRScanBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000010 /* QRScanBridge.swift */; };
+		E10000000000000000000009 /* DocScanBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20000000000000000000011 /* DocScanBridge.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,6 +27,9 @@
 		E20000000000000000000005 /* DeviceAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceAuth.swift; sourceTree = "<group>"; };
 		E20000000000000000000006 /* AppIntents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIntents.swift; sourceTree = "<group>"; };
 		E20000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		E20000000000000000000009 /* GeofenceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeofenceMonitor.swift; sourceTree = "<group>"; };
+		E20000000000000000000010 /* QRScanBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScanBridge.swift; sourceTree = "<group>"; };
+		E20000000000000000000011 /* DocScanBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocScanBridge.swift; sourceTree = "<group>"; };
 		E20000000000000000000008 /* EvieShell.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EvieShell.entitlements; sourceTree = "<group>"; };
 		E40000000000000000000001 /* Evie.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Evie.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -33,7 +39,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				E10000000000000000000007 /* EvieNativeBroker in Frameworks */,
+				E10000000000000000000010 /* EvieNativeBroker in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -57,6 +63,9 @@
 				E20000000000000000000004 /* CapabilityBroker.swift */,
 				E20000000000000000000005 /* DeviceAuth.swift */,
 				E20000000000000000000006 /* AppIntents.swift */,
+				E20000000000000000000009 /* GeofenceMonitor.swift */,
+				E20000000000000000000010 /* QRScanBridge.swift */,
+				E20000000000000000000011 /* DocScanBridge.swift */,
 				E20000000000000000000007 /* Info.plist */,
 				E20000000000000000000008 /* EvieShell.entitlements */,
 			);
@@ -151,6 +160,9 @@
 				E10000000000000000000004 /* CapabilityBroker.swift in Sources */,
 				E10000000000000000000005 /* DeviceAuth.swift in Sources */,
 				E10000000000000000000006 /* AppIntents.swift in Sources */,
+				E10000000000000000000007 /* GeofenceMonitor.swift in Sources */,
+				E10000000000000000000008 /* QRScanBridge.swift in Sources */,
+				E10000000000000000000009 /* DocScanBridge.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

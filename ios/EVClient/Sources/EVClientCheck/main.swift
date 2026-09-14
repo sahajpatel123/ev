@@ -180,6 +180,60 @@ do {
     print("FAIL: attachment: \(error)")
 }
 
+// 8a2. Clip ingest: recorded video goes to Home Station as multipart, and the
+// sampled moments/transcript come back decoded.
+do {
+    var receivedStatus = 0
+    var receivedBody = ""
+    var receivedPath = ""
+    MockURLProtocol.handler = { request in
+        var bodyData = request.httpBody ?? Data()
+        if bodyData.isEmpty, let stream = request.httpBodyStream {
+            stream.open()
+            defer { stream.close() }
+            var buffer = [UInt8](repeating: 0, count: 4096)
+            while stream.hasBytesAvailable {
+                let count = stream.read(&buffer, maxLength: buffer.count)
+                if count <= 0 { break }
+                bodyData.append(buffer, count: count)
+            }
+        }
+        receivedBody = String(data: bodyData, encoding: .utf8) ?? ""
+        receivedPath = request.url?.path ?? ""
+        receivedStatus = 201
+        let responseData = Data(clipResponseJSON().utf8)
+        return (httpResponse(201, contentLength: responseData.count), responseData)
+    }
+    do {
+        let result = try await client.ingestClip(
+            filename: "EV-clip.mov",
+            contentType: "video/quicktime",
+            data: Data("clip-bytes".utf8),
+            durationMs: 4000,
+            requestId: "clip-check-1"
+        )
+        expect(receivedStatus == 201, "clip request reached mock")
+        expect(receivedPath == "/v1/vision/clip", "clip upload uses the vision clip path")
+        expect(receivedBody.contains("name=\"file\""), "clip body has file part")
+        expect(receivedBody.contains("filename=\"EV-clip.mov\""), "clip body has filename")
+        expect(receivedBody.contains("clip-bytes"), "clip body contains clip data")
+        expect(receivedBody.contains("name=\"duration_ms\""), "clip body carries duration")
+        expect(result.ok, "clip ingest decoded ok")
+        expect(result.frames == 6, "clip frame count decoded")
+        expect(result.moments.count == 2, "clip moments decoded")
+        expect(result.moments.first?.tStart == 0.0, "clip moment start decoded")
+        expect(result.transcript == "this is the clip", "clip transcript decoded")
+        expect(result.extractionDegraded == false, "clip degradation flag decoded")
+        print("ok: clip ingest")
+    } catch {
+        failures.append("clip ingest: \(error)")
+        print("FAIL: clip ingest: \(error) (status=\(receivedStatus), body=\(receivedBody.prefix(120)))")
+    }
+} catch {
+    failures.append("clip ingest: \(error)")
+    print("FAIL: clip ingest: \(error)")
+}
+
 // 8b. HUD briefing / focus / route: decode, validate, render.
 do {
     let decoder = JSONDecoder()
@@ -860,6 +914,140 @@ do {
 } catch {
     failures.append("life access: \(error)")
     print("FAIL: life access: \(error)")
+}
+
+
+do {
+    let decoder = JSONDecoder()
+    let fixture = """
+    {
+      "device": {"display_name": "iPhone 16 Pro"},
+      "memory_enabled": true,
+      "memory_scope": "owner",
+      "hud": {"title": "EV status", "body": "No active signals."},
+      "health": {"available": true, "freshness": "reported", "metrics": {"steps": 8123}},
+      "calendar": {"events": [{"title": "Dentist", "start": "2026-09-08T10:00:00Z"}]},
+      "reminders": [{"id": "r1", "text": "Water basil"}],
+      "memories": [{"id": "m1", "memory_type": "preference", "text": "Espresso first"}],
+      "inbox_pending": 2
+    }
+    """
+    let payload = try decoder.decode(EvieTodayPayload.self, from: Data(fixture.utf8))
+    expect(payload.memoryEnabled && payload.memoryScope == "owner", "today payload memory scope")
+    expect(payload.hud?.body == "No active signals.", "today payload hud")
+    expect(payload.health?.metrics["steps"] == 8123, "today payload health metrics")
+    expect(payload.calendarEvents.first?.title == "Dentist", "today payload calendar")
+    expect(payload.reminders.count == 1 && payload.memories.count == 1, "today payload lists")
+    let summary = payload.renderSummary()
+    expect(summary.contains("No active signals."), "today summary hud body, got: \(summary)")
+    expect(summary.contains("1 reminder") && summary.contains("1 event") && summary.contains("2 unread"), "today summary counts: \(summary)")
+    let noHud = try decoder.decode(EvieTodayPayload.self, from: Data("{\"device\": {\"display_name\": \"16 Pro\"}, \"memory_enabled\": true, \"memory_scope\": \"owner\", \"health\": {\"available\": true, \"freshness\": \"reported\", \"metrics\": {\"steps\": 8123}}, \"reminders\": [], \"memories\": [], \"inbox_pending\": 0}".utf8))
+    expect(noHud.renderSummary().contains("8123 steps"), "today summary steps fallback: \(noHud.renderSummary())")
+    let sparse = try decoder.decode(EvieTodayPayload.self, from: Data("{\"device\": {\"display_name\": \"SE\"}, \"memory_enabled\": false, \"memory_scope\": \"sandbox\", \"inbox_pending\": 0}".utf8))
+    expect(!sparse.memoryEnabled && sparse.hud == nil && sparse.reminders.isEmpty, "today sparse decode tolerant")
+    expect(sparse.renderSummary() == "", "today sparse summary stays empty, got: \(sparse.renderSummary())")
+    print("ok: today payload decode/render")
+} catch {
+    failures.append("today payload: \(error)")
+    print("FAIL: today payload: \(error)")
+}
+
+
+do {
+    let decoder = JSONDecoder()
+    let listFixture = """
+    {"ok": true, "memory_enabled": true, "memories": [{"id": "m1", "memory_type": "preference", "text": "Espresso first", "confidence": 0.95, "source_type": "explicit"}], "total": 1}
+    """
+    let list = try decoder.decode(EvieMemoryList.self, from: Data(listFixture.utf8))
+    expect(list.memoryEnabled && list.total == 1 && list.memories.first?.text == "Espresso first", "memory list decode")
+    expect(list.memories.first?.confidence == 0.95, "memory row confidence")
+    let sandbox = try decoder.decode(EvieMemoryList.self, from: Data("{\"ok\": true, \"memory_enabled\": false, \"memories\": [], \"total\": 0}".utf8))
+    expect(!sandbox.memoryEnabled && sandbox.memories.isEmpty, "sandbox memory off decode")
+    let detailFixture = """
+    {"ok": true, "memory_enabled": true, "memory": {"id": "m1", "memory_type": "preference", "text": "Espresso first"}, "sources": [{"id": "e1", "kind": "note", "text": "Owner said it", "occurred_at": "2026-09-08T07:00:00Z"}, {"id": "e2", "kind": "note", "text": "Again"}]}
+    """
+    let detail = try decoder.decode(EvieMemoryDetail.self, from: Data(detailFixture.utf8))
+    expect(detail.memory?.id == "m1" && detail.sources.count == 2, "memory detail decode")
+    expect(detail.renderProvenance() == "From note", "memory provenance dedupe: \(detail.renderProvenance())")
+    let bare = try decoder.decode(EvieMemoryDetail.self, from: Data("{\"ok\": true, \"memory_enabled\": true, \"memory\": null, \"sources\": []}".utf8))
+    expect(bare.memory == nil && bare.renderProvenance() == "No source events recorded", "memory detail sparse")
+    print("ok: memory payload decode/render")
+} catch {
+    failures.append("memory payload: \(error)")
+    print("FAIL: memory payload: \(error)")
+}
+
+
+do {
+    let decoder = JSONDecoder()
+    let fixture = """
+    {"ok": true, "items": [{"id": "a", "kind": "digest", "title": "Evie digest", "body": "Quiet day", "created_at": "2026-09-08T07:00:00Z", "unread": true}, {"id": "b", "kind": "notice", "title": "T", "body": "b", "created_at": "2026-09-08T06:00:00Z", "unread": false}], "inbox_channel": "in_app_poll", "push_delivery": "apns", "push_registered": true}
+    """
+    let inbox = try decoder.decode(EvieInboxPayload.self, from: Data(fixture.utf8))
+    expect(inbox.items.count == 2 && inbox.unreadCount == 1, "notification inbox decode")
+    expect(inbox.pushDelivery == "apns" && inbox.pushRegistered, "notification push state")
+    let summary = inbox.renderSummary()
+    expect(summary.contains("1 unread") && summary.contains("push on"), "notification summary: \(summary)")
+    let poll = try decoder.decode(EvieInboxPayload.self, from: Data("{\"ok\": true, \"items\": [], \"push_delivery\": \"poll\", \"push_registered\": false}".utf8))
+    expect(poll.renderSummary() == "poll", "poll summary: \(poll.renderSummary())")
+    print("ok: notification inbox decode/render")
+} catch {
+    failures.append("notification inbox: \(error)")
+    print("FAIL: notification inbox: \(error)")
+}
+
+
+do {
+    let decoder = JSONDecoder()
+    let fixture = """
+    {"ok": true, "routines": {"enabled": true, "digest_times": ["07:30", "21:00"], "quiet_hours_start": "22:00", "quiet_hours_end": "07:30", "timezone": "Asia/Kolkata"}}
+    """
+    struct Wrapper: Decodable { let routines: EvieRoutinesConfig }
+    let wrapped = try decoder.decode(Wrapper.self, from: Data(fixture.utf8))
+    let cfg = wrapped.routines
+    expect(cfg.enabled && cfg.digestTimes == ["07:30", "21:00"], "routines decode")
+    expect(cfg.quietHoursStart == "22:00" && cfg.timezone == "Asia/Kolkata", "routines quiet decode")
+    var cal = Calendar(identifier: .gregorian)
+    cal.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+    let at8 = cal.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 8, minute: 0))!
+    let at21 = cal.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 21, minute: 0))!
+    let at23 = cal.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 23, minute: 0))!
+    expect(cfg.isInsideQuietHours(at23), "23:00 inside 22:00-07:30 window")
+    expect(!cfg.isInsideQuietHours(at21), "21:00 outside quiet window")
+    expect(!cfg.isInsideQuietHours(at8), "08:00 outside quiet window")
+    let next = cfg.nextDigest(after: at8)
+    let nextText = next.map { cal.dateComponents([.hour, .minute], from: $0) }.map { "\($0.hour!):\(String(format: "%02d", $0.minute!))" }
+    expect(nextText == "21:00", "next digest after 08:00 is 21:00, got \(nextText ?? "nil")")
+    let late = cal.date(from: DateComponents(year: 2026, month: 9, day: 8, hour: 23, minute: 0))!
+    let nextLate = cfg.nextDigest(after: late)
+    let lateText = nextLate.map { cal.dateComponents([.day, .hour, .minute], from: $0) }.map { String(format: "day %d %02d:%02d", $0.day!, $0.hour!, $0.minute!) }
+    expect(lateText?.hasPrefix("day 9 07:30") == true, "next digest after quiet start rolls to tomorrow 07:30, got \(lateText ?? "nil")")
+    var off = cfg
+    off.enabled = false
+    expect(off.nextDigest(after: at8) == nil, "disabled -> no digest")
+    print("ok: routines config decode + next-digest")
+} catch {
+    failures.append("routines config: \(error)")
+    print("FAIL: routines config: \(error)")
+}
+
+
+do {
+    let decoder = JSONDecoder()
+    let fixture = """
+    {"ok": true, "query": "basil", "memory_enabled": true, "memories": [{"id": "m1", "memory_type": "preference", "text": "Basil plant on the counter"}], "events": [{"id": "e1", "kind": "note", "text": "Watered the basil", "occurred_at": "2026-09-08T07:00:00Z"}], "reminders": [{"id": "r1", "text": "Water the basil plant"}], "contacts": []}
+    """
+    let result = try decoder.decode(EvieSearchResultGroup.self, from: Data(fixture.utf8))
+    expect(result.query == "basil" && result.memoryEnabled, "search decode")
+    expect(result.memories.count == 1 && result.events.count == 1 && result.reminders.count == 1, "search groups")
+    expect(result.memories.first?.memoryType == "preference", "search memory type")
+    expect(result.totalHits == 3, "search total")
+    let sandbox = try decoder.decode(EvieSearchResultGroup.self, from: Data("{\"ok\": true, \"query\": \"x\", \"memory_enabled\": false, \"memories\": [], \"events\": [], \"reminders\": [], \"contacts\": []}".utf8))
+    expect(!sandbox.memoryEnabled && sandbox.totalHits == 0, "search sandbox off")
+    print("ok: search payload decode")
+} catch {
+    failures.append("search payload: \(error)")
+    print("FAIL: search payload: \(error)")
 }
 
 if failures.isEmpty {

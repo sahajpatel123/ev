@@ -5,7 +5,8 @@ contract implemented in ``macos/Sources/EVLifeHelper/main.swift``:
 
 - CLI: ``EVLifeHelper <command> [--flag value ...]``
 - commands: ``contacts.list | contacts.resolve --query | messages.list
-  [--limit N] | messages.send --to --text | whatsapp.send --to --text |
+  [--limit N] | messages.send --to --text [--service auto|imessage|sms] |
+  whatsapp.send --to --text |
   mail.list [--limit N] |
   mail.send --to --subject --body | call.place --destination [--kind
   tel|facetime] | call.check | apps.frontmost | apps.activate |
@@ -27,11 +28,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
 
 from app.config import settings
+
+logger = logging.getLogger("ev.integrations.life_helper")
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -39,10 +43,17 @@ EXIT_PERMISSION_DENIED = 3
 EXIT_NOT_AVAILABLE = 4
 EXIT_BAD_ARGUMENTS = 5
 
+# Commands that prove a message actually left this Mac.
 DELIVERY_COMMANDS = {
     "messages.send",
     "mail.send",
     "call.place",
+}
+
+# Commands that only open a compose surface. The helper's `opened` flag means
+# LaunchServices accepted a URL — WhatsApp has not accepted the message and
+# the owner still has to tap send, so this is never delivery evidence.
+COMPOSE_COMMANDS = {
     "whatsapp.send",
 }
 
@@ -50,6 +61,9 @@ CONFIRMATION_FIELD = {
     "messages.send": "sent",
     "mail.send": "sent",
     "call.place": "opened",
+}
+
+COMPOSE_FIELD = {
     "whatsapp.send": "opened",
 }
 
@@ -59,7 +73,7 @@ COMMAND_FLAGS: dict[str, tuple[tuple[str, str], ...]] = {
     "contacts.create": (("name", "--name"), ("phone", "--phone"), ("email", "--email"), ("company", "--company")),
     "contacts.update": (("id", "--id"), ("query", "--query"), ("name", "--name"), ("phone", "--phone"), ("email", "--email"), ("company", "--company")),
     "messages.list": (("limit", "--limit"),),
-    "messages.send": (("to", "--to"), ("text", "--text")),
+    "messages.send": (("to", "--to"), ("text", "--text"), ("service", "--service")),
     "whatsapp.send": (("to", "--to"), ("text", "--text")),
     "mail.list": (("limit", "--limit"),),
     "mail.send": (("to", "--to"), ("subject", "--subject"), ("body", "--body")),
@@ -106,6 +120,24 @@ class LifeTimeoutError(LifeHelperError):
     pass
 
 
+class AmbiguousRecipientError(Exception):
+    """A name matched more than one distinct contact. Never guess.
+
+    ``candidates`` are short human labels ("John Smith · +1555…, John Doe")
+    the caller must read back so the owner can pick. Transports catch this
+    and speak a clarification instead of sending to the first match.
+    """
+
+    def __init__(self, recipient: str, candidates: list[str]) -> None:
+        self.recipient = recipient
+        self.candidates = list(candidates or [])
+        names = ", ".join(self.candidates[:4]) or "no details"
+        super().__init__(
+            f"I found more than one contact for {recipient}: {names}. "
+            "Which one?"
+        )
+
+
 @dataclass(frozen=True)
 class LifeHelperResult:
     command: str
@@ -133,6 +165,44 @@ def _argv_bytes(argv: list[str]) -> int:
     return sum(len(part.encode("utf-8")) for part in argv)
 
 
+def resolve_helper_path(helper_path: str | None = None) -> str:
+    """A usable EVLifeHelper, preferring the caller's path but never trusting it blind.
+
+    An integration row keeps its own ``helper_path`` in config. That value goes
+    stale the moment the app is rebuilt, moved, or reinstalled — and a stale
+    path used to take the entire bridge down with "EVLifeHelper is not an
+    executable file", even though a perfectly good binary was configured in
+    ``EV_LIFE_HELPER_PATH``. Every life bridge (mail, messages, contacts, calls)
+    goes through this one resolver, so a stale row can no longer kill the
+    feature: the configured default is used instead, and the substitution is
+    recorded so it is visible rather than silent.
+    """
+
+    candidates = (
+        str(helper_path or "").strip(),
+        str(getattr(settings, "life_helper_path", "") or "").strip(),
+        str(os.environ.get("EV_LIFE_HELPER_PATH") or "").strip(),
+    )
+    for candidate in candidates:
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            if candidate != candidates[0] and candidates[0]:
+                logger.warning(
+                    "life helper path in config is stale (%r); using %r instead",
+                    candidates[0],
+                    candidate,
+                )
+            return candidate
+    attempted = ", ".join(repr(c) for c in candidates if c)
+    if not attempted:
+        raise LifeHelperUnavailableError(
+            "EV_LIFE_HELPER_PATH is not set; configure the EVLifeHelper binary "
+            "(see docs/INTEGRATIONS.md § Life bridges)"
+        )
+    raise LifeHelperUnavailableError(
+        f"no executable EVLifeHelper found; tried {attempted}"
+    )
+
+
 async def run_life_helper(
     command: str,
     args: dict,
@@ -147,16 +217,7 @@ async def run_life_helper(
     Never returns success without helper-confirmed delivery evidence for
     send/call commands.
     """
-    path = helper_path or settings.life_helper_path
-    if not path:
-        raise LifeHelperUnavailableError(
-            "EV_LIFE_HELPER_PATH is not set; configure the EVLifeHelper binary "
-            "(see docs/INTEGRATIONS.md § Life bridges)"
-        )
-    if not os.path.isfile(path) or not os.access(path, os.X_OK):
-        raise LifeHelperUnavailableError(
-            f"EVLifeHelper is not an executable file at '{path}'"
-        )
+    path = resolve_helper_path(helper_path)
     argv = _build_argv(command, args)
     if _argv_bytes(argv) > MAX_ARGS_BYTES:
         raise LifeHelperError("life helper arguments exceed the size limit")
@@ -257,6 +318,18 @@ async def run_life_helper(
                 },
             },
         }
+    elif command in COMPOSE_COMMANDS:
+        # `delivery` stays empty on purpose: a compose window is not a send.
+        # The surface flag is still required, so a helper that reports ok
+        # without opening anything is refused rather than reported as success.
+        compose_field = COMPOSE_FIELD[command]
+        if data.get(compose_field) is not True:
+            raise LifeHelperError(
+                "EVLifeHelper returned ok without opening the compose surface; "
+                "refusing to report success",
+                exit_code=exit_code,
+                error_code="missing_compose_evidence",
+            )
     return LifeHelperResult(command=command, data=data, delivery=delivery)
 
 

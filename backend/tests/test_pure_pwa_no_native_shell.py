@@ -65,10 +65,14 @@ def test_pure_pwa_status_native_unavailable_not_required() -> None:
     assert snap["native_shell_connected"] is False
     assert snap["native_shell"] in {"SCAFFOLDED", "INTEGRATED"}
     assert snap["voice_backend"] == "pwa_golden"
-    # Low-risk native ops unavailable; maps/web handoffs can still be ready.
+    # Low-risk native ops unavailable; Evie local timers/reminders are available
+    # on the Home Screen page (never claimed as Clock.app).
     by_op = {row["operation"]: row for row in snap["capabilities"]}
-    assert by_op["create_timer"]["available"] is False
-    assert "Needs the Evie iPhone app" in (by_op["create_timer"]["reason"] or "")
+    assert by_op["create_timer"]["available"] is True
+    assert "Clock" in (by_op["create_timer"]["reason"] or "")
+    assert by_op["create_reminder"]["available"] is True
+    assert by_op["create_alarm"]["available"] is False
+    assert "Needs the Evie iPhone app" in (by_op["create_alarm"]["reason"] or "")
 
 
 def test_pwa_handshake_without_native_shell_does_not_claim_broker() -> None:

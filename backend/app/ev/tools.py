@@ -10,6 +10,7 @@ the access log so each call is authorized, auditable, and traceable.
 from __future__ import annotations
 
 import ast
+import contextvars
 import math
 import operator
 import re
@@ -21,13 +22,19 @@ from typing import Any, cast
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.digital.tools import DIGITAL_TOOL_SPECS, handle_digital_tool
 from app.ev import health_radar, maker, people
 from app.ev.actions import LIFE_ACTION_NAMES, autonomy_mode
 from app.ev.fleet_tools import FLEET_TOOL_SPECS, actuate_permission, handle_fleet_tool
 from app.ev.research import list_sessions
 from app.gateway.validation import validate_arguments, validate_output
 from app.integrations import service as integrations
-from app.integrations.life_helper import LifeHelperError, LifeHelperUnavailableError
+from app.integrations.life_helper import (
+    AmbiguousRecipientError,
+    LifeHelperError,
+    LifeHelperUnavailableError,
+    LifePermissionDeniedError,
+)
 from app.memory.retrieval import Retriever
 from app.models import GearSnapshot, Integration, Memory
 from app.schemas import ToolCallResponse
@@ -38,6 +45,9 @@ from app.utils.text import utcnow
 MAX_EXPRESSION_LENGTH = 200
 MAX_EXPONENT = 100
 MAX_RESULT_ABS = 1e12
+# Set when the computer broker has already decided a turn is public web
+# research. Prevents search_web intercept from re-entering _run_computer_goal.
+_ALLOW_DIRECT_WEB = contextvars.ContextVar("ev_allow_direct_web", default=False)
 
 
 def safe_calculate(expression: str) -> float:
@@ -130,13 +140,17 @@ TOOL_SPECS: list[dict[str, Any]] = [
         # stack. Same substrate as search_memory; different model surface.
         "name": "recall",
         "description": (
-            "Recall the owner's history: people, chats, photos, notes, mail, "
-            "contacts, past conversations, decisions, and what was left "
-            "unfinished. You already know this owner; that life is not new. "
-            "Use when they ask about the past, someone they know, or whether "
-            "you know them. Returns a small evidence pack; answer from it. If "
-            "empty for the specific question, say you cannot find that "
-            "particular record — never that you have no history with them."
+            "Recall the owner's history AND current inbox: people, chats, "
+            "photos, notes, mail, contacts, past conversations, decisions, "
+            "what was left unfinished, plus the latest WhatsApp, iMessage, "
+            "calls, mail, and mixed notifications from this Mac's live "
+            "copies. You already know this owner; that life is not new. "
+            "Use when they ask about the past, someone they know, whether "
+            "you know them, or what is recent/new/unread — recent messages, "
+            "recent mail, latest chats, or catching up. Returns a small "
+            "evidence pack; answer from it. If empty for the specific "
+            "question, say you cannot find that particular record — never "
+            "that you have no history with them."
         ),
         "parameters": {
             "type": "object",
@@ -164,10 +178,12 @@ TOOL_SPECS: list[dict[str, Any]] = [
         # implementation details or assigns risk.
         "name": "computer",
         "description": (
-            "Mac goal: open or close apps, open a URL, operate UI, or handle "
-            "owner files in Desktop/Documents/Downloads. State the request in "
-            "plain words. After a verified new_tab or close_tab, stop. After "
-            "opening a site, finish the first requested click. Not for memory, "
+            "Mac goal: open or close apps, open a URL, drive an app's UI, "
+            "open X from Y, play a random track from a playlist, find any "
+            "owner file on this Mac, or run a safe Terminal command "
+            "(ls, mdfind, open, hostname). Pass the owner's whole request. "
+            "Never call search_web for a laptop file or an in-app play. "
+            "Finish the in-app outcome; reuse windows/tabs. Not for memory, "
             "weather, messages, timers, or writing programs — call code."
         ),
         "parameters": {
@@ -565,8 +581,18 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "name": "send_message",
         "description": (
             "Send a message to a contact or phone number through the granted "
-            "messaging bridge (e.g. Messages). Under EV_OWNER_AUTONOMY=full this "
-            "needs no approval inside granted scopes."
+            "messaging bridge. channel names the transport the owner asked "
+            "for: 'whatsapp', 'imessage', 'sms', 'telegram', 'signal', "
+            "'mail', or any registered channel. Omit it when the owner named "
+            "none; never substitute a channel they did not ask for. WhatsApp "
+            "over the owner's open WhatsApp Web tab autosends only after one "
+            "human approval: when the result says pending_approval, speak its "
+            "spoken question and stop — do not call the tool again until the "
+            "owner answers. Other compose-only channels open with the text "
+            "ready and the owner taps send; delivery is only claimed when the "
+            "bridge confirms it. Use resolve_contact first when the target is "
+            "a person's name. Under EV_OWNER_AUTONOMY=full this needs no "
+            "approval inside granted scopes."
         ),
         "parameters": {
             "type": "object",
@@ -578,9 +604,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 64,
-                    "default": "messages",
                 },
                 "confirm": {"type": "boolean", "default": False},
+                "idempotency_key": {"type": "string", "maxLength": 128, "default": None},
             },
             "required": ["to", "text"],
         },
@@ -600,9 +626,11 @@ TOOL_SPECS: list[dict[str, Any]] = [
     {
         "name": "list_messages",
         "description": (
-            "List recent iMessage and SMS from this Mac's Messages database. "
-            "Does not open Messages.app. WhatsApp is a different aisle — use "
-            "recall when they said WhatsApp."
+            "List recent chats from this Mac's live copies without opening "
+            "any app: iMessage/SMS from the Messages database, WhatsApp from "
+            "WhatsApp Desktop. Pass the owner's words as query so the "
+            "WhatsApp/iMessage aisle is picked; the result channel says which "
+            "was read."
         ),
         "parameters": {
             "type": "object",
@@ -614,6 +642,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
                     "maxLength": 64,
                     "default": "messages",
                 },
+                "query": {"type": "string", "minLength": 1, "maxLength": 1000},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
             },
         },
@@ -668,7 +697,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Read recent Apple Mail on this Mac without opening Mail.app. "
             "Speaks a short gist of the particular message, or a short inbox "
-            "digest — never the full body."
+            "digest; when the owner asks to hear a mail read aloud, it reads "
+            "the message body out instead."
         ),
         "parameters": {
             "type": "object",
@@ -691,6 +721,46 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "idempotency": "natural",
         "cancellation": "not_applicable",
         "required_scopes": ["mail:read"],
+    },
+    {
+        "name": "open_in_app",
+        "description": (
+            "Open (or play) a specific thing inside an app on the owner's Mac: "
+            "a WhatsApp chat, a Messages thread, a Slack channel, a Music "
+            "playlist or track, a note, a folder, YouTube, or a map place. "
+            "Use this instead of open_app whenever the owner names both an app "
+            "and an item inside it, including 'open X from Y' and "
+            "'play something randomly from Z in Y'. It drives the app's "
+            "existing Chrome tab, AppleScript, or the live EV.app control "
+            "channel; it never sends a message or edits content."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "app": {"type": "string", "maxLength": 64, "default": None},
+                "item": {"type": "string", "minLength": 1, "maxLength": 200},
+                "kind": {"type": "string", "maxLength": 32, "default": None},
+                "verb": {"type": "string", "enum": ["open", "play", "close"], "default": "open"},
+                "background": {"type": "boolean", "default": False},
+                "random": {"type": "boolean", "default": False},
+                "playlist": {"type": "string", "maxLength": 120, "default": None},
+            },
+            "required": ["item"],
+        },
+        "output": {"type": "object"},
+        "sensitive": False,
+        "read_only": False,
+        "permission": "apps:act",
+        "undoable": True,
+        "risk_class": "R1",
+        "confirmation": "none",
+        "target_ownership": "owner",
+        "provider": "macos_life",
+        "evidence": ["source", "timestamp"],
+        "idempotency": "natural",
+        "cancellation": "not_applicable",
+        "required_scopes": ["apps:act"],
     },
     {
         "name": "open_url",
@@ -1010,7 +1080,9 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "search only the words they asked to find, then navigate to open "
             "the first result when they asked for that. Verify URL. "
             "Safari/Chrome also: new_tab, close_tab, next_tab, previous_tab — "
-            "run each once; after verified is true, do not repeat. "
+            "run each once; after verified is true, do not repeat. Set new_tab "
+            "true on navigate/search when the owner asked for another tab, and "
+            "put the close target in query when they named a tab. "
             "Notes: create/append with the exact text in query or value, then verify. "
             "Calculator: put the expression in query (generic keyboard path). "
             "Unknown apps: inspect the UI and click, or capture the window and "
@@ -1035,6 +1107,18 @@ TOOL_SPECS: list[dict[str, Any]] = [
                         "list_playlists",
                         "search",
                         "navigate",
+                        "type",
+                        "select",
+                        "toggle",
+                        "set_value",
+                        "submit",
+                        "dismiss",
+                        "scroll",
+                        "scroll_to",
+                        "back",
+                        "save",
+                        "new_item",
+                        "menu",
                         "create",
                         "append",
                         "read",
@@ -1049,6 +1133,10 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "playlist": {"type": "string", "maxLength": 120},
                 "index": {"type": "integer", "minimum": -1, "maximum": 500},
                 "query": {"type": "string", "maxLength": 2000},
+                "url": {"type": "string", "maxLength": 2048},
+                "new_tab": {"type": "boolean"},
+                "all": {"type": "boolean"},
+                "random": {"type": "boolean"},
                 "value": {"type": "string", "maxLength": 4000},
                 "text": {"type": "string", "maxLength": 4000},
                 "track": {"type": "string", "maxLength": 200},
@@ -1078,6 +1166,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
             "properties": {
                 "text": {"type": "string", "minLength": 1, "maxLength": 2000},
                 "when": {"type": "string", "maxLength": 128, "default": None},
+                "idempotency_key": {"type": "string", "maxLength": 128, "default": None},
             },
             "required": ["text"],
         },
@@ -2456,6 +2545,7 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "provider": "computer",
     },
     *FLEET_TOOL_SPECS,
+    *DIGITAL_TOOL_SPECS,
 ]
 
 
@@ -2481,6 +2571,31 @@ def _resolved_sensitive(spec: dict) -> bool:
     return bool(spec.get("sensitive", False))
 
 
+def _friendly_policy_block(name: str, args: dict, reason: str) -> dict | None:
+    """Speakable next step for unknown-recipient policy blocks. None otherwise.
+
+    Voice has no confirm loop, so "pass confirm=true" is not an actionable
+    next step — name the missing contact instead. The raw policy reason is
+    kept in `error` for API consumers.
+    """
+    if "pre-authorized" not in reason and "confirm=true" not in reason:
+        return None
+    who = (
+        str(args.get("to") or "").strip()
+        or str(args.get("destination") or "").strip()
+        or str(args.get("name") or "").strip()
+    ) or "them"
+    verb = "ring" if name == "place_call" else "send it"
+    return _life_unavailable(
+        "contact allowlist block",
+        next_step=(
+            f"I don't have {who} in your contacts, so I held that. "
+            f"Add them to Contacts and I'll {verb} right away."
+        ),
+        error=reason,
+    )
+
+
 def _life_unavailable(reason: str, *, next_step: str, error: str | None = None) -> dict:
     """Capability-theater contract: degraded=true + exact next_step."""
 
@@ -2497,6 +2612,58 @@ def _life_unavailable(reason: str, *, next_step: str, error: str | None = None) 
         "error": error or reason,
         "spoken": spoken[:400],
     }
+
+
+def _alerts_spoken(rows: list[dict]) -> str:
+    """Short human digest of pending alerts — never the raw list."""
+
+    if not rows:
+        return "Nothing pending — no alerts."
+    titles = [str(row.get("title") or "").strip() for row in rows]
+    titles = [title for title in titles if title]
+    urgent = sum(
+        1
+        for row in rows
+        if str(row.get("priority") or "").strip().lower()
+        in {"urgent", "critical", "high", "p0"}
+        or str(row.get("tier") or "").strip().lower() == "urgent"
+    )
+    head = "1 alert" if len(rows) == 1 else f"{len(rows)} alerts"
+    if urgent and urgent != len(rows):
+        head += f" ({urgent} urgent)"
+    elif urgent and urgent == len(rows) and len(rows) > 1:
+        head += " (all urgent)"
+    if not titles:
+        return f"{head}."
+    shown = titles[:3]
+    if len(shown) == 1:
+        listing = shown[0]
+    elif len(shown) == 2:
+        listing = f"{shown[0]} and {shown[1]}"
+    else:
+        listing = f"{shown[0]}, {shown[1]}, and {shown[2]}"
+    extra = len(titles) - len(shown)
+    tail = f", plus {extra} more" if extra > 0 else ""
+    return f"{head}: {listing}{tail}."
+
+
+def declared_argument_names(name: str) -> set[str] | None:
+    """Property names a tool declares, or ``None`` when it accepts extras.
+
+    Used by the semantic bridge so an argument the mind inferred from the
+    owner's words (a ``query`` on a tool that only takes a ``limit``) is dropped
+    instead of failing the whole request with "invalid arguments". The gateway's
+    own strict validation is untouched: this only relaxes the bridge, where the
+    caller is Evie's mind rather than an untrusted client.
+    """
+
+    spec = get_spec(name)
+    if spec is None:
+        return None
+    parameters = spec.get("parameters") or {}
+    if parameters.get("additionalProperties", True) is not False:
+        return None
+    return set((parameters.get("properties") or {}).keys())
 
 
 def get_spec(name: str) -> dict | None:
@@ -2551,10 +2718,33 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
 
     payload = result.get("result") if isinstance(result, dict) and "result" in result else result
     payload = payload if isinstance(payload, dict) else {}
-    if payload.get("spoken"):
-        return str(payload["spoken"])
     name = (tool_name or payload.get("_tool") or payload.get("tool") or "").strip()
-    degraded = bool(payload.get("degraded") or payload.get("ok") is False)
+    spoken_now = str(payload.get("spoken") or "").strip()
+    code_files = [str(item) for item in (payload.get("files_changed") or []) if item]
+    if (
+        name == "code"
+        and spoken_now
+        and not code_files
+        and not payload.get("deferred")
+        and not payload.get("pending")
+        and not payload.get("background")
+    ):
+        from app.ev.luna_code import _spoken_claims_code_write
+
+        if payload.get("ok") is False or payload.get("degraded") or _spoken_claims_code_write(spoken_now):
+            spoken_now = ""
+    if spoken_now:
+        return spoken_now
+    # A result is only "not degraded" when it carries positive evidence. A
+    # payload whose only content is an error — a raised transport or
+    # permission failure, for example — is a failure, never a success, and
+    # must not reach the "Sent to …" template at the tail of this function.
+    degraded = bool(
+        payload.get("degraded")
+        or payload.get("ok") is False
+        or payload.get("simulated")
+        or str(payload.get("error") or "").strip()
+    )
     next_step = str(
         payload.get("next_step") or payload.get("reason") or payload.get("error") or ""
     ).strip()
@@ -2576,11 +2766,9 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
             spoken = str(payload.get("spoken") or "").strip()
             if spoken and spoken.lower() not in {"not connected", "not_connected"}:
                 return spoken
-            return (
-                f"I couldn't finish that yet. {next_step}"
-                if next_step and next_step.lower() not in {"not connected", "not_connected"}
-                else "I couldn't send that from this Mac yet."
-            )
+            from app.ev.messaging.failures import spoken_failure
+
+            return spoken_failure(payload, channel=payload.get("channel"))
         if name == "code":
             return (
                 f"I couldn't finish that coding job. {next_step}"
@@ -2593,18 +2781,26 @@ def life_success_reply(result: dict, *, tool_name: str | None = None) -> str:
         text = str(payload.get("text") or payload.get("reminder") or "that").strip()
         return f"Reminder set: {text}."
     if name == "code":
+        if payload.get("deferred") or payload.get("pending") or payload.get("background"):
+            spoken = str(payload.get("spoken") or "").strip()
+            return spoken or "I'm writing that now. I'll tell you when it's saved."
         files = [str(item) for item in (payload.get("files_changed") or []) if item]
         folder = str(payload.get("workspace") or payload.get("project") or "the coding workspace")
         if files:
             return f"I wrote {', '.join(files[:4])} in {folder}."
-        return "I finished that coding job."
+        from app.ev.luna_code import _spoken_claims_code_write
+
+        spoken = str(payload.get("spoken") or "").strip()
+        if spoken and not _spoken_claims_code_write(spoken):
+            return spoken
+        return "I couldn't finish that coding job."
     channel_name = str(payload.get("channel") or "").strip().lower()
     if name == "send_message" and channel_name in {"whatsapp", "wa"}:
         target = str(payload.get("to") or "them")
         if payload.get("sent"):
             return f"Sent WhatsApp to {target}."
         if payload.get("opened"):
-            return f"Opened WhatsApp to {target}."
+            return f"WhatsApp to {target} is open with your message ready — tap send to finish it."
     if name == "present" or "opened" in payload:
         if payload.get("opened"):
             return "Opened that on your screen."
@@ -2665,6 +2861,8 @@ async def dispatch(
     channel: str | None = None,
     confirmation=None,
     live_session_id: str | None = None,
+    approved_route: Any = None,
+    approved_address: str = "",
     audit_endpoint: str = "POST /v1/gateway/tools",
 ) -> ToolCallResponse:
     """Validate, authorize, execute, shape-check, and log one tool invocation."""
@@ -2863,6 +3061,61 @@ async def dispatch(
             else:
                 status = "denied"
                 error = decision.reason
+        elif (
+            spec is not None
+            and confirmation is None
+            and await _web_send_needs_approval(name, dispatch_arguments)
+        ):
+            # WhatsApp Web autosend is physical-world consequential: park it
+            # and ask once. A retry of the exact same message after a failure
+            # that sent nothing reuses the owner's earlier yes inside its TTL
+            # instead of asking again.
+            reuse = None
+            if name == "send_message":
+                from app.ev.messaging.approval import recent_failed_send
+
+                reuse = await recent_failed_send(
+                    session,
+                    to=str(dispatch_arguments.get("to") or ""),
+                    text=str(dispatch_arguments.get("text") or ""),
+                    channel="whatsapp",
+                )
+            if reuse is not None:
+                from app.ev.confirm import pol_meta
+                from app.ev.messaging.routing import RouteBinding
+
+                meta = pol_meta(reuse.payload)
+                effective, issues = validate_arguments(
+                    dispatch_arguments, spec["parameters"]
+                )
+                if issues:
+                    reuse = None
+                else:
+                    result = await _handle(
+                        session,
+                        name,
+                        effective,
+                        actor=actor,
+                        live_session_id=live_session_id,
+                        device_id=device_id,
+                        request_id=request_id,
+                        channel=auth_channel,
+                        approved_route=RouteBinding.from_payload(meta.get("route")),
+                        approved_address=str(meta.get("address") or ""),
+                    )
+                    status = "ok"
+                    error = None
+            if reuse is None:
+                status = "denied"
+                error = "confirmation_required"
+                result = await _park_web_send(
+                    session,
+                    dispatch_arguments,
+                    actor=actor,
+                    device_id=device_id,
+                    live_session_id=live_session_id,
+                    channel=auth_channel,
+                )
         elif spec is not None:
             effective, issues = validate_arguments(dispatch_arguments, spec["parameters"])
             if issues:
@@ -2914,6 +3167,8 @@ async def dispatch(
                         device_id=device_id,
                         request_id=request_id,
                         channel=auth_channel,
+                        approved_route=approved_route,
+                        approved_address=approved_address,
                     )
                     if _router_mode == "on" and router_outcome is not None:
                         route = router_outcome["route"]
@@ -2968,7 +3223,12 @@ async def dispatch(
                         if isinstance(result, dict) and (
                             result.get("degraded") or result.get("error") == "not_connected"
                         ):
-                            result = {**result, "error": "not_connected", "degraded": True}
+                            # Keep the real failure reason: a degraded result
+                            # without its own error is the only case that
+                            # becomes a generic not_connected.
+                            result = {**result, "degraded": True}
+                            if not result.get("error"):
+                                result["error"] = "not_connected"
                         else:
                             result = attach_evidence(result, decision)
                     if result is not None:
@@ -3275,6 +3535,7 @@ async def _run_computer_goal(
 
     from app.ev.computer_runtime import ensure_state
     from app.ev.computer_strategy import (
+        looks_like_app_or_web_task,
         resolve_generic_computer_goal,
         resolve_in_app_computer_goal,
         resolve_screen_observation_goal,
@@ -3292,6 +3553,15 @@ async def _run_computer_goal(
     if is_system_confirmation(orig):
         orig = ""
         route_text = goal_text
+
+    # A new app/URL act is the live job. Never replay a prior file create
+    # (or the desk-scene last path) as if the owner asked for that file again.
+    if looks_like_app_or_web_task(goal_text):
+        orig = ""
+        route_text = goal_text
+        if state is not None:
+            state.last_file_path = None
+            state.original_owner_request = goal_text[:400]
 
     from app.ev.luna_code import looks_like_code_request
 
@@ -3312,7 +3582,9 @@ async def _run_computer_goal(
         )
 
     last_path = str(args.get("last_path") or getattr(state, "last_file_path", None) or "").strip() or None
-    if not last_path:
+    if looks_like_app_or_web_task(goal_text):
+        last_path = None
+    elif not last_path:
         from app.ev.desk_scene import referent_file_path
 
         found = referent_file_path()
@@ -3320,17 +3592,28 @@ async def _run_computer_goal(
             last_path = str(found)
             if state is not None:
                 state.last_file_path = last_path
+    from app.ev.file_coalesce import is_rephrase_create, is_verify_only
+
     file_goal = resolve_file_computer_goal(
         goal_text, args.get("target_app"), last_path=last_path
     )
     if file_goal is not None:
         route_text = goal_text
     elif orig and not looks_like_file_followup(goal_text, last_path=last_path):
-        file_goal = resolve_file_computer_goal(
-            orig, args.get("target_app"), last_path=last_path
-        )
-        if file_goal is not None:
-            route_text = orig
+        # A verify/rephrase of the file already written this job must not
+        # replay the owner's original create (that minted unique_name siblings).
+        if last_path and (is_verify_only(goal_text) or is_rephrase_create(goal_text, last_path)):
+            file_goal = resolve_file_computer_goal(
+                goal_text, args.get("target_app"), last_path=last_path
+            )
+            if file_goal is not None:
+                route_text = goal_text
+        elif not looks_like_app_or_web_task(goal_text):
+            file_goal = resolve_file_computer_goal(
+                orig, args.get("target_app"), last_path=last_path
+            )
+            if file_goal is not None:
+                route_text = orig
     if file_goal is not None:
         from app.ev.computer import handle_computer_tool
 
@@ -3348,6 +3631,8 @@ async def _run_computer_goal(
             request_id=request_id,
         )
 
+    from app.ev.laptop_files import looks_like_file_task, parse_file_goal
+
     if looks_like_file_followup(goal_text, last_path=last_path) and (
         ADD_TO_DEIXIS_RE.search(goal_text) or FILE_FOLLOWUP_RE.search(goal_text)
     ):
@@ -3360,6 +3645,30 @@ async def _run_computer_goal(
             "error": "file_referent_missing",
             "spoken": "I don't have that file in reach. Say add it to the note on the desktop.",
         }
+
+    if looks_like_file_task(route_text) and re.search(
+        r"\b(?:find|search|locate|look for|look up|where'?s|where is)\b",
+        route_text,
+        re.I,
+    ):
+        from app.ev.computer import handle_computer_tool
+
+        parsed = parse_file_goal(route_text, last_path=last_path) or {
+            "action": "search",
+            "path": "",
+            "query": route_text[:80],
+            "goal": route_text,
+        }
+        parsed.setdefault("goal", route_text)
+        return await handle_computer_tool(
+            session,
+            "file_op",
+            parsed,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
 
     observation = resolve_screen_observation_goal(route_text, args.get("target_app"))
     if observation is not None:
@@ -3378,18 +3687,23 @@ async def _run_computer_goal(
         )
 
     from app.ev.computer_strategy import looks_like_web_research, web_search_query_from_text
+    from app.ev.in_app import act_in_app, parse_in_app_intent
 
-    if looks_like_web_research(route_text):
-        query = web_search_query_from_text(route_text) or goal_text
-        return await _handle(
+    in_app_intent = parse_in_app_intent(route_text)
+    if in_app_intent is not None:
+        return await act_in_app(
             session,
-            "search_web",
-            {"query": query, "limit": 5},
+            app=in_app_intent.app,
+            item=in_app_intent.item,
+            kind=in_app_intent.kind,
+            verb=in_app_intent.verb,
+            background=in_app_intent.background,
+            random=in_app_intent.random,
+            playlist=in_app_intent.collection,
             actor=actor,
             live_session_id=live_session_id,
             device_id=device_id,
             request_id=request_id,
-            channel=None,
         )
 
     in_app = resolve_in_app_computer_goal(route_text, args.get("target_app"))
@@ -3409,6 +3723,28 @@ async def _run_computer_goal(
             device_id=device_id,
             request_id=request_id,
         )
+
+    from app.ev.mac_host import looks_like_mac_command, run_owner_mac_goal
+
+    if looks_like_mac_command(route_text):
+        return run_owner_mac_goal(route_text)
+
+    if looks_like_web_research(route_text):
+        query = web_search_query_from_text(route_text) or goal_text
+        token = _ALLOW_DIRECT_WEB.set(True)
+        try:
+            return await _handle(
+                session,
+                "search_web",
+                {"query": query, "limit": 5},
+                actor=actor,
+                live_session_id=live_session_id,
+                device_id=device_id,
+                request_id=request_id,
+                channel=None,
+            )
+        finally:
+            _ALLOW_DIRECT_WEB.reset(token)
 
     from app.ev.capability_router import RouteKind, goal_from_transcript, route_action
 
@@ -3497,16 +3833,21 @@ async def _run_computer_goal(
             session, capability, inner_args,
             actor=actor, live_session_id=live_session_id, device_id=device_id,
         )
-    response = await dispatch(
-        session,
-        capability,
-        inner_args,
-        actor=actor,
-        live_session_id=live_session_id,
-        device_id=device_id,
-        request_id=f"computer-{goal_text[:24]}",
-        audit_endpoint="POST /v1/gateway/tools(computer)",
-    )
+    token = _ALLOW_DIRECT_WEB.set(True) if capability == "search_web" else None
+    try:
+        response = await dispatch(
+            session,
+            capability,
+            inner_args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=f"computer-{goal_text[:24]}",
+            audit_endpoint="POST /v1/gateway/tools(computer)",
+        )
+    finally:
+        if token is not None:
+            _ALLOW_DIRECT_WEB.reset(token)
     return response.result if response.result is not None else response.model_dump()
 
 
@@ -3688,10 +4029,15 @@ async def _handle(
     device_id=None,
     request_id: str | None = None,
     channel: str | None = None,
+    approved_route: Any = None,
+    approved_address: str = "",
 ) -> dict:
     fleet = await handle_fleet_tool(session, name, args, actor=actor)
     if fleet is not None:
         return fleet
+    digital = await handle_digital_tool(session, name, args, actor=actor)
+    if digital is not None:
+        return digital
     if name == "execute_command":
         return await _run_execute_command(session, args, actor=actor)
     if name == "recall":
@@ -3912,19 +4258,21 @@ async def _handle(
         from app.ev import alert_radar
 
         alerts = await alert_radar.list_alerts(session, status="pending", limit=int(args.get("limit", 10)))
+        alert_rows = [
+            {
+                "id": str(a.id),
+                "kind": a.kind,
+                "title": a.title,
+                "body": a.body,
+                "priority": a.priority,
+                "tier": a.tier,
+            }
+            for a in alerts
+        ]
         return {
-            "count": len(alerts),
-            "alerts": [
-                {
-                    "id": str(a.id),
-                    "kind": a.kind,
-                    "title": a.title,
-                    "body": a.body,
-                    "priority": a.priority,
-                    "tier": a.tier,
-                }
-                for a in alerts
-            ],
+            "count": len(alert_rows),
+            "alerts": alert_rows,
+            "spoken": _alerts_spoken(alert_rows),
         }
     if name == "get_research":
         sessions = await list_sessions(session, status=args.get("status"), limit=int(args.get("limit", 10)))
@@ -3941,6 +4289,30 @@ async def _handle(
             ],
         }
     if name == "search_web":
+        from app.ev.computer_strategy import looks_like_computer_task
+        from app.ev.in_app import parse_in_app_intent
+        from app.ev.laptop_files import looks_like_file_task
+
+        query = str(args.get("query") or "")
+        if not _ALLOW_DIRECT_WEB.get():
+            if looks_like_file_task(query) or looks_like_file_task(str(args.get("goal") or "")):
+                return await _run_computer_goal(
+                    session,
+                    {"goal": query or str(args.get("goal") or "")},
+                    actor=actor,
+                    live_session_id=live_session_id,
+                    device_id=device_id,
+                    request_id=request_id,
+                )
+            if parse_in_app_intent(query) is not None or looks_like_computer_task(query):
+                return await _run_computer_goal(
+                    session,
+                    {"goal": query},
+                    actor=actor,
+                    live_session_id=live_session_id,
+                    device_id=device_id,
+                    request_id=request_id,
+                )
         provider = get_search_provider()
         if provider is None:
             return {
@@ -4011,7 +4383,30 @@ async def _handle(
         )
     if name in _LIFE_BRIDGES:
         return await _dispatch_life_action(
-            session, name, args, actor=actor, policy_checked=True
+            session,
+            name,
+            args,
+            actor=actor,
+            policy_checked=True,
+            approved_route=approved_route,
+            approved_address=approved_address,
+        )
+    if name == "open_in_app":
+        from app.ev.in_app import act_in_app
+
+        return await act_in_app(
+            session,
+            app=args.get("app"),
+            item=args.get("item"),
+            kind=args.get("kind"),
+            verb=str(args.get("verb") or "open"),
+            background=bool(args.get("background")),
+            random=bool(args.get("random")),
+            playlist=args.get("playlist"),
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
         )
     if name == "open_url":
         from app.ev.computer import open_url_via_live_or_helper
@@ -4078,6 +4473,7 @@ async def _handle(
     if name == "set_reminder":
         from uuid import uuid4
 
+        from app.ev.actuator import fingerprint, prior_result, record_actuator
         from app.ev.briefing import extract_reminder_when
         from app.ev.resolve import parse_owner_when
         from app.ev.timers import start_timer
@@ -4085,6 +4481,15 @@ async def _handle(
         from app.utils.text import utcnow as _utcnow
 
         text = str(args.get("text") or "").strip()
+        idempotency_key = str(args.get("idempotency_key") or "").strip()[:128] or None
+        if idempotency_key:
+            prior = await prior_result(
+                session,
+                name="set_reminder",
+                key=idempotency_key,
+            )
+            if prior is not None:
+                return prior
         now = _utcnow()
         when = args.get("when") or extract_reminder_when(text)
         fire_at = None
@@ -4100,9 +4505,10 @@ async def _handle(
                 at=fire_at.isoformat(),
                 text=text,
                 actor=actor,
+                idempotency_key=idempotency_key,
             )
             if timed.get("ok"):
-                return {
+                result = {
                     "ok": True,
                     "text": text,
                     "when": timed.get("fire_at"),
@@ -4110,6 +4516,41 @@ async def _handle(
                     "spoken": timed.get("spoken") or f"Reminder set: {text}.",
                     "evidence": timed.get("evidence"),
                 }
+                if idempotency_key:
+                    await record_actuator(
+                        session,
+                        name="set_reminder",
+                        actor=actor,
+                        key=idempotency_key,
+                        result=result,
+                        target=text,
+                    )
+                return result
+        alert_fingerprint = fingerprint(
+            "set_reminder",
+            idempotency_key or text,
+            when or "",
+            text,
+        )
+        existing_alert = (
+            await session.execute(
+                select(Alert)
+                .where(
+                    Alert.source == "set_reminder",
+                    Alert.fingerprint == alert_fingerprint,
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        if existing_alert is not None:
+            return {
+                "ok": True,
+                "text": text,
+                "id": str(existing_alert.id),
+                "stored": "alert",
+                "spoken": f"Reminder set: {text}.",
+                "idempotent_replay": True,
+            }
         alert = Alert(
             kind="reminder",
             title="Reminder",
@@ -4118,16 +4559,16 @@ async def _handle(
             tier="useful",
             status="pending",
             source="set_reminder",
-            fingerprint=uuid4().hex,
+            fingerprint=alert_fingerprint or uuid4().hex,
             rationale="Owner asked to be reminded.",
-            details={"text": text, "when": when},
+            details={"text": text, "when": when, "idempotency_key": idempotency_key},
         )
         session.add(alert)
         await session.flush()
         from app.ev.actuator import evidence_base
         from app.utils.text import utcnow as _utcnow
 
-        return {
+        result = {
             "ok": True,
             "text": text,
             "id": str(alert.id),
@@ -4141,6 +4582,16 @@ async def _handle(
                 alert_id=str(alert.id),
             ),
         }
+        if idempotency_key:
+            await record_actuator(
+                session,
+                name="set_reminder",
+                actor=actor,
+                key=idempotency_key,
+                result=result,
+                target=text,
+            )
+        return result
     if name == "set_assistant_name":
         from app.ev.assistant import set_nickname
 
@@ -4497,15 +4948,51 @@ async def _dispatch_life_action(
     *,
     actor: str,
     policy_checked: bool = False,
+    approved_route: Any = None,
+    approved_address: str = "",
 ) -> dict:
     """Call the CONDUIT adapter for one life action; never fake success."""
 
     slug, action, scope = _LIFE_BRIDGES[name]
+    hub_read: dict | None = None
+    if name in {"list_mail", "resolve_contact", "list_messages"}:
+        try:
+            want_limit = int(args.get("limit") or 8)
+        except (TypeError, ValueError):
+            want_limit = 8
+        if want_limit <= 8:
+            # Shaped hub reads (person filter, demotion, grouping, spoken)
+            # beat raw adapter rows. Bulk limits keep today's adapter path.
+            hub_read = await _mac_hub_life_read(name, args)
+            if hub_read is not None and _life_read_rows(name, hub_read):
+                return hub_read
+            if hub_read is not None and name in {"list_mail", "list_messages"}:
+                # Shaped hub digest — including honest empty — is the answer.
+                # Adapter/Chrome fallback hangs when tabs are closed and
+                # answers a recents ask from the wrong copy.
+                return hub_read
+    from app.ev.messaging.routing import RouteBinding
+
     integration = await _active_life_integration(session, slug)
-    if integration is None:
-        write = await _mac_hub_life_write(name, args)
+    # An approved route is only honored by the hub sender. The CONDUIT adapter
+    # re-chooses the transport and re-resolves the recipient from its own
+    # probes, so an approval bound to a specific transport must not be handed
+    # to it — that is how an approved WhatsApp Web send ends up on a different
+    # app. Web-bound sends therefore go to the hub path even when a life
+    # integration row exists.
+    approved_binding = RouteBinding.from_payload(approved_route)
+    bound_to_web = approved_binding is not None and approved_binding.provider == "web"
+    if integration is None or bound_to_web:
+        write = await _mac_hub_life_write(
+            name,
+            args,
+            approved_route=approved_route,
+            approved_address=approved_address,
+        )
         if write is not None:
             return write
+        if hub_read is not None:
+            return hub_read
         fallback = await _mac_hub_life_read(name, args)
         if fallback is not None:
             return fallback
@@ -4540,9 +5027,26 @@ async def _dispatch_life_action(
             error=str(exc),
         )
     except PermissionError as exc:
+        friendly = _friendly_policy_block(name, args, str(exc))
+        if friendly is not None:
+            return friendly
         return _life_unavailable(
             f"{slug} bridge permission denied",
             next_step=str(exc),
+            error=str(exc),
+        )
+    except LifePermissionDeniedError as exc:
+        # The helper's own message is identical for every command, so name the
+        # app from the channel the owner asked for.
+        from app.ev.messaging.channels import normalize_channel
+        from app.ev.messaging.failures import spoken_failure
+
+        channel = normalize_channel(str(args.get("channel") or "")) or slug
+        return _life_unavailable(
+            "permission_denied",
+            next_step=spoken_failure(
+                {"error": str(exc), "diagnosis": "permission denied"}, channel=channel
+            ),
             error=str(exc),
         )
     except LifeHelperError as exc:
@@ -4559,10 +5063,14 @@ async def _dispatch_life_action(
         )
     payload = getattr(outcome, "result", None) or {}
     result = {"ok": True, **payload}
-    if name in {"list_mail", "resolve_contact", "list_messages"} and not _life_read_rows(name, result):
-        hub = await _mac_hub_life_read(name, args)
-        if hub is not None and _life_read_rows(name, hub):
-            return hub
+    # Hub was already tried first; reuse it instead of re-peeking.
+    if (
+        name in {"list_mail", "resolve_contact", "list_messages"}
+        and not _life_read_rows(name, result)
+        and hub_read is not None
+        and _life_read_rows(name, hub_read)
+    ):
+        return hub_read
     if name == "list_mail":
         from app.ev.spark_task import bind_decision, decide_task, reset_decision
         from app.memory.mail_speak import shape_mail_payload
@@ -4582,7 +5090,13 @@ async def _dispatch_life_action(
     return result
 
 
-async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
+async def _mac_hub_life_write(
+    name: str,
+    args: dict,
+    *,
+    approved_route: Any = None,
+    approved_address: str = "",
+) -> dict | None:
     """Send/call/mail through EVLifeHelper when no Integration row exists."""
 
     if name not in {"send_message", "place_call", "send_mail", "send_email"}:
@@ -4601,7 +5115,12 @@ async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
         return None
     try:
         if name == "send_message":
-            return await _send_via_helper(args, helper_path=helper)
+            return await _send_via_helper(
+                args,
+                helper_path=helper,
+                approved_route=approved_route,
+                approved_address=approved_address,
+            )
         if name in {"send_mail", "send_email"}:
             to = str(args.get("to") or "").strip()
             body = str(args.get("body") or args.get("text") or "").strip()
@@ -4611,7 +5130,12 @@ async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
                     "missing_mail_fields",
                     next_step="I need who to email and what to say.",
                 )
-            dest = await _resolve_send_destination(to, "mail", helper_path=helper)
+            try:
+                dest = await _resolve_send_destination(to, "mail", helper_path=helper)
+            except AmbiguousRecipientError as exc:
+                return _life_unavailable(
+                    "ambiguous_recipient", next_step=str(exc), error=str(exc)
+                )
             email = dest.get("email") or (to if "@" in to else "")
             if not email:
                 return _life_unavailable(
@@ -4635,11 +5159,46 @@ async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
         destination = str(args.get("name") or args.get("to") or args.get("destination") or "").strip()
         if not destination:
             return _life_unavailable("missing_call_target", next_step="Who should I call?")
-        dest = await _resolve_send_destination(destination, "messages", helper_path=helper)
-        phone = dest.get("phone") or destination
+        kind = str(args.get("kind") or "tel")
+        try:
+            dest = await _resolve_send_destination(destination, "messages", helper_path=helper)
+        except AmbiguousRecipientError as exc:
+            return _life_unavailable(
+                "ambiguous_recipient", next_step=str(exc), error=str(exc)
+            )
+        # tel:// needs digits; facetime:// also accepts an email. A bare
+        # name builds a dead URL — fail friendly instead of helper-failing.
+        phone = dest.get("phone") or ""
+        email = dest.get("email") or ""
+        target = ""
+
+        def _tel(value: str) -> str:
+            text = (value or "").strip()
+            if not text or "@" in text:
+                return ""
+            digits = re.sub(r"\D+", "", text)
+            if not digits:
+                return ""
+            return ("+" if text.startswith("+") else "") + digits
+
+        for candidate in (phone, destination):
+            tel = _tel(candidate)
+            if tel and len(re.sub(r"\D+", "", tel)) >= 7:
+                target = tel
+                break
+        if not target and kind == "facetime":
+            for candidate in (email, destination):
+                if candidate and "@" in candidate:
+                    target = candidate.strip()
+                    break
+        if not target:
+            return _life_unavailable(
+                "no_call_number",
+                next_step=f"I don't have a phone number for {destination}, so I couldn't place that call.",
+            )
         result = await run_life_helper(
             "call.place",
-            {"destination": phone, "kind": str(args.get("kind") or "tel")},
+            {"destination": target, "kind": kind},
             helper_path=helper,
         )
         return {
@@ -4662,8 +5221,273 @@ async def _mac_hub_life_write(name: str, args: dict) -> dict | None:
         return _life_unavailable("helper_failed", next_step=str(exc), error=str(exc))
 
 
-async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
+def _owner_gui_actions_allowed() -> bool:
+    """Never launch WhatsApp from pytest."""
+
+    import os
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    from app.config import settings
+
+    env = str(getattr(settings, "env", None) or os.environ.get("EV_ENV") or "").lower()
+    return env not in {"test", "testing"}
+
+
+def _open_whatsapp_compose(phone: str, text: str) -> bool:
+    """Open WhatsApp's compose URL in the foreground. Visible on purpose."""
+
+    import subprocess
+    from urllib.parse import quote
+
+    digits = re.sub(r"\D+", "", phone or "")
+    if len(digits) < 8 or not _owner_gui_actions_allowed():
+        return False
+    url = f"whatsapp://send?phone={digits}&text={quote(text or '', safe='')}"
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/open", url],
+            check=False,
+            capture_output=True,
+            timeout=8,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _open_whatsapp_app() -> bool:
+    import subprocess
+
+    if not _owner_gui_actions_allowed():
+        return False
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/open", "-a", "WhatsApp"],
+            check=False,
+            capture_output=True,
+            timeout=8,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+def _bring_whatsapp_forward() -> None:
+    """If the helper opened compose hidden, raise WhatsApp so they can tap send."""
+
+    _open_whatsapp_app()
+
+
+def _copy_owner_text(text: str) -> bool:
+    import subprocess
+
+    raw = (text or "").encode("utf-8")
+    if not raw or not _owner_gui_actions_allowed():
+        return False
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/pbcopy"],
+            input=raw,
+            check=False,
+            capture_output=True,
+            timeout=3,
+        )
+        return completed.returncode == 0
+    except Exception:
+        return False
+
+
+async def _web_send_needs_approval(name: str, args: dict) -> bool:
+    """True when this send would autosend through WhatsApp Web.
+
+    Only an authenticated tab that can deliver without a tap needs the extra
+    spoken yes; compose-only sends already require the owner's tap.
+    """
+
+    if name != "send_message":
+        return False
+    from app.ev.messaging.channels import normalize_channel
+
+    raw = str(args.get("channel") or "").strip()
+    requested = normalize_channel(raw)
+    if raw and requested is None:
+        return False
+    if requested not in {None, "whatsapp"}:
+        return False
+    to = str(args.get("to") or "").strip()
+    body = str(args.get("text") or args.get("body") or "").strip()
+    if not to or not body:
+        return False
+    from app.ev.messaging.whatsapp_web import web_available
+
+    if not await web_available():
+        return False
+    if requested is None:
+        from app.ev.messaging.native import resolve_native_contact
+
+        native = await resolve_native_contact("whatsapp", to)
+        if native is not None and native.get("status") == "unique":
+            return True
+        return await _whatsapp_peer(to) is not None
+    return requested == "whatsapp"
+
+
+async def _park_web_send(
+    session: AsyncSession,
+    args: dict,
+    *,
+    actor: str,
+    device_id,
+    live_session_id: str | None,
+    channel: str,
+) -> dict:
+    """Park a WhatsApp Web send for one spoken approval. Never sends.
+
+    Resolution is WhatsApp-native first: the chat list decides who exists,
+    not Apple Contacts. Contacts only contribute a phone fallback (a number
+    is addressable on WhatsApp even when the chat list did not render).
+    """
+
+    from app.ev.messaging.approval import park_send, question_for
+    from app.ev.messaging.native import resolve_native_contact
+
+    to = str(args.get("to") or "").strip()
+    body = str(args.get("text") or "").strip()
+    # A background tab can only be driven through Evie's CDP Chrome. If the
+    # profile is up but unlinked, say exactly what to scan instead of asking
+    # for an approval that cannot execute; the AppleScript tab path is the
+    # known-broken one and must not masquerade as ready.
+    from app.ev.messaging import whatsapp_cdp
+
+    cdp_state, _cdp_diagnosis = await whatsapp_cdp.ensure_ready()
+    if cdp_state == "qr":
+        return _life_unavailable(
+            "whatsapp_not_linked",
+            next_step=(
+                "WhatsApp isn't linked in Evie's Chrome window yet. I brought it "
+                "up \u2014 scan the QR code once, then ask me to send again."
+            ),
+        )
+    display = to
+    target = to
+    address = ""
+    native = await resolve_native_contact("whatsapp", to)
+    if native is not None and native.get("status") == "ambiguous":
+        names = ", ".join(str(name) for name in native.get("candidates") or [] if name)
+        return _life_unavailable(
+            "ambiguous_recipient",
+            next_step=f"I found more than one WhatsApp chat for {to}: {names}. Which one?",
+        )
+    if native is not None and native.get("status") == "unique":
+        display = str(native.get("display") or to)
+        # The chat WhatsApp itself matched is the identity the owner is
+        # approving. Keep it, so execution cannot resolve a different one.
+        address = str(native.get("phone") or native.get("id") or "").strip()
+    else:
+        # WhatsApp itself did not name-match. A phone number (spoken
+        # directly or from Contacts) is still a WhatsApp address.
+        phone = ""
+        try:
+            from app.ev.apps import discover_life_helper_path
+
+            dest = await _resolve_send_destination(
+                to, "whatsapp", helper_path=discover_life_helper_path()
+            )
+            phone = str(dest.get("phone") or "").strip()
+            display = str(dest.get("handle") or to)
+        except AmbiguousRecipientError:
+            # Apple Contacts ambiguity is not WhatsApp ambiguity: ignore it.
+            phone = ""
+        except Exception:
+            phone = ""
+        digits = re.sub(r"\D+", "", to)
+        if phone:
+            target = phone
+            address = phone
+        elif digits and len(digits) >= 8 and not re.search(r"[A-Za-z]", to):
+            target = to
+            address = to
+        else:
+            return _life_unavailable(
+                "chat_not_found",
+                next_step=(
+                    f"I couldn't find {to} on WhatsApp on this Mac, "
+                    "so I didn't park anything."
+                ),
+            )
+    if not address:
+        address = target
+    # Bind the transport the question is about. Parking only happens when the
+    # Web tab is available, so that is the route the owner is approving.
+    from app.ev.messaging.routing import RouteBinding, route_channel
+
+    approved_binding = RouteBinding.of(
+        route_channel("whatsapp", helper_available=False, web_available=True)
+    )
+    action = await park_send(
+        session,
+        to=target,
+        text=body,
+        display=display,
+        channel="whatsapp",
+        actor=actor,
+        device_id=device_id,
+        live_session_id=live_session_id,
+        source=channel,
+        route=approved_binding,
+        address=address,
+    )
+    return {
+        "ok": False,
+        "pending_approval": True,
+        "requires_approval": True,
+        "channel": "whatsapp",
+        "to": display,
+        "text": body,
+        "action_id": str(action.id),
+        "spoken": question_for(action),
+    }
+
+
+async def _whatsapp_peer(to: str) -> dict | None:
+    """Strong identity match from the WhatsApp chat list, or None.
+
+    The chat list is substring-scored upstream ("John" can hit "Johnson"),
+    so its loose result is only trusted on a whole-token name match.
+    """
+
+    from app.ev.messaging.recipients import verify_peer
+
+    try:
+        from app.services.life_stream_daemon import (
+            get_life_stream_daemon,
+            life_stream_should_run,
+        )
+
+        if not life_stream_should_run():
+            return None
+        peer = get_life_stream_daemon().resolve_whatsapp_peer(to)
+    except Exception:
+        return None
+    return peer if verify_peer(to, peer) else None
+
+
+async def _send_via_helper(
+    args: dict,
+    *,
+    helper_path: str | None,
+    approved_route: Any = None,
+    approved_address: str = "",
+) -> dict:
+    from app.ev.messaging.channels import channel_label, normalize_channel
+    from app.ev.messaging.routing import (
+        RouteBinding,
+        route_channel,
+        route_unavailable_spoken,
+    )
     from app.integrations.life_helper import run_life_helper
+    from app.services.life_stream_daemon import life_stream_should_run
 
     to = str(args.get("to") or "").strip()
     body = str(args.get("text") or args.get("body") or "").strip()
@@ -4672,20 +5496,113 @@ async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
             "missing_send_fields",
             next_step="I need who to message and what to say.",
         )
-    wanted = str(args.get("channel") or "").strip().lower()
-    if wanted in {"wa", "whatsapp"}:
-        channel = "whatsapp"
-    elif wanted in {"mail", "email"}:
-        channel = "mail"
-    else:
-        channel = "messages"
-        preferred = _channel_from_talk(to)
-        if preferred == "whatsapp":
+    # Explicit channels are authoritative and never remapped onto a
+    # different transport. An omitted channel defaults to Messages; history
+    # may pick WhatsApp, but only on a whole-name match and never over an
+    # explicit request. Named-but-unwired channels fail loudly — sending
+    # "telegram" as SMS would be a mis-send.
+    raw_requested = str(args.get("channel") or "").strip()
+    requested = normalize_channel(raw_requested)
+    if raw_requested and requested is None:
+        return _life_unavailable(
+            "unknown_channel",
+            next_step=(
+                f"I don't have {raw_requested} connected on this Mac, "
+                "so I didn't send anything."
+            ),
+        )
+    helper_available = bool(helper_path) or life_stream_should_run()
+    channel = requested or "messages"
+    if requested is None:
+        # The owner named no channel: WhatsApp decides first (open Web tab,
+        # then WhatsApp Desktop), then the desktop chat daemon. Only when no
+        # WhatsApp evidence exists does this fall back to Messages.
+        from app.ev.messaging.native import resolve_native_contact
+
+        native = await resolve_native_contact("whatsapp", to)
+        if (
+            native is not None
+            and native.get("status") == "unique"
+        ) or await _whatsapp_peer(to) is not None:
             channel = "whatsapp"
-        elif preferred == "mail" and wanted:
-            channel = "mail"
-    dest = await _resolve_send_destination(to, channel, helper_path=helper_path)
-    if channel == "mail":
+    web = False
+    if channel == "whatsapp":
+        from app.ev.messaging.whatsapp_web import web_available
+
+        web = await web_available()
+    routing = route_channel(
+        channel, helper_available=helper_available, web_available=web
+    )
+    # An approval covers a transport, not just a channel name. When the owner
+    # already agreed to send this on a specific route, hold execution to it:
+    # re-probe the approved route once, and if it is genuinely gone say so
+    # instead of quietly handing the message to a different app.
+    binding = (
+        approved_route
+        if isinstance(approved_route, RouteBinding)
+        else RouteBinding.from_payload(approved_route)
+    )
+    if binding is not None:
+        if binding.satisfies(routing) == "channel":
+            return _life_unavailable(
+                "approved_channel_changed",
+                next_step=(
+                    f"That was approved for {channel_label(binding.channel)}, "
+                    f"but this would go out as {channel_label(routing.channel)}. "
+                    "I didn't send it."
+                ),
+            )
+        if binding.satisfies(routing) == "provider":
+            if channel == "whatsapp" and binding.provider == "web":
+                from app.ev.messaging.whatsapp_web import web_available as _wa_available
+
+                web = await _wa_available(refresh=True)
+                routing = route_channel(
+                    channel, helper_available=helper_available, web_available=web
+                )
+            if binding.satisfies(routing) == "provider":
+                return {
+                    "ok": False,
+                    "sent": False,
+                    "channel": binding.channel,
+                    "error": "approved_route_unavailable",
+                    "diagnosis": f"approved={binding.provider} now={routing.provider}",
+                    "spoken": route_unavailable_spoken(binding, routing),
+                }
+    if routing.mode == "unavailable":
+        return _life_unavailable("channel_unavailable", next_step=routing.spoken)
+    # The identity the owner approved is resolved once and reused: re-looking
+    # the name up here is how an approval for one chat reaches another.
+    lookup = str(approved_address or "").strip() or to
+    try:
+        dest = await _resolve_send_destination(
+            lookup, routing.channel, helper_path=helper_path
+        )
+    except AmbiguousRecipientError as exc:
+        return _life_unavailable(
+            "ambiguous_recipient", next_step=str(exc), error=str(exc)
+        )
+    if routing.provider == "web":
+        from app.ev.messaging.whatsapp_web import send as send_whatsapp_web
+
+        # send() resolves the chat natively (Web tab, then Desktop) and
+        # returns the honest ambiguity/not-found wording itself.
+        web_result = await send_whatsapp_web(str(dest.get("handle") or to), body)
+        payload = {
+            "ok": bool(web_result.get("ok")),
+            "sent": bool(web_result.get("sent")),
+            "channel": "whatsapp",
+            "to": web_result.get("to") or dest.get("handle") or to,
+            "verified_in_thread": bool(web_result.get("verified_in_thread")),
+            "focus_theft": int(web_result.get("focus_theft") or 0),
+            "spoken": str(web_result.get("spoken") or ""),
+        }
+        if not payload["ok"]:
+            payload["error"] = str(web_result.get("error") or "whatsapp_web_send_failed")
+            if web_result.get("candidates"):
+                payload["candidates"] = list(web_result["candidates"])
+        return payload
+    if routing.channel == "mail":
         email = dest.get("email") or (to if "@" in to else "")
         if not email:
             return _life_unavailable("no_email", next_step=f"I don't have an email for {to}.")
@@ -4703,31 +5620,64 @@ async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
             **(result.data or {}),
             "delivery": result.delivery,
         }
-    if channel == "whatsapp":
+    if routing.channel == "whatsapp":
         phone = dest.get("phone") or ""
         digits = re.sub(r"\D+", "", phone or to)
         if len(digits) >= 8:
-            result = await run_life_helper(
-                "whatsapp.send",
-                {"to": digits, "text": body},
-                helper_path=helper_path,
-            )
-            opened = bool((result.data or {}).get("opened"))
+            opened = _open_whatsapp_compose(digits, body)
+            helper_delivery = {}
+            if not opened:
+                result = await run_life_helper(
+                    "whatsapp.send",
+                    {"to": digits, "text": body},
+                    helper_path=helper_path,
+                )
+                opened = bool((result.data or {}).get("opened"))
+                helper_delivery = result.delivery
+                _bring_whatsapp_forward()
             return {
                 "ok": True,
                 "opened": opened,
                 "sent": False,
                 "to": to,
                 "channel": "whatsapp",
-                "spoken": f"Opened WhatsApp to {to}." if opened else f"I couldn't open WhatsApp for {to}.",
-                **(result.data or {}),
-                "delivery": result.delivery,
+                "spoken": (
+                    f"WhatsApp to {to} is open with your message ready — tap send to finish it."
+                    if opened
+                    else f"I couldn't open WhatsApp for {to}."
+                ),
+                "delivery": helper_delivery,
             }
-        channel = "messages"
-    handle = dest.get("phone") or dest.get("handle") or to
+        if requested == "whatsapp":
+            shown = _open_whatsapp_app()
+            copied = _copy_owner_text(body) if shown else False
+            if shown:
+                return {
+                    "ok": True,
+                    "opened": True,
+                    "sent": False,
+                    "to": to,
+                    "channel": "whatsapp",
+                    "copied": copied,
+                    "spoken": (
+                        f"I opened WhatsApp. I don't see {to} in the chats on this Mac. "
+                        "Pick that chat, paste, and tap send — I copied your message."
+                    ),
+                }
+            return _life_unavailable(
+                "no_whatsapp_chat",
+                next_step=f"I couldn't find {to} on WhatsApp on this Mac.",
+            )
+        routing = route_channel("messages", helper_available=helper_available)
+    if dest.get("status") == "none" and " " in to:
+        return _life_unavailable(
+            "no_contact",
+            next_step=f"I don't have a contact for {to}, so I didn't send anything.",
+        )
+    handle = dest.get("phone") or dest.get("email") or dest.get("handle") or to
     result = await run_life_helper(
         "messages.send",
-        {"to": handle, "text": body},
+        {"to": handle, "text": body, "service": routing.service or "auto"},
         helper_path=helper_path,
     )
     sent = bool((result.data or {}).get("sent"))
@@ -4735,65 +5685,74 @@ async def _send_via_helper(args: dict, *, helper_path: str | None) -> dict:
         "ok": bool(sent),
         "sent": sent,
         "to": to,
-        "channel": "messages",
+        "channel": routing.channel,
+        "service": routing.service or "auto",
         "spoken": f"Sent a message to {to}." if sent else f"I couldn't text {to} from Messages.",
         **(result.data or {}),
         "delivery": result.delivery,
     }
 
 
-def _channel_from_talk(to: str) -> str | None:
-    from app.memory.life_archive.desk import _compact
-
-    key = _compact(to)
-    if not key:
-        return None
-    try:
-        from app.services.life_stream_daemon import get_life_stream_daemon, life_stream_should_run
-
-        if not life_stream_should_run():
-            return None
-        daemon = get_life_stream_daemon()
-        hits = list(daemon.peek_whatsapp(tokens=[key], limit=4) or [])
-        if hits:
-            return "whatsapp"
-    except Exception:
-        return None
-    return None
-
-
 async def _resolve_send_destination(
     to: str, channel: str, *, helper_path: str | None
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    from app.ev.messaging.recipients import match_recipient
     from app.integrations.life_helper import run_life_helper
 
-    out: dict[str, str] = {}
+    out: dict[str, Any] = {"status": "none", "candidates": []}
+    who = (to or "").strip()
+    if not who:
+        return out
+    if (channel or "").strip().lower() == "whatsapp":
+        peer = await _whatsapp_peer(who)
+        if peer:
+            out["status"] = "unique"
+            out["handle"] = str(peer.get("handle") or "")
+            if peer.get("phone"):
+                out["phone"] = str(peer["phone"])
+    digits = re.sub(r"\D+", "", who)
+    if "@" in who:
+        out["email"] = who
+        out["status"] = "unique" if out["status"] == "none" else out["status"]
+        return out
+    if digits and len(digits) >= 7 and not re.search(r"[A-Za-z]", who):
+        out["phone"] = ("+" + digits) if who.strip().startswith("+") else digits
+        out["status"] = "unique" if out["status"] == "none" else out["status"]
+        return out
     try:
         result = await run_life_helper(
-            "contacts.resolve", {"query": to}, helper_path=helper_path
+            "contacts.resolve", {"query": who}, helper_path=helper_path
         )
     except Exception:
         return out
-    matches = list((result.data or {}).get("matches") or [])
-    if not matches:
-        return out
-    row = matches[0] if isinstance(matches[0], dict) else {}
-    phones = row.get("phone_numbers") or []
-    emails = row.get("email_addresses") or []
-    if phones:
-        out["phone"] = str(phones[0])
-    if emails:
-        out["email"] = str(emails[0])
-    if row.get("full_name"):
-        out["handle"] = str(row["full_name"])
-    del channel
+    rows = [
+        row
+        for row in list((result.data or {}).get("matches") or [])
+        if isinstance(row, dict)
+    ]
+    match = match_recipient(who, rows)
+    if match.status == "ambiguous":
+        raise AmbiguousRecipientError(who, list(match.candidates))
+    if match.status == "unique":
+        out["status"] = "unique"
+        if match.phones and not out.get("phone"):
+            out["phone"] = match.primary_phone
+        if match.emails:
+            out["email"] = match.primary_email
+        out["handle"] = str(match.display or out.get("handle") or "")
     return out
 
 
 async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
-    """Closed-app Mac copies. iMessage is chat.db, mail is Envelope Index, contacts are CNContactStore."""
+    """Closed-app Mac copies. iMessage is chat.db, mail is Envelope Index, contacts are CNContactStore.
+
+    MAC HUB ONLY. Do not edit this function for iPhone / PWA / device-gateway work.
+    """
     if name not in {"list_mail", "resolve_contact", "list_messages"}:
         return None
+    from dataclasses import replace
+
+    from app.cognitive.intent import continuation_readout
     from app.memory.live_life import peek_account_life, peek_mac_life
     from app.memory.recall import _spoken_empty_connected, _spoken_from_evidence
     from app.services.life_stream_daemon import get_life_stream_daemon, life_stream_should_run
@@ -4806,19 +5765,73 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
         daemon = get_life_stream_daemon()
     except Exception:
         return None
+    import asyncio
+
     if name == "list_messages":
-        from app.ev.spark_task import bind_decision, decide_task, reset_decision
+        from app.ev.spark_task import (
+            bind_decision,
+            decide_task,
+            remember_life_from_hits,
+            reset_decision,
+        )
 
         ask = query or "any new messages"
-        decision = await decide_task(ask, family_hint="messages")
+        from app.memory.life_archive.locate import chat_search_tokens
+        from app.memory.life_archive.locate import life_channel as _life_channel
+
+        _ask_channel = _life_channel(ask)
+        structural = chat_search_tokens(ask)
+        decision_task = asyncio.create_task(decide_task(ask, family_hint="messages"))
+        hits = peek_mac_life(ask, shelf="chats", tokens=structural, k=limit, daemon=daemon)
+        if not hits and structural and _ask_channel in {"whatsapp", "imessage"}:
+            # Person named but wrong aisle word ("messages from Mansi" where
+            # Mansi is WhatsApp-only): search the other aisle before giving up.
+            other_hits = (
+                daemon.peek_imessage(tokens=structural, limit=limit)
+                if _ask_channel == "whatsapp"
+                else daemon.peek_whatsapp(tokens=structural, limit=limit)
+            )
+            if other_hits:
+                hits = other_hits
+        decision = await decision_task
+        spark_manner = decision.manner
+        if spark_manner != "readout" and continuation_readout(ask):
+            # A bare "yes" answers Evie's own offer to read this chat out. The
+            # live offer, not the utterance, decides the manner — a digest here
+            # would gist the thread and never speak the words she offered.
+            decision = replace(decision, manner="readout", focus="readout")
+        if (
+            decision.tokens()
+            and spark_manner in {"particular", "readout"}
+            and [t.lower() for t in decision.tokens()] != [t.lower() for t in structural]
+        ):
+            # Spark/prior narrowing. Digest decisions never re-filter (a
+            # misfired who must not wipe a fresh digest), and an empty
+            # narrowing never replaces live hits.
+            narrowed = peek_mac_life(
+                ask, shelf="chats", tokens=decision.tokens(), k=limit, daemon=daemon
+            )
+            if narrowed:
+                hits = narrowed
         token = bind_decision(decision)
         try:
-            hits = peek_mac_life(ask, shelf="chats", tokens=decision.tokens(), k=limit, daemon=daemon)
             spoken = (
                 _spoken_from_evidence(hits, ask) if hits else _spoken_empty_connected(ask)
             )
             from app.memory.message_speak import shape_message_payload
 
+            _hit_channels = {str(h.get("channel") or "") for h in hits if isinstance(h, dict)}
+            _hit_channels.discard("")
+            if _hit_channels == {"whatsapp"}:
+                _channel = "whatsapp"
+            elif _hit_channels == {"imessage"}:
+                _channel = "imessage"
+            elif _ask_channel in {"whatsapp", "imessage"}:
+                _channel = _ask_channel
+            else:
+                _channel = "messages"
+
+            remember_life_from_hits(hits, family="messages", tool="list_messages", query=ask)
             return shape_message_payload(
                 {
                     "ok": True,
@@ -4826,7 +5839,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
                     "messages": hits,
                     "spoken": spoken,
                     "source": "live_mac",
-                    "channel": "imessage",
+                    "channel": _channel,
                     "task_decision": decision.as_dict(),
                 },
                 ask,
@@ -4834,15 +5847,36 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
         finally:
             reset_decision(token)
     if name == "list_mail":
-        from app.ev.spark_task import bind_decision, decide_task, reset_decision
+        from app.ev.spark_task import (
+            bind_decision,
+            decide_task,
+            remember_life_from_hits,
+            reset_decision,
+        )
         from app.memory.mail_speak import fill_readout, selector_tokens, shape_mail_payload
 
         ask = query or "any new email"
-        decision = await decide_task(ask, family_hint="mail")
+        wanted_guess = selector_tokens(ask)
+        decision_task = asyncio.create_task(decide_task(ask, family_hint="mail"))
+        hits = peek_mac_life(ask, shelf="mail", tokens=wanted_guess, k=limit, daemon=daemon)
+        decision = await decision_task
+        spark_manner = decision.manner
+        if spark_manner != "readout" and continuation_readout(ask):
+            # A bare "yes" answers Evie's own offer to read this mail out. The
+            # live offer, not the utterance, decides the manner — a digest here
+            # would gist the envelope and never speak the body she offered.
+            decision = replace(decision, manner="readout", focus="readout")
+        wanted = wanted_guess
+        if spark_manner in {"particular", "readout"}:
+            wanted = decision.tokens() or wanted_guess
+        if wanted != wanted_guess:
+            # Digest decisions never re-filter, and an empty narrowing never
+            # replaces live hits (Spark/prior misfires must not wipe).
+            narrowed = peek_mac_life(ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon)
+            if narrowed:
+                hits = narrowed
         token = bind_decision(decision)
         try:
-            wanted = decision.tokens() or selector_tokens(ask)
-            hits = peek_mac_life(ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon)
             if not hits:
                 hits = await peek_account_life(
                     ask, shelf="mail", tokens=wanted, k=limit, daemon=daemon
@@ -4856,6 +5890,7 @@ async def _mac_hub_life_read(name: str, args: dict) -> dict | None:
             spoken = (
                 _spoken_from_evidence(hits, ask) if hits else _spoken_empty_connected(ask)
             )
+            remember_life_from_hits(hits, family="mail", tool="list_mail", query=ask)
             shaped = shape_mail_payload(
                 {
                     "ok": True,

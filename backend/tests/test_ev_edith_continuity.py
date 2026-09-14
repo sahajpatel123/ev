@@ -345,7 +345,7 @@ async def test_live_permission_fail_closed_and_replay_idempotent(
             "event_type": "focus_change",
             "payload": {"app": "SecretApp", "text": "top-secret screen text"},
             "privacy_level": "normal",
-            "occurred_at": "2026-08-09T10:00:00Z",
+            "occurred_at": (utcnow() - timedelta(days=1)).isoformat(),
         }
     ]
     resp = await client.post(f"/v1/live/channels/{channel_id}/events", json=batch)
@@ -700,7 +700,7 @@ async def test_research_web_search_citations_come_only_from_provider(
             json={"question": "EV search citations"},
         )
         session_id = session_resp.json()["id"]
-        service = research_mod.ResearchService(db_session, actor="test")
+        service = research_mod.ResearchService(db_session, actor="owner")
         notes = await service.web_search(UUID(session_id), "EV memory", limit=3)
         assert len(notes) == 3
         for index, note in enumerate(notes, start=1):

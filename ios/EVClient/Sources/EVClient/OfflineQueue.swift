@@ -324,3 +324,9 @@ public struct OfflineCaptureQueue: Sendable {
         )
     }
 }
+// Cycle EAC-09 — OfflineQueue badge counter.
+/// iPhone-only additive helper; backward compatible (computed property only, sync logic untouched).
+public extension SyncSummary {
+    /// App-icon badge: captures still waiting to sync.
+    var evieBadgeCount: Int { remaining }
+}

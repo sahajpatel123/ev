@@ -628,7 +628,13 @@ async def complete_oauth_flow(
         oauth_row = IntegrationCredential(integration_id=integration.id, kind="oauth")
         session.add(oauth_row)
     oauth_row.provider_account_id = account_email
-    oauth_row.scopes = sorted(set(integration.scopes or []))
+    granted: list[str] = []
+    raw_scope = outcome.get("scope")
+    if isinstance(raw_scope, str) and raw_scope.strip():
+        granted = [part for part in raw_scope.split() if part]
+    oauth_row.scopes = sorted(
+        set(list(provider.scopes) + granted + list(integration.scopes or []))
+    )
     oauth_row.encrypted_access = vault.encrypt(outcome["access_token"])
     refresh_token = outcome.get("refresh_token")
     if isinstance(refresh_token, str):

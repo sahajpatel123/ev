@@ -38,3 +38,15 @@ public enum WatchComplicationStub {
         return Layout(title: card.objective, lines: Array(lines.prefix(2)))
     }
 }
+// Cycle EAC-07 — Watch complication layout helper.
+/// iPhone-only additive helper; backward compatible (new factory, render paths untouched).
+public extension WatchComplicationStub {
+    /// Builds a title + compact-lines layout for a Today headline pair.
+    static func evieTodayLayout(title: String, headline: String, subline: String?) -> Layout {
+        var lines = [headline]
+        if let subline, !subline.isEmpty {
+            lines.append(subline)
+        }
+        return Layout(title: title, lines: Array(lines.prefix(2)))
+    }
+}

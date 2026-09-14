@@ -1,7 +1,7 @@
 """CLI: catalog (dry-run) or ingest a personal-data archive.
 
-  cd backend && uv run python -m app.memory.life_archive catalog --root ~/personal-data-for-training
-  cd backend && uv run python -m app.memory.life_archive ingest --root ~/personal-data-for-training --apply
+  cd backend && uv run python -m app.memory.life_archive catalog --root ../data/life-archive
+  cd backend && uv run python -m app.memory.life_archive ingest --root ../data/life-archive --apply
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def _preload_repo_env() -> None:
 _preload_repo_env()
 
 from app.memory.life_archive.catalog import catalog_tree, write_catalog  # noqa: E402
-from app.memory.life_archive.classify import DEFAULT_ARCHIVE_ROOT  # noqa: E402
+from app.memory.life_archive.classify import archive_root  # noqa: E402
 from app.memory.life_archive.ingest import ingest_records  # noqa: E402
 
 
@@ -41,10 +41,10 @@ def main() -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     catalog_p = sub.add_parser("catalog", help="Dry-run classify; write private summary")
-    catalog_p.add_argument("--root", type=Path, default=DEFAULT_ARCHIVE_ROOT)
+    catalog_p.add_argument("--root", type=Path, default=None)
 
     ingest_p = sub.add_parser("ingest", help="Index/ingest classified files into Events")
-    ingest_p.add_argument("--root", type=Path, default=DEFAULT_ARCHIVE_ROOT)
+    ingest_p.add_argument("--root", type=Path, default=None)
     ingest_p.add_argument("--apply", action="store_true", help="Write events (default is count-only)")
     ingest_p.add_argument(
         "--include",
@@ -61,12 +61,13 @@ def main() -> int:
     locate_p.set_defaults(rebuild=True)
 
     args = parser.parse_args()
-    if args.cmd == "catalog":
-        return _catalog(args.root)
     if args.cmd == "locate":
         return asyncio.run(_rebuild_locator())
+    root = args.root or archive_root()
+    if args.cmd == "catalog":
+        return _catalog(root)
     return asyncio.run(
-        _ingest(args.root, apply=args.apply, include=args.include, adapters=args.adapters)
+        _ingest(root, apply=args.apply, include=args.include, adapters=args.adapters)
     )
 
 

@@ -133,7 +133,9 @@ async def test_stale_element_fails_closed() -> None:
 def test_is_mutating_covers_all_act_verbs() -> None:
     for verb in ("press", "type", "key", "scroll", "drag", "confirm", "cancel", "paste"):
         assert is_mutating("ui_action", {"action": verb}) is True
-    assert is_mutating("ui_action", {"action": "read_value"}) is False
+    # Unadvertised verbs fail closed: an action the schema does not describe as
+    # a read must be observed and fenced like any other mutation.
+    assert is_mutating("ui_action", {"action": "read_value"}) is True
     assert is_mutating("open_app", {}) is True
 
 

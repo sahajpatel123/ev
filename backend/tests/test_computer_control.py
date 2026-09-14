@@ -947,8 +947,66 @@ def test_in_app_computer_goal_routes_to_adapters() -> None:
     assert openai[1]["query"] == "OpenAI"
 
 
+def test_spoken_site_in_browser_navigates_not_empty_tabs() -> None:
+    from app.ev.computer_strategy import (
+        looks_like_app_or_web_task,
+        named_web_destination,
+        parse_open_intent,
+        resolve_in_app_computer_goal,
+    )
+
+    for utter in (
+        "open safari and open youtube",
+        "open safari and open youtube inside it",
+        "open safari and open youtube in it",
+        "open youtube in safari",
+        "open youtube",
+        "go to github in chrome",
+    ):
+        assert looks_like_app_or_web_task(utter), utter
+        resolved = resolve_in_app_computer_goal(utter)
+        assert resolved is not None, utter
+        assert resolved[0] == "app_action", utter
+        assert resolved[1]["action"] == "navigate", utter
+        url = str(resolved[1].get("url") or resolved[1].get("query") or "").lower()
+        if "youtube" in utter:
+            assert "youtube.com" in url, utter
+            assert resolved[1]["app"] == "Safari"
+        if "github" in utter:
+            assert "github.com" in url, utter
+            assert resolved[1]["app"] == "Chrome"
+
+    chrome_app = resolve_in_app_computer_goal("open google chrome")
+    assert chrome_app == ("open_app", {"name": "google chrome"})
+    assert named_web_destination("In Safari, search for YouTube") is None
+    search = resolve_in_app_computer_goal(
+        "In Safari, search for YouTube and open the first result."
+    )
+    assert search is not None
+    assert search[1]["action"] == "search"
+    assert search[1]["query"] == "YouTube"
+    assert parse_open_intent("open the grocery list") is None
+    assert parse_open_intent("add eggs to it") is None
+    assert parse_open_intent("open safari and check my email") is None
+    assert looks_like_app_or_web_task("open the note") is False
+
+
+def test_new_browser_goal_replaces_prior_file_owner_request() -> None:
+    from app.ev.computer_runtime import ensure_state, note_goal, reset_computer_states
+
+    reset_computer_states()
+    state = ensure_state("replace-file-job")
+    note_goal(state, "create a packing list and save it on Desktop")
+    state.last_file_path = "/tmp/evie-packing-list.txt"
+    note_goal(state, "open safari and open youtube inside it")
+    assert "youtube" in (state.original_owner_request or "").lower()
+    assert "packing" not in (state.original_owner_request or "").lower()
+    assert not str(state.last_file_path or "").strip()
+
+
 def test_owner_search_is_exact_and_domains_navigate() -> None:
     from app.ev.computer_strategy import (
+        _search_query_from_goal,
         look_should_use_screen,
         navigation_url_from_text,
         navigation_url_in_utterance,
@@ -957,7 +1015,6 @@ def test_owner_search_is_exact_and_domains_navigate() -> None:
         resolve_screen_observation_goal,
         wants_play_media,
         wants_screen_observation,
-        _search_query_from_goal,
     )
 
     assert _search_query_from_goal(
@@ -1985,7 +2042,7 @@ def test_rewritten_search_keeps_first_result_intent() -> None:
 
 
 def test_owner_search_does_not_steal_into_play() -> None:
-    from app.ev.computer import _wants_play_media, _wants_first_on_page_item
+    from app.ev.computer import _wants_first_on_page_item, _wants_play_media
     from app.ev.computer_runtime import ensure_state, note_goal, reset_computer_states
 
     reset_computer_states()
@@ -2149,12 +2206,12 @@ async def test_mixed_new_tab_search_still_opens_first_result(db_session) -> None
 
 def test_web_research_is_not_a_safari_search() -> None:
     from app.ev.computer_strategy import (
+        _search_query_from_goal,
         looks_like_web_research,
         resolve_browser_computer_goal,
         resolve_in_app_computer_goal,
-        web_search_query_from_text,
         wants_first_on_page_item,
-        _search_query_from_goal,
+        web_search_query_from_text,
     )
 
     book = (

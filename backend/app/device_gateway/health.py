@@ -111,6 +111,7 @@ def snapshot(*, connected_devices: int | None = None) -> dict[str, Any]:
         "mobile_voice_status": "OWNER FAILURE / CONVERGENCE ACTIVE",
         "design_version": getattr(settings, "pwa_design_version", None) or "veil-1",
         "web_push": "DEFERRED",
+        "web_notification": "PWA_LOCAL",
         "always_ready_se": "DEFERRED",
         "native_ios": "DEFERRED",
         "mobile_actions": {

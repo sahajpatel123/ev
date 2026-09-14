@@ -36,6 +36,35 @@ def fresh_db():
     yield
 
 
+@pytest.fixture(autouse=True)
+def isolated_cognitive_session(tmp_path, monkeypatch):
+    """Keep follow-up classification off the owner's durable session.
+
+    ``classify_turn`` reads the live offer, so a real ``session.json`` left
+    behind by a running EVIE would decide whether "yes" is a turn.
+    """
+
+    from app.cognitive.session_store import reset_for_tests
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "storage_root", str(tmp_path / "storage"))
+    reset_for_tests()
+    yield
+    reset_for_tests()
+
+
+def arm_offer() -> None:
+    """Record a live offer, exactly as the kernel does after EVIE asks."""
+
+    from app.cognitive.intent import set_pending_offer
+    from app.cognitive.session_store import current
+
+    set_pending_offer(
+        current(),
+        "I found the mail from Rahul. Do you want me to read out the full mail?",
+    )
+
+
 def silence(ms: int) -> bytes:
     return array.array("h", [0] * (SAMPLE_RATE * ms // 1000)).tobytes()
 
@@ -490,6 +519,41 @@ async def test_acknowledgement_in_a_follow_up_is_not_addressed_to_evie() -> None
 
     assert live.of("dismissed") == [
         {"reason": "not_addressed_to_evie", "text": "mm hmm"}
+    ]
+    assert len(live.responder.turns) == 1
+    assert live.loop.state == LiveState.FOLLOW_UP
+
+
+async def test_yes_in_a_follow_up_answers_a_live_offer() -> None:
+    """"yes" answers the question EVIE just asked, so it is the next turn."""
+
+    live = harness(script=wake_at(100), texts=("search my mail for rahul", "yes"))
+
+    await wake_turn(live)
+    arm_offer()
+    await live.loop.playback_finished()
+    await follow_up_turn(live)
+
+    assert [turn.transcript.text for turn in live.responder.turns] == [
+        "search my mail for rahul",
+        "yes",
+    ]
+    assert live.responder.turns[1].follow_up is True
+    assert live.of("dismissed") == []
+    assert live.loop.state == LiveState.SPEAKING
+
+
+async def test_yes_in_a_follow_up_without_an_offer_is_still_backchannel() -> None:
+    """With nothing waiting on it, the same word stays an acknowledgement."""
+
+    live = harness(script=wake_at(100), texts=("what did i decide", "yes"))
+
+    await wake_turn(live)
+    await live.loop.playback_finished()
+    await follow_up_turn(live)
+
+    assert live.of("dismissed") == [
+        {"reason": "not_addressed_to_evie", "text": "yes"}
     ]
     assert len(live.responder.turns) == 1
     assert live.loop.state == LiveState.FOLLOW_UP

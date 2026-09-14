@@ -41,8 +41,39 @@ def _api_url() -> str:
     return os.environ.get("EV_API_URL", DEFAULT_API_URL).rstrip("/")
 
 
+def _load_secret_overlay() -> None:
+    """Mirror of app.config._load_production_secret_overlay (dependency-free).
+
+    Runtime services authenticate with the production master credential,
+    which lives outside the repo in ~/.ev/secrets/production.env. Keys
+    already present in os.environ win (explicit operator override).
+    Never logs values; never raises.
+    """
+    overlay = Path(
+        os.environ.get("EV_SECRETS_FILE", "~/.ev/secrets/production.env")
+    ).expanduser()
+    try:
+        if not overlay.exists():
+            return
+        for line in overlay.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
+    except Exception:
+        pass
+
+
 def _api_key() -> str:
-    key = os.environ.get("EV_API_KEY", "")
+    _load_secret_overlay()
+    # Production: the overlay master is what the API accepts. Dev: fall back
+    # to the repo .env key. Preferring master first ends the 401 loop where
+    # the listener sent a stale dev key at the production API.
+    key = os.environ.get("EV_MASTER_KEY", "") or os.environ.get("EV_API_KEY", "")
     if not key:
         raise SystemExit("EV_API_KEY is not set (export EV_API_KEY=... before running)")
     return key

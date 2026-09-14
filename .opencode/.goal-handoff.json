@@ -1,0 +1,45 @@
+{
+  "createdAt": "2026-09-04T18:46:26.463Z",
+  "state": {
+    "version": 1,
+    "id": "9a1cb61a-8c27-4dc9-8d5a-d2436dcb5c1e",
+    "condition": "Evie's Talk/voice path is restored to the previous OpenAI setup: live voice runs S2S via OpenAI gpt-realtime-2.1-mini (EV_VOICE_LIVE_BRAIN=openai), the talk sidecar :18000 reports live=openai-realtime, and the owner can speak to Evie and hear spoken replies end-to-end. Muse/Meta flags are deselected but keys/files remain untouched.",
+    "command": null,
+    "verification": null,
+    "status": "paused",
+    "createdAt": 1788545403830,
+    "startedAt": 1788545403830,
+    "completedAt": null,
+    "pausedAt": 1788546604354,
+    "resumedAt": null,
+    "turnsEvaluated": 1,
+    "tokensUsed": 0,
+    "lastEvaluation": {
+      "met": false,
+      "blocked": true,
+      "reason": "Session error: MessageAbortedError: Aborted",
+      "confidence": 1,
+      "timestamp": 1788546604356,
+      "evaluatorType": "deterministic"
+    },
+    "evaluationHistory": [
+      {
+        "met": false,
+        "reason": "No GOAL_COMPLETE signal in latest output yet",
+        "confidence": 0.5,
+        "timestamp": 1788546131698,
+        "evaluatorType": "heuristic"
+      }
+    ],
+    "constraints": {
+      "maxTurns": 20,
+      "maxTimeMinutes": 30,
+      "maxTokens": 100000
+    },
+    "metadata": {
+      "setBy": "user",
+      "conditionEditedAt": 1788547326754
+    }
+  },
+  "note": "Rollback to OpenAI Realtime complete and owner-verified. .env restored to the Aug-31 working values (EV_CHAT_PROVIDER=xai, EV_VOICE_LIVE_BRAIN=openai, EV_PHONE_AUDIO_BACKEND=webrtc_strict, EV_VOICE_ASR_PROVIDER=faster_whisper, Muse slots deselected; Meta/Spark keys untouched). Talk sidecar :18000 verified: live=openai-realtime, voice=gpt-realtime-2.1-mini, spoken round trip confirmed by probe and by owner. Uncommitted working-tree extras: device_playable_audio MP3→WAV transcoder (+test), live_re"
+}

@@ -225,3 +225,10 @@ final class HealthKitManager {
         return fallback
     }
 }
+// Cycle EAC-02 — HealthKit opt-in explainer copy.
+/// iPhone-only strings; backward compatible (comment + static strings, no logic changed).
+enum EvieHealthOptInCopy {
+    static let title = "Share Apple Health with Evie?"
+    static let body = "Evie reads recent activity, sleep, and workouts to brief you. Sharing is optional and read-only; Evie works fully without it."
+    static let declineNote = "You can enable this later from Settings."
+}

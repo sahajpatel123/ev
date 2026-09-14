@@ -386,12 +386,43 @@ _OUTPUT_TRANSCRIPT_MIN_INTERVAL_S = 0.08
 _TOOL_GAP_GATE_S = 15.0
 _TOOL_GAP_CONTINUATION_GATE_S = 5.0
 # Keep provider reads independent from client/audio playout. A blocked recv
-# cannot answer websocket pings (ping_timeout=20s) and starves TTS after ~20s.
-# 96 gives headroom for a fast 30s burst. Under pressure we preserve provider
-# control/boundary events (response.created/done, VAD, transcripts, tools) and
-# discard only an audio delta or disposable transcript delta as a last resort;
-# losing a boundary is much worse than losing one already-buffered PCM slice.
+# cannot answer websocket pings and starves TTS. 96 gives headroom for a fast
+# 30s burst. Under pressure we preserve provider control/boundary events
+# (response.created/done, VAD, transcripts, tools) and discard only an audio
+# delta or disposable transcript delta as a last resort; losing a boundary is
+# much worse than losing one already-buffered PCM slice.
 _UPSTREAM_EVENT_QUEUE_MAX = 96
+# AGENT LAW (2026-09-10): OpenAI Realtime does not reliably pong *client*
+# protocol pings while Mini is generating a long spoken reply. websockets then
+# closes with 1011 "keepalive ping timeout" at ping_timeout=40s — heard as
+# Evie going off-script ~40s into a long answer because reconnect collides
+# with leftover playback. Disable client keepalive. Server protocol pings are
+# still auto-ponged by the library. JSON `ping` events are answered in recv,
+# never queued behind audio. Dead peers still surface as ConnectionClosed.
+_REALTIME_WS_PING_INTERVAL = None
+_REALTIME_WS_PING_TIMEOUT = None
+# Mini is a mouth. Muse already wrote the spoken text. Do not attach the
+# owner-frozen brevity law here — "one or two short sentences" fights a
+# long verbatim speak and Mini starts inventing a shorter answer mid-stream.
+_MOUTH_SPEAK_INSTRUCTIONS = (
+    "Your ONLY job is to speak the owner-facing text from the "
+    "latest user item, verbatim, in your normal voice. Never read "
+    "the parenthetical label. Speak only the text after the closing "
+    "parenthesis. Do not paraphrase, omit, summarize, or add facts. "
+    "Do not plan. Do not call tools. No JSON, no questions, no "
+    "independent answer. Speak the full text even if it is long; "
+    "do not stop, restart, or invent a shorter version. Speak in the "
+    "same language as that text; never switch languages."
+)
+_COPROCESSOR_INSTRUCTIONS = (
+    "You are a voice coprocessor, not Evie's mind. You do not answer owner "
+    "questions, plan, call tools, add facts, or paraphrase meaning. You "
+    "transcribe speech. When given a system-confirmation item, speak the "
+    "text after the closing parenthesis verbatim, in full, in your normal "
+    "voice, even if the text is long. Never shorten it. Never create an "
+    "independent spoken reply to the owner. Speak in the same language as "
+    "that text; never switch languages."
+)
 
 _AUDIO_DELTA_TYPES = frozenset(
     {
@@ -967,6 +998,14 @@ def _live_surface_mode(explicit: str | None = None) -> str:
     return value
 
 
+def _mini_coprocessor() -> bool:
+    """True when Mini is VAD/ASR/TTS only and Muse Spark owns tools and replies."""
+
+    from app.cognitive.mode import muse_kernel_active
+
+    return muse_kernel_active()
+
+
 def grok_voice_tools(specs: list[dict] | None = None, *, mode: str | None = None) -> list[dict]:
     """Build flat Realtime function payloads from an approved spec projection.
 
@@ -980,8 +1019,11 @@ def grok_voice_tools(specs: list[dict] | None = None, *, mode: str | None = None
       recall_history + generic capabilities; inspect_ui/ui_action/screen_look
       are removed);
     - autonomous: no tools at all.
+    Cognitive OS V2 (muse_kernel): Mini is a voice coprocessor — tools none.
     """
 
+    if _mini_coprocessor():
+        return []
     mode = _live_surface_mode(mode)
     if mode == "autonomous":
         return []
@@ -1188,6 +1230,7 @@ def grok_session_update(
 
     from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
+    coprocessor = _mini_coprocessor()
     kind = _normalize_realtime_provider(provider or live_realtime_provider() or "xai")
     selected_tools = function_tools if function_tools is not None else approved_tools
     if selected_tools is None and isinstance(capability_manifest, dict):
@@ -1198,7 +1241,8 @@ def grok_session_update(
     if selected_tools is None:
         selected_tools = []
     mode = _live_surface_mode()
-    realtime_tools = grok_voice_tools(selected_tools, mode=mode)
+    realtime_tools = [] if coprocessor else grok_voice_tools(selected_tools, mode=mode)
+    coprocessor_instructions = _COPROCESSOR_INSTRUCTIONS
     if kind == "openai":
         voice = (settings.openai_realtime_voice or "marin").strip() or "marin"
         # OWNER LAW (S2S latency): server VAD creates the response the moment
@@ -1206,13 +1250,14 @@ def grok_session_update(
         # first. Shadow injects SHADOW MEMORY onto response.create for the
         # current spoken turn; V2 commits after a bounded silence grace.
         # Supervised stays create_response=true (frozen live path).
+        # Cognitive OS V2: Mini never auto-answers; Muse supplies speech text.
         turn_detection = {
             "type": "server_vad",
             "threshold": 0.5,
             "prefix_padding_ms": 200,
             "silence_duration_ms": 400,
             "interrupt_response": False,
-            "create_response": not (turn_authority_v2 or mode == "shadow"),
+            "create_response": False if coprocessor else not (turn_authority_v2 or mode == "shadow"),
         }
         return {
             "type": "session.update",
@@ -1220,10 +1265,14 @@ def grok_session_update(
                 "type": "realtime",
                 "model": (settings.openai_realtime_model or "gpt-realtime-2.1-mini").strip(),
                 "instructions": (
-                    openai_realtime_instructions(capability_manifest=capability_manifest)
-                    + capability_instructions(capability_manifest)
-                    + "\n"
-                    + SPEECH_STYLE_INSTRUCTIONS
+                    coprocessor_instructions
+                    if coprocessor
+                    else (
+                        openai_realtime_instructions(capability_manifest=capability_manifest)
+                        + capability_instructions(capability_manifest)
+                        + "\n"
+                        + SPEECH_STYLE_INSTRUCTIONS
+                    )
                 ),
                 "output_modalities": ["audio"],
                 "reasoning": {
@@ -1250,20 +1299,24 @@ def grok_session_update(
         "silence_duration_ms": int(settings.xai_voice_silence_ms),
         "prefix_padding_ms": 330,
     }
-    xai_tools = realtime_tools
+    xai_tools = [] if coprocessor else realtime_tools
     # xAI's built-in web_search is provider-side execution, so only expose it
     # when the current EV search capability is explicitly available. It is not
     # a substitute for an empty EV function projection. Never in autonomous.
-    if mode != "autonomous" and _manifest_allows_search(capability_manifest):
+    if not coprocessor and mode != "autonomous" and _manifest_allows_search(capability_manifest):
         xai_tools = [{"type": "web_search"}, *realtime_tools]
     return {
         "type": "session.update",
         "session": {
             "instructions": (
-                grok_voice_instructions(capability_manifest=capability_manifest)
-                + capability_instructions(capability_manifest)
-                + "\n"
-                + SPEECH_STYLE_INSTRUCTIONS
+                coprocessor_instructions
+                if coprocessor
+                else (
+                    grok_voice_instructions(capability_manifest=capability_manifest)
+                    + capability_instructions(capability_manifest)
+                    + "\n"
+                    + SPEECH_STYLE_INSTRUCTIONS
+                )
             ),
             "voice": settings.xai_voice_voice or "eve",
             "reasoning": {"effort": "none"},
@@ -1350,7 +1403,7 @@ class GrokVoiceBridge:
 
     # LiveSession uses this marker to distinguish a real function-call bridge
     # from a legacy OpenAI sidecar object that cannot own tool calls.
-    supports_function_calls = True
+    # Coprocessor sessions override via the instance property below.
     bridge_version = REALTIME_BRIDGE_VERSION
 
     def __init__(
@@ -1571,6 +1624,12 @@ class GrokVoiceBridge:
         self._intelligence_judged_ids: set[str] = set()
 
     @property
+    def supports_function_calls(self) -> bool:
+        """Mini must not own tools when Muse Spark is the mind."""
+
+        return not _mini_coprocessor()
+
+    @property
     def function_tools_enabled(self) -> bool:
         """Whether this session advertised at least one EV function."""
 
@@ -1585,7 +1644,9 @@ class GrokVoiceBridge:
         rewrites speech.
         """
         mode = (getattr(settings, "intelligence_layer", "") or "").strip().lower()
-        if mode != "spark":
+        from app.cognitive.mode import muse_kernel_active
+
+        if muse_kernel_active() or mode != "spark":
             logger.warning("realtime_trace event=intelligence_judge.skipped mode=%r", mode)
             return {"skipped": "disabled"}
         try:
@@ -1594,7 +1655,7 @@ class GrokVoiceBridge:
 
             provider = _spark_judge_provider()
             if not provider._credential():
-                raise MuseProviderUnavailable("OPENCODE_API_KEY missing")
+                raise MuseProviderUnavailable("META_MODEL_API_KEY missing")
             result = await provider.chat(
                 [
                     ChatMessage(
@@ -1982,6 +2043,10 @@ class GrokVoiceBridge:
 
         if not self._shadow_mode or self._provider != "openai" or self._ws is None:
             return
+        from app.cognitive.mode import muse_kernel_active
+
+        if muse_kernel_active():
+            return
         if self._response_active:
             return
         turn_id = self._open_turn_id
@@ -2240,13 +2305,6 @@ class GrokVoiceBridge:
                 [item for item in session_tools if isinstance(item, dict)]
             ),
         }
-        audio = (
-            session_payload.get("audio") if isinstance(session_payload.get("audio"), dict) else {}
-        )
-        audio_in = audio.get("input") if isinstance(audio.get("input"), dict) else {}
-        requested_tx = (
-            audio_in.get("transcription") if isinstance(audio_in.get("transcription"), dict) else {}
-        )
         audio_raw = session_payload.get("audio")
         audio = audio_raw if isinstance(audio_raw, dict) else {}
         audio_in_raw = audio.get("input")
@@ -2309,20 +2367,29 @@ class GrokVoiceBridge:
             )
         )
         if not session_tools:
-            message = "No approved realtime tools were exposed; function calls are disabled."
-            logger.warning(
-                "realtime_trace event=tool_projection.empty provider=%s capability_error=%s",
-                self._provider,
-                bool(self._capability_error),
-            )
-            await self._on_event(
-                ErrorEvent(
-                    at_ms=self._now(),
-                    code="realtime_no_tools",
-                    message=message,
-                    fatal=False,
+            # Cognitive OS V2: empty tools are required. Surfacing that as a
+            # live error made the Mac show "function calls are disabled" and
+            # Mini's leftover tool attempts then muted the next owner turn.
+            if _mini_coprocessor():
+                logger.warning(
+                    "realtime_trace event=tool_projection.coprocessor provider=%s tools=0",
+                    self._provider,
                 )
-            )
+            else:
+                message = "No approved realtime tools were exposed; function calls are disabled."
+                logger.warning(
+                    "realtime_trace event=tool_projection.empty provider=%s capability_error=%s",
+                    self._provider,
+                    bool(self._capability_error),
+                )
+                await self._on_event(
+                    ErrorEvent(
+                        at_ms=self._now(),
+                        code="realtime_no_tools",
+                        message=message,
+                        fatal=False,
+                    )
+                )
         self._pump = asyncio.create_task(self._recv_loop(), name="ev-realtime-voice-recv")
         logger.warning(
             "Live realtime connected provider=%s model=%s advertised_tools=%s",
@@ -2459,6 +2526,11 @@ class GrokVoiceBridge:
         raw = (text or "").strip()
         if not raw or self._closed:
             return
+        if _mini_coprocessor():
+            # Muse already owns typed/voice meaning. Mini must not create a
+            # tool-calling response that wedges the next spoken turn.
+            logger.warning("realtime_trace event=send_text.skipped_coprocessor chars=%s", len(raw))
+            return
         self._last_input_transcript = raw
         self._last_input_transcript_at = time.monotonic()
         self._discard_queued_audio_events()
@@ -2543,7 +2615,7 @@ class GrokVoiceBridge:
                 "no questions, no persona changes.\n" + SPEECH_STYLE_INSTRUCTIONS
             )
         }
-        if self._response_tool_choice_supported:
+        if self._response_tool_choice_supported or _mini_coprocessor():
             response["tool_choice"] = "none"
         return await self._send({"type": "response.create", "response": response})
 
@@ -2602,7 +2674,50 @@ class GrokVoiceBridge:
                 + SPEECH_STYLE_INSTRUCTIONS
             )
         }
-        if self._response_tool_choice_supported:
+        if self._response_tool_choice_supported or _mini_coprocessor():
+            response["tool_choice"] = "none"
+        sent = await self._send({"type": "response.create", "response": response})
+        if sent:
+            self._response_active = True
+            self._audio_accepting = True
+        return sent
+
+    async def speak_supplied_text(self, text: str) -> bool:
+        """Speak Muse's canonical reply verbatim. Mini must not paraphrase."""
+
+        raw = (text or "").strip()
+        if not raw or self._closed or self._ws is None:
+            return False
+        self._honesty_speech = True
+        self._pending_life_record = raw
+        self._life_record_forced = False
+        self._tool_gap_gate_until = 0.0
+        logger.warning(
+            "realtime_trace event=speak_supplied_text chars=%s",
+            len(raw),
+        )
+        if not await self._send(
+            {
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": (
+                                "(system confirmation — speak this to the owner now) " + raw
+                            ),
+                        }
+                    ],
+                },
+            }
+        ):
+            return False
+        response: dict[str, Any] = {
+            "instructions": _MOUTH_SPEAK_INSTRUCTIONS
+        }
+        if self._response_tool_choice_supported or _mini_coprocessor():
             response["tool_choice"] = "none"
         sent = await self._send({"type": "response.create", "response": response})
         if sent:
@@ -3186,7 +3301,8 @@ class GrokVoiceBridge:
             # Reserve the mic gate at enqueue time for the same reason: no
             # ambient input may slip between the provider's function boundary
             # and the first scheduling slice of a slow tool worker.
-            self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_GATE_S
+            if not _mini_coprocessor():
+                self._tool_gap_gate_until = time.monotonic() + _TOOL_GAP_GATE_S
         if self._tool_worker is None or self._tool_worker.done():
             self._tool_worker = asyncio.create_task(self._tool_loop(), name="ev-realtime-tools")
         self._tool_queue.put_nowait(event)
@@ -3304,6 +3420,12 @@ class GrokVoiceBridge:
                     return
                 event = _parse_event(message)
                 if event:
+                    kind = str(event.get("type") or "")
+                    if kind == "ping":
+                        # OpenAI JSON keepalive. Never park this behind audio
+                        # deltas — a late pong is a 1011 close mid-speak.
+                        await self._send({"type": "pong"})
+                        continue
                     queue = self._upstream_events
                     if queue is None:
                         return
@@ -3641,9 +3763,13 @@ class GrokVoiceBridge:
         manifest = (
             self._capability_manifest if isinstance(self._capability_manifest, dict) else None
         )
+        from app.cognitive.mode import muse_kernel_active
         from app.ev.personality import SPEECH_STYLE_INSTRUCTIONS
 
-        if self._provider == "openai":
+        coprocessor = muse_kernel_active()
+        if coprocessor:
+            text = _COPROCESSOR_INSTRUCTIONS
+        elif self._provider == "openai":
             text = (
                 openai_realtime_instructions(capability_manifest=manifest)
                 + capability_instructions(manifest)
@@ -3668,10 +3794,10 @@ class GrokVoiceBridge:
             self._last_shadow_block = ""
         new_names = tuple(self.advertised_tool_names)
         tools_changed = new_names != previous_names or new_names != self._upstream_tool_names
-        if tools_changed:
-            realtime_tools = grok_voice_tools(self._tool_specs)
+        if coprocessor or tools_changed:
+            realtime_tools = [] if coprocessor else grok_voice_tools(self._tool_specs)
             session_payload["tools"] = realtime_tools
-            session_payload["tool_choice"] = "auto" if realtime_tools else "none"
+            session_payload["tool_choice"] = "none" if coprocessor or not realtime_tools else "auto"
             self._upstream_session_ready = False
         sent = await self._send({"type": "session.update", "session": session_payload})
         logger.warning(
@@ -4041,11 +4167,7 @@ class GrokVoiceBridge:
             # User started a turn. Do not send response.cancel — that errors
             # with "no active response" and can kill the next spoken answer.
             self._ensure_open_turn()
-            if (
-                self._turn_authority_v2
-                and self._v2_pending_commit is not None
-                and not self._v2_pending_commit.done()
-            ):
+            if self._turn_authority_v2 and self._v2_pending_commit is not None and not self._v2_pending_commit.done():
                 # CONTINUATION: speech restarted inside the grace window — the
                 # owner was still forming the thought. Cancel any pending
                 # commit; floor stays OWNER. (TA05)
@@ -4124,12 +4246,6 @@ class GrokVoiceBridge:
             elif text:
                 await self._emit_user_transcript(text, final=False, item_id=item_id)
             return
-        if kind in {
-            "conversation.item.done",
-            "conversation.item.created",
-            "response.output_item.added",
-        }:
-            item = event.get("item") if isinstance(event.get("item"), dict) else {}
         if kind in {"conversation.item.done", "conversation.item.created", "response.output_item.added"}:
             item_raw = event.get("item")
             item = item_raw if isinstance(item_raw, dict) else {}
@@ -4362,6 +4478,14 @@ class GrokVoiceBridge:
                 self._turn_audio_chunks = 0
             return
         if kind in _FUNCTION_ERROR_TYPES:
+            if _mini_coprocessor():
+                logger.warning(
+                    "realtime_trace event=function_call.provider_error.ignored_coprocessor provider=%s",
+                    self._provider,
+                )
+                self._function_call_error = False
+                self._tool_gap_gate_until = 0.0
+                return
             self._function_call_error = True
             message, code = _realtime_error_fields(event)
             logger.error(
@@ -4408,6 +4532,22 @@ class GrokVoiceBridge:
                 # loop into a wall.
                 await self._note_disconnect(ConnectionError(f"{code} {message}".strip()))
                 return
+            if _mini_coprocessor() and (
+                "function" in combined
+                or "tool_choice" in combined
+                or "tools were" in combined
+                or "tools are disabled" in combined
+            ):
+                logger.warning(
+                    "realtime_trace event=provider.error.ignored_coprocessor provider=%s code=%s",
+                    self._provider,
+                    code,
+                )
+                self._function_call_error = False
+                self._tool_gap_gate_until = 0.0
+                if "tool_choice" in combined or "unknown parameter" in combined:
+                    self._response_tool_choice_supported = False
+                return
             if "tool_choice" in combined or "unknown parameter" in combined:
                 self._response_tool_choice_supported = False
                 logger.warning(
@@ -4447,8 +4587,16 @@ class GrokVoiceBridge:
                 len(pcm),
             )
         self._out_pcm.extend(pcm)
-        first_bytes = int(self._upstream_rate * 2 * 0.08)
-        next_bytes = int(self._upstream_rate * 2 * 0.10)
+        # S2S continuity: emit 160/200 ms chunks, not 80/100 ms. The provider
+        # drips at ~1x realtime over WAN; 80 ms chunks meant 12.5 tts_chunk
+        # events/sec through the Mac MainActor handle() path while the player
+        # rode a ~250 ms lead — every routine jitter hole caused an underrun
+        # heard as constant lag/glitch with and without tools (tts-metrics
+        # 10-95 underruns/response vs ≤1 gate). 200 ms chunks halve the event
+        # rate and double per-event lead; the client aggregates to 160 ms
+        # internally so no audio shape changes, only fewer, bigger packets.
+        first_bytes = int(self._upstream_rate * 2 * 0.16)
+        next_bytes = int(self._upstream_rate * 2 * 0.20)
         threshold = first_bytes if self._first_audio else next_bytes
         while len(self._out_pcm) >= threshold:
             chunk = bytes(self._out_pcm[:threshold])
@@ -4460,7 +4608,7 @@ class GrokVoiceBridge:
     async def _flush_audio(self, *, force: bool) -> None:
         if not self._out_pcm:
             return
-        if not force and len(self._out_pcm) < int(self._upstream_rate * 2 * 0.08):
+        if not force and len(self._out_pcm) < int(self._upstream_rate * 2 * 0.16):
             return
         chunk = bytes(self._out_pcm)
         self._out_pcm.clear()
@@ -4543,6 +4691,28 @@ class GrokVoiceBridge:
                     fatal=False,
                 )
             )
+            return
+        if _mini_coprocessor():
+            # Mini still hallucinates tools after Muse cutover. Executing them
+            # (or 15s-gating the mic when they fail) is what silenced the next
+            # owner turn. Unstick the provider and leave meaning to Muse.
+            if call_id:
+                self._handled_tool_calls.add(call_id)
+            logger.warning(
+                "realtime_trace event=function_call.ignored_coprocessor function_name=%s",
+                name or "<empty>",
+            )
+            if call_id:
+                await self._send_function_output(
+                    call_id,
+                    json.dumps(
+                        {"ok": False, "error": "coprocessor_no_tools"},
+                        separators=(",", ":"),
+                    ),
+                )
+            self._tool_gap_gate_until = 0.0
+            self._tool_boundary_pending = False
+            self._function_call_error = False
             return
         # Direct callers (tests and a few compatibility paths) do not pass
         # through ``_spawn_tool``. Reserve them here; normal upstream calls
@@ -5320,6 +5490,6 @@ async def _default_connect(url: str, additional_headers: dict | None = None):
         url,
         additional_headers=additional_headers or {},
         open_timeout=20,
-        ping_interval=20,
-        ping_timeout=40,
+        ping_interval=_REALTIME_WS_PING_INTERVAL,
+        ping_timeout=_REALTIME_WS_PING_TIMEOUT,
     )

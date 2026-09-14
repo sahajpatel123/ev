@@ -22,9 +22,12 @@ PHONE_MAC_TOOLS = (
     "activate_app",
     "list_apps",
     "computer_status",
-    "open_url",
     "start_timer",
+    "cancel_timer",
+    "list_timers",
     "set_reminder",
+    "list_reminders",
+    "cancel_reminder",
     "get_weather",
     "calendar_read",
     "list_mail",
@@ -42,10 +45,18 @@ PHONE_MAC_TOOLS = (
     "present",
     "send_message",
     "place_call",
-    "computer",
-    "code",
     "evie_turn",
 )
+PHONE_TOOL_ALIASES = {
+    "timer": "start_timer",
+    "reminder": "set_reminder",
+    "weather": "get_weather",
+    "calendar": "calendar_read",
+    "mail": "list_mail",
+    "messages": "list_messages",
+    "message": "send_message",
+    "call": "place_call",
+}
 
 _CHAT_RE = re.compile(
     r"^(?:hi|hello|hey|yo|yes|yeah|yep|ok|okay|no|nope|thanks|thank you|"
@@ -59,6 +70,10 @@ _ACTION_ISH_RE = re.compile(
     r"turn (?:on|off)|lights?|lock|unlock|brief|what's on|"
     r"calculator|safari|spotify|notes|reminders"
     r")\b",
+    re.I,
+)
+_HEALTH_RE = re.compile(
+    r"\b(?:healthkit|steps?|heart rate|sleep|calories|blood pressure)\b",
     re.I,
 )
 
@@ -78,6 +93,9 @@ _SCHEMA = {
         "query": {"type": "string"},
         "goal": {"type": "string"},
         "expression": {"type": "string"},
+        "entity": {"type": "string"},
+        "action": {"type": "string"},
+        "channel": {"type": "string"},
     },
     "required": ["tool"],
 }
@@ -91,8 +109,11 @@ Otherwise pick one Home Station tool:
 - start_timer (minutes)
 - set_reminder (text)
 - get_weather, calendar_read, list_mail, list_messages, brief_me, home_status
-- send_message (to, text), place_call (name)
-- home_act for lights/locks
+- send_message (to, text, channel), place_call (name)
+- send_message channel must match what the owner said: "whatsapp" when they
+  say WhatsApp, "mail" when they say email, otherwise omit channel
+  (Home Station defaults to Messages). Never invent a channel.
+- home_act only for reversible lights on/off actions
 - computer for a Mac UI/file job (goal)
 - code for a coding job (goal)
 - calculate (expression)
@@ -116,7 +137,7 @@ def looks_like_phone_chat(text: str) -> bool:
 
 def should_ask_spark(text: str) -> bool:
     raw = (text or "").strip()
-    if looks_like_phone_chat(raw):
+    if not raw or _HEALTH_RE.search(raw) or looks_like_phone_chat(raw):
         return False
     return bool(_ACTION_ISH_RE.search(raw) or len(raw.split()) >= 4)
 
@@ -124,14 +145,14 @@ def should_ask_spark(text: str) -> bool:
 async def spark_phone_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
     from app.gateway.muse import (
         MuseProviderUnavailable,
-        muse_intelligence_active,
+        muse_brain_active,
         muse_spark_key_loaded,
         muse_spark_model,
     )
 
     if not should_ask_spark(utterance):
         return None
-    if not muse_intelligence_active() or not muse_spark_key_loaded():
+    if not muse_brain_active() or not muse_spark_key_loaded():
         return None
     try:
         from app.contracts import ChatMessage
@@ -149,7 +170,7 @@ async def spark_phone_tool(utterance: str) -> tuple[str, dict[str, Any]] | None:
             ),
             timeout=_SPARK_BUDGET_S,
         )
-    except (MuseProviderUnavailable, asyncio.TimeoutError):
+    except (TimeoutError, MuseProviderUnavailable):
         logger.info("spark_phone unavailable")
         return None
     except Exception:
@@ -189,11 +210,24 @@ def _parse_tool(raw: str) -> tuple[str, dict[str, Any]] | None:
             return None
     if not isinstance(data, dict):
         return None
-    tool = str(data.get("tool") or "chat").strip()
+    tool = str(data.get("tool") or "chat").strip().lower()
+    tool = PHONE_TOOL_ALIASES.get(tool, tool)
     if tool in {"", "chat"} or tool not in PHONE_MAC_TOOLS:
         return None
     args: dict[str, Any] = {}
-    for key in ("name", "minutes", "text", "to", "url", "query", "goal", "expression"):
+    for key in (
+        "name",
+        "minutes",
+        "text",
+        "to",
+        "url",
+        "query",
+        "goal",
+        "expression",
+        "entity",
+        "action",
+        "channel",
+    ):
         value = data.get(key)
         if value is None or value == "":
             continue

@@ -1,5 +1,5 @@
-const CLIENT_BUILD = "2026.09.08.42";
-const DESIGN_VERSION = "veil-1";
+const CLIENT_BUILD = "2026.09.09.04";
+const DESIGN_VERSION = "atelier-1";
 const PROTOCOL_VERSION = "1";
 const TARGET_RATE = 16000;
 const ASSET_V = "?v=" + CLIENT_BUILD;
@@ -93,6 +93,7 @@ const state = {
   encodedPlaying: false,
   encodedUrl: null,
   voiceHealth: null,
+  talkPhase: "IDLE",
   connectionDiag: null,
   lastAsr: "",
   lastAsrConfidence: null,
@@ -111,7 +112,8 @@ const state = {
   queue: [],
   syncCursor: null,
   drainedCaptures: {},
-  cameraRole: "unknown",
+  assetManifestHash: null,
+  helloRecheckTimer: 0,
   userLine: "",
   caption: "",
   mood: "Connecting to Evie…",
@@ -163,6 +165,228 @@ function textOf(el, value) {
   if (el) el.textContent = value == null ? "" : String(value);
 }
 
+function showHomeStationResult(payload) {
+  const body = payload && payload.phone_action ? payload.phone_action : (payload || {});
+  const isHomeStation =
+    body.route === "HOME_STATION" ||
+    body.provenance === "home_station.dispatch" ||
+    (payload && payload.home_station_result);
+  if (!isHomeStation) return false;
+  const tool = String(body.tool || body.operation || payload.name || "action").trim();
+  let status = "accepted";
+  if (body.confirmation_required) {
+    status = "confirmation required";
+  } else if (body.ok === false || body.tool_ok === false || body.error_code) {
+    status = "failed";
+  } else if (body.queued) {
+    status = "queued";
+  } else if (body.executed === true) {
+    status = body.verified === true ? "completed · verified" : "completed · verification pending";
+  }
+  const line = "Home Station · " + status + " · " + tool;
+  const card = $("action-card");
+  if (card) {
+    card.hidden = false;
+    card.setAttribute("role", "status");
+    card.setAttribute("aria-live", "polite");
+    textOf(card, line);
+  }
+  if (state._lastHomeStationResult !== line) {
+    state._lastHomeStationResult = line;
+    pushActivity(line);
+    if (window.EvieFeedback) {
+      if (status.indexOf("confirmation") === 0) {
+        window.EvieFeedback.haptic(10);
+      } else if (status.indexOf("failed") === 0) {
+        window.EvieFeedback.hapticEvent("bargeIn");
+      } else if (status.indexOf("completed") === 0) {
+        window.EvieFeedback.hapticEvent("turnDone");
+      } else {
+        window.EvieFeedback.haptic(10);
+      }
+    }
+  }
+  return true;
+}
+
+function digitalFollowPrompts(digital) {
+  const payload = digital || {};
+  const chips = [];
+  const manner = String(payload.manner || "");
+  const status = String(payload.status || "").toUpperCase();
+  const focus = payload.focus || {};
+  const person = String(focus.person || "").trim();
+  const dest = String(payload.destination || "").trim();
+  if (manner === "digest" || manner === "particular") {
+    chips.push({ id: "more", label: "More about that", prompt: "more about that particular chat" });
+    if (person) chips.push({ id: "who", label: "More about " + person, prompt: "more about " + person });
+  }
+  if (manner === "details") {
+    chips.push({ id: "more", label: "A bit more", prompt: "tell me more" });
+  }
+  if (status === "PREPARED" || status === "WAITING_FOR_APPROVAL") {
+    chips.push({ id: "approve", label: "Approve send", prompt: "approve send" });
+    chips.push({ id: "hold", label: "Don't send", prompt: "do not send" });
+  }
+  if (status === "CLARIFY" && dest) {
+    chips.push({ id: "to", label: "To " + dest, prompt: "reroute those chats to " + dest });
+  }
+  const seen = new Set();
+  return chips.filter((chip) => {
+    if (!chip.prompt || seen.has(chip.id)) return false;
+    seen.add(chip.id);
+    return true;
+  });
+}
+
+function turnOutcomeLine(body) {
+  const payload = body || {};
+  const digital = payload.digital || {};
+  if (payload.route === "DIGITAL_OPS" || digital.kind === "phone_brief") {
+    const bits = ["This iPhone"];
+    if (digital.manner === "digest") bits.push("summary");
+    else if (digital.manner === "details") bits.push("more on that chat");
+    else if (digital.manner === "particular") bits.push("that chat");
+    else if (digital.manner === "reroute") bits.push("reroute");
+    else if (digital.manner) bits.push(String(digital.manner));
+    if (digital.sent === false) bits.push("not sent");
+    if (digital.focus && digital.focus.person) bits.push(String(digital.focus.person));
+    return bits.join(" · ");
+  }
+  const target = String(payload.route_target || "");
+  const result = String(payload.action_result || "").toUpperCase();
+  if (target === "HOME_STATION" || payload.queued || result === "QUEUED") {
+    let status = "accepted";
+    if (payload.queued || result === "QUEUED") status = "queued";
+    if (result === "NEEDS_CONFIRMATION" || payload.confirmation_required) status = "needs confirmation";
+    if (result === "DEVICE_OFFLINE") status = "Mac offline";
+    if (result === "COMPLETED") status = "completed";
+    if (result === "FAILED" || result === "BLOCKED") status = result.toLowerCase();
+    return "Home Station · " + status;
+  }
+  return "";
+}
+
+function mergePeopleRows(body) {
+  const rows = [];
+  const seen = new Set();
+  const add = (name, source, extra) => {
+    const label = String(name || "").trim();
+    if (!label) return;
+    const key = label.toLowerCase();
+    if (seen.has(key)) return;
+    const extraRow = extra || {};
+    rows.push({
+      name: label,
+      source: source || "home",
+      callable: !!extraRow.callable,
+      channels: extraRow.channels || [],
+    });
+    seen.add(key);
+  };
+  ((body && body.contacts) || []).forEach((row) => add(typeof row === "string" ? row : row && row.name, "phone", row));
+  ((body && body.home) || []).forEach((row) => add(typeof row === "string" ? row : row && row.name, "home", row));
+  return rows;
+}
+
+function trustBannerCopy(hello) {
+  const status = (hello && hello.status) || hello || {};
+  const raw = String(status.trust_state || (hello && hello.environment) || "");
+  const trust = raw === "OWNER" ? "TRUSTED_OWNER_DEVICE" : raw === "SANDBOX" ? "PAIRED_SANDBOX" : raw;
+  if (window.EvieTrust && typeof window.EvieTrust.banner === "function") {
+    return window.EvieTrust.banner(trust);
+  }
+  if (trust === "TRUSTED_OWNER_DEVICE") return { tone: "good", label: "Trusted owner device", cta: "Manage devices" };
+  if (trust === "REVOKED") return { tone: "bad", label: "Trust revoked", cta: "Re-pair this iPhone" };
+  return { tone: "neutral", label: trust || "Paired · Sandbox", cta: "Review pairing" };
+}
+
+function missionLines(payload) {
+  const mission = (payload && payload.mission) || payload || {};
+  const lines = [];
+  if (mission.now && mission.now.objective) lines.push("Now · " + mission.now.objective);
+  (mission.working || []).forEach((row) => {
+    if (row && row.objective) lines.push("Working · " + row.objective);
+  });
+  (mission.waiting || []).forEach((row) => {
+    if (row && row.objective) lines.push("Waiting · " + row.objective);
+  });
+  (mission.needs_you || []).forEach((row) => {
+    const title = row && (row.title || row.objective || row.what);
+    if (title) lines.push("Needs you · " + title);
+  });
+  return lines;
+}
+
+function changedLines(payload) {
+  const rows = (payload && payload.changes) || [];
+  return rows.map((row) => {
+    if (typeof row === "string") return row;
+    return String((row && (row.summary || row.title || row.text || row.kind)) || "").trim();
+  }).filter(Boolean);
+}
+
+function fillFollowChips(digital, extra) {
+  const host = $("follow-chips");
+  const prompts = digitalFollowPrompts(digital).concat(Array.isArray(extra) ? extra : []);
+  if (!host) return prompts;
+  while (host.firstChild) host.removeChild(host.firstChild);
+  host.hidden = prompts.length === 0;
+  prompts.forEach((chip) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = chip.label;
+    btn.setAttribute("data-follow", chip.id);
+    btn.addEventListener("click", () => {
+      if (typeof sendText !== "function") return;
+      sendText(chip.prompt).catch((err) => {
+        state.caption = String(err.message || err);
+        paintLive();
+      });
+    });
+    host.appendChild(btn);
+  });
+  if (prompts.length) {
+    const exchange = $("room-exchange");
+    if (exchange) exchange.open = true;
+  }
+  return prompts;
+}
+
+function applyTurnOutcome(body) {
+  const payload = body || {};
+  fillFollowChips(payload.digital, payload.follow_prompts);
+  if (showHomeStationResult(payload)) return payload;
+  const line = turnOutcomeLine(payload);
+  const card = $("action-card");
+  if (line && card) {
+    card.hidden = false;
+    card.setAttribute("role", "status");
+    card.setAttribute("aria-live", "polite");
+    textOf(card, line);
+    if (state._lastTurnOutcome !== line) {
+      state._lastTurnOutcome = line;
+      pushActivity(line);
+    }
+  }
+  return payload;
+}
+
+function showCameraStatus(status) {
+  const line = "Camera · " + String(status || "working").trim();
+  const card = $("action-card");
+  if (card) {
+    card.hidden = false;
+    card.setAttribute("role", "status");
+    card.setAttribute("aria-live", "polite");
+    textOf(card, line);
+  }
+  if (state._lastCameraStatus !== line) {
+    state._lastCameraStatus = line;
+    pushActivity(line);
+  }
+}
+
 function setMood(label) {
   state.mood = label;
   textOf($("mood"), label);
@@ -174,6 +398,7 @@ function setMood(label) {
       Thinking: "thinking",
       Speaking: "speaking",
       "Working on MacBook": "tool",
+      "Working on Home Station": "tool",
       Camera: "vision",
       "Connecting to Evie…": "connecting",
       Reconnecting: "connecting",
@@ -186,6 +411,7 @@ function setMood(label) {
     };
     presence.setState(map[label] || (state.ui === "ERROR" ? "error" : "idle"));
   }
+  if ($("room-exchange")) syncQuietRoom();
 }
 
 function applyAppearance(mode) {
@@ -202,6 +428,38 @@ function applyAppearance(mode) {
     }
   }
   if (state.orb && state.orb.refreshTheme) state.orb.refreshTheme();
+  syncRoomTheme();
+}
+
+function syncRoomTheme() {
+  const color = getComputedStyle(document.documentElement).getPropertyValue("--paper").trim();
+  document.querySelectorAll('meta[name="theme-color"]').forEach(meta => { meta.content = color; });
+}
+
+function arrangeRoomTools() {
+  const list = $("room-tool-list");
+  if (!list || list.dataset.arranged) return;
+  const groups = [
+    ["Quick actions", ["look", "capture", "conversation"]],
+    ["Your day", ["today", "weather", "health", "routines"]],
+    ["Your memory", ["memory", "search", "looks"]],
+    ["Your space", ["inbox", "people", "devices", "queue", "activity", "privacy"]],
+  ];
+  groups.forEach(([title, surfaces], index) => {
+    const section = document.createElement("section");
+    section.className = "room-tool-group";
+    const heading = document.createElement("h3");
+    heading.id = "room-tools-group-" + index;
+    heading.textContent = title;
+    section.setAttribute("aria-labelledby", heading.id);
+    section.appendChild(heading);
+    surfaces.forEach(surface => {
+      const button = surface === "look" ? $("look-btn") : list.querySelector('[data-surface="' + surface + '"]');
+      if (button) section.appendChild(button);
+    });
+    list.appendChild(section);
+  });
+  list.dataset.arranged = "true";
 }
 
 function prettyRole(role) {
@@ -243,15 +501,67 @@ function paintLive() {
   textOf($("status"), offline && unpaired ? "Pair this device" : (online ? "Private" : state.conn));
   const talk = $("talk");
   if (talk) {
-    talk.disabled = state._talkInflight || !online || state.ui === "OFFLINE" || state.ui === "CONNECTING";
-    talk.textContent = state.talking ? "Stop" : "Talk";
-    talk.setAttribute("aria-label", state.talking ? "Stop talking" : "Talk to Evie");
+    const canStop = state.talking || state._talkInflight;
+    talk.disabled = !canStop && (!online || state.ui === "OFFLINE" || state.ui === "CONNECTING");
+    talk.textContent = "";
+    talk.setAttribute("aria-label", canStop ? "Stop talking" : "Talk to Evie");
+    talk.setAttribute("title", canStop ? "Stop talking" : "Talk to Evie");
+    talk.dataset.connecting = String(!!state._talkInflight);
   }
   textOf($("user-line"), state.userLine);
   textOf($("reply"), state.caption);
   const quick = $("quick-row");
-  if (quick) quick.hidden = unpaired || !!state.talking;
+  if (quick) quick.hidden = true;
+  syncQuietRoom();
   if (state.ui === "OFFLINE") setMood("Home Station is offline.");
+}
+
+// Visual disclosure only. No permission requests or model calls live here.
+function syncQuietRoom() {
+  const ready = $("ready-ui");
+  if (!ready) return;
+  ready.dataset.session = state.talking || state._talkInflight ? "active" : "idle";
+  $("room-session").hidden = !(state.talking || state._talkInflight);
+  $("room-enable-audio").hidden = !(state.talking && state.webrtc && state.webrtc.playBlocked);
+  const exchange = $("room-exchange");
+  const hasContent = !!(state.userLine || state.caption);
+  const newTurn = state._roomSeenUserLine !== state.userLine;
+  const newCaption = state._roomSeenCaption !== state.caption;
+  const recovery = state.ui === "ERROR" || state.ui === "OFFLINE" || /unavailable|tap to enable|denied/i.test(state.mood || "");
+  if (newTurn) state._roomSetAside = false;
+  if (hasContent && (exchange.hidden || (!state._roomSetAside && (newTurn || newCaption)) || recovery)) exchange.open = true;
+  exchange.hidden = !hasContent;
+  state._roomSeenUserLine = state.userLine;
+  state._roomSeenCaption = state.caption;
+  ready.dataset.exchange = hasContent && exchange.open ? "open" : "closed";
+  textOf(exchange.querySelector(".room-fold-hint"), exchange.open ? "Set aside" : "Read");
+  const dialog = document.querySelector('.sheet[role="dialog"]:not([hidden])');
+  if (state.orb && state.orb.setPaused) state.orb.setPaused(!!dialog);
+  if (dialog) {
+    let feedback = dialog.querySelector(".room-panel-feedback");
+    if (!feedback) {
+      feedback = document.createElement("p");
+      feedback.className = "room-panel-feedback quiet";
+      feedback.setAttribute("role", "status");
+      dialog.querySelector("h2, h1")?.insertAdjacentElement("afterend", feedback);
+    }
+    feedback.textContent = state.caption || "";
+    feedback.hidden = !state.caption;
+  }
+  const actionCard = $("mobile-action-card");
+  if (actionCard) {
+    const actionParent = dialog || ready;
+    if (actionCard.parentElement !== actionParent) actionParent.appendChild(actionCard);
+  }
+  const bar = $("room-call-bar");
+  const parent = dialog || document.querySelector(".stage");
+  if (bar.parentElement !== parent) parent.appendChild(bar);
+  bar.hidden = !((state.talking || state._talkInflight) && dialog);
+  const enable = $("room-enable-audio");
+  const enableParent = dialog ? bar : $("room-session").parentElement;
+  if (enable.parentElement !== enableParent) enableParent.appendChild(enable);
+  document.body.dataset.callOverlay = String(!bar.hidden);
+  if (!bar.hidden) document.body.style.setProperty("--room-call-height", bar.offsetHeight + "px");
 }
 
 function render() {
@@ -316,6 +626,7 @@ function render() {
     playback_backend: state.activeBackend === "webrtc" || state.activeBackend === "webrtc_strict" ? "webrtc" : (engine ? engine.backend : "uninitialized"),
     pcm_fallback: "off",
     voice_health: state.voiceHealth,
+    talk_phase: state.talkPhase,
     last_asr_label: "TRANSCRIPT",
     last_asr: state.lastAsr,
     last_asr_confidence: state.lastAsrConfidence,
@@ -323,6 +634,9 @@ function render() {
     forensic: state.forensic,
     protocol_version: PROTOCOL_VERSION,
     server_build: hello.pwa_build || hello.server_build,
+    server_release: hello.server_release || hello.pwa_build || "",
+    backend_sha_fingerprint: abbrev(hello.backend_sha),
+    asset_manifest_hash: hello.asset_manifest_hash || "",
     device_id: abbrev(device.device_id),
     role: device.role,
     memory_scope: hello.memory_scope || "sandbox",
@@ -388,7 +702,7 @@ function renderConnectionStages() {
   }
 }
 
-function copyVoiceDiagnostic() {
+async function copyVoiceDiagnostic() {
   const mv = window.EvieMobileVoice;
   const diag = state.connectionDiag || (state.webrtc && state.webrtc.diag && state.webrtc.diag.snapshot()) || {};
   const hello = state.hello || {};
@@ -400,10 +714,59 @@ function copyVoiceDiagnostic() {
       signaling: diag.signaling || hello.signaling || "unified_calls",
     })
     : JSON.stringify(diag, null, 2);
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).catch(function () {});
-  }
+  if (!navigator.clipboard?.writeText) throw new Error("Clipboard is unavailable in this browser.");
+  await navigator.clipboard.writeText(text);
   state.caption = "Voice diagnostic copied.";
+  render();
+}
+
+async function copyPhoneDiagnostic() {
+  const hello = state.hello || {};
+  const status = state.status || hello.status || {};
+  const diag = state.connectionDiag || (state.webrtc && state.webrtc.diag && state.webrtc.diag.snapshot()) || {};
+  const payload = {
+    schema: "evie.phone-diagnostic.v1",
+    captured_at: new Date().toISOString(),
+    client_build: CLIENT_BUILD,
+    server_release: hello.server_release || hello.pwa_build || "",
+    backend_sha_fingerprint: abbrev(hello.backend_sha),
+    asset_manifest_hash: hello.asset_manifest_hash || "",
+    protocol: PROTOCOL_VERSION,
+    device_id: abbrev((state.device || {}).device_id),
+    role: (state.device || {}).role || "",
+    trust_state: status.trust_state || "",
+    auth_revision: status.auth_revision || (state.device || {}).auth_revision || null,
+    connection: {
+      state: state.conn,
+      ui: state.ui,
+      backend: state.activeBackend,
+      talk_phase: state.talkPhase,
+      session_active: !!state.sessionId,
+      instance_id: abbrev(state.instanceId),
+      lease_id: abbrev(state.leaseId),
+      reconnects: state.reconnects,
+    },
+    voice: {
+      health: state.voiceHealth && state.voiceHealth.health,
+      signaling: diag.signaling || hello.signaling || "",
+      failed_stage: diag.failed_stage || "",
+    },
+    camera_role: state.cameraRole,
+    queue: {
+      local_items: Array.isArray(state.queue) ? state.queue.length : 0,
+      pending_items: Array.isArray(state.queue)
+        ? state.queue.filter((item) => item && item.state === "pending").length
+        : 0,
+    },
+    action: {
+      home_station_status: state._lastHomeStationResult || "",
+      camera_status: state._lastCameraStatus || "",
+    },
+  };
+  const text = JSON.stringify(payload, null, 2);
+  if (!navigator.clipboard?.writeText) throw new Error("Clipboard is unavailable in this browser.");
+  await navigator.clipboard.writeText(text);
+  state.caption = "Phone diagnostic copied.";
   render();
 }
 
@@ -436,7 +799,7 @@ function fillMobileActions(hello) {
     ["Native shell", native ? "Connected" : "Not this page"],
     ["This device", ma.this_device || "This iPhone"],
     ["Broker", ma.broker_version || "—"],
-    ["Actions", ma.native_actions_enabled === false ? "Disabled" : "Enabled"],
+    ["Actions", ma.native_actions_enabled === true ? "Enabled" : ma.native_actions_enabled === false ? "Disabled" : "Not verified"],
   ];
   const legacy = document.getElementById("legacy-bridge-panel");
   if (legacy) legacy.hidden = !/legacy_bridge=1/.test(location.search);
@@ -449,15 +812,62 @@ function fillMobileActions(hello) {
   fillDl("mobile-actions-meta", rows);
 }
 
+async function refreshStatus() {
+  if (!state.deviceToken) return;
+  try {
+    const [status, caps, phoneCaps] = await Promise.all([
+      api("/v1/device-gateway/status"),
+      api("/v1/device-gateway/capabilities").catch(() => null),
+      api("/v1/device-gateway/phone-capabilities").catch(() => null),
+    ]);
+    if (status && status.ok === false) return;
+    state.status = status || {};
+    state.phoneCapabilities = phoneCaps || null;
+    fillSettings(Object.assign({}, state.hello || {}, { status: status || {} }), state.device || {});
+    if (caps && caps.capabilities) {
+      const rows = Object.keys(caps.capabilities).map((name) => {
+        const c = caps.capabilities[name];
+        const label = name.replace(/_/g, " ");
+        return [label, c.available ? "available" : (c.reason ? c.reason.replace(/_/g, " ") : "unavailable")];
+      });
+      const home = (state.hello && state.hello.home_station_capabilities) || {};
+      if (home.executor) {
+        rows.push(["Home Station executor", home.executor + " · " + (home.availability || "server validated")]);
+        (home.safe_actions || []).forEach((action) => {
+          rows.push(["Home Station · " + action, "server validated"]);
+        });
+        if (Array.isArray(home.blocked) && home.blocked.length) {
+          rows.push(["Home Station blocked", home.blocked.join(", ")]);
+        }
+      }
+      rows.push(["HealthKit", "never sent to a model"]);
+      if (phoneCaps && Array.isArray(phoneCaps.safe_actions)) {
+        rows.push(["Phone catalog", phoneCaps.trust_state || "server"]);
+      }
+      fillDl("capability-meta", rows);
+    } else {
+      fillDl("capability-meta", [
+        ["Capabilities", phoneCaps ? "Home Station catalog available" : "capability snapshot unavailable"],
+        ["HealthKit", "never sent to a model"],
+      ]);
+    }
+    paintLive();
+  } catch (_err) {}
+}
+
 function fillSettings(hello, device) {
   const status = hello.status || hello.session_context || state.status || {};
-  fillDl("settings-meta", [
+  const rows = [
     ["Device", device.display_name || prettyRole(device.role) || "—"],
     ["Role", prettyRole(device.role) || "—"],
     ["Trust", status.trust_state || hello.environment || "—"],
     ["Owner scope", status.owner_scope || status.scope || "—"],
     ["Auth revision", String(status.auth_revision || device.auth_revision || "—")],
     ["Next action", status.next_action || "—"],
+    ["Backend", status.backend_build || hello.backend_sha || "—"],
+    ["Backend fingerprint", abbrev(hello.backend_sha)],
+    ["Server release", hello.server_release || hello.pwa_build || "—"],
+    ["Asset manifest", abbrev(hello.asset_manifest_hash)],
     ["Trust", status.trust_state || hello.environment || "—"],
     ["Battery", typeof status.battery_percent === "number" ? Math.round(status.battery_percent) + "%" + (status.battery_percent <= 15 ? " · low — alarms only" : "") : "not reported"],
     ["Product", status.product || "Tailscale PWA"],
@@ -465,6 +875,7 @@ function fillSettings(hello, device) {
     ["Home Station", homeLine(hello)],
     ["PWA build", CLIENT_BUILD + (state.updateAvailable ? " · update available" : "")],
     ["Runtime", (window.EvieMobileVoice && window.EvieMobileVoice.RUNTIME_VERSION) || "—"],
+    ["Mind", cognitiveLine(hello)],
     ["Signaling", hello.signaling_version || "unified-calls-v1"],
     ["Design", DESIGN_VERSION],
     ["Protocol", PROTOCOL_VERSION],
@@ -472,7 +883,26 @@ function fillSettings(hello, device) {
     ["Notifications", notificationLine(status)],
     ["Sync cursor", state.syncCursor ? "yes" : "none"],
     ["Install", isStandalonePwa() ? "Home Screen" : "Safari tab"],
-  ]);
+  ];
+  const battery = Number(status.battery_percent);
+  if (Number.isFinite(battery)) {
+    rows.splice(rows.findIndex((r) => r[0] === "Home Station"), 0, ["Battery", battery.toFixed(0) + "%"]);
+  }
+  fillDl("settings-meta", rows);
+  const banner = $("trust-banner");
+  if (banner) {
+    const copy = trustBannerCopy(hello);
+    banner.textContent = copy.label + (copy.cta ? " · " + copy.cta : "");
+    banner.className = "quiet evie-trust-" + (copy.tone || "neutral");
+  }
+}
+
+function cognitiveLine(hello) {
+  const cog = (hello && hello.cognitive) || {};
+  if (cog.muse_kernel) {
+    return (cog.brain || "muse-spark-1.3-contributor") + " · speech " + (cog.speech || "gpt-realtime-2.1-mini");
+  }
+  return "Realtime Mini (legacy mind)";
 }
 
 function healthkitLine(status) {
@@ -485,7 +915,125 @@ function notificationLine(status) {
   const note = (status && status.notifications) || {};
   const delivery = note.push_delivery || "poll";
   const inbox = note.inbox_channel || "in_app_poll";
-  return delivery + " capability · inbox " + inbox;
+  if (delivery === "web_notification") return "local alerts on this iPhone · inbox " + inbox;
+  if (delivery === "apns") return "apns · inbox " + inbox;
+  return "poll · inbox " + inbox + " · APNs not registered";
+}
+
+const EviePhoneAlerts = {
+  key: "evie_local_alerts",
+  seenKey: "evie_inbox_seen",
+  timers: {},
+  load: function () {
+    try {
+      return JSON.parse(localStorage.getItem(this.key) || "[]");
+    } catch (_err) {
+      return [];
+    }
+  },
+  save: function (rows) {
+    try { localStorage.setItem(this.key, JSON.stringify(rows.slice(-12))); } catch (_err) {}
+  },
+  canNotify: function () {
+    return typeof Notification !== "undefined" && Notification.permission === "granted";
+  },
+  show: function (title, body) {
+    if (!this.canNotify()) return false;
+    try {
+      new Notification(title || "Evie", { body: body || "", tag: "evie-local" });
+      return true;
+    } catch (_err) {
+      return false;
+    }
+  },
+  arm: function (row) {
+    const item = row || {};
+    const fireAt = Number(item.fireAt || 0);
+    const id = String(item.id || ("t" + fireAt));
+    if (!fireAt || fireAt <= Date.now()) {
+      this.show(item.title || "Evie", item.body || "Time's up.");
+      return;
+    }
+    const pending = this.load().filter((row) => row && row.id !== id && Number(row.fireAt) > Date.now());
+    pending.push({ id: id, fireAt: fireAt, title: item.title || "Evie", body: item.body || "Time's up." });
+    this.save(pending);
+    if (this.timers[id]) clearTimeout(this.timers[id]);
+    const delay = Math.min(Math.max(0, fireAt - Date.now()), 2147483647);
+    this.timers[id] = setTimeout(() => {
+      this.show(item.title || "Evie", item.body || "Time's up.");
+      this.save(this.load().filter((row) => row && row.id !== id));
+      delete this.timers[id];
+    }, delay);
+  },
+  restore: function () {
+    this.load().forEach((row) => {
+      if (row && Number(row.fireAt) > Date.now()) this.arm(row);
+    });
+  },
+  noticeInbox: function (items) {
+    const primedKey = this.seenKey + "_ok";
+    let seen = [];
+    try { seen = JSON.parse(sessionStorage.getItem(this.seenKey) || "[]"); } catch (_err) {}
+    const known = new Set(seen);
+    const primed = sessionStorage.getItem(primedKey) === "1";
+    (items || []).forEach((item) => {
+      if (!item || !item.id) return;
+      if (!primed) {
+        known.add(item.id);
+        return;
+      }
+      if (item.unread && !known.has(item.id)) {
+        this.show(item.title || "Evie", item.body || "");
+        known.add(item.id);
+      }
+    });
+    try {
+      sessionStorage.setItem(this.seenKey, JSON.stringify(Array.from(known).slice(-80)));
+      sessionStorage.setItem(primedKey, "1");
+    } catch (_err) {}
+  },
+};
+window.EviePhoneAlerts = EviePhoneAlerts;
+
+async function registerPhoneAlerts() {
+  let delivery = "poll";
+  let authorization = "undetermined";
+  if (typeof Notification !== "undefined") {
+    authorization = Notification.permission || "undetermined";
+    if (Notification.permission === "granted") delivery = "web_notification";
+  }
+  try {
+    await api("/v1/device-gateway/push/register", {
+      method: "POST",
+      body: JSON.stringify({
+        token: "",
+        delivery: delivery,
+        bundle_id: "com.ev.evie.shell",
+        authorization: authorization,
+      }),
+    });
+  } catch (_err) {}
+  EviePhoneAlerts.restore();
+}
+
+async function enableLocalAlerts() {
+  const meta = $("alerts-meta");
+  if (typeof Notification === "undefined") {
+    textOf(meta, "This Safari cannot show notifications. Inbox still polls.");
+    return;
+  }
+  try {
+    const permission = await Notification.requestPermission();
+    textOf(
+      meta,
+      permission === "granted"
+        ? "Local alerts on. Inbox still polls Home Station. Not APNs."
+        : "Alerts stay off until Safari allows notifications. Inbox still polls."
+    );
+  } catch (_err) {
+    textOf(meta, "Could not ask for notifications. Inbox still polls.");
+  }
+  await registerPhoneAlerts();
 }
 
 function fillPrivacy(hello, device) {
@@ -497,7 +1045,7 @@ function fillPrivacy(hello, device) {
     ["Camera", $("camera-sheet").hidden ? "Ask on Look" : "Allowed"],
     ["This phone", prettyRole(device.role) || "Companion"],
     ["HealthKit", "Unavailable in this build · never sent to a model"],
-    ["Notifications", "In-app poll until APNs is entitled"],
+    ["Notifications", "Local Evie alerts when allowed · otherwise in-app poll. Not APNs."],
   ]);
 }
 
@@ -510,6 +1058,15 @@ function fillDevices(hello, device) {
     ["This phone", prettyRole(device.role) || "Companion", state.talking ? "Active" : "Ready"],
     ["MacBook", "Control + camera", hello.home_station === "ONLINE" ? "Online" : "Waiting"],
   ];
+  ((hello && hello.companions) || []).forEach((row) => {
+    if (!row) return;
+    const seen = row.last_seen_at ? "last seen " + String(row.last_seen_at).replace("T", " ").slice(0, 16) : "not seen yet";
+    nodes.push([
+      row.display_name || "Other iPhone",
+      prettyRole(row.role) || "Companion",
+      (row.presence_state || "OFFLINE") + " · " + seen,
+    ]);
+  });
   nodes.forEach((row) => {
     const el = document.createElement("div");
     el.className = "node";
@@ -536,21 +1093,1025 @@ function fillInbox() {
   const list = $("inbox-list");
   if (!list) return;
   while (list.firstChild) list.removeChild(list.firstChild);
-  (state.inbox || []).forEach((item) => {
+  const items = state.inbox || [];
+  if (!items.length) {
     const li = document.createElement("li");
+    li.className = "evie-today-empty";
+    li.textContent = "Inbox is clear.";
+    list.appendChild(li);
+  }
+  items.forEach((item) => {
+    const li = document.createElement("li");
+    if (item.unread) li.className = "evie-inbox-unread";
     const via = item.delivery || item.push_delivery || "in_app_poll";
-    li.textContent = (item.title || item.kind || "notice") + " — " + (item.body || "") + " · " + via;
+    const label = document.createElement("span");
+    label.textContent = (item.title || item.kind || "notice") + " — " + (item.body || "") + " · " + via;
+    li.appendChild(label);
+    if (item.unread) {
+      const ack = document.createElement("button");
+      ack.type = "button";
+      ack.className = "evie-queue-drop";
+      ack.textContent = "✕";
+      ack.setAttribute("aria-label", "Dismiss");
+      ack.addEventListener("click", async () => {
+        if (ack.disabled) return;
+        ack.disabled = true;
+        try {
+          const result = await api("/v1/device-gateway/inbox/ack", {
+            method: "POST",
+            body: JSON.stringify({ item_id: item.id }),
+          });
+          if (!result || result.ok !== true) throw new Error("Dismiss was not confirmed.");
+          await refreshInbox();
+        } catch (err) {
+          let message = li.querySelector('[role="status"]');
+          if (!message) {
+            message = document.createElement("span");
+            message.setAttribute("role", "status");
+            li.appendChild(message);
+          }
+          textOf(message, "Could not dismiss. Try again. " + String(err.message || err));
+        } finally { ack.disabled = false; }
+      });
+      li.appendChild(ack);
+    }
     list.appendChild(li);
   });
 }
 
+async function markAllInboxRead() {
+  const btn = $("inbox-ack-all-btn");
+  if (btn && btn.disabled) return;
+  if (btn) btn.disabled = true;
+  try {
+    const result = await api("/v1/device-gateway/inbox/ack-all", { method: "POST", body: "{}" });
+    if (!result || result.ok !== true) throw new Error("Update was not confirmed.");
+    await refreshInbox();
+  } catch (err) {
+    let meta = $("inbox-secondary-status");
+    if (!meta) {
+      meta = document.createElement("p");
+      meta.id = "inbox-secondary-status";
+      meta.setAttribute("role", "status");
+      $("inbox-list")?.parentNode.appendChild(meta);
+    }
+    textOf(meta, "Could not mark all read. Try again. " + String(err.message || err));
+  } finally { if (btn) btn.disabled = false; }
+}
+
 async function refreshInbox() {
   if (!state.deviceToken) return;
+  const token = state.deviceToken;
   try {
     const body = await api("/v1/device-gateway/inbox");
+    if (token !== state.deviceToken) return;
+    if (!body || body.ok === false || !Array.isArray(body.items)) throw new Error("Invalid inbox response.");
     state.inbox = body.items || [];
     fillInbox();
-  } catch (_err) {}
+    EviePhoneAlerts.noticeInbox(state.inbox);
+    const unread = (state.inbox || []).filter((item) => item.unread).length;
+    const btn = $("inbox-ack-all-btn");
+    if (btn) btn.hidden = unread === 0;
+    textOf($("inbox-secondary-status"), "");
+  } catch (err) {
+    if (token !== state.deviceToken) return;
+    let meta = $("inbox-secondary-status");
+    if (!meta) {
+      meta = document.createElement("p");
+      meta.id = "inbox-secondary-status";
+      meta.setAttribute("role", "status");
+      $("inbox-list")?.parentNode.appendChild(meta);
+    }
+    textOf(meta, "Inbox could not refresh; showing the previous list. " + String(err.message || err));
+  }
+}
+
+function fillOl(id, items, limit, emptyLabel) {
+  const list = $(id);
+  if (!list) return;
+  while (list.firstChild) list.removeChild(list.firstChild);
+  const rows = (items || []).slice(0, limit || 12);
+  if (!rows.length) {
+    const li = document.createElement("li");
+    li.className = "evie-today-empty";
+    li.textContent = emptyLabel || "Nothing here yet.";
+    list.appendChild(li);
+    return;
+  }
+  rows.forEach((entry) => {
+    const li = document.createElement("li");
+    li.textContent = String(entry);
+    list.appendChild(li);
+  });
+}
+
+function todayTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function metricLabel(key) {
+  const names = { steps: "Steps", sleep_hours: "Sleep", heart_rate: "Heart rate", active_energy: "Active energy", resting_hr: "Resting heart rate", vo2: "VO₂", weight: "Weight" };
+  return names[key] || key.replace(/_/g, " ");
+}
+
+async function refreshToday() {
+  if (!state.deviceToken) return;
+  const hud = $("today-hud");
+  const meta = $("today-meta");
+  try {
+    const body = await api("/v1/device-gateway/today");
+    const card = body.hud || null;
+    if (card && hud) {
+      hud.hidden = false;
+      textOf($("today-hud-title"), card.title || "Today");
+      textOf($("today-hud-body"), card.body || "");
+    } else if (hud) {
+      hud.hidden = true;
+    }
+    const health = body.health || {};
+    const rows = [["Status", health.freshness || "unavailable"]];
+    const metrics = health.metrics || {};
+    Object.keys(metrics).slice(0, 5).forEach((key) => {
+      const value = metrics[key];
+      rows.push([metricLabel(key), typeof value === "number" ? String(value) : String(value || "—")]);
+    });
+    fillDl("today-health", rows);
+    const calendar = (body.calendar || {}).events || [];
+    fillOl("today-calendar", calendar.map((ev) => (todayTime(ev.start) ? todayTime(ev.start) + " · " : "") + (ev.title || "Event")), 6, "Nothing scheduled.");
+    const reminders = (body.reminders || []).map((row) => row.text || "Reminder");
+    fillOl("today-reminders", reminders, 8, "No pending reminders.");
+    const memories = (body.memories || []).map((row) => (row.memory_type ? row.memory_type + " — " : "") + row.text);
+    fillOl("today-memories", memories, 6, "No memories yet.");
+    const scope = body.memory_enabled ? body.memory_scope || "owner" : "sandbox";
+    const unread = body.inbox_pending || 0;
+    let metaText = "Memory: " + scope + (unread ? " · " + unread + " unread in Inbox" : "");
+    const qh = body.quiet_hours || {};
+    if (qh.window && qh.window.start) {
+      const end = qh.window.end || "—";
+      metaText += qh.active ? " · Quiet hours until " + end : " · Digest quiet " + qh.window.start + "–" + end;
+    }
+    textOf(meta, metaText);
+  } catch (err) {
+    textOf(meta, "Today is unavailable: " + String(err.message || err));
+  }
+}
+
+async function refreshMemories(query) {
+  if (!state.deviceToken) return;
+  const list = $("memory-list");
+  const detail = $("memory-detail");
+  const meta = $("memory-meta");
+  const request = {};
+  const token = state.deviceToken;
+  if (detail) {
+    detail.hidden = true;
+    detail._evieMemoryRequest = request;
+  }
+  textOf($("memory-detail-text"), "");
+  textOf($("memory-detail-meta"), "");
+  textOf($("memory-versions"), "");
+  textOf($("memory-sources"), "");
+  $("memory-back-btn")?.remove();
+  if (list) {
+    list.hidden = false;
+    while (list.firstChild) list.removeChild(list.firstChild);
+  }
+  try {
+    const params = new URLSearchParams();
+    if (query) params.set("q", query);
+    const body = await api("/v1/device-gateway/memories" + (params.toString() ? "?" + params.toString() : ""));
+    if (token !== state.deviceToken || (detail && detail._evieMemoryRequest !== request)) return;
+    if (body.memory_enabled === false) {
+      textOf(meta, "Personal memory is off — pair and promote this phone from the Mac.");
+      const form = $("memory-search-form");
+      if (form) form.hidden = true;
+      return;
+    }
+    const form = $("memory-search-form");
+    if (form) form.hidden = false;
+    const rows = body.memories || [];
+    if (!rows.length) {
+      const li = document.createElement("li");
+      li.className = "evie-today-empty";
+      li.textContent = query ? "No memories match that search." : "No memories yet.";
+      if (list) list.appendChild(li);
+    }
+    rows.forEach((row) => {
+      const li = document.createElement("li");
+      li.className = "evie-memory-row";
+      li.tabIndex = 0;
+      li.setAttribute("role", "button");
+      const strong = document.createElement("strong");
+      strong.textContent = row.memory_type || "memory";
+      const span = document.createElement("span");
+      span.textContent = String(row.text || "").slice(0, 160);
+      li.appendChild(strong);
+      li.appendChild(span);
+      li.addEventListener("click", () => openMemoryDetail(row.id));
+      li.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          if (!event.repeat) openMemoryDetail(row.id);
+        }
+      });
+      if (list) list.appendChild(li);
+    });
+    textOf(meta, body.total + " memories" + (query ? " · “" + query + "”" : ""));
+  } catch (err) {
+    if (token !== state.deviceToken || (detail && detail._evieMemoryRequest !== request)) return;
+    textOf(meta, "Memory unavailable: " + String(err.message || err));
+  }
+}
+
+async function openMemoryDetail(memoryId) {
+  const detail = $("memory-detail");
+  const list = $("memory-list");
+  if (!detail || !memoryId) return;
+  const request = {};
+  const token = state.deviceToken;
+  const opener = document.activeElement;
+  detail._evieMemoryRequest = request;
+  detail.hidden = true;
+  textOf($("memory-detail-text"), "");
+  textOf($("memory-detail-meta"), "");
+  textOf($("memory-sources"), "");
+  textOf($("memory-versions"), "");
+  $("memory-back-btn")?.remove();
+  if (list) list.hidden = false;
+  textOf($("memory-meta"), "Loading memory…");
+  try {
+    const body = await api("/v1/device-gateway/memories/" + encodeURIComponent(memoryId));
+    if (token !== state.deviceToken || detail._evieMemoryRequest !== request) return;
+    const mem = body.memory;
+    if (!mem) throw new Error("This memory is unavailable.");
+    textOf($("memory-meta"), "");
+    detail.hidden = false;
+    if (list) list.hidden = true;
+    textOf($("memory-detail-text"), mem.text || "");
+    const confidence = typeof mem.confidence === "number" ? Math.round(mem.confidence * 100) + "%" : "—";
+    textOf($("memory-detail-meta"), (mem.memory_type || "memory") + " · confidence " + confidence + " · " + (mem.source_type || "inferred"));
+    const sources = $("memory-sources");
+    if (sources) {
+      while (sources.firstChild) sources.removeChild(sources.firstChild);
+      const items = body.sources || [];
+      if (!items.length) {
+        const li = document.createElement("li");
+        li.className = "evie-today-empty";
+        li.textContent = "No source events recorded.";
+        sources.appendChild(li);
+      }
+      items.forEach((src) => {
+        const li = document.createElement("li");
+        li.textContent = (src.kind || "event") + " — " + (src.text || "");
+        sources.appendChild(li);
+      });
+    }
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "secondary";
+    back.textContent = "Back to list";
+    back.addEventListener("click", () => {
+      detail._evieMemoryRequest = null;
+      detail.hidden = true;
+      if (list) list.hidden = false;
+      if (opener && opener.isConnected) opener.focus();
+    });
+    const existing = $("memory-back-btn");
+    if (existing) existing.remove();
+    back.id = "memory-back-btn";
+    detail.appendChild(back);
+    back.focus();
+    try {
+      const prov = await api("/v1/device-gateway/memories/" + encodeURIComponent(memoryId) + "/provenance");
+      if (token !== state.deviceToken || detail._evieMemoryRequest !== request) return;
+      const versions = $("memory-versions");
+      if (versions) {
+        while (versions.firstChild) versions.removeChild(versions.firstChild);
+        const rows = prov.versions || [];
+        if (!rows.length) {
+          const li = document.createElement("li");
+          li.className = "evie-today-empty";
+          li.textContent = "No version history.";
+          versions.appendChild(li);
+        }
+        rows.forEach((v) => {
+          const li = document.createElement("li");
+          const suffix = v.is_current ? " · current" : "";
+          const reason = v.reason_for_change ? " — " + v.reason_for_change : "";
+          li.textContent = "v" + v.version + suffix + ": " + (v.text || "").slice(0, 140) + reason;
+          versions.appendChild(li);
+        });
+      }
+    } catch (_err) {
+      if (token !== state.deviceToken || detail._evieMemoryRequest !== request) return;
+      fillOl("memory-versions", [], 1, "Version history unavailable. Reopen to retry.");
+    }
+  } catch (err) {
+    if (token !== state.deviceToken || detail._evieMemoryRequest !== request) return;
+    textOf($("memory-meta"), "Memory unavailable: " + String(err.message || err));
+  }
+}
+
+async function runSearch(query) {
+  const meta = $("search-meta");
+  const q = (query || "").trim();
+  if (!q) {
+    textOf(meta, "Type a query to search everything.");
+    return;
+  }
+  try {
+    const body = await api("/v1/device-gateway/search?q=" + encodeURIComponent(q));
+    fillOl("search-memories", (body.memories || []).map((m) => (m.memory_type ? m.memory_type + " — " : "") + m.text), 8, body.memory_enabled === false ? "Memory is off (pair + promote on the Mac)." : "No memory matches.");
+    fillOl("search-events", (body.events || []).map((e) => (e.kind || "event") + " — " + e.text), 8, "No events match.");
+    fillOl("search-reminders", (body.reminders || []).map((r) => r.text || "Reminder"), 6, "No reminders match.");
+    fillOl("search-contacts", (body.contacts || []).map((c) => c.name || ""), 6, "No contacts match.");
+    const total = (body.memories || []).length + (body.events || []).length + (body.reminders || []).length + (body.contacts || []).length;
+    textOf(meta, total + " result" + (total === 1 ? "" : "s") + " for “" + q + "”");
+  } catch (err) {
+    textOf(meta, "Search unavailable: " + String(err.message || err));
+  }
+}
+
+function openSearch() {
+  openSurface("search");
+  const input = $("search-q");
+  if (input) input.focus();
+}
+
+async function submitCapture() {
+  cleanupEvieVoiceNote();
+  if (submitCapture._pending) return;
+  const input = $("capture-text");
+  const meta = $("capture-meta");
+  const text = input ? input.value.trim() : "";
+  if (!text) {
+    textOf(meta, "Write something first.");
+    return;
+  }
+  const privacy = $("capture-privacy");
+  const chosen = privacy && privacy.querySelector("button.on") ? privacy.querySelector("button.on").getAttribute("data-privacy") : "normal";
+  const fingerprint = JSON.stringify([state.deviceToken, text, chosen]);
+  if (!submitCapture._draft || submitCapture._draft.fingerprint !== fingerprint) {
+    submitCapture._draft = { fingerprint, key: "note-" + crypto.randomUUID() };
+  }
+  const draft = submitCapture._draft;
+  const key = draft.key;
+  submitCapture._pending = draft;
+  try {
+    const body = await api("/v1/device-gateway/capture", {
+      method: "POST",
+      body: JSON.stringify({ text: text, privacy_level: chosen, idempotency_key: key }),
+    });
+    if (submitCapture._pending !== draft) return;
+    if (body && body.ok) {
+      if (input && input.value.trim() === text) input.value = "";
+      submitCapture._draft = null;
+      textOf(meta, body.duplicate ? "Already saved (duplicate)." : "Saved to memory.");
+    } else {
+      textOf(meta, "Could not save right now.");
+    }
+  } catch (err) {
+    if (submitCapture._pending !== draft) return;
+    const code = err && (err.error_code || (err.body && err.body.error_code));
+    if (code === "capture_requires_owner") {
+      textOf(meta, "This phone is still sandboxed — approve it from the Mac first.");
+    } else if (err && err.status === 422) {
+      textOf(meta, "Note is empty.");
+    } else {
+      textOf(meta, "Offline or unreachable — try again when Home Station is back.");
+    }
+  } finally {
+    if (submitCapture._pending === draft) submitCapture._pending = null;
+  }
+}
+
+// Capture-only lifecycle; MAIN may call cleanupEvieVoiceNote() when closing Capture.
+const evieVoiceNoteLifecycle = { active: null, draft: null, saving: false, epoch: 0 };
+
+function evieVoiceNoteIsNormal() {
+  const selected = $("capture-privacy")?.querySelector("button.on");
+  return !selected || selected.getAttribute("data-privacy") === "normal";
+}
+
+function releaseEvieVoiceNoteResources(session) {
+  if (!session) return;
+  window.clearTimeout(session.timer);
+  session.timer = null;
+  if (session.stream) session.stream.getTracks().forEach(track => {
+    try { track.stop(); } catch (_err) {}
+  });
+}
+
+function finishEvieVoiceNote(session) {
+  releaseEvieVoiceNoteResources(session);
+  if (session.finished) return;
+  session.finished = true;
+  if (evieVoiceNoteLifecycle.active !== session) return;
+  evieVoiceNoteLifecycle.active = null;
+  const mime = session.recorder?.mimeType || "audio/mp4";
+  const blob = new Blob(session.chunks, { type: mime });
+  if (blob.size) {
+    evieVoiceNoteLifecycle.draft = { blob, mime, capturedAt: session.capturedAt, key: session.key };
+  }
+  const btn = $("voice-note-btn");
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = blob.size ? "Retry save voice note" : "Voice note";
+  }
+  textOf($("voice-note-state"), blob.size ? "Recording kept on this page. Tap to save; closing the page loses it." : "No audio recorded. Try again.");
+  if (!evieVoiceNoteIsNormal()) textOf($("voice-note-state"), "Private and sensitive voice notes are unavailable. Use a text note. Any recorded audio remains on this page, unsent.");
+  if (session.save && blob.size) saveEvieVoiceNoteDraft();
+}
+
+function stopEvieVoiceNoteSession(session, save) {
+  session.save = save;
+  session.phase = "stopping";
+  window.clearTimeout(session.timer);
+  session.timer = null;
+  try {
+    if (session.recorder && session.recorder.state !== "inactive") {
+      session.stopRequested = true;
+      session.recorder.stop();
+    } else if (!session.stopRequested) finishEvieVoiceNote(session);
+  } catch (_err) {
+    session.save = false;
+    finishEvieVoiceNote(session);
+  } finally { releaseEvieVoiceNoteResources(session); }
+}
+
+function cleanupEvieVoiceNote(options = {}) {
+  const session = evieVoiceNoteLifecycle.active;
+  if (options.discard) {
+    evieVoiceNoteLifecycle.epoch += 1;
+    evieVoiceNoteLifecycle.draft = null;
+    evieVoiceNoteLifecycle.saving = false;
+    evieVoiceNoteLifecycle.active = null;
+  }
+  if (session) {
+    if (!session.recorder) evieVoiceNoteLifecycle.active = null; // Invalidates late microphone permission.
+    stopEvieVoiceNoteSession(session, false);
+  }
+  const btn = $("voice-note-btn");
+  if (btn && !evieVoiceNoteLifecycle.saving) {
+    btn.disabled = false;
+    btn.textContent = evieVoiceNoteLifecycle.draft ? "Retry save voice note" : "Voice note";
+  }
+  if (options.discard) textOf($("voice-note-state"), "Voice note cleared from this page.");
+}
+
+async function saveEvieVoiceNoteDraft() {
+  const lifecycle = evieVoiceNoteLifecycle;
+  const draft = lifecycle.draft;
+  if (!draft || lifecycle.saving) return;
+  const btn = $("voice-note-btn");
+  const meta = $("voice-note-state");
+  if (!evieVoiceNoteIsNormal()) {
+    textOf(meta, "Private and sensitive voice notes are unavailable. Use a text note; audio can only be saved as Normal.");
+    return;
+  }
+  const epoch = lifecycle.epoch;
+  lifecycle.saving = true;
+  if (btn) btn.disabled = true;
+  textOf(meta, "Saving voice note as Normal…");
+  try {
+    const audioB64 = await blobToBase64(draft.blob);
+    if (epoch !== lifecycle.epoch) return;
+    if (!evieVoiceNoteIsNormal()) throw new Error("Private and sensitive audio cannot be saved. Use a text note.");
+    const body = await api("/v1/device-gateway/capture/audio", {
+      method: "POST",
+      body: JSON.stringify({ audio_b64: audioB64, content_type: draft.mime, captured_at: draft.capturedAt, idempotency_key: draft.key }),
+    });
+    if (epoch !== lifecycle.epoch) return;
+    if (!body || body.ok !== true) throw new Error("Home Station did not confirm the save.");
+    lifecycle.draft = null;
+    textOf(meta, "Voice note saved as Normal.");
+  } catch (err) {
+    if (epoch !== lifecycle.epoch) return;
+    const code = err && (err.error_code || (err.body && err.body.error_code));
+    textOf(meta, "Save failed. Recording kept on this page for retry. " + (code === "capture_requires_owner" ? "Approve this phone from the Mac first." : String(err.message || err)));
+  } finally {
+    if (epoch === lifecycle.epoch) {
+      lifecycle.saving = false;
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = lifecycle.draft ? "Retry save voice note" : "Voice note";
+      }
+    }
+  }
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || "").split(",")[1] || "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function toggleVoiceNote() {
+  const btn = $("voice-note-btn");
+  const stateEl = $("voice-note-state");
+  const lifecycle = evieVoiceNoteLifecycle;
+  if (lifecycle.saving) return;
+  if (!evieVoiceNoteIsNormal()) {
+    cleanupEvieVoiceNote();
+    textOf(stateEl, "Private and sensitive voice recording is unavailable. Use a text note; audio can only be saved as Normal.");
+    return;
+  }
+  if (lifecycle.active) {
+    if (lifecycle.active.phase !== "recording") return;
+    if (btn) btn.disabled = true;
+    stopEvieVoiceNoteSession(lifecycle.active, true);
+    return;
+  }
+  if (lifecycle.draft) return saveEvieVoiceNoteDraft();
+  if (state.talking || state._talkInflight) {
+    textOf(stateEl, "Stop Talk before recording a voice note.");
+    return;
+  }
+  if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) || typeof MediaRecorder === "undefined") {
+    textOf(stateEl, "This browser cannot record audio.");
+    return;
+  }
+  const session = { phase: "acquiring", chunks: [], stream: null, recorder: null, timer: null, save: false, capturedAt: new Date().toISOString(), key: "voicenote-" + crypto.randomUUID() };
+  lifecycle.active = session;
+  if (btn) btn.disabled = true;
+  textOf(stateEl, "Waiting for microphone permission…");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    session.stream = stream;
+    if (lifecycle.active !== session) { releaseEvieVoiceNoteResources(session); return; }
+    if (!evieVoiceNoteIsNormal() || state.talking || state._talkInflight) {
+      throw new Error("Voice recording needs Normal privacy and Talk stopped. Text notes remain available.");
+    }
+    const mime = MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "";
+    const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+    session.recorder = recorder;
+    recorder.ondataavailable = (ev) => {
+      if (ev.data && ev.data.size) session.chunks.push(ev.data);
+    };
+    recorder.onstop = () => finishEvieVoiceNote(session);
+    recorder.onerror = () => {
+      if (lifecycle.active !== session) { releaseEvieVoiceNoteResources(session); return; }
+      stopEvieVoiceNoteSession(session, false);
+      textOf(stateEl, "Recording failed — microphone error.");
+    };
+    recorder.start(250);
+    session.phase = "recording";
+    if (btn) { btn.disabled = false; btn.textContent = "Stop and save"; }
+    textOf(stateEl, "Recording as Normal… tap again to stop and save.");
+    session.timer = window.setTimeout(() => {
+      if (lifecycle.active === session && session.phase === "recording") toggleVoiceNote();
+    }, 90000);
+  } catch (err) {
+    releaseEvieVoiceNoteResources(session);
+    if (lifecycle.active !== session) return;
+    cleanupEvieVoiceNote();
+    textOf(stateEl, "Could not record. " + String(err.message || err));
+  }
+}
+
+async function refreshQueue() {
+  if (!state.deviceToken) return;
+  const token = state.deviceToken;
+  const list = $("queue-list");
+  const meta = $("queue-meta");
+  try {
+    const body = await api("/v1/device-gateway/queue");
+    if (token !== state.deviceToken) return;
+    if (!body || body.ok === false || !Array.isArray(body.items)) throw new Error("Invalid queue response.");
+    const items = body.items || [];
+    if (list) {
+      while (list.firstChild) list.removeChild(list.firstChild);
+    }
+    if (!items.length) {
+      const li = document.createElement("li");
+      li.className = "evie-today-empty";
+      li.textContent = "Nothing queued.";
+      if (list) list.appendChild(li);
+    }
+    items.forEach((item) => {
+      const li = document.createElement("li");
+      const text = item.kind === "siri_capture" && item.payload && item.payload.text ? String(item.payload.text) : item.kind || "request";
+      li.textContent = text.slice(0, 120) + " · " + (item.state || "pending") + (item.error_code ? " · " + item.error_code : "");
+      if (item.state === "pending") {
+        const drop = document.createElement("button");
+        drop.type = "button";
+        drop.className = "evie-queue-drop";
+        drop.textContent = "Drop";
+        drop.addEventListener("click", async () => {
+          if (drop.disabled) return;
+          drop.disabled = true;
+          try {
+            const result = await api("/v1/device-gateway/queue/" + encodeURIComponent(item.id), { method: "DELETE" });
+            if (!result || result.ok !== true) throw new Error("Drop was not confirmed.");
+            await refreshQueue();
+          } catch (err) {
+            if (token === state.deviceToken) textOf(meta, "Could not drop this item. Try again. " + String(err.message || err));
+          } finally { drop.disabled = false; }
+        });
+        li.appendChild(drop);
+      }
+      if (list) list.appendChild(li);
+    });
+    textOf(meta, items.length + " item" + (items.length === 1 ? "" : "s") + " on this phone");
+  } catch (err) {
+    if (token !== state.deviceToken) return;
+    textOf(meta, "Queue unavailable: " + String(err.message || err));
+  }
+}
+
+let routineTimes = [];
+
+function renderRoutineTimes() {
+  const box = $("routines-times");
+  if (!box) return;
+  while (box.firstChild) box.removeChild(box.firstChild);
+  routineTimes.forEach((t) => {
+    const chip = document.createElement("span");
+    chip.className = "evie-routine-chip";
+    chip.textContent = t;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.textContent = "✕";
+    x.setAttribute("aria-label", "Remove " + t);
+    x.addEventListener("click", () => {
+      routineTimes = routineTimes.filter((v) => v !== t);
+      renderRoutineTimes();
+    });
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
+}
+
+async function loadRoutines() {
+  if (!state.deviceToken) return;
+  const meta = $("routines-meta");
+  try {
+    const body = await api("/v1/device-gateway/routines");
+    const cfg = body.routines || {};
+    routineTimes = (cfg.digest_times || []).slice(0, 4);
+    renderRoutineTimes();
+    const seg = $("routines-enabled");
+    if (seg) {
+      seg.querySelectorAll("button").forEach((btn) => {
+        const on = btn.getAttribute("data-rv") === "on";
+        btn.classList.toggle("on", on === !!cfg.enabled);
+      });
+    }
+    const qs = $("routines-q-start");
+    const qe = $("routines-q-end");
+    if (qs) qs.value = cfg.quiet_hours_start || "";
+    if (qe) qe.value = cfg.quiet_hours_end || "";
+    textOf(meta, cfg.enabled ? "Digest is on — " + (cfg.digest_times || []).join(", ") : "Digest is off.");
+  } catch (err) {
+    textOf(meta, "Routines unavailable: " + String(err.message || err));
+  }
+}
+
+async function saveRoutines() {
+  const meta = $("routines-meta");
+  const seg = $("routines-enabled");
+  const enabled = !!(seg && seg.querySelector("button.on") && seg.querySelector("button.on").getAttribute("data-rv") === "on");
+  const timezone = (Intl.DateTimeFormat && Intl.DateTimeFormat().resolvedOptions && Intl.DateTimeFormat().resolvedOptions().timeZone) || "UTC";
+  const qs = $("routines-q-start");
+  const qe = $("routines-q-end");
+  try {
+    const body = await api("/v1/device-gateway/routines", {
+      method: "PUT",
+      body: JSON.stringify({
+        enabled: enabled,
+        digest_times: routineTimes,
+        quiet_hours_start: qs && qs.value ? qs.value : null,
+        quiet_hours_end: qe && qe.value ? qe.value : null,
+        timezone: timezone,
+      }),
+    });
+    if (body && body.ok) {
+      textOf(meta, "Saved. Timezone: " + timezone + ".");
+    } else {
+      textOf(meta, "Could not save routines.");
+    }
+  } catch (err) {
+    if (err && err.status === 422) textOf(meta, "Enable requires at least one digest time.");
+    else textOf(meta, "Save failed: " + String(err.message || err));
+  }
+}
+
+let peopleCache = [];
+
+async function refreshPeople(filterText) {
+  const list = $("people-list");
+  const meta = $("people-meta");
+  const needle = (filterText || "").trim().toLowerCase();
+  try {
+    const body = await api("/v1/device-gateway/contacts");
+    peopleCache = mergePeopleRows(body);
+    if (list) {
+      while (list.firstChild) list.removeChild(list.firstChild);
+    }
+    const shown = needle
+      ? peopleCache.filter((row) => row.name.toLowerCase().indexOf(needle) !== -1)
+      : peopleCache;
+    if (!shown.length) {
+      const li = document.createElement("li");
+      li.className = "evie-today-empty";
+      li.textContent = needle
+        ? "No matching contact."
+        : "No people yet — Evie uses WhatsApp, iMessage, mail, and Home Station names. Safari cannot read the iPhone address book.";
+      if (list) list.appendChild(li);
+      textOf(meta, "");
+      return;
+    }
+    shown.forEach((row) => {
+      const name = row.name;
+      const li = document.createElement("li");
+      li.className = "evie-people-row";
+      const span = document.createElement("span");
+      span.textContent = name;
+      li.appendChild(span);
+      const actions = document.createElement("span");
+      actions.className = "evie-people-actions";
+      const actionsFor = [
+        { verb: "Last", prompt: "What did I last have with " + name },
+        { verb: "Message", prompt: "latest messages with " + name },
+      ];
+      if (row.callable) actionsFor.push({ verb: "Call", prompt: "Call " + name });
+      actionsFor.forEach((action) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "evie-queue-drop";
+        btn.textContent = action.verb;
+        btn.addEventListener("click", () => {
+          openSurface("home");
+          sendText(action.prompt).catch(() => {});
+        });
+        actions.appendChild(btn);
+      });
+      li.appendChild(actions);
+      if (list) list.appendChild(li);
+    });
+    const phoneN = peopleCache.filter((row) => row.source === "phone").length;
+    const homeN = peopleCache.filter((row) => row.source === "home").length;
+    const source = phoneN && homeN
+      ? "this phone and Home Station"
+      : phoneN
+        ? "this phone"
+        : "Home Station";
+    textOf(meta, shown.length + " of " + peopleCache.length + " people · " + source);
+  } catch (err) {
+    textOf(meta, "People unavailable: " + String(err.message || err));
+  }
+}
+
+async function refreshMission() {
+  const meta = $("mission-meta");
+  try {
+    const body = await api("/v1/device-gateway/presence/mission");
+    const changed = await api("/v1/device-gateway/presence/what-changed");
+    const lines = missionLines(body);
+    fillOl("mission-list", lines, 12, "Nothing in flight right now.");
+    fillOl("mission-changed", changedLines(changed), 8, "No recent changes.");
+    const pocket = (body.mission && body.mission.pocket) || {};
+    textOf(meta, (pocket.working || 0) + " working · " + (pocket.needs_you || 0) + " need you");
+  } catch (err) {
+    fillOl("mission-list", [], 12, "In flight is unavailable.");
+    textOf(meta, "In flight unavailable: " + String(err.message || err));
+  }
+}
+
+async function refreshLooks() {
+  const list = $("looks-list");
+  const meta = $("looks-meta");
+  if (list) {
+    while (list.firstChild) list.removeChild(list.firstChild);
+  }
+  try {
+    const body = await api("/v1/device-gateway/looks");
+    const looks = body.looks || [];
+    if (body.memory_enabled === false) {
+      textOf(meta, "Look history needs Mac approval first.");
+      return;
+    }
+    if (!looks.length) {
+      const li = document.createElement("li");
+      li.className = "evie-today-empty";
+      li.textContent = "No looks yet — tap Look and share what the camera sees.";
+      if (list) list.appendChild(li);
+    }
+    looks.forEach((look) => {
+      const li = document.createElement("li");
+      const when = todayTime(look.occurred_at);
+      const text = look.summary || (look.scene ? "Saw " + look.scene : "A look");
+      li.textContent = (when ? when + " · " : "") + text;
+      if (look.has_media && look.media_url) {
+        const row = document.createElement("div");
+        row.className = "look-media";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "secondary";
+        const isClip = String(look.media_kind || "") === "clip" || String(look.media_kind || "") === "video";
+        button.textContent = isClip
+          ? "Play clip" + (look.duration_s ? " · " + Math.round(look.duration_s) + "s" : "")
+          : "View image";
+        button.addEventListener("click", () => toggleLookMedia(li, button, look));
+        row.appendChild(button);
+        if (look.moment_count) {
+          const note = document.createElement("span");
+          note.className = "quiet";
+          note.textContent = " · " + look.moment_count + " moments";
+          row.appendChild(note);
+        }
+        li.appendChild(row);
+      }
+      if (look.transcript) {
+        const transcript = document.createElement("p");
+        transcript.className = "quiet";
+        transcript.textContent = "Speech: " + look.transcript;
+        li.appendChild(transcript);
+      }
+      if (list) list.appendChild(li);
+    });
+    textOf(meta, looks.length + " look" + (looks.length === 1 ? "" : "s") + " recorded");
+  } catch (err) {
+    textOf(meta, "Look history unavailable: " + String(err.message || err));
+  }
+}
+
+async function toggleLookMedia(li, button, look) {
+  const existing = li.querySelector("video, img");
+  if (existing) {
+    if (existing.src && existing.src.indexOf("blob:") === 0) URL.revokeObjectURL(existing.src);
+    existing.remove();
+    button.textContent = String(look.media_kind || "") === "clip" ? "Play clip" : "View image";
+    return;
+  }
+  button.disabled = true;
+  const label = button.textContent;
+  button.textContent = "Loading…";
+  try {
+    const response = await fetch(look.media_url, {
+      headers: state.deviceToken ? { Authorization: "Bearer " + state.deviceToken } : {},
+    });
+    if (!response.ok) {
+      throw new Error(response.status === 410 ? "The stored media was deleted by retention." : "Media unavailable.");
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const isClip = String(look.media_kind || "") === "clip" || String(look.media_kind || "") === "video";
+    const node = document.createElement(isClip ? "video" : "img");
+    node.src = url;
+    node.controls = isClip;
+    node.playsInline = true;
+    node.className = "look-media-view";
+    li.appendChild(node);
+    button.textContent = "Close";
+  } catch (err) {
+    button.textContent = label;
+    textOf($("looks-meta"), String(err.message || err));
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function conversationExportText() {
+  const speaker = (state.device && state.device.display_name) || "Me";
+  const lines = (state.history || []).slice(-24).map((entry) => {
+    const who = entry.role === "assistant" || entry.role === "evie" ? "Evie" : speaker;
+    return who + ": " + String(entry.text || "");
+  });
+  return lines.join("\n");
+}
+
+async function copyConversation() {
+  const meta = $("conv-export-meta");
+  const text = conversationExportText();
+  if (!text) {
+    textOf(meta, "Nothing to copy yet.");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    textOf(meta, "Copied the last " + Math.min(24, state.history.length) + " messages available on this phone.");
+  } catch (_err) {
+    textOf(meta, "Copy is blocked in this browser.");
+  }
+}
+
+async function shareConversation() {
+  const meta = $("conv-export-meta");
+  const text = conversationExportText();
+  if (!text) {
+    textOf(meta, "Nothing to share yet.");
+    return;
+  }
+  try {
+    if (!navigator.share || (navigator.canShare && !navigator.canShare({ text: text }))) {
+      textOf(meta, "Sharing is unavailable here. Use Copy instead.");
+      return;
+    }
+    await navigator.share({ title: "Conversation with Evie · last 24 messages on this phone", text: text });
+    textOf(meta, "Shared the messages available on this phone (up to 24).");
+  } catch (err) {
+    textOf(meta, err && err.name === "AbortError" ? "Sharing cancelled." : "Sharing failed. Try again or use Copy. " + String(err.message || err));
+  }
+}
+
+function healthChip(label, value) {
+  const chip = document.createElement("div");
+  chip.className = "evie-health-chip";
+  const strong = document.createElement("strong");
+  strong.textContent = String(value == null ? "—" : value);
+  const span = document.createElement("span");
+  span.textContent = label;
+  chip.appendChild(strong);
+  chip.appendChild(span);
+  return chip;
+}
+
+async function refreshHealth() {
+  const chips = $("health-chips");
+  const series = $("health-series");
+  const meta = $("health-meta");
+  if (chips) {
+    while (chips.firstChild) chips.removeChild(chips.firstChild);
+  }
+  if (series) {
+    while (series.firstChild) series.removeChild(series.firstChild);
+  }
+  try {
+    const body = await api("/v1/device-gateway/vitals");
+    const snap = body.phone_snapshot || {};
+    const rows = body.series || [];
+    if (!chips) return;
+    if (snap.available && snap.metrics && Object.keys(snap.metrics).length) {
+      const m = snap.metrics || {};
+      chips.appendChild(healthChip("Steps", m.steps != null ? String(m.steps) : "—"));
+      chips.appendChild(healthChip("Sleep (h)", m.sleep_hours != null ? String(m.sleep_hours) : "—"));
+      chips.appendChild(healthChip("Freshness", snap.freshness || "—"));
+    } else if (rows.length && rows[0].metrics && Object.keys(rows[0].metrics).length) {
+      const m = rows[0].metrics || {};
+      chips.appendChild(healthChip("Steps", m.steps != null ? String(m.steps) : "—"));
+      chips.appendChild(healthChip("Sleep (h)", m.sleep_hours != null ? String(m.sleep_hours) : "—"));
+      const note = document.createElement("p");
+      note.className = "quiet";
+      note.textContent = "Home Station vitals — not from this iPhone's HealthKit. Never sent to a model.";
+      chips.appendChild(note);
+    } else {
+      const chip = healthChip("Health", "off");
+      chips.appendChild(chip);
+      const note = document.createElement("p");
+      note.className = "quiet";
+      note.textContent = "No Health numbers on Home Station yet. Safari cannot read HealthKit. Nothing from Health is sent to a model.";
+      chips.appendChild(note);
+    }
+    if (!rows.length && series) {
+      const li = document.createElement("li");
+      li.className = "evie-today-empty";
+      li.textContent = "No vitals series yet.";
+      series.appendChild(li);
+    }
+    rows.slice(0, 14).forEach((row) => {
+      const li = document.createElement("li");
+      const when = row.occurred_at ? new Date(row.occurred_at).toLocaleDateString([], { month: "short", day: "numeric" }) : "";
+      const readiness = typeof row.readiness === "number" ? " · readiness " + Math.round(row.readiness) : "";
+      const band = row.band ? " · " + row.band : "";
+      li.textContent = (when ? when + " · " : "") + (row.source || "vitals") + readiness + band;
+      if (series) series.appendChild(li);
+    });
+    textOf(meta, "Series entries: " + rows.length + " · phone snapshot " + (snap.freshness || "unavailable"));
+  } catch (err) {
+    textOf(meta, "Health unavailable: " + String(err.message || err));
+  }
+}
+
+async function refreshWeather(placeText) {
+  const card = $("weather-card");
+  const meta = $("weather-meta");
+  const place = (placeText || "").trim();
+  try {
+    const params = place ? "?place=" + encodeURIComponent(place) : "";
+    const body = await api("/v1/device-gateway/weather" + params);
+    if (body.status === "ok" && body.forecast) {
+      if (card) card.hidden = false;
+      textOf($("weather-title"), body.forecast.title || "Weather");
+      textOf($("weather-body"), body.forecast.snippet || "");
+      textOf(meta, "Live from Home Station.");
+    } else if (body.error_code === "NO_PLACE") {
+      if (card) card.hidden = true;
+      textOf(meta, "Tell Evie a place — no location is guessed.");
+    } else {
+      if (card) card.hidden = true;
+      textOf(meta, body.error_code === "WEATHER_TIMEOUT" ? "Weather lookup timed out." : "Weather is unavailable right now.");
+    }
+  } catch (err) {
+    if (card) card.hidden = true;
+    textOf(meta, "Weather unavailable: " + String(err.message || err));
+  }
 }
 
 async function enqueueOffline(kind, payload, key) {
@@ -572,9 +2133,38 @@ async function enqueueOffline(kind, payload, key) {
     }
   }
   state.queue.push(item);
+  saveOfflineQueueKeys();
   return item;
 }
 
+// Offline queue keys survive reload via localStorage (keys only, never payloads).
+const OFFLINE_QUEUE_KEYS = "ev.offlineQueueKeys";
+function loadOfflineQueueKeys() {
+  try {
+    const raw = localStorage.getItem(OFFLINE_QUEUE_KEYS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((k) => typeof k === "string" && k.length >= 8);
+  } catch (_err) {
+    return [];
+  }
+}
+function saveOfflineQueueKeys() {
+  try {
+    const keys = state.queue.map((item) => item && item.idempotency_key).filter((k) => typeof k === "string" && k.length >= 8);
+    localStorage.setItem(OFFLINE_QUEUE_KEYS, JSON.stringify(keys));
+  } catch (_err) {}
+}
+function restoreOfflineQueue() {
+  const keys = loadOfflineQueueKeys();
+  const seen = new Set(state.queue.map((item) => item && item.idempotency_key));
+  keys.forEach((key) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    state.queue.push({ idempotency_key: key, kind: "siri_capture", payload: {}, state: "queued_local", executed: false });
+  });
+}
 function nativePost(payload) {
   if (!(window.EvieNativeShell && window.EvieNativeShell.post)) return Promise.resolve(null);
   return Promise.race([
@@ -648,6 +2238,7 @@ async function postNativeSnapshots() {
       }),
     });
   } catch (_err) {}
+  await registerPhoneAlerts().catch(() => {});
 }
 
 async function pullEverywhere() {
@@ -668,12 +2259,20 @@ async function replayOfflineQueue() {
     const items = listed.items || [];
     for (let i = 0; i < items.length; i += 1) {
       const item = items[i];
-      if (!item || item.state !== "pending" || !item.idempotency_key) continue;
+      if (!item || item.state !== "pending") continue;
+      const text = item.kind === "siri_capture" && item.payload && item.payload.text;
+      const mark = item.idempotency_key || text || "";
+      if (text && trust === "TRUSTED_OWNER_DEVICE" && mark && !state.drainedCaptures[mark]) {
+        try {
+          await sendText(text, mark);
+          state.drainedCaptures[mark] = true;
+        } catch (_err) {
+          continue;
+        }
+      }
+      if (!item.idempotency_key) continue;
       // Cycle 53 — exactly-once: the SERVER executes queued voice intents
       // under the queue's idempotency key (the turn gate dedupes on it).
-      // The client never re-sends the utterance itself — that used to mean
-      // a queued timer could fire twice. Non-voice items still replay to
-      // the accepted state for server-side handling.
       try {
         const out = await api("/v1/device-gateway/queue/replay", {
           method: "POST",
@@ -684,8 +2283,36 @@ async function replayOfflineQueue() {
           state.caption = out.reply;
           render();
         }
+        state.queue = state.queue.filter((local) => !local || local.idempotency_key !== item.idempotency_key);
+        saveOfflineQueueKeys();
       } catch (_err) {}
     }
+  } catch (_err) {}
+}
+
+async function syncOnboarding() {
+  if (!state.deviceToken) return;
+  const status = state.status || {};
+  const trusted = status.trust_state === "TRUSTED_OWNER_DEVICE";
+  const steps = [];
+  if (state.cameraRole && state.cameraRole !== "unknown") steps.push("camera_role");
+  if (trusted) {
+    steps.push("promoted");
+    const prev = localStorage.getItem("evie_trust_seen");
+    if (prev && prev !== "trusted") {
+      state.caption = "Memory is now on for this phone.";
+      render();
+    }
+    localStorage.setItem("evie_trust_seen", "trusted");
+  }
+  try {
+    await api("/v1/device-gateway/onboarding", {
+      method: "PUT",
+      body: JSON.stringify({
+        steps_completed: steps,
+        camera_role_set: state.cameraRole === "pro" || state.cameraRole === "standard",
+      }),
+    });
   } catch (_err) {}
 }
 
@@ -701,6 +2328,7 @@ async function syncPhoneLife() {
     if (snap) {
       state.status = snap;
       if (state.hello) state.hello.status = snap;
+      await syncOnboarding().catch(() => {});
     }
   } catch (_err) {}
 }
@@ -725,14 +2353,29 @@ async function reportBattery() {
 
 function pushHistory(role, text) {
   if (!text) return;
+  const previous = state.history[state.history.length - 1];
+  if (previous && previous.role === role && previous.text === text) return;
   state.history.push({ role: role, text: text });
   if (state.history.length > 24) state.history.shift();
+  paintConversation();
+}
+
+function paintConversation(query) {
   const list = $("history");
+  if (!list) return;
   while (list.firstChild) list.removeChild(list.firstChild);
-  state.history.forEach((item) => {
+  const needle = query != null ? query : (($("conv-q") && $("conv-q").value) || "");
+  let turns = state.history || [];
+  if (window.EvieSearch && typeof window.EvieSearch.filterTurns === "function") {
+    turns = window.EvieSearch.filterTurns(turns, needle);
+  } else if (String(needle).trim()) {
+    const q = String(needle).trim().toLowerCase();
+    turns = turns.filter((item) => String(item.text || "").toLowerCase().indexOf(q) !== -1);
+  }
+  turns.forEach((item) => {
     const li = document.createElement("li");
     li.className = item.role === "user" ? "as-user" : "as-evie";
-    li.textContent = (item.role === "user" ? "" : "") + item.text;
+    li.textContent = item.text;
     list.appendChild(li);
   });
 }
@@ -749,9 +2392,85 @@ function pushActivity(text) {
   });
 }
 
+function openSurface(surface, origin, opener) {
+  const previous = document.querySelector('.sheet[role="dialog"]:not([hidden])');
+  if (!previous) state._roomReturnFocus = opener || (document.activeElement?.matches("button, input, textarea, summary, a[href]") ? document.activeElement : $("more-btn"));
+  $("room-tool-search").value = "";
+  $("room-tool-list").querySelectorAll("button").forEach(button => { button.hidden = false; });
+  $("room-tool-list").querySelectorAll(".room-tool-group").forEach(group => { group.hidden = false; });
+  $("room-tool-empty").hidden = true;
+  const map = {
+    more: "more-sheet",
+    today: "today-sheet",
+    weather: "weather-sheet",
+    health: "health-sheet",
+    looks: "looks-sheet",
+    people: "people-sheet",
+    routines: "routines-sheet",
+    queue: "queue-sheet",
+    capture: "capture-sheet",
+    search: "search-sheet",
+    memory: "memory-sheet",
+    conversation: "conversation-sheet",
+    devices: "devices-sheet",
+    activity: "activity-sheet",
+    inbox: "inbox-sheet",
+    mission: "mission-sheet",
+    privacy: "settings-sheet",
+  };
+  ["more-sheet", "today-sheet", "weather-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "mission-sheet", "settings-sheet"].forEach((id) => {
+    const on = map[surface] === id;
+    const el = $(id);
+    if (!el) return;
+    el.classList.remove("from-left", "from-right");
+    if (on && origin) el.classList.add(origin);
+    showSheet(id, on);
+  });
+  if (surface === "inbox") refreshInbox();
+  if (surface === "conversation") paintConversation();
+  if (surface === "today") refreshToday();
+  if (surface === "memory") refreshMemories();
+  if (surface === "privacy") refreshStatus();
+  if (surface === "queue") refreshQueue();
+  if (surface === "routines") loadRoutines();
+  if (surface === "people") refreshPeople();
+  if (surface === "mission") refreshMission();
+  if (surface === "looks") refreshLooks();
+  if (surface === "health") refreshHealth();
+  if (surface === "weather") refreshWeather();
+  state.surface = surface;
+  syncQuietRoom();
+}
+
 function showSheet(id, on) {
   const el = $(id);
-  if (el) el.hidden = !on;
+  if (!el) return;
+  const wasHidden = el.hidden;
+  if (!on && !wasHidden && id === "capture-sheet" && typeof cleanupEvieVoiceNote === "function") cleanupEvieVoiceNote();
+  el.hidden = !on;
+  if (id === "welcome") return;
+  if (on && wasHidden) {
+    el._returnFocus = document.activeElement;
+    el.setAttribute("role", "dialog");
+    el.setAttribute("aria-modal", "true");
+    const heading = el.querySelector("h2, h1");
+    if (heading) {
+      if (!heading.id) heading.id = id + "-title";
+      el.setAttribute("aria-labelledby", heading.id);
+      heading.tabIndex = -1;
+    }
+    requestAnimationFrame(() => {
+      if (!el.hidden) (heading || el.querySelector("button, input"))?.focus({ preventScroll: true });
+    });
+  }
+  const ready = $("ready-ui");
+  const hasDialog = !!document.querySelector('.sheet[role="dialog"]:not([hidden])');
+  if (ready) ready.inert = hasDialog;
+  if (!on && !wasHidden && !hasDialog) {
+    const target = state._roomReturnFocus?.getClientRects().length ? state._roomReturnFocus : $("more-btn");
+    target?.focus({ preventScroll: true });
+  }
+  syncQuietRoom();
   if (on && id === "settings-sheet" && window.EvieCapabilities) {
     window.EvieCapabilities.refresh({ api: (path) => api(path, { _useDeviceToken: true }) });
   }
@@ -759,7 +2478,7 @@ function showSheet(id, on) {
   if (on && id === "settings-sheet") fillPrivacyStance().catch(() => {});
   if (on && id === "conversation-sheet") loadTurnHistory().catch(() => {});
   if (on && id === "conversation-sheet") loadMemoryBrowser().catch(() => {});
-  if (on && id === "tactical-sheet") loadTactical().catch(() => {});
+
   if (on && id === "more-sheet") loadQuickActions().catch(() => {});
 }
 
@@ -1086,8 +2805,24 @@ async function loadQuickActions() {
   });
 }
 
+document.addEventListener("keydown", (event) => {
+  const dialog = document.querySelector('.sheet[role="dialog"]:not([hidden])');
+  if (!dialog) return;
+  if (event.key === "Escape") {
+    const close = dialog.querySelector("[data-close]");
+    if (close) { event.preventDefault(); close.click(); }
+  }
+  if (event.key === "Tab") {
+    const controls = Array.from(dialog.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, a[href], [tabindex="0"]')).filter(el => el.getClientRects().length);
+    if (!controls.length) return;
+    const first = controls[0], last = controls[controls.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement))) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement))) { event.preventDefault(); first.focus(); }
+  }
+});
+
 function anySheetOpen() {
-  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "more-sheet", "camera-sheet", "welcome"]
+  return ["conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "mission-sheet", "settings-sheet", "more-sheet", "today-sheet", "weather-sheet", "health-sheet", "looks-sheet", "people-sheet", "routines-sheet", "queue-sheet", "capture-sheet", "search-sheet", "memory-sheet", "camera-sheet", "welcome"]
     .some((id) => {
       const el = $(id);
       return !!(el && !el.hidden);
@@ -1101,7 +2836,7 @@ const STAGE_OUT_CURVE = "cubic-bezier(0.32, 0.72, 0.22, 1)";
 const STAGE_HOME_CURVE = "cubic-bezier(0.16, 1, 0.3, 1)";
 
 function stageSlideAside(direction) {
-  const stage = document.querySelector(".stage");
+  const stage = $("ready-ui");
   if (!stage) return;
   stage.style.willChange = "transform, opacity";
   stage.style.transition =
@@ -1111,7 +2846,7 @@ function stageSlideAside(direction) {
 }
 
 function stageReturn() {
-  const stage = document.querySelector(".stage");
+  const stage = $("ready-ui");
   if (!stage) return;
   stage.style.transition =
     "transform 460ms " + STAGE_HOME_CURVE + ", opacity 360ms " + STAGE_HOME_CURVE;
@@ -1128,7 +2863,7 @@ function stageReturn() {
    locks to horizontal intent only, never fights vertical scroll,
    and ignores every interactive region. */
 function initSwipes(openSurface) {
-  const stage = document.querySelector(".stage");
+  const stage = $("ready-ui");
   if (!stage) return;
   const OPEN_AT = 72;          /* travel that commits a swipe */
   const FLICK_VELOCITY = 0.45; /* px/ms — a quick flick commits early */
@@ -1454,14 +3189,45 @@ async function api(path, opts = {}) {
   const useDevice = !!opts._useDeviceToken;
   const bearer = useDevice ? state.deviceToken : (state.accessToken || state.deviceToken);
   if (bearer) headers.Authorization = "Bearer " + bearer;
-  const res = await fetch(path, Object.assign({}, opts, { headers }));
-  const body = await res.json().catch(() => ({}));
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (opts.signal) {
+    if (opts.signal.aborted) abort();
+    else opts.signal.addEventListener("abort", abort, { once: true });
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; abort(); }, opts._timeoutMs || 20000);
+  const request = Object.assign({}, opts, { headers, signal: controller.signal });
+  delete request._timeoutMs;
+  delete request._retried;
+  delete request._useDeviceToken;
+  let res, body;
+  try {
+    res = await fetch(path, request);
+    body = await res.json().catch(err => { if (controller.signal.aborted) throw err; return {}; });
+  } catch (err) {
+    if (timedOut) throw new Error("Home Station took too long to respond. Please try again.");
+    throw err;
+  } finally {
+    clearTimeout(timer);
+    if (opts.signal) opts.signal.removeEventListener("abort", abort);
+  }
   if (res.status === 401 && state.deviceToken && !opts._retried) {
-    const refreshed = await api("/v1/device-gateway/session", {
-      method: "POST",
-      _retried: true,
-      _useDeviceToken: true,
-    }).catch(() => null);
+    let refreshed;
+    try {
+      refreshed = await api("/v1/device-gateway/session", {
+        method: "POST", _retried: true, _useDeviceToken: true,
+        signal: opts.signal, _timeoutMs: opts._timeoutMs,
+      });
+    } catch (err) {
+      // A transient refresh failure is not evidence that pairing was revoked.
+      if (err.status !== 401 && err.status !== 403) throw err;
+      await idbDel("device_token").catch(() => {});
+      await idbDel("access_token").catch(() => {});
+      state.deviceToken = null;
+      state.accessToken = null;
+      throw err;
+    }
     if (refreshed && refreshed.access_token) {
       state.accessToken = refreshed.access_token;
       await idbPut("access_token", refreshed.access_token).catch(() => {});
@@ -1469,15 +3235,14 @@ async function api(path, opts = {}) {
       if (refreshed.status) state.status = refreshed.status;
       return api(path, Object.assign({}, opts, { _retried: true }));
     }
-    await idbDel("device_token").catch(() => {});
-    await idbDel("access_token").catch(() => {});
-    state.deviceToken = null;
-    state.accessToken = null;
+    throw new Error("Home Station could not renew this session. Retry connection; your pairing is preserved.");
   }
   if (!res.ok) {
     const err = new Error(detailOf(body, res.statusText || "request failed"));
     err.status = res.status;
     err.body = body;
+    err.error_code = res.headers.get("X-Error-Code") || body.error_code || (body.detail && body.detail.error_code);
+    if (err.error_code && body && typeof body === "object") body.error_code = err.error_code;
     const detail = body && body.detail;
     if (detail && typeof detail === "object") {
       err.failed_stage = detail.failed_stage;
@@ -1535,13 +3300,48 @@ function paintCameraRole() {
 }
 
 function cameraHardware() {
-  if (state.cameraRole === "pro") {
-    return { camera_quality: "pro", camera_preference_rank: 0, provenance: "owner_declared" };
+  const base = (function () {
+    if (state.cameraRole === "pro") {
+      return { camera_quality: "pro", camera_preference_rank: 0, provenance: "owner_declared" };
+    }
+    if (state.cameraRole === "standard") {
+      return { camera_quality: "standard", camera_preference_rank: 10, provenance: "owner_declared" };
+    }
+    return { camera_quality: "unknown", camera_preference_rank: 50, provenance: "undeclared" };
+  })();
+  // Media capability is a browser fact, reported so the server never offers
+  // recording this phone cannot honour. Safari on iOS usually cannot record
+  // video from a live camera stream; when it cannot, we send timestamped stills.
+  const media = {
+    still: true,
+    burst: true,
+    video: videoRecordingSupported(),
+  };
+  const mime = preferredClipMime();
+  if (mime) media.clip_mime = mime;
+  return Object.assign(base, { media: media });
+}
+
+const CLIP_MIME_CANDIDATES = [
+  "video/mp4;codecs=h264",
+  "video/mp4",
+  "video/webm;codecs=vp8",
+  "video/webm",
+];
+
+function preferredClipMime() {
+  if (typeof window.MediaRecorder === "undefined") return null;
+  if (typeof window.MediaRecorder.isTypeSupported !== "function") return null;
+  for (let i = 0; i < CLIP_MIME_CANDIDATES.length; i += 1) {
+    if (window.MediaRecorder.isTypeSupported(CLIP_MIME_CANDIDATES[i])) {
+      return CLIP_MIME_CANDIDATES[i];
+    }
   }
-  if (state.cameraRole === "standard") {
-    return { camera_quality: "standard", camera_preference_rank: 10, provenance: "owner_declared" };
-  }
-  return { camera_quality: "unknown", camera_preference_rank: 50, provenance: "undeclared" };
+  return null;
+}
+
+function videoRecordingSupported() {
+  return preferredClipMime() !== null;
 }
 
 function refreshInstallHint() {
@@ -1554,13 +3354,45 @@ function refreshInstallHint() {
 function showUpdateLine() {
   const el = $("update-line");
   if (!el) return;
+  const toast = window.EvieUpdate && typeof window.EvieUpdate.toast === "function"
+    ? window.EvieUpdate.toast({ latest_web_build: state.updateAvailable && state.updateAvailable.latest }, CLIENT_BUILD)
+    : null;
   if (state.updateAvailable && state.updateAvailable.latest) {
     el.hidden = false;
-    el.textContent = "Update available · tap to reload (" + state.updateAvailable.latest + ")";
+    if (toast) {
+      el.textContent = toast.title + " · " + toast.body + " · " + toast.cta;
+    } else {
+      const ready = state.updateAvailable.sw_ready ? "Update ready" : "Update available";
+      el.textContent = ready + " · tap to reload (" + state.updateAvailable.latest + ")";
+    }
   } else {
     el.hidden = true;
     el.textContent = "";
   }
+}
+
+function watchServiceWorkerUpdate(registration) {
+  if (!registration) return;
+  const markReady = () => {
+    if (state.updateAvailable && state.updateAvailable.sw_ready) return;
+    if (!state.updateAvailable) {
+      state.updateAvailable = { latest: "Home Station" };
+    }
+    state.updateAvailable.sw_ready = true;
+    pushActivity("Update ready · tap to reload");
+    showUpdateLine();
+  };
+  if (registration.waiting && navigator.serviceWorker.controller) markReady();
+  if (!registration.addEventListener) return;
+  registration.addEventListener("updatefound", () => {
+    const installing = registration.installing;
+    if (!installing || !installing.addEventListener) return;
+    installing.addEventListener("statechange", () => {
+      if (installing.state === "installed" && navigator.serviceWorker.controller) {
+        markReady();
+      }
+    });
+  });
 }
 
 async function nativeSnapshot() {
@@ -1653,10 +3485,27 @@ function backgroundUpdateServiceWorker() {
     if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
       navigator.serviceWorker
         .getRegistration("/evie/")
-        .then((reg) => reg && reg.update && reg.update())
+        .then((reg) => {
+          watchServiceWorkerUpdate(reg);
+          return reg && reg.update && reg.update();
+        })
         .catch(() => {});
     }
   } catch (_err) {}
+}
+const HELLO_RECHECK_MS = 15 * 60 * 1000;
+function scheduleHelloRecheck() {
+  // Long-lived tabs miss deploys: re-run hello every 15min while READY so a
+  // redeployed Home Station surfaces via the display-only update notice.
+  // Skips while talking, unauthenticated, or not READY; never throws.
+  if (state.helloRecheckTimer) return;
+  state.helloRecheckTimer = setInterval(() => {
+    try {
+      if (state.conn !== "READY" || state.talking || state._talkInflight) return;
+      if (!state.deviceToken) return;
+      hello().catch(() => {});
+    } catch (_err) {}
+  }, HELLO_RECHECK_MS);
 }
 
 async function hello() {
@@ -1664,7 +3513,6 @@ async function hello() {
   // ---- B01 ASSET_INTEGRITY ----------------------------------------------
   // Served HTML must belong to the same release as this app.js. A mismatch
   // means a mixed/partial deploy: repair caches ONCE, then give up with a
-  // terminal error instead of looping.
   const metaEl = document.querySelector('meta[name="evie-build"]');
   const metaBuild = (metaEl && metaEl.content) || CLIENT_BUILD;
   if (metaBuild !== CLIENT_BUILD) {
@@ -1738,6 +3586,14 @@ async function hello() {
   try {
     sessionStorage.removeItem("evie_build_reload");
   } catch (_err) {}
+  // Deploy notice: a changed asset_manifest_hash across hellos in one tab
+  // means the Home Station redeployed under us. Display only — auth and
+  // READY are unaffected; the new assets activate on next launch.
+  const seenManifest = (body && body.asset_manifest_hash) || "";
+  if (seenManifest && state.assetManifestHash && seenManifest !== state.assetManifestHash) {
+    pushActivity("Home Station updated · reload when convenient to pick up the new build");
+  }
+  if (seenManifest) state.assetManifestHash = seenManifest;
   state.hello = body;
   state.device = body.device;
   state.status = body.status || body.session_context || null;
@@ -1748,6 +3604,8 @@ async function hello() {
       api: api,
       instanceId: state.instanceId,
       onActivity: (line) => pushActivity(line),
+      onPresent: () => syncQuietRoom(),
+      onStatus: () => syncQuietRoom(),
     });
     window.EvieMobileActions.handshake().then((snap) => {
       if (snap && snap.status) {
@@ -1792,7 +3650,7 @@ async function subscribeWebPush() {
 
 async function pair() {
   const token = $("pair-token").value.trim();
-  if (!token) return;
+  if (!token) throw new Error("Enter the pairing code shown on your Mac.");
   setConn("AUTHENTICATING");
   const native = await nativeSnapshot();
   const body = await api("/v1/device-gateway/pair", {
@@ -1821,8 +3679,11 @@ async function pair() {
   await hello();
 }
 
-async function sendText(text) {
-  const requestId = crypto.randomUUID();
+async function sendText(text, requestIdOverride) {
+  // Replies and action confirmations belong in the room, not behind an inert
+  // background while People/Today/Conversation is still open.
+  if (document.querySelector('.sheet[role="dialog"]:not([hidden])')) openSurface("home");
+  const requestId = requestIdOverride || crypto.randomUUID();
   markTtfaStart();
   state.userLine = text;
   state.caption = "…";
@@ -1859,14 +3720,78 @@ async function sendText(text) {
     pushActivity("Continued from your other device");
   }
   pushHistory("evie", body.reply || "");
+  applyTurnOutcome(body);
   if (body.conversation_moved) await stopTalk();
   if (body.needs_camera) await captureCamera(body);
+  else if (body.camera_request_id) await waitForCameraReceipt(body);
   if (body.phone_action && window.EvieMobileActions) {
     window.EvieMobileActions.present(body.phone_action);
   }
   setMood(state.talking ? "Listening" : "Ready");
   paintLive();
   return body;
+}
+
+const CLIP_CAPTURE_SECONDS = 4;
+const BURST_FRAMES = 5;
+const BURST_GAP_MS = 750;
+
+function isRecordAction(action) {
+  const value = String(action || "").toLowerCase();
+  return value === "record" || value === "record_clip" || value === "record_video";
+}
+
+function cameraCopyFor(action) {
+  if (!isRecordAction(action)) return "Opening camera";
+  return videoRecordingSupported()
+    ? "Recording a short clip on this phone"
+    : "Capturing a short sequence of still frames (this browser cannot record video)";
+}
+
+async function grabStill(video, canvas) {
+  await new Promise((r) => requestAnimationFrame(r));
+  canvas.width = Math.min(video.videoWidth || 640, 1280);
+  canvas.height = Math.min(video.videoHeight || 480, 720);
+  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+}
+
+/** Record a real clip with MediaRecorder when this browser supports it. */
+async function recordClipBlob(stream) {
+  const mime = preferredClipMime();
+  if (!mime || typeof window.MediaRecorder === "undefined") return null;
+  let recorder;
+  try {
+    recorder = new MediaRecorder(stream, { mimeType: mime });
+  } catch (_err) {
+    return null;
+  }
+  const chunks = [];
+  const done = new Promise((resolve) => { recorder.onstop = resolve; });
+  recorder.ondataavailable = (event) => {
+    if (event.data && event.data.size) chunks.push(event.data);
+  };
+  recorder.start(250);
+  const posters = [];
+  const canvas = document.createElement("canvas");
+  const wanted = BURST_FRAMES;
+  for (let index = 0; index < wanted; index += 1) {
+    await new Promise((r) => setTimeout(r, (CLIP_CAPTURE_SECONDS * 1000) / wanted));
+    try {
+      posters.push(await grabStill(streamVideo(), canvas));
+    } catch (_err) {
+      break;
+    }
+  }
+  if (recorder.state !== "inactive") recorder.stop();
+  await done;
+  if (!chunks.length) return null;
+  return { blob: new Blob(chunks, { type: mime }), posters: posters };
+}
+
+let _clipVideoEl = null;
+function streamVideo() {
+  return _clipVideoEl;
 }
 
 /* Cycle 54 — POST + ReadableStream SSE parse (EventSource cannot POST).
@@ -1963,6 +3888,12 @@ function playTypedTts(audioB64, contentType) {
 
 async function captureCamera(body, facing) {
   const action = (body && (body.camera_action || body.action)) || "look_once";
+  const wantsClip = isRecordAction(action);
+  const generation = (state._roomCameraGeneration || 0) + 1;
+  state._roomCameraGeneration = generation;
+  showSheet("camera-sheet", true);
+  textOf($("camera-copy"), cameraCopyFor(action));
+  setMood("Camera");
   $("camera-sheet").hidden = false;
   const REASONS = {
     explicit_this_phone: "You asked this phone to look",
@@ -1978,27 +3909,64 @@ async function captureCamera(body, facing) {
   setMood(action === "record_clip" ? "Clip" : "Camera");
   const video = $("preview");
   const canvas = $("snap");
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: { ideal: facing || "environment" }, width: { max: 1280 }, height: { max: 720 } },
-    audio: false,
-  });
-  video.srcObject = stream;
-  video.hidden = false;
-  await video.play();
-  if (action === "record_clip") {
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-  } else {
-    await new Promise((r) => requestAnimationFrame(r));
+  let stream;
+  let jpeg;
+  let clip = null;
+  let burst = [];
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: facing || "environment" }, width: { max: 1280 }, height: { max: 720 } },
+      audio: false,
+    });
+    if (generation !== state._roomCameraGeneration) throw new Error("Camera cancelled.");
+    video.srcObject = stream;
+    video.hidden = false;
+    await video.play();
+    if (wantsClip) {
+      _clipVideoEl = video;
+      clip = await recordClipBlob(stream);
+      _clipVideoEl = null;
+      if (generation !== state._roomCameraGeneration) throw new Error("Camera cancelled.");
+      if (clip && clip.posters.length) {
+        burst = clip.posters;
+        jpeg = clip.posters[Math.floor(clip.posters.length / 2)] || clip.posters[0];
+      } else {
+        // Honest fallback: timestamped stills, never called a video.
+        burst = await captureBurst(video, canvas, generation);
+        jpeg = burst.length ? burst[Math.floor(burst.length / 2)] : null;
+      }
+    } else {
+      jpeg = await grabStill(video, canvas);
+    }
+  } finally {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    if (generation === state._roomCameraGeneration) {
+      video.hidden = true;
+      video.srcObject = null;
+      showSheet("camera-sheet", false);
+    }
   }
-  canvas.width = Math.min(video.videoWidth || 640, 1280);
-  canvas.height = Math.min(video.videoHeight || 480, 720);
-  canvas.getContext("2d").drawImage(video, 0, 0, canvas.width, canvas.height);
-  const jpeg = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
-  stream.getTracks().forEach((t) => t.stop());
-  video.hidden = true;
-  video.srcObject = null;
-  $("camera-sheet").hidden = true;
+  const hasClip = !!(clip && clip.blob);
   if (body && body.camera_request_id) {
+    if (hasClip) {
+      await uploadClip({
+        requestId: body.camera_request_id,
+        blob: clip.blob,
+        durationMs: CLIP_CAPTURE_SECONDS * 1000,
+        posters: burst,
+        action: action,
+      });
+    } else {
+      const images = burst.length ? burst : [jpeg];
+      const receipt = await postCameraFrames({
+        requestId: body.camera_request_id,
+        images: images.filter(Boolean),
+        action: action,
+        mediaKind: burst.length > 1 ? "burst" : "frame",
+        hasClip: false,
+      });
+      applyCameraReceipt(receipt);
+    }
     await api("/v1/device-gateway/camera/result", {
       method: "POST",
       body: JSON.stringify({ request_id: body.camera_request_id, jpeg_b64: jpeg, action: action }),
@@ -2014,6 +3982,128 @@ async function captureCamera(body, facing) {
   return jpeg;
 }
 
+async function captureBurst(video, canvas, generation) {
+  const frames = [];
+  for (let index = 0; index < BURST_FRAMES; index += 1) {
+    if (generation !== state._roomCameraGeneration) break;
+    frames.push(await grabStill(video, canvas));
+    if (index + 1 < BURST_FRAMES) {
+      await new Promise((r) => setTimeout(r, BURST_GAP_MS));
+    }
+  }
+  return frames;
+}
+
+async function postCameraFrames({ requestId, images, action, mediaKind, hasClip }) {
+  const clipSupported = videoRecordingSupported();
+  const total = images.length;
+  const span = mediaKind === "burst" ? CLIP_CAPTURE_SECONDS * 1000 : 0;
+  for (let index = 0; index < total; index += 1) {
+    const capturedAt = total > 1 ? Math.round((span * index) / (total - 1)) : 0;
+    const payload = {
+      request_id: requestId,
+      jpeg_b64: images[index],
+      action: action,
+      media_kind: mediaKind,
+      has_clip: !!hasClip,
+      clip_supported: clipSupported,
+      captured_at_ms: capturedAt,
+      sequence: index,
+      last: index === total - 1,
+    };
+    if (index === total - 1) {
+      const receipt = await api("/v1/device-gateway/camera/result", {
+        method: "POST",
+        body: JSON.stringify(payload),
+        _timeoutMs: 45000,
+      });
+      if (!receipt || !receipt.ok) throw new Error("Camera upload failed. Try Look again.");
+      return receipt;
+    }
+    // Non-final frames only need to reach the server; failures are non-fatal.
+    await api("/v1/device-gateway/camera/result", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      _timeoutMs: 45000,
+    }).catch(() => null);
+  }
+  return null;
+}
+
+async function uploadClip({ requestId, blob, durationMs, posters, action }) {
+  const form = new FormData();
+  form.append("file", blob, "ev-clip." + (blob.type.indexOf("webm") >= 0 ? "webm" : "mp4"));
+  form.append("duration_ms", String(durationMs));
+  form.append("request_id", requestId);
+  form.append("analyze", "true");
+  const receipt = await api("/v1/vision/clip", {
+    method: "POST",
+    body: form,
+    headers: {},
+    _timeoutMs: 90000,
+  });
+  const spoken = (receipt && receipt.spoken) || "Clip stored.";
+  state.caption = spoken;
+  pushHistory("evie", spoken);
+  showCameraStatus(
+    receipt && receipt.frames
+      ? "clip saved to memory · " + receipt.frames + " moments"
+      : "clip saved to memory"
+  );
+  // Posters ride along as the live frame for the same request, so the pending
+  // request resolves with what the camera actually saw.
+  if (posters && posters.length) {
+    await postCameraFrames({
+      requestId: requestId,
+      images: posters,
+      action: action,
+      mediaKind: "video",
+      hasClip: true,
+    }).catch(() => null);
+  }
+}
+
+function applyCameraReceipt(receipt) {
+  if (!receipt) return;
+  const vision = receipt.vision || {};
+  const description = vision.spoken || vision.description || vision.caption || vision.summary || receipt.ocr_text;
+  state.caption = typeof description === "string" && description.trim()
+    ? description
+    : "Image received. " + (receipt.vision ? "No description was returned." : "Visual analysis is unavailable for this phone’s current access.");
+  if (description) pushHistory("evie", state.caption);
+  showCameraStatus(receipt.persisted_to_memory_os ? "image saved to memory" : "image received · not saved to personal memory");
+}
+
+async function waitForCameraReceipt(body) {
+  const requestId = String((body && body.camera_request_id) || "").trim();
+  if (!requestId) return null;
+  const generation = Number(state._cameraReceiptGeneration || 0) + 1;
+  state._cameraReceiptGeneration = generation;
+  const current = () => generation === Number(state._cameraReceiptGeneration || 0);
+  if (String((body && body.freshness) || "").toUpperCase() === "OFFLINE") {
+    if (current()) showCameraStatus("preferred phone offline · look queued");
+    return null;
+  }
+  if (current()) showCameraStatus("waiting for the preferred phone");
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    try {
+      const receipt = await api("/v1/device-gateway/camera/" + encodeURIComponent(requestId));
+      if (receipt && receipt.request_id === requestId && receipt.expired) {
+        if (current()) showCameraStatus("camera request expired · ask me to look again");
+        return receipt;
+      }
+      if (receipt && receipt.request_id === requestId && receipt.has_frame) {
+        if (current()) showCameraStatus("frame received · Evie is analyzing");
+        return receipt;
+      }
+    } catch (_err) {
+      // The request may still be queued or the target may be offline.
+    }
+  }
+  if (current()) showCameraStatus("still waiting · no frame received yet");
+  return null;
+
 /* Cycle 67 — "remember this": the owner keeps what Evie just looked at.
    The SAME frame re-posts with action=remember; the server marks it as an
    explicit owner keep with provenance. Optional note names the thing. */
@@ -2027,6 +4117,7 @@ async function keepLastLook() {
   });
   lastLook = null;
   pushActivity("Kept to memory");
+}
 }
 
 function downsample(float32, fromRate, toRate) {
@@ -2092,7 +4183,9 @@ async function attachCapture(ws, stream) {
   const sePerf = !!(window.EvieAudioProfile && window.EvieAudioProfile.se);
   const BATCH_S = sePerf ? 0.04 : 0.02;
   const ctx = new AudioContext({ latencyHint: sePerf ? "playback" : "interactive" });
+  const current = () => state.ws === ws && state.talking;
   if (ctx.state === "suspended") await ctx.resume();
+  if (!current()) { stream.getTracks().forEach(track => track.stop()); void ctx.close(); return; }
   const source = ctx.createMediaStreamSource(stream);
   const mute = ctx.createGain();
   mute.gain.value = 0;
@@ -2155,6 +4248,7 @@ async function attachCapture(ws, stream) {
   if (ctx.audioWorklet) {
     try {
       await ctx.audioWorklet.addModule("/evie/pcm-worklet.js" + ASSET_V);
+      if (!current()) { source.disconnect(); stream.getTracks().forEach(track => track.stop()); void ctx.close(); return; }
       const node = new AudioWorkletNode(ctx, "pcm-capture");
       node.port.onmessage = (ev) => sendPcm(ev.data);
       source.connect(node);
@@ -2176,6 +4270,28 @@ async function attachCapture(ws, stream) {
   state._audio = { stream, ctx, source, proc, mute, kind: "script" };
 }
 
+function handlePhoneHud(event) {
+  if (!event || typeof event !== "object") return;
+  const hud = event.hud && typeof event.hud === "object" ? event.hud : event;
+  const actions = window.EvieMobileActions;
+  // Both transports must deliver the same actionable card. A spoken reply
+  // alone cannot expose the required confirmation/OS handoff controls.
+  const action = hud.phone_action;
+  if (actions && action && typeof action === "object" && (action.card || action.action_id)) {
+    actions.present(action);
+    render();
+    return;
+  }
+  if (actions && actions.presentFromHud(event)) { render(); return; }
+  if (showHomeStationResult(hud)) { render(); return; }
+  if (hud.kind === "progress" || event.kind === "progress") {
+    setMood("Working");
+    textOf($("action-card"), hud.title || hud.name || "Working…");
+    $("action-card").hidden = false;
+    render();
+  }
+}
+
 async function handleLiveMessage(gen, ev) {
   if (gen !== state.sessionGen) return;
   if (typeof ev.data !== "string") return;
@@ -2189,6 +4305,7 @@ async function handleLiveMessage(gen, ev) {
       line.classList.remove("partial");
       line.classList.add("final");
     }
+    if (window.EvieMobileActions?.onTranscript) window.EvieMobileActions.onTranscript(msg.text);
     setMood("Thinking");
     render();
   }
@@ -2203,6 +4320,7 @@ async function handleLiveMessage(gen, ev) {
   }
   if (msg.type === "barge_in" && engine) engine.stop();
   if (msg.type === "hud") {
+    handlePhoneHud(msg);
     const hud = msg.hud || msg;
     const kind = hud.kind || msg.kind || (hud.meta && hud.meta.kind) || "";
     if (kind === "progress") {
@@ -2365,12 +4483,13 @@ document.addEventListener("visibilitychange", () => {
 });
 
 async function talk() {
-  if (state._talkInflight) return;
+  if (state._talkInflight) return stopTalk();
   if (state.talking) {
     if (state.webrtc && state.webrtc.playBlocked) {
       try {
         await state.webrtc.enableAudio();
         state.caption = "";
+        setConn("ACTIVE");
         setMood("Listening");
       } catch (err) {
         state.caption = "Voice connected — tap to enable audio";
@@ -2381,10 +4500,21 @@ async function talk() {
     await stopTalk();
     return;
   }
+  const attempt = (state._voiceAttempt || 0) + 1;
+  state._voiceAttempt = attempt;
+  const current = () => state._voiceAttempt === attempt;
+  const controller = new AbortController();
+  state._voiceAbort = controller;
   state._talkInflight = true;
+  // Prime playback in the original tap, before any network awaits. Actual
+  // remote playback remains independently checked by EvieWebRTC.
+  const output = $("webrtc-out");
+  if (output) { try { const play = output.play(); if (play) play.catch(() => {}); } catch (_err) {} }
   markTtfaStart();
   render();
   try {
+    if (state._voiceCleanup) await state._voiceCleanup;
+    if (!current()) return;
     if (window.EvieFeedback) window.EvieFeedback.emit("conversationStart", $("talk"));
     claimAudioLeader();
     setConn("ACTIVE");
@@ -2392,6 +4522,7 @@ async function talk() {
     $("talk").textContent = voiceMode() === "ptt" ? "Hold" : "Stop";
     const opened = await api("/v1/device-gateway/live/open", {
       method: "POST",
+      signal: controller.signal,
       body: JSON.stringify({
         instance_id: state.instanceId,
         method: "manual",
@@ -2402,6 +4533,7 @@ async function talk() {
         takeover: !!(state._wakeTakeover || state._takeoverArmed),
       }),
     });
+    if (!current()) return;
     state._takeoverArmed = false;
     if (opened.ok === false && opened.refused === "lease_active") {
       state._takeoverArmed = true;
@@ -2412,15 +4544,17 @@ async function talk() {
     }
     state.sessionId = opened.session_id;
     acquireWakeLock().catch(() => {});
+    if (window.EvieMobileActions) window.EvieMobileActions.setSession(opened.session_id);
     state.leaseId = opened.lease_id || (opened.lease && opened.lease.lease_id);
     const want = opened.media_backend || "webrtc_strict";
     const strict = opened.strict_webrtc === true || want === "webrtc_strict" || !opened.ws_ticket;
     if ((want === "webrtc" || want === "webrtc_strict") && window.RTCPeerConnection && window.EvieWebRTC) {
       try {
         setMood("Connecting voice…");
-        await startWebRTC(opened);
+        await startWebRTC(opened, attempt);
         return;
       } catch (err) {
+        if (!current()) return;
         const diag = (err && err.diag) || (state.webrtc && state.webrtc.diag && state.webrtc.diag.snapshot());
         state.connectionDiag = diag || {
           failed_stage: err && err.failed_stage,
@@ -2429,6 +4563,7 @@ async function talk() {
         };
         if (err && err.audio_blocked) {
           state.talking = true;
+          setConn("ACTIVE");
           state.caption = "Voice connected — tap to enable audio";
           setMood("Voice connected — tap to enable audio");
           render();
@@ -2457,14 +4592,34 @@ async function talk() {
       await stopTalk();
       return;
     }
-    await startPcm(opened);
+    await startPcm(opened, attempt);
+  } catch (err) {
+    if (!current()) return;
+    state.caption = String(err.message || err);
+    await stopTalk();
+    setMood("Voice unavailable");
   } finally {
-    state._talkInflight = false;
+    if (current()) { state._talkInflight = false; state._voiceAbort = null; }
     render();
   }
 }
 
-async function startWebRTC(opened) {
+function scheduleVoiceRecovery(attempt, delay) {
+  if (state._recoverInflight || state._talkInflight) return;
+  state._recoverInflight = true;
+  setMood("Reconnecting");
+  setConn("RECONNECTING");
+  state._voiceRecoveryTimer = setTimeout(async () => {
+    state._voiceRecoveryTimer = null;
+    if (state._voiceAttempt !== attempt || !state.talking) return;
+    const cleanup = stopTalk({ preserveLease: true });
+    const stoppedAttempt = state._voiceAttempt;
+    await cleanup;
+    if (state._voiceAttempt === stoppedAttempt) await talk();
+  }, delay);
+}
+
+async function startWebRTC(opened, attempt) {
   closeActiveBackend();
   const encoded = $("encoded-out");
   if (encoded) {
@@ -2482,8 +4637,10 @@ async function startWebRTC(opened) {
     api: api,
     instanceId: state.instanceId,
     leaseId: state.leaseId || opened.lease_id,
+    miniThinks: !((state.hello && state.hello.cognitive && state.hello.cognitive.muse_kernel)),
     audioEl: $("webrtc-out"),
     onState: (label) => {
+      if (state._voiceAttempt !== attempt) return;
       if (label === "listening") setMood("Listening");
       if (label === "thinking") setMood("Thinking");
       if (label === "speaking") setMood("Speaking");
@@ -2492,12 +4649,7 @@ async function startWebRTC(opened) {
         // Bounded mic reacquisition: if iOS policy allows, one auto-recover
         // without extra Talk press; otherwise surface truthful gesture need.
         if (state.talking && !state._recoverInflight) {
-          state._recoverInflight = true;
-          setMood("Reconnecting");
-          setConn("RECONNECTING");
-          setTimeout(async () => {
-            try { await stopTalk(); await talk(); } catch (_e) {} finally { state._recoverInflight = false; }
-          }, 600);
+          scheduleVoiceRecovery(attempt, 600);
           return;
         }
         setMood("Voice unavailable");
@@ -2512,16 +4664,12 @@ async function startWebRTC(opened) {
         // dropped. Single generation, no Talk press required unless iOS
         // demands a new gesture (handled as mic_ended above).
         if (state.talking && !state._recoverInflight && !state._talkInflight) {
-          state._recoverInflight = true;
-          setMood("Reconnecting");
-          setConn("RECONNECTING");
-          setTimeout(async () => {
-            try { await stopTalk(); await talk(); } catch (_e) {} finally { state._recoverInflight = false; }
-          }, 800);
+          scheduleVoiceRecovery(attempt, 800);
         }
       }
     },
     onTranscript: (text, meta) => {
+      if (state._voiceAttempt !== attempt) return;
       state.lastAsr = text;
       state.lastAsrConfidence = meta && meta.confidence;
       state.userLine = text;
@@ -2532,8 +4680,16 @@ async function startWebRTC(opened) {
       paintLive();
     },
     onCaption: (text, done) => {
+      if (state._voiceAttempt !== attempt) return;
+      if (!done && !state._captionStreaming) {
+        state.caption = "";
+        state._captionStreaming = true;
+      }
       state.caption = done ? text : (state.caption + text);
-      if (done) pushHistory("evie", state.caption);
+      if (done) {
+        state._captionStreaming = false;
+        pushHistory("evie", state.caption);
+      }
       paintLive();
     },
     onEnvelope: (amp) => {
@@ -2541,19 +4697,11 @@ async function startWebRTC(opened) {
     },
     onCamera: (ev) => handleCameraRequest(ev),
     onHud: (hud) => {
-      if (window.EvieMobileActions && window.EvieMobileActions.presentFromHud(hud)) {
-        render();
-        return;
-      }
-      if ((hud && hud.kind) === "progress" || hud.name) {
-        setMood("Working on MacBook");
-        $("action-card").hidden = false;
-        textOf($("action-card"), "MacBook · " + (hud.name || "working"));
-        pushActivity("MacBook · " + (hud.name || "working"));
-      }
+      if (state._voiceAttempt === attempt) handlePhoneHud(hud);
     },
     onHealth: (snap) => {
       state.voiceHealth = snap;
+      state.talkPhase = String((snap && snap.runtime) || state.talkPhase || "IDLE");
       if (snap && snap.connection) state.connectionDiag = snap.connection;
       scheduleHealthRender();
     },
@@ -2561,17 +4709,17 @@ async function startWebRTC(opened) {
   state.webrtc = rtc;
   if (voiceMode() === "ptt") rtc.setPtt(true);
   state.talking = true;
-  if (window.EvieMobileActions) window.EvieMobileActions.setSession(opened.session_id);
   const signaling = /voice_signaling=ephemeral/.test(location.search) ? "ephemeral_direct" : "unified_calls";
   const mic = await rtc.start(opened, { signaling: signaling });
+  if (state._voiceAttempt !== attempt || state.webrtc !== rtc) { rtc.stop(); return; }
   state.connectionDiag = rtc.diag ? rtc.diag.snapshot() : null;
   state.capture = "webrtc_native_track";
   state.captureSettings = (mic.settings && mic.settings.actual) || mic.settings || {};
   setMood("Listening");
-  render();
+  setConn("ACTIVE");
 }
 
-async function startPcm(opened) {
+async function startPcm(opened, attempt) {
   closeActiveBackend();
   if (!opened.ws_ticket) throw new Error("Home Station did not mint a live ticket.");
   state.activeBackend = "pcm_ws";
@@ -2582,6 +4730,7 @@ async function startPcm(opened) {
     setMood("Tap to enable voice");
     throw _err;
   }
+  if (state._voiceAttempt !== attempt) return;
   playback.flushReconnect();
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl =
@@ -2598,6 +4747,18 @@ async function startPcm(opened) {
   ws.binaryType = "arraybuffer";
   state.ws = ws;
   state.talking = true;
+  let queue = Promise.resolve();
+  ws.onmessage = (ev) => {
+    queue = queue.then(() => { if (gen === state.sessionGen) return handleLiveMessage(gen, ev); }).catch(err => {
+      if (gen === state.sessionGen) { state.caption = String(err.message || err); render(); }
+    });
+  };
+  ws.onclose = () => {
+    if (state.talking && gen === state.sessionGen) {
+      state.caption = "Voice connection closed. Tap Talk to reconnect.";
+      void stopTalk();
+    }
+  };
   playback.onPlayingChange = (active) => {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "playback", active: !!active }));
@@ -2618,21 +4779,17 @@ async function startPcm(opened) {
     },
     video: false,
   });
+  if (state._voiceAttempt !== attempt || state.ws !== ws || ws.readyState === WebSocket.CLOSED) {
+    stream.getTracks().forEach(track => track.stop());
+    return;
+  }
+  state._pcmMic = stream;
   const track = stream.getAudioTracks()[0];
   state.captureSettings = track && track.getSettings ? track.getSettings() : {};
   await attachCapture(ws, stream);
-  let queue = Promise.resolve();
-  ws.onmessage = (ev) => {
-    queue = queue.then(() => handleLiveMessage(gen, ev)).catch(() => {});
-  };
-  ws.onclose = () => {
-    if (state.talking && gen === state.sessionGen) {
-      playback.flushReconnect();
-      state.caption = "Reconnecting…";
-      setMood("Reconnecting");
-      stopTalk().then(() => scheduleReconnect());
-    }
-  };
+  if (state._voiceAttempt !== attempt) return;
+  setMood("Listening");
+  setConn("ACTIVE");
 }
 
 function closeActiveBackend() {
@@ -2640,7 +4797,7 @@ function closeActiveBackend() {
     state.webrtc.stop();
     state.webrtc = null;
   }
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.close();
+  if (state.ws) { state.ws.onclose = null; state.ws.onmessage = null; state.ws.close(); }
   state.ws = null;
   const encoded = $("encoded-out");
   if (encoded) {
@@ -2657,40 +4814,69 @@ function closeActiveBackend() {
   state.activeBackend = "none";
 }
 
-async function stopTalk() {
+async function stopTalk(options) {
+  const preserveLease = !!(options && options.preserveLease);
   releaseWakeLock().catch(() => {});
   if (window.EvieFeedback) window.EvieFeedback.emit("conversationStop", $("talk"));
+  state._voiceAttempt = (state._voiceAttempt || 0) + 1;
+  if (state._voiceAbort) state._voiceAbort.abort();
+  state._voiceAbort = null;
+  clearTimeout(state._voiceRecoveryTimer);
+  state._voiceRecoveryTimer = null;
+  state._recoverInflight = false;
+  state._talkInflight = false;
   state.sessionGen += 1;
   if (engine) engine.socketGeneration = state.sessionGen;
   if (engine) engine.flushReconnect();
   state.talking = false;
   state.audioLeader = false;
-  $("talk").textContent = "Talk";
   const sessionId = state.sessionId;
+  const instanceId = state.instanceId;
+  state.sessionId = null;
+  state.leaseId = null;
+  if (window.EvieMobileActions) window.EvieMobileActions.setSession(null);
   closeActiveBackend();
+  if (state._pcmMic) { state._pcmMic.getTracks().forEach(track => track.stop()); state._pcmMic = null; }
   if (state._audio) {
     if (state._audio.node) state._audio.node.disconnect();
     if (state._audio.proc) state._audio.proc.disconnect();
     if (state._audio.mute) state._audio.mute.disconnect();
     state._audio.source.disconnect();
     state._audio.stream.getTracks().forEach((t) => t.stop());
-    await state._audio.ctx.close().catch(() => {});
+    void state._audio.ctx.close().catch(() => {});
     state._audio = null;
   }
-  await api("/v1/device-gateway/live/close", {
-    method: "POST",
-    body: JSON.stringify({ instance_id: state.instanceId, session_id: sessionId }),
-  }).catch(() => {});
-  await api("/v1/device-gateway/conversation/release", {
-    method: "POST",
-    body: JSON.stringify({ instance_id: state.instanceId }),
-  }).catch(() => {});
-  state.sessionId = null;
   $("action-card").hidden = true;
-  if (state.conn === "ACTIVE") {
+  if (state.conn === "ACTIVE" || state.conn === "RECONNECTING") {
     setMood("Ready");
     setConn("READY");
   }
+  paintLive();
+  // Local media/UI stops synchronously. Serialize remote cleanup before a
+  // subsequent open, since the server lease is scoped to this instance.
+  const previous = state._voiceCleanup;
+  const cleanup = (async () => {
+    if (previous) await previous;
+    await api("/v1/device-gateway/live/close", {
+    method: "POST",
+    _timeoutMs: 5000,
+    body: JSON.stringify({
+      instance_id: instanceId,
+      session_id: sessionId,
+      preserve_lease: preserveLease,
+    }),
+  }).catch(() => {});
+  if (!preserveLease) {
+    await api("/v1/device-gateway/conversation/release", {
+      method: "POST",
+      _timeoutMs: 5000,
+      body: JSON.stringify({ instance_id: instanceId }),
+    }).catch(() => {});
+  }
+  })();
+  state._voiceCleanup = cleanup;
+  await cleanup;
+  if (state._voiceCleanup === cleanup) state._voiceCleanup = null;
 }
 
 function scheduleReconnect() {
@@ -2728,7 +4914,7 @@ async function runSelfTest() {
   checks.push(["HTTPS", window.isSecureContext, ""]);
   checks.push(["WebRTC", typeof RTCPeerConnection === "function", ""]);
   try {
-    const health = await fetch("/v1/device-gateway/health").then((r) => r.json());
+    const health = await api("/v1/device-gateway/health");
     checks.push(["Mac Home Station", health.device_gateway_ready === true, ""]);
     checks.push(["Sandbox memory", health.production_memory_enabled === false, ""]);
   } catch (_err) {
@@ -2798,9 +4984,9 @@ async function asrCheck() {
 }
 
 async function understandingCheck() {
-  if (state.webrtc && !state.webrtc.closed) {
+  if (state.webrtc && !state.webrtc.closed && state.webrtc.dc?.readyState === "open") {
     state.webrtc.perceptionProbe();
-    state.caption = "Understanding Check: text-only probe sent. No extra speech should play.";
+    state.caption = "Understanding Check: text-only probe submitted. Waiting for a response.";
     render();
     return;
   }
@@ -2825,10 +5011,12 @@ async function outputCheck() {
 }
 
 async function reportMisheard() {
+  const intended = $("misheard-intended").value.trim();
+  if (!intended) throw new Error("Enter what you actually said before sending the report.");
   await api("/v1/device-gateway/mobile-voice/misheard", {
     method: "POST",
     body: JSON.stringify({
-      intended: "Turn off the Wi-Fi after I finish this sentence.",
+      intended: intended,
       asr_transcript: state.lastAsr,
       independent_asr: state.lastIndependentAsr,
       model_caption: state.caption,
@@ -2857,6 +5045,7 @@ async function runAudioDiagnostic() {
   report.d5 = typeof RTCPeerConnection === "function" ? "READY" : "UNAVAILABLE";
   report.engine = "not_started_in_strict_mode";
   state.preflight.audio_diag = report;
+  state.caption = "Speaker playback: " + report.d4 + ". Browser WebRTC support: " + report.d5 + ". This is not an end-to-end voice test.";
   render();
 }
 
@@ -2875,82 +5064,268 @@ async function reportGlitch() {
   await api("/v1/device-gateway/audio-diag/incident", {
     method: "POST",
     body: JSON.stringify(incident),
-  }).catch(() => {});
+  });
+  state.caption = "Audio issue report saved.";
   render();
 }
 
 async function resetLocal(unpair) {
-  if (state.talking) await stopTalk();
-  sessionStorage.removeItem("evie_instance");
-  state.instanceId = crypto.randomUUID();
-  sessionStorage.setItem("evie_instance", state.instanceId);
-  if (unpair) {
-    await idbDel("device_token");
-    state.deviceToken = null;
-    state.accessToken = null;
-    state.device = null;
-    state.hello = null;
+  if (resetLocal._pending) return;
+  resetLocal._pending = true;
+  const warnings = [];
+  try {
+    cleanupEvieVoiceNote({ discard: !!unpair });
+    submitCapture._pending = null;
+    submitCapture._draft = null;
+    clearTimeout(state.reconnectTimer);
+    state.reconnectTimer = null;
+    clearInterval(state.helloRecheckTimer);
+    state.helloRecheckTimer = 0;
+    if (state.talking || state._talkInflight || state._recoverInflight || state.ws || state.webrtc) {
+      try { await stopTalk(); } catch (_err) { warnings.push("Voice cleanup could not complete."); }
+    }
+    state.instanceId = crypto.randomUUID();
+    try { sessionStorage.setItem("evie_instance", state.instanceId); }
+    catch (_err) { warnings.push("Session storage could not be updated."); }
+    if (unpair) {
+      state.deviceToken = null;
+      state.accessToken = null;
+      state.device = null;
+      state.hello = null;
+      state.status = null;
+      state.history = [];
+      state.activity = [];
+      state.inbox = [];
+      state.queue = [];
+      state.syncCursor = null;
+      state.drainedCaptures = {};
+      state.userLine = "";
+      state.caption = "";
+      state.lastAsr = "";
+      state.lastAsrConfidence = null;
+      state.lastIndependentAsr = "";
+      state.forensic = {};
+      state.preflight = {};
+      state.incidents = [];
+      state.voiceHealth = null;
+      state.connectionDiag = null;
+      state.captureSettings = {};
+      state.capture = "none";
+      state._lastHomeStationResult = null;
+      state._lastCameraStatus = null;
+      state._roomSetAside = false;
+      peopleCache = [];
+      routineTimes = [];
+      const detail = $("memory-detail");
+      if (detail) { detail._evieMemoryRequest = null; detail.hidden = true; }
+      document.querySelectorAll(".sheet").forEach(sheet => { sheet.hidden = true; });
+      ["history", "activity", "inbox-list", "queue-list", "memory-list", "memory-detail-text", "memory-detail-meta", "memory-versions", "memory-sources", "people-list", "looks-list", "search-memories", "search-events", "search-reminders", "search-contacts", "today-calendar", "today-reminders", "today-memories", "today-health", "health-chips", "health-series", "routines-times", "capture-meta", "conv-export-meta", "inbox-secondary-status", "queue-meta", "memory-meta", "user-line", "reply", "diag"].forEach(id => textOf($(id), ""));
+      ["capture-text", "text", "pair-token", "memory-q", "search-q"].forEach(id => { if ($(id)) $(id).value = ""; });
+      ["mobile-action-card", "action-card", "room-exchange", "today-hud", "camera-ask"].forEach(id => { if ($(id)) $(id).hidden = true; });
+      for (const key of ["device_token", "access_token"]) {
+        try { await idbDel(key); }
+        catch (_err) { warnings.push("Could not remove persisted " + key + "; clear this site's data before sharing this phone."); }
+      }
+      for (const key of [OFFLINE_QUEUE_KEYS, "evie_trust_seen", "evie_camera_role"]) {
+        try { localStorage.removeItem(key); }
+        catch (_err) { warnings.push("Could not clear " + key + "."); }
+      }
+      state.cameraRole = "unknown";
+    }
+    if (window.caches) {
+      try {
+        const keys = await caches.keys();
+        await Promise.all(keys.filter(key => key.indexOf("evie-static-") === 0).map(key => caches.delete(key)));
+      } catch (_err) { warnings.push("Cached assets could not be cleared."); }
+    }
+    state.surface = "presence";
+    if (state.deviceToken) {
+      state.hello = null;
+      state.status = null;
+      try { await hello(); }
+      catch (err) { setConn("DISCONNECTED"); warnings.push("Reconnect failed: " + String(err.message || err)); }
+    } else {
+      setMood("Pair this iPhone");
+      setConn("DISCONNECTED");
+    }
+    state.caption = (unpair
+      ? "Forgot this phone locally. Server trust was not revoked. Pair again to reconnect."
+      : "Local client reset. Pairing kept; connection settings requested again.") + (warnings.length ? " " + warnings.join(" ") : "");
+    render();
+  } finally {
+    resetLocal._pending = false;
+    if (state.deviceToken) scheduleHelloRecheck();
   }
-  if (window.caches) {
-    const keys = await caches.keys();
-    await Promise.all(keys.filter((key) => key.indexOf("evie-static-") === 0).map((key) => caches.delete(key)));
-  }
-  state.caption = unpair ? "Device unpaired. Pair again." : "Local client reset. Pairing kept.";
-  render();
+}
+
+async function runControl(id, work) {
+  const button = $(id);
+  if (button?.getAttribute("aria-busy") === "true") return;
+  button?.setAttribute("aria-busy", "true");
+  try { return await work(); }
+  catch (err) { state.caption = String(err.message || err); render(); }
+  finally { button?.removeAttribute("aria-busy"); }
 }
 
 async function boot() {
   await ensureAudioModules();
+  arrangeRoomTools();
   try {
     const storedRole = localStorage.getItem("evie_camera_role");
     if (storedRole === "pro" || storedRole === "standard" || storedRole === "unknown") {
       state.cameraRole = storedRole;
     }
   } catch (_err) {}
+  restoreOfflineQueue();
   const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   const Presence = window.EviePresence || window.EvieOrb;
   state.orb = new Presence($("orb"));
   state.orb.setReduced(reduce);
   state.orb.start();
+  window.matchMedia("(prefers-reduced-motion: reduce)").addEventListener("change", event => state.orb.setReduced(event.matches));
+  window.addEventListener("resize", () => { if (!state.orb.raf) state.orb.draw(); });
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", syncRoomTheme);
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/evie/sw.js", { scope: "/evie/" }).catch(() => {});
+    navigator.serviceWorker
+      .register("/evie/sw.js", { scope: "/evie/" })
+      .then((reg) => watchServiceWorkerUpdate(reg))
+      .catch(() => {});
     navigator.serviceWorker.addEventListener("controllerchange", () => {
       if (!state.updateAvailable) return;
       if (!oneShot("evie_sw_controller")) return;
       location.reload();
     });
   }
-  $("pair-btn").addEventListener("click", () => pair().catch((err) => {
-    state.caption = String(err.message || err);
-    setConn("DISCONNECTED");
-  }));
+  scheduleHelloRecheck();
+  function pairErrorCopy(err) {
+    const body = err && err.body;
+    const detail = body && body.detail;
+    if (typeof detail === "string") return detail;
+    const code = body && body.error_code;
+    if (code === "pair_rate_limited") return "Too many attempts from this network — wait a few minutes.";
+    if (err && err.status === 401) return "That code is invalid or expired. Ask the Mac for a fresh one.";
+    if (err && err.status === 403) return "Pairing is blocked from this origin — open Evie over Tailscale.";
+    return String(err.message || err);
+  }
+  $("pair-btn").addEventListener("click", () => {
+    const errorEl = $("pair-error");
+    if (errorEl) errorEl.hidden = true;
+    pair().catch((err) => {
+      const copy = pairErrorCopy(err);
+      if (errorEl) {
+        errorEl.textContent = copy;
+        errorEl.hidden = false;
+      }
+      state.caption = copy;
+      setConn("DISCONNECTED");
+    });
+  });
   $("text-form").addEventListener("submit", (ev) => {
     ev.preventDefault();
     const text = $("text").value.trim();
     if (!text) return;
+    state._roomSetAside = false;
     $("text").value = "";
     sendText(text).catch((err) => {
+      if (!$("text").value) $("text").value = text;
       state.caption = String(err.message || err);
+      $("room-exchange").open = true;
       render();
     });
   });
   $("talk").addEventListener("click", () => {
+    state._roomSetAside = false;
     if (window.EvieFeedback) window.EvieFeedback.visualPress($("talk"));
-    talk().catch((err) => {
+    const action = state.talking || state._talkInflight ? stopTalk() : talk();
+    action.catch((err) => {
       state.caption = String(err.message || err);
       render();
       stopTalk();
     });
   });
   $("look-btn").addEventListener("click", () => {
+    openSurface("home");
     sendText("Look at this.").catch((err) => {
       state.caption = String(err.message || err);
       render();
     });
   });
   $("type-btn").addEventListener("click", () => {
-    $("text-form").hidden = !$("text-form").hidden;
-    if (!$("text-form").hidden) $("text").focus();
+    const visible = $("text-form").hidden;
+    $("text-form").hidden = !visible;
+    $("ready-ui").dataset.writing = String(visible);
+    $("type-btn").setAttribute("aria-expanded", String(visible));
+    if (visible) $("text").focus();
+  });
+  $("room-write-close").addEventListener("click", () => {
+    $("text-form").hidden = true;
+    $("ready-ui").dataset.writing = "false";
+    $("type-btn").setAttribute("aria-expanded", "false");
+    $("type-btn").focus();
+  });
+  $("room-exchange").addEventListener("toggle", () => {
+    state._roomSetAside = !$("room-exchange").open;
+    $("ready-ui").dataset.exchange = $("room-exchange").open ? "open" : "closed";
+    textOf($("room-exchange").querySelector(".room-fold-hint"), $("room-exchange").open ? "Set aside" : "Read");
+  });
+  $("room-enable-audio").addEventListener("click", () => {
+    if (state.webrtc && state.webrtc.playBlocked) talk().catch(err => {
+      state.caption = String(err.message || err);
+      render();
+    });
+  });
+  $("room-stop-session").addEventListener("click", () => stopTalk().catch(err => {
+    state.caption = String(err.message || err);
+    render();
+  }));
+  $("room-tool-search").addEventListener("input", () => {
+    const query = $("room-tool-search").value.trim().toLocaleLowerCase();
+    let matches = 0;
+    $("room-tool-list").querySelectorAll("button").forEach(button => {
+      button.hidden = !button.textContent.toLocaleLowerCase().includes(query);
+      if (!button.hidden) matches += 1;
+    });
+    $("room-tool-empty").hidden = matches > 0;
+    $("room-tool-list").querySelectorAll(".room-tool-group").forEach(group => {
+      group.hidden = !group.querySelector("button:not([hidden])");
+    });
+  });
+  document.querySelectorAll("[data-chip]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const kind = btn.getAttribute("data-chip");
+      if (kind === "note" || kind === "memory") {
+        $("text-form").hidden = true;
+        $("ready-ui").dataset.writing = "false";
+        openSurface(kind === "note" ? "capture" : "memory");
+        return;
+      }
+      if (kind === "look") {
+        $("text-form").hidden = true;
+        $("ready-ui").dataset.writing = "false";
+        openSurface("home");
+        sendText("Look at this.").catch((err) => {
+          state.caption = String(err.message || err);
+          paintLive();
+        });
+        return;
+      }
+      const prompts = {
+        remind: "Remind me in 30 minutes",
+        timer: "Start a 10 minute timer",
+        day: "What's today looking like",
+        weather: "What's the weather",
+        messages: "what message do I have last",
+        mail: "what mail do I have last",
+      };
+      const prompt = prompts[kind];
+      if (!prompt) return;
+      $("text-form").hidden = true;
+      $("ready-ui").dataset.writing = "false";
+      sendText(prompt).catch((err) => {
+        state.caption = String(err.message || err);
+        paintLive();
+      });
+    });
   });
   $("more-btn").addEventListener("click", () => {
     const sheet = $("more-sheet");
@@ -2959,29 +5334,8 @@ async function boot() {
       stageReturn();
       return;
     }
-    stageSlideAside(1);
-    openSurface("more", "from-left");
+    openSurface("more", undefined, $("more-btn"));
   });
-  function openSurface(surface, origin) {
-    const map = {
-      more: "more-sheet",
-      conversation: "conversation-sheet",
-      devices: "devices-sheet",
-      activity: "activity-sheet",
-      tactical: "tactical-sheet",
-      inbox: "inbox-sheet",
-      privacy: "settings-sheet",
-    };
-    ["more-sheet", "conversation-sheet", "devices-sheet", "activity-sheet", "inbox-sheet", "settings-sheet", "tactical-sheet"].forEach((id) => {
-      const on = map[surface] === id;
-      const el = $(id);
-      if (!el) return;
-      el.classList.remove("from-left", "from-right");
-      if (on && origin) el.classList.add(origin);
-      showSheet(id, on);
-    });
-    if (surface === "inbox") refreshInbox();
-  }
   document.querySelectorAll("[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const kind = btn.getAttribute("data-quick");
@@ -2999,19 +5353,135 @@ async function boot() {
         return;
       }
       if (kind === "today") {
-        showBrief().catch((err) => {
-          state.caption = String(err.message || err);
-          render();
-        });
+        openSurface("today");
         return;
       }
-      const prompt = kind === "weather" ? "what's the weather" : "";
+      if (kind === "weather") {
+        openSurface("weather");
+        return;
+      }
+      const prompt = "";
       if (!prompt) return;
       sendText(prompt).catch((err) => {
         state.caption = String(err.message || err);
         paintLive();
       });
   });
+  document.querySelectorAll("[data-surface]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      openSurface(btn.getAttribute("data-surface"), undefined, btn);
+    });
+  });
+  const memoryForm = $("memory-search-form");
+  if (memoryForm) {
+    memoryForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const q = $("memory-q");
+      refreshMemories(q ? q.value.trim() : "");
+    });
+  }
+  const searchForm = $("search-form");
+  if (searchForm) {
+    searchForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const q = $("search-q");
+      runSearch(q ? q.value : "");
+    });
+  }
+  const capturePrivacy = $("capture-privacy");
+  if (capturePrivacy) {
+    capturePrivacy.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      capturePrivacy.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+    });
+  }
+  const captureForm = $("capture-form");
+  if (captureForm) {
+    captureForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      submitCapture();
+    });
+  }
+  const peopleFilter = $("people-filter-form");
+  if (peopleFilter) {
+    peopleFilter.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const q = $("people-q");
+      refreshPeople(q ? q.value : "");
+    });
+  }
+  const routinesEnabled = $("routines-enabled");
+  if (routinesEnabled) {
+    routinesEnabled.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button");
+      if (!btn) return;
+      routinesEnabled.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
+    });
+  }
+  const routinesAdd = $("routines-add-form");
+  if (routinesAdd) {
+    routinesAdd.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const input = $("routines-new-time");
+      const value = input && input.value;
+      if (value && routineTimes.length < 4 && routineTimes.indexOf(value) === -1) {
+        routineTimes.push(value);
+        renderRoutineTimes();
+      }
+      if (input) input.value = "";
+    });
+  }
+  const routinesSave = $("routines-save-btn");
+  if (routinesSave) {
+    routinesSave.addEventListener("click", () => saveRoutines());
+  }
+  const weatherForm = $("weather-form");
+  if (weatherForm) {
+    weatherForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const place = $("weather-place");
+      refreshWeather(place ? place.value : "");
+    });
+  }
+  const todayNote = $("today-note-btn");
+  if (todayNote) {
+    todayNote.addEventListener("click", () => openSurface("capture"));
+  }
+  const todayLook = $("today-look-btn");
+  if (todayLook) {
+    todayLook.addEventListener("click", () => {
+      sendText("Look at this.").catch((err) => {
+        state.caption = String(err.message || err);
+        render();
+      });
+    });
+  }
+  const inboxAckAll = $("inbox-ack-all-btn");
+  if (inboxAckAll) {
+    inboxAckAll.addEventListener("click", () => markAllInboxRead());
+  }
+  const convCopy = $("conv-copy-btn");
+  if (convCopy) {
+    convCopy.addEventListener("click", () => copyConversation());
+  }
+  const convShare = $("conv-share-btn");
+  if (convShare) {
+    convShare.addEventListener("click", () => shareConversation());
+  }
+  const convQ = $("conv-q");
+  if (convQ) {
+    convQ.addEventListener("input", () => paintConversation(convQ.value));
+  }
+  const queueRefresh = $("queue-refresh-btn");
+  if (queueRefresh) {
+    queueRefresh.addEventListener("click", () => refreshQueue());
+  }
+  const voiceNoteBtn = $("voice-note-btn");
+  if (voiceNoteBtn) {
+    voiceNoteBtn.addEventListener("click", () => toggleVoiceNote());
+  }
+  // The quiet room uses visible navigation; horizontal drags remain native.
   });
 
 /* Cycle 60 — the Today card: server-computed morning brief rendered into
@@ -3069,6 +5539,13 @@ function voiceMode() {
   initSheetGestures();
   document.querySelectorAll(".sheet-close").forEach((btn) => {
     btn.addEventListener("click", () => {
+      if (btn.id === "room-camera-close") {
+        state._roomCameraGeneration = (state._roomCameraGeneration || 0) + 1;
+        const video = $("preview");
+        if (video.srcObject) video.srcObject.getTracks().forEach(track => track.stop());
+        video.srcObject = null;
+        video.hidden = true;
+      }
       showSheet(btn.getAttribute("data-close"), false);
       stageReturn();
     });
@@ -3082,6 +5559,11 @@ function voiceMode() {
       if (btn) applyAppearance(btn.getAttribute("data-appearance"));
     });
   }
+  const enableAlerts = $("enable-alerts-btn");
+  if (enableAlerts) {
+    enableAlerts.addEventListener("click", () => runControl("enable-alerts-btn", enableLocalAlerts));
+  }
+  $("self-test-btn").addEventListener("click", () => runControl("self-test-btn", runSelfTest));
   /* Cycle 75 — density: auto (≤380px = SE compact), compact, comfortable. */
   /* Cycle 79 — push-to-wake: the service worker (or the ?wake=1 entry
      link) tells the app to open the live session on arrival, with the
@@ -3158,7 +5640,6 @@ function voiceMode() {
       if (state.webrtc) state.webrtc.setPtt(next === "ptt");
     });
   }
-  $("self-test-btn").addEventListener("click", () => runSelfTest());
   const installBridge = $("install-bridge-btn");
   if (installBridge) {
     installBridge.addEventListener("click", () => {
@@ -3189,12 +5670,14 @@ function voiceMode() {
     });
   }
   $("ma-go").addEventListener("click", () => {
-    if (window.EvieMobileActions) window.EvieMobileActions.run();
+    if (window.EvieMobileActions) runControl("ma-go", () => window.EvieMobileActions.run());
   });
   $("ma-cancel").addEventListener("click", () => {
-    if (window.EvieMobileActions) window.EvieMobileActions.cancel();
+    if (window.EvieMobileActions) runControl("ma-cancel", () => window.EvieMobileActions.cancel());
   });
-  $("retry-btn").addEventListener("click", () => hello().catch(() => scheduleReconnect()));
+  $("retry-btn").addEventListener("click", () => runControl("retry-btn", async () => {
+    try { await hello(); } catch (err) { scheduleReconnect(); throw err; }
+  }));
   document.addEventListener("click", (ev) => {
     const node = ev.target;
     if (!node || !node.closest) return;
@@ -3210,20 +5693,26 @@ function voiceMode() {
   const updateLine = $("update-line");
   if (updateLine) {
     updateLine.addEventListener("click", () => {
-      updateServiceWorkerOnce().catch(() => location.reload());
+      runControl("update-line", async () => {
+        if (!(await updateServiceWorkerOnce())) {
+          state.caption = "Automatic update is unavailable. Close Evie and reopen it to load the latest version.";
+          render();
+        }
+      });
     });
   }
-  $("copy-voice-diag-btn").addEventListener("click", () => copyVoiceDiagnostic());
+  $("copy-voice-diag-btn").addEventListener("click", () => runControl("copy-voice-diag-btn", copyVoiceDiagnostic));
+  $("copy-phone-diag-btn").addEventListener("click", () => runControl("copy-phone-diag-btn", copyPhoneDiagnostic));
   $("retry-voice-btn").addEventListener("click", () => {
     (state.talking ? stopTalk() : Promise.resolve()).then(() => talk()).catch((err) => {
       state.caption = String(err.message || err);
       render();
     });
   });
-  $("reset-btn").addEventListener("click", () => resetLocal(false));
-  $("unpair-btn").addEventListener("click", () => resetLocal(true));
-  $("glitch-btn").addEventListener("click", () => reportGlitch());
-  $("diag-run-btn").addEventListener("click", () => runAudioDiagnostic());
+  $("reset-btn").addEventListener("click", () => runControl("reset-btn", () => resetLocal(false)));
+  $("unpair-btn").addEventListener("click", () => runControl("unpair-btn", () => resetLocal(true)));
+  $("glitch-btn").addEventListener("click", () => runControl("glitch-btn", reportGlitch));
+  $("diag-run-btn").addEventListener("click", () => runControl("diag-run-btn", runAudioDiagnostic));
   $("mic-check-btn").addEventListener("click", () => micCheck().catch((err) => {
     state.caption = String(err.message || err);
     render();
@@ -3238,7 +5727,11 @@ function voiceMode() {
     render();
   }));
   $("tap-done-btn").addEventListener("click", () => {
-    if (state.webrtc && state.webrtc.commitTurn) state.webrtc.commitTurn();
+    if (state.webrtc?.dc?.readyState === "open" && state.webrtc.commitTurn) {
+      state.webrtc.commitTurn();
+      state.caption = "Turn submitted. Waiting for Evie.";
+    } else state.caption = "Connect Talk before ending a turn.";
+    render();
   });
   $("misheard-btn").addEventListener("click", () => reportMisheard().catch((err) => {
     state.caption = String(err.message || err);
@@ -3255,7 +5748,7 @@ function voiceMode() {
         const cs = state.webrtc.pc.connectionState;
         if (cs === "failed" || cs === "closed" || cs === "disconnected") {
           setMood("Reconnecting");
-          stopTalk().then(() => talk()).catch(() => {});
+          stopTalk({ preserveLease: true }).then(() => talk()).catch(() => {});
         }
       }
     }
@@ -3292,7 +5785,8 @@ function voiceMode() {
       }
       await hello();
     } else setConn("DISCONNECTED");
-  } catch (_err) {
+  } catch (err) {
+    state.caption = "Couldn’t connect: " + String(err.message || err) + " Open Tools → Settings → Retry connection.";
     setConn("DISCONNECTED");
   }
   render();

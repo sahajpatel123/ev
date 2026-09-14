@@ -6,7 +6,6 @@ from app.ev.spark_task import TaskDecision, fallback_task_decision
 from app.memory.message_speak import shape_message_payload, speak_messages, speak_person_gist
 from app.memory.recall import _spoken_from_evidence
 
-
 LONG = (
     "Can you send the notes from standup when you get a minute? "
     "Also here is a dump: " + ("lorem ipsum dolor sit amet. " * 40)
@@ -45,6 +44,27 @@ def test_latest_messages_are_headers_not_bodies() -> None:
     assert "lorem ipsum" not in lowered
     assert spoken.count("lorem ipsum") == 0
     assert fallback_task_decision("what are my latest messages", family_hint="messages").manner != "readout"
+
+
+def test_digest_manner_is_headlines_even_when_latest_is_set() -> None:
+    """`latest` on a digest is recency of the set, not a one-thread readout."""
+    items = [
+        _imessage("Mansi", "on my way"),
+        _imessage("Puran", "ok cool"),
+        _imessage("Gopal", "see you"),
+    ]
+    spoken = speak_messages(
+        "recent messages",
+        items,
+        decision=TaskDecision(
+            family="messages", manner="digest", latest=True, source="fallback"
+        ),
+    )
+    lowered = spoken.lower()
+    assert lowered.startswith("latest messages:")
+    assert "mansi" in lowered
+    assert "puran" in lowered
+    assert "on my way" in lowered or "ok cool" in lowered
 
 
 def test_last_chat_is_a_gist_not_a_recitation() -> None:

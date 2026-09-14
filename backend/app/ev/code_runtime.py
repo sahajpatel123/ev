@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import subprocess
+from contextlib import suppress
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -91,7 +92,20 @@ FORBIDDEN_BINARIES = frozenset(
     }
 )
 GIT_SUBCOMMANDS = frozenset(
-    {"status", "diff", "log", "show", "rev-parse", "ls-files", "branch", "describe"}
+    {
+        "status",
+        "diff",
+        "log",
+        "show",
+        "rev-parse",
+        "ls-files",
+        "branch",
+        "describe",
+        "checkout",
+    }
+)
+GIT_CHECKOUT_FORBIDDEN = frozenset(
+    {"-f", "--force", "--ours", "--theirs", "--detach", "--orphan"}
 )
 UV_SUBCOMMANDS = frozenset({"run", "tree"})
 CARGO_SUBCOMMANDS = frozenset({"test", "check", "build", "clippy", "fmt"})
@@ -145,13 +159,42 @@ SECRET_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 UNSAFE_ARG_RE = re.compile(r"[;|&`$]|\$\(|\n")
+_STICKY_PROJECT_RE = re.compile(
+    r"\b(?:"
+    r"(?:in|on|inside|from) (?:the |my |our )?(?:repo|project|codebase|tree|code)\b|"
+    r"(?:this|my|the) (?:repo|project|codebase|tree)\b|"
+    r"the same project|keep using this project|"
+    r"this codebase|"
+    r"how (?:do i |to )?(?:run|start) it|"
+    r"how is (?:it|this) (?:structured|organized|laid out|put together)|"
+    r"what(?:'s| is) (?:the |its )?(?:stack|structure|architecture)|"
+    r"what(?:'s| is) (?:dirty|changed|uncommitted)|"
+    r"go deeper|tell me more|dig deeper|"
+    r"git status"
+    r")\b",
+    re.IGNORECASE,
+)
+_PLACE_NOUN = r"(?:repo|project|codebase|app|package|tree|workspace|folder|code)"
+_NAMED_PROJECT_RE = (
+    r"(?:in |on |inside |from |about |of )(?:the |my |our )?{name}\b|"
+    r"(?:the |my |our |this )?{name} " + _PLACE_NOUN + r"\b|"
+    r"\b{name} (?:repo|project|codebase|app|package|tree|workspace|folder)\b|"
+    r"(?:" + _PLACE_NOUN + r") (?:called|named|of) (?:the |my |our )?{name}\b|"
+    r"(?:called|named) {name}\b|"
+    r"\b(?:use|open|switch to|work (?:in|on)|select) (?:the |my |our )?{name}"
+    r"(?: repo| project| codebase| workspace| folder)?\b"
+)
+_AMBIGUOUS_PROJECT_NAMES = frozenset(
+    {"wish", "hope", "love", "now", "go", "make", "try", "open", "work"}
+)
 MAX_LISTING = 80
-MAX_READ_CHARS = 24_000
+MAX_READ_CHARS = 48_000
 MAX_STDOUT = 16_384
 MAX_SEARCH_HITS = 40
 MAX_SEARCH_FILES = 800
 
 _active_root: ContextVar[Path | None] = ContextVar("ev_code_active_root", default=None)
+_sticky_root: Path | None = None
 
 
 class CodeJailError(ValueError):
@@ -221,7 +264,11 @@ def list_projects() -> list[dict[str, str]]:
             if not child.is_dir() or child.name.startswith(".") or child.name in SKIP_DIR_NAMES:
                 continue
             if not _looks_like_project(child):
-                continue
+                try:
+                    if not any(child.iterdir()):
+                        continue
+                except OSError:
+                    continue
             key = child.name.lower()
             if key in found and found[key] == child.resolve():
                 continue
@@ -231,7 +278,7 @@ def list_projects() -> list[dict[str, str]]:
 
 
 def select_project(goal: str) -> Path:
-    """Pick an allowed root from the owner phrasing, else the default workspace."""
+    """Pick an allowed root from the owner phrasing, sticky repo, or sandbox."""
 
     catalog = {item["name"]: Path(item["path"]) for item in list_projects()}
     lowered = (goal or "").lower()
@@ -240,15 +287,26 @@ def select_project(goal: str) -> Path:
         for name in sorted(catalog, key=len, reverse=True)
         if name not in GENERIC_PROJECT_NAMES
         and len(name) >= 2
-        and re.search(
-            rf"(?:in |on |inside |from )(?:the |my |our )?{re.escape(name)}\b|"
-            rf"\b{re.escape(name)} (?:repo|project|codebase|app|package|tree)\b",
-            lowered,
-        )
+        and _mentions_named_project(lowered, name)
     ]
     if named:
-        return catalog[named[0]]
-    return workspace_root()
+        chosen = catalog[named[0]]
+        remember_sticky_project(chosen)
+        return chosen
+    try:
+        from app.ev.code_literacy import project_name_for_alias
+
+        alias = project_name_for_alias(goal)
+    except Exception:  # noqa: BLE001 - alias lookup must never break jail select
+        alias = None
+    if alias and alias in catalog:
+        chosen = catalog[alias]
+        remember_sticky_project(chosen)
+        return chosen
+    sticky = sticky_project_path()
+    if sticky is not None and _wants_sticky_project(goal):
+        return sticky
+    return _default_workspace_path().resolve() if _default_workspace_path().exists() else workspace_root()
 
 
 def use_project(name: str) -> dict[str, Any]:
@@ -261,8 +319,172 @@ def use_project(name: str) -> dict[str, Any]:
             "detail": "Project is not in the owner allowlist.",
             "projects": [{"name": item["name"], "path": item["path"]} for item in list_projects()],
         }
-    set_active_project(catalog[wanted])
-    return {"ok": True, "project": wanted, "path": str(catalog[wanted])}
+    chosen = catalog[wanted]
+    set_active_project(chosen)
+    remember_sticky_project(chosen)
+    return {"ok": True, "project": wanted, "path": str(chosen)}
+
+
+def _name_token(name: str) -> str:
+    """Regex for a catalog name, allowing spaces where the folder uses -/_."""
+
+    raw = (name or "").strip().lower()
+    parts = [part for part in re.split(r"[-_]+", raw) if part]
+    if not parts:
+        return re.escape(raw)
+    if len(parts) == 1:
+        return re.escape(parts[0])
+    flex = r"[\s_-]+".join(re.escape(part) for part in parts)
+    compact = re.escape("".join(parts))
+    dashed = re.escape(raw)
+    return rf"(?:{dashed}|{compact}|{flex})"
+
+
+def _mentions_named_project(lowered: str, name: str) -> bool:
+    """True when the owner named this allowlisted project, not a common verb."""
+
+    token = _name_token(name)
+    if not token:
+        return False
+    pattern = _NAMED_PROJECT_RE.format(name=token)
+    anchored = bool(
+        re.search(
+            rf"(?:in |on |inside |from |about )(?:the |my |our )?{token}\b|"
+            rf"(?:the |my |our |this )?{token} {_PLACE_NOUN}\b|"
+            rf"\b{token} {_PLACE_NOUN}\b|"
+            rf"{_PLACE_NOUN} (?:called|named|of) (?:the |my |our )?{token}\b",
+            lowered,
+        )
+    )
+    if re.search(pattern, lowered):
+        return name not in _AMBIGUOUS_PROJECT_NAMES or anchored
+    if name in _AMBIGUOUS_PROJECT_NAMES:
+        return False
+    return bool(re.search(rf"\b{token}\b", lowered))
+
+
+def catalog_project_names() -> list[str]:
+    return [
+        item["name"]
+        for item in list_projects()
+        if item["name"] not in GENERIC_PROJECT_NAMES and len(item["name"]) >= 2
+    ]
+
+
+def is_sandbox_workspace(path: Path | None) -> bool:
+    """True when `path` is the default coding sandbox, not an owner git repo."""
+
+    if path is None:
+        return True
+    try:
+        resolved = path.expanduser().resolve()
+    except OSError:
+        return True
+    default = _default_workspace_path()
+    try:
+        return resolved == default.resolve()
+    except OSError:
+        return True
+
+
+def sticky_project_path() -> Path | None:
+    """Last owner repo Evie was asked to use, if it is still allowlisted."""
+
+    global _sticky_root
+    candidate = _sticky_root
+    if candidate is None:
+        candidate = _load_sticky_project()
+        _sticky_root = candidate
+    if candidate is None or not candidate.is_dir():
+        return None
+    allowed = {Path(item["path"]).resolve() for item in list_projects()}
+    if candidate.resolve() not in allowed:
+        return None
+    if is_sandbox_workspace(candidate):
+        return None
+    return candidate.resolve()
+
+
+def remember_sticky_project(root: Path | None) -> None:
+    """Pin later 'in my repo' asks to this allowlisted owner project."""
+
+    global _sticky_root
+    if root is None:
+        clear_sticky_project()
+        return
+    try:
+        resolved = root.expanduser().resolve()
+    except OSError:
+        return
+    if not resolved.is_dir() or is_sandbox_workspace(resolved):
+        return
+    allowed = {Path(item["path"]).resolve() for item in list_projects()}
+    if resolved not in allowed:
+        return
+    _sticky_root = resolved
+    _persist_sticky_project(resolved)
+
+
+def clear_sticky_project() -> None:
+    global _sticky_root
+    _sticky_root = None
+    path = _sticky_project_file()
+    with suppress(OSError):
+        path.unlink(missing_ok=True)
+
+
+def _wants_sticky_project(goal: str) -> bool:
+    raw = (goal or "").strip()
+    if not raw:
+        return False
+    if _STICKY_PROJECT_RE.search(raw):
+        return True
+    lowered = raw.lower()
+    return bool(
+        re.search(
+            r"\b(?:refactor|implement|feature|codebase|module|endpoint|handler)\b",
+            lowered,
+        )
+        and not re.search(r"\bhello(?:\s+world)?\b|\bprints? hello\b", lowered)
+    )
+
+
+def _sticky_project_file() -> Path:
+    from app.memory.paths import ensure_tree
+
+    return ensure_tree() / "code-jobs" / "active-project.json"
+
+
+def _load_sticky_project() -> Path | None:
+    from app.memory.paths import read_json
+
+    try:
+        stored = read_json(_sticky_project_file())
+    except OSError:
+        return None
+    raw = str((stored or {}).get("path") or "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return None
+    return resolved if resolved.is_dir() else None
+
+
+def _persist_sticky_project(root: Path) -> None:
+    from app.memory.paths import atomic_write_json
+
+    try:
+        from app.utils.text import utcnow
+
+        atomic_write_json(
+            _sticky_project_file(),
+            {"path": str(root), "name": root.name, "at": utcnow().isoformat()},
+        )
+    except OSError:
+        pass
 
 
 def resolve_workspace_path(rel: str, *, directory: bool = False, create: bool = False) -> Path:
@@ -582,6 +804,12 @@ def _fence_argv(binary: str, cleaned: list[str]) -> None:
             raise CodeJailError("git subcommand required")
         if cleaned[1] not in GIT_SUBCOMMANDS:
             raise CodeJailError(f"git {cleaned[1]} is not allowlisted")
+        if cleaned[1] == "checkout":
+            rest = cleaned[2:]
+            if any(flag in GIT_CHECKOUT_FORBIDDEN for flag in rest):
+                raise CodeJailError("git checkout force/detach is not allowlisted")
+            if rest == ["."] or (rest[-1:] == ["."] and "--" in rest):
+                raise CodeJailError("git checkout of the whole tree is not allowlisted")
     if binary == "uv":
         if len(cleaned) < 2 or cleaned[1] not in UV_SUBCOMMANDS:
             raise CodeJailError("uv may only run or tree")
@@ -589,21 +817,18 @@ def _fence_argv(binary: str, cleaned: list[str]) -> None:
             rest = [item for item in cleaned[2:] if not item.startswith("-")]
             if not rest or Path(rest[0]).name not in ALLOWED_BINARIES:
                 raise CodeJailError("uv run is limited to allowlisted programs")
-    if binary == "cargo":
-        if len(cleaned) < 2 or cleaned[1] not in CARGO_SUBCOMMANDS:
-            raise CodeJailError("cargo subcommand is not allowlisted")
-    if binary == "go":
-        if len(cleaned) < 2 or cleaned[1] not in GO_SUBCOMMANDS:
-            raise CodeJailError("go subcommand is not allowlisted")
+    if binary == "cargo" and (len(cleaned) < 2 or cleaned[1] not in CARGO_SUBCOMMANDS):
+        raise CodeJailError("cargo subcommand is not allowlisted")
+    if binary == "go" and (len(cleaned) < 2 or cleaned[1] not in GO_SUBCOMMANDS):
+        raise CodeJailError("go subcommand is not allowlisted")
     if binary == "swift":
         rest = cleaned[1:]
         if not rest:
             raise CodeJailError("swift subcommand or source file required")
         if rest[0] not in SWIFT_SUBCOMMANDS and not rest[0].endswith(".swift"):
             raise CodeJailError("swift subcommand is not allowlisted")
-    if binary == "dart":
-        if len(cleaned) >= 2 and cleaned[1] in {"pub", "aotrun"}:
-            raise CodeJailError("dart pub is not allowlisted")
+    if binary == "dart" and len(cleaned) >= 2 and cleaned[1] in {"pub", "aotrun"}:
+        raise CodeJailError("dart pub is not allowlisted")
 
 
 def _run_env() -> dict[str, str]:

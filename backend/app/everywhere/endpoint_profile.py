@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import re
 from typing import Any
 
@@ -61,6 +62,9 @@ def merge_endpoint_profile(device: Device, *, hardware: dict | None, permissions
             rank = int(hw_in["camera_preference_rank"])
         except (TypeError, ValueError):
             pass
+    media_row = _sanitize_media(hw_in.get("media") or hw_in.get("camera_media"))
+    raw_media = current.get("media")
+    previous_media: dict[str, Any] = raw_media if isinstance(raw_media, dict) else {}
     hardware_row = {
         **(current.get("hardware") if isinstance(current.get("hardware"), dict) else {}),
         **{k: hw_in[k] for k in hw_in if k in {"model", "machine", "chip"}},
@@ -77,8 +81,49 @@ def merge_endpoint_profile(device: Device, *, hardware: dict | None, permissions
         "permissions": permissions_row,
         "reported_at": utcnow().isoformat(),
     }
+    merged_media = {**previous_media, **media_row} if (media_row or previous_media) else None
+    if merged_media:
+        profile["media"] = merged_media
     device.endpoint_profile = profile
     return profile
+
+
+def _sanitize_media(raw: Any) -> dict[str, Any]:
+    """Client-declared media capability. Booleans only, never trusted as truth."""
+
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key in ("still", "burst", "video", "has_audio"):
+        value = raw.get(key)
+        if isinstance(value, bool):
+            out[key] = value
+        elif isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+            out[key] = value.strip().lower() == "true"
+    mime = str(raw.get("clip_mime") or "").strip()[:64]
+    if mime:
+        out["clip_mime"] = mime
+    max_seconds = raw.get("max_clip_seconds")
+    if max_seconds is not None:
+        with contextlib.suppress(TypeError, ValueError):
+            out["max_clip_seconds"] = max(1, min(120, int(max_seconds)))
+    return out
+
+
+def camera_media_capabilities(device: Device) -> dict[str, Any]:
+    """What this device says it can capture. Unknown stays unknown, never "yes"."""
+
+    profile = getattr(device, "endpoint_profile", None) or {}
+    media = profile.get("media") if isinstance(profile, dict) else {}
+    declared = media if isinstance(media, dict) else {}
+    return {
+        "still": declared.get("still"),
+        "burst": declared.get("burst"),
+        "video": declared.get("video"),
+        "clip_mime": declared.get("clip_mime"),
+        "max_clip_seconds": declared.get("max_clip_seconds"),
+        "declared": bool(declared),
+    }
 
 
 def _camera_rank(device: Device) -> int:
@@ -149,6 +194,7 @@ async def resolve_camera_target(
             "permission": _camera_permission(origin),
             "freshness": presence_state(origin),
             "provenance": "owner_utterance",
+            "media": camera_media_capabilities(origin),
         }
 
     rows = list((await session.execute(select(Device).where(Device.revoked_at.is_(None)))).scalars().all())
@@ -187,6 +233,7 @@ async def resolve_camera_target(
         "permission": _camera_permission(chosen),
         "freshness": presence_state(chosen),
         "provenance": "endpoint_profile",
+        "media": camera_media_capabilities(chosen),
         "camera_quality": (getattr(chosen, "endpoint_profile", None) or {}).get("hardware", {}).get("camera_quality")
         if isinstance(getattr(chosen, "endpoint_profile", None), dict)
         else None,

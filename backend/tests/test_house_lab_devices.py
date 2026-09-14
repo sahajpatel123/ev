@@ -249,7 +249,11 @@ async def test_place_call_rings_only_when_opened(
     busy = await place_call(db_session, {"name": "Mom", "confirm": True}, actor="master")
     assert busy["ok"] is False
     assert "Ringing" not in busy["spoken"]
-    assert busy["spoken"] == "busy"
+    # The provider's raw token is not owner-facing speech: the refusal must say
+    # what actually happened, and must not claim the call went out.
+    assert "busy" not in busy["spoken"].lower()
+    assert "Mom" in busy["spoken"]
+    assert "didn't go out" in busy["spoken"].lower() or "did not go out" in busy["spoken"].lower()
 
 
 async def test_place_call_exit_4_speaks_unavailable(

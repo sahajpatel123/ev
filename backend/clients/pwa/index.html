@@ -9,39 +9,55 @@
   <meta name="color-scheme" content="light dark">
   <!-- B01 ASSET_INTEGRITY: must equal app.js CLIENT_BUILD. A mismatch after a
        fresh load means a mixed/partial deploy (see release.json contract). -->
-  <meta name="evie-build" content="2026.09.08.42">
-  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f4efe6">
-  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0e0d0c">
+  <meta name="evie-build" content="2026.09.09.04">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f5f1">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#191c19">
   <link rel="manifest" href="/evie/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/evie/apple-touch-icon.png">
   <!-- Cycle 86/88 — per-device launch screens (SE + 16 Pro). -->
-  <link rel="apple-touch-startup-image" media="(max-width: 430px) and (max-height: 900px)" href="/evie/splash-se.png?v=2026.09.08.42">
-  <link rel="apple-touch-startup-image" media="(min-width: 431px)" href="/evie/splash-16pro.png?v=2026.09.08.42">
+  <link rel="apple-touch-startup-image" media="(max-width: 430px) and (max-height: 900px)" href="/evie/splash-se.png?v=2026.09.09.04">
+  <link rel="apple-touch-startup-image" media="(min-width: 431px)" href="/evie/splash-16pro.png?v=2026.09.09.04">
   <link rel="icon" href="/evie/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/evie/style.css?v=2026.09.08.42">
+  <link rel="stylesheet" href="/evie/style.css?v=2026.09.09.04">
   <title>Evie</title>
 </head>
-<body>
+<body class="quiet-room">
   <div class="field-bg" aria-hidden="true"></div>
   <main class="stage">
     <section id="welcome" class="sheet welcome" hidden>
-      <p class="lead">Pair this phone with Home Station.</p>
-      <p class="quiet">This iPhone starts as PAIRED_SANDBOX. Owner trust is approved from the Mac.</p>
+      <p class="room-wordmark">evie.</p>
+      <h1 class="evie-welcome-title">A space<br><em>of your own.</em></h1>
+      <p class="lead">Let's connect this iPhone.</p>
+      <p class="quiet" id="pair-code-help">Get a pairing code from Evie on your Mac. Enter it here, then approve this iPhone on the Mac.</p>
       <p class="quiet" id="install-hint" hidden>On iPhone Safari: Share → Add to Home Screen, then open Evie from the home screen. Tailscale stays on.</p>
       <label class="field">One-time pairing code
-        <input id="pair-token" autocomplete="off" autocapitalize="off" spellcheck="false">
+        <input id="pair-token" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste your code" aria-describedby="pair-code-help">
       </label>
       <button type="button" id="pair-btn" class="dock-primary">Pair this device</button>
-      <dl class="meta" id="welcome-status"></dl>
+      <p class="quiet" id="pair-error" hidden></p>
+      <details class="room-connection-details"><summary>Connection details</summary><dl class="meta" id="welcome-status"></dl></details>
     </section>
 
     <section id="ready-ui" class="presence-surface" hidden>
-      <canvas id="orb" class="presence" width="360" height="360" aria-label="Evie"></canvas>
-      <p class="mood" id="mood">Ready</p>
-      <p class="quiet camera-role-line" id="camera-role-line" hidden></p>
-      <p class="quiet" id="update-line" hidden></p>
-      <p class="user-line" id="user-line"></p>
-      <p class="reply" id="reply"></p>
+      <header class="room-header">
+        <span class="room-wordmark" aria-label="Evie">evie<span aria-hidden="true">.</span></span>
+        <button type="button" class="room-link room-icon" data-surface="conversation" aria-label="Conversation thread" title="Conversation thread"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M5 12h9M5 17h12"/></svg></button>
+      </header>
+      <div class="room-center" id="room-center">
+        <div class="room-presence" aria-hidden="true"><canvas id="orb" class="presence" width="360" height="360"></canvas></div>
+        <h1 class="room-invitation" id="room-invitation">What's on<br><em>your mind?</em></h1>
+        <p class="mood" id="mood" role="status" aria-live="polite">Ready</p>
+        <button type="button" id="talk" class="room-talk" aria-label="Talk to Evie" title="Talk to Evie"></button>
+        <button type="button" id="room-enable-audio" class="room-enable" hidden>Enable audio</button>
+        <p id="room-session" class="room-session" hidden>Voice session active · Stop to finish</p>
+      </div>
+      <details id="room-exchange" class="room-exchange" hidden>
+        <summary><span>Latest exchange</span><span class="room-fold-hint" aria-hidden="true">Read</span><svg class="room-disclosure" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4"/></svg></summary>
+        <p class="user-line" id="user-line"></p>
+        <p class="reply" id="reply"></p>
+        <div id="follow-chips" class="evie-composer-chips" hidden></div>
+      </details>
+      <button type="button" class="quiet" id="update-line" hidden></button>
       <article class="mobile-action-card" id="mobile-action-card" hidden>
         <p class="ma-kicker" id="ma-kicker">This iPhone</p>
         <p class="ma-op" id="ma-op"></p>
@@ -54,7 +70,7 @@
           <button type="button" id="ma-cancel" class="ghost">Cancel</button>
         </div>
       </article>
-      <p class="action-card" id="action-card" hidden></p>
+      <p class="action-card" id="action-card" role="status" aria-live="polite" aria-atomic="true" hidden></p>
       <article class="mobile-action-card" id="tool-result-card" hidden>
         <p class="ma-kicker" id="tr-kicker">Result</p>
         <p class="ma-op" id="tr-title"></p>
@@ -87,35 +103,96 @@
         <button type="button" data-quick="chat">Chat</button>
       </nav>
 
-      <div class="dock" id="command-dock">
-        <button type="button" id="look-btn" class="dock-side" aria-label="Look">Look</button>
-        <button type="button" id="talk" class="dock-primary" aria-label="Talk to Evie">Talk</button>
-        <button type="button" id="type-btn" class="dock-side" aria-label="Type">Type</button>
-        <button type="button" id="more-btn" class="dock-more" aria-label="More">More</button>
-      </div>
+      <footer class="room-footer" id="command-dock">
+        <button type="button" id="type-btn" class="room-link room-icon" aria-label="Write a thought" title="Write a thought" aria-controls="text-form" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 16-1 4 4-1L20 7l-3-3L5 16Zm9-9 3 3"/></svg></button>
+        <button type="button" id="more-btn" class="room-link room-icon" aria-label="Tools" title="Tools" aria-haspopup="dialog" aria-controls="more-sheet"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>
+      </footer>
       <form id="text-form" class="composer" hidden>
         <label class="sr-only" for="text">Text Evie</label>
-        <input id="text" type="text" enterkeyhint="send" autocomplete="off" placeholder="Ask Evie">
+        <div class="room-input-row"><input id="text" type="text" enterkeyhint="send" autocomplete="off" placeholder="What's on your mind?"><button type="submit" class="room-send" aria-label="Send thought"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5m-6 6 6-6 6 6"/></svg></button></div>
+        <button type="button" id="room-write-close" class="room-link">Done writing</button>
+        <div id="composer-chips" class="evie-composer-chips">
+          <button type="button" data-chip="messages">Last messages</button>
+          <button type="button" data-chip="mail">Last mail</button>
+          <button type="button" data-chip="day">How's my day</button>
+          <button type="button" data-chip="remind">Remind me in 30 min</button>
+          <button type="button" data-chip="timer">Timer 10 min</button>
+          <button type="button" data-chip="note">Save a note</button>
+          <button type="button" data-chip="weather">Weather</button>
+          <button type="button" data-chip="look">Look</button>
+          <button type="button" data-chip="memory">Memory</button>
+        </div>
       </form>
     </section>
 
+    <div id="room-call-bar" class="room-call-bar" hidden><span>Voice session active</span><button type="button" id="room-stop-session">Stop session</button></div>
     <section id="more-sheet" class="sheet folio" hidden>
       <button type="button" class="sheet-close sheet-x" data-close="more-sheet" aria-label="Close">✕</button>
-      <h2>Around you</h2>
+      <h2>Your tools.</h2>
+      <label class="sr-only" for="room-tool-search">Find a tool</label>
+      <input id="room-tool-search" class="room-tool-search" type="search" placeholder="Find a tool" autocomplete="off" aria-controls="room-tool-list">
+      <p id="room-tool-empty" class="quiet" role="status" hidden>No matching tools. Try “memory” or “camera”.</p>
       <p class="quiet">One Evie. This phone, Home Station, the thread.</p>
       <!-- Cycle 51 — server-computed one-tap actions; each chip sends its
            utterance through the same trusted text path as a spoken turn. -->
       <div id="qa-chips" class="qa-chips"></div>
-      <div class="folio-grid">
+      <div class="folio-grid" id="room-tool-list">
+        <button type="button" id="look-btn" class="folio-card"><strong>Look</strong><span>Ask Evie to use this iPhone's camera</span></button>
+        <button type="button" class="folio-card" data-surface="weather"><strong>Weather</strong><span>Forecast for a place</span></button>
         <button type="button" class="folio-card folio-wide" data-surface="conversation">
           <span class="folio-kicker">Thread</span>
-          <strong>Chat</strong>
+          <strong>Conversation</strong>
           <span>The conversation on this phone</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="health">
+          <span class="folio-kicker">Vitals</span>
+          <strong>Health</strong>
+          <span>Steps, sleep, readiness</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="looks">
+          <span class="folio-kicker">Vision</span>
+          <strong>Visual memory</strong>
+          <span>What Evie has seen</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="people">
+          <span class="folio-kicker">People</span>
+          <strong>People</strong>
+          <span>Who Evie can reach</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="routines">
+          <span class="folio-kicker">Daily</span>
+          <strong>Routines</strong>
+          <span>Digest times and quiet hours</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="queue">
+          <span class="folio-kicker">Pending</span>
+          <strong>Queue</strong>
+          <span>Captures received by Home Station</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="capture">
+          <span class="folio-kicker">Note</span>
+          <strong>Capture</strong>
+          <span>Save something to memory</span>
+        </button>
+        <button type="button" class="folio-card folio-wide" data-surface="search">
+          <span class="folio-kicker">Find</span>
+          <strong>Search</strong>
+          <span>Memory, events, reminders, contacts</span>
         </button>
         <button type="button" class="folio-card" data-surface="devices">
           <span class="folio-kicker">Places</span>
           <strong>Devices</strong>
           <span>This iPhone and Home Station</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="memory">
+          <span class="folio-kicker">Recall</span>
+          <strong>Memory</strong>
+          <span>Search what Evie knows</span>
+        </button>
+        <button type="button" class="folio-card" data-surface="today">
+          <span class="folio-kicker">Today</span>
+          <strong>Today</strong>
+          <span>Health, calendar, memory</span>
         </button>
         <button type="button" class="folio-card folio-wide" data-quick="tactical">
           <span class="folio-kicker">Tactical</span>
@@ -132,6 +209,11 @@
           <strong>Inbox</strong>
           <span>Notices waiting here</span>
         </button>
+        <button type="button" class="folio-card folio-wide" data-surface="mission">
+          <span class="folio-kicker">In flight</span>
+          <strong>In flight</strong>
+          <span>What Evie is working on, and what changed</span>
+        </button>
         <button type="button" class="folio-card folio-wide" data-surface="privacy">
           <span class="folio-kicker">This iPhone</span>
           <strong>Settings</strong>
@@ -140,10 +222,181 @@
       </div>
     </section>
 
+    <section id="weather-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="weather-sheet" aria-label="Close">✕</button>
+      <h2>Weather</h2>
+      <p class="quiet">Live forecast from Home Station — it never guesses.</p>
+      <form id="weather-form" class="composer">
+        <label class="sr-only" for="weather-place">Place</label>
+        <input id="weather-place" type="search" enterkeyhint="search" autocomplete="off" placeholder="Place (e.g. Surat)">
+      </form>
+      <article class="evie-today-hud" id="weather-card" hidden>
+        <p class="evie-today-hud-title" id="weather-title"></p>
+        <p class="evie-today-hud-body" id="weather-body"></p>
+      </article>
+      <p class="quiet" id="weather-meta"></p>
+    </section>
+
+    <section id="health-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="health-sheet" aria-label="Close">✕</button>
+      <h2>Health</h2>
+      <p class="quiet">This phone's snapshot plus the owner vitals series — never sent to a model.</p>
+      <div class="evie-health" id="health-chips"></div>
+      <h3>Recent series</h3>
+      <ol id="health-series" class="timeline"></ol>
+      <p class="quiet" id="health-meta"></p>
+    </section>
+
+    <section id="looks-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="looks-sheet" aria-label="Close">✕</button>
+      <h2>Look history</h2>
+      <p class="quiet">What Evie saw through this phone's camera.</p>
+      <ol id="looks-list" class="timeline"></ol>
+      <p class="quiet" id="looks-meta"></p>
+    </section>
+
+    <section id="people-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="people-sheet" aria-label="Close">✕</button>
+      <h2>People</h2>
+      <p class="quiet">Contacts Evie can reach — actions run through Home Station, never guessed numbers.</p>
+      <form id="people-filter-form" class="composer">
+        <label class="sr-only" for="people-q">Filter contacts</label>
+        <input id="people-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Filter people">
+      </form>
+      <ol id="people-list" class="timeline"></ol>
+      <p class="quiet" id="people-meta"></p>
+    </section>
+
+    <section id="routines-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="routines-sheet" aria-label="Close">✕</button>
+      <h2>Routines</h2>
+      <p class="quiet">Evie drops a digest into this phone's Inbox at set times — built from real server state, never a model call.</p>
+      <h3>Daily digest</h3>
+      <div class="segment" id="routines-enabled">
+        <button type="button" data-rv="on">On</button>
+        <button type="button" data-rv="off" class="on">Off</button>
+      </div>
+      <div id="routines-times" class="evie-routine-times"></div>
+      <form id="routines-add-form" class="evie-routine-add">
+        <label class="sr-only" for="routines-new-time">Add digest time</label>
+        <input id="routines-new-time" type="time">
+        <button type="submit" class="secondary">Add time</button>
+      </form>
+      <h3>Quiet hours</h3>
+      <p class="quiet">No digests inside this window. Leave empty for none.</p>
+      <form id="routines-quiet-form" class="evie-routine-quiet">
+        <label class="sr-only" for="routines-q-start">Quiet hours start</label>
+        <input id="routines-q-start" type="time">
+        <label class="sr-only" for="routines-q-end">Quiet hours end</label>
+        <input id="routines-q-end" type="time">
+      </form>
+      <button type="button" id="routines-save-btn" class="dock-primary">Save routines</button>
+      <p class="quiet" id="routines-meta"></p>
+    </section>
+
+    <section id="queue-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="queue-sheet" aria-label="Close">✕</button>
+      <h2>Queue</h2>
+      <p class="quiet">Pending captures already received by Home Station. Failed saves remain on this page; this list is not a durable offline outbox.</p>
+      <ol id="queue-list" class="timeline"></ol>
+      <button type="button" id="queue-refresh-btn" class="secondary">Refresh</button>
+      <p class="quiet" id="queue-meta"></p>
+    </section>
+
+    <section id="capture-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="capture-sheet" aria-label="Close">✕</button>
+      <h2>Capture</h2>
+      <p class="quiet">A note lands in your event stream and becomes memory.</p>
+      <form id="capture-form">
+        <label class="sr-only" for="capture-text">Note text</label>
+        <textarea id="capture-text" rows="4" maxlength="2000" placeholder="What do you want to remember?"></textarea>
+        <div class="segment" id="capture-privacy">
+          <button type="button" data-privacy="normal" class="on">Normal</button>
+          <button type="button" data-privacy="private">Private</button>
+          <button type="button" data-privacy="sensitive">Sensitive</button>
+        </div>
+        <button type="submit" class="dock-primary">Save to memory</button>
+      </form>
+      <p class="quiet" id="voice-note-state">Voice notes use Normal privacy. Private and Sensitive notes are text-only in this build.</p>
+      <button type="button" id="voice-note-btn" class="secondary">Voice note</button>
+      <p class="quiet" id="capture-meta"></p>
+    </section>
+
+    <section id="search-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="search-sheet" aria-label="Close">✕</button>
+      <h2>Search</h2>
+      <p class="quiet">One query across memory, events, reminders, contacts.</p>
+      <form id="search-form" class="composer">
+        <label class="sr-only" for="search-q">Search Evie</label>
+        <input id="search-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Search everything">
+      </form>
+      <h3>Memory</h3>
+      <ol id="search-memories" class="timeline"></ol>
+      <h3>Events</h3>
+      <ol id="search-events" class="timeline"></ol>
+      <h3>Reminders</h3>
+      <ol id="search-reminders" class="timeline"></ol>
+      <h3>Contacts</h3>
+      <ol id="search-contacts" class="timeline"></ol>
+      <p class="quiet" id="search-meta"></p>
+    </section>
+
+    <section id="memory-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="memory-sheet" aria-label="Close">✕</button>
+      <h2>Memory</h2>
+      <p class="quiet">What Evie remembers — with provenance.</p>
+      <form id="memory-search-form" class="composer" hidden>
+        <label class="sr-only" for="memory-q">Search memories</label>
+        <input id="memory-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Search memories">
+      </form>
+      <ol id="memory-list" class="timeline"></ol>
+      <article id="memory-detail" class="memory-detail" hidden>
+        <p class="memory-detail-text" id="memory-detail-text"></p>
+        <p class="quiet" id="memory-detail-meta"></p>
+        <p class="memory-detail-kicker">Versions</p>
+        <ol id="memory-versions" class="timeline"></ol>
+        <p class="memory-detail-kicker">Sources</p>
+        <ol id="memory-sources" class="timeline"></ol>
+      </article>
+      <p class="quiet" id="memory-meta"></p>
+    </section>
+
+    <section id="today-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="today-sheet" aria-label="Close">✕</button>
+      <h2>Today</h2>
+      <p class="quiet">Your day at a glance, from Home Station.</p>
+      <article class="evie-today-hud" id="today-hud" hidden>
+        <p class="evie-today-hud-title" id="today-hud-title"></p>
+        <p class="evie-today-hud-body" id="today-hud-body"></p>
+      </article>
+      <p class="evie-export-row">
+        <button type="button" id="today-note-btn" class="secondary">Save a note</button>
+        <button type="button" id="today-look-btn" class="secondary">Look</button>
+      </p>
+      <h3>Health</h3>
+      <dl class="meta" id="today-health"></dl>
+      <h3>Calendar</h3>
+      <ol id="today-calendar" class="timeline"></ol>
+      <h3>Reminders</h3>
+      <ol id="today-reminders" class="timeline"></ol>
+      <h3>Memory</h3>
+      <ol id="today-memories" class="timeline"></ol>
+      <p class="quiet" id="today-meta"></p>
+    </section>
+
     <section id="conversation-sheet" class="sheet" hidden>
       <button type="button" class="sheet-close sheet-x" data-close="conversation-sheet" aria-label="Close">✕</button>
       <h2>Conversation</h2>
+      <form id="conv-search-form" class="composer">
+        <label class="sr-only" for="conv-q">Find in this thread</label>
+        <input id="conv-q" type="search" enterkeyhint="search" autocomplete="off" placeholder="Find in this thread">
+      </form>
+      <p class="evie-export-row">
+        <button type="button" id="conv-copy-btn" class="secondary">Copy</button>
+        <button type="button" id="conv-share-btn" class="secondary">Share…</button>
+      </p>
       <ol id="history" class="timeline"></ol>
+      <p class="quiet" id="conv-export-meta"></p>
       <h3>Recent turns on this phone</h3>
       <div id="turn-history" class="turn-history"></div>
       <h3>Memory — read only</h3>
@@ -168,15 +421,30 @@
       <ol id="activity" class="timeline"></ol>
     </section>
 
+    <section id="mission-sheet" class="sheet" hidden>
+      <button type="button" class="sheet-close sheet-x" data-close="mission-sheet" aria-label="Close">✕</button>
+      <h2>In flight</h2>
+      <p class="quiet">Work Evie is carrying, including waits that need you. Nothing here is guessed.</p>
+      <ol id="mission-list" class="timeline"></ol>
+      <h3>What changed</h3>
+      <ol id="mission-changed" class="timeline"></ol>
+      <p class="quiet" id="mission-meta"></p>
+    </section>
+
     <section id="inbox-sheet" class="sheet" hidden>
       <button type="button" class="sheet-close sheet-x" data-close="inbox-sheet" aria-label="Close">✕</button>
       <h2>Inbox</h2>
+      <p class="evie-export-row">
+        <button type="button" id="inbox-ack-all-btn" class="secondary" hidden>Mark all read</button>
+      </p>
       <ol id="inbox-list" class="timeline"></ol>
     </section>
 
     <section id="settings-sheet" class="sheet" hidden>
       <button type="button" class="sheet-close sheet-x" data-close="settings-sheet" aria-label="Close">✕</button>
       <h2>This iPhone</h2>
+      <p class="quiet" id="trust-banner"></p>
+      <button type="button" class="quiet camera-role-line" id="camera-role-line" hidden></button>
       <!-- Cycle 42 — server-computed capability manifest: what this phone
            can do right now, per trust state. Rendered by capabilities.js. -->
       <div id="capabilities-card"></div>
@@ -202,6 +470,8 @@
       <h3>Autonomy</h3>
       <p class="quiet">Low-risk actions run after a clear command. Apple Messages and calls use the system’s own confirmation. High-risk actions stay blocked.</p>
       <h3>Mobile Capabilities</h3>
+      <dl class="meta" id="capability-meta"></dl>
+      <p class="quiet">Rendered from the server's trust state and real snapshots — the phone never guesses what it can do.</p>
       <dl class="meta" id="mobile-actions-meta"></dl>
       <div id="legacy-bridge-panel" hidden>
         <button type="button" id="install-bridge-btn" class="secondary">Install Evie Mobile Bridge</button>
@@ -225,6 +495,10 @@
         <button type="button" data-appearance="light">Light</button>
         <button type="button" data-appearance="dark">Dark</button>
       </div>
+      <h3>Alerts</h3>
+      <p class="quiet">Safari can show local alerts on this iPhone. That is not APNs. Inbox still polls Home Station.</p>
+      <button type="button" id="enable-alerts-btn" class="secondary">Allow local alerts</button>
+      <p class="quiet" id="alerts-meta"></p>
       <h3>Density</h3>
       <div class="segment" id="density">
         <button type="button" data-density="auto" class="on">Auto</button>
@@ -244,15 +518,18 @@
         <p class="quiet" id="voice-fail-stage">FAILED AT: —</p>
         <ol id="voice-stages" class="self-test"></ol>
         <button type="button" id="copy-voice-diag-btn" class="secondary">Copy Voice Diagnostic</button>
+        <button type="button" id="copy-phone-diag-btn" class="secondary">Copy Phone Diagnostic</button>
         <button type="button" id="retry-voice-btn" class="secondary">Retry Voice</button>
         <button type="button" id="mic-check-btn" class="secondary">Mic Check</button>
         <button type="button" id="asr-check-btn" class="secondary">Speech Recognition Check</button>
         <button type="button" id="understand-btn" class="secondary">Understanding Check</button>
         <button type="button" id="output-check-btn" class="secondary">Voice Output Check</button>
         <button type="button" id="tap-done-btn" class="secondary">Tap Done (manual turn)</button>
+        <label for="misheard-intended">What did you actually say?</label>
+        <input id="misheard-intended" type="text" autocomplete="off" placeholder="Enter your intended phrase">
         <button type="button" id="misheard-btn" class="secondary">Report misheard phrase</button>
         <button type="button" id="glitch-btn" class="secondary">Report audio glitch</button>
-        <button type="button" id="diag-run-btn" class="secondary">Run 30-second diagnostic</button>
+        <button type="button" id="diag-run-btn" class="secondary">Check speaker &amp; voice support</button>
         <audio id="mic-check-out" playsinline hidden></audio>
         <pre id="diag"></pre>
         <button type="button" id="reset-btn" class="secondary">Reset local Evie client</button>
@@ -260,7 +537,8 @@
       </details>
     </section>
 
-    <section id="camera-sheet" class="sheet lens" hidden>
+    <section id="camera-sheet" class="sheet lens" aria-label="Camera" hidden>
+      <button type="button" id="room-camera-close" class="sheet-close sheet-x" data-close="camera-sheet" aria-label="Cancel camera">✕</button>
       <p class="mood" id="camera-copy">Opening perception</p>
       <video id="preview" playsinline muted></video>
       <canvas id="snap" hidden></canvas>
@@ -275,14 +553,14 @@
   <audio id="webrtc-out" autoplay playsinline hidden></audio>
   <audio id="encoded-out" playsinline hidden></audio>
 
-  <script src="/evie/audio.js?v=2026.09.08.42"></script>
-  <script src="/evie/presence.js?v=2026.09.08.42"></script>
-  <script src="/evie/orb.js?v=2026.09.08.42"></script>
-  <script src="/evie/feedback.js?v=2026.09.08.42"></script>
-  <script src="/evie/webrtc.js?v=2026.09.08.42"></script>
-  <script src="/evie/mobile-actions.js?v=2026.09.08.42"></script>
-  <script src="/evie/capabilities.js?v=2026.09.08.42"></script>
-  <script src="/evie/app.js?v=2026.09.08.42"></script>
+  <script src="/evie/audio.js?v=2026.09.09.04"></script>
+  <script src="/evie/presence.js?v=2026.09.09.04"></script>
+  <script src="/evie/orb.js?v=2026.09.09.04"></script>
+  <script src="/evie/feedback.js?v=2026.09.09.04"></script>
+  <script src="/evie/webrtc.js?v=2026.09.09.04"></script>
+  <script src="/evie/mobile-actions.js?v=2026.09.09.04"></script>
+  <script src="/evie/capabilities.js?v=2026.09.09.04"></script>
+  <script src="/evie/app.js?v=2026.09.09.04"></script>
   <!-- Cycle 21 — iPhone-only trust-state banner model. Backward compatible:
        additive window.EvieTrust namespace; no existing markup changed. -->
   <script>

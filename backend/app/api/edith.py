@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
+from pathlib import Path
+from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +24,7 @@ from app.ev import conversation, edith, live, vision
 from app.ev.rollup import build_rollup
 from app.models import LiveChannel, LiveEvent
 from app.schemas import (
+    ClipIngestOut,
     CommandOut,
     ConfirmRecognitionRequest,
     ConversationDetail,
@@ -729,6 +732,106 @@ async def get_vision_perception(
     )
     await session.commit()
     return _perception_out(row)
+
+
+@router.post("/vision/clip", response_model=ClipIngestOut, status_code=201)
+async def ingest_vision_clip(
+    file: UploadFile = File(...),
+    duration_ms: int | None = Form(default=None),
+    request_id: str | None = Form(default=None),
+    privacy_level: Literal["private", "normal", "sensitive", "never_send_to_model"] = Form(
+        default="normal"
+    ),
+    device_id: str | None = Form(default=None),
+    keep_request: str | None = Form(default=None),
+    analyze: bool = Form(default=True),
+    session: AsyncSession = Depends(get_session),
+    ctx: ActorContext = Depends(require_reverification("camera.clip")),
+) -> ClipIngestOut:
+    """Ingest one recorded clip: keyframes, speech, and one durable observation.
+
+    The clip is stored as an attachment; the derived memory carries a bounded
+    moment timeline and the local transcript. Raw video never reaches a hosted
+    model — keyframes are offered later through the normal permissioned paths.
+    """
+
+    from app.memory.clip import ingest_clip
+    from app.vision.clips import MAX_FRAMES
+    from app.vision.settings import get_vision_settings
+
+    vision_settings = get_vision_settings()
+    max_bytes = int(vision_settings.vision_clip_max_mb) * 1024 * 1024
+    data = await _read_bounded(file, max_bytes=max_bytes)
+    if data is None:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Clip exceeds the {max_bytes // (1024 * 1024)} MB limit",
+        )
+    if not data:
+        raise HTTPException(status_code=422, detail="Empty clip upload")
+    content_type = (file.content_type or "video/quicktime")[:128]
+    if not _clip_content_type_allowed(content_type, file.filename):
+        raise HTTPException(status_code=415, detail=f"Unsupported clip type {content_type!r}")
+    resolved_device_id = device_id or (str(ctx.device_id) if ctx.device_id else None)
+    result = await ingest_clip(
+        session,
+        data,
+        actor=ctx.actor,
+        device_id=resolved_device_id,
+        filename=file.filename,
+        content_type=content_type,
+        duration_ms=duration_ms,
+        request_id=request_id,
+        keep_request=keep_request,
+        frame_count=max(1, min(int(vision_settings.vision_clip_max_frames), MAX_FRAMES)),
+        analyze=analyze,
+    )
+    await log_access(
+        session,
+        actor=ctx.actor,
+        action="perception.clip",
+        endpoint="POST /v1/vision/clip",
+        resource_type="attachment",
+        resource_ids=[UUID(result.attachment_id)] if result.attachment_id else [],
+        details={
+            "frames": result.frames,
+            "duration_s": result.duration_s,
+            "engine": result.engine,
+            "extraction_degraded": result.extraction_degraded,
+            "transcript": bool(result.transcript),
+            "privacy_level": privacy_level,
+        },
+    )
+    await session.commit()
+    return ClipIngestOut(**result.as_dict())
+
+
+def _clip_content_type_allowed(content_type: str, filename: str | None) -> bool:
+    mime = (content_type or "").lower()
+    if mime.startswith("video/"):
+        return True
+    if mime in {"application/octet-stream", "application/mp4", ""}:
+        from app.vision.clips import SUPPORTED_SUFFIXES
+
+        suffix = Path(filename or "").suffix.lower()
+        return suffix in SUPPORTED_SUFFIXES
+    return False
+
+
+async def _read_bounded(file: UploadFile, *, max_bytes: int) -> bytes | None:
+    """Read an upload in chunks so a huge clip cannot be buffered blindly."""
+
+    if max_bytes <= 0:
+        max_bytes = 64 * 1024 * 1024
+    buffer = bytearray()
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        buffer.extend(chunk)
+        if len(buffer) > max_bytes:
+            return None
+    return bytes(buffer)
 
 
 @router.get("/commands", response_model=list[CommandOut])

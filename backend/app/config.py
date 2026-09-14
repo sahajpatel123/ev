@@ -33,7 +33,11 @@ def _load_production_secret_overlay() -> None:
             key, _, value = line.partition("=")
             key = key.strip()
             value = value.strip().strip("'\"")
-            if key and key not in _os.environ:
+            # Empty shell exports (EV_VAULT_KEY="") are not operator overrides.
+            # They must not hide ~/.ev/secrets/production.env — that crash-loops
+            # Talk (:18000) with Settings vault_key min_length and EV.app then
+            # sits on "Backend unavailable — retrying until it returns."
+            if key and not (_os.environ.get(key) or "").strip():
                 _os.environ[key] = value
         # Canonical Meta Model API credential. Settings use the EV_ prefix;
         # both Muse adapters consume the same secret. Never log the value.
@@ -114,6 +118,8 @@ class Settings(BaseSettings):
     code_http_timeout_seconds: float = 60.0
     code_max_file_bytes: int = 256_000
     memory_dir: str | None = None  # default ~/Library/Application Support/EV/memory
+    # WhatsApp takeout copies for named-chat recaps. Empty = repo data/life-archive.
+    life_archive_root: str | None = None
     memory_curator_enabled: bool = True
     memory_curator_version: str = "1.1"
     memory_curator_batch_events: int = 8
@@ -126,7 +132,7 @@ class Settings(BaseSettings):
     device_protocol_version: str = "1"
     native_actions_enabled: bool = True
     native_broker_version: str = "1.0.0"
-    pwa_build: str = "2026.09.08.42"
+    pwa_build: str = "2026.09.09.04"
     web_push_vapid_private_key: str = ""  # PEM or base64url ECDSA private key
     web_push_vapid_public_key: str = ""  # applicationServerKey for the browser
     web_push_vapid_subject: str = "mailto:owner@evie.local"
@@ -139,6 +145,9 @@ class Settings(BaseSettings):
     pairing_ttl_seconds: int = 900
     conversation_lease_ttl_seconds: int = 45
     active_conversation_ttl_seconds: int = 3600
+    # --- AGENT EAC (iPhone device gateway) ---
+    phone_digest_poll_seconds: int = 30
+    # --- END AGENT EAC (iPhone device gateway) ---
     sandbox_namespace: str = "cross_platform_test"
     home_station_mode: bool = True
     home_station_keep_awake_on_ac: bool = True
@@ -461,20 +470,39 @@ class Settings(BaseSettings):
     # When set, typed chat / live pipeline / curator / turn-control share this
     # general-intelligence provider. Empty = follow EV_CHAT_PROVIDER.
     intelligence_provider: str = ""
-    # Meta Model API (Muse Voice Transcribe). Muse Spark Contributor is served
-    # through OpenCode Go's Responses endpoint below.
-    # Secret: META_MODEL_API_KEY in ~/.ev/secrets/production.env (also EV_META_MODEL_API_KEY).
+    # Meta Model API: Muse Voice Transcribe and Muse Spark 1.3 Contributor.
+    # Official inference is https://api.meta.ai/v1 (OpenAI-compatible Responses).
+    # Secret: META_MODEL_API_KEY in ~/.ev/secrets/production.env
+    # (also EV_META_MODEL_API_KEY / MODEL_API_KEY). OpenCode Zen is not a
+    # cognitive inference route.
     meta_model_api_key: str | None = None
     meta_model_base_url: str = "https://api.meta.ai/v1"
     meta_model_asr_realtime_url: str = "wss://api.meta.ai/v1/asr/realtime"
     muse_spark_model: str = "muse-spark-1.3-contributor"
-    muse_spark_base_url: str = "https://opencode.ai/zen/go/v1"
+    muse_spark_base_url: str = "https://api.meta.ai/v1"
     muse_voice_model: str = "muse-voice-transcribe-1.0"
     muse_spark_reasoning_effort: str = "high"
     # INTELLIGENCE LAYER (additive observer). "" = off. "spark" = Muse Spark
     # Contributor reviews each completed spoken reply for bluff/filler/steer
     # and reports to voice health. Never blocks or rewrites speech.
+    # Cognitive OS V2 disables this observer on muse_kernel.
     intelligence_layer: str = ""
+    # --- COGNITIVE OS V2 ---
+    # legacy_mini = frozen Mini-as-brain path. muse_kernel = Muse is the mind.
+    cognitive_mode: str = "legacy_mini"
+    # auto | kernel | voice_edge. Talk sidecar forces voice_edge.
+    cognitive_role: str = "auto"
+    cognitive_kernel_url: str = "http://127.0.0.1:8000"
+    cognitive_mac_execute_url: str = "http://127.0.0.1:18000"
+    cognitive_max_tool_turns: int = 12
+    cognitive_conversation_timeout_seconds: float = 25.0
+    cognitive_work_timeout_seconds: float = 90.0
+    # Spoken-speed overrides for the kernel only. Do not change
+    # muse_spark_reasoning_effort (stays high for non-kernel Spark callers).
+    cognitive_conversation_reasoning_effort: str = "low"
+    cognitive_work_reasoning_effort: str = "medium"
+    cognitive_conversation_max_tool_turns: int = 4
+    # --- END COGNITIVE OS V2 ---
     local_model_base_url: str | None = None  # OpenAI-compatible local server (Ollama/llama.cpp)
     local_model_name: str = "llama3"
     model_call_log_enabled: bool = True
@@ -795,6 +823,16 @@ class Settings(BaseSettings):
     ui_verb_tools_enabled: bool = True  # read/see/click/type/key/... registry toggle
     voice_shadow_wait_ms: int = 350  # bound on shadow recall before bare response.create (shadow mode)
     # --- END EV VOICE CONTROL PLAN --------------------------------------------
+
+    # --- DIGITAL OPERATIONS V1 (append-only) --------------------------------
+    digital_ops_enabled: bool = True
+    digital_gmail_page_size: int = 25
+    digital_mass_action_max: int = 25
+    digital_whatsapp_poll_seconds: int = 45
+    digital_artifact_dir: str = "./storage/digital-artifacts"
+    digital_live_gmail: bool = False
+    digital_live_whatsapp: bool = False
+    # --- END DIGITAL OPERATIONS V1 ------------------------------------------
 
 
 @lru_cache

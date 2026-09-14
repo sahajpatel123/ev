@@ -43,6 +43,7 @@ public struct HUDCardView: View {
 public struct TodayView: View {
     @State private var card: HUDCard?
     @State private var confirming = false
+    @State private var status: String?
     public let client: EVAPIClient
 
     public init(client: EVAPIClient) {
@@ -57,6 +58,11 @@ public struct TodayView: View {
             } else {
                 Text("Loading…").foregroundStyle(.secondary)
             }
+            if let status, !status.isEmpty {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
         }
         .padding()
         .task { await load() }
@@ -69,29 +75,53 @@ public struct TodayView: View {
     private func confirmHold() {
         guard !confirming, let card, card.isApprovalHold else { return }
         confirming = true
+        status = nil
         Task {
             defer { confirming = false }
-            if EVLifeBiometric.isAvailable {
-                let ok = await EVLifeBiometric.confirmLifeAction(
-                    reason: "Confirm \(card.holdToolName ?? "this action")"
-                )
-                guard ok else { return }
-            }
-            do {
-                if let actionId = card.holdActionId, !actionId.isEmpty {
-                    _ = try await client.approveAction(id: actionId)
-                } else if let name = card.holdToolName, !name.isEmpty {
-                    _ = try await client.dispatchTool(
-                        name: name,
-                        arguments: card.holdArguments,
-                        confirm: true
-                    )
-                }
-                await load()
-            } catch {
+            // A confirmation tap may only resolve the parked action the owner was
+            // shown. Re-dispatching the tool here would re-resolve the transport
+            // and recipient at send time and run them unconfirmed.
+            guard let actionId = card.holdActionId, !actionId.isEmpty else {
+                status =
+                    "That request has no parked action on the server, so there is nothing to approve. Ask Evie again to start a fresh one."
                 return
             }
+            if EVLifeBiometric.isAvailable {
+                let label = card.holdToolName.flatMap {
+                    $0.isEmpty ? nil : $0.replacingOccurrences(of: "_", with: " ")
+                } ?? "this action"
+                let ok = await EVLifeBiometric.confirmLifeAction(
+                    reason: "Confirm \(label)"
+                )
+                guard ok else {
+                    status = "Confirmation cancelled."
+                    return
+                }
+            }
+            do {
+                let proof = try? await client.issueReverification(purpose: "runtime.action")
+                let response = try await client.approveAction(
+                    id: actionId,
+                    reverifyToken: proof?.token
+                )
+                if response.status == "executed" || response.status == "approved" {
+                    status = nil
+                    await load()
+                } else {
+                    status =
+                        response.error ?? "Confirmation failed — the action is still waiting."
+                }
+            } catch {
+                status = renderApproveError(error)
+            }
         }
+    }
+
+    private func renderApproveError(_ error: Error) -> String {
+        if let apiError = error as? EVAPIError {
+            return "Confirmation failed: \(apiError.localizedDescription)"
+        }
+        return "Confirmation failed: \(error.localizedDescription)"
     }
 }
 
@@ -434,6 +464,30 @@ public struct AppShellView: View {
                 .tabItem { Label("Memory", systemImage: "brain") }
             VoiceCaptureView(client: client, deviceId: deviceId, live: live)
                 .tabItem { Label("Voice", systemImage: "mic") }
+        }
+    }
+}
+// Cycle EAC-08 — EVUI Today widget view.
+/// iPhone-only additive view; backward compatible (new struct, existing views untouched).
+public struct EvieTodayWidgetView: View {
+    public let headline: String
+    public let subline: String
+
+    public init(headline: String, subline: String = "") {
+        self.headline = headline
+        self.subline = subline
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(headline)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            if !subline.isEmpty {
+                Text(subline)
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+            }
         }
     }
 }

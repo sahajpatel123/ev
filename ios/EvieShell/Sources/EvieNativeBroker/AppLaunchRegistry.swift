@@ -39,3 +39,24 @@ public enum AppLaunchRegistry {
         return nil
     }
 }
+
+// Cycle 49 — iPhone-only, backward compat: launch-registry Siri phrase list.
+// Additive lookup helper; AppLaunchRegistry.resolve(_:) unchanged.
+public enum EvieSiriPhraseList {
+    public static let phrasesByAppID: [String: [String]] = [
+        "safari": ["Open Safari", "Browse with Safari"],
+        "maps": ["Open Maps", "Get directions with Maps"],
+        "spotify": ["Open Spotify", "Play music on Spotify"],
+        "instagram": ["Open Instagram"],
+        "youtube": ["Open YouTube", "Watch on YouTube"],
+        "gmail": ["Open Gmail", "Check Gmail"],
+        "whatsapp": ["Open WhatsApp", "Message on WhatsApp"],
+        "chrome": ["Open Chrome"],
+        "music": ["Open Music", "Play music"],
+        "x": ["Open X"],
+    ]
+
+    public static func phrases(forAppID appID: String) -> [String] {
+        phrasesByAppID[appID] ?? []
+    }
+}

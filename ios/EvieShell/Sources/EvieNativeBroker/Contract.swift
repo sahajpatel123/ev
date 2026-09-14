@@ -99,3 +99,15 @@ public struct NativeBridgeRequest: Sendable {
         )
     }
 }
+
+// Cycle 46 — iPhone-only, backward compat: additive orb-state extensions enum.
+// UI-only state names; NativeBridgeRequest / HapticEvent unchanged.
+public enum EvieOrbState: String, Sendable, CaseIterable {
+    case idle
+    case listening
+    case thinking
+    case speaking
+    case confirming
+    case succeeded
+    case failed
+}

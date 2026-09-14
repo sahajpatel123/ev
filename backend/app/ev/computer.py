@@ -27,6 +27,7 @@ from app.ev.computer_runtime import (
     COMPUTER_VISION_TOOLS,
     action_signature,
     cancel_computer_task,
+    close_tab_query_hint,
     decode_screen_jpeg,
     ensure_state,
     guard_loop,
@@ -34,6 +35,7 @@ from app.ev.computer_runtime import (
     note_goal,
     remember_frame,
     remember_snapshot,
+    remember_tab,
     stamp_computer_receipt,
     stash_screen_observation,
     state_for,
@@ -41,17 +43,20 @@ from app.ev.computer_runtime import (
     validate_frame_click,
 )
 from app.ev.computer_strategy import (
+    _search_query_from_goal,
+    _slot_is_browser_app,
     adapter_for,
+    clean_computer_query,
     control_for_app,
     looks_like_opened_content_item,
     media_query_from_goal,
+    named_site_in_text,
     navigation_url_from_text,
     normalize_app_action,
+    utterance_navigation_dest,
     wants_first_on_page_item,
     wants_first_result_text,
     wants_play_media,
-    clean_computer_query,
-    _search_query_from_goal,
 )
 from app.integrations.life_helper import (
     LifeHelperError,
@@ -460,6 +465,10 @@ async def handle_computer_tool(
             arguments["action"] = normalize_app_action(arguments.get("action"))
         app_name = str(arguments.get("app") or "").lower()
         action = str(arguments.get("action") or "")
+        if action == "close_tab" and not arguments.get("query"):
+            hint = close_tab_query_hint(state)
+            if hint:
+                arguments["query"] = hint
         this_goal = str(arguments.get("goal") or "")
         if action in {"search", "navigate", "open_item"}:
             for key in ("query", "url"):
@@ -470,23 +479,25 @@ async def handle_computer_tool(
                         arguments[key] = cleaned
         if action == "new_tab" and this_goal:
             query = _search_query_from_goal(this_goal)
-            if query or wants_first_result_text(this_goal):
-                dest_from_goal = navigation_url_from_text(query) if query else None
-                if dest_from_goal:
-                    arguments["action"] = "navigate"
-                    arguments["query"] = dest_from_goal
-                    action = "navigate"
-                elif query:
-                    arguments["action"] = "search"
-                    if not arguments.get("query"):
-                        arguments["query"] = query
-                    action = "search"
+            dest_from_goal = navigation_url_from_text(query) if query else None
+            if dest_from_goal is None:
+                dest_from_goal = utterance_navigation_dest(this_goal, query)
+            if dest_from_goal is None:
+                dest_from_goal = named_site_in_text(this_goal)
+            if dest_from_goal:
+                arguments["action"] = "navigate"
+                arguments["query"] = dest_from_goal
+                arguments["url"] = dest_from_goal
+                action = "navigate"
+            elif query:
+                arguments["action"] = "search"
+                if not arguments.get("query"):
+                    arguments["query"] = query
+                action = "search"
         dest = navigation_url_from_text(
             str(arguments.get("query") or arguments.get("url") or "")
         )
-        if dest and action == "search" and any(
-            name in app_name for name in ("safari", "chrome")
-        ):
+        if dest and action == "search" and _slot_is_browser_app(app_name):
             arguments["action"] = "navigate"
             arguments["query"] = dest
             arguments["url"] = dest
@@ -532,6 +543,7 @@ async def handle_computer_tool(
         if (
             action == "navigate"
             and dest
+            and not arguments.get("new_tab")
             and result.get("ok") is not False
             and not str(result.get("url") or "").strip()
         ):
@@ -592,7 +604,7 @@ async def handle_computer_tool(
             # Domain land or in-app search is not done when they asked to
             # open/play a named or ordinal on-screen video.
             app = str(arguments.get("app") or "Safari")
-            browser = any(name in app.lower() for name in ("safari", "chrome"))
+            browser = _slot_is_browser_app(app)
             item_args: dict[str, Any] = {
                 "app": app,
                 "action": "play" if browser or _wants_play_media(state, this_goal) else "open_item",
@@ -1181,6 +1193,7 @@ def _record(
         "error": result.get("error"),
         "app": result.get("app") or result.get("name"),
     }
+    remember_tab(state, arguments, result)
     latency_ms = int((time.monotonic() - started) * 1000)
     state.traces.append(
         f"{name} ok={result.get('ok')} executed={result.get('executed')} "

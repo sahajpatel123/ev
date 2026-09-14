@@ -308,18 +308,33 @@ def _integration_state(
     )
     if row is None:
         from app.ev.apps import discover_life_helper_path
-        from app.services.life_stream_daemon import life_stream_should_run
 
-        if provider in {"messaging", "phone", "mail", "contacts"} and (
-            life_stream_should_run() or discover_life_helper_path()
-        ):
+        if provider in {"messaging", "phone", "mail", "contacts"}:
+            # Only an executable helper on disk makes the Apple life bridge
+            # real; the opt-in flag alone would advertise actions that the
+            # execution gate (``app.ev.apps``) then refuses.
+            helper = discover_life_helper_path()
+            if helper:
+                return {
+                    "availability": "available",
+                    "reason": "macos_life helper on this Mac",
+                    "current_provider": "macos_life",
+                    "provider_scopes": list(required_scopes),
+                    "missing_provider_scopes": [],
+                    "credential_ready": True,
+                }
+            configured = str(getattr(settings, "life_helper_path", "") or "").strip()
+            tried = f" at {configured}" if configured else ""
             return {
-                "availability": "available",
-                "reason": "macos_life helper on this Mac",
-                "current_provider": "macos_life",
-                "provider_scopes": list(required_scopes),
-                "missing_provider_scopes": [],
-                "credential_ready": True,
+                "availability": "not_connected",
+                "reason": (
+                    f"no executable EVLifeHelper{tried}; "
+                    "set EV_LIFE_HELPER_PATH to a built EVLifeHelper"
+                ),
+                "current_provider": provider,
+                "provider_scopes": [],
+                "missing_provider_scopes": list(required_scopes),
+                "credential_ready": False,
             }
         return {
             "availability": "not_connected",

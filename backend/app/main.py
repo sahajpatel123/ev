@@ -15,6 +15,7 @@ from app import __version__
 from app.api import (
     assistant,
     backup,
+    cognitive,
     companion,
     compliance,
     core,
@@ -40,11 +41,12 @@ from app.api import (
 )
 from app.config import settings
 from app.db import init_db
-from app.gateway.muse import MuseProviderUnavailable
 from app.device_gateway import api as device_gateway_api
 from app.device_gateway import pwa as device_gateway_pwa
 from app.device_gateway import release_portal
 from app.device_gateway.security import origin_allowed
+from app.digital.api import router as digital_ops_router
+from app.gateway.muse import MuseProviderUnavailable
 
 LOGGER = logging.getLogger("ev.main")
 
@@ -129,6 +131,9 @@ async def lifespan(_: FastAPI):
     from app.ev.timers import timer_watch_loop
 
     watch = asyncio.create_task(timer_watch_loop(), name="ev-timer-watch")
+    from app.device_gateway.digest import phone_digest_watch_loop
+
+    digest_watch = asyncio.create_task(phone_digest_watch_loop(), name="ev-phone-digest")
     desk_watch = None
     if settings.environment != "test":
         from app.ev.laptop_files import laptop_files_allowed
@@ -139,6 +144,7 @@ async def lifespan(_: FastAPI):
             desk_watch = asyncio.create_task(steward_watch_loop(), name="ev-desk-steward")
     yield
     watch.cancel()
+    digest_watch.cancel()
     warmup.cancel()
     if desk_watch is not None:
         desk_watch.cancel()
@@ -217,6 +223,8 @@ async def _gateway_correlation_and_cache_policy(request, call_next):
     return await call_next(request)
 app.include_router(device_gateway_pwa.router)
 app.include_router(release_portal.router)  # private tailnet-only install portal
+app.include_router(digital_ops_router)
+app.include_router(cognitive.router)
 
 
 @app.get("/")

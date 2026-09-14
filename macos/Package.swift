@@ -75,7 +75,8 @@ let package = Package(
         .executableTarget(
             name: "EVAuthCheck",
             dependencies: ["EVAuth"],
-            path: "Sources/EVAuthCheck"
+            path: "Sources/EVAuthCheck",
+            linkerSettings: [
                 .linkedFramework("Contacts"),
                 .linkedFramework("CoreBluetooth"),
                 .linkedFramework("CoreLocation"),
