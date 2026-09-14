@@ -35,6 +35,12 @@ _BACKGROUND_RE = re.compile(
 _INQUIRY_RE = re.compile(
     r"^\s*(?:what|which|who|when|where|why|did|do|does|is|are|any|check)\b", re.I
 )
+_RANDOM_RE = re.compile(r"\b(?:random(?:ly)?|shuffled?|shuffle)\b", re.I)
+_COLLECTION_RE = re.compile(
+    r"\bfrom\s+(?:my\s+|the\s+)?(?P<collection>.+?)"
+    r"(?=\s+(?:in|inside|on|using)\s+[A-Za-z])",
+    re.I,
+)
 
 _KINDS: tuple[tuple[str, str], ...] = (
     ("chat", r"chats?|conversations?|threads?"),
@@ -98,6 +104,13 @@ TARGETS: tuple[InAppTarget, ...] = (
     InAppTarget("Telegram", ("telegram",), web=True, kinds=("chat",)),
     InAppTarget("Safari", ("safari",), kinds=("tab",)),
     InAppTarget("Google Chrome", ("chrome", "google chrome", "browser"), kinds=("tab",)),
+    InAppTarget(
+        "YouTube",
+        ("youtube", "you tube"),
+        web=True,
+        url_template="https://www.youtube.com/results?search_query={quote}",
+        kinds=("track", "tab"),
+    ),
 )
 
 _ALIAS_INDEX: tuple[tuple[str, str], ...] = tuple(
@@ -126,15 +139,22 @@ class InAppIntent:
     item: str | None
     kind: str
     background: bool
+    random: bool = False
+    collection: str = ""
 
     def as_args(self) -> dict[str, Any]:
-        return {
+        payload = {
             "app": self.app,
             "item": self.item,
             "kind": self.kind,
             "verb": self.verb,
             "background": self.background,
         }
+        if self.random:
+            payload["random"] = True
+        if self.collection:
+            payload["playlist"] = self.collection
+        return payload
 
 
 def _strip_vocatives(text: str) -> str:
@@ -228,27 +248,63 @@ def parse_in_app_intent(text: str | None) -> InAppIntent | None:
     rest = match.group("rest").strip()
     background = bool(_BACKGROUND_RE.search(rest))
     rest = _BACKGROUND_RE.sub("", rest).strip()
+    random = bool(_RANDOM_RE.search(rest))
+    collection = ""
+    collected = _COLLECTION_RE.search(rest)
+    if collected:
+        collection = _clean_item(collected.group("collection"))
+        # Keep the app preposition; drop "from <collection>" so the item parser
+        # does not treat the playlist as the app.
+        rest = (rest[: collected.start()] + " " + rest[collected.end() :]).strip()
+        rest = _RANDOM_RE.sub(" ", rest)
+        rest = re.sub(r"\s+", " ", rest).strip()
     # "show me the note X" / "open WhatsApp and then John's chat"
     rest = re.sub(r"^(?:me|us)\s+", "", rest, flags=re.I).strip()
     rest = re.sub(r"^(?:and|then|,)\s+(?:open\s+|show\s+|go\s+to\s+)?", "", rest, flags=re.I).strip()
+    if re.search(
+        r"\bopen\s+(?:the\s+)?[A-Za-z][\w .+-]{1,40}?\s+(?:and|then|,)\s+"
+        r"(?:open|go to|visit|navigate)\b",
+        core,
+        re.I,
+    ):
+        # "open Safari and open YouTube inside it" is a computer compound.
+        return None
 
     app: str | None = None
     app_alias: str | None = None
-    for alias, label in _ALIAS_INDEX:
-        if re.search(rf"(?<![\w]){re.escape(alias)}(?![\w])", rest, re.I):
-            app = label
-            app_alias = alias
-            break
+    hosted = re.search(
+        r"\b(?:in|inside|on|using|from|with)\s+(?:the\s+)?"
+        r"(?P<slot>[A-Za-z][\w .+-]{0,40})$",
+        rest,
+        re.I,
+    )
+    if hosted:
+        slot = re.sub(r"\s+app$", "", hosted.group("slot").strip(), flags=re.I)
+        for alias, label in _ALIAS_INDEX:
+            if re.search(rf"(?<![\w]){re.escape(alias)}(?![\w])", slot, re.I):
+                app = label
+                app_alias = alias
+                break
+    if app is None:
+        for alias, label in _ALIAS_INDEX:
+            if re.search(rf"(?<![\w]){re.escape(alias)}(?![\w])", rest, re.I):
+                app = label
+                app_alias = alias
+                break
     item_rest = rest
     if app_alias:
         item_rest = re.sub(
             rf"(?<![\w]){re.escape(app_alias)}(?![\w])", " ", item_rest, count=1, flags=re.I
         ).strip()
-        item_rest = re.sub(r"\b(?:in|on|at|inside)\s*$", "", item_rest, flags=re.I).strip()
-        item_rest = re.sub(r"^\s*(?:in|on|at|inside)\s+", "", item_rest, flags=re.I).strip()
+        item_rest = re.sub(r"\b(?:in|on|at|inside|from)\s*$", "", item_rest, flags=re.I).strip()
+        item_rest = re.sub(r"^\s*(?:in|on|at|inside|from)\s+", "", item_rest, flags=re.I).strip()
         item_rest = re.sub(
             r"^(?:and|then|,)\s+(?:open\s+|show\s+|go\s+to\s+)?", "", item_rest, flags=re.I
         ).strip()
+        play_led = re.match(rf"^(?:{_VERB_PLAY})\s+(?P<item>.+)$", item_rest, re.I)
+        if play_led:
+            verb = "play"
+            item_rest = play_led.group("item").strip()
 
     kind = _find_kind(item_rest) or _find_kind(rest)
     item = ""
@@ -294,12 +350,27 @@ def parse_in_app_intent(text: str | None) -> InAppIntent | None:
             flags=re.I,
         )
         remainder = re.sub(r"\b(?:with|for|of|from|called|named)\b", " ", remainder, flags=re.I)
+        remainder = _RANDOM_RE.sub(" ", remainder)
+        remainder = re.sub(
+            r"\b(?:some|a|an|song|track|video|clip)\b", " ", remainder, flags=re.I
+        )
         remainder = _clean_item(remainder)
-        if remainder and (kind or verb == "play"):
+        # Named app: "open YouTube from Safari" / "play lofi in Music" do not
+        # need a kind word. Play without an item still needs a name unless
+        # they asked for a random track from a collection.
+        if remainder and (kind or verb == "play" or app):
             item = remainder
 
     if verb == "play" and not kind:
-        kind = "track"
+        if collection and item and item.lower() != collection.lower():
+            kind = "track"
+        elif collection:
+            kind = "playlist"
+        else:
+            kind = "track"
+    if not item and collection and verb == "play":
+        item = collection
+        kind = "playlist"
     if not item:
         return None
     if app is None and not kind:
@@ -314,6 +385,8 @@ def parse_in_app_intent(text: str | None) -> InAppIntent | None:
         item=item,
         kind=kind or "item",
         background=background,
+        random=random,
+        collection=collection,
     )
 
 
@@ -325,6 +398,23 @@ async def _guess_app_for_chat(item: str) -> str | None:
     whatsapp = await resolve_native_contact("whatsapp", item)
     if isinstance(whatsapp, dict) and whatsapp.get("status") == "unique":
         return "WhatsApp"
+    return None
+
+
+def _destination_url_for_item(item: str) -> str | None:
+    """Homepage/URL when the item is a named site (YouTube from Safari)."""
+
+    raw = (item or "").strip()
+    if not raw:
+        return None
+    from app.ev.computer_strategy import named_site_in_text, navigation_url_from_text
+
+    dest = navigation_url_from_text(raw) or named_site_in_text(raw)
+    if dest:
+        return dest
+    other = target_for(raw)
+    if other is not None and other.label == "YouTube":
+        return "https://www.youtube.com/"
     return None
 
 
@@ -346,7 +436,9 @@ def _applescript_escape(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-async def _drive_applescript(target: InAppTarget, item: str, kind: str) -> dict[str, Any] | None:
+async def _drive_applescript(
+    target: InAppTarget, item: str, kind: str, *, random: bool = False, playlist: str = ""
+) -> dict[str, Any] | None:
     if not target.apple_script:
         return None
     import asyncio
@@ -356,18 +448,50 @@ async def _drive_applescript(target: InAppTarget, item: str, kind: str) -> dict[
         return None
     safe = _applescript_escape(item)
     if target.apple_script == "music_play":
-        finder = f'playlist "{safe}"' if kind == "playlist" else f'track "{safe}"'
-        script = f'''
-        tell application "Music"
-          try
-            play {finder}
-            delay 0.4
-            return "{{" & "\\"ok\\": true, \\"playing\\": " & (player state is playing) & "}}"
-          on error errMsg
-            return "{{\\"ok\\": false, \\"error\\": \\"not_found\\"}}"
-          end try
-        end tell
-        '''
+        playlist_name = _applescript_escape(playlist or (item if kind == "playlist" else ""))
+        track_name = _applescript_escape(item) if kind != "playlist" else ""
+        if playlist_name and random:
+            script = f'''
+            tell application "Music"
+              try
+                set theList to playlist "{playlist_name}"
+                set total to count of tracks of theList
+                if total is 0 then return "{{\\"ok\\": false, \\"error\\": \\"not_found\\"}}"
+                set pick to random number from 1 to total
+                play track pick of theList
+                delay 0.4
+                return "{{" & "\\"ok\\": true, \\"playing\\": " & (player state is playing) & "}}"
+              on error errMsg
+                return "{{\\"ok\\": false, \\"error\\": \\"not_found\\"}}"
+              end try
+            end tell
+            '''
+        elif playlist_name and not track_name:
+            finder = f'playlist "{playlist_name}"'
+            script = f'''
+            tell application "Music"
+              try
+                play {finder}
+                delay 0.4
+                return "{{" & "\\"ok\\": true, \\"playing\\": " & (player state is playing) & "}}"
+              on error errMsg
+                return "{{\\"ok\\": false, \\"error\\": \\"not_found\\"}}"
+              end try
+            end tell
+            '''
+        else:
+            finder = f'playlist "{safe}"' if kind == "playlist" else f'track "{safe}"'
+            script = f'''
+            tell application "Music"
+              try
+                play {finder}
+                delay 0.4
+                return "{{" & "\\"ok\\": true, \\"playing\\": " & (player state is playing) & "}}"
+              on error errMsg
+                return "{{\\"ok\\": false, \\"error\\": \\"not_found\\"}}"
+              end try
+            end tell
+            '''
     elif target.apple_script == "notes_show":
         script = f'''
         tell application "Notes"
@@ -441,6 +565,8 @@ async def _drive_live_app(
     device_id,
     request_id: str | None,
     all_items: bool = False,
+    random: bool = False,
+    playlist: str = "",
 ) -> dict[str, Any] | None:
     """Universal EV.app content opener, when the desktop app is live."""
 
@@ -456,6 +582,10 @@ async def _drive_live_app(
     payload: dict[str, Any] = {"app": target.label, "action": action, "query": item}
     if all_items:
         payload["all"] = True
+    if random:
+        payload["random"] = True
+    if playlist:
+        payload["playlist"] = playlist
     result = await handle_computer_tool(
         session,
         "app_action",
@@ -538,6 +668,8 @@ async def act_in_app(
     kind: str | None = None,
     verb: str = "open",
     background: bool = False,
+    random: bool = False,
+    playlist: str | None = None,
     actor: str = "master",
     live_session_id: str | None = None,
     device_id=None,
@@ -550,6 +682,8 @@ async def act_in_app(
         kind=kind,
         verb=verb,
         background=background,
+        random=random,
+        playlist=playlist,
         actor=actor,
         live_session_id=live_session_id,
         device_id=device_id,
@@ -571,6 +705,8 @@ async def _act_in_app(
     kind: str | None = None,
     verb: str = "open",
     background: bool = False,
+    random: bool = False,
+    playlist: str | None = None,
     actor: str = "master",
     live_session_id: str | None = None,
     device_id=None,
@@ -691,25 +827,56 @@ async def _act_in_app(
         if web is not None:
             return {**web, "app": target.label, "item": who}
 
+    dest_url = None
+    if verb in {"open", "play"} and (
+        target.label in {"Safari", "Google Chrome"} or kind == "tab"
+    ):
+        dest_url = _destination_url_for_item(who)
+    live_item = dest_url or who
+    live_kind = "tab" if dest_url else (kind or "item")
+    live_verb = "open" if dest_url else verb
+
     live = await _drive_live_app(
         session,
         target,
-        who,
-        kind or "item",
-        verb,
+        live_item,
+        live_kind,
+        live_verb,
         actor=actor,
         live_session_id=live_session_id,
         device_id=device_id,
         request_id=request_id,
+        random=bool(random) and not dest_url,
+        playlist=str(playlist or "").strip() if not dest_url else "",
     )
     if live is not None:
         return {**live, "app": target.label, "item": who}
 
-    scripted = await _drive_applescript(target, who, kind or "item")
+    if dest_url:
+        from app.ev.mac_host import open_url_in_app
+
+        hosted = open_url_in_app(target.label, dest_url, background=background)
+        if hosted.get("ok"):
+            return {
+                **hosted,
+                "app": target.label,
+                "item": who,
+                "url": dest_url,
+                "driver": "mac_open",
+                "matched": True,
+            }
+
+    scripted = await _drive_applescript(
+        target,
+        who,
+        kind or "item",
+        random=bool(random),
+        playlist=str(playlist or "").strip(),
+    )
     if scripted is not None:
         return {**scripted, "app": target.label, "item": who}
 
-    url = _render_url(target, who, kind or "item")
+    url = dest_url or _render_url(target, who, kind or "item")
     if url:
         opened = await _open_url_background(url)
         if opened.get("ok"):

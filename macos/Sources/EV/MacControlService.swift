@@ -6330,6 +6330,10 @@ public final class MacControlService: @unchecked Sendable {
         if fm.fileExists(atPath: code.path) {
             roots.append(code.resolvingSymlinksInPath())
         }
+        let home = fm.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
+        if !roots.contains(where: { $0.path == home.path }) {
+            roots.append(home)
+        }
         return roots
     }
 
@@ -6355,12 +6359,19 @@ public final class MacControlService: @unchecked Sendable {
         {
             return "path_denied"
         }
-        if !allowedFileRoots().contains(where: { root in
-            path == root.path || path.hasPrefix(root.path + "/")
-        }) {
-            return "path_outside_allowed"
+        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
+        let library = home.appendingPathComponent("Library", isDirectory: true).resolvingSymlinksInPath()
+        let icloud = library.appendingPathComponent("Mobile Documents", isDirectory: true)
+        if path == library.path || path.hasPrefix(library.path + "/") {
+            if path == icloud.path || path.hasPrefix(icloud.path + "/") {
+                return nil
+            }
+            return "path_denied"
         }
-        return nil
+        if path == home.path || path.hasPrefix(home.path + "/") {
+            return nil
+        }
+        return "path_outside_allowed"
     }
 
     private func expandFilePath(_ raw: String) -> URL? {
@@ -6639,8 +6650,28 @@ public final class MacControlService: @unchecked Sendable {
                 command: "file_op",
                 requestId: requestId
             )
+        case "search":
+            let found = locateFile(path: path, query: query)
+            if let url = found.url {
+                return ok(
+                    [
+                        "ok": true,
+                        "executed": true,
+                        "verified": true,
+                        "action": "search",
+                        "path": url.path,
+                        "files": [url.lastPathComponent],
+                        "count": 1,
+                        "spoken": "I found \(url.lastPathComponent) on \(url.deletingLastPathComponent().lastPathComponent).",
+                        "source": "mac_control",
+                    ],
+                    command: "file_op",
+                    requestId: requestId
+                )
+            }
+            return fileLocateFail(found, requestId: requestId)
         default:
-            return fail("unknown_action", "I can read, write, edit, list, or open local files.", command: "file_op", requestId: requestId)
+            return fail("unknown_action", "I can read, write, edit, list, search, or open local files.", command: "file_op", requestId: requestId)
         }
     }
 

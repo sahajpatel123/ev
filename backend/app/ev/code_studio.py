@@ -526,7 +526,11 @@ def maybe_handle_code_ops(text: str, *, session_key: str = "owner") -> str | Non
         return apply_code_control(raw)
     if looks_like_code_steer(raw):
         return queue_steer(raw)
-    from app.ev.luna_code import maybe_switch_coding_project, spoken_project_catalog, looks_like_project_catalog_ask
+    from app.ev.luna_code import (
+        looks_like_project_catalog_ask,
+        maybe_switch_coding_project,
+        spoken_project_catalog,
+    )
 
     if looks_like_project_catalog_ask(raw) and not looks_like_long_code_goal(raw):
         return spoken_project_catalog()

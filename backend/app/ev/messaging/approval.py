@@ -458,6 +458,58 @@ async def newest_pending(session: AsyncSession) -> ApprovedAction | None:
     return None
 
 
+async def recent_failed_send(
+    session: AsyncSession,
+    *,
+    to: str,
+    text: str,
+    channel: str = "whatsapp",
+    limit: int = 8,
+) -> ApprovedAction | None:
+    """Newest executed ticket for this exact message that sent nothing.
+
+    Only transport/preparation failures reach here. Reusing the owner's yes is
+    safe because the earlier attempt is provably undelivered
+    (``result.sent != true``) and the TTL has not expired; the same approval
+    binding is replayed so execution cannot drift to another recipient.
+    """
+
+    if not to or not text:
+        return None
+    result = await session.execute(
+        select(ApprovedAction)
+        .where(
+            ApprovedAction.action_type == "send_message",
+            ApprovedAction.status == "executed",
+        )
+        .order_by(ApprovedAction.executed_at.desc())
+        .limit(limit)
+    )
+    wanted = to.strip().casefold()
+    for row in result.scalars().all():
+        meta = pol_meta(row.payload)
+        if meta.get("kind") != APPROVAL_KIND:
+            continue
+        if _expired(row):
+            continue
+        if str(meta.get("text") or "") != text:
+            continue
+        if str(meta.get("channel") or "whatsapp") != channel:
+            continue
+        names = {
+            str(meta.get("to") or "").strip().casefold(),
+            str(meta.get("display") or "").strip().casefold(),
+            str(meta.get("address") or "").strip().casefold(),
+        }
+        if wanted not in names:
+            continue
+        outcome = row.result if isinstance(row.result, dict) else {}
+        if outcome.get("sent"):
+            continue
+        return row
+    return None
+
+
 def adopt_pending(
     action: ApprovedAction,
     *,

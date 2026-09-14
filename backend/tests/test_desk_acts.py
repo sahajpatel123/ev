@@ -186,6 +186,23 @@ async def test_which_note_asks_then_binds_choice(files_root: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_find_file_is_not_which_note(files_root: Path) -> None:
+    from app.ev.laptop_files import run_file_goal
+
+    packing = await run_file_goal(
+        parse_file_goal("Make a packing list that says passport, charger")
+    )
+    grocery = await run_file_goal(
+        parse_file_goal("drop a note on the desktop that says milk")
+    )
+    assert packing["ok"] is True and grocery["ok"] is True
+    found = parse_file_goal("find my passport")
+    assert found is not None
+    assert found["action"] == "search"
+    assert "passport" in str(found.get("query") or "").lower()
+
+
+@pytest.mark.asyncio
 async def test_remind_and_text_use_the_live_list_not_file_op(files_root: Path) -> None:
     from app.ev.laptop_files import run_file_goal
 

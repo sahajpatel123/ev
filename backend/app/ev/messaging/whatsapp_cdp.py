@@ -51,6 +51,19 @@ def _profile_dir() -> Path:
     return Path(raw).expanduser()
 
 
+def _linked_marker() -> Path:
+    profile = _profile_dir()
+    return profile.parent / f"{profile.name}.linked"
+
+
+def _write_linked_marker() -> None:
+    try:
+        _linked_marker().parent.mkdir(parents=True, exist_ok=True)
+        _linked_marker().write_text("linked\n")
+    except OSError:
+        pass
+
+
 async def _pages(timeout: float = 3.0) -> list[dict[str, Any]]:
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -170,25 +183,56 @@ async def available(*, refresh: bool = False) -> tuple[bool, str]:
     except (TypeError, json.JSONDecodeError):
         parsed = {}
     linked = bool(parsed.get("ready")) and not bool(parsed.get("qr"))
-    _status_cache = (now, linked, "ok" if linked else "cdp_not_linked")
-    return linked, ("ok" if linked else "cdp_not_linked")
+    if linked:
+        _write_linked_marker()
+        diagnosis = "ok"
+    elif parsed.get("qr"):
+        diagnosis = "cdp_qr"
+    else:
+        diagnosis = "cdp_not_linked"
+    _status_cache = (now, linked, diagnosis)
+    return linked, diagnosis
 
 
-async def ensure_running() -> bool:
-    """Start Evie's dedicated debug Chrome in the background if needed."""
+async def reveal_window() -> bool:
+    """Bring the WhatsApp tab's window forward (for the one-time QR scan)."""
+
+    target = await whatsapp_target(timeout=1.5)
+    if target is None:
+        return False
+    try:
+        import websockets
+
+        async with websockets.connect(target["webSocketDebuggerUrl"], open_timeout=CONNECT_TIMEOUT) as ws:
+            await _cdp(ws, "Page.bringToFront", {}, msg_id=1)
+    except Exception:
+        return False
+    return True
+
+
+async def ensure_running(*, bring_to_front: bool = False) -> bool:
+    """Start Evie's dedicated debug Chrome in the background if needed.
+
+    ``bring_to_front=True`` raises the window so the owner can scan the
+    WhatsApp QR on first link; normal operation keeps Chrome in the background.
+    """
 
     if os.environ.get("PYTEST_CURRENT_TEST"):
         return False
-    if await whatsapp_target(timeout=1.5) is not None:
+    target = await whatsapp_target(timeout=1.5)
+    if target is not None:
+        if bring_to_front:
+            await reveal_window()
         return True
     if not os.path.isfile(CHROME_BINARY):
         return False
     profile = _profile_dir()
     profile.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess = await asyncio.create_subprocess_exec(
-            "/usr/bin/open",
-            "-g",
+        command = ["/usr/bin/open"]
+        if not bring_to_front:
+            command.append("-g")
+        command += [
             "-n",
             "-a",
             "Google Chrome",
@@ -199,6 +243,9 @@ async def ensure_running() -> bool:
             "--no-default-browser-check",
             "--disable-session-crashed-bubble",
             WHATSAPP_URL,
+        ]
+        subprocess = await asyncio.create_subprocess_exec(
+            *command,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
             start_new_session=True,
@@ -209,8 +256,45 @@ async def ensure_running() -> bool:
     for _ in range(12):
         await _wait(0.8)
         if await whatsapp_target(timeout=1.5) is not None:
+            if bring_to_front:
+                await reveal_window()
             return True
     return False
+
+
+async def ensure_ready(*, reveal_workspace: bool = True) -> tuple[str, str]:
+    """Preflight for a real send: ``linked`` | ``qr`` | ``loading`` | ``unavailable``.
+
+    Launches Evie's Chrome when it is not running and polls through the page
+    load. ``qr`` means the window is up with the scan prompt: the owner must
+    link the profile once, and no send should be attempted or approved yet.
+    """
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return "unavailable", "cdp_disabled"
+    if not os.path.isfile(CHROME_BINARY):
+        return "unavailable", "cdp_chrome_missing"
+    linked, diagnosis = await available(refresh=True)
+    if not linked and diagnosis == "cdp_chrome_not_running":
+        await ensure_running(
+            bring_to_front=reveal_workspace and not _linked_marker().exists()
+        )
+        for _ in range(15):
+            await _wait(0.8)
+            linked, diagnosis = await available(refresh=True)
+            if linked or diagnosis == "cdp_qr":
+                break
+    if linked:
+        return "linked", diagnosis
+    if diagnosis == "cdp_qr":
+        if reveal_workspace:
+            await reveal_window()
+        return "qr", diagnosis
+    if diagnosis == "cdp_not_linked" and await whatsapp_target(timeout=1.5) is not None:
+        # The tab is up but the app has not painted yet. Never hand a send to
+        # the AppleScript path in this state; it cannot drive the tab anyway.
+        return "loading", diagnosis
+    return "unavailable", diagnosis
 
 
 _FIND_JS = r"""
@@ -243,6 +327,16 @@ _VERIFY_JS = r"""
 """
 
 
+_SCROLL_JS = r"""
+(function () {
+  const pane = document.querySelector('#pane-side');
+  if (!pane) return 0;
+  pane.scrollTop = Math.min(pane.scrollHeight, pane.scrollTop + 320);
+  return pane.scrollTop;
+})()
+"""
+
+
 def _js(template: str, want: str) -> str:
     return template.replace("__WANT__", json.dumps(want))
 
@@ -262,24 +356,27 @@ async def send(to: str, text: str) -> dict[str, Any]:
             "focus_theft": 0,
         }
 
-    linked, diagnosis = await available()
-    if (
-        not linked
-        and diagnosis == "cdp_chrome_not_running"
-        and await ensure_running()
-    ):
-        linked, diagnosis = await available(refresh=True)
-    if not linked:
+    cdp_state, cdp_diagnosis = await ensure_ready()
+    if cdp_state != "linked":
+        if cdp_state == "qr":
+            spoken = (
+                "WhatsApp isn't linked in Evie's Chrome window yet. I brought it "
+                "up \u2014 scan the QR code once, then ask me to send again."
+            )
+        elif cdp_state == "loading":
+            spoken = (
+                "WhatsApp is still loading in Evie's Chrome window \u2014 give it "
+                "a few seconds and ask me again."
+            )
+        else:
+            spoken = "WhatsApp Web isn't ready on this Mac right now, so I didn't send it."
         return {
             "ok": False,
             "sent": False,
             "channel": "whatsapp",
             "error": "whatsapp_cdp_unavailable",
-            "diagnosis": diagnosis,
-            "spoken": (
-                "WhatsApp needs to be linked once in Evie's Chrome profile. "
-                "Open the window Evie just started, scan the WhatsApp QR, then ask me again."
-            ),
+            "diagnosis": cdp_diagnosis,
+            "spoken": spoken,
             "focus_theft": 0,
         }
 
@@ -327,22 +424,32 @@ async def send(to: str, text: str) -> dict[str, Any]:
                 await _cdp(ws, "Input.insertText", {"text": target_name}, msg_id=msg_id)
                 msg_id += 1
 
-                row = None
-                for _ in range(16):
-                    await _wait(0.5)
-                    state = await find()
-                    if state.get("row"):
-                        row = state["row"]
-                        break
-                if not row:
-                    return _fail("exact_row_missing", target_name)
-                msg_id = await _click(ws, row["x"], row["y"], msg_id=msg_id)
+                # The list is virtualized and re-ranks while typing: a click on
+                # stale geometry lands on a different chat. Re-find the exact
+                # row and re-click up to three times; scroll for rows below
+                # the fold.
                 compose = None
-                for _ in range(16):
-                    await _wait(0.5)
-                    state = await find()
-                    if (state.get("header") or "").casefold() == target_name.casefold():
-                        compose = state.get("compose")
+                for _attempt in range(3):
+                    row = None
+                    for poll in range(16):
+                        await _wait(0.5)
+                        state = await find()
+                        if state.get("row"):
+                            row = state["row"]
+                            break
+                        if poll in {5, 11}:
+                            await evaluate(ws, _SCROLL_JS, msg_id=msg_id)
+                            msg_id += 1
+                    if not row:
+                        continue
+                    msg_id = await _click(ws, row["x"], row["y"], msg_id=msg_id)
+                    for _ in range(16):
+                        await _wait(0.5)
+                        state = await find()
+                        if (state.get("header") or "").casefold() == target_name.casefold():
+                            compose = state.get("compose")
+                            break
+                    if compose:
                         break
                 if not compose:
                     return _fail("chat_open_failed", target_name)

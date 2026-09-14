@@ -223,6 +223,12 @@ def maybe_ambiguous_append(text: str, items: list[str] | None = None) -> dict[st
     raw = _norm(text)
     if not raw or ADD_TO_NAMED_RE.search(raw) or STRONG_DEIXIS_RE.search(raw):
         return None
+    if re.search(
+        r"\b(?:find|search(?:\s+for)?|locate|look(?:ing)?\s+(?:for|up)|where'?s|where is)\b",
+        raw,
+        re.I,
+    ):
+        return None
     from app.ev.laptop_files import extract_append_items
 
     found = list(items or extract_append_items(raw))

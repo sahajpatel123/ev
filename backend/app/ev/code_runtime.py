@@ -164,13 +164,23 @@ _STICKY_PROJECT_RE = re.compile(
     r"(?:in|on|inside|from) (?:the |my |our )?(?:repo|project|codebase|tree|code)\b|"
     r"(?:this|my|the) (?:repo|project|codebase|tree)\b|"
     r"the same project|keep using this project|"
-    r"this codebase"
+    r"this codebase|"
+    r"how (?:do i |to )?(?:run|start) it|"
+    r"how is (?:it|this) (?:structured|organized|laid out|put together)|"
+    r"what(?:'s| is) (?:the |its )?(?:stack|structure|architecture)|"
+    r"what(?:'s| is) (?:dirty|changed|uncommitted)|"
+    r"go deeper|tell me more|dig deeper|"
+    r"git status"
     r")\b",
     re.IGNORECASE,
 )
+_PLACE_NOUN = r"(?:repo|project|codebase|app|package|tree|workspace|folder|code)"
 _NAMED_PROJECT_RE = (
-    r"(?:in |on |inside |from )(?:the |my |our )?{name}\b|"
+    r"(?:in |on |inside |from |about |of )(?:the |my |our )?{name}\b|"
+    r"(?:the |my |our |this )?{name} " + _PLACE_NOUN + r"\b|"
     r"\b{name} (?:repo|project|codebase|app|package|tree|workspace|folder)\b|"
+    r"(?:" + _PLACE_NOUN + r") (?:called|named|of) (?:the |my |our )?{name}\b|"
+    r"(?:called|named) {name}\b|"
     r"\b(?:use|open|switch to|work (?:in|on)|select) (?:the |my |our )?{name}"
     r"(?: repo| project| codebase| workspace| folder)?\b"
 )
@@ -254,7 +264,11 @@ def list_projects() -> list[dict[str, str]]:
             if not child.is_dir() or child.name.startswith(".") or child.name in SKIP_DIR_NAMES:
                 continue
             if not _looks_like_project(child):
-                continue
+                try:
+                    if not any(child.iterdir()):
+                        continue
+                except OSError:
+                    continue
             key = child.name.lower()
             if key in found and found[key] == child.resolve():
                 continue
@@ -279,6 +293,16 @@ def select_project(goal: str) -> Path:
         chosen = catalog[named[0]]
         remember_sticky_project(chosen)
         return chosen
+    try:
+        from app.ev.code_literacy import project_name_for_alias
+
+        alias = project_name_for_alias(goal)
+    except Exception:  # noqa: BLE001 - alias lookup must never break jail select
+        alias = None
+    if alias and alias in catalog:
+        chosen = catalog[alias]
+        remember_sticky_project(chosen)
+        return chosen
     sticky = sticky_project_path()
     if sticky is not None and _wants_sticky_project(goal):
         return sticky
@@ -301,19 +325,42 @@ def use_project(name: str) -> dict[str, Any]:
     return {"ok": True, "project": wanted, "path": str(chosen)}
 
 
+def _name_token(name: str) -> str:
+    """Regex for a catalog name, allowing spaces where the folder uses -/_."""
+
+    raw = (name or "").strip().lower()
+    parts = [part for part in re.split(r"[-_]+", raw) if part]
+    if not parts:
+        return re.escape(raw)
+    if len(parts) == 1:
+        return re.escape(parts[0])
+    flex = r"[\s_-]+".join(re.escape(part) for part in parts)
+    compact = re.escape("".join(parts))
+    dashed = re.escape(raw)
+    return rf"(?:{dashed}|{compact}|{flex})"
+
+
 def _mentions_named_project(lowered: str, name: str) -> bool:
     """True when the owner named this allowlisted project, not a common verb."""
 
-    pattern = _NAMED_PROJECT_RE.format(name=re.escape(name))
-    if not re.search(pattern, lowered):
+    token = _name_token(name)
+    if not token:
         return False
-    if name in _AMBIGUOUS_PROJECT_NAMES and not re.search(
-        rf"(?:in |on |inside |from )(?:the |my |our )?{re.escape(name)}\b|"
-        rf"\b{re.escape(name)} (?:repo|project|codebase|app|package|tree|workspace|folder)\b",
-        lowered,
-    ):
+    pattern = _NAMED_PROJECT_RE.format(name=token)
+    anchored = bool(
+        re.search(
+            rf"(?:in |on |inside |from |about )(?:the |my |our )?{token}\b|"
+            rf"(?:the |my |our |this )?{token} {_PLACE_NOUN}\b|"
+            rf"\b{token} {_PLACE_NOUN}\b|"
+            rf"{_PLACE_NOUN} (?:called|named|of) (?:the |my |our )?{token}\b",
+            lowered,
+        )
+    )
+    if re.search(pattern, lowered):
+        return name not in _AMBIGUOUS_PROJECT_NAMES or anchored
+    if name in _AMBIGUOUS_PROJECT_NAMES:
         return False
-    return True
+    return bool(re.search(rf"\b{token}\b", lowered))
 
 
 def catalog_project_names() -> list[str]:

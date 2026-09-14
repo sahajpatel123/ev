@@ -112,6 +112,18 @@ def test_coding_intent_routing() -> None:
     )
     assert resolve_live_action("run rm -rf /") is None
     assert resolve_live_action("how are you") is None
+    wish = "tell me about the code that i have written in the wish workspace"
+    assert looks_like_code_request(wish)
+    assert resolve_live_action(wish) == ("code", {"goal": wish})
+    assert select_tool(wish).selected == "code"
+    info = "give me info about the wish workspace"
+    assert looks_like_code_request(info)
+    assert resolve_live_action(info) == ("code", {"goal": info})
+    assert looks_like_code_request("what projects do I have")
+    assert not looks_like_code_request("tell me about my conversations")
+    assert not looks_like_code_request("tell me about my chats")
+    assert not looks_like_code_request("I wish you would tell me about the weather")
+    assert not looks_like_code_request("tell me about John")
 
 
 def test_expand_code_goal_keeps_last_files() -> None:
@@ -2195,4 +2207,439 @@ async def test_spark_keeps_going_after_a_failed_check(tmp_path: Path, monkeypatc
     assert "last command failed" in joined.lower()
     assert "mod.py" in result["files_changed"]
     assert (tmp_path / "mod.py").read_text(encoding="utf-8").count("return a + b")
+
+
+def _seed_wish_project(root: Path) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / ".git").mkdir()
+    (root / "OVERVIEW.md").write_text(
+        "# Wish — Sweet Potato — Project Overview\n\n"
+        "Inspected from /tmp/wish on 2026-09-13.\n\n"
+        "## What it is\n"
+        "`wish` is **Sweet Potato**, a Next.js Three.js birthday film for the owner.\n\n"
+        "## Purpose\n"
+        "Personal cinematic gift: interactive birthday film.\n",
+        encoding="utf-8",
+    )
+    (root / "package.json").write_text(
+        '{"name":"wish","description":"Interactive Three.js workspace",'
+        '"dependencies":{"next":"16.3.4","three":"0.186.0"},'
+        '"scripts":{"dev":"next dev","test":"npm run lint"}}\n',
+        encoding="utf-8",
+    )
+    (root / "src").mkdir()
+    (root / "src" / "app").mkdir()
+    (root / "src" / "app" / "layout.tsx").write_text(
+        'export const metadata = { title: "Sweet Potato", '
+        'description: "A little visitor is waiting for you." };\n',
+        encoding="utf-8",
+    )
+    (root / "src" / "experience").mkdir()
+    (root / "src" / "experience" / "PlushTeddy.tsx").write_text(
+        "export function PlushTeddy() { return null }\n",
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_wish_workspace_is_a_named_code_project(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project, select_project
+    from app.ev.code_studio import looks_like_long_code_goal, maybe_handle_code_ops
+    from app.ev.luna_code import looks_like_code_explain, spoken_project_catalog
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    wish_root = _seed_wish_project(code_home / "wish")
+    _seed_project(code_home / "ev")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    clear_sticky_project()
+    ask = "tell me about the code that i have written in the wish workspace"
+    assert looks_like_code_explain(ask)
+    assert not looks_like_long_code_goal(ask)
+    assert maybe_handle_code_ops(ask) is None
+    assert select_project(ask) == wish_root.resolve()
+    assert select_project("give me info about the wish workspace") == wish_root.resolve()
+    assert select_project("give me information about wish workspace") == wish_root.resolve()
+    assert select_project("tell me about the ev repo") == (code_home / "ev").resolve()
+    assert select_project("I wish you would tell me about the weather") == sandbox.resolve()
+    catalog = spoken_project_catalog().lower()
+    assert "wish" in catalog
+    assert "ev" in catalog
+    listed = maybe_handle_code_ops("what projects do I have")
+    assert listed is not None
+    assert "wish" in listed.lower()
+    assert "sweet potato" in listed.lower() or "three" in listed.lower()
+
+
+@pytest.mark.asyncio
+async def test_offline_surveys_wish_workspace_without_writing(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    wish_root = _seed_wish_project(code_home / "wish")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    clear_sticky_project()
+    ask = "tell me about the code that i have written in the wish workspace"
+    result = await run_code_job(ask)
+    assert result["ok"] is True
+    assert result.get("project") == "wish"
+    spoken = str(result.get("spoken") or "")
+    lowered = spoken.lower()
+    assert "wish" in lowered
+    assert "sweet potato" in lowered
+    assert "next" in lowered or "three" in lowered
+    assert "overview.md" not in lowered
+    assert "package.json" not in lowered
+    from app.ev.luna_code import _spoken_is_file_dump
+
+    assert not _spoken_is_file_dump(spoken)
+    assert "hello.py" not in lowered
+    assert not result.get("files_changed")
+    assert not (wish_root / "hello.py").exists()
+    assert not (sandbox / "hello.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_offline_catalogs_code_projects(tmp_path: Path, monkeypatch) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project, sticky_project_path
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    _seed_wish_project(code_home / "wish")
+    _seed_project(code_home / "ev")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    clear_sticky_project()
+    result = await run_code_job("what projects do I have")
+    assert result["ok"] is True
+    spoken = str(result.get("spoken") or "").lower()
+    assert "wish" in spoken
+    assert "ev" in spoken
+    assert not result.get("files_changed")
+    assert sticky_project_path() is None
+    assert "sweet potato" in spoken or "three" in spoken or "python" in spoken
+
+
+@pytest.mark.asyncio
+async def test_info_about_named_workspace_is_not_the_sandbox(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "hello.py").write_text("print('sandbox')\n", encoding="utf-8")
+    code_home = tmp_path / "Code"
+    wish_root = _seed_wish_project(code_home / "wish")
+    zombie = code_home / "zombie-game"
+    zombie.mkdir(parents=True)
+    (zombie / "README.md").write_text("# Zombie game\nArcade shooter.\n", encoding="utf-8")
+    certify = _seed_project(code_home / "certify")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    clear_sticky_project()
+    remember_code_job(
+        {
+            "ok": True,
+            "workspace": str(sandbox),
+            "project": "code-workspace",
+            "files_changed": ["hello.py"],
+            "spoken": "Wrote hello.py.",
+            "goal": "write a python script that prints hello world",
+        },
+        session_key="owner",
+    )
+    result = await run_code_job("give me info about the wish workspace")
+    assert result["ok"] is True
+    assert result.get("project") == "wish"
+    spoken = str(result.get("spoken") or "").lower()
+    assert "wish" in spoken
+    assert "code-workspace" not in spoken
+    assert "ev coding folder" not in spoken
+    assert "sweet potato" in spoken
+    assert "overview.md" not in spoken
+    assert "package.json" not in spoken
+    assert not (wish_root / "hello.py").exists()
+
+    unnamed = await run_code_job("tell me about the workspace")
+    unnamed_spoken = str(unnamed.get("spoken") or "").lower()
+    assert "which project" in unnamed_spoken or "wish" in unnamed_spoken
+    assert "code-workspace" not in unnamed_spoken
+
+    z_result = await run_code_job("tell me about the zombie game folder")
+    assert z_result.get("project") == "zombie-game"
+    assert "arcade" in str(z_result.get("spoken") or "").lower() or "zombie" in str(
+        z_result.get("spoken") or ""
+    ).lower()
+
+    c_result = await run_code_job("give me information about certify")
+    assert c_result.get("project") == "certify"
+    assert certify.name in str(c_result.get("workspace") or "")
+    certify_spoken = str(c_result.get("spoken") or "").lower()
+    assert "python" in certify_spoken
+    assert "add" in certify_spoken
+    assert "mathy.py" not in certify_spoken
+
+
+def test_spoken_is_file_dump_detects_listings_not_purpose() -> None:
+    from app.ev.luna_code import _spoken_is_file_dump
+
+    assert _spoken_is_file_dump(
+        "In wish: OVERVIEW.md, package.json, src/, README.md, next.config.ts"
+    )
+    assert _spoken_is_file_dump("I looked through wish.")
+    assert not _spoken_is_file_dump(
+        "Wish is Sweet Potato, a Next.js and Three.js birthday film."
+    )
+
+
+@pytest.mark.asyncio
+async def test_named_explain_skips_spark_when_purpose_is_known(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    _seed_wish_project(code_home / "wish")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
+
+    async def boom(*_args, **_kwargs):
+        raise AssertionError("spark should not run for a purpose-ready explain")
+
+    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", boom)
+    clear_sticky_project()
+    result = await run_code_job("give me info about the wish workspace")
+    spoken = str(result.get("spoken") or "").lower()
+    assert result["ok"] is True
+    assert result.get("project") == "wish"
+    assert "sweet potato" in spoken
+    assert "overview.md" not in spoken
+
+
+@pytest.mark.asyncio
+async def test_spark_file_dump_explain_is_replaced_with_purpose(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    notes = code_home / "notes"
+    notes.mkdir(parents=True)
+    (notes / "scratch.log").write_text("log\n", encoding="utf-8")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr(settings, "code_max_steps", 8)
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_model", lambda: "muse-spark-1.3-contributor")
+
+    async def dump_loop(*_args, **_kwargs):
+        return {
+            "ok": True,
+            "spoken": "In notes: scratch.log, README.md, package.json, src/, app/",
+            "files_changed": [],
+            "runs": [],
+            "workspace": str(notes.resolve()),
+        }
+
+    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", dump_loop)
+    clear_sticky_project()
+    result = await run_code_job("give me info about the notes workspace")
+    spoken = str(result.get("spoken") or "").lower()
+    assert result.get("project") == "notes"
+    assert "scratch.log" not in spoken
+    assert "package.json" not in spoken
+    from app.ev.luna_code import _spoken_is_file_dump
+
+    assert not _spoken_is_file_dump(str(result.get("spoken") or ""))
+
+
+def _literacy_env(tmp_path: Path, monkeypatch):
+    from app.config import settings
+    from app.ev.code_runtime import clear_sticky_project
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    code_home = tmp_path / "Code"
+    wish_root = _seed_wish_project(code_home / "wish")
+    certify = _seed_project(code_home / "certify")
+    monkeypatch.setattr(settings, "code_workspace", str(sandbox))
+    monkeypatch.setattr(settings, "code_projects_root", str(code_home))
+    monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "code_model", "")
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: False)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: False)
+    clear_sticky_project()
+    return sandbox, wish_root, certify
+
+
+def test_code_literacy_routing_does_not_steal_chats(tmp_path: Path, monkeypatch) -> None:
+    from app.ev.code_literacy import looks_like_code_how_to_run, looks_like_code_literacy
+    from app.ev.luna_code import looks_like_code_request
+    from app.ev.tool_select import resolve_live_action
+
+    _literacy_env(tmp_path, monkeypatch)
+    run_wish = "how do I run the wish workspace"
+    assert looks_like_code_how_to_run(run_wish)
+    assert looks_like_code_literacy(run_wish)
+    assert looks_like_code_request(run_wish)
+    assert resolve_live_action(run_wish) == ("code", {"goal": run_wish})
+    teddy = "where is the teddy in the wish workspace"
+    assert looks_like_code_request(teddy)
+    assert not looks_like_code_request("I wish you would tell me about the weather")
+    assert not looks_like_code_request("tell me about my chats")
+    assert not looks_like_code_literacy("where is John")
+    assert looks_like_code_request("how is the wish workspace structured")
+
+
+@pytest.mark.asyncio
+async def test_alias_catalog_run_search_git_and_sticky_followups(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import subprocess
+
+    from app.ev.code_literacy import project_name_for_alias
+    from app.ev.code_runtime import remember_sticky_project, select_project
+    from app.ev.luna_code import spoken_project_catalog
+
+    _, wish_root, _certify = _literacy_env(tmp_path, monkeypatch)
+    subprocess.run(["git", "init"], cwd=wish_root, check=True, capture_output=True)
+    (wish_root / "scratch.txt").write_text("dirty\n", encoding="utf-8")
+
+    catalog = spoken_project_catalog().lower()
+    assert "wish" in catalog
+    assert "sweet potato" in catalog or "three" in catalog
+    assert "overview.md" not in catalog
+    assert project_name_for_alias("tell me about sweet potato") == "wish"
+    assert select_project("give me info about the wish workspace") == wish_root.resolve()
+    assert select_project("tell me about sweet potato") == wish_root.resolve()
+
+    alias = await run_code_job("tell me about sweet potato")
+    assert alias.get("project") == "wish"
+    spoken = str(alias.get("spoken") or "").lower()
+    assert "sweet potato" in spoken
+    assert "overview.md" not in spoken
+
+    run = await run_code_job("how do I run the wish workspace")
+    run_spoken = str(run.get("spoken") or "").lower()
+    assert run.get("project") == "wish"
+    assert "npm run dev" in run_spoken
+    assert "cannot run npm" in run_spoken
+    assert "overview.md" not in run_spoken
+
+    teddy = await run_code_job("where is the teddy in the wish workspace")
+    teddy_spoken = str(teddy.get("spoken") or "").lower()
+    assert "teddy" in teddy_spoken
+    assert "plushteddy" in teddy_spoken.replace(" ", "") or "experience" in teddy_spoken
+
+    structure = await run_code_job("how is the wish workspace structured")
+    structure_spoken = str(structure.get("spoken") or "").lower()
+    assert structure.get("project") == "wish"
+    assert "experience" in structure_spoken or "src/app" in structure_spoken
+    assert "overview.md" not in structure_spoken
+
+    dirty = await run_code_job("what's dirty in the wish workspace")
+    dirty_spoken = str(dirty.get("spoken") or "").lower()
+    assert "scratch.txt" in dirty_spoken or "uncommitted" in dirty_spoken
+
+    remember_sticky_project(wish_root)
+    follow = await run_code_job("how do I run it")
+    assert follow.get("project") == "wish"
+    assert "npm run dev" in str(follow.get("spoken") or "").lower()
+
+    from app.ev.code_literacy import looks_like_code_literacy
+
+    assert looks_like_code_literacy("where is the teddy")
+    assert not looks_like_code_literacy("where is John")
+    sticky_teddy = await run_code_job("where is the teddy")
+    sticky_teddy_spoken = str(sticky_teddy.get("spoken") or "").lower()
+    assert sticky_teddy.get("project") == "wish"
+    assert "plushteddy" in sticky_teddy_spoken.replace(" ", "") or "experience" in sticky_teddy_spoken
+
+    deeper = await run_code_job("go deeper")
+    deeper_spoken = str(deeper.get("spoken") or "").lower()
+    assert deeper.get("project") == "wish"
+    assert "sweet potato" in deeper_spoken
+    assert "src/" in deeper_spoken or "experience" in deeper_spoken or "npm run" in deeper_spoken
+
+
+def test_purpose_catalog_ranks_named_work_ahead_of_clones(tmp_path: Path, monkeypatch) -> None:
+    from app.ev.luna_code import spoken_project_catalog
+
+    _sandbox, _wish_root, _certify = _literacy_env(tmp_path, monkeypatch)
+    code_home = tmp_path / "Code"
+    for name in ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"):
+        _seed_project(code_home / name)
+    clone = code_home / "ev-remote.git"
+    clone.mkdir()
+    (clone / "README.md").write_text("clone of ev\n", encoding="utf-8")
+
+    catalog = spoken_project_catalog().lower()
+    assert "wish" in catalog
+    assert "sweet potato" in catalog
+    assert "overview.md" not in catalog
+    assert "ev-remote.git" not in catalog
+    wish_at = catalog.find("wish")
+    hotel_at = catalog.find("hotel")
+    assert wish_at >= 0
+    assert hotel_at == -1 or wish_at < hotel_at
+
+
+def test_spark_code_loop_injects_purpose_card() -> None:
+    import inspect
+
+    from app.ev.luna_code import _spark_code_loop
+
+    source = inspect.getsource(_spark_code_loop)
+    assert "This repo's purpose" in source
+    assert "project_card" in source
+
+
+def test_git_relpath_strips_status_not_folder_name() -> None:
+    from pathlib import Path
+
+    from app.ev.code_literacy import _git_relpath
+
+    assert _git_relpath(" M scripts/capture.cjs") == "scripts/capture.cjs"
+    assert Path(_git_relpath(" M scripts/capture.cjs")).parts[0] == "scripts"
+    assert _git_relpath("?? OVERVIEW.md") == "OVERVIEW.md"
+    assert _git_relpath("R  old.ts -> src/new.ts") == "src/new.ts"
+
+
 

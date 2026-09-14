@@ -127,6 +127,10 @@ FILE_CUE = re.compile(
     r"\bdocuments?\s+folder\b|"
     r"\b(?:in|into|to|on)\s+(?:my\s+|the\s+)?documents\b|"
     r"on\s+(?:my\s+|the\s+)?(?:desk(?:top)?|desktop)|"
+    r"on\s+(?:my\s+|the\s+)?(?:laptop|macbook|mac|computer|machine)\b|"
+    r"in\s+(?:my\s+|the\s+)?home\s+folder|"
+    r"(?:through|inside)\s+(?:my\s+|the\s+)?(?:documents|desktop|downloads|pictures|movies)|"
+    r"\bmy documents\b|"
     r"files? (?:on|in|from) (?:my )?(?:the )?(?:desk(?:top)?|desktop|documents|downloads|icloud)|"
     r"\bicloud drive\b|"
     r"\blocal files?\b|"
@@ -268,11 +272,13 @@ DOC_NOUN_RE = re.compile(
     re.I,
 )
 FINDABLE_DOC_RE = re.compile(
-    r"\b(?:resumes?|cvs?|curriculum vitae|pdfs?|receipts?|invoices?|letters?)\b",
+    r"\b(?:resumes?|cvs?|curriculum vitae|pdfs?|receipts?|invoices?|letters?|"
+    r"passports?|w-?2s?|theses|thesis|tax(?:es| return)?|spreadsheets?|"
+    r"presentations?|transcripts?|contracts?|tickets?|scans?)\b",
     re.I,
 )
 FIND_FILE_RE = re.compile(
-    r"\b(?:find|locate|search(?:\s+for)?|look(?:ing)?\s+for|where(?:'s| is))\b"
+    r"\b(?:find|locate|search(?:\s+for)?|look(?:ing)?\s+(?:for|up)|where(?:'s| is))\b"
     r".{0,60}?\b(?:files?|documents?|folders?|pdfs?|screenshots?|spreadsheets?|"
     r"presentations?|resumes?|cvs?|receipts?|invoices?)\b",
     re.I,
@@ -280,7 +286,9 @@ FIND_FILE_RE = re.compile(
 LAPTOP_CUE = re.compile(
     r"\b(?:on|from|in|inside)\s+(?:my\s+|the\s+)?"
     r"(?:laptop|mac|macbook|computer|machine)\b|"
-    r"\blocal(?:ly)?\b|\bmy\s+(?:desk(?:top)?|home\s+folder)\b",
+    r"\bon this (?:laptop|mac|computer)\b|"
+    r"\blocal(?:ly)?\b|\bmy\s+(?:desk(?:top)?|home\s+folder)\b|"
+    r"\bin\s+(?:my\s+|the\s+)?home\s+folder\b",
     re.I,
 )
 WEB_STEAL_RE = re.compile(
@@ -336,6 +344,23 @@ def laptop_files_allowed() -> bool:
     if env == "test":
         return True
     return bool(getattr(settings, "laptop_files", False))
+
+
+def laptop_search_allowed() -> bool:
+    """Read/find/open on the owner's Mac even when write flag is off.
+
+    Production :8000 still refuses writes without EV_LAPTOP_FILES. Finding a
+    file must not depend on that write flag when this process is the Mac.
+    """
+
+    if laptop_files_allowed():
+        return True
+    if str(getattr(settings, "laptop_files_root", None) or "").strip():
+        return True
+    env = str(getattr(settings, "environment", "") or "").strip().lower()
+    if env == "test":
+        return True
+    return os.name == "posix" and hasattr(os, "uname") and os.uname().sysname == "Darwin"
 
 
 def allowed_roots() -> list[Path]:
@@ -400,9 +425,11 @@ FILE_VERBS = re.compile(
     r"\b(?:"
     r"read|write|edit|create|save|make|put|jot|open|list|append|update|"
     r"change|modify|what's in|whats in|what is in|what's on|whats on|what is on|"
+    r"what's inside|whats inside|what is inside|"
+    r"tell me about|walk me through|summarize|"
     r"show(?:\s+me)?|all the files|the files|"
     r"look at (?:the |my )files|"
-    r"drop|leave|dump|find|search|locate|where's|where is|look for|"
+    r"drop|leave|dump|find|search|locate|where's|where is|look for|look up|"
     r"pull up|peek|check|grab|rename|copy|duplicate|move|"
     r"delete|remove|trash|clear|erase|wipe|run|execute|"
     r"recent|latest|newest"
@@ -416,6 +443,10 @@ CALLED_BARE_RE = re.compile(
 )
 NAME_FILE_RE = re.compile(
     r"\ba\s+(?!new\b|text\b|local\b|empty\b|small\b)([A-Za-z][\w.+\-]{0,40})\s+files?\b",
+    re.I,
+)
+MY_FILE_RE = re.compile(
+    r"\b(?:my|the)\s+([A-Za-z0-9][\w.+\-]{0,60})\s+files?\b",
     re.I,
 )
 WRITE_ON_RE = re.compile(
@@ -561,6 +592,13 @@ def extract_append_items(text: str) -> list[str]:
 
     if UNDO_RE.search(raw):
         return []
+    if re.search(
+        r"\b(?:find|search(?:\s+for)?|locate|look(?:ing)?\s+(?:for|up)|where'?s|where is)\b",
+        raw,
+        re.I,
+    ):
+        # Locating a laptop file is never "add this phrase to the live note".
+        return []
     if re.match(r"^\s*(?:i|i'm|im|we|you)\b", raw, re.I):
         return []
     from app.ev.desk_scene import BELONGS_RE, LAND_NAME, OTHER_RE, PACKET_PUT_RE
@@ -705,6 +743,10 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
 
     if looks_like_code_request(raw):
         return False
+    if re.search(r"\b(?:conversations?|chats?)\b", raw, re.I) and not EXT_NAME_RE.search(raw):
+        return False
+    if re.search(r"\b(?:weather|sandwich)\b", raw, re.I) and not FILE_CUE.search(raw):
+        return False
     if NOTE_CREATE_RE.search(raw) and not re.search(
         r"\bin\s+(?:the\s+)?notes?\s+app\b", raw, re.I
     ):
@@ -737,7 +779,7 @@ def looks_like_file_task(text: str, last_path: str | None = None) -> bool:
         return False
     finding = bool(
         re.search(
-            r"\b(?:find|search|locate|look for|where'?s|where is)\b",
+            r"\b(?:find|search|locate|look for|look up|where'?s|where is)\b",
             raw,
             re.I,
         )
@@ -832,6 +874,18 @@ def parse_file_goal(
                 "packet": (named_obj.get("aliases") or [needle])[0]
                 if named_obj is not None and named_obj.get("kind") == "packet"
                 else "",
+            }
+    if re.search(
+        r"\b(?:find|search|locate|look for|look up|where'?s|where is)\b", lowered
+    ):
+        needle = name or kind or _search_needle(raw)
+        if needle or folder:
+            return {
+                "action": "search",
+                "path": folder or "",
+                "query": needle or kind or "",
+                "kind": kind,
+                "goal": raw,
             }
     from app.ev.desk_scene import parse_scene_goal
 
@@ -962,6 +1016,13 @@ def parse_file_goal(
             r"anything on|check(?:\s+what's)?)\b",
             lowered,
         )
+        or (
+            re.search(
+                r"\b(?:tell me about|walk me through|summarize|what's inside|what is inside)\b",
+                lowered,
+            )
+            and not name
+        )
         or (recent and folder and not name and not re.search(r"\b(?:write|read|open|edit)\b", lowered))
         or (
             bool(re.search(r"\bshow(?:\s+me)?\b", lowered))
@@ -972,11 +1033,14 @@ def parse_file_goal(
         and not re.search(r"\b(?:open|read|write|edit|find)\b", lowered)
     )
     if wants_list:
-        if re.search(r"\b(?:find|search|look for|where's|where is|locate)\b", lowered) and (
+        if re.search(
+            r"\b(?:find|search|look for|look up|where's|where is|locate)\b", lowered
+        ) and (
             name or (kind and not re.search(r"\bfiles?\b", lowered))
         ):
             pass
         else:
+            laptop_wide = bool(LAPTOP_CUE.search(raw) and not folder and not name)
             return {
                 "action": "list",
                 "path": folder or name or "",
@@ -984,8 +1048,11 @@ def parse_file_goal(
                 "recent": recent,
                 "kind": kind,
                 "goal": raw,
+                "survey": laptop_wide,
             }
-    if re.search(r"\b(?:find|search|locate|look for|where's|where is)\b", lowered):
+    if re.search(
+        r"\b(?:find|search|locate|look for|look up|where's|where is)\b", lowered
+    ):
         needle = name or kind or _search_needle(raw)
         if needle or folder:
             return {
@@ -1082,6 +1149,21 @@ def parse_file_goal(
             "kind": kind,
             "goal": raw,
         }
+    needle = name or kind or _search_needle(raw)
+    if needle and (
+        LAPTOP_CUE.search(raw)
+        or FILE_CUE.search(raw)
+        or FINDABLE_DOC_RE.search(raw)
+        or DOC_NOUN_RE.search(raw)
+        or FIND_FILE_RE.search(raw)
+    ):
+        return {
+            "action": "search",
+            "path": folder or "",
+            "query": needle,
+            "kind": kind,
+            "goal": raw,
+        }
     del target_app
     return None
 
@@ -1089,7 +1171,7 @@ def parse_file_goal(
 def _folder_from_text(text: str) -> str:
     override = str(getattr(settings, "laptop_files_root", None) or "").strip()
     source = re.search(
-        r"\b(?:on|in|inside)\s+(?:my\s+|the\s+)?(icloud(?:\s+drive)?|desk(?:top)?|desktop|documents|docs|downloads?|movies|pictures|photos|code)\b",
+        r"\b(?:on|in|inside|from)\s+(?:my\s+|the\s+)?(icloud(?:\s+drive)?|desk(?:top)?|desktop|documents|docs|downloads?|movies|pictures|photos|code)\b",
         text,
         re.I,
     )
@@ -1144,6 +1226,7 @@ def _search_needle(text: str) -> str:
     raw = re.sub(
         r"\b(?:please|can you|could you|find|search(?:\s+for)?|locate|look for|"
         r"where'?s|where is|open(?:\s+it)?|and open(?:\s+it)?|"
+        r"look up|look for|"
         r"the|a|an|my|on|in|inside|from|desktop|documents|downloads|files?|"
         r"laptop|macbook|computer|machine|local|locally|"
         r"and|that|this|it|for me)\b",
@@ -1169,7 +1252,14 @@ def _filename_from_text(text: str) -> str:
     ext = EXT_NAME_RE.search(text)
     if ext:
         return ext.group(1).strip(" \"'")
-    for pattern in (CALLED_RE, BARE_NAME_RE, CALLED_BARE_RE, NAME_FILE_RE, WRITE_ON_RE):
+    for pattern in (
+        CALLED_RE,
+        BARE_NAME_RE,
+        CALLED_BARE_RE,
+        NAME_FILE_RE,
+        MY_FILE_RE,
+        WRITE_ON_RE,
+    ):
         match = pattern.search(text)
         if match:
             name = match.group(1).strip(" \"'")
@@ -1511,9 +1601,9 @@ def _collect_file_hits(
     home = Path.home().resolve()
     per_root = 80
     for root in search_roots:
-        if roots is None and root == home:
-            # Spotlight already covers the whole home tree; a raw walk would
-            # scan caches and duplicates for no benefit.
+        if roots is None and root == home and hits:
+            # Spotlight already covered the home tree. Walk it only when
+            # mdfind is missing or returned nothing (Linux tests, TCC deny).
             continue
         depth = _search_depth(root) if roots is None else 6
         for child in _walk_matching_files(
@@ -1606,7 +1696,10 @@ def resolve_existing(path_hint: str, query: str = "") -> tuple[Path | None, list
 
 
 def perform_local(arguments: dict[str, Any]) -> dict[str, Any]:
-    if not laptop_files_allowed():
+    args = prepare_file_arguments(arguments)
+    action = str(args.get("action") or "").strip().lower()
+    read_only = action in {"search", "list", "open", "read"}
+    if not laptop_files_allowed() and not (read_only and laptop_search_allowed()):
         return {
             "ok": False,
             "executed": False,
@@ -1614,12 +1707,12 @@ def perform_local(arguments: dict[str, Any]) -> dict[str, Any]:
             "error": "laptop_files_disabled",
             "spoken": "Local file access is not enabled on this API.",
         }
-    args = prepare_file_arguments(arguments)
-    action = str(args.get("action") or "").strip().lower()
     path_hint = str(args.get("path") or "").strip()
     query = str(args.get("query") or "").strip()
     content = str(args.get("content") or "")
     if action == "list":
+        if bool(args.get("survey")) and not path_hint:
+            return _survey_home_roots()
         return _list_files(
             path_hint,
             query,
@@ -1918,6 +2011,58 @@ def _list_files(
         "files": names,
         "count": len(names),
         "spoken": spoken,
+        "source": "laptop_files",
+    }
+
+
+def _survey_home_roots() -> dict[str, Any]:
+    """List the usual owner folders without dumping all of $HOME."""
+
+    roots = allowed_roots()
+    if len(roots) == 1:
+        return _list_files(str(roots[0]), "", kind="", recent=False)
+    home = Path.home().resolve()
+    chunks: list[str] = []
+    listed: list[str] = []
+    for root in roots:
+        try:
+            resolved = root.resolve()
+        except OSError:
+            continue
+        if resolved == home:
+            continue
+        if path_denied(resolved):
+            continue
+        names: list[str] = []
+        try:
+            children = sorted(resolved.iterdir(), key=lambda item: item.name.lower())
+        except OSError:
+            continue
+        for child in children:
+            if child.name.startswith(".") or child.name in _SKIP_DIR_NAMES:
+                continue
+            if path_denied(child):
+                continue
+            names.append(child.name + ("/" if child.is_dir() else ""))
+            if len(names) >= 8:
+                break
+        if names:
+            chunks.append(f"{resolved.name}: {', '.join(names)}")
+            listed.append(str(resolved))
+        if len(chunks) >= 7:
+            break
+    if not chunks:
+        return _fail("empty", "I don't see anything in the usual folders yet.")
+    spoken = "Here's what's on this laptop. " + " ".join(chunks)
+    return {
+        "ok": True,
+        "executed": True,
+        "verified": True,
+        "action": "list",
+        "path": "",
+        "files": listed,
+        "count": len(listed),
+        "spoken": spoken[:700],
         "source": "laptop_files",
     }
 
@@ -2948,21 +3093,12 @@ async def execute_file_op(
         path_obj = Path.home() / "Desktop" / path_obj.name
         arguments["path"] = str(path_obj)
         path_raw = str(path_obj)
-    concrete_file = bool(path_obj is not None and path_obj.is_file())
-    query = str(arguments.get("query") or "").strip().lower()
-    mismatched = bool(
-        concrete_file
-        and query
-        and query not in path_obj.name.lower()
-        and Path(query).name.lower() != path_obj.name.lower()
-    )
-    # Packaged EV.app uniquifies evie-note.txt and only scans one folder level.
-    # Append/edit overwrite in Python. Find/open uses Python ranking.
-    query_lookup = action in {"open", "read", "search"} and (not concrete_file or mismatched)
+    # Find/open/read use the Mac helper when Talk is live (Spotlight across
+    # the whole home). Python ranking is the fallback, including when the
+    # helper is missing or only scanned one folder.
     use_helper = (
         live is not None
         and not bool(arguments.get("overwrite"))
-        and not query_lookup
         and action not in {"run", "delete"}
     )
     if use_helper:
@@ -2977,11 +3113,17 @@ async def execute_file_op(
         )
         error = str(result.get("error") or "")
         retry_local = error in {"unknown_command", "unsupported", "unknown_action"}
-        if error in {"not_found", "ambiguous"} and action in {"open", "read", "search"}:
+        if error in {"not_found", "ambiguous", "path_outside_allowed"} and action in {
+            "open",
+            "read",
+            "search",
+            "list",
+        }:
             retry_local = True
         if not retry_local:
             return result
-    if not laptop_files_allowed():
+    read_only = action in {"search", "list", "open", "read"}
+    if not laptop_files_allowed() and not (read_only and laptop_search_allowed()):
         logger.warning(
             "laptop_files_disabled action=%s live=%s",
             payload.get("action"),

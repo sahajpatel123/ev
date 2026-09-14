@@ -277,6 +277,103 @@ async def test_yes_sends_via_web_in_background_and_no_stays_unsent(
 
 
 @pytest.mark.asyncio
+async def test_failed_send_retry_reuses_approval_without_asking_again(
+    db_session, monkeypatch
+) -> None:
+    """A failed transport must not cost the owner a second confirmation."""
+
+    from app.ev.tools import dispatch
+
+    _allow_policy(monkeypatch)
+    monkeypatch.setattr("app.ev.tools._resolve_send_destination", _fake_destination)
+    monkeypatch.setattr(whatsapp_web, "web_available", _fake_web_available)
+    monkeypatch.setattr(whatsapp_web, "resolve", _fake_chat)
+    monkeypatch.setattr("app.ev.tools._whatsapp_peer", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "app.integrations.life_helper.run_life_helper",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("helper must not run")),
+    )
+    attempts: list[str] = []
+
+    async def flaky_web_send(to, text):
+        attempts.append(text)
+        if len(attempts) == 1:
+            return {
+                "ok": False,
+                "sent": False,
+                "channel": "whatsapp",
+                "error": "chat_open_failed",
+                "spoken": "I couldn't open that chat.",
+            }
+        return {
+            "ok": True,
+            "sent": True,
+            "verified_in_thread": True,
+            "to": to,
+            "focus_theft": 0,
+            "spoken": f"Sent WhatsApp to {to}.",
+        }
+
+    monkeypatch.setattr(whatsapp_web, "send", flaky_web_send)
+
+    await dispatch(
+        db_session,
+        "send_message",
+        {"to": "John Smith", "text": "running late", "channel": "whatsapp"},
+        actor="voice",
+        allow_sensitive=True,
+    )
+    first = await handle_send_approval(db_session, "yes", actor="voice")
+    assert first is not None and first.get("sent") is False
+    assert attempts == ["running late"]
+
+    response = await dispatch(
+        db_session,
+        "send_message",
+        {"to": "John Smith", "text": "running late", "channel": "whatsapp"},
+        actor="voice",
+        allow_sensitive=True,
+    )
+    body = response.result or {}
+    assert body.get("pending_approval") is not True
+    assert body.get("sent") is True
+    assert attempts == ["running late", "running late"]
+    assert await latest_pending(db_session) is None
+
+
+@pytest.mark.asyncio
+async def test_unlinked_cdp_profile_is_named_before_any_approval(
+    db_session, monkeypatch
+) -> None:
+    """The one-time QR link must not look like yet another failed send."""
+
+    from app.ev.tools import dispatch
+
+    _allow_policy(monkeypatch)
+    monkeypatch.setattr("app.ev.tools._resolve_send_destination", _fake_destination)
+    monkeypatch.setattr(whatsapp_web, "web_available", _fake_web_available)
+    monkeypatch.setattr(whatsapp_web, "resolve", _fake_chat)
+    monkeypatch.setattr("app.ev.tools._whatsapp_peer", lambda *_a, **_k: None)
+
+    async def qr(*_args, **_kwargs):
+        return "qr", "cdp_qr"
+
+    monkeypatch.setattr("app.ev.messaging.whatsapp_cdp.ensure_ready", qr)
+
+    response = await dispatch(
+        db_session,
+        "send_message",
+        {"to": "John Smith", "text": "running late", "channel": "whatsapp"},
+        actor="voice",
+        allow_sensitive=True,
+    )
+    body = response.result or {}
+    assert body.get("pending_approval") is not True
+    assert "QR" in str(body.get("spoken") or "")
+    assert await latest_pending(db_session) is None
+
+
+@pytest.mark.asyncio
 async def test_digital_act_whatsapp_write_parks_instead_of_autosend(
     db_session, monkeypatch
 ) -> None:

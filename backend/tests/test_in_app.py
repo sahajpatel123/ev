@@ -56,6 +56,41 @@ def test_parse_in_app_intent_kinds_and_apps() -> None:
     background = parse_in_app_intent("open John's chat in WhatsApp in the background")
     assert background is not None and background.background is True
 
+    from_app = parse_in_app_intent("open YouTube from Safari")
+    assert from_app is not None
+    assert from_app.app == "Safari"
+    assert from_app.item.lower() == "youtube"
+
+    chrome = parse_in_app_intent("open youtube from chrome")
+    assert chrome is not None
+    assert chrome.app == "Google Chrome"
+    assert chrome.item.lower() == "youtube"
+
+    random_play = parse_in_app_intent("play some song randomly from Chill in Music")
+    assert random_play is not None
+    assert random_play.verb == "play"
+    assert random_play.app == "Music"
+    assert random_play.random is True
+    assert random_play.collection.lower() == "chill"
+
+    spoken = parse_in_app_intent("play a random song from chill in music")
+    assert spoken is not None
+    assert spoken.random is True
+    assert spoken.app == "Music"
+    assert spoken.collection.lower() == "chill"
+
+    track_from = parse_in_app_intent("play Bohemian Rhapsody from Chill in Music")
+    assert track_from is not None
+    assert track_from.item.lower() == "bohemian rhapsody"
+    assert track_from.collection.lower() == "chill"
+    assert track_from.kind == "track"
+
+    compound = parse_in_app_intent("open Music and play Chill")
+    assert compound is not None
+    assert compound.app == "Music"
+    assert compound.verb == "play"
+    assert "chill" in (compound.item or "").lower()
+
 
 def test_parse_in_app_intent_leaves_other_pipelines_alone() -> None:
     for phrase in (
@@ -76,7 +111,7 @@ def test_parse_in_app_intent_leaves_other_pipelines_alone() -> None:
 
 def test_router_prefers_open_in_app_for_item_actions() -> None:
     from app.ev.briefing import _prefetch_names, plan_life_tool_calls
-    from app.ev.tool_select import resolve_live_action, select_tool
+    from app.ev.tool_select import DETERMINISTIC_LIVE_ACTIONS, resolve_live_action, select_tool
 
     phrase = "open John's chat in WhatsApp"
     assert select_tool(phrase).selected == "open_in_app"
@@ -94,6 +129,8 @@ def test_router_prefers_open_in_app_for_item_actions() -> None:
     assert select_tool("send a WhatsApp message to John saying hi").selected == "send_message"
     assert select_tool("what did John say on WhatsApp").selected == "recall_history"
     assert select_tool("open WhatsApp").selected == "open_app"
+    assert "open_in_app" in DETERMINISTIC_LIVE_ACTIONS
+    assert "open_app" in DETERMINISTIC_LIVE_ACTIONS
 
 
 @pytest.mark.asyncio
@@ -201,3 +238,34 @@ async def test_dispatch_open_in_app_returns_evidence(db_session, monkeypatch) ->
     assert body.get("driver") == "web_tab"
     assert body.get("item") == "John"
     assert "John" in str(body.get("spoken") or "")
+
+
+@pytest.mark.asyncio
+async def test_act_in_app_opens_named_site_in_browser(db_session, monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    async def no_live(*_args, **_kwargs):
+        return None
+
+    def fake_open(app: str, url: str, *, background: bool = True):
+        calls.append((app, url))
+        return {
+            "ok": True,
+            "executed": True,
+            "verified": True,
+            "source": "mac_host",
+            "spoken": f"Opened that in {app}.",
+        }
+
+    monkeypatch.setattr("app.ev.in_app._drive_live_app", no_live)
+    monkeypatch.setattr("app.ev.mac_host.open_url_in_app", fake_open)
+    result = await act_in_app(
+        db_session,
+        app="Safari",
+        item="YouTube",
+        kind="tab",
+        actor="master",
+    )
+    assert result["ok"] is True
+    assert calls == [("Safari", "https://www.youtube.com/")]
+    assert result.get("driver") == "mac_open"

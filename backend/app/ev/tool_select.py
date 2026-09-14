@@ -275,6 +275,7 @@ LIVE_VOICE_TOOLS = frozenset(
         "ui_action",
         "screen_look",
         "app_action",
+        "open_in_app",
         "look",
         "observe_camera",
         "capture_photo",
@@ -366,6 +367,7 @@ SHADOW_VOICE_TOOLS = frozenset(
         "list_apps",
         "computer_status",
         "app_action",
+        "open_in_app",
         "home_status",
         "home_act",
         "calibrate",
@@ -401,7 +403,7 @@ F4_TARGET_SURFACE = frozenset(
 # Realtime models often refuse Mac open/close in speech even when the
 # function is advertised. The live session executes these from the owner
 # transcript through dispatch; it does not invent success.
-DETERMINISTIC_LIVE_ACTIONS = frozenset({"open_app", "close_app", "open_url"})
+DETERMINISTIC_LIVE_ACTIONS = frozenset({"open_app", "close_app", "open_url", "open_in_app"})
 
 LOOK_RE = re.compile(
     r"\b(?:"
@@ -476,9 +478,7 @@ def is_heading_out(message: str | None) -> bool:
     if not HEADING_OUT_RE.search(text):
         return False
     lowered = text.lower()
-    if re.search(r"\bleav(?:e|ing)\s+(this|the file|the note|a comment)\b", lowered):
-        return False
-    return True
+    return not re.search(r"\bleav(?:e|ing)\s+(this|the file|the note|a comment)\b", lowered)
 
 
 def parse_heading_out(message: str | None) -> dict | None:
@@ -568,6 +568,7 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("send_message", 6, "The message asks to send a text/message.")
         add("resolve_contact", 4, "Life sends should resolve the recipient first.")
     from app.ev.in_app import parse_in_app_intent
+    from app.ev.laptop_files import looks_like_file_task
 
     in_app_item = parse_in_app_intent(message)
     if in_app_item is not None:
@@ -760,7 +761,6 @@ def select_tool(message: str) -> ToolSelectionResponse:
             )
     if is_heading_out(message):
         add("heading_out", 9, "The owner is leaving; weather, calendar, and leave-by in one beat.")
-    from app.ev.laptop_files import looks_like_file_task
     from app.ev.luna_code import looks_like_code_request
 
     if looks_like_code_request(message):
@@ -803,7 +803,9 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("set_voice", 7, "The owner asked to change TTS voice.")
     if any(p in lowered for p in ("what's public", "public record", "sec filing")):
         add("public_lookup", 6, "The owner asked for public records.")
-    if any(p in lowered for p in ("where's my", "find my ", "backpack tag", "airtag")):
+    if any(p in lowered for p in ("where's my", "find my ", "backpack tag", "airtag")) and (
+        not looks_like_file_task(message)
+    ):
         add("find_gear", 6, "The owner asked to find their gear.")
     if "why did you ping" in lowered or "why'd you ping" in lowered:
         add("why_did_you_ping", 8, "The owner asked why they were pinged.")
@@ -815,7 +817,9 @@ def select_tool(message: str) -> ToolSelectionResponse:
         add("drone", 7, "The owner issued a leashed drone command.")
     if is_weather_query(message):
         add("get_weather", 6, "The message asks for live weather or a forecast.")
-    if SEARCH_WEB_RE.search(message) or looks_world_knowledge(message):
+    if (SEARCH_WEB_RE.search(message) or looks_world_knowledge(message)) and (
+        in_app_item is None and not looks_like_file_task(message)
+    ):
         add("search_web", 5, "The message asks for a public/web fact.")
     if CALENDAR_READ_RE.search(message):
         add("calendar_read", 7, "The message asks to read the owner's calendar.")
@@ -1041,7 +1045,11 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         target = str(cancel_reminder.group(1) or "").strip()
         return "cancel_reminder", {"text": target[:500]} if target else {}
     early_open_app = OPEN_APP_RE.search(text)
-    if early_open_app:
+    if early_open_app and not re.search(
+        r"\s+(?:and|then|,)\s+(?:open|go to|visit|navigate|play|search|find)\b",
+        text,
+        re.I,
+    ):
         return "open_app", {"name": early_open_app.group("name")}
     early_close_app = CLOSE_APP_RE.search(text)
     if early_close_app:
@@ -1082,6 +1090,10 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
     if desk_act is not None and desk_act.get("channel") == "tool":
         return str(desk_act["name"]), dict(desk_act.get("args") or {})
     if looks_like_file_task(text):
+        return "computer", {"goal": text[:500]}
+    from app.ev.computer_strategy import looks_like_computer_task
+
+    if looks_like_computer_task(text) and not parse_send_intent(text):
         return "computer", {"goal": text[:500]}
     from app.memory.life_archive.locate import (
         classify_shelf,
@@ -1235,6 +1247,7 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
         "set_quiet_hours",
         "home_act",
         "present",
+        "open_in_app",
     }:
         if name == "calculate":
             return name, {"expression": text}
@@ -1278,6 +1291,11 @@ def resolve_live_action(message: str) -> tuple[str, dict] | None:
                 "body": text[:400],
                 "kind": "auto",
             }
+        if name == "open_in_app":
+            from app.ev.in_app import parse_in_app_intent
+
+            parsed = parse_in_app_intent(text)
+            return name, parsed.as_args() if parsed is not None else {"item": text[:200]}
         return name, {}
     if name == "send_message":
         # The phrase regex can name a send the tight grammar cannot finish

@@ -89,6 +89,8 @@ act:
 If Evie just handled a mail/message/calendar item, a follow-up about that same item (when it arrived, who sent it, what it was about, read it out) is still life, not chat. Do not wait for the word mail or inbox to appear again.
 WhatsApp hanging / leave-it / colliding plans / thread climate is recall, not chat, not desk.
 A question about whether mail or texts arrived is life, not chat. Mini must not repeat the question.
+Finding a file on the laptop / Mac / home folder is files, never search.
+Opening or playing something inside an app (open X from Y, play random from Z in Y) is computer, never search.
 If they asked Evie to DO something in the world or in a project, it is not chat.
 Return JSON only.
 """
@@ -172,11 +174,6 @@ def fallback_act(utterance: str) -> ActDecision | None:
         return ActDecision(act="look", source="fallback")
     if camera == "recall":
         return ActDecision(act="recall", source="fallback")
-    from app.ev.tool_select import SEARCH_WEB_RE
-    from app.search.live import is_weather_query, looks_world_knowledge
-
-    if is_weather_query(raw) or SEARCH_WEB_RE.search(raw) or looks_world_knowledge(raw):
-        return ActDecision(act="search", source="fallback")
     from app.ev.home import parse_home_act
 
     if parse_home_act(raw):
@@ -195,14 +192,22 @@ def fallback_act(utterance: str) -> ActDecision | None:
     # app-name list. Channel mentions without read triggers ("the whatsapp
     # backup file") still fall through to the checks below.
     messaging_read = _live_list_action(raw) is not None
+    from app.ev.in_app import parse_in_app_intent
     from app.ev.laptop_files import looks_like_file_task
 
     if not messaging_read and looks_like_file_task(raw):
         return ActDecision(act="files", source="fallback")
     from app.ev.computer_strategy import looks_like_computer_task
 
-    if not messaging_read and looks_like_computer_task(raw):
+    if not messaging_read and (
+        parse_in_app_intent(raw) is not None or looks_like_computer_task(raw)
+    ):
         return ActDecision(act="computer", source="fallback")
+    from app.ev.tool_select import SEARCH_WEB_RE
+    from app.search.live import is_weather_query, looks_world_knowledge
+
+    if is_weather_query(raw) or SEARCH_WEB_RE.search(raw) or looks_world_knowledge(raw):
+        return ActDecision(act="search", source="fallback")
     resolved = resolve_live_action(raw)
     if resolved is None:
         return None
@@ -222,7 +227,7 @@ def fallback_act(utterance: str) -> ActDecision | None:
         return ActDecision(act="search", source="fallback")
     if name == "code":
         return ActDecision(act="code", source="fallback")
-    if name in {"open_app", "close_app", "open_url"}:
+    if name in {"open_app", "close_app", "open_url", "open_in_app", "computer"}:
         return ActDecision(act="computer", source="fallback")
     if name in {"home_act", "home_status"}:
         return ActDecision(act="home", source="fallback")
@@ -246,6 +251,15 @@ async def decide_owner_act(utterance: str) -> ActDecision | None:
     if should_poke:
         sparked = await _spark_decide(utterance)
         if sparked in ACTS and sparked != "chat":
+            if (
+                sparked == "search"
+                and fallback is not None
+                and fallback.act in {"files", "computer", "life", "code", "home"}
+            ):
+                logger.warning(
+                    "spark_act act=%s demoted_to_fallback=%s", sparked, fallback.act
+                )
+                return fallback
             logger.warning("spark_act act=%s source=spark", sparked)
             return ActDecision(act=sparked, source="spark")
         if sparked == "chat" and fallback is not None and fallback.act != "chat":
@@ -285,8 +299,15 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
             return None
         return _safe_live_tool("recall", {"query": raw[:1000]})
     if act == "search":
+        from app.ev.in_app import parse_in_app_intent
+        from app.ev.laptop_files import looks_like_file_task
         from app.search.live import is_weather_query
 
+        if looks_like_file_task(raw):
+            return _safe_live_tool("computer", {"goal": raw[:500]})
+        if parse_in_app_intent(raw) is not None:
+            parsed = parse_in_app_intent(raw)
+            return _safe_live_tool("open_in_app", parsed.as_args() if parsed else {"item": raw[:200]})
         if is_weather_query(raw):
             return _safe_live_tool("get_weather", {"query": raw[:400]})
         return _safe_live_tool("search_web", {"query": raw[:400]})
@@ -294,6 +315,7 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
         return _safe_live_tool("computer", {"goal": raw[:500]})
     if act == "computer":
         from app.ev.desk_meaning import looks_like_desk_job, spark_desk_candidate
+        from app.ev.in_app import parse_in_app_intent
         from app.ev.laptop_files import looks_like_file_task, parse_file_goal
         from app.ev.send_intent import parse_send_intent
 
@@ -302,6 +324,9 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
             # A turn labelled computer still routes its parsed send: a
             # message is not a generic computer goal.
             return _safe_live_tool("send_message", send)
+        in_app = parse_in_app_intent(raw)
+        if in_app is not None:
+            return _safe_live_tool("open_in_app", in_app.as_args())
         if (
             parse_file_goal(raw) is not None
             or looks_like_file_task(raw)
@@ -316,6 +341,7 @@ def live_tool_for_act(text: str, decision: ActDecision) -> tuple[str, dict[str, 
             "open_app",
             "close_app",
             "open_url",
+            "open_in_app",
             "computer",
             "send_message",
         }:

@@ -111,7 +111,8 @@ _OP_SKIP_RE = re.compile(
     r"\b(?:"
     r"read|open|list|edit|delete|remove|clear|keep|rewrite|rename|copy|"
     r"duplicate|move|run|execute|what's in|what is in|what's on|what is on|"
-    r"show me|pull up|cross(?:ed)? off|check(?:ed)? off|tick(?:ed)? off"
+    r"show me|pull up|cross(?:ed)? off|check(?:ed)? off|tick(?:ed)? off|"
+    r"find|search|locate|look for|look up|where'?s|where is"
     r")\b",
     re.I,
 )

@@ -23,12 +23,20 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from app.ev.code_literacy import (
+    literacy_job,
+    looks_like_code_literacy,
+    project_card,
+    project_name_for_alias,
+    spoken_is_file_dump,
+    spoken_purpose_catalog,
+)
 from app.ev.code_runtime import (
     GENERIC_PROJECT_NAMES,
     CodeJailError,
+    _mentions_named_project,
     catalog_project_names,
     is_sandbox_workspace,
-    _mentions_named_project,
     list_dir,
     list_projects,
     read_file,
@@ -39,11 +47,14 @@ from app.ev.code_runtime import (
     search_text,
     select_project,
     set_active_project,
+    sticky_project_path,
     use_project,
     workspace_root,
     write_file,
 )
 from app.utils.text import utcnow
+
+_spoken_is_file_dump = spoken_is_file_dump
 
 logger = logging.getLogger("ev.luna_code")
 
@@ -78,6 +89,7 @@ Rules:
 - Take the time you need. Search before guessing.
 - Never ask for a raw shell. Never touch secrets, .env files, or paths outside the project. Never install packages.
 - When done, answer with a short spoken summary Evie can say aloud: what you wrote, whether it ran, and the folder the file lives in (two or three sentences). Never just name the file.
+- If the owner asked what a project is for: read OVERVIEW.md, README.md, or package.json, then speak two or three sentences about its purpose. Do not list filenames.
 - Do not call yourself Luna, Mini, Grok, or DeepSeek.
 - If the owner request is a CODING GOAL SLICE, finish only that phase as real multi-file work. Do not ship a hello-world stub when they asked for a professional site, app UI, or calculator.
 - If the request is too large for one pass, finish a coherent working slice, leave the tree runnable, and say exactly what still remains.
@@ -232,6 +244,7 @@ _MAX_GOAL_CHARS = 8000
 _LIVE_JOB_SECONDS = 240.0
 _CHAT_JOB_SECONDS = 300.0
 _PROJECT_JOB_SECONDS = 600.0
+_EXPLAIN_JOB_SECONDS = 120.0
 _MAX_CODE_STEPS = 48
 _LIVE_SHORT_STEPS = 20
 _LOOP_CHAR_BUDGET = 140_000
@@ -258,6 +271,9 @@ _PROJECT_SWITCH_ONLY_RE = re.compile(
 _CODE_EXPLAIN_RE = re.compile(
     r"\b(?:"
     r"tell me about|talk (?:to me )?about|explain|describe|summarize|"
+    r"give (?:me )?(?:some )?(?:the )?(?:info|information|details|an overview|a rundown)|"
+    r"info(?:rmation)? (?:about|on|regarding)|"
+    r"details about|overview of|"
     r"walk me through|what's in|whats in|what is in|what's inside|what is inside|"
     r"show me (?:the )?(?:code|repo|project|workspace|folder)|"
     r"what(?:'s| is) (?:this |the |my )?(?:code|repo|project|workspace|codebase)|"
@@ -280,7 +296,9 @@ _CODE_CATALOG_RE = re.compile(
     r"(?:what|which) (?:code )?(?:projects|repos|workspaces|codebases)|"
     r"list (?:my |the |all )?(?:code )?(?:projects|repos|workspaces)|"
     r"what(?:'s| is) in (?:my |the )?code folder|"
-    r"what code (?:projects|repos) do i have"
+    r"what code (?:projects|repos) do i have|"
+    r"(?:what|which) code (?:is |do i have )?on (?:my )?(?:laptop|mac|computer)|"
+    r"tell me about (?:the |my )?code on (?:my )?(?:laptop|mac|computer)"
     r")\b",
     re.IGNORECASE,
 )
@@ -472,6 +490,7 @@ def looks_like_code_request(text: str | None) -> bool:
         or _natural_code_ask(raw)
         or looks_like_code_explain(raw)
         or looks_like_project_catalog_ask(raw)
+        or looks_like_code_literacy(raw)
     )
 
 
@@ -501,7 +520,8 @@ def looks_like_code_explain(text: str | None) -> bool:
     if _NOT_CODE_EXPLAIN_RE.search(raw):
         return False
     if re.search(
-        r"\b(?:on my desktop|inside my desktop|in my documents|in downloads)\b",
+        r"\b(?:on my desktop|inside my desktop|in my documents|in downloads|"
+        r"on my laptop|on my mac|on my computer|in my home folder)\b",
         raw,
         re.IGNORECASE,
     ) and not _named_projects_in_text(raw):
@@ -509,11 +529,9 @@ def looks_like_code_explain(text: str | None) -> bool:
     if re.search(r"\b(?:my |the )?code folder\b", raw, re.IGNORECASE) and not _named_projects_in_text(raw):
         return looks_like_project_catalog_ask(raw)
     named = _named_projects_in_text(raw)
-    if named and (_CODE_EXPLAIN_RE.search(raw) or _CODE_PLACE_RE.search(raw)):
+    if named and _CODE_EXPLAIN_RE.search(raw):
         return True
-    if _CODE_EXPLAIN_RE.search(raw) and _CODE_PLACE_RE.search(raw):
-        return True
-    return False
+    return bool(_CODE_EXPLAIN_RE.search(raw) and _CODE_PLACE_RE.search(raw))
 
 
 def _named_projects_in_text(text: str) -> list[str]:
@@ -524,16 +542,14 @@ def _named_projects_in_text(text: str) -> list[str]:
             continue
         if _mentions_named_project(lowered, name):
             found.append(name)
+    alias = project_name_for_alias(text)
+    if alias and alias not in found:
+        found.append(alias)
     return found
 
 
 def spoken_project_catalog() -> str:
-    names = catalog_project_names()
-    if not names:
-        return "I don't see any code projects in your Code folder yet."
-    shown = ", ".join(names[:12])
-    extra = f" and {len(names) - 12} more" if len(names) > 12 else ""
-    return f"On this laptop I can work in {shown}{extra}."
+    return spoken_purpose_catalog()
 
 
 def owner_asked_to_code(text: str | None) -> bool:
@@ -1236,6 +1252,8 @@ def _goal_needs_new_files(goal: str) -> bool:
         return False
     if looks_like_code_explain(raw) and not _CODE_FRESH_VERB_RE.search(raw):
         return False
+    if looks_like_code_literacy(raw) and not _CODE_FRESH_VERB_RE.search(raw):
+        return False
     if looks_like_project_catalog_ask(raw) and not _CODE_FRESH_VERB_RE.search(raw):
         return False
     return not (_RUN_TESTS.search(raw) and not _CODE_FRESH_VERB_RE.search(raw))
@@ -1284,7 +1302,11 @@ def _deep_code_job(goal: str, root: Path | None = None) -> bool:
     if looks_like_short_code_job(raw) or _HELLO.search(raw):
         return False
     if looks_like_code_explain(raw) and not _CODE_FRESH_VERB_RE.search(raw):
-        return root is not None and not is_sandbox_workspace(root)
+        return False
+    if looks_like_code_literacy(raw) and not _CODE_FRESH_VERB_RE.search(raw):
+        return False
+    if looks_like_project_catalog_ask(raw) and not _CODE_FRESH_VERB_RE.search(raw):
+        return False
     if looks_like_long_code_goal(raw):
         return True
     if root is not None and not is_sandbox_workspace(root):
@@ -1296,6 +1318,8 @@ def _code_step_limit(*, live: bool, goal: str) -> int:
     configured = int(getattr(settings, "code_max_steps", 24) or 24)
     max_steps = max(1, min(_MAX_CODE_STEPS, configured))
     if looks_like_code_explain(goal) and not _CODE_FRESH_VERB_RE.search(goal):
+        return min(16, max(8, configured))
+    if looks_like_code_literacy(goal) and not _CODE_FRESH_VERB_RE.search(goal):
         return min(16, max(8, configured))
     if _deep_code_job(goal, workspace_root()):
         return _MAX_CODE_STEPS
@@ -1391,6 +1415,7 @@ def shape_code_spoken(result: dict[str, Any]) -> str:
     else:
         if existing and (
             looks_like_code_explain(str(result.get("goal") or ""))
+            or looks_like_code_literacy(str(result.get("goal") or ""))
             or looks_like_project_catalog_ask(str(result.get("goal") or ""))
         ):
             return existing[:700]
@@ -1419,7 +1444,7 @@ def _finish_code_job(
     result.setdefault("goal", request)
     result["spoken"] = shape_code_spoken(result)
     remember_code_job(result, session_key=session_key)
-    if result.get("ok") and workspace:
+    if result.get("ok") and workspace and str(result.get("brain") or "") != "catalog":
         remember_sticky_project(Path(workspace))
     return result
 
@@ -1464,9 +1489,64 @@ async def run_code_job(
         )
     luna_goal = expand_code_goal(request, prior if continued else None)
     selected = select_project(request)
+    named = _named_projects_in_text(request)
+    alias = project_name_for_alias(request)
+    if alias:
+        catalog = {item["name"]: Path(item["path"]) for item in list_projects()}
+        if alias in catalog:
+            selected = catalog[alias]
+            if alias not in named:
+                named = [alias, *named]
+            remember_sticky_project(selected)
     prior_root = _prior_root(prior) if continued and prior else None
-    if prior_root is not None:
+    if prior_root is not None and not named:
         selected = prior_root
+    read_only = (
+        looks_like_code_explain(request) or looks_like_code_literacy(request)
+    ) and not _CODE_FRESH_VERB_RE.search(request)
+    explain_only = looks_like_code_explain(request) and not _CODE_FRESH_VERB_RE.search(
+        request
+    )
+    if read_only and not named:
+        sticky = sticky_project_path()
+        if sticky is not None:
+            selected = sticky
+        elif is_sandbox_workspace(selected):
+            spoken = spoken_project_catalog()
+            which = spoken if "don't see" in spoken.lower() else f"Which project? {spoken}"
+            return _finish_code_job(
+                {
+                    "ok": True,
+                    "spoken": which,
+                    "files_changed": [],
+                    "runs": [],
+                    "brain": "catalog",
+                    "degraded": False,
+                    "partial": False,
+                },
+                request=request,
+                workspace=str(selected),
+                session_key=job_key,
+            )
+    if named and is_sandbox_workspace(selected):
+        spoken = (
+            f"I don't see {named[0]} in your Code folder. {spoken_project_catalog()}"
+        )
+        return _finish_code_job(
+            {
+                "ok": False,
+                "spoken": spoken,
+                "files_changed": [],
+                "runs": [],
+                "brain": "catalog",
+                "degraded": True,
+                "partial": False,
+                "error": "unknown_project",
+            },
+            request=request,
+            workspace=str(selected),
+            session_key=job_key,
+        )
     token = set_active_project(selected)
     started = time.monotonic()
     channel_l = (channel or "").lower()
@@ -1492,8 +1572,23 @@ async def run_code_job(
         if deep:
             budget = max(budget, _PROJECT_JOB_SECONDS)
     budget = _effective_job_budget(budget)
+    if (
+        looks_like_code_explain(request) or looks_like_code_literacy(request)
+    ) and not _CODE_FRESH_VERB_RE.search(request):
+        budget = min(float(budget), _EXPLAIN_JOB_SECONDS)
     try:
         workspace = str(workspace_root())
+        if read_only and not is_sandbox_workspace(workspace_root()):
+            purpose = literacy_job(request)
+            if purpose.get("ok") and (
+                purpose.get("purpose_ok")
+                or looks_like_code_literacy(request)
+            ):
+                purpose.setdefault("actor", actor)
+                purpose.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
+                return _finish_code_job(
+                    purpose, request=request, workspace=workspace, session_key=job_key
+                )
         from app.gateway.muse import (
             MUSE_SPARK_PROVIDERS,
             muse_brain_active,
@@ -1544,7 +1639,19 @@ async def run_code_job(
                 result.setdefault("brain", model)
                 result.setdefault("actor", actor)
                 result.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
-                if not result.get("ok") and not result.get("files_changed"):
+                spoken_l = str(result.get("spoken") or "").lower()
+                result_root = Path(str(result.get("workspace") or workspace))
+                wrong_tree = explain_only and not is_sandbox_workspace(selected) and (
+                    "code-workspace" in spoken_l
+                    or "ev coding folder" in spoken_l
+                    or is_sandbox_workspace(result_root)
+                )
+                if not result.get("files_changed") and (
+                    wrong_tree
+                    or not result.get("ok")
+                    or not str(result.get("spoken") or "").strip()
+                    or (read_only and _spoken_is_file_dump(str(result.get("spoken") or "")))
+                ):
                     rescued = _heuristic_if_spark_wrote_nothing(
                         request,
                         prior=prior,
@@ -1604,6 +1711,22 @@ async def run_code_job(
                     result.setdefault("brain", attempt)
                     result.setdefault("actor", actor)
                     result.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
+                    if read_only and not result.get("files_changed") and (
+                        not result.get("ok")
+                        or not str(result.get("spoken") or "").strip()
+                        or _spoken_is_file_dump(str(result.get("spoken") or ""))
+                    ):
+                        rescued = _heuristic_if_spark_wrote_nothing(
+                            request,
+                            prior=prior,
+                            actor=actor,
+                            started=started,
+                            model=attempt,
+                        )
+                        if rescued is not None:
+                            return _finish_code_job(
+                                rescued, request=request, workspace=workspace, session_key=job_key
+                            )
                     return _finish_code_job(
                         result, request=request, workspace=workspace, session_key=job_key
                     )
@@ -1800,7 +1923,7 @@ def _orientation_block() -> str:
         if not text:
             continue
         lines.append(f"{label}: {text[:800]}")
-    for name in ("AGENTS.md", "README.md"):
+    for name in ("OVERVIEW.md", "README.md", "AGENTS.md", "package.json", "pyproject.toml"):
         try:
             doc = read_file(name, limit=50)
         except CodeJailError:
@@ -1883,13 +2006,22 @@ def _heuristic_if_spark_wrote_nothing(
 
     from app.ev.code_studio import looks_like_short_code_job
 
-    if looks_like_code_explain(request) and not _CODE_FRESH_VERB_RE.search(request or ""):
-        survey = _heuristic_survey_job(request)
-        if survey.get("ok"):
+    if (
+        looks_like_code_explain(request) or looks_like_code_literacy(request)
+    ) and not _CODE_FRESH_VERB_RE.search(request or ""):
+        survey = literacy_job(request)
+        if survey.get("ok") and not is_sandbox_workspace(workspace_root()):
             survey.setdefault("brain", f"{model}+survey")
             survey.setdefault("actor", actor)
             survey.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
             return survey
+    if _RUN_TESTS.search(request or "") and not _CODE_FRESH_VERB_RE.search(request or ""):
+        heuristic = _heuristic_job(request, prior=prior)
+        if heuristic.get("ok") and not heuristic.get("files_changed"):
+            heuristic.setdefault("brain", f"{model}+heuristic")
+            heuristic.setdefault("actor", actor)
+            heuristic.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
+            return heuristic
     if not is_sandbox_workspace(workspace_root()) and not (
         looks_like_short_code_job(request) or _HELLO.search(request or "")
     ):
@@ -1911,9 +2043,14 @@ _SPARK_VERIFY_NUDGE = (
     "The files are on disk but you have not run a real check yet. "
     "Call run_command with the project's test or the file you wrote. Do not stop."
 )
+_SPARK_FIX_NUDGE = (
+    "The last command failed. Read the error, patch the cause with replace_in_file, "
+    "and rerun the same check. Do not claim success."
+)
 _SPARK_EXPLAIN_NUDGE = (
-    "The owner asked what is in this project. Call list_dir and read_file now. "
-    "Do not write files. Then give a short spoken summary of the real tree."
+    "The owner asked what this project is for. Read OVERVIEW.md, README.md, "
+    "or package.json, then speak two or three sentences about its purpose. "
+    "Do not write files. Do not list filenames."
 )
 
 
@@ -1932,11 +2069,13 @@ async def _spark_code_loop(
     max_steps = _code_step_limit(live=live, goal=goal)
     projects = list_projects()
     catalog = ", ".join(f"{item['name']}={item['path']}" for item in projects[:24]) or "(none)"
-    explain = looks_like_code_explain(goal) and not _CODE_FRESH_VERB_RE.search(goal)
+    explain = (
+        looks_like_code_explain(goal) or looks_like_code_literacy(goal)
+    ) and not _CODE_FRESH_VERB_RE.search(goal)
     repo_note = (
-        "The owner asked you to READ and EXPLAIN this project. list_dir, search, "
-        "and read_file only. Do not write or patch unless they asked to change it. "
-        "Answer with a short spoken summary of what actually exists on disk.\n"
+        "The owner asked what this PROJECT IS FOR. Read OVERVIEW.md, README.md, "
+        "package.json, or the app title. Speak 2-3 sentences: what it is, who it is "
+        "for, and how it is built. Do not list files. Do not write.\n"
         if explain
         else (
             "This is a real owner repository. Map with list_dir/search/read_file, "
@@ -1947,13 +2086,23 @@ async def _spark_code_loop(
         )
     )
     work_line = (
-        "Relative paths only. Map the tree, then summarize what is actually there."
+        "Relative paths only. Explain the purpose. Do not dump the directory."
         if explain
         else (
             "Relative paths only. Search, then patch. New work may be several files. "
             "Use the language this repo already speaks. Run a check before you stop."
         )
     )
+    orientation = _orientation_block()
+    purpose_hint = ""
+    if not is_sandbox_workspace(workspace_root()):
+        brief = project_card()
+        hint = str(brief.get("spoken") or "").strip()
+        if hint and brief.get("ok"):
+            purpose_hint = (
+                "This repo's purpose (do not ignore it; do not list files):\n"
+                f"{hint}\n"
+            )
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SPARK_CODE_SYSTEM},
         {
@@ -1962,7 +2111,8 @@ async def _spark_code_loop(
                 f"Owner request:\n{goal}\n\n"
                 f"Selected project: {workspace_root()}\n"
                 f"Allowed projects: {catalog}\n"
-                f"{_orientation_block()}"
+                f"{purpose_hint}"
+                f"{orientation}"
                 f"{_prior_hint(prior)}"
                 f"{repo_note}"
                 f"{work_line}"
@@ -2055,7 +2205,11 @@ async def _spark_code_loop(
             except json.JSONDecodeError:
                 parsed = {}
             result = execute_code_tool(name, parsed if isinstance(parsed, dict) else {})
-            if name in {"list_dir", "search", "read_file", "list_projects"} and result.get("ok"):
+            if result.get("ok") and (
+                name == "read_file"
+                or (name in {"list_dir", "search", "list_projects"} and not explain)
+                or (explain and name == "search")
+            ):
                 inspected = True
             if name in {"write_file", "replace_in_file"} and result.get("ok"):
                 path = str(result.get("path") or "")
@@ -2085,7 +2239,10 @@ async def _spark_code_loop(
         files_changed=files_changed,
         runs=runs,
         goal=goal,
+        inspected=inspected,
     )
+    if explain and not files_changed and _spoken_claims_code_write(spoken):
+        spoken = ""
     if not ok and _spoken_claims_code_success(spoken):
         spoken = ""
     if not spoken:
@@ -2098,6 +2255,8 @@ async def _spark_code_loop(
             spoken = f"I edited {', '.join(files_changed)} in {workspace_root().name}."
             if last_out:
                 spoken = f"{spoken} Output: {last_out[:180]}"
+        elif ok and explain:
+            spoken = f"I looked through {workspace_root().name}."
         elif ok:
             spoken = f"I ran that in {workspace_root().name}."
             if last_out:
@@ -2106,7 +2265,7 @@ async def _spark_code_loop(
             spoken = "I couldn't finish a verified coding change."
     return {
         "ok": ok,
-        "spoken": spoken[:500],
+        "spoken": spoken[:700] if explain else spoken[:500],
         "files_changed": files_changed,
         "runs": runs[-12:],
         "brain": model,
@@ -2381,9 +2540,36 @@ def _heuristic_continue(goal: str, prior: dict[str, Any] | None) -> dict[str, An
     return None
 
 
+def _project_brief() -> dict[str, Any]:
+    """Purpose-first spoken survey of the active jail. Never writes files."""
+
+    return project_card()
+
+
+def _heuristic_survey_job(goal: str) -> dict[str, Any]:
+    brief = literacy_job(goal)
+    brief["goal"] = goal
+    return brief
+
+
 def _heuristic_job(goal: str, prior: dict[str, Any] | None = None) -> dict[str, Any]:
     lowered = goal.lower()
     try:
+        if (
+            looks_like_code_explain(goal) or looks_like_code_literacy(goal)
+        ) and not _CODE_FRESH_VERB_RE.search(goal):
+            surveyed = _heuristic_survey_job(goal)
+            if surveyed.get("ok"):
+                return surveyed
+        if looks_like_project_catalog_ask(goal) and not _named_projects_in_text(goal):
+            return {
+                "ok": True,
+                "spoken": spoken_project_catalog(),
+                "files_changed": [],
+                "runs": [],
+                "brain": "catalog",
+                "degraded": False,
+            }
         from app.ev.code_studio import try_heuristic_slice
 
         sliced = try_heuristic_slice(goal)

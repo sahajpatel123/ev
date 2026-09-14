@@ -10,6 +10,7 @@ the access log so each call is authorized, auditable, and traceable.
 from __future__ import annotations
 
 import ast
+import contextvars
 import math
 import operator
 import re
@@ -44,6 +45,9 @@ from app.utils.text import utcnow
 MAX_EXPRESSION_LENGTH = 200
 MAX_EXPONENT = 100
 MAX_RESULT_ABS = 1e12
+# Set when the computer broker has already decided a turn is public web
+# research. Prevents search_web intercept from re-entering _run_computer_goal.
+_ALLOW_DIRECT_WEB = contextvars.ContextVar("ev_allow_direct_web", default=False)
 
 
 def safe_calculate(expression: str) -> float:
@@ -174,17 +178,13 @@ TOOL_SPECS: list[dict[str, Any]] = [
         # implementation details or assigns risk.
         "name": "computer",
         "description": (
-            "Mac goal: open or close any installed app, open a URL, operate an "
-            "app's UI (search, click, type, play, navigate), or handle owner "
-            "files in Desktop/Documents/Downloads. Pass the owner's whole "
-            "request in plain words; set target_app when they named one. The "
-            "executor learns an app's UI itself; never ask the owner to guide "
-            "you step by step. If a goal is already live, continue it — try "
-            "again / keep going / that didn't work revise the same goal. "
-            "Opening an app is not completion: finish the in-app outcome, "
-            "reuse existing windows/tabs, and never open duplicate tabs. After "
-            "a verified new_tab or close_tab, stop. Not for memory, weather, "
-            "messages, timers, or writing programs — call code."
+            "Mac goal: open or close apps, open a URL, drive an app's UI, "
+            "open X from Y, play a random track from a playlist, find any "
+            "owner file on this Mac, or run a safe Terminal command "
+            "(ls, mdfind, open, hostname). Pass the owner's whole request. "
+            "Never call search_web for a laptop file or an in-app play. "
+            "Finish the in-app outcome; reuse windows/tabs. Not for memory, "
+            "weather, messages, timers, or writing programs — call code."
         ),
         "parameters": {
             "type": "object",
@@ -727,11 +727,12 @@ TOOL_SPECS: list[dict[str, Any]] = [
         "description": (
             "Open (or play) a specific thing inside an app on the owner's Mac: "
             "a WhatsApp chat, a Messages thread, a Slack channel, a Music "
-            "playlist or track, a note, a folder, or a map place. Use this "
-            "instead of open_app whenever the owner names both an app and an "
-            "item inside it. It drives the app's existing Chrome tab or a safe "
-            "native driver in the background when asked; it never sends a "
-            "message or edits content."
+            "playlist or track, a note, a folder, YouTube, or a map place. "
+            "Use this instead of open_app whenever the owner names both an app "
+            "and an item inside it, including 'open X from Y' and "
+            "'play something randomly from Z in Y'. It drives the app's "
+            "existing Chrome tab, AppleScript, or the live EV.app control "
+            "channel; it never sends a message or edits content."
         ),
         "parameters": {
             "type": "object",
@@ -742,6 +743,8 @@ TOOL_SPECS: list[dict[str, Any]] = [
                 "kind": {"type": "string", "maxLength": 32, "default": None},
                 "verb": {"type": "string", "enum": ["open", "play", "close"], "default": "open"},
                 "background": {"type": "boolean", "default": False},
+                "random": {"type": "boolean", "default": False},
+                "playlist": {"type": "string", "maxLength": 120, "default": None},
             },
             "required": ["item"],
         },
@@ -3064,17 +3067,55 @@ async def dispatch(
             and await _web_send_needs_approval(name, dispatch_arguments)
         ):
             # WhatsApp Web autosend is physical-world consequential: park it
-            # and ask once. The spoken "yes" resumes the exact parked args.
-            status = "denied"
-            error = "confirmation_required"
-            result = await _park_web_send(
-                session,
-                dispatch_arguments,
-                actor=actor,
-                device_id=device_id,
-                live_session_id=live_session_id,
-                channel=auth_channel,
-            )
+            # and ask once. A retry of the exact same message after a failure
+            # that sent nothing reuses the owner's earlier yes inside its TTL
+            # instead of asking again.
+            reuse = None
+            if name == "send_message":
+                from app.ev.messaging.approval import recent_failed_send
+
+                reuse = await recent_failed_send(
+                    session,
+                    to=str(dispatch_arguments.get("to") or ""),
+                    text=str(dispatch_arguments.get("text") or ""),
+                    channel="whatsapp",
+                )
+            if reuse is not None:
+                from app.ev.confirm import pol_meta
+                from app.ev.messaging.routing import RouteBinding
+
+                meta = pol_meta(reuse.payload)
+                effective, issues = validate_arguments(
+                    dispatch_arguments, spec["parameters"]
+                )
+                if issues:
+                    reuse = None
+                else:
+                    result = await _handle(
+                        session,
+                        name,
+                        effective,
+                        actor=actor,
+                        live_session_id=live_session_id,
+                        device_id=device_id,
+                        request_id=request_id,
+                        channel=auth_channel,
+                        approved_route=RouteBinding.from_payload(meta.get("route")),
+                        approved_address=str(meta.get("address") or ""),
+                    )
+                    status = "ok"
+                    error = None
+            if reuse is None:
+                status = "denied"
+                error = "confirmation_required"
+                result = await _park_web_send(
+                    session,
+                    dispatch_arguments,
+                    actor=actor,
+                    device_id=device_id,
+                    live_session_id=live_session_id,
+                    channel=auth_channel,
+                )
         elif spec is not None:
             effective, issues = validate_arguments(dispatch_arguments, spec["parameters"])
             if issues:
@@ -3590,6 +3631,8 @@ async def _run_computer_goal(
             request_id=request_id,
         )
 
+    from app.ev.laptop_files import looks_like_file_task, parse_file_goal
+
     if looks_like_file_followup(goal_text, last_path=last_path) and (
         ADD_TO_DEIXIS_RE.search(goal_text) or FILE_FOLLOWUP_RE.search(goal_text)
     ):
@@ -3602,6 +3645,30 @@ async def _run_computer_goal(
             "error": "file_referent_missing",
             "spoken": "I don't have that file in reach. Say add it to the note on the desktop.",
         }
+
+    if looks_like_file_task(route_text) and re.search(
+        r"\b(?:find|search|locate|look for|look up|where'?s|where is)\b",
+        route_text,
+        re.I,
+    ):
+        from app.ev.computer import handle_computer_tool
+
+        parsed = parse_file_goal(route_text, last_path=last_path) or {
+            "action": "search",
+            "path": "",
+            "query": route_text[:80],
+            "goal": route_text,
+        }
+        parsed.setdefault("goal", route_text)
+        return await handle_computer_tool(
+            session,
+            "file_op",
+            parsed,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=request_id,
+        )
 
     observation = resolve_screen_observation_goal(route_text, args.get("target_app"))
     if observation is not None:
@@ -3620,18 +3687,23 @@ async def _run_computer_goal(
         )
 
     from app.ev.computer_strategy import looks_like_web_research, web_search_query_from_text
+    from app.ev.in_app import act_in_app, parse_in_app_intent
 
-    if looks_like_web_research(route_text):
-        query = web_search_query_from_text(route_text) or goal_text
-        return await _handle(
+    in_app_intent = parse_in_app_intent(route_text)
+    if in_app_intent is not None:
+        return await act_in_app(
             session,
-            "search_web",
-            {"query": query, "limit": 5},
+            app=in_app_intent.app,
+            item=in_app_intent.item,
+            kind=in_app_intent.kind,
+            verb=in_app_intent.verb,
+            background=in_app_intent.background,
+            random=in_app_intent.random,
+            playlist=in_app_intent.collection,
             actor=actor,
             live_session_id=live_session_id,
             device_id=device_id,
             request_id=request_id,
-            channel=None,
         )
 
     in_app = resolve_in_app_computer_goal(route_text, args.get("target_app"))
@@ -3651,6 +3723,28 @@ async def _run_computer_goal(
             device_id=device_id,
             request_id=request_id,
         )
+
+    from app.ev.mac_host import looks_like_mac_command, run_owner_mac_goal
+
+    if looks_like_mac_command(route_text):
+        return run_owner_mac_goal(route_text)
+
+    if looks_like_web_research(route_text):
+        query = web_search_query_from_text(route_text) or goal_text
+        token = _ALLOW_DIRECT_WEB.set(True)
+        try:
+            return await _handle(
+                session,
+                "search_web",
+                {"query": query, "limit": 5},
+                actor=actor,
+                live_session_id=live_session_id,
+                device_id=device_id,
+                request_id=request_id,
+                channel=None,
+            )
+        finally:
+            _ALLOW_DIRECT_WEB.reset(token)
 
     from app.ev.capability_router import RouteKind, goal_from_transcript, route_action
 
@@ -3739,16 +3833,21 @@ async def _run_computer_goal(
             session, capability, inner_args,
             actor=actor, live_session_id=live_session_id, device_id=device_id,
         )
-    response = await dispatch(
-        session,
-        capability,
-        inner_args,
-        actor=actor,
-        live_session_id=live_session_id,
-        device_id=device_id,
-        request_id=f"computer-{goal_text[:24]}",
-        audit_endpoint="POST /v1/gateway/tools(computer)",
-    )
+    token = _ALLOW_DIRECT_WEB.set(True) if capability == "search_web" else None
+    try:
+        response = await dispatch(
+            session,
+            capability,
+            inner_args,
+            actor=actor,
+            live_session_id=live_session_id,
+            device_id=device_id,
+            request_id=f"computer-{goal_text[:24]}",
+            audit_endpoint="POST /v1/gateway/tools(computer)",
+        )
+    finally:
+        if token is not None:
+            _ALLOW_DIRECT_WEB.reset(token)
     return response.result if response.result is not None else response.model_dump()
 
 
@@ -4190,6 +4289,30 @@ async def _handle(
             ],
         }
     if name == "search_web":
+        from app.ev.computer_strategy import looks_like_computer_task
+        from app.ev.in_app import parse_in_app_intent
+        from app.ev.laptop_files import looks_like_file_task
+
+        query = str(args.get("query") or "")
+        if not _ALLOW_DIRECT_WEB.get():
+            if looks_like_file_task(query) or looks_like_file_task(str(args.get("goal") or "")):
+                return await _run_computer_goal(
+                    session,
+                    {"goal": query or str(args.get("goal") or "")},
+                    actor=actor,
+                    live_session_id=live_session_id,
+                    device_id=device_id,
+                    request_id=request_id,
+                )
+            if parse_in_app_intent(query) is not None or looks_like_computer_task(query):
+                return await _run_computer_goal(
+                    session,
+                    {"goal": query},
+                    actor=actor,
+                    live_session_id=live_session_id,
+                    device_id=device_id,
+                    request_id=request_id,
+                )
         provider = get_search_provider()
         if provider is None:
             return {
@@ -4278,6 +4401,8 @@ async def _handle(
             kind=args.get("kind"),
             verb=str(args.get("verb") or "open"),
             background=bool(args.get("background")),
+            random=bool(args.get("random")),
+            playlist=args.get("playlist"),
             actor=actor,
             live_session_id=live_session_id,
             device_id=device_id,
@@ -5229,6 +5354,21 @@ async def _park_web_send(
 
     to = str(args.get("to") or "").strip()
     body = str(args.get("text") or "").strip()
+    # A background tab can only be driven through Evie's CDP Chrome. If the
+    # profile is up but unlinked, say exactly what to scan instead of asking
+    # for an approval that cannot execute; the AppleScript tab path is the
+    # known-broken one and must not masquerade as ready.
+    from app.ev.messaging import whatsapp_cdp
+
+    cdp_state, _cdp_diagnosis = await whatsapp_cdp.ensure_ready()
+    if cdp_state == "qr":
+        return _life_unavailable(
+            "whatsapp_not_linked",
+            next_step=(
+                "WhatsApp isn't linked in Evie's Chrome window yet. I brought it "
+                "up \u2014 scan the QR code once, then ask me to send again."
+            ),
+        )
     display = to
     target = to
     address = ""

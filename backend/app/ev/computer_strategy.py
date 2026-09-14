@@ -232,10 +232,12 @@ _COMPUTER_TASK_RE = re.compile(
     r")\b",
     re.I,
 )
-# Case-sensitive on purpose: the app slot must start uppercase ("in Firefox")
-# so "play it in the background" never becomes a computer task.
+# Spoken transcripts are lowercase. "play it in the background" is excluded
+# by a negative lookahead so it never becomes a computer task.
 _PLAY_IN_APP_RE = re.compile(
-    r"\b(?:play|watch)\b.{0,60}\b(?:in|inside|using)\s+(?:the\s+)?[A-Z][\w .+-]{0,30}"
+    r"\b(?:play|watch)\b.{0,80}\b(?:in|inside|using|from)\s+(?:the\s+)?"
+    r"(?!background\b)[A-Za-z][\w .+-]{0,30}",
+    re.I,
 )
 _NAVIGATION_URL_RE = re.compile(    r"^(?:https?://)?(?:www\.)?"
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}"
@@ -1230,6 +1232,14 @@ _APP_SLOT_STOP = frozenset(
         "windows",
         "app",
         "application",
+        "laptop",
+        "mac",
+        "macbook",
+        "computer",
+        "machine",
+        "desktop",
+        "documents",
+        "downloads",
     }
 )
 
@@ -1272,6 +1282,14 @@ _TAB_SLOT_WORDS = frozenset(
 )
 
 _CONTENT_PRONOUNS = frozenset({"it", "that", "this", "there", "here"})
+
+_PLAY_FROM_COLLECTION_RE = re.compile(
+    r"^(?:please\s+)?(?P<verb>play|watch)\s+"
+    r"(?P<content>.+?)\s+from\s+(?:my\s+|the\s+)?(?P<collection>.+?)"
+    r"\s+(?:in|inside|on|using)\s+(?:the\s+)?"
+    r"(?P<app>[A-Za-z][\w .+-]{0,40}?)(?:\s+app)?\.?\s*$",
+    re.I,
+)
 
 _OPEN_IN_APP_RE = re.compile(
     r"^(?:please\s+)?(?P<verb>go to|look up|navigate to|navigate|open|launch|start|"
@@ -1623,22 +1641,34 @@ def _resolve_open_content_in_app(
     app: str | None = None
     verb = "open"
     content: str | None = None
-    compound = _OPEN_APP_COMPOUND_RE.match(raw)
-    if compound:
-        candidate = _clean_app_slot(compound.group("app"))
-        if not _slot_rejected(candidate):
-            rest = _IN_IT_SUFFIX_RE.sub("", compound.group("rest").strip()).strip()
-            parsed = _REST_VERB_RE.match(rest)
-            if parsed and (parsed.group("content") or "").strip():
-                app, verb, content = (
-                    candidate,
-                    parsed.group("verb").lower().replace("look up", "search"),
-                    parsed.group("content").strip(),
-                )
-                if verb == "find":
-                    verb = "search"
-                elif verb in {"visit", "go to", "navigate", "navigate to", "launch", "start"}:
-                    verb = "open"
+    collection = ""
+    random = bool(_RANDOM_RE.search(raw))
+    from_collection = _PLAY_FROM_COLLECTION_RE.match(raw)
+    if from_collection:
+        app = _clean_app_slot(from_collection.group("app"))
+        verb = from_collection.group("verb").lower()
+        content = from_collection.group("content").strip()
+        collection = from_collection.group("collection").strip(" .,'\"")
+        content = _RANDOM_RE.sub(" ", content)
+        content = re.sub(r"\b(?:some|a|an|song|track|video|clip)\b", " ", content, flags=re.I)
+        content = re.sub(r"\s+", " ", content).strip()
+    if app is None:
+        compound = _OPEN_APP_COMPOUND_RE.match(raw)
+        if compound:
+            candidate = _clean_app_slot(compound.group("app"))
+            if not _slot_rejected(candidate):
+                rest = _IN_IT_SUFFIX_RE.sub("", compound.group("rest").strip()).strip()
+                parsed = _REST_VERB_RE.match(rest)
+                if parsed and (parsed.group("content") or "").strip():
+                    app, verb, content = (
+                        candidate,
+                        parsed.group("verb").lower().replace("look up", "search"),
+                        parsed.group("content").strip(),
+                    )
+                    if verb == "find":
+                        verb = "search"
+                    elif verb in {"visit", "go to", "navigate", "navigate to", "launch", "start"}:
+                        verb = "open"
     if app is None:
         single = _OPEN_IN_APP_RE.match(raw)
         if single:
@@ -1677,8 +1707,20 @@ def _resolve_open_content_in_app(
         query = clean_computer_query(content, app=app)
         if not query:
             return None
-        return "app_action", {"app": app, "action": "open_item", "query": query}
-    return _open_content_capability(app=app, verb=verb, content=content)
+        payload = {"app": app, "action": "open_item", "query": query}
+    else:
+        mapped = _open_content_capability(app=app, verb=verb, content=content)
+        if mapped is None:
+            return None
+        _, payload = mapped
+        payload = dict(payload)
+    if collection:
+        payload["playlist"] = collection
+    if random:
+        payload["random"] = True
+        if str(payload.get("action") or "") not in {"pause", "status"}:
+            payload["action"] = "play" if verb in {"play", "watch"} else payload.get("action")
+    return "app_action", payload
 
 
 def _resolve_app_lifecycle_and_browser_chrome(
@@ -2186,9 +2228,23 @@ def looks_like_computer_task(text: str) -> bool:
         return False
     if looks_like_file_task(raw):
         return True
+    from app.ev.in_app import parse_in_app_intent
+
+    if parse_in_app_intent(raw) is not None:
+        return True
     if _PLAY_IN_APP_RE.search(raw):
         return True
-    if _APP_NAME_RE.search(raw) or _COMPUTER_TASK_RE.search(raw):
+    from app.ev.mac_host import looks_like_mac_command
+
+    if looks_like_mac_command(raw):
+        return True
+    if _APP_NAME_RE.search(raw) and re.search(
+        r"\b(?:open|close|quit|launch|play|pause|search|click|type|scroll)\b",
+        raw,
+        re.I,
+    ):
+        return True
+    if _COMPUTER_TASK_RE.search(raw):
         return True
     return bool(re.search(r"\b(open|launch|quit|play the|find my)\b", raw, re.I))
 

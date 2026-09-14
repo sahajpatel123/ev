@@ -75,6 +75,11 @@ def test_parse_write_read_edit_on_desktop(files_root: Path) -> None:
 
     listed = parse_file_goal("List the files on my desktop")
     assert listed is not None and listed["action"] == "list"
+    laptop = parse_file_goal("what's on my laptop")
+    assert laptop is not None and laptop["action"] == "list"
+    assert laptop.get("survey") is True
+    walk = parse_file_goal("walk me through my Documents")
+    assert walk is not None and walk["action"] == "list"
 
 
 def test_file_goals_do_not_steal_apps_or_code() -> None:
@@ -89,6 +94,12 @@ def test_file_goals_do_not_steal_apps_or_code() -> None:
     assert looks_like_file_task(desktop)
     assert not looks_like_code_request(desktop)
     assert resolve_live_action(desktop) == ("computer", {"goal": desktop})
+    wish = "tell me about the code that i have written in the wish workspace"
+    assert looks_like_code_request(wish)
+    assert looks_like_file_task(wish) is False
+    assert looks_like_file_task("tell me about my conversations") is False
+    assert looks_like_file_task("I wish you would tell me about the weather") is False
+    assert looks_like_file_task("what's on my laptop")
 
 
 def test_secrets_are_denied(files_root: Path) -> None:
@@ -125,6 +136,10 @@ def test_write_read_edit_roundtrip(files_root: Path) -> None:
     assert (files_root / "evie-proof.txt").read_text(encoding="utf-8") == "hi from evie"
     names = perform_local({"action": "list", "path": str(files_root)})
     assert "evie-proof.txt" in names["files"]
+    (files_root / "note.txt").write_text("hi", encoding="utf-8")
+    surveyed = perform_local({"action": "list", "survey": True, "path": ""})
+    assert surveyed["ok"] is True
+    assert "note.txt" in (surveyed.get("files") or []) or "note.txt" in str(surveyed.get("spoken") or "")
 
 
 @pytest.mark.asyncio
@@ -1153,6 +1168,8 @@ def test_append_intent_is_meaning_not_a_fixed_phrase() -> None:
     assert extract_append_items("add that to my calendar") == []
     assert extract_append_items("add a note on the desktop saying pick up dry cleaning") == []
     assert extract_append_items("how are you") == []
+    assert extract_append_items("find my passport") == []
+    assert extract_append_items("look up my resume on my laptop") == []
 
 
 @pytest.mark.asyncio

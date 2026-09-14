@@ -271,3 +271,39 @@ async def test_recent_messages_poke_spark_not_obvious_skip(
     tool = live_tool_for_act("what are my recent messages", decision)
     assert tool is not None
     assert tool[0] == "list_messages"
+
+
+def test_file_find_and_in_app_are_not_web_search() -> None:
+    find = "find my w2 file from laptop"
+    assert fallback_act(find) is not None
+    assert fallback_act(find).act == "files"
+    find_tool = live_tool_for_act(find, fallback_act(find))
+    assert find_tool is not None and find_tool[0] == "computer"
+
+    play = "play some song randomly from Chill in Music"
+    assert fallback_act(play) is not None
+    assert fallback_act(play).act == "computer"
+    play_tool = live_tool_for_act(play, fallback_act(play))
+    assert play_tool is not None and play_tool[0] == "open_in_app"
+    assert play_tool[1].get("random") is True
+
+    opened = "open YouTube from Safari"
+    assert fallback_act(opened).act == "computer"
+    open_tool = live_tool_for_act(opened, fallback_act(opened))
+    assert open_tool is not None and open_tool[0] == "open_in_app"
+    assert str(open_tool[1].get("app") or "") == "Safari"
+
+
+@pytest.mark.asyncio
+async def test_spark_cannot_demote_file_find_to_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_spark(_utterance: str) -> str:
+        return "search"
+
+    monkeypatch.setattr("app.ev.spark_act._spark_decide", fake_spark)
+    decision = await decide_owner_act("find my resume file on my laptop")
+    assert decision is not None
+    assert decision.act == "files"
+    tool = live_tool_for_act("find my resume file on my laptop", decision)
+    assert tool is not None and tool[0] == "computer"

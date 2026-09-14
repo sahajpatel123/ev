@@ -297,12 +297,40 @@ async def send(to: str, text: str) -> dict[str, Any]:
             "focus_theft": 0,
         }
     # CDP delivers trusted input, so chat navigation and Send actually work in
-    # a background tab; prefer it whenever Evie's debug profile is linked.
+    # a background tab; prefer it whenever Evie's debug profile is usable. When
+    # the profile exists but is not linked yet, say so before touching the
+    # AppleScript path, which cannot drive a background tab.
     from app.ev.messaging import whatsapp_cdp
 
-    cdp_linked, _cdp_diagnosis = await whatsapp_cdp.available()
-    if cdp_linked:
+    cdp_state, cdp_diagnosis = await whatsapp_cdp.ensure_ready()
+    if cdp_state == "linked":
         return await whatsapp_cdp.send(to, body)
+    if cdp_state == "qr":
+        return {
+            "ok": False,
+            "sent": False,
+            "channel": "whatsapp",
+            "error": "whatsapp_cdp_not_linked",
+            "diagnosis": cdp_diagnosis,
+            "spoken": (
+                "WhatsApp isn't linked in Evie's Chrome window yet. I brought it "
+                "up \u2014 scan the QR code once, then ask me to send again."
+            ),
+            "focus_theft": 0,
+        }
+    if cdp_state == "loading":
+        return {
+            "ok": False,
+            "sent": False,
+            "channel": "whatsapp",
+            "error": "whatsapp_cdp_loading",
+            "diagnosis": cdp_diagnosis,
+            "spoken": (
+                "WhatsApp is still loading in Evie's Chrome window \u2014 give it "
+                "a few seconds and ask me again."
+            ),
+            "focus_theft": 0,
+        }
     if not await web_available():
         diagnosis = "no_authenticated_tab"
         spoken = "WhatsApp Web isn't signed in on this Mac right now."
