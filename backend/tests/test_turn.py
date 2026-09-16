@@ -58,6 +58,20 @@ def test_snapshot_working_on_always_names_this_request() -> None:
     assert "explain gravity" in skipped
     assert "clothing site UI" not in skipped
 
+    catalog_skip = snapshot_working_on(
+        "tell me about the wish project",
+        user_state=SimpleNamespace(
+            current_task=None,
+            active_project="tryon",
+            active_goal=None,
+            activity=None,
+            recent_topics=[],
+        ),
+        continuation=False,
+    )
+    assert "tell me about the wish project" in catalog_skip
+    assert "Active project: tryon" not in catalog_skip
+
 
 def test_confirmed_reply_replaces_promised_action() -> None:
     receipts = [

@@ -22,6 +22,16 @@ from app.config import settings
 
 logger = logging.getLogger("ev.laptop_files")
 
+
+def _bump_file_index() -> None:
+    try:
+        from app.ev.file_index import invalidate as _invalidate_index
+
+        _invalidate_index()
+    except Exception:
+        pass
+
+
 MAX_FILE_BYTES = 256 * 1024
 MAX_LIST = 40
 TEXT_EXTENSIONS = frozenset(
@@ -1440,6 +1450,7 @@ def _needle_aliases(needle: str) -> tuple[str, ...]:
 def _name_matches_needle(path: Path, needle: str) -> bool:
     name = path.name.lower()
     hay = _search_hay(path.stem)
+    words = hay.split()
     for token in _needle_aliases(needle):
         if token == "cv":
             if path.suffix.lower() == ".pdf" and re.search(
@@ -1449,6 +1460,27 @@ def _name_matches_needle(path: Path, needle: str) -> bool:
                 return True
             continue
         if token and (token in name or token in hay.split() or token in hay):
+            return True
+    # Multi-word / typo fallback: every word must hit (exactly or fuzzy).
+    parts = [part for part in re.findall(r"[a-z0-9]+", (needle or "").lower()) if len(part) >= 3]
+    if len(parts) >= 2:
+        ok = True
+        for part in parts[:5]:
+            if part in hay or part in name:
+                continue
+            if any(word.startswith(part) for word in words):
+                continue
+            if len(part) >= 4 and any(_edits_at_most_one_file(part, word) for word in words):
+                continue
+            ok = False
+            break
+        if ok:
+            return True
+    if len(parts) == 1 and len(parts[0]) >= 4:
+        part = parts[0]
+        if any(word.startswith(part) for word in words):
+            return True
+        if any(_edits_at_most_one_file(part, word) for word in words):
             return True
     return False
 
@@ -1511,23 +1543,30 @@ def _walk_matching_files(
 def _spotlight_name_hits(needle: str, roots: list[Path]) -> list[Path]:
     if str(getattr(settings, "laptop_files_root", None) or "").strip():
         return []
-    aliases = [
-        token
-        for token in _needle_aliases(needle)
-        if token != "cv" and re.fullmatch(r"[A-Za-z0-9._ -]{2,40}", token)
-    ]
-    if not aliases or os.name != "posix":
+    raw_tokens = [token for token in re.findall(r"[A-Za-z0-9]{2,}", (needle or "").lower()) if token != "cv"]
+    expanded: list[str] = []
+    for token in raw_tokens:
+        if token not in expanded:
+            expanded.append(token)
+        if token.endswith("s") and len(token) > 3 and token[:-1] not in expanded:
+            expanded.append(token[:-1])
+    clauses: list[str] = []
+    for token in expanded[:4]:
+        if not re.fullmatch(r"[A-Za-z0-9._-]{2,40}", token):
+            continue
+        clauses.append(f'kMDItemFSName == "*{token}*"cd')
+    if not clauses or os.name != "posix":
         return []
     cmd: list[str] = ["mdfind"]
     for root in roots:
         cmd.extend(["-onlyin", str(root)])
-    cmd.append(" || ".join(f'kMDItemFSName == "*{token}*"cd' for token in aliases))
+    cmd.append(" && ".join(clauses))
     try:
         proc = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=8,
+            timeout=4,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -1560,7 +1599,7 @@ def _spotlight_content_hits(needle: str, roots: list[Path]) -> list[Path]:
     cmd.append(token)
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=8, check=False
+            cmd, capture_output=True, text=True, timeout=4, check=False
         )
     except (OSError, subprocess.TimeoutExpired):
         return []
@@ -1590,6 +1629,18 @@ def _collect_file_hits(
     if not token:
         return []
     search_roots = roots or allowed_roots()
+    try:
+        from app.ev.file_index import scored_search as _indexed_search
+
+        indexed = _indexed_search(token, roots=search_roots, kind=kind, limit=MAX_LIST * 3)
+        indexed_files = [path for path in indexed if path.is_file()]
+        # A just-moved file can miss a still-warm index. Small roots (tests,
+        # EV_LAPTOP_FILES_ROOT) still walk. Home production trusts the index.
+        override = str(getattr(settings, "laptop_files_root", None) or "").strip()
+        if indexed_files and not override:
+            return indexed_files[: MAX_LIST * 3]
+    except Exception:
+        pass
     seen: set[Path] = set()
     hits: list[Path] = []
 
@@ -1611,6 +1662,33 @@ def _collect_file_hits(
             return
         seen.add(resolved)
         hits.append(resolved)
+
+    try:
+        from app.ev.code_sandbox import lookup_folder_name
+
+        allowed = []
+        for root in search_roots:
+            try:
+                allowed.append(root.expanduser().resolve())
+            except OSError:
+                continue
+        for row in lookup_folder_name(token):
+            raw_path = str(row.get("path") or "").strip()
+            if not raw_path:
+                continue
+            candidate = Path(raw_path)
+            try:
+                resolved = candidate.expanduser().resolve()
+            except OSError:
+                continue
+            if not any(
+                item == resolved or item in resolved.parents for item in allowed
+            ):
+                continue
+            if resolved.is_file():
+                add(resolved)
+    except Exception:  # noqa: BLE001 - map miss falls through to spotlight/walk
+        pass
 
     for path in _spotlight_name_hits(token, search_roots):
         add(path)
@@ -2088,16 +2166,31 @@ def _search_hay(name: str) -> str:
 
 
 def _search_score(path: Path, needle: str) -> int:
-    aliases = _needle_aliases(needle)
-    if not aliases:
+    raw = re.sub(r"\s+", " ", (needle or "").strip().lower())
+    if not raw:
+        return 0
+    full_aliases = _needle_aliases(raw)
+    # Tokenize multi-word needles ("quarterly report") so each word scores
+    # independently instead of requiring the whole phrase as one substring.
+    tokens: list[str] = []
+    for part in re.findall(r"[a-z0-9]+", raw):
+        if len(part) < 2 or part == "cv":
+            continue
+        if part not in tokens:
+            tokens.append(part)
+        if part.endswith("s") and len(part) > 3 and part[:-1] not in tokens:
+            tokens.append(part[:-1])
+    if not tokens:
+        tokens = [alias for alias in full_aliases if alias != "cv"]
+    if not tokens:
         return 0
     name = path.name.lower()
     hay = _search_hay(path.stem)
     words = hay.split()
+    compact_name = re.sub(r"[\s_\-.]+", "", name)
     score = 0
-    for token in aliases:
-        if token == "cv" and not re.search(r"(?:^|[\s_\-])cv(?:$|[\s_\-]|\.)", name):
-            continue
+    matched = 0
+    for token in tokens[:6]:
         current = 0
         if path.stem.lower() == token or name == token or name == f"{token}{path.suffix.lower()}":
             current = 100
@@ -2105,13 +2198,27 @@ def _search_score(path: Path, needle: str) -> int:
             current = 85
         elif token in words:
             current = 70
+        elif name.startswith(token):
+            current = 62
         elif token in hay or token in name:
             current = 50
-        if current > score:
-            score = current
-    if score <= 0:
+        elif token and token in compact_name:
+            current = 45
+        elif len(token) >= 3 and any(word.startswith(token) for word in words):
+            current = 40
+        elif len(token) >= 4 and any(_edits_at_most_one_file(token, word) for word in words):
+            current = 30
+        if current > 0:
+            matched += 1
+            score += current
+    if matched == 0:
         return 0
+    if len(tokens) > 1 and matched == len(tokens[:6]):
+        score += 25
+    if raw in hay or raw in name:
+        score += 20
     score -= min(len(path.stem), 10)
+    aliases = full_aliases
     if path.suffix.lower() == ".pdf" and any(token in {"resume", "cv", "pdf"} for token in aliases):
         score += 14
     parent = path.parent.name.lower()
@@ -2125,11 +2232,43 @@ def _search_score(path: Path, needle: str) -> int:
         score += 2
     if len(words) >= 3:
         score += 4
+    try:
+        age = time.time() - path.stat().st_mtime
+        if age < 7 * 86400:
+            score += 8
+        elif age < 30 * 86400:
+            score += 5
+        elif age < 90 * 86400:
+            score += 2
+    except OSError:
+        pass
     lowered_hay = f"{hay} {name}"
     for token in _SEARCH_PENALTY:
-        if token in lowered_hay and token not in aliases:
+        if token in lowered_hay and token not in aliases and token not in tokens:
             score -= 12 if token == "flagship" else 6
     return score
+
+
+def _edits_at_most_one_file(left: str, right: str) -> bool:
+    if left == right:
+        return True
+    if abs(len(left) - len(right)) > 1:
+        return False
+    if len(left) == len(right):
+        return sum(a != b for a, b in zip(left, right, strict=True)) == 1
+    if len(left) > len(right):
+        left, right = right, left
+    i = j = diffs = 0
+    while i < len(left) and j < len(right):
+        if left[i] == right[j]:
+            i += 1
+            j += 1
+            continue
+        diffs += 1
+        if diffs > 1:
+            return False
+        j += 1
+    return True
 
 
 def _best_search_hit(matches: list[Path], needle: str) -> Path | None:
@@ -2202,6 +2341,7 @@ def _rename_file(target: Path, dest_hint: str) -> dict[str, Any]:
         target.rename(dest)
     except OSError as exc:
         return _fail("rename_failed", f"I couldn't rename {target.name}. {type(exc).__name__}")
+    _bump_file_index()
     return {
         "ok": True,
         "executed": True,
@@ -2228,6 +2368,7 @@ def _copy_file(target: Path, dest_hint: str) -> dict[str, Any]:
         dest.write_bytes(target.read_bytes())
     except OSError as exc:
         return _fail("copy_failed", f"I couldn't copy {target.name}. {type(exc).__name__}")
+    _bump_file_index()
     return {
         "ok": True,
         "executed": True,
@@ -2254,6 +2395,7 @@ def _move_file(target: Path, dest_hint: str) -> dict[str, Any]:
         target.rename(dest)
     except OSError as exc:
         return _fail("move_failed", f"I couldn't move {target.name}. {type(exc).__name__}")
+    _bump_file_index()
     return {
         "ok": True,
         "executed": True,
@@ -2280,6 +2422,7 @@ def _delete_file(target: Path) -> dict[str, Any]:
     from app.ev.desk_scene import forget_file
 
     forget_file(target)
+    _bump_file_index()
     return {
         "ok": True,
         "executed": True,
@@ -2397,6 +2540,7 @@ def _write_file(target: Path, content: str, *, spoken: str | None = None) -> dic
     tmp.replace(target)
     check = target.read_text(encoding="utf-8")
     verified = check == content
+    _bump_file_index()
     return {
         "ok": verified,
         "executed": True,

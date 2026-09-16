@@ -41,8 +41,6 @@ from app.ev.code_locate import (
 from app.ev.code_runtime import (
     GENERIC_PROJECT_NAMES,
     CodeJailError,
-    _mentions_named_project,
-    catalog_project_names,
     is_sandbox_workspace,
     list_dir,
     list_projects,
@@ -564,24 +562,33 @@ def looks_like_code_explain(text: str | None) -> bool:
 
 
 def _named_projects_in_text(text: str) -> list[str]:
-    lowered = (text or "").lower()
-    found: list[str] = []
-    for name in catalog_project_names():
-        if name in GENERIC_PROJECT_NAMES:
-            continue
-        if _mentions_named_project(lowered, name):
-            found.append(name)
+    from app.ev.code_locate import preferred_catalog_projects, wanted_place_names
+
+    found = list(preferred_catalog_projects(text))
     alias = project_name_for_alias(text)
     if alias and alias not in found:
-        found.append(alias)
+        try:
+            from app.ev.code_locate import name_is_rejected
+
+            if not name_is_rejected(text, alias):
+                found.append(alias)
+        except Exception:  # noqa: BLE001
+            found.append(alias)
     located = resolve_code_target(text)
     if (
         located is not None
         and located.kind != "ambiguous"
         and located.project not in found
     ):
-        found.append(located.project)
+        wanted = {_norm_place(item) for item in wanted_place_names(text)}
+        loc_keys = {_norm_place(located.project), _norm_place(located.name)}
+        if not wanted or wanted & loc_keys:
+            found.append(located.project)
     return found
+
+
+def _norm_place(value: str) -> str:
+    return re.sub(r"[\s._-]+", "", (value or "").lower())
 
 
 def spoken_project_catalog() -> str:
@@ -1560,10 +1567,66 @@ async def run_code_job(
             workspace=str(located.root),
             session_key=job_key,
         )
-    if located is None and looks_like_named_place_ask(request):
-        from app.ev.code_sandbox import alias_project_name
+    from app.ev.code_locate import wanted_place_names
+    from app.ev.code_sandbox import alias_project_name
 
-        if not alias_project_name(request):
+    wanted = wanted_place_names(request)
+    studio_slice = "CODING GOAL SLICE" in request
+    if (
+        located is None
+        and not studio_slice
+        and (
+            looks_like_named_place_ask(request)
+            or (wanted and looks_like_code_explain(request))
+        )
+        and not alias_project_name(request)
+    ):
+        spoken = missing_folder_spoken(request)
+        return _finish_code_job(
+            {
+                "ok": False,
+                "spoken": spoken,
+                "files_changed": [],
+                "runs": [],
+                "brain": "locate",
+                "degraded": True,
+                "partial": False,
+                "error": "unknown_folder",
+                "purpose_ok": False,
+            },
+            request=request,
+            workspace=str(workspace_root()),
+            session_key=job_key,
+        )
+    luna_goal = expand_code_goal(request, prior if continued else None)
+    if located is not None and located.rel:
+        luna_goal = (
+            f"{luna_goal}\n\nNamed folder map hit: {located.name} is {located.rel} "
+            f"in project {located.project}. Start there. Do not hunt other trees."
+        )
+    selected = select_project(request)
+    named = _named_projects_in_text(request)
+    alias = project_name_for_alias(request)
+    if alias:
+        from app.ev.code_locate import name_is_rejected
+
+        catalog = {item["name"]: Path(item["path"]) for item in list_projects()}
+        if alias in catalog and not name_is_rejected(request, alias):
+            selected = catalog[alias]
+            if alias not in named:
+                named = [alias, *named]
+            remember_sticky_project(selected)
+    prior_root = _prior_root(prior) if continued and prior else None
+    if prior_root is not None and not named and not wanted:
+        selected = prior_root
+    read_only = (
+        looks_like_code_explain(request) or looks_like_code_literacy(request)
+    ) and not _CODE_FRESH_VERB_RE.search(request)
+    explain_only = looks_like_code_explain(request) and not _CODE_FRESH_VERB_RE.search(
+        request
+    )
+    if read_only and not named:
+        if wanted and not studio_slice:
             spoken = missing_folder_spoken(request)
             return _finish_code_job(
                 {
@@ -1578,35 +1641,9 @@ async def run_code_job(
                     "purpose_ok": False,
                 },
                 request=request,
-                workspace=str(workspace_root()),
+                workspace=str(selected),
                 session_key=job_key,
             )
-    luna_goal = expand_code_goal(request, prior if continued else None)
-    if located is not None and located.rel:
-        luna_goal = (
-            f"{luna_goal}\n\nNamed folder map hit: {located.name} is {located.rel} "
-            f"in project {located.project}. Start there. Do not hunt other trees."
-        )
-    selected = select_project(request)
-    named = _named_projects_in_text(request)
-    alias = project_name_for_alias(request)
-    if alias:
-        catalog = {item["name"]: Path(item["path"]) for item in list_projects()}
-        if alias in catalog:
-            selected = catalog[alias]
-            if alias not in named:
-                named = [alias, *named]
-            remember_sticky_project(selected)
-    prior_root = _prior_root(prior) if continued and prior else None
-    if prior_root is not None and not named:
-        selected = prior_root
-    read_only = (
-        looks_like_code_explain(request) or looks_like_code_literacy(request)
-    ) and not _CODE_FRESH_VERB_RE.search(request)
-    explain_only = looks_like_code_explain(request) and not _CODE_FRESH_VERB_RE.search(
-        request
-    )
-    if read_only and not named:
         from app.ev.code_runtime import session_sticky_project_path
 
         sticky = session_sticky_project_path()
@@ -1681,15 +1718,11 @@ async def run_code_job(
         workspace = str(workspace_root())
         if read_only and not is_sandbox_workspace(workspace_root()):
             purpose = literacy_job(request)
-            if purpose.get("ok") and (
-                purpose.get("purpose_ok")
-                or looks_like_code_literacy(request)
-            ):
-                purpose.setdefault("actor", actor)
-                purpose.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
-                return _finish_code_job(
-                    purpose, request=request, workspace=workspace, session_key=job_key
-                )
+            purpose.setdefault("actor", actor)
+            purpose.setdefault("latency_ms", round((time.monotonic() - started) * 1000, 1))
+            return _finish_code_job(
+                purpose, request=request, workspace=workspace, session_key=job_key
+            )
         from app.gateway.muse import (
             MUSE_SPARK_PROVIDERS,
             muse_brain_active,

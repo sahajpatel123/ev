@@ -31,7 +31,10 @@ _MAP_SCOPE = ""
 _MAX_INDEX = 500
 _MAX_DEPTH = 6
 _DESK_DEPTH = 2
-_VERSION = 1
+_MAX_DESK_FILES = 400
+_VERSION = 2
+_RANK_KEEP = 78.0
+_RANK_GAP = 12.0
 
 _NORM_RE = re.compile(r"[\s._-]+")
 
@@ -65,7 +68,7 @@ def reset_folder_map() -> None:
     _MAP_SCOPE = ""
 
 
-def lookup_folder_name(token: str) -> list[dict[str, Any]]:
+def lookup_folder_name(token: str, *, strict: bool = False) -> list[dict[str, Any]]:
     """Hits for one spoken name. Empty means the sandbox does not know it."""
 
     key = _norm(token)
@@ -76,18 +79,28 @@ def lookup_folder_name(token: str) -> list[dict[str, Any]]:
     hits = list(by_name.get(key) or [])
     if hits:
         return [item for item in hits if isinstance(item, dict)]
-    if len(key) < 5:
+    ranked = _rank_name_hits(key, by_name)
+    if not ranked:
         return []
-    matched: list[dict[str, Any]] = []
-    for name, rows in by_name.items():
-        if not str(name).startswith(key):
-            continue
-        for row in rows or []:
-            if isinstance(row, dict):
-                matched.append(row)
-    projects = {str(item.get("project") or "") for item in matched}
+    if strict:
+        prefix = [
+            row
+            for score, row in ranked
+            if score >= 90.0 and str(row.get("kind") or "") == "project"
+        ]
+        projects = {str(item.get("project") or "") for item in prefix}
+        return prefix if len(projects) == 1 else []
+    best = ranked[0][0]
+    if best < _RANK_KEEP:
+        return []
+    kept = [row for score, row in ranked if best - score <= 2.0]
+    projects = {str(item.get("project") or "") for item in kept}
     if len(projects) == 1:
-        return matched
+        return kept
+    second = ranked[1][0] if len(ranked) > 1 else 0.0
+    if best - second >= _RANK_GAP:
+        winner = str(ranked[0][1].get("project") or "")
+        return [row for score, row in ranked if str(row.get("project") or "") == winner and best - score <= 2.0]
     return []
 
 
@@ -98,13 +111,17 @@ def alias_project_name(text: str) -> str | None:
     if not lowered:
         return None
     from app.ev.code_literacy import _alias_token_ok
+    from app.ev.code_locate import negated_place_names
 
+    denied = negated_place_names(text)
     payload = folder_map()
     aliases = payload.get("aliases") if isinstance(payload.get("aliases"), dict) else {}
     ranked: list[tuple[int, str]] = []
     for alias, name in aliases.items():
         token = str(alias or "").strip().lower()
         if not _alias_token_ok(token):
+            continue
+        if _norm(token) in denied or _norm(str(name)) in denied:
             continue
         if not re.search(rf"\b{re.escape(token)}\b", lowered):
             continue
@@ -363,8 +380,9 @@ def _index_desk_root(payload: dict[str, Any], root: Path) -> None:
         return
     label = resolved.name.lower() or "desktop"
     prefix_len = len(resolved.parts)
+    files_indexed = 0
     try:
-        for dirpath, dirnames, _filenames in os.walk(resolved):
+        for dirpath, dirnames, filenames in os.walk(resolved):
             current = Path(dirpath)
             depth = len(current.parts) - prefix_len
             dirnames[:] = [
@@ -372,24 +390,43 @@ def _index_desk_root(payload: dict[str, Any], root: Path) -> None:
                 for name in dirnames
                 if name not in SKIP_DIR_NAMES and not name.startswith(".")
             ]
-            if depth >= _DESK_DEPTH:
+            if depth > _DESK_DEPTH:
                 dirnames.clear()
                 continue
-            if depth == 0:
-                continue
-            rel = str(current.relative_to(resolved)).replace("\\", "/")
-            _add_hit(
-                payload,
-                _norm(current.name),
-                {
+            if depth >= 1:
+                rel = str(current.relative_to(resolved)).replace("\\", "/")
+                _add_hit(
+                    payload,
+                    _norm(current.name),
+                    {
+                        "project": label,
+                        "rel": rel,
+                        "kind": "desk",
+                        "path": str(current),
+                        "root": str(current),
+                        "name": current.name,
+                    },
+                )
+            for filename in filenames:
+                if filename.startswith(".") or files_indexed >= _MAX_DESK_FILES:
+                    continue
+                child = current / filename
+                rel = str(child.relative_to(resolved)).replace("\\", "/")
+                stem = Path(filename).stem
+                row = {
                     "project": label,
                     "rel": rel,
                     "kind": "desk",
-                    "path": str(current),
-                    "root": str(current),
-                    "name": current.name,
-                },
-            )
+                    "path": str(child),
+                    "root": str(resolved),
+                    "name": stem or filename,
+                }
+                _add_hit(payload, _norm(filename), row)
+                if _norm(stem) != _norm(filename):
+                    _add_hit(payload, _norm(stem), row)
+                files_indexed += 1
+            if files_indexed >= _MAX_DESK_FILES:
+                dirnames.clear()
     except OSError:
         logger.debug("code_sandbox.desk_index_failed root=%s", resolved)
 
@@ -563,3 +600,46 @@ def _persist_map(payload: dict[str, Any]) -> None:
 
 def _norm(value: str) -> str:
     return _NORM_RE.sub("", (value or "").lower())
+
+
+def _trigrams(value: str) -> set[str]:
+    token = f"  {_norm(value)} "
+    if len(token) < 5:
+        return set()
+    return {token[index : index + 3] for index in range(len(token) - 2)}
+
+
+def _name_score(query: str, key: str) -> float:
+    q = _norm(query)
+    k = _norm(key)
+    if not q or not k:
+        return 0.0
+    if q == k:
+        return 100.0
+    shorter, longer = (q, k) if len(q) <= len(k) else (k, q)
+    if len(shorter) >= 4 and longer.startswith(shorter):
+        return max(90.0 - (len(longer) - len(shorter)) * 2.0, 78.0)
+    if len(q) < 5 or len(k) < 5:
+        return 0.0
+    left, right = _trigrams(q), _trigrams(k)
+    if not left or not right:
+        return 0.0
+    dice = (2.0 * len(left & right)) / (len(left) + len(right))
+    if dice < 0.78:
+        return 0.0
+    return 50.0 + 50.0 * dice
+
+
+def _rank_name_hits(
+    query: str, by_name: dict[str, Any]
+) -> list[tuple[float, dict[str, Any]]]:
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for name, rows in by_name.items():
+        score = _name_score(query, str(name))
+        if score < _RANK_KEEP:
+            continue
+        for row in rows or []:
+            if isinstance(row, dict):
+                scored.append((score, row))
+    scored.sort(key=lambda item: (-item[0], len(str(item[1].get("rel") or ""))))
+    return scored[:24]

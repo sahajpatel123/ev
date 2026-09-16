@@ -830,6 +830,12 @@ class Settings(BaseSettings):
     digital_live_gmail: bool = False
     digital_live_whatsapp: bool = False
     # --- END DIGITAL OPERATIONS V1 ------------------------------------------
+    # --- EVIE FILE SANDBOX (append-only) ------------------------------------
+    # One jail for Mac + iPhone + brain. confirm = mutating ops need
+    # confirm=True (delete/run always); auto = owner trusts the brain.
+    file_sandbox_autonomy: str = "confirm"  # confirm | auto
+    file_sandbox_max_bytes: int = 256 * 1024
+    # --- END EVIE FILE SANDBOX ----------------------------------------------
 
 
 @lru_cache

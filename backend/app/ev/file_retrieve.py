@@ -414,6 +414,24 @@ def collect_retrieve_hits(
         seen.add(resolved)
         hits.append(resolved)
 
+    try:
+        from app.ev.file_index import scored_search as _indexed_search
+
+        indexed = _indexed_search(
+            query or " ".join(needles),
+            roots=roots,
+            want_folder=want_folder,
+            limit=80,
+            cls_tokens=tuple(class_tokens),
+        )
+        for path in indexed:
+            add(path)
+        if hits:
+            # Index hit: skip per-token Spotlight + full walk (the stall).
+            return hits
+    except Exception:
+        pass
+
     for token in needles[:6]:
         if len(token) < 2:
             continue

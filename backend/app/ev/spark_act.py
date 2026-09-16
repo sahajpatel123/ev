@@ -76,7 +76,7 @@ _SPARK_SYSTEM = """You are Evie's turn brain (Muse Spark 1.3 Contributor). Mini 
 
 act:
 - chat: small talk, feelings, opinion, a question you can answer from this conversation. Not a job.
-- code: they asked to write, edit, run, or build software, or they named a Code folder/file/repo. General knowledge, definitions, dinner, feelings, and "what is X" are chat unless X is that Code folder or file. A leftover coding goal is not the topic of a fresh question.
+- code: they asked to write, edit, run, or build software, or they named a Code folder/file/repo. General knowledge, definitions, dinner, feelings, and "what is X" are chat unless X is that Code folder or file. A leftover coding goal is not the topic of a fresh question. If they named a project, that name is the only topic. A refused last project is not the topic. Unknown names miss; do not hunt.
 - look: see what is in view NOW (camera).
 - recall: stored life — WhatsApp, who is waiting, colliding plans, where a chat was left, how a thread has been, who starts chats, summaries, last messages, people they talk to, photos/notes already stored.
 - search: look up on the web, weather, current facts.

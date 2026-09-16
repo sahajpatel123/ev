@@ -106,13 +106,58 @@ _THE_PLACE_RE = re.compile(
     r"workspaces?|codebases?|files?)\b",
     re.IGNORECASE,
 )
+_BARE_PLACE_RE = re.compile(
+    r"\b(?P<name>[A-Za-z][\w-]{1,32})"
+    r"\s+(?P<kind>folders?|directories|directory|repos?|projects?|"
+    r"workspaces?|codebases?)\b",
+    re.IGNORECASE,
+)
+_NEGATE_RE = re.compile(
+    r"\b(?:(?:do|does|did)\s+not|don't|dont|didn't|not|no)\s+"
+    r"(?:want(?:ing)?\s+|tell\s+me\s+about\s+|talk\s+about\s+)?"
+    r"(?:the\s+|my\s+|our\s+|this\s+)?"
+    r"(?P<name>[A-Za-z][\w-]{1,32}(?:[ _][A-Za-z][\w-]{1,32}){0,2})"
+    r"(?:\s+(?:project|repo|folder|workspace|codebase|app|one))?",
+    re.IGNORECASE,
+)
+_PLACE_INTENT_RE = re.compile(
+    r"\b(?:"
+    r"tell me about|talk (?:to me )?about|explain|describe|"
+    r"info(?:rmation)? (?:about|on)|details about|overview of|"
+    r"find|locate|where(?:'s| is)|what's in|whats in|what is in|"
+    r"inside |from |open |work (?:in|on)|use |switch to|"
+    r"in (?:the |my |our )?"
+    r")\b",
+    re.IGNORECASE,
+)
+_GENERIC_PLACE = frozenset(
+    {
+        "the",
+        "my",
+        "our",
+        "this",
+        "that",
+        "a",
+        "an",
+        "new",
+        "old",
+        "same",
+        "other",
+        "next",
+        "last",
+        "code",
+        "one",
+        "it",
+    }
+)
 _FILE_NAME_RE = re.compile(
     r"\b([A-Za-z][\w.-]*\.(?:tsx?|jsx?|py|swift|md|json|mjs|cjs|go|rs|toml))\b",
     re.IGNORECASE,
 )
 _CAMEL_RE = re.compile(r"\b([A-Z][a-z]+[A-Z][\w]*)\b")
 _INFO_PREFIX_RE = re.compile(
-    r"^(?:hey |ok(?:ay)? |evie |please |can you |could you |would you )*"
+    r"(?:hey |ok(?:ay)? |evie |please |can you |could you |would you |"
+    r"i want you to |i need you to )*"
     r"(?:"
     r"tell me about|talk (?:to me )?about|explain|describe|summarize|"
     r"look (?:at|through|into)|take a look at|"
@@ -175,8 +220,13 @@ def looks_like_named_place_ask(text: str | None) -> bool:
     ):
         return False
     hit = _THE_PLACE_RE.search(raw)
-    if not hit:
-        return False
+    if hit is None:
+        bare = _BARE_PLACE_RE.search(raw)
+        return bool(
+            bare is not None
+            and (bare.group("name") or "").strip().lower() not in _GENERIC_PLACE
+            and _PLACE_INTENT_RE.search(raw)
+        )
     kind = (hit.group("kind") or "").lower()
     headed = (raw[hit.start() : hit.start() + 4]).lower()
     if headed.startswith("my ") and kind.startswith(("file", "folder", "director")):
@@ -199,6 +249,119 @@ def looks_like_named_place_ask(text: str | None) -> bool:
         ):
             return False
     return True
+
+
+def negated_place_names(text: str | None) -> set[str]:
+    """Names the owner just refused — never the lookup target."""
+
+    denied: set[str] = set()
+    for hit in _NEGATE_RE.finditer(text or ""):
+        token = _norm(_strip_kind(hit.group("name") or ""))
+        if token and token not in {"not", "no", "want"}:
+            denied.add(token)
+    return denied
+
+
+def name_is_rejected(text: str | None, name: str) -> bool:
+    token = _norm(name)
+    return bool(token) and token in negated_place_names(text)
+
+
+def wanted_place_names(text: str | None) -> list[str]:
+    """Place names the owner asked about, minus names they just refused."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    denied = negated_place_names(raw)
+    found: list[str] = []
+
+    def _add(token: str) -> None:
+        cleaned = _strip_kind(token)
+        key = _norm(cleaned)
+        if not cleaned or cleaned.lower() in _STOP or cleaned.lower() in _GENERIC_PLACE:
+            return
+        if any(part in _STOP or part in _GENERIC_PLACE for part in cleaned.lower().split()):
+            return
+        if key in denied or key in {_norm(item) for item in found}:
+            return
+        found.append(cleaned)
+
+    for hit in _THE_PLACE_RE.finditer(raw):
+        _add(hit.group("name") or "")
+    for hit in _BARE_PLACE_RE.finditer(raw):
+        name = (hit.group("name") or "").strip()
+        if name.lower() in _GENERIC_PLACE:
+            continue
+        _add(name)
+    about = _info_subject(raw)
+    if about:
+        place_named = bool(_THE_PLACE_RE.search(raw) or _BARE_PLACE_RE.search(raw))
+        catalog_hit = False
+        if not place_named:
+            try:
+                from app.ev.code_runtime import GENERIC_PROJECT_NAMES, catalog_project_names
+
+                catalog_hit = any(
+                    _norm(name) == _norm(about)
+                    for name in catalog_project_names()
+                    if name not in GENERIC_PROJECT_NAMES
+                )
+            except Exception:  # noqa: BLE001 - catalog miss keeps this a chat ask
+                catalog_hit = False
+        if place_named or catalog_hit:
+            _add(about)
+    return found
+
+
+def preferred_catalog_projects(text: str | None) -> list[str]:
+    """Allowlisted Code folders named as the target, never a refused last project."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    from app.ev.code_runtime import GENERIC_PROJECT_NAMES, catalog_project_names
+
+    catalog = [
+        name
+        for name in catalog_project_names()
+        if name not in GENERIC_PROJECT_NAMES and len(name) >= 2
+    ]
+    denied = negated_place_names(raw)
+    wanted = wanted_place_names(raw)
+    hits: list[str] = []
+
+    def _push(name: str) -> None:
+        if not name or _norm(name) in denied or name in hits:
+            return
+        hits.append(name)
+
+    for token in wanted:
+        key = _norm(token)
+        for name in catalog:
+            if _norm(name) == key:
+                _push(name)
+    if hits:
+        return hits
+    try:
+        from app.ev.code_sandbox import alias_project_name
+
+        alias = alias_project_name(raw)
+    except Exception:  # noqa: BLE001 - alias miss must not break select
+        alias = None
+    if alias and _alias_is_invoked(raw, alias) and _norm(alias) not in denied:
+        _push(alias)
+        return hits
+    if wanted:
+        return []
+    lowered = raw.lower()
+    mentioned = [
+        name
+        for name in catalog
+        if _mentions_named_project(lowered, name) and _norm(name) not in denied
+    ]
+    mentioned.sort(key=len, reverse=True)
+    return mentioned
 
 
 def resolve_code_target(text: str | None) -> CodeTarget | None:
@@ -278,17 +441,29 @@ def extract_locate_queries(text: str | None) -> list[str]:
     raw = (text or "").strip()
     if not raw:
         return []
+    denied = negated_place_names(raw)
     found: list[str] = []
 
     def _add(token: str) -> None:
         cleaned = _strip_kind(token)
         if not cleaned or cleaned.lower() in _STOP:
             return
+        if any(part in _STOP or part in _GENERIC_PLACE for part in cleaned.lower().split()):
+            return
+        if _norm(cleaned) in denied:
+            return
         if cleaned not in found:
             found.append(cleaned)
 
+    for item in wanted_place_names(raw):
+        _add(item)
     for hit in _THE_PLACE_RE.finditer(raw):
         _add(hit.group("name") or "")
+    for hit in _BARE_PLACE_RE.finditer(raw):
+        name = (hit.group("name") or "").strip()
+        if name.lower() in _GENERIC_PLACE:
+            continue
+        _add(name)
     for hit in _FILE_NAME_RE.finditer(raw):
         _add(hit.group(1) or "")
     for hit in _CAMEL_RE.finditer(raw):
@@ -373,7 +548,7 @@ def missing_folder_spoken(goal: str) -> str:
 
     from app.ev.code_sandbox import known_project_names
 
-    queries = extract_locate_queries(goal)
+    queries = wanted_place_names(goal) or extract_locate_queries(goal)
     name = queries[0] if queries else "that folder"
     names = [item for item in known_project_names() if item][:8]
     have = f" I have {', '.join(names)}." if names else ""
@@ -426,17 +601,12 @@ def _catalog_target(text: str) -> tuple[str | None, Path | None]:
         if is_sandbox_workspace(path):
             continue
         catalog.append((name, path))
-    lowered = text.lower()
-    mentioned = [
-        name
-        for name, _path in catalog
-        if _mentions_named_project(lowered, name)
-    ]
-    if mentioned:
-        mentioned.sort(key=len, reverse=True)
-        name = mentioned[0]
-        path = next(path for item, path in catalog if item == name)
-        return name, path
+    preferred = preferred_catalog_projects(text)
+    if preferred:
+        name = preferred[0]
+        path = next((path for item, path in catalog if item == name), None)
+        if path is not None:
+            return name, path
     try:
         from app.ev.code_sandbox import alias_project_name
 
@@ -483,10 +653,12 @@ def _alias_is_invoked(text: str, alias: str) -> bool:
 
 def _info_subject(text: str) -> str | None:
     raw = (text or "").strip().strip("?.!")
-    hit = _INFO_PREFIX_RE.search(raw)
-    if not hit:
+    hits = list(_INFO_PREFIX_RE.finditer(raw))
+    if not hits:
         return None
+    hit = hits[-1]
     rest = raw[hit.end() :].strip()
+    rest = re.split(r"\s*[,;]\s*|\s+and then\s+|\s+and also\s+", rest, maxsplit=1)[0]
     rest = _KIND_TAIL_RE.sub("", rest)
     rest = re.sub(r"\s+", " ", rest).strip(" .,'\"")
     if not rest or rest.lower() in _STOP or len(rest) > 48:

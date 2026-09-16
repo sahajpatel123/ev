@@ -654,6 +654,16 @@ def _search_spoken(goal: str, card: dict[str, Any]) -> str:
     folder = str(card.get("folder") or workspace_root().name)
     if not needle:
         return f"Tell me what to find in {folder}."
+    try:
+        from app.ev.code_sandbox import lookup_in_project
+
+        mapped = lookup_in_project(needle, workspace_root())
+    except Exception:  # noqa: BLE001 - map miss falls through to grep
+        mapped = []
+    if mapped:
+        rel = str(mapped[0].get("rel") or mapped[0].get("name") or needle)
+        extra = f" There are {len(mapped) - 1} more matches." if len(mapped) > 1 else ""
+        return f"In {folder}, {needle} is in {rel}.{extra}"[:700]
     pattern = f"(?i){re.escape(needle)}"
     hits: list[dict[str, Any]] = []
     try:

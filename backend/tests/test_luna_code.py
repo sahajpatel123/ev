@@ -2893,6 +2893,114 @@ async def test_code_job_refuses_general_questions_even_if_forced(
     assert named.get("error") != "not_a_code_job"
 
 
+@pytest.mark.asyncio
+async def test_named_project_wins_over_sticky_and_unknown_misses_without_spark(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from types import SimpleNamespace
+
+    from app.ev.code_locate import (
+        looks_like_named_place_ask,
+        preferred_catalog_projects,
+        wanted_place_names,
+    )
+    from app.ev.code_runtime import remember_sticky_project, select_project
+    from app.ev.code_sandbox import lookup_folder_name, reset_folder_map
+    from app.ev.luna_code import looks_like_code_request
+    from app.ev.tool_select import resolve_live_action
+    from app.ev.turn import snapshot_working_on
+
+    sandbox, wish_root, _certify = _literacy_env(tmp_path, monkeypatch)
+    tryon = _seed_project(tmp_path / "Code" / "tryon")
+    (tryon / "OVERVIEW.md").write_text(
+        "## What it is\ntryon is a virtual fitting room.\n",
+        encoding="utf-8",
+    )
+    reset_folder_map()
+    remember_sticky_project(tryon)
+
+    other = "tell me about the wish project"
+    switch = "I do not want tryon, I want you to tell me about the wish project"
+    unknown = "tell me about the foobarbaz project"
+    bare_unknown = "tell me about foobarbaz project"
+
+    assert looks_like_named_place_ask(unknown)
+    assert looks_like_named_place_ask(bare_unknown)
+    assert looks_like_code_request(other)
+    assert looks_like_code_request(switch)
+    assert looks_like_code_request(unknown)
+    assert not looks_like_named_place_ask("history project due tomorrow")
+    assert resolve_live_action("explain gravity") is None or resolve_live_action(
+        "explain gravity"
+    )[0] not in {"code", "computer"}
+
+    assert wanted_place_names(switch)[0].lower() == "wish"
+    assert "tryon" not in {item.lower() for item in wanted_place_names(switch)}
+    assert preferred_catalog_projects(switch) == ["wish"]
+    assert preferred_catalog_projects(other) == ["wish"]
+    assert preferred_catalog_projects(unknown) == []
+    assert select_project(other) == wish_root.resolve()
+    assert select_project(switch) == wish_root.resolve()
+    assert select_project(unknown) == sandbox.resolve()
+
+    briefing = snapshot_working_on(
+        other,
+        user_state=SimpleNamespace(
+            current_task=None,
+            active_project="tryon",
+            active_goal=None,
+            activity=None,
+            recent_topics=[],
+        ),
+        continuation=False,
+    )
+    assert "Active project: tryon" not in briefing
+
+    ranked = lookup_folder_name("plushtedd")
+    assert ranked
+    assert any("plushteddy" in str(item.get("rel") or "").lower() for item in ranked)
+
+    spark_calls: list[str] = []
+
+    async def boom(goal: str, **_kwargs):
+        spark_calls.append(goal)
+        raise AssertionError("spark must not hunt a named info ask")
+
+    monkeypatch.setattr("app.ev.luna_code._spark_code_loop", boom)
+    monkeypatch.setattr("app.gateway.muse.muse_brain_active", lambda: True)
+    monkeypatch.setattr("app.gateway.muse.muse_spark_key_loaded", lambda: True)
+
+    wish = await run_code_job(other)
+    wish_spoken = str(wish.get("spoken") or "").lower()
+    assert wish.get("project") == "wish"
+    assert "sweet potato" in wish_spoken or "birthday" in wish_spoken
+    assert "fitting room" not in wish_spoken
+    assert spark_calls == []
+
+    switched = await run_code_job(switch)
+    switched_spoken = str(switched.get("spoken") or "").lower()
+    assert switched.get("project") == "wish"
+    assert "fitting room" not in switched_spoken
+    assert spark_calls == []
+
+    miss = await run_code_job(unknown)
+    miss_spoken = str(miss.get("spoken") or "").lower()
+    assert miss.get("error") == "unknown_folder"
+    assert "foobarbaz" in miss_spoken
+    assert "don't see" in miss_spoken
+    assert "fitting room" not in miss_spoken
+    assert spark_calls == []
+
+    bare_miss = await run_code_job(bare_unknown)
+    assert bare_miss.get("error") == "unknown_folder"
+    assert "foobarbaz" in str(bare_miss.get("spoken") or "").lower()
+    assert spark_calls == []
+
+    general = await run_code_job("explain gravity")
+    assert general.get("error") == "not_a_code_job"
+    assert spark_calls == []
+
+
 
 
 

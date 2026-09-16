@@ -282,18 +282,20 @@ def select_project(goal: str) -> Path:
     """Pick an allowed root from the owner phrasing, sticky repo, or sandbox."""
 
     catalog = {item["name"]: Path(item["path"]) for item in list_projects()}
-    lowered = (goal or "").lower()
-    named = [
-        name
-        for name in sorted(catalog, key=len, reverse=True)
-        if name not in GENERIC_PROJECT_NAMES
-        and len(name) >= 2
-        and _mentions_named_project(lowered, name)
-    ]
-    if named:
-        chosen = catalog[named[0]]
-        remember_sticky_project(chosen)
-        return chosen
+    try:
+        from app.ev.code_locate import preferred_catalog_projects, wanted_place_names
+
+        preferred = preferred_catalog_projects(goal)
+        wanted = wanted_place_names(goal)
+    except Exception:  # noqa: BLE001 - locate must never break jail select
+        preferred = []
+        wanted = []
+    if preferred:
+        name = preferred[0]
+        if name in catalog:
+            chosen = catalog[name]
+            remember_sticky_project(chosen)
+            return chosen
     try:
         from app.ev.code_literacy import project_name_for_alias
 
@@ -301,9 +303,16 @@ def select_project(goal: str) -> Path:
     except Exception:  # noqa: BLE001 - alias lookup must never break jail select
         alias = None
     if alias and alias in catalog:
-        chosen = catalog[alias]
-        remember_sticky_project(chosen)
-        return chosen
+        try:
+            from app.ev.code_locate import name_is_rejected
+
+            rejected = name_is_rejected(goal, alias)
+        except Exception:  # noqa: BLE001
+            rejected = False
+        if not rejected:
+            chosen = catalog[alias]
+            remember_sticky_project(chosen)
+            return chosen
     try:
         from app.ev.code_locate import resolve_code_target
 
@@ -313,6 +322,8 @@ def select_project(goal: str) -> Path:
     if located is not None and located.kind not in {"ambiguous", "desk"}:
         remember_sticky_project(located.root)
         return located.root
+    if wanted:
+        return _default_workspace_path().resolve() if _default_workspace_path().exists() else workspace_root()
     sticky = sticky_project_path()
     if sticky is not None and _wants_sticky_project(goal):
         return sticky
@@ -353,6 +364,13 @@ def _name_token(name: str) -> str:
 def _mentions_named_project(lowered: str, name: str) -> bool:
     """True when the owner named this allowlisted project, not a common verb."""
 
+    try:
+        from app.ev.code_locate import name_is_rejected
+
+        if name_is_rejected(lowered, name):
+            return False
+    except Exception:  # noqa: BLE001 - negation miss must not hide a real name
+        pass
     token = _name_token(name)
     if not token:
         return False

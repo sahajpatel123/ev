@@ -90,10 +90,13 @@ async def build_bootstrap(session: AsyncSession) -> dict[str, Any]:
     if sign:
         lines.append(sign)
     if state.active_project:
+        from app.ev.code_runtime import catalog_project_names
         from app.ev.code_studio import is_background_coding_title
 
-        if not is_background_coding_title(state.active_project):
-            lines.append(f"Active project: {state.active_project}.")
+        name = state.active_project
+        catalog = {item.lower() for item in catalog_project_names()}
+        if not is_background_coding_title(name) and name.lower() not in catalog:
+            lines.append(f"Active project: {name}.")
     if state.current_task:
         lines.append(f"Current task: {state.current_task}.")
     if prefs:

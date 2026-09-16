@@ -8,6 +8,7 @@ WORKING ON snapshot plus action receipts, and asks the model only for wording.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -96,6 +97,22 @@ def snapshot_working_on(
 
                 if is_background_coding_title(str(value)) and not is_code_lane_ask(message):
                     continue
+                try:
+                    from app.ev.code_locate import wanted_place_names
+                    from app.ev.code_runtime import catalog_project_names
+
+                    wanted = wanted_place_names(message)
+                    current = re.sub(r"[\s._-]+", "", str(value).lower())
+                    if wanted and not any(
+                        re.sub(r"[\s._-]+", "", item.lower()) == current for item in wanted
+                    ):
+                        continue
+                    if not is_code_lane_ask(message) and str(value).lower() in {
+                        name.lower() for name in catalog_project_names()
+                    }:
+                        continue
+                except Exception:  # noqa: BLE001 - briefing must never break a turn
+                    pass
             lines.append(f"- {label}: {str(value)[:200]}")
         topics = list(getattr(user_state, "recent_topics", None) or [])[:3]
         if topics:
